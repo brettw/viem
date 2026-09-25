@@ -15,6 +15,7 @@ use tree_sitter::{
     QueryMatch, QueryPredicateArg, StreamingIterator, Tree,
 };
 
+mod lua_pattern;
 mod native;
 pub use native::{
     global_metrics as native_allocation_metrics, initialize as initialize_native_accounting,
@@ -97,7 +98,35 @@ pub fn package_for_language(language: &str) -> Result<Arc<TreeSitterPackage>, Tr
         .unwrap_or_else(|e| e.into_inner())
         .get(language)
         .cloned();
-    registered.map_or_else(|| TreeSitterPackage::bundled(language), Ok)
+    if let Some(package) = registered {
+        return Ok(package);
+    }
+    // Bundled packages are immutable, so injected children (for example every
+    // C macro body) share one compiled query. Compilation runs outside the lock;
+    // a concurrent duplicate is discarded.
+    static BUNDLED: OnceLock<RwLock<BTreeMap<String, Arc<TreeSitterPackage>>>> = OnceLock::new();
+    let cache = BUNDLED.get_or_init(Default::default);
+    if let Some(package) = cache.read().unwrap_or_else(|e| e.into_inner()).get(language) {
+        return Ok(package.clone());
+    }
+    let package = TreeSitterPackage::bundled(language)?;
+    Ok(cache
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(language.to_owned())
+        .or_insert(package)
+        .clone())
+}
+
+/// Whether a registered or bundled package exists, without compiling it.
+pub fn package_exists(language: &str) -> bool {
+    BUNDLED_LANGUAGES.contains(&language)
+        || matches!(language, "cs" | "javascriptreact" | "typescriptreact")
+        || PACKAGE_REGISTRY
+            .get_or_init(Default::default)
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(language)
 }
 
 /// Input/capture/output limits are hard; the native tree-node limit is a
@@ -301,6 +330,7 @@ enum Predicate {
 enum Matcher {
     Regular(dense::DFA<Vec<u32>>),
     Vim(super::vim::VimPattern),
+    Lua(lua_pattern::LuaPattern),
 }
 #[derive(Clone, Debug)]
 enum Argument {
@@ -321,6 +351,7 @@ struct Pattern {
     offsets: Vec<Offset>,
     priority: i32,
     injection_language: Option<String>,
+    injection_self: bool,
     combined: bool,
     include_children: bool,
 }
@@ -406,30 +437,37 @@ impl TreeSitterPackage {
 
     pub fn bundled(id: &str) -> Result<Arc<Self>, TreeSitterError> {
         let javascript = include_str!("treesitter/javascript.scm");
-        let (language, highlights, injections) = match id {
+        let c = include_str!("treesitter/c.scm");
+        let c_injections = include_str!("treesitter/c_injections.scm");
+        // nvim-treesitter's inherited query is prepended to the inheriting one.
+        let inherit_c = |source: &str| source.replacen("; inherits: c", "", 1);
+        let (language, highlights, injections, profile) = match id {
             "c" => (
                 tree_sitter_c::LANGUAGE.into(),
-                tree_sitter_c::HIGHLIGHT_QUERY.to_owned(),
-                None,
+                c.to_owned(),
+                Some(c_injections.to_owned()),
+                QueryProfile::NeovimV1,
             ),
             "cpp" => (
                 tree_sitter_cpp::LANGUAGE.into(),
-                format!(
-                    "{}\n{}",
-                    tree_sitter_c::HIGHLIGHT_QUERY,
-                    tree_sitter_cpp::HIGHLIGHT_QUERY
-                ),
-                None,
+                format!("{c}\n{}", inherit_c(include_str!("treesitter/cpp.scm"))),
+                Some(format!(
+                    "{c_injections}\n{}",
+                    inherit_c(include_str!("treesitter/cpp_injections.scm"))
+                )),
+                QueryProfile::NeovimV1,
             ),
             "rust" => (
                 tree_sitter_rust::LANGUAGE.into(),
                 tree_sitter_rust::HIGHLIGHTS_QUERY.to_owned(),
-                Some(tree_sitter_rust::INJECTIONS_QUERY),
+                Some(tree_sitter_rust::INJECTIONS_QUERY.to_owned()),
+                QueryProfile::Upstream,
             ),
             "swift" => (
                 tree_sitter_swift::LANGUAGE.into(),
                 tree_sitter_swift::HIGHLIGHTS_QUERY.to_owned(),
-                Some(tree_sitter_swift::INJECTIONS_QUERY),
+                Some(tree_sitter_swift::INJECTIONS_QUERY.to_owned()),
+                QueryProfile::Upstream,
             ),
             "objc" => (
                 tree_sitter_objc::LANGUAGE.into(),
@@ -439,11 +477,13 @@ impl TreeSitterPackage {
                     tree_sitter_objc::HIGHLIGHTS_QUERY.replace("; inherits: c", "")
                 ),
                 None,
+                QueryProfile::Upstream,
             ),
             "c_sharp" | "cs" => (
                 tree_sitter_c_sharp::LANGUAGE.into(),
                 include_str!("treesitter/c_sharp.scm").to_owned(),
                 None,
+                QueryProfile::Upstream,
             ),
             "javascript" | "javascriptreact" => (
                 tree_sitter_javascript::LANGUAGE.into(),
@@ -451,12 +491,14 @@ impl TreeSitterPackage {
                     "{javascript}\n{}",
                     tree_sitter_javascript::JSX_HIGHLIGHT_QUERY
                 ),
-                Some(include_str!("treesitter/javascript_injections.scm")),
+                Some(include_str!("treesitter/javascript_injections.scm").to_owned()),
+                QueryProfile::Upstream,
             ),
             "typescript" => (
                 tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
                 format!("{javascript}\n{}", tree_sitter_typescript::HIGHLIGHTS_QUERY),
                 None,
+                QueryProfile::Upstream,
             ),
             "tsx" | "typescriptreact" => (
                 tree_sitter_typescript::LANGUAGE_TSX.into(),
@@ -465,12 +507,14 @@ impl TreeSitterPackage {
                     tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
                     tree_sitter_typescript::HIGHLIGHTS_QUERY
                 ),
-                Some(include_str!("treesitter/javascript_injections.scm")),
+                Some(include_str!("treesitter/javascript_injections.scm").to_owned()),
+                QueryProfile::Upstream,
             ),
             "python" => (
                 tree_sitter_python::LANGUAGE.into(),
                 tree_sitter_python::HIGHLIGHTS_QUERY.to_owned(),
                 None,
+                QueryProfile::Upstream,
             ),
             _ => return Err(TreeSitterError::UnsupportedLanguage(id.to_owned())),
         };
@@ -479,8 +523,8 @@ impl TreeSitterPackage {
             1,
             language,
             &highlights,
-            injections,
-            QueryProfile::Upstream,
+            injections.as_deref(),
+            profile,
             &TreeSitterBudget::default(),
             None,
         )
@@ -660,6 +704,22 @@ fn compile_query(
                         any: op.starts_with("any-"),
                     });
                 }
+                "lua-match?" | "not-lua-match?" | "any-lua-match?"
+                    if profile == QueryProfile::NeovimV1 && args.len() == 2 =>
+                {
+                    let source = string(args.get(1))?;
+                    let matcher =
+                        lua_pattern::LuaPattern::compile(&source, budget.max_query_source_bytes)
+                            .map_err(|e| {
+                                TreeSitterError::InvalidQuery(format!("Lua pattern {source:?}: {e}"))
+                            })?;
+                    pattern.predicates.push(Predicate::Match {
+                        capture: capture(args.first())?,
+                        matcher: Matcher::Lua(matcher),
+                        positive: !op.contains("not-"),
+                        any: op.starts_with("any-"),
+                    });
+                }
                 "offset!" if args.len() == 5 => {
                     let number = |at| {
                         string(args.get(at))?.parse::<i32>().map_err(|_| {
@@ -694,6 +754,7 @@ fn compile_query(
                                 })?
                         }
                         "injection.language" if injection => pattern.injection_language = value,
+                        "injection.self" if injection => pattern.injection_self = true,
                         "injection.combined" if injection => pattern.combined = true,
                         "injection.include-children" if injection => {
                             pattern.include_children = true
@@ -1185,6 +1246,8 @@ pub struct HighlightResult {
     pub coverage: Coverage,
     pub runs: Vec<SyntaxRun>,
     pub injections: Vec<InjectionRegion>,
+    /// Discovery stopped at `max_injections`; later regions keep parent runs.
+    pub injections_truncated: bool,
     pub work: TreeSitterWork,
     pub diagnostic: Option<TreeSitterError>,
     /// Capture/text/ancestor reads, including attempted capped text reads. This
@@ -1200,6 +1263,19 @@ pub fn highlight(
     budget: &TreeSitterBudget,
     cancelled: &AtomicBool,
 ) -> HighlightResult {
+    highlight_injecting(snapshot, range, budget, cancelled, &mut |_| true)
+}
+
+/// Like Neovim, an injection whose language has no available provider is
+/// discarded at discovery: it neither owns its region nor counts toward the
+/// injection budget.
+pub fn highlight_injecting(
+    snapshot: &ParseSnapshot,
+    range: Range<usize>,
+    budget: &TreeSitterBudget,
+    cancelled: &AtomicBool,
+    injectable: &mut dyn FnMut(&str) -> bool,
+) -> HighlightResult {
     let native = Arc::new(native::Account::default());
     let _scope = native::Scope::new(&native);
     let control = Control::new(budget, cancelled, &native);
@@ -1210,6 +1286,7 @@ pub fn highlight(
         coverage: Coverage::Missing,
         runs: Vec::new(),
         injections: Vec::new(),
+        injections_truncated: false,
         work: TreeSitterWork::default(),
         diagnostic: None,
         failure_dependencies: range.clone(),
@@ -1225,7 +1302,7 @@ pub fn highlight(
             &snapshot.package.highlights,
             &range,
             &control,
-            false,
+            None,
         )?;
         let runs = coalesce(captures.0);
         let output_bytes = runs
@@ -1244,9 +1321,11 @@ pub fn highlight(
                 } else {
                     range.clone()
                 };
-                execute_query(snapshot, query, &discovery, &control, true)?.1
+                let (_, injections, truncated) =
+                    execute_query(snapshot, query, &discovery, &control, Some(injectable))?;
+                (injections, truncated)
             }
-            None => Vec::new(),
+            None => (Vec::new(), false),
         };
         if control.check() {
             return Err(control.failure().unwrap());
@@ -1254,10 +1333,11 @@ pub fn highlight(
         Ok((runs, injections))
     })();
     match result {
-        Ok((runs, injections)) => {
+        Ok((runs, (injections, truncated))) => {
             output.coverage = Coverage::Exact;
             output.runs = runs;
             output.injections = injections;
+            output.injections_truncated = truncated;
         }
         Err(error) => output.diagnostic = Some(error),
     }
@@ -1274,10 +1354,11 @@ fn execute_query(
     compiled: &CompiledQuery,
     range: &Range<usize>,
     control: &Control<'_>,
-    injection: bool,
-) -> Result<(Vec<RankedRun>, Vec<InjectionRegion>), TreeSitterError> {
+    mut injectable: Option<&mut dyn FnMut(&str) -> bool>,
+) -> Result<(Vec<RankedRun>, Vec<InjectionRegion>, bool), TreeSitterError> {
+    let injection = injectable.is_some();
     if range.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), false));
     }
     if injection
         && compiled.patterns.iter().any(|p| p.combined)
@@ -1305,6 +1386,7 @@ fn execute_query(
     let mut injections = Vec::new();
     let mut combined = BTreeMap::<(usize, String), InjectionRegion>::new();
     let mut injection_ranges = 0usize;
+    let mut truncated = false;
     let mut serial = 0;
     while let Some(found) = iterator.next() {
         if control.check() {
@@ -1328,11 +1410,22 @@ fn execute_query(
         if !predicates_match(pattern, found, &snapshot.input, control)? {
             continue;
         }
-        if injection {
-            if let Some(region) = injection_region(snapshot, compiled, pattern, found, control)? {
+        if let Some(injectable) = injectable.as_mut() {
+            if truncated {
+                continue;
+            }
+            if let Some(region) = injection_region(snapshot, compiled, pattern, found, control)?
+                .filter(|region| injectable(&region.language))
+            {
                 injection_ranges = injection_ranges.saturating_add(region.ranges.len());
                 if injection_ranges > control.budget.max_injections {
-                    return Err(TreeSitterError::Limit("injections"));
+                    // A combined group must be complete; otherwise the regions
+                    // already found stay valid and later ones keep parent runs.
+                    if compiled.patterns.iter().any(|p| p.combined) {
+                        return Err(TreeSitterError::Limit("injections"));
+                    }
+                    truncated = true;
+                    continue;
                 }
                 if region.combined {
                     let key = (found.pattern_index, region.language.clone());
@@ -1400,7 +1493,7 @@ fn execute_query(
         }
         injections.push(region);
     }
-    Ok((runs, injections))
+    Ok((runs, injections, truncated))
 }
 
 fn capture_text(
@@ -1520,6 +1613,11 @@ fn predicates_match(
                     control.charge_predicate(text.len().max(1))?;
                     let matched = match matcher {
                         Matcher::Regular(regex) => regular_match(regex, &text, control)?,
+                        Matcher::Lua(lua_pattern::LuaPattern::Regular(regex)) => {
+                            regular_match(regex, &text, control)?
+                        }
+                        Matcher::Lua(lua_pattern::LuaPattern::Backtracking(pattern)) => pattern
+                            .find(&text, &mut |steps| control.charge_predicate(steps))?,
                         Matcher::Vim(pattern) => {
                             let text = std::str::from_utf8(&text)
                                 .map_err(|_| TreeSitterError::InvalidInput)?;
@@ -1636,15 +1734,22 @@ fn injection_region(
     found: &QueryMatch<'_, '_>,
     control: &Control<'_>,
 ) -> Result<Option<InjectionRegion>, TreeSitterError> {
-    let mut language = pattern.injection_language.clone();
+    let mut language = if pattern.injection_self {
+        Some(snapshot.package.id.clone())
+    } else {
+        pattern.injection_language.clone()
+    };
+    let mut captured_language = false;
     let mut ranges = Vec::new();
     for capture in found.captures {
         match compiled.query.capture_names()[capture.index as usize] {
             "injection.language" => {
-                language = Some(
+                // Captured text is document content, such as a C++ raw-string
+                // delimiter. Text that cannot name a language injects nothing.
+                language =
                     String::from_utf8(control.text(&snapshot.input, capture.node.byte_range())?)
-                        .map_err(|_| TreeSitterError::InvalidInput)?,
-                );
+                        .ok();
+                captured_language = true;
             }
             "injection.content" => {
                 let range = offset_range(capture.node, pattern, capture.index, &snapshot.input)?;
@@ -1676,6 +1781,9 @@ fn injection_region(
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_+-".contains(c))
     {
+        if captured_language {
+            return Ok(None);
+        }
         return Err(TreeSitterError::InvalidQuery(
             "invalid injection language".into(),
         ));

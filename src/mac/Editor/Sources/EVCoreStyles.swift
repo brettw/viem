@@ -87,6 +87,7 @@ struct EVStyleDefinitionFlags: OptionSet, Equatable {
     static let baseParagraph = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_BASE_PARAGRAPH))
     static let internalSyntax = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL))
     static let internalList = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL_LIST))
+    static let implicit = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_IMPLICIT))
 
     var isBase: Bool {
         contains(.baseParagraph)
@@ -267,6 +268,15 @@ struct EVStyleDefinition: Equatable {
 
     var parentKey: EVStyleKey? {
         parentID.map { EVStyleKey(namespace: key.namespace, id: $0) }
+    }
+
+    /// Pickers and menus mark generated Code syntax definitions.
+    var displayTitle: String {
+        flags.contains(.implicit) ? Self.implicitTitle(name) : name
+    }
+
+    static func implicitTitle(_ name: String) -> String {
+        "\(name) (automatic)"
     }
 }
 
@@ -631,6 +641,16 @@ enum EVCoreStyleBridge {
                 request.display_name.length = UInt64(name.count)
                 try check(viem_code_create_style(&request, &info))
             }
+        }
+    }
+
+    /// Generates the implicit definition for a syntax name, and its missing
+    /// dotted ancestors. An existing definition is left unchanged.
+    static func materializeCodeStyle(name: String) throws {
+        var info = ViemStyleSheetInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        try Array(name.utf8).withUnsafeBufferPointer { name in
+            try check(viem_code_materialize_style(name.baseAddress, UInt64(name.count), &info))
         }
     }
 

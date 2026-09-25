@@ -138,51 +138,74 @@ final class EVCodeStyleMenuTests: XCTestCase {
                        "A harmless stylesheet revision change does not lose the stable edit target")
     }
 
-    func testUndefinedSyntaxNameAppearsWithoutCreatingAStyleAndDefineIsExplicit() async throws {
+    func testDeletedSyntaxNameIsRegeneratedAsAnImplicitDefinition() async throws {
         let surface = try surface()
         let code = try EVCodeStyleSession(configuration: surface.backend.configuration)
         let initial = try code.snapshot()
         let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "Keyword" })
         try code.delete(key: keyword.key, expected: initial.identity)
+        let savedAfterDelete = try surface.backend.configuration.codeStyleSheet()
         let before = try surface.backend.recoverySnapshot()
-        let missingRevision = try code.snapshot().identity.styleSheetRevision
         for _ in 0..<200 {
             surface.backend.pollSyntax()
-            if try surface.backend.syntaxStyleNames().contains("Keyword") { break }
+            if try code.snapshot().definitions.contains(where: { $0.name == "Keyword" }) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(try surface.backend.syntaxStyleNames().contains("Keyword"))
+        let implicit = try XCTUnwrap(code.snapshot().definitions.first { $0.name == "Keyword" })
+        XCTAssertTrue(implicit.flags.contains(.implicit))
+        XCTAssertNotEqual(implicit.key, keyword.key, "A deleted built-in is not revived")
+        XCTAssertFalse(implicit.properties.values.contains { $0.declared != nil },
+                       "An implicit definition only inherits")
+        XCTAssertEqual(try surface.backend.configuration.codeStyleSheet(), savedAfterDelete,
+                       "Implicit definitions are never written to code_style.json")
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-        let entry = try XCTUnwrap(catalogue.entries.first { $0.syntaxName == "Keyword" })
-        XCTAssertEqual(entry.actionKind, .defineSyntax)
-        XCTAssertEqual(entry.displayName, "Define Keyword…")
-        XCTAssertEqual(entry.stableID, "", "An unresolved reference has no invented definition ID")
-        XCTAssertEqual(entry.presentation.state, .off)
-        XCTAssertEqual(catalogue.entries.first { $0.role == .character && $0.stableID == "" && $0.isBase }?
-            .presentation.state, .on, "An unresolved syntax style renders with Default Paragraph")
-        XCTAssertEqual(try code.snapshot().identity.styleSheetRevision, missingRevision)
-        XCTAssertFalse(try code.snapshot().definitions.contains { $0.name == "Keyword" })
+        let entry = try XCTUnwrap(catalogue.entries.first { $0.stableID == implicit.key.id.rawValue })
+        XCTAssertEqual(entry.actionKind, .edit)
+        XCTAssertEqual(entry.displayName, "Keyword (automatic)")
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
         let item = menuItem(entry, catalogue: catalogue)
         XCTAssertTrue(surface.editorView.validateMenuItem(item))
         surface.editorView.performEditorStyleMenuAction(item)
-        let defined = try XCTUnwrap(code.snapshot().definitions.first { $0.name == "Keyword" })
-        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, defined.key)
-        XCTAssertNotEqual(defined.key, keyword.key)
-        XCTAssertFalse(defined.properties.values.contains { $0.declared != nil },
-                       "Explicit creation inherits the default appearance until properties are changed")
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, implicit.key)
+        let editor = try XCTUnwrap(coordinator.styleWindow?.contentViewController as? EVStyleEditorViewController)
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(19)), editor.inspection.diagnostic)
+        let edited = try XCTUnwrap(code.snapshot().definition(for: implicit.key))
+        XCTAssertFalse(edited.flags.contains(.implicit), "Editing makes an implicit definition ordinary")
+        XCTAssertNotEqual(try surface.backend.configuration.codeStyleSheet(), savedAfterDelete)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
         XCTAssertFalse(surface.canUndo)
-        XCTAssertFalse(surface.editorView.validateMenuItem(item), "An already defined name cannot be created twice")
-        let fresh = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-        XCTAssertEqual(fresh.entries.first { $0.displayName == "Keyword" }?.actionKind, .edit)
-        XCTAssertFalse(fresh.entries.contains { $0.syntaxName == "Keyword" })
     }
 
-    func testCodeEditStylesCommandsTargetBasesAndAssignmentsStayDisabled() throws {
+    func testChoosingAnUnmaterializedSyntaxNameGeneratesItsAncestry() throws {
+        // Implicit definitions are not exported, so restoring the export
+        // removes them from the process-wide authority.
+        let saved = try EVCodeStyleSession.exportGlobalJSON()
+        defer {
+            _ = saved.withUnsafeBytes { raw in
+                viem_code_replace_style_json(raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+            }
+        }
+        try EVCoreStyleBridge.materializeCodeStyle(name: "Keyword.directive.define")
+        let snapshot = try EVCoreStyleBridge.copyStyleSheet(core: nil)
+        let leaf = try XCTUnwrap(snapshot.definitions.first { $0.name == "Keyword.directive.define" })
+        let middle = try XCTUnwrap(snapshot.definitions.first { $0.name == "Keyword.directive" })
+        let root = try XCTUnwrap(snapshot.definitions.first { $0.name == "Keyword" })
+        XCTAssertTrue(leaf.flags.contains(.implicit))
+        XCTAssertTrue(middle.flags.contains(.implicit))
+        XCTAssertEqual(leaf.parentID, middle.key.id)
+        XCTAssertEqual(middle.parentID, root.key.id)
+        XCTAssertEqual(leaf.displayTitle, "Keyword.directive.define (automatic)")
+    }
+
+    func testCodeEditStylesCommandsTargetBasesAndAssignmentsStayDisabled() async throws {
         let surface = try surface()
+        // The space after `fn` has no syntax style, so each command falls back
+        // to its base style rather than following a highlighted caret.
+        try await waitForRustHighlighting(surface)
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
         let before = try surface.backend.recoverySnapshot()
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()

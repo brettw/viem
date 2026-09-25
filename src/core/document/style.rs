@@ -437,6 +437,9 @@ pub struct StyleSheet {
     // layers: the editable maps above contain the complete own declarations.
     default_blocks: BTreeMap<StyleId, BlockStyle>,
     default_characters: BTreeMap<StyleId, CharacterStyle>,
+    /// Code syntax definitions generated for emitted names and not yet edited.
+    /// They are never persisted.
+    implicit_characters: BTreeSet<StyleId>,
 }
 
 // Maps do not expose node capacities. Charge a conservative estimate for their
@@ -470,7 +473,8 @@ impl StyleSheet {
         }
         for set in [&self.deleted_configuration_blocks, &self.deleted_configuration_characters,
                     &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters,
-                    &self.html_configuration_blocks, &self.html_configuration_characters] {
+                    &self.html_configuration_blocks, &self.html_configuration_characters,
+                    &self.implicit_characters] {
             bytes += style_map_heap_bytes(set.len(), std::mem::size_of::<StyleId>())
                 + set.iter().map(id).sum::<usize>();
         }
@@ -496,6 +500,7 @@ impl PartialEq for StyleSheet {
             && self.default_characters == other.default_characters
             && self.html_configuration_blocks == other.html_configuration_blocks
             && self.html_configuration_characters == other.html_configuration_characters
+            && self.implicit_characters == other.implicit_characters
     }
 }
 
@@ -682,6 +687,7 @@ impl Default for StyleSheet {
             source_character_defaults: BTreeMap::new(),
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
+            implicit_characters: BTreeSet::new(),
         };
         sheet.install_incremental_match_style();
         sheet
@@ -1229,6 +1235,11 @@ impl StyleSheet {
     /// Look up one immutable block-style definition by its stable ID.
     pub fn block_style(&self, id: &StyleId) -> Option<&BlockStyle> {
         self.block_styles.get(id)
+    }
+
+    /// A generated Code syntax definition that has not been edited.
+    pub fn is_implicit_character(&self, id: &StyleId) -> bool {
+        self.implicit_characters.contains(id)
     }
 
     /// Iterate immutable block-style definitions in stable ID order.

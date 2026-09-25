@@ -217,7 +217,10 @@ fn exercise_syntax_finishing_during_layout(
     assert_eq!(core.syntax_statistics().publications, 1);
     assert_eq!(core.syntax.service.runs(core.syntax_input().identity()).len(), 2);
     assert_eq!(core.syntax_style_names(), ["@provider.undefined", "Keyword"]);
-    assert!(code_style::resolve_name(core.document.projection().style_sheet(), "@provider.undefined").is_none());
+    let sheet = core.document.projection().style_sheet();
+    let generated = code_style::resolve_name(sheet, "@provider.undefined")
+        .expect("publication generates an implicit definition");
+    assert!(sheet.is_implicit_character(generated));
     assert_eq!(core.syntax_statistics().publications, 1, "menu inspection does not publish work");
     core.set_code_language(LanguageSelection::None);
     assert!(core.syntax_style_names().is_empty(), "retired language names are not exposed");

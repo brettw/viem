@@ -965,6 +965,8 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_DEFINITION_BASE_PARAGRAPH (1u << 3)
 #define VIEM_STYLE_DEFINITION_INTERNAL (1u << 5)
 #define VIEM_STYLE_DEFINITION_INTERNAL_LIST (1u << 6)
+/* A generated Code syntax definition that has not been edited or persisted. */
+#define VIEM_STYLE_DEFINITION_IMPLICIT (1u << 7)
 
 #define VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS (1u << 0)
 #define VIEM_STYLE_CAPABILITY_EDIT_PARENT (1u << 1)
@@ -2602,6 +2604,11 @@ ViemStatus viem_code_copy_style_sheet(const ViemStyleSheetIdentityV1 *expected,
 ViemStatus viem_code_edit_style(const ViemStyleEditV1 *request, ViemStyleSheetInfoV1 *output);
 ViemStatus viem_code_create_style(const ViemCreateStyleV1 *request, ViemStyleSheetInfoV1 *output);
 ViemStatus viem_code_delete_style(const ViemDeleteStyleV1 *request, ViemStyleSheetInfoV1 *output);
+/* Generates the implicit definition for one syntax name, and its missing
+ * dotted ancestors, when it has no definition. Fails with ResourceExhausted
+ * when the implicit-definition limit leaves the name undefined. */
+ViemStatus viem_code_materialize_style(const uint8_t *name, uint64_t length,
+    ViemStyleSheetInfoV1 *output);
 ViemStatus viem_code_replace_style_json(const uint8_t *input, uint64_t length);
 ViemStatus viem_code_export_style_json(uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_core_initialize_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, uint8_t allow_auto_code);

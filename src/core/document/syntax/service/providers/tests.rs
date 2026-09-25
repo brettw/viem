@@ -237,7 +237,7 @@ fn vim_directory_change_preserves_the_completed_primary_parser() {
 }
 
 #[test]
-fn failed_child_tree_sitter_uses_vim_and_unknown_children_clear_host_colors() {
+fn failed_child_tree_sitter_uses_vim_and_unknown_children_keep_host_colors() {
     let _registry = treesitter::package_registry_test_guard();
     let fixture = Fixture::new("fixture", "syn keyword ChildKeyword hello\n");
     let mut req = request("hello", "fixture", 1);
@@ -252,6 +252,7 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_clear_host_colors() {
         fallback_attempted: false,
         slices: 0,
         progress: 0,
+        deadline_retries: 0,
         touched: true,
         input: Some(req.input.clone()),
         failed: None,
@@ -268,6 +269,7 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_clear_host_colors() {
             ..TreeSitterBudget::default()
         },
         &AtomicBool::new(false),
+        &mut |_| true,
     );
     assert!(child.failed.is_some());
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
@@ -284,18 +286,20 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_clear_host_colors() {
         .unwrap()
         .find("hello")
         .unwrap();
-    assert_eq!(output.coverage, Coverage::Provisional);
+    // Like Neovim, a language without a provider is not injected at all.
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
     assert!(
-        !output
+        output
             .runs
             .iter()
-            .any(|run| overlaps(&run.range, &(start..start + 5))),
-        "unavailable child leaked host colors"
+            .any(|run| run.range.start <= start && run.range.end >= start + 5),
+        "unavailable child hid host colors: {:?}",
+        output.runs
     );
 }
 
 #[test]
-fn total_child_input_limit_clears_coverage_without_creating_parser() {
+fn total_child_input_limit_keeps_host_runs_without_creating_parser() {
     let _registry = treesitter::package_registry_test_guard();
     let mut req = request(&"x".repeat(MAX_TOTAL_CHILD_INPUT_BYTES + 1), "c", 1);
     req.range = 0..10;
@@ -321,7 +325,7 @@ fn total_child_input_limit_clears_coverage_without_creating_parser() {
         &AtomicBool::new(false),
     );
     assert!(provider.children.is_empty());
-    assert!(output.runs.is_empty());
+    assert_eq!(output.runs.len(), 1, "host runs remain until a child has coverage");
     assert_eq!(output.coverage, Coverage::Provisional);
     assert!(!output.continuation);
 }
@@ -404,4 +408,130 @@ fn native_wide_root_repair_exhaustion_uses_fallback_without_repaint_retry() {
         });
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
+}
+
+fn bundled_vim(text: &str, language: &str) -> SyntaxRequest {
+    let mut request = request(text, language, 1);
+    request.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    request
+}
+fn name_at(result: &SyntaxResult, text: &str, needle: &str) -> Option<String> {
+    let start = text.find(needle).unwrap();
+    result
+        .runs
+        .iter()
+        .find(|run| run.range.start <= start && run.range.end >= start + needle.len())
+        .map(|run| run.name.0.clone())
+}
+
+#[test]
+fn nvim_cpp_queries_highlight_preprocessor_comments_and_injections() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = concat!(
+        "#include <vector>\n",
+        "#define MAX_SIZE (1 << 10)\n",
+        "/// Brief doc comment.\n",
+        "// Plain comment.\n",
+        "class Widget { int m_count; };\n",
+        "int main() {\n",
+        "  auto q = R\"sql(select 1)sql\";\n",
+        "  printf(\"%d\\n\", MAX_SIZE);\n",
+        "  return nullptr != nullptr;\n",
+        "}\n",
+    );
+    let request = bundled_vim(text, "cpp");
+    let result = finish(&mut BackendProvider::default(), &request);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    let name = |needle| name_at(&result, text, needle);
+    assert_eq!(name("#include").as_deref(), Some("Keyword.import"));
+    assert_eq!(name("<vector>").as_deref(), Some("String"));
+    assert_eq!(name("#define").as_deref(), Some("Keyword.directive.define"));
+    // lua-match? constants and the self-injected macro body.
+    assert_eq!(name("MAX_SIZE").as_deref(), Some("Constant.macro"));
+    assert_eq!(name("<<").as_deref(), Some("Operator"));
+    assert_eq!(name("m_count").as_deref(), Some("Variable.member"));
+    assert_eq!(name("nullptr").as_deref(), Some("Constant.builtin"));
+    // The comment, doxygen and printf injections have no available provider,
+    // so the host colors remain.
+    assert_eq!(name("/// Brief doc comment.").as_deref(), Some("Comment"));
+    assert_eq!(name("// Plain comment.").as_deref(), Some("Comment"));
+    assert_eq!(name("\"%d").as_deref(), Some("String"));
+    // A raw-string delimiter selects Vim sql; its gaps keep the host color.
+    assert_eq!(name("select").as_deref(), Some("Statement"));
+    let space = text.find("select").unwrap() + "select".len();
+    assert!(result
+        .runs
+        .iter()
+        .any(|run| run.range.contains(&space) && run.name.0 == "String"));
+}
+
+#[test]
+fn many_injected_macro_bodies_are_all_highlighted() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = (0..100)
+        .map(|n| format!("#define VALUE_{n} ({n} + 1)\n"))
+        .collect::<String>();
+    let request = bundled_vim(&text, "c");
+    let result = finish(&mut BackendProvider::default(), &request);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    let plus = text.match_indices(" + ").map(|(at, _)| at + 1).collect::<Vec<_>>();
+    assert_eq!(plus.len(), 100);
+    for at in plus {
+        assert!(
+            result
+                .runs
+                .iter()
+                .any(|run| run.range.contains(&at) && run.name.0 == "Operator"),
+            "macro body at {at} was not highlighted"
+        );
+    }
+}
+
+#[test]
+fn injection_overflow_keeps_host_highlighting() {
+    let _registry = treesitter::package_registry_test_guard();
+    let count = TreeSitterBudget::default().max_injections + 10;
+    let text = (0..count)
+        .map(|n| format!("#define V{n} {n}\n"))
+        .collect::<String>();
+    let request = bundled_vim(&text, "c");
+    let result = finish(&mut BackendProvider::default(), &request);
+    assert_eq!(result.coverage, Coverage::Provisional);
+    assert!(result
+        .diagnostics
+        .iter()
+        .any(|d| d.contains("discovery budget")));
+    let last = text.rfind("#define").unwrap();
+    assert!(result
+        .runs
+        .iter()
+        .any(|run| run.range.start == last && run.name.0 == "Keyword.directive.define"));
+}
+
+#[test]
+fn overlay_keeps_parent_runs_around_child_runs() {
+    let run = |range: Range<usize>, name: &str| SyntaxRun {
+        range,
+        name: crate::document::syntax::SyntaxStyleName(name.into()),
+        origin: String::new(),
+        priority: 100,
+    };
+    let mut runs = vec![run(0..4, "A"), run(4..20, "String"), run(20..24, "B")];
+    overlay_runs(&mut runs, vec![run(6..8, "X"), run(10..22, "Y")]);
+    let spans = runs
+        .iter()
+        .map(|r| (r.range.clone(), r.name.0.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        spans,
+        [
+            (0..4, "A"),
+            (4..6, "String"),
+            (6..8, "X"),
+            (8..10, "String"),
+            (10..22, "Y"),
+            (22..24, "B"),
+        ]
+    );
 }

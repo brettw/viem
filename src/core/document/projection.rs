@@ -3225,7 +3225,13 @@ impl FormattedDocument {
             // capture beginning inside it starts at the following cluster.
             let range = ceil(run.range.start)?..ceil(run.range.end)?;
             if range.is_empty() { return None; }
-            let id = names.get(run.name.0.as_str())?;
+            // A name without a definition uses its nearest defined dotted
+            // ancestor, the appearance its implicit definition will have.
+            let mut name = run.name.0.as_str();
+            let id = loop {
+                if let Some(id) = names.get(name) { break id; }
+                name = name.rsplit_once('.')?.0;
+            };
             Some(StyleSpan { range, application: StyleApplication::Automatic((*id).clone()) })
         }).collect());
         self.style_sheet = sheet;

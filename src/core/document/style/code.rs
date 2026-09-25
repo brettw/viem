@@ -309,6 +309,118 @@ fn default_parent<'a>(name: &'a str, root: &'a str) -> &'a str {
     }
 }
 
+/// At most this many implicit definitions exist at once.
+pub const MAX_IMPLICIT_DEFINITIONS: usize = 1024;
+/// Distinct from built-in `syntax:` IDs, so a regenerated name never revives a
+/// deleted built-in definition whose suppression is persisted.
+const IMPLICIT_ID_PREFIX: &str = "implicit:";
+
+/// A syntax name's appearance: its own definition, else its nearest defined
+/// dotted ancestor. This equals the appearance of the implicit definitions
+/// that will be generated for it, so rendering never waits for generation.
+pub fn resolve_syntax_name<'a>(sheet: &'a StyleSheet, name: &str) -> Option<&'a StyleId> {
+    let mut name = name;
+    loop {
+        if let Some(id) = resolve_name(sheet, name) {
+            return Some(id);
+        }
+        name = name.rsplit_once('.')?.0;
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Materialized {
+    /// The published sheet when any definition was generated.
+    pub sheet: Option<Arc<StyleSheet>>,
+    /// Some names were left to the ancestor walk by `MAX_IMPLICIT_DEFINITIONS`.
+    pub limited: bool,
+}
+
+/// Generate an empty implicit definition for each name without one, and for
+/// its missing dotted ancestors. A dotted name is based on its dot-parent; an
+/// undotted name is a root. This is one serialized global-stylesheet operation
+/// that adds no document history and changes no appearance.
+pub fn materialize<'a>(names: impl IntoIterator<Item = &'a str> + Clone) -> Materialized {
+    if missing_names(&snapshot(), names.clone()).is_empty() {
+        return Materialized::default();
+    }
+    let mut guard = authority().write().unwrap_or_else(|e| e.into_inner());
+    let Some(revision) = guard.revision.0.checked_add(1) else {
+        return Materialized::default();
+    };
+    let mut next = guard.as_ref().clone();
+    let limited = generate_implicit(&mut next, names);
+    let mut result = Materialized { sheet: None, limited };
+    if next.implicit_characters == guard.implicit_characters {
+        return result;
+    }
+    next.revision = StyleSheetRevision(revision);
+    debug_assert_eq!(validate(&next), Ok(()));
+    *guard = Arc::new(next);
+    result.sheet = Some(guard.clone());
+    result
+}
+
+/// Names, and their dotted ancestors, that have no definition.
+fn missing_names<'a>(sheet: &StyleSheet, names: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    let defined = sheet
+        .character_metadata
+        .values()
+        .map(|metadata| metadata.display_name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut missing = BTreeSet::new();
+    for name in names {
+        let mut name = name;
+        while !name.trim().is_empty() && !defined.contains(name) {
+            missing.insert(name.to_owned());
+            match name.rsplit_once('.') {
+                Some((parent, _)) => name = parent,
+                None => break,
+            }
+        }
+    }
+    missing
+}
+
+/// Returns whether `MAX_IMPLICIT_DEFINITIONS` left any name undefined.
+fn generate_implicit<'a>(sheet: &mut StyleSheet, names: impl IntoIterator<Item = &'a str>) -> bool {
+    // A name's dotted prefixes are generated first so it can link to them.
+    let mut order = missing_names(sheet, names).into_iter().collect::<Vec<_>>();
+    order.sort_by_key(|name| name.matches('.').count());
+    for name in order {
+        if sheet.implicit_characters.len() >= MAX_IMPLICIT_DEFINITIONS {
+            return true;
+        }
+        let based_on = match name.rsplit_once('.') {
+            Some((parent, _)) => match resolve_name(sheet, parent) {
+                Some(id) => Some(id.clone()),
+                None => continue,
+            },
+            None => None,
+        };
+        let mut id = StyleId(format!("{IMPLICIT_ID_PREFIX}{name}"));
+        let mut suffix = 2;
+        while sheet.character_styles.contains_key(&id) {
+            id = StyleId(format!("{IMPLICIT_ID_PREFIX}{name}#{suffix}"));
+            suffix += 1;
+        }
+        sheet.character_styles.insert(
+            id.clone(),
+            CharacterStyle {
+                id: id.clone(),
+                based_on,
+                properties: Default::default(),
+            },
+        );
+        sheet
+            .character_metadata
+            .insert(id.clone(), StyleDefinitionMetadata::generated(name));
+        sheet.deleted_configuration_characters.remove(&id);
+        sheet.implicit_characters.insert(id);
+    }
+    false
+}
+
 pub fn resolve_name<'a>(sheet: &'a StyleSheet, name: &str) -> Option<&'a StyleId> {
     sheet.character_styles.keys().find(|id| {
         sheet
@@ -607,6 +719,23 @@ pub fn export_json() -> Result<Vec<u8>, String> {
 }
 pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
     let defaults = default_sheet();
+    let persisted = |s: &&CharacterStyle| {
+        !sheet.implicit_characters.contains(&s.id)
+            && (defaults.character_styles.get(&s.id) != Some(*s)
+                || defaults.character_metadata.get(&s.id) != sheet.character_metadata.get(&s.id))
+    };
+    // An edited definition may be based on an implicit one. Persist that
+    // ancestry too, so the saved sheet never names a missing parent.
+    let mut required = BTreeSet::new();
+    for style in sheet.character_styles.values().filter(persisted) {
+        let mut parent = style.based_on.as_ref();
+        while let Some(id) = parent.filter(|id| sheet.implicit_characters.contains(*id)) {
+            if !required.insert(id.clone()) {
+                break;
+            }
+            parent = sheet.character_styles.get(id).and_then(|s| s.based_on.as_ref());
+        }
+    }
     let suppressed_character_ids = defaults
         .character_styles
         .keys()
@@ -630,10 +759,7 @@ pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
         character_styles: sheet
             .character_styles
             .values()
-            .filter(|s| {
-                defaults.character_styles.get(&s.id) != Some(s)
-                    || defaults.character_metadata.get(&s.id) != sheet.character_metadata.get(&s.id)
-            })
+            .filter(|s| persisted(s) || required.contains(&s.id))
             .map(|s| CharacterEntry {
                 name: sheet.character_metadata[&s.id].display_name.clone(),
                 style: s.clone(),
@@ -693,6 +819,16 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
 pub fn replace_json(bytes: &[u8]) -> Result<Arc<StyleSheet>, String> {
     let mut sheet = parse_json(bytes)?;
     let mut guard = authority().write().unwrap_or_else(|e| e.into_inner());
+    // Implicit definitions are not in the file. Carry the current ones over,
+    // with the same IDs, so a reload does not drop names that are still in
+    // use or the style an open editor has selected.
+    let implicit = guard
+        .implicit_characters
+        .iter()
+        .filter_map(|id| guard.character_metadata.get(id))
+        .map(|metadata| metadata.display_name.clone())
+        .collect::<Vec<_>>();
+    generate_implicit(&mut sheet, implicit.iter().map(String::as_str));
     sheet.revision = StyleSheetRevision(
         guard
             .revision
@@ -716,8 +852,119 @@ mod tests {
     };
     use crate::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
 
+    fn named<'a>(sheet: &'a StyleSheet, name: &str) -> &'a CharacterStyle {
+        &sheet.character_styles[resolve_name(sheet, name).unwrap()]
+    }
+
     #[test]
-    fn defaults_cover_every_bundled_highlight_capture_and_reject_non_code_paragraph_semantics() {
+    fn implicit_definitions_link_dotted_ancestry_and_resolve_like_their_parent() {
+        let mut sheet = default_sheet();
+        assert_eq!(
+            resolve_syntax_name(&sheet, "Keyword.directive.define"),
+            resolve_name(&sheet, "Keyword"),
+            "an ungenerated name already has its parent's appearance"
+        );
+        assert!(resolve_syntax_name(&sheet, "Unknown.root").is_none());
+        assert!(!generate_implicit(
+            &mut sheet,
+            ["Keyword.directive.define", "Keyword.directive", "Unknown.root", "Keyword"]
+        ));
+        let keyword = resolve_name(&sheet, "Keyword").unwrap().clone();
+        let directive = named(&sheet, "Keyword.directive");
+        let define = named(&sheet, "Keyword.directive.define");
+        let unknown = named(&sheet, "Unknown");
+        assert_eq!(directive.based_on.as_ref(), Some(&keyword));
+        assert_eq!(define.based_on.as_ref(), Some(&directive.id));
+        assert_eq!(unknown.based_on, None, "an undotted name is a root");
+        assert_eq!(named(&sheet, "Unknown.root").based_on.as_ref(), Some(&unknown.id));
+        for style in [directive, define, unknown] {
+            assert!(sheet.is_implicit_character(&style.id));
+            assert_eq!(style.properties, CharacterProperties::default());
+            assert!(style.id.0.starts_with(IMPLICIT_ID_PREFIX));
+        }
+        assert!(!sheet.is_implicit_character(&keyword), "existing definitions are untouched");
+        assert_eq!(validate(&sheet), Ok(()));
+        let before = sheet.clone();
+        assert!(!generate_implicit(&mut sheet, ["Keyword.directive.define"]));
+        assert_eq!(sheet, before, "generation is idempotent");
+    }
+
+    #[test]
+    fn implicit_definitions_persist_only_after_an_edit_or_as_a_needed_parent() {
+        let mut sheet = default_sheet();
+        generate_implicit(&mut sheet, ["Keyword.directive.define", "Variable.member"]);
+        let exported = String::from_utf8(export_snapshot(&sheet).unwrap()).unwrap();
+        assert!(!exported.contains(IMPLICIT_ID_PREFIX), "{exported}");
+        // Editing the leaf persists it and the implicit parent it names.
+        let mut define = named(&sheet, "Keyword.directive.define").clone();
+        define.properties.bold = Some(true);
+        let id = define.id.clone();
+        sheet.apply_configuration_edit(
+            &StyleDefinitionEdit::UpdateCharacter(define),
+            StyleSheetRevision(sheet.revision.0 + 1),
+            false,
+        )
+        .unwrap();
+        sheet.implicit_characters.remove(&id);
+        let reloaded = parse_json(&export_snapshot(&sheet).unwrap()).unwrap();
+        assert_eq!(named(&reloaded, "Keyword.directive.define").properties.bold, Some(true));
+        assert!(resolve_name(&reloaded, "Keyword.directive").is_some());
+        assert!(resolve_name(&reloaded, "Variable.member").is_none());
+        assert!(reloaded.implicit_characters.is_empty());
+    }
+
+    #[test]
+    fn deleted_and_renamed_definitions_are_regenerated_under_a_distinct_id() {
+        let mut sheet = default_sheet();
+        let comment = resolve_name(&sheet, "Comment").unwrap().clone();
+        sheet.character_styles.remove(&comment);
+        sheet.character_metadata.remove(&comment);
+        generate_implicit(&mut sheet, ["Comment"]);
+        let regenerated = named(&sheet, "Comment");
+        assert_ne!(regenerated.id, comment, "a deleted built-in stays suppressed");
+        assert_eq!(regenerated.properties, CharacterProperties::default());
+        let exported = String::from_utf8(export_snapshot(&sheet).unwrap()).unwrap();
+        assert!(exported.contains(&comment.0), "suppression is still persisted: {exported}");
+        // Renaming ends the association; the name gets a new definition.
+        let first = regenerated.id.clone();
+        sheet.character_metadata.insert(first.clone(), StyleDefinitionMetadata::generated("Renamed"));
+        sheet.implicit_characters.remove(&first);
+        generate_implicit(&mut sheet, ["Comment"]);
+        let second = named(&sheet, "Comment").id.clone();
+        assert_ne!(second, first);
+        assert_eq!(resolve_name(&sheet, "Renamed"), Some(&first));
+    }
+
+    #[test]
+    fn replacing_the_file_keeps_implicit_definitions_and_their_ids() {
+        let mut current = default_sheet();
+        generate_implicit(&mut current, ["Keyword.directive"]);
+        let id = resolve_name(&current, "Keyword.directive").unwrap().clone();
+        let names = current
+            .implicit_characters
+            .iter()
+            .map(|id| current.character_metadata[id].display_name.clone())
+            .collect::<Vec<_>>();
+        let mut reloaded = parse_json(&export_snapshot(&current).unwrap()).unwrap();
+        assert!(resolve_name(&reloaded, "Keyword.directive").is_none());
+        generate_implicit(&mut reloaded, names.iter().map(String::as_str));
+        assert_eq!(resolve_name(&reloaded, "Keyword.directive"), Some(&id));
+        assert!(reloaded.is_implicit_character(&id));
+    }
+
+    #[test]
+    fn implicit_definitions_are_limited() {
+        let mut sheet = default_sheet();
+        let names = (0..MAX_IMPLICIT_DEFINITIONS + 5)
+            .map(|n| format!("Generated{n}"))
+            .collect::<Vec<_>>();
+        assert!(generate_implicit(&mut sheet, names.iter().map(String::as_str)));
+        assert_eq!(sheet.implicit_characters.len(), MAX_IMPLICIT_DEFINITIONS);
+        assert_eq!(validate(&sheet), Ok(()));
+    }
+
+    #[test]
+    fn every_bundled_highlight_capture_has_an_appearance_and_non_code_paragraph_semantics_are_rejected() {
         let sheet = default_sheet();
         for language in [
             "c",
@@ -733,10 +980,16 @@ mod tests {
         ] {
             let package =
                 crate::document::syntax::treesitter::TreeSitterPackage::bundled(language).unwrap();
-            for capture in package.highlight_capture_names() {
+            for capture in package.highlight_capture_names().iter().filter(|capture| {
+                !capture.starts_with('_')
+                    && !capture.starts_with("injection.")
+                    && !matches!(**capture, "spell" | "nospell")
+            }) {
+                // Built-in definitions need not cover every name: a missing
+                // one takes its nearest defined dotted ancestor's appearance.
                 assert!(
-                    resolve_name(&sheet, &canonical_capture_name(capture)).is_some(),
-                    "missing {language}: @{capture}"
+                    resolve_syntax_name(&sheet, &canonical_capture_name(capture)).is_some(),
+                    "no appearance for {language}: @{capture}"
                 );
             }
         }
@@ -856,6 +1109,8 @@ pub fn edit(
     }
     next.apply_configuration_edit(&edit, revision, false)
         .map_err(|e| format!("{e:?}"))?;
+    // Any edit makes an implicit definition an ordinary persisted one.
+    next.implicit_characters.remove(edit.style_id());
     validate(&next)?;
     *guard = Arc::new(next);
     Ok(guard.clone())

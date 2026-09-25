@@ -63,7 +63,9 @@ final class EVCodeStylesTests: XCTestCase {
         let loaded = try session.snapshot()
         XCTAssertEqual(loaded.definition(for: keyword.key)?.name, "KEYword")
         XCTAssertNil(loaded.definition(for: custom))
-        XCTAssertFalse(loaded.definitions.contains { $0.name == "Keyword" })
+        // A live Code buffer may regenerate the name implicitly; the saved file
+        // must not resurrect the built-in or the deleted custom definition.
+        XCTAssertFalse(loaded.definitions.contains { $0.name == "Keyword" && !$0.flags.contains(.implicit) })
         XCTAssertFalse(editor.createStyle(kind: .paragraph))
     }
 
