@@ -12,8 +12,8 @@ pins all transitive build inputs.
 
 | Package | Grammar version | Highlight and injection composition |
 | --- | --- | --- |
-| c | 0.23.4 | Crate highlights |
-| cpp | 0.23.4 | C then C++ highlights |
+| c | 0.23.4 | nvim-treesitter highlights and injections (NeovimV1) |
+| cpp | 0.23.4 | nvim-treesitter C then C++ highlights and injections (NeovimV1) |
 | rust | 0.23.2 | Crate highlights and macro injections |
 | swift | 0.7.0 | Crate highlights and regex injections |
 | objc | 3.0.2 | C then Objective-C highlights; resolved C inheritance |
@@ -28,6 +28,17 @@ The copied C# query is from
 The JavaScript query starts with
 [tree-sitter-javascript v0.23.1](https://github.com/tree-sitter/tree-sitter-javascript/blob/v0.23.1/queries/highlights.scm).
 Their upstream MIT licenses are adjacent to the query files.
+
+The C and C++ queries are copied unmodified from
+[nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) commit
+40cca05b40438ddd74125132b0cec58c9afdccb2 (`runtime/queries/{c,cpp}`), whose
+Apache-2.0 license is adjacent as `c.LICENSE` and `cpp.LICENSE`. They compile
+against the pinned 0.23.4 grammars. The C++ files' `; inherits: c` is resolved
+by prepending the C query, as nvim-treesitter does. Their injections name
+`comment`, `doxygen`, `printf` and `re2c`, which have no bundled provider and so
+are not injected (Vim's doxygen syntax does not load in the native profile);
+macro bodies inject C/C++ into themselves and raw strings inject the language
+named by their delimiter.
 
 JavaScript's two local-variable-sensitive builtin classification patterns are
 omitted. Generic identifier/function captures remain. This highlights-only
@@ -62,9 +73,14 @@ Its match predicates use the bounded Vim matcher, including Neovim's implicit
 very-magic prefix policy. Unsupported Vim atoms or magic modes reject the
 package. The initial profile rejects quantified predicate/directive capture
 arguments, whose any/all and missing-capture behavior differs among Neovim
-handlers. Single-capture supported handlers preserve Neovim behavior. Lua
-patterns/custom Lua, locals scopes, concealment, arbitrary metadata and unknown
-directives reject the package; they do not become successful predicates.
+handlers. Single-capture supported handlers preserve Neovim behavior.
+`lua-match?` (with `not-` and `any-`) uses Lua 5.1 patterns over bytes, as
+`string.find` does. A pattern without `%b`, `%f` or a back-reference compiles
+to the same bounded byte DFA as upstream `match?`; the others run a port of
+Lua's backtracking matcher that charges every step to the predicate budget.
+Malformed patterns reject the package. `injection.self` injects the package's
+own language. Custom Lua, locals scopes, concealment, arbitrary metadata and
+unknown directives reject the package; they do not become successful predicates.
 
 Query inheritance and extensions are composition responsibilities of a package
 loader. The bundled combinations above resolve their dependencies explicitly;
@@ -77,9 +93,10 @@ Registry capacity is 64 packages.
 
 Capture overlaps resolve by priority, narrower original capture extent,
 pattern order, and stable capture order
-before stylesheet lookup. The effective style name is @capture.name; origin
-retains package and capture identity. A missing name is a stylesheet default,
-not permission to reveal a losing capture or another provider. Empty completed
+before stylesheet lookup. The effective style name is the canonical capture
+name; origin retains package and capture identity. A name without a definition
+takes its nearest defined dotted ancestor's appearance and gets an implicit
+definition; it never reveals a losing capture or another provider. Empty completed
 queries are exact coverage and clear previous fallback colors.
 
 Known spell/nospell control captures and internal/injection-only captures do
@@ -100,12 +117,20 @@ An initial parse covers the full host region. A viewport request queries the
 completed tree. Declared included ranges preserve parent coordinates for child
 parsers. Combined injection discovery queries the complete host under the same
 bounded query budget and joins same-pattern, same-language members only after
-complete discovery. Incomplete discovery gives missing coverage. A child
-owns its declared region; unavailable child coverage uses Vim or the default
-style and reports a diagnostic. Child Vim input is a bounded isolated region
-with an explicit range map. Only one uncached child runs in each worker turn.
+complete discovery. Incomplete discovery gives missing coverage. As in
+Neovim, an injection is kept only when its language has a Tree-sitter package
+or a Vim syntax program that loads; the answer is cached per provider and
+resolved outside the query's time slice. A captured language that cannot name
+a language injects nothing. Child runs are layered over the host's, so host
+runs remain in gaps and until the child supplies coverage. Discovery beyond the
+injection limit keeps the regions found and reports provisional coverage.
+Child Vim input is a bounded isolated region with an explicit range map. Each
+worker turn computes up to 64 uncached children or 64 KiB of child input.
 Child result caches total at most 4 MiB, and total included child input is
 limited to 16 MiB. Host and child parser accounts share a 256 MiB buffer limit.
+Compiled bundled packages are shared, so each injected child reuses one query.
+A query that misses its time slice is retried in later slices, up to three
+times, before it is treated as capped work.
 
 Actual edits are included even when native structural changed ranges are empty.
 The present implementation conservatively invalidates an edited suffix instead
@@ -119,7 +144,7 @@ reusing exact query output.
 Default limits include 512 MiB input, 2 MiB query source, 32 MiB supplied input
 per slice, 16,384 progress callbacks per slice, 65,536 matches, 131,072 captures,
 1 MiB copied predicate text, two million predicate steps, 4,096 pending native
-matches, 4 MiB raw/final query output, 128 injection ranges, 16 child sessions
+matches, 4 MiB raw/final query output, 128 injection ranges, 256 child sessions
 and nesting depth 3. Parser
 repair is capped at 4,096 total native progress callbacks; cold work is capped
 at two million, with at most 4,096 worker slices. Query exhaustion publishes no

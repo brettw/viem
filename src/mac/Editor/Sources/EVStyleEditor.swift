@@ -105,16 +105,14 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             }
             var selectedStyle = preferredStyle
             if let name = definingSyntaxName {
-                // Explicit creation is its own settings undo action, even when
-                // invoked while another style control has an open edit group.
+                // Generating an implicit definition is not a settings edit: it
+                // has no undo entry and is never written to code_style.json.
                 session.endGroup()
-                let latest = try session.snapshot()
-                if let existing = latest.definitions.first(where: { $0.kind == .character && $0.name == name }) {
-                    selectedStyle = existing.key
-                } else {
-                    let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
-                    try session.create(key: key, name: name, expected: latest.identity)
-                    selectedStyle = key
+                try EVCoreStyleBridge.materializeCodeStyle(name: name)
+                if let definition = try session.snapshot().definitions.first(where: {
+                    $0.kind == .character && $0.name == name
+                }) {
+                    selectedStyle = definition.key
                 }
             }
             stopFollowingSelection()
@@ -909,7 +907,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         for (title, styles) in sections {
             menu.addItem(.sectionHeader(title: title))
             for definition in styles {
-                let item = NSMenuItem(title: definition.name, action: nil, keyEquivalent: "")
+                let item = NSMenuItem(title: definition.displayTitle, action: nil, keyEquivalent: "")
                 item.representedObject = EVStyleKeyBox(definition.key)
                 item.toolTip = "Stable ID: \(definition.key.id.rawValue)"
                 menu.addItem(item)

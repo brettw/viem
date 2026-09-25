@@ -48,6 +48,7 @@ pub(super) struct CoreSyntax {
     filename: String,
     published: Option<(SyntaxInputIdentity, u64)>,
     referenced_names: Vec<String>,
+    implicit_limited: bool,
     sheet: Arc<crate::document::StyleSheet>,
 }
 impl Default for CoreSyntax {
@@ -62,6 +63,7 @@ impl Default for CoreSyntax {
             filename: String::new(),
             published: None,
             referenced_names: Vec::new(),
+            implicit_limited: false,
             sheet: code_style::snapshot(),
         }
     }
@@ -193,7 +195,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.published = None;
     }
     pub fn syntax_diagnostics(&self) -> String {
-        self.syntax.service.diagnostics()
+        let mut diagnostics = self.syntax.service.diagnostics();
+        if self.syntax.implicit_limited {
+            if !diagnostics.is_empty() {
+                diagnostics.push('\n');
+            }
+            diagnostics.push_str(&format!(
+                "More than {} implicit Code styles; further syntax names use their nearest defined ancestor",
+                code_style::MAX_IMPLICIT_DEFINITIONS
+            ));
+        }
+        diagnostics
     }
     pub fn syntax_statistics(&self) -> crate::document::syntax::service::SyntaxServiceStatistics {
         self.syntax.service.statistics
@@ -284,7 +296,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.syntax.service.request(input.clone(), range);
         }
         let completed = self.syntax.service.poll(input.identity());
-        let sheet = code_style::snapshot();
+        let mut sheet = code_style::snapshot();
         let style_changed = sheet.revision != self.syntax.sheet.revision;
         let publication = (
             input.identity(),
@@ -301,6 +313,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
+        let generated =
+            code_style::materialize(self.syntax.referenced_names.iter().map(String::as_str));
+        self.syntax.implicit_limited = generated.limited;
+        if let Some(generated) = generated.sheet {
+            sheet = generated;
+        }
         self.publish_code_presentation(sheet, &runs);
         self.syntax.published = Some(publication);
         true
@@ -348,7 +366,7 @@ fn code_metrics_changed(
                 &sheet.base_paragraph,
                 &Default::default(),
                 &Default::default(),
-                name.and_then(|name| code_style::resolve_name(sheet, name)),
+                name.and_then(|name| code_style::resolve_syntax_name(sheet, name)),
                 &Default::default(),
             )
             .ok()

@@ -215,6 +215,78 @@ fn neovim_query_uses_very_magic_and_rejects_quantified_handler_ambiguity() {
 }
 
 #[test]
+fn neovim_lua_match_uses_lua_patterns_and_rejects_malformed_ones() {
+    let package = custom(
+        concat!(
+            r#"((identifier) @constant (#lua-match? @constant "^[A-Z][A-Z0-9_]+$"))"#,
+            "\n",
+            r#"((identifier) @balanced (#lua-match? @balanced "^%f[%a]x%d$"))"#,
+            "\n",
+            r#"((identifier) @other (#not-lua-match? @other "^[A-Zx]"))"#,
+        ),
+        QueryProfile::NeovimV1,
+    );
+    let mut session = TreeSitterSession::new(package).unwrap();
+    let text = "int MAX_SIZE; int x1; int lower;";
+    let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+    let output = highlight(&snapshot, 0..text.len(), &generous(), &AtomicBool::new(false));
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+    let names = output
+        .runs
+        .iter()
+        .map(|run| (&text[run.range.clone()], run.name.0.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [("MAX_SIZE", "Constant"), ("x1", "Balanced"), ("lower", "Other")]
+    );
+    assert!(matches!(
+        TreeSitterPackage::compile(
+            "malformed",
+            1,
+            tree_sitter_c::LANGUAGE.into(),
+            r#"((identifier) @name (#lua-match? @name "[a"))"#,
+            None,
+            QueryProfile::NeovimV1,
+            &generous(),
+            None
+        ),
+        Err(TreeSitterError::InvalidQuery(_))
+    ));
+}
+
+#[test]
+fn injection_self_and_captured_languages() {
+    let package = TreeSitterPackage::compile(
+        "cpp",
+        1,
+        tree_sitter_cpp::LANGUAGE.into(),
+        "(identifier) @variable",
+        Some(concat!(
+            "((preproc_arg) @injection.content (#set! injection.self))\n",
+            "(raw_string_literal delimiter: (raw_string_delimiter) @injection.language",
+            " (raw_string_content) @injection.content)",
+        )),
+        QueryProfile::NeovimV1,
+        &generous(),
+        None,
+    )
+    .unwrap();
+    let mut session = TreeSitterSession::new(package).unwrap();
+    let text = "#define A (b)\nauto s = R\"sql(x)sql\"; auto t = R\"a.b(y)a.b\";\n";
+    let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+    let output = highlight(&snapshot, 0..text.len(), &generous(), &AtomicBool::new(false));
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+    let regions = output
+        .injections
+        .iter()
+        .map(|region| (region.language.as_str(), &text[region.ranges[0].clone()]))
+        .collect::<Vec<_>>();
+    // A delimiter that cannot name a language injects nothing.
+    assert_eq!(regions, [("cpp", "(b)"), ("sql", "x")]);
+}
+
+#[test]
 fn query_reload_preserves_native_tree_and_published_package() {
     let mut session =
         TreeSitterSession::new(custom("(identifier) @old", QueryProfile::Upstream)).unwrap();

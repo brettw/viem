@@ -1231,6 +1231,8 @@ pub const VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE: u32 = 1 << 1;
 pub const VIEM_STYLE_DEFINITION_BASE_PARAGRAPH: u32 = 1 << 3;
 pub const VIEM_STYLE_DEFINITION_INTERNAL: u32 = 1 << 5;
 pub const VIEM_STYLE_DEFINITION_INTERNAL_LIST: u32 = 1 << 6;
+/// A generated Code syntax definition that has not been edited or persisted.
+pub const VIEM_STYLE_DEFINITION_IMPLICIT: u32 = 1 << 7;
 
 pub const VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS: u32 = 1 << 0;
 pub const VIEM_STYLE_CAPABILITY_EDIT_PARENT: u32 = 1 << 1;
@@ -5091,6 +5093,37 @@ pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyleV1
 }
 
 /// # Safety
+/// The UTF-8 name must remain readable and must not overlap the one writable
+/// style-info output record.
+#[no_mangle]
+pub unsafe extern "C" fn viem_code_materialize_style(
+    name: *const u8,
+    length: u64,
+    output: *mut ViemStyleSheetInfoV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(name, length)?,
+            typed_pointer_region(output, 1)?,
+        ])?;
+        let name = std::str::from_utf8(unsafe { input_bytes(name, length)? })
+            .map_err(|_| ViemStatus::InvalidUtf8)?;
+        if name.trim().is_empty() {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let generated = crate::document::code_style::materialize([name]);
+        let sheet = generated
+            .sheet
+            .unwrap_or_else(crate::document::code_style::snapshot);
+        if crate::document::code_style::resolve_name(&sheet, name).is_none() {
+            return Err(ViemStatus::ResourceExhausted);
+        }
+        unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        Ok(())
+    })
+}
+
+/// # Safety
 /// The input slice must remain readable during this call. Empty resets defaults.
 #[no_mangle]
 pub unsafe extern "C" fn viem_code_replace_style_json(input:*const u8, length:u64) -> ViemStatus {
@@ -5792,6 +5825,9 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         let mut flags = 0;
         if style.id.is_internal() {
             flags |= VIEM_STYLE_DEFINITION_INTERNAL;
+        }
+        if sheet.is_implicit_character(&style.id) {
+            flags |= VIEM_STYLE_DEFINITION_IMPLICIT;
         }
         let parent_id = if let Some(parent) = &style.based_on {
             flags |= VIEM_STYLE_DEFINITION_HAS_PARENT;

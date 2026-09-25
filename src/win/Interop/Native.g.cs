@@ -1544,6 +1544,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_DEFINITION_BASE_PARAGRAPH = (1u << 3);
     public const uint VIEM_STYLE_DEFINITION_INTERNAL = (1u << 5);
     public const uint VIEM_STYLE_DEFINITION_INTERNAL_LIST = (1u << 6);
+    public const uint VIEM_STYLE_DEFINITION_IMPLICIT = (1u << 7);
     public const uint VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS = (1u << 0);
     public const uint VIEM_STYLE_CAPABILITY_EDIT_PARENT = (1u << 1);
     public const uint VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE = (1u << 2);
@@ -2011,6 +2012,8 @@ internal static unsafe partial class Native
     public static extern uint viem_code_create_style(ViemCreateStyleV1* @request, ViemStyleSheetInfoV1* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_code_delete_style(ViemDeleteStyleV1* @request, ViemStyleSheetInfoV1* @output);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_code_materialize_style(byte* @name, ulong @length, ViemStyleSheetInfoV1* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_code_replace_style_json(byte* @input, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
