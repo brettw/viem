@@ -731,6 +731,22 @@ impl SourcePatch {
         }
     }
 
+    /// Extend a deletion over an adjacent deleted range. Contiguous removals
+    /// have one spelling whether they are recorded separately or together.
+    pub(super) fn absorb_adjacent_deletion(&mut self, range: &Range<usize>) -> bool {
+        if !self.replacement.is_empty() || !self.generated_text_ranges.is_empty() || self.range.is_empty() {
+            return false;
+        }
+        if range.end == self.range.start {
+            self.range.start = range.start;
+        } else if range.start == self.range.end {
+            self.range.end = range.end;
+        } else {
+            return false;
+        }
+        true
+    }
+
     pub fn part(&self) -> SourcePartId {
         self.part
     }
@@ -6569,7 +6585,17 @@ impl Document {
         if !self.format().is_wysiwyg() || edits.is_empty() || patches.is_empty() {
             return Ok(None);
         }
-        let combined = edits.len() != 1 || patches.len() != 1;
+        // Removing an emptied character scope extends a deletion patch over
+        // its delimiters. Verify that hull like any other combined window.
+        let removes_delimiters = self.format() == Format::Html
+            && edits.len() == 1
+            && patches.len() == 1
+            && !edits[0].range.is_empty()
+            && edits[0].replacement.is_empty()
+            && patches[0].replacement.is_empty()
+            && !self.projection().provenance_for_region(&edits[0].range).iter()
+                .any(|span| span.source.start == patches[0].range.start);
+        let combined = edits.len() != 1 || patches.len() != 1 || removes_delimiters;
         let combined_edit;
         let combined_patch;
         let (edit, patch) = if combined {

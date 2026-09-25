@@ -25,7 +25,9 @@ pub(super) fn materialize(
     for edit in edits.iter().filter(|edit| !edit.replacement.is_empty()) {
         let Some(block) = super::edit_boundary::paragraph_at(document, edit.range.start)? else { continue; };
         let Ok(source) = source_at(block.range.start, BoundaryAffinity::Downstream) else { continue; };
-        if !has_local_owner(document, source)? { affected.push((edit, block)); }
+        if !has_local_owner(document, source)? && !has_indexed_owner(document, source) {
+            affected.push((edit, block));
+        }
     }
     if affected.is_empty() { return Ok(()); }
     let input = super::line_endings::normalize(
@@ -130,6 +132,17 @@ fn has_local_owner(document: &Document, source: usize) -> Result<bool, DocumentE
         if valid { return Ok(true); }
     }
     Ok(false)
+}
+
+/// The lexical scope index answers the same open-element question as the
+/// full-token stack below, without decoding an arbitrarily long prefix such as
+/// a huge ancestor attribute or a paragraph beyond the local syntax window.
+fn has_indexed_owner(document: &Document, source: usize) -> bool {
+    let sheet = document.projection().style_sheet();
+    document.projection().html_scope_index().is_some_and(|index| {
+        index.scopes_at(source).iter().any(|scope|
+            html::owns_paragraph(&scope.tag, sheet) || scope.tag.name == "table")
+    })
 }
 
 fn encloses_structure(tokens: &[Token], opening: &Token) -> bool {

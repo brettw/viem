@@ -146,6 +146,15 @@ fn equivalent_context(mut a: Option<&Arc<HtmlScope>>, mut b: Option<&Arc<HtmlSco
     }
 }
 
+fn depth(mut scope: Option<&Arc<HtmlScope>>) -> usize {
+    let mut depth = 0;
+    while let Some(current) = scope {
+        depth += 1;
+        scope = current.parent.as_ref();
+    }
+    depth
+}
+
 fn transition(
     mut context: Option<Arc<HtmlScope>>,
     tag: &Tag,
@@ -301,6 +310,83 @@ impl HtmlScopeIndex {
         } else {
             None
         }
+    }
+
+    /// Find the delimiters of `scope`'s element around a boundary inside its
+    /// body. The walk visits only lexical entries accepted by `passable`, so a
+    /// caller proving that the body is otherwise empty stops at the first
+    /// retained content instead of scanning unrelated source. `passable`
+    /// receives the part of each entry inside the body (the containing entry
+    /// may be split at `source_offset`) and whether that entry is opaque.
+    pub(super) fn element_delimiters(
+        &self,
+        source_offset: usize,
+        scope: &Arc<HtmlScope>,
+        mut passable: impl FnMut(&Range<usize>, bool) -> bool,
+    ) -> Option<(Range<usize>, Range<usize>)> {
+        let (index, entry) = self.entry_at(source_offset)?;
+        let (mut backward, mut forward) = if entry.range.end <= source_offset {
+            (Some((index, entry.range.clone())), index + 1)
+        } else if entry.range.start >= source_offset {
+            (index.checked_sub(1).map(|index| (index, 0..0)), index)
+        } else {
+            if !matches!(entry.kind, Kind::Text | Kind::UnsafeText) {
+                return None;
+            }
+            if !passable(&(entry.range.start..source_offset), false)
+                || !passable(&(source_offset..entry.range.end), false)
+            {
+                return None;
+            }
+            (index.checked_sub(1).map(|index| (index, 0..0)), index + 1)
+        };
+        let parent = scope.parent.as_ref();
+        let opening = loop {
+            let (at, piece) = backward?;
+            let (entry, work) = self.entries.get_with_stats(at);
+            super::work_statistics::record(|stats| {
+                stats.html_index_nodes_visited += work.nodes_visited;
+                stats.html_scope_entries_visited += 1;
+            });
+            let entry = entry?;
+            if matches!(entry.kind, Kind::Tag { closing: None, .. })
+                && equivalent_context(entry.after.as_ref(), Some(scope))
+                && equivalent_context(entry.before.as_ref(), parent)
+            {
+                break entry.range;
+            }
+            let piece = if piece.is_empty() { entry.range.clone() } else { piece };
+            if !passable(&piece, matches!(entry.kind, Kind::Opaque)) {
+                return None;
+            }
+            backward = at.checked_sub(1).map(|at| (at, 0..0));
+        };
+        let closing = loop {
+            let (entry, work) = self.entries.get_with_stats(forward);
+            super::work_statistics::record(|stats| {
+                stats.html_index_nodes_visited += work.nodes_visited;
+                stats.html_scope_entries_visited += 1;
+            });
+            let entry = entry?;
+            if equivalent_context(entry.after.as_ref(), parent) {
+                // An element implicitly closed by other syntax has no own end
+                // tag; its body is not a removable character scope.
+                match &entry.kind {
+                    Kind::Tag { closing: Some(name), .. } if **name == *scope.tag.name => {
+                        break entry.range;
+                    }
+                    _ => return None,
+                }
+            }
+            if depth(entry.after.as_ref()) <= depth(parent) {
+                return None;
+            }
+            if !passable(&entry.range, matches!(entry.kind, Kind::Opaque)) {
+                return None;
+            }
+            forward += 1;
+        };
+        Some((opening, closing))
     }
 
     pub(super) fn adjacent_closing_at(&self, source_offset: usize) -> Option<(String, usize)> {
