@@ -251,6 +251,18 @@ pub struct StyleSpan {
     pub application: StyleApplication,
 }
 
+/// Character-style display names of a Code sheet, for run-name resolution.
+fn code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
+    sheet
+        .character_styles()
+        .filter_map(|style| {
+            sheet
+                .character_style_metadata(&style.id)
+                .map(|metadata| (metadata.display_name.as_str(), &style.id))
+        })
+        .collect()
+}
+
 impl RangedItem for StyleSpan {
     fn owned_heap_bytes(&self) -> usize { self.application.owned_heap_bytes() }
 
@@ -3216,35 +3228,119 @@ impl FormattedDocument {
 
     pub(crate) fn install_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
         self.document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
-        let names=sheet.character_styles().filter_map(|style|sheet.character_style_metadata(&style.id).map(|metadata|(metadata.display_name.as_str(),&style.id))).collect::<std::collections::BTreeMap<_,_>>();
-        self.styles = IntervalRangeStore::new(runs.iter().filter_map(|run| {
-            if run.range.start >= run.range.end || run.range.end > self.text.byte_len() { return None; }
-            let ceil = |at| {
-                // Two adjacent ASCII bytes other than CR LF always form a
-                // grapheme boundary, so most run edges need no cluster search.
-                let ascii_pair = at > 0 && at < self.text.byte_len() && {
-                    let before = self.text.byte_chunk_at(at - 1);
-                    let after = self.text.byte_chunk_at(at);
-                    before.first().is_some_and(|b| b.is_ascii() && *b != b'\r')
-                        && after.first().is_some_and(|b| b.is_ascii())
-                };
-                if ascii_pair || self.is_logical_grapheme_boundary(at).ok()? { Some(at) }
-                else { self.next_logical_grapheme_boundary(at).ok()? }
-            };
-            // A cluster's first character owns its appearance. A later
-            // capture beginning inside it starts at the following cluster.
-            let range = ceil(run.range.start)?..ceil(run.range.end)?;
-            if range.is_empty() { return None; }
-            // A name without a definition uses its nearest defined dotted
-            // ancestor, the appearance its implicit definition will have.
-            let mut name = run.name.0.as_str();
-            let id = loop {
-                if let Some(id) = names.get(name) { break id; }
-                name = name.rsplit_once('.')?.0;
-            };
-            Some(StyleSpan { range, application: StyleApplication::Automatic((*id).clone()) })
-        }).collect());
+        let names = code_style_names(&sheet);
+        self.styles = IntervalRangeStore::new(
+            runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect(),
+        );
         self.style_sheet = sheet;
+    }
+
+    /// Install a publication as a splice of the previous presentation's
+    /// automatic spans: drop the spans inside the edit hull and shift the rest
+    /// lazily, then replace the spans of each region whose runs changed.
+    /// `runs_in` supplies the current runs overlapping a replaced region.
+    /// Returns false when the previous spans cannot be reused, in which case
+    /// nothing changes and the caller installs from every run.
+    pub(crate) fn install_code_styles_incrementally(
+        &mut self,
+        sheet: Arc<StyleSheet>,
+        previous: &FormattedDocument,
+        hull: Option<&(Range<usize>, Range<usize>)>,
+        replaced: &[Range<usize>],
+        runs_in: &dyn Fn(&Range<usize>) -> Vec<super::syntax::SyntaxRun>,
+    ) -> bool {
+        // Code has no source-backed spans; anything else is not a Code base.
+        if !self.styles.is_empty() || previous.style_sheet.revision != sheet.revision {
+            return false;
+        }
+        let old_len = previous.text.byte_len();
+        let new_len = self.text.byte_len();
+        match hull {
+            Some((old_hull, new_hull)) => {
+                if old_hull.start != new_hull.start
+                    || old_hull.end > old_len
+                    || new_hull.end > new_len
+                    || old_len as i128 - old_hull.end as i128 != new_len as i128 - new_hull.end as i128
+                {
+                    return false;
+                }
+            }
+            None if old_len != new_len => return false,
+            None => {}
+        }
+        let mut styles = previous.styles.clone();
+        let mut stats = RangeSpliceStats::default();
+        if let Some((old_hull, new_hull)) = hull {
+            let indices = styles.overlapping_index_span(old_hull);
+            let Some(items) = styles.get_range(&indices) else { return false };
+            let kept = items.into_iter().filter(|span| span.range.end <= old_hull.start).collect();
+            let Some(next) = styles.splice(indices, kept, old_hull.end, new_hull.end, &mut stats) else {
+                return false;
+            };
+            styles = next;
+        }
+        let names = code_style_names(&sheet);
+        for region in replaced {
+            if region.end > new_len {
+                return false;
+            }
+            let indices = styles.overlapping_index_span(region);
+            let Some(items) = styles.get_range(&indices) else { return false };
+            let mut replacement = Vec::with_capacity(items.len());
+            for span in &items {
+                if span.range.start >= region.end || span.range.end <= region.start {
+                    replacement.push(span.clone());
+                    continue;
+                }
+                if span.range.start < region.start {
+                    replacement.push(span.with_range(span.range.start..region.start));
+                }
+                if span.range.end > region.end {
+                    replacement.push(span.with_range(region.end..span.range.end));
+                }
+            }
+            replacement.extend(runs_in(region).iter().filter_map(|run| self.automatic_span(&names, run)));
+            let Some(next) = styles.splice(indices, replacement, 0, 0, &mut stats) else { return false };
+            styles = next;
+        }
+        self.document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
+        self.styles = styles;
+        self.style_sheet = sheet;
+        true
+    }
+
+    /// The automatic span one syntax run contributes to this projection's
+    /// text, or none when it is empty or begins past the text.
+    fn automatic_span(
+        &self,
+        names: &std::collections::BTreeMap<&str, &StyleId>,
+        run: &super::syntax::SyntaxRun,
+    ) -> Option<StyleSpan> {
+        if run.range.start >= run.range.end || run.range.end > self.text.byte_len() { return None; }
+        let ceil = |at| {
+            // Two adjacent ASCII bytes other than CR LF always form a
+            // grapheme boundary, so most run edges need no cluster search.
+            let ascii_pair = at > 0 && at < self.text.byte_len() && {
+                let before = self.text.byte_chunk_at(at - 1);
+                let after = self.text.byte_chunk_at(at);
+                before.first().is_some_and(|b| b.is_ascii() && *b != b'\r')
+                    && after.first().is_some_and(|b| b.is_ascii())
+            };
+            if ascii_pair || self.is_logical_grapheme_boundary(at).ok()? { Some(at) }
+            else { self.next_logical_grapheme_boundary(at).ok()? }
+        };
+        // A cluster's first character owns its appearance. A later
+        // capture beginning inside it starts at the following cluster.
+        let range = ceil(run.range.start)?..ceil(run.range.end)?;
+        if range.is_empty() { return None; }
+        // A name without a definition uses its nearest defined dotted
+        // ancestor, the appearance its implicit definition will have.
+        let mut name = run.name.as_str();
+        let id = loop {
+            if let Some(id) = names.get(name) { break id; }
+            name = name.rsplit_once('.')?.0;
+        };
+        Some(StyleSpan { range, application: StyleApplication::Automatic((*id).clone()) })
     }
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {

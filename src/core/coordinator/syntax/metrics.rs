@@ -17,9 +17,27 @@ fn same_metrics(a: &ResolvedCharacterStyle, b: &ResolvedCharacterStyle) -> bool 
 }
 
 fn metric_runs(projection: &FormattedDocument) -> Result<Vec<MetricRun>, StyleError> {
+    metric_runs_from(projection, projection.style_spans().iter().cloned())
+}
+
+/// The metric runs of `projection` clipped to `range`.
+fn metric_runs_in(projection: &FormattedDocument, range: &Range<usize>) -> Result<Vec<MetricRun>, StyleError> {
+    metric_runs_from(
+        projection,
+        projection.style_spans_for_region(range).into_iter().map(|mut span| {
+            span.range = span.range.start.max(range.start)..span.range.end.min(range.end);
+            span
+        }),
+    )
+}
+
+fn metric_runs_from(
+    projection: &FormattedDocument,
+    spans: impl Iterator<Item = crate::document::StyleSpan>,
+) -> Result<Vec<MetricRun>, StyleError> {
     let sheet = projection.style_sheet();
     let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
-    let resolve = |id| {
+    let resolve = |id: Option<&StyleId>| {
         sheet
             .resolve_assigned_paragraph_style(
                 &assignment,
@@ -32,16 +50,16 @@ fn metric_runs(projection: &FormattedDocument) -> Result<Vec<MetricRun>, StyleEr
             .map(|style| style.character)
     };
     let default = resolve(None)?;
-    let mut styles: BTreeMap<&StyleId, Option<Arc<ResolvedCharacterStyle>>> = BTreeMap::new();
+    let mut styles: BTreeMap<StyleId, Option<Arc<ResolvedCharacterStyle>>> = BTreeMap::new();
     let mut runs: Vec<MetricRun> = Vec::new();
-    for span in projection.style_spans() {
+    for span in spans {
         let StyleApplication::Automatic(id) = &span.application else {
             continue;
         };
         if !styles.contains_key(id) {
             let style = resolve(Some(id))?;
             styles.insert(
-                id,
+                id.clone(),
                 (!same_metrics(&style, &default)).then(|| Arc::new(style)),
             );
         }
@@ -69,7 +87,7 @@ fn metric_runs(projection: &FormattedDocument) -> Result<Vec<MetricRun>, StyleEr
 /// Whether any automatic (syntax) character style of this sheet resolves to
 /// metrics other than the default. When none does, no run can change metrics,
 /// so a publication need not compare every span of both projections.
-fn sheet_has_metric_styles(sheet: &crate::document::StyleSheet) -> Result<bool, StyleError> {
+pub(super) fn sheet_has_metric_styles(sheet: &crate::document::StyleSheet) -> Result<bool, StyleError> {
     let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
     let resolve = |id| {
         sheet
@@ -132,6 +150,90 @@ pub(super) fn metric_change(old: &FormattedDocument, new: &FormattedDocument) ->
         (None, None) => MetricChange::None,
     }
 }
+
+/// Where a local publication changes font metrics, comparing only the
+/// regions the delta names: the edit hull and each replaced region, in the
+/// previous presentation's and the new projection's own coordinates. Both
+/// projections share the sheet; `has_metric_styles` is that sheet's answer.
+pub(super) fn metric_change_local(
+    old: Option<&FormattedDocument>,
+    new: &FormattedDocument,
+    delta: &crate::document::syntax::service::PublicationDelta,
+    has_metric_styles: bool,
+) -> MetricChange {
+    if !has_metric_styles {
+        return MetricChange::None;
+    }
+    let Some(old) = old else {
+        return MetricChange::Unbounded;
+    };
+    let hull = delta.hull.as_ref();
+    let shift = hull.map_or(0, |(old_hull, new_hull)| new_hull.end as i128 - old_hull.end as i128);
+    // Map a new-coordinate offset back to the previous presentation.
+    let to_old = |offset: usize, at_end: bool| -> usize {
+        match hull {
+            Some((old_hull, new_hull)) if offset >= new_hull.end => (offset as i128 - shift) as usize,
+            Some((old_hull, new_hull)) if offset > new_hull.start => {
+                if at_end { old_hull.end } else { old_hull.start }
+            }
+            _ => offset,
+        }
+    };
+    let mut regions: Vec<Range<usize>> = delta.replaced.clone();
+    if let Some((_, new_hull)) = hull {
+        regions.push(new_hull.clone());
+    }
+    let mut changed: Option<Range<usize>> = None;
+    for region in regions {
+        let old_region = to_old(region.start, false)..to_old(region.end, true);
+        let (Ok(old_runs), Ok(new_runs)) = (metric_runs_in(old, &old_region), metric_runs_in(new, &region)) else {
+            return MetricChange::Unbounded;
+        };
+        let touches_hull = |range: &Range<usize>, hull: &Range<usize>| {
+            range.start < hull.end && hull.start < range.end
+                || (hull.is_empty() && range.start < hull.start && hull.start < range.end)
+        };
+        let differs = match hull {
+            Some((old_hull, new_hull))
+                if old_runs.iter().any(|run| touches_hull(&run.range, old_hull))
+                    || new_runs.iter().any(|run| touches_hull(&run.range, new_hull)) =>
+            {
+                true
+            }
+            _ => {
+                let translated = old_runs.iter().map(|run| {
+                    let map = |offset: usize| match hull {
+                        Some((old_hull, _)) if offset >= old_hull.end => (offset as i128 + shift) as usize,
+                        _ => offset,
+                    };
+                    (map(run.range.start)..map(run.range.end), &run.style)
+                });
+                !translated.eq_by_metrics(new_runs.iter().map(|run| (run.range.clone(), &run.style)))
+            }
+        };
+        if differs {
+            changed = Some(match changed {
+                Some(hull) => hull.start.min(region.start)..hull.end.max(region.end),
+                None => region,
+            });
+        }
+    }
+    changed.map_or(MetricChange::None, MetricChange::Local)
+}
+
+trait MetricRunsEq<'a>: Iterator<Item = (Range<usize>, &'a Arc<ResolvedCharacterStyle>)> + Sized {
+    fn eq_by_metrics(mut self, mut other: impl Iterator<Item = (Range<usize>, &'a Arc<ResolvedCharacterStyle>)>) -> bool {
+        loop {
+            match (self.next(), other.next()) {
+                (None, None) => return true,
+                (Some((a, x)), Some((b, y))) if a == b && same_metrics(x, y) => {}
+                _ => return false,
+            }
+        }
+    }
+}
+
+impl<'a, I: Iterator<Item = (Range<usize>, &'a Arc<ResolvedCharacterStyle>)>> MetricRunsEq<'a> for I {}
 
 #[cfg(test)]
 pub(super) fn runs_change_metrics(old: &FormattedDocument, new: &FormattedDocument) -> bool {

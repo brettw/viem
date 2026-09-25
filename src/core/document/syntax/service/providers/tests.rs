@@ -103,7 +103,7 @@ fn absent_primary_uses_vim_and_unavailable_vim_stays_missing() {
     req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
     let result = finish(&mut BackendProvider::default(), &req);
     assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
-    assert_eq!(result.runs[0].name.0, "Important");
+    assert_eq!(result.runs[0].name.as_str(), "Important");
     req.configuration.vim_directory = fixture.0.join("absent").to_str().unwrap().to_owned();
     let missing = finish(&mut BackendProvider::default(), &req);
     assert_eq!(missing.coverage, Coverage::Missing);
@@ -119,7 +119,7 @@ fn registry_reload_without_edit_replaces_fallback_with_empty_primary() {
     let mut req = request("hello", ID, 1);
     req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
     let mut provider = BackendProvider::default();
-    assert_eq!(finish(&mut provider, &req).runs[0].name.0, "Fallback");
+    assert_eq!(finish(&mut provider, &req).runs[0].name.as_str(), "Fallback");
     struct Owner(Arc<AtomicBool>);
     impl Drop for Owner {
         fn drop(&mut self) {
@@ -273,7 +273,7 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_keep_host_colors() {
     );
     assert!(child.failed.is_some());
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
-    assert_eq!(output.runs[0].name.0, "ChildKeyword");
+    assert_eq!(output.runs[0].name.as_str(), "ChildKeyword");
     let req = request(
         "const q = nonexistent\u{0060}hello\u{0060};",
         "javascript",
@@ -422,7 +422,7 @@ fn name_at(result: &SyntaxResult, text: &str, needle: &str) -> Option<String> {
         .runs
         .iter()
         .find(|run| run.range.start <= start && run.range.end >= start + needle.len())
-        .map(|run| run.name.0.clone())
+        .map(|run| run.name.to_string())
 }
 
 #[test]
@@ -463,7 +463,7 @@ fn nvim_cpp_queries_highlight_preprocessor_comments_and_injections() {
     assert!(result
         .runs
         .iter()
-        .any(|run| run.range.contains(&space) && run.name.0 == "String"));
+        .any(|run| run.range.contains(&space) && run.name.as_str() == "String"));
 }
 
 #[test]
@@ -482,7 +482,7 @@ fn many_injected_macro_bodies_are_all_highlighted() {
             result
                 .runs
                 .iter()
-                .any(|run| run.range.contains(&at) && run.name.0 == "Operator"),
+                .any(|run| run.range.contains(&at) && run.name.as_str() == "Operator"),
             "macro body at {at} was not highlighted"
         );
     }
@@ -506,5 +506,5 @@ fn injection_overflow_keeps_host_highlighting() {
     assert!(result
         .runs
         .iter()
-        .any(|run| run.range.start == last && run.name.0 == "Keyword.directive.define"));
+        .any(|run| run.range.start == last && run.name.as_str() == "Keyword.directive.define"));
 }

@@ -464,6 +464,8 @@ struct Job {
     guard: Vec<usize>,
     last_checkpoint: usize,
     run_bytes: usize,
+    /// Shared spellings for the group and origin names this job emits.
+    interned: BTreeMap<String, Arc<str>>,
 }
 #[derive(Clone, Debug)]
 struct Cached {
@@ -1058,6 +1060,7 @@ impl VimSession {
             guard: Vec::new(),
             last_checkpoint: position,
             run_bytes: 0,
+            interned: BTreeMap::new(),
         }
     }
     fn finish_frames(&self, j: &mut Job) {
@@ -1581,16 +1584,27 @@ impl VimSession {
             return;
         }
         if let Some(last) = j.runs.last_mut() {
-            if last.range.end == range.start && last.name.0 == name && last.origin == *origin {
+            if last.range.end == range.start && last.name.as_str() == name && &*last.origin == origin.as_str() {
                 last.range.end = range.end;
                 return;
             }
         }
         j.run_bytes += std::mem::size_of::<SyntaxRun>() + name.len() + origin.len();
+        // `name` may borrow a frame, so look the shared spellings up before
+        // recording new ones.
+        let shared_name = j.interned.get(name).cloned();
+        let shared_origin = j.interned.get(origin.as_str()).cloned();
+        let name: Arc<str> = shared_name.unwrap_or_else(|| name.into());
+        let origin: Arc<str> = shared_origin.unwrap_or_else(|| origin.as_str().into());
+        for shared in [&name, &origin] {
+            if !j.interned.contains_key(&**shared) {
+                j.interned.insert(shared.to_string(), shared.clone());
+            }
+        }
         j.runs.push(SyntaxRun {
             range,
-            name: SyntaxStyleName(name.into()),
-            origin: origin.clone(),
+            name: SyntaxStyleName(name),
+            origin,
             priority: 0,
         });
     }
