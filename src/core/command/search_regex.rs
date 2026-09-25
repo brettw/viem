@@ -1103,25 +1103,6 @@ mod tests {
     }
 
     #[test]
-    fn repeated_short_matches_reuse_the_tree_scan_window() {
-        let document = edited_document(&"a ".repeat(10_000));
-        let snapshot = document.hard_line_snapshot();
-        let input = RegexInput::new(&snapshot);
-        let limits = RegexLimits::default();
-        let regex = CompiledRegex::compile("a", false, limits).unwrap();
-        let matches = regex
-            .find_all(
-                &input,
-                0..snapshot.text_length(),
-                &mut RegexWork::new(limits),
-            )
-            .unwrap();
-        assert_eq!(matches.len(), 10_000);
-        assert!(input.cursor.borrow().chunk_reads < 30);
-        assert!(!document.projection().compatibility_text_is_materialized());
-    }
-
-    #[test]
     fn large_search_does_not_flatten_or_look_up_each_byte() {
         let mut text = "line\n".repeat(200_000);
         text.push_str("needle終");

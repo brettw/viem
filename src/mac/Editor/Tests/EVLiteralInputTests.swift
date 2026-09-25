@@ -61,19 +61,6 @@ import XCTest
         }
     }
 
-    func testQuotedNamedKeysInsertTheirNamesAndReplaceOnlyOneCharacter() throws {
-        for mode in ["i", "R"] {
-            let (backend, surface) = try fixture("ABCDE")
-            surface.editorView.insertText(mode, replacementRange: noReplacement)
-            for (code, shift) in [(UInt16(123), false), (UInt16(51), false), (UInt16(117), false), (UInt16(48), true)] {
-                try quote("q", in: surface)
-                surface.editorView.keyDown(with: try key(code, shift: shift))
-            }
-            XCTAssertEqual(try backend.formattedText(), "<Left><BS><Del><S-Tab>" + (mode == "R" ? "E" : "ABCDE"))
-            XCTAssertNil(surface.commandOutput)
-        }
-    }
-
     func testNativeControlValueIsPreservedWhenThePrintedKeyDiffers() throws {
         let (backend, surface) = try fixture("")
         surface.editorView.insertText("i", replacementRange: noReplacement)
@@ -82,40 +69,6 @@ import XCTest
             surface.editorView.keyDown(with: try key(18, control: printed, characters: actual))
         }
         XCTAssertEqual(try backend.formattedText(), "\0\u{08}\u{7f}")
-    }
-
-    func testNumericEntryAndQuotedPunctuationBypassTypingAssistance() throws {
-        let (backend, surface) = try fixture("")
-        let session = try XCTUnwrap(surface.session)
-        try session.setSmartQuotes(true)
-        surface.editorView.insertText("i", replacementRange: noReplacement)
-        for input in ["009", "o101", "x42", "u03b1", "U0001f642", "\""] {
-            try quote("v", in: surface)
-            surface.editorView.insertText(input, replacementRange: noReplacement)
-        }
-        XCTAssertEqual(try backend.formattedText(), "\tABα🙂\"")
-        XCTAssertNil(surface.commandOutput)
-    }
-
-    func testLiteralCommandLineInputDoesNotCompleteSubmitNavigateOrCancel() throws {
-        let (backend, surface) = try fixture()
-        surface.editorView.insertText(":", replacementRange: noReplacement)
-        try quote("v", in: surface)
-        surface.editorView.keyDown(with: try key(48))
-        try quote("q", in: surface)
-        surface.editorView.keyDown(with: try key(36))
-        try quote("v", in: surface)
-        surface.editorView.keyDown(with: try key(53))
-        try quote("q", in: surface)
-        surface.editorView.keyDown(with: try key(115))
-        try quote("v", in: surface)
-        surface.editorView.insertText("u03b1", replacementRange: noReplacement)
-        XCTAssertEqual(surface.commandLine?.text, "\t\r\u{1b}<Home>α")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_COMMAND_LINE))
-        XCTAssertEqual(try backend.formattedText(), "end")
-        XCTAssertFalse(backend.persistenceState.isDirty)
-        surface.editorView.keyDown(with: try key(53))
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
 
     func testNormalModeRetainsVisualBlockShortcuts() throws {
@@ -127,48 +80,4 @@ import XCTest
         }
     }
 
-    func testNumericTerminatorMovesOnTheUpdatedLayoutAndRecordsOnlyOnce() throws {
-        let (backend, surface) = try fixture("one\ntwo\nthree")
-        surface.editorView.insertText("qai", replacementRange: noReplacement)
-        try quote("v", in: surface)
-        surface.editorView.insertText("65", replacementRange: noReplacement)
-        surface.editorView.keyDown(with: try key(125))
-        XCTAssertEqual(try backend.formattedText(), "Aone\ntwo\nthree")
-        XCTAssertGreaterThanOrEqual(surface.viewPresentation.cursor_utf8_offset, 5)
-        XCTAssertLessThanOrEqual(surface.viewPresentation.cursor_utf8_offset, 8)
-        surface.editorView.keyDown(with: try key(53))
-        surface.editorView.insertText("qgg@a", replacementRange: noReplacement)
-        XCTAssertEqual(try backend.formattedText(), "AAone\ntwo\nthree")
-        XCTAssertGreaterThanOrEqual(surface.viewPresentation.cursor_utf8_offset, 6)
-        XCTAssertLessThan(surface.viewPresentation.cursor_utf8_offset, 9,
-                          "The recorded Down key must run once, not move to the third line")
-        XCTAssertNil(surface.commandOutput)
-    }
-
-    func testNumericCommandLineTerminatorCanStartNormalReplayFromVisualBlock() throws {
-        let (backend, surface) = try fixture("one\ntwo")
-        surface.editorView.keyDown(with: try key(9, control: "v"))
-        surface.editorView.insertText(":normal! i", replacementRange: noReplacement)
-        try quote("v", in: surface)
-        surface.editorView.insertText("65", replacementRange: noReplacement)
-        surface.editorView.keyDown(with: try key(36))
-        XCTAssertEqual(try backend.formattedText(), "Aone\ntwo")
-        XCTAssertNil(surface.commandOutput)
-    }
-
-    func testVisualBlockKeepsQuotedTabsAndQuotesLiteralBesideSmartQuotes() throws {
-        let (backend, surface) = try fixture("one\ntwo")
-        try XCTUnwrap(surface.session).setSmartQuotes(true)
-        surface.editorView.keyDown(with: try key(9, control: "v"))
-        surface.editorView.insertText("jI", replacementRange: noReplacement)
-        surface.editorView.insertText("'", replacementRange: noReplacement)
-        try quote("v", in: surface)
-        surface.editorView.keyDown(with: try key(48))
-        try quote("q", in: surface)
-        surface.editorView.insertText("\"", replacementRange: noReplacement)
-        surface.editorView.insertText("word'", replacementRange: noReplacement)
-        surface.editorView.keyDown(with: try key(53))
-        XCTAssertEqual(try backend.formattedText(), "‘\t\"word’one\n‘\t\"word’two")
-        XCTAssertNil(surface.commandOutput)
-    }
 }

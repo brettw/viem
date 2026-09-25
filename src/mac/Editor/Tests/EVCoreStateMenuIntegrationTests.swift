@@ -391,9 +391,10 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         _ = try session.setViewportOrigin(left: 0, top: 0, expected: farState)
         surface.refreshPresentation()
         XCTAssertEqual(surface.viewportState.top, 0)
-        XCTAssertNil(surface.visualSelection, "offscreen exact selection geometry is not fabricated")
+        // The logical selection export survives; offscreen geometry is not fabricated.
+        XCTAssertEqual(surface.visualSelection?.rectangles.isEmpty, true)
         XCTAssertTrue(surface.presentation(for: .jumpToSelection).isEnabled)
-        XCTAssertFalse(surface.presentation(for: .useSelectionForFind).isEnabled)
+        XCTAssertTrue(surface.presentation(for: .useSelectionForFind).isEnabled)
 
         surface.perform(menuCommand: .jumpToSelection, sender: nil)
 
@@ -599,9 +600,12 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             surface.perform(menuCommand: .copy, sender: nil)
             XCTAssertEqual(pasteboard.text, "ab")
             XCTAssertEqual(surface.formattedText, "abc")
-            _ = try session.sendText("p")
+            // Native Copy keeps the Visual selection; leave it before putting.
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+            _ = try session.sendText("0P")
             surface.refreshPresentation()
-            XCTAssertEqual(surface.formattedText, "aabbc")
+            XCTAssertEqual(surface.formattedText, "ababc")
         }
 
         _ = pasteboard.viemClearContents()
@@ -652,7 +656,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             expected: surface.viewportState
         )
         surface.refreshPresentation()
-        XCTAssertNil(surface.visualSelection)
+        XCTAssertEqual(surface.visualSelection?.rectangles.isEmpty, true)
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
 
         XCTAssertTrue(
@@ -836,7 +840,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         )
         surface.refreshPresentation()
 
-        XCTAssertNil(surface.visualSelection)
+        XCTAssertEqual(surface.visualSelection?.rectangles.isEmpty, true)
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertEqual(surface.presentation(for: .bold).state, .off)
         XCTAssertTrue(surface.presentation(for: .bold).isEnabled)

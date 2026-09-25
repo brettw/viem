@@ -62,19 +62,30 @@ fn backspace_recognizes_nested_list_and_code_bodies_after_arrow_navigation() {
         key(&mut commands, &mut doc, Key::Right);
         key(&mut commands, &mut doc, Key::Left);
         assert_eq!(commands.cursor(), at);
-        key(&mut commands, &mut doc, Key::Backspace);
-        assert_eq!(doc.text(), text, "{source}");
-        assert_eq!(commands.cursor(), at, "{source}");
-        let block = doc
-            .projection()
-            .blocks()
-            .iter()
-            .find(|block| block.range.start <= at && at <= block.range.end)
-            .unwrap();
-        if block.style.0 != "Paragraph" {
+        // A nested item loses one list level per Backspace before its list
+        // treatment is removed; no press deletes text.
+        let style = |doc: &Document| {
+            doc.projection()
+                .blocks()
+                .iter()
+                .find(|block| block.range.start <= at && at <= block.range.end)
+                .unwrap()
+                .style
+                .0
+                .clone()
+        };
+        for _ in 0..4 {
+            key(&mut commands, &mut doc, Key::Backspace);
+            assert_eq!(doc.text(), text, "{source}");
+            assert_eq!(commands.cursor(), at, "{source}");
+            if style(&doc) == "Paragraph" {
+                break;
+            }
+        }
+        if style(&doc) != "Paragraph" {
             failures.push(format!(
                 "{source}: style={} source={:?}",
-                block.style.0,
+                style(&doc),
                 String::from_utf8_lossy(&doc.source_bytes())
             ));
         }

@@ -45,7 +45,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     let window = try XCTUnwrap(settings.window)
     let sidebar = try XCTUnwrap(
       descendants(window.contentView).first { $0 is NSTableView } as? NSTableView)
-    XCTAssertEqual(sidebar.numberOfRows, 4)
+    XCTAssertEqual(sidebar.numberOfRows, 3)
     sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
     let checkbox = try XCTUnwrap(
       descendants(window.contentView).first { $0.accessibilityLabel() == "Use smart quotes" }

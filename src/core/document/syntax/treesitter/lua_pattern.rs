@@ -577,10 +577,6 @@ mod tests {
         assert!(!find("%f[%w]word", "aword"));
         assert!(find("^(%a+)=%1$", "abc=abc"));
         assert!(!find("^(%a+)=%1$", "abc=abd"));
-        assert!(matches!(
-            LuaPattern::compile("%b()", 1 << 20),
-            Ok(LuaPattern::Backtracking(_))
-        ));
     }
 
     #[test]

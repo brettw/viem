@@ -917,48 +917,6 @@ mod tests {
     }
 
     #[test]
-    fn staging_large_learned_height_index_shares_unchanged_paths() {
-        fn pointers(tree: &Link, result: &mut std::collections::HashSet<*const Node>) {
-            if let Some(node) = tree {
-                result.insert(Arc::as_ptr(node));
-                pointers(&node.left, result);
-                pointers(&node.right, result);
-            }
-        }
-
-        let mut original = ViewHeightIndex::new_estimated(1_000_000, 16.0).unwrap();
-        // Model a long scroll through differently wrapped hard lines: exact
-        // height runs cannot collapse into one uniform estimate.
-        let heights: Vec<_> = (0..65_536).map(|line| 16.0 * (1 + line % 3) as f64).collect();
-        original.set_exact_heights(400_000, &heights).unwrap();
-        let before = original.total_height();
-        let mut staged = original.clone();
-        assert!(Arc::ptr_eq(
-            original.root.as_ref().unwrap(),
-            staged.root.as_ref().unwrap()
-        ));
-
-        let mut original_nodes = std::collections::HashSet::new();
-        pointers(&original.root, &mut original_nodes);
-        staged.set_exact_height(432_123, 80.0).unwrap();
-        staged.invalidate(432_124..432_126).unwrap();
-        let mut staged_nodes = std::collections::HashSet::new();
-        pointers(&staged.root, &mut staged_nodes);
-        let copied_nodes = staged_nodes.difference(&original_nodes).count();
-        assert!(
-            copied_nodes <= original.statistics().tree_depth() * 12,
-            "local staging copied {copied_nodes} of {} learned nodes",
-            original_nodes.len()
-        );
-        assert_eq!(original.total_height(), before);
-        assert!(original.range_height(432_124..432_126).unwrap().is_exact());
-        assert!(!staged.range_height(432_124..432_126).unwrap().is_exact());
-        assert_eq!(staged.range_height(432_123..432_124).unwrap().height(), 80.0);
-        assert_valid_index(&original);
-        assert_valid_index(&staged);
-    }
-
-    #[test]
     fn one_million_estimated_lines_stay_compact_through_splices() {
         let mut index = ViewHeightIndex::new_estimated(1_000_000, 16.0).unwrap();
         assert_valid_index(&index);

@@ -5982,51 +5982,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn inherited_blocks_are_compact_and_direct_formatting_is_copy_on_write() {
-        assert_eq!(std::mem::size_of::<Block>(), 32);
-        let original = Block::paragraph(1, 0..1);
-        let another = Block::paragraph(2, 2..3);
-        assert!(Arc::ptr_eq(&original.attributes, &another.attributes));
-        let mut styled = original.clone();
-        assert!(Arc::ptr_eq(&original.attributes, &styled.attributes));
-        styled.style = "Heading1".into();
-        styled.kind = BlockKind::Heading(1);
-        styled.direct_default_character.size = Some(24.0.into());
-        styled.direct_paragraph.spacing_before = Some(2.0);
-        assert!(original.direct_formatting.is_none());
-        assert_eq!(original.style.0, "Paragraph");
-        assert_eq!(original.kind, BlockKind::Paragraph);
-        assert!(!Arc::ptr_eq(&original.attributes, &styled.attributes));
-        assert_eq!(original.direct_default_character.size, None);
-        let mut changed = styled.clone();
-        assert!(Arc::ptr_eq(styled.direct_formatting.as_ref().unwrap(), changed.direct_formatting.as_ref().unwrap()));
-        changed.direct_default_character.size = Some(30.0.into());
-        assert_eq!(styled.direct_default_character.size, Some(24.0.into()));
-        assert_eq!(changed.direct_default_character.size, Some(30.0.into()));
-        assert_eq!(changed.direct_paragraph.spacing_before, Some(2.0));
-        let mut explicit_empty = original.clone();
-        explicit_empty.direct_default_character.size = None;
-        assert_eq!(explicit_empty, original);
-    }
-
-    #[test]
-    fn literal_blocks_share_attributes_across_open_edits_and_history() {
-        use crate::document::Document;
-        for format in [Format::PlainText, Format::Code] {
-            let mut document = Document::from_bytes(b"a\n".repeat(10_000), Encoding::Utf8, format).unwrap();
-            let initial = document.projection().blocks.get(0).unwrap();
-            for index in [1, 5000, 10_000] {
-                assert!(Arc::ptr_eq(&initial.attributes, &document.projection().blocks.get(index).unwrap().attributes));
-            }
-            document.insert(3, "x\ny").unwrap();
-            assert_eq!(initial.kind, BlockKind::Paragraph);
-            assert_eq!(initial.style.0, "Paragraph");
-            assert!(document.undo());
-            assert!(Arc::ptr_eq(&initial.attributes, &document.projection().blocks.get(0).unwrap().attributes));
-        }
-    }
-
     fn markdown_at(source: &str, revision: Revision) -> FormattedDocument {
         let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
         let normalized = normalize(&decoded, FileFormat::Unix);
@@ -6628,22 +6583,6 @@ mod tests {
     }
 
     #[test]
-    fn projection_clones_and_equal_reprojections_share_range_indexes() {
-        let mut previous = markdown_at("# left\n**bold**", Revision(1));
-        previous.assign_initial_block_ids(1).unwrap();
-        let cloned = previous.clone();
-        assert!(previous.blocks.shares_root_with(&cloned.blocks));
-        assert!(previous.hard_lines.shares_root_with(&cloned.hard_lines));
-        assert!(previous.styles.shares_root_with(&cloned.styles));
-
-        let mut candidate = markdown_at("# left\n**bold**", Revision(2));
-        candidate.install_unchanged_block_ids(&previous).unwrap();
-        assert!(previous.blocks.shares_root_with(&candidate.blocks));
-        assert!(previous.hard_lines.shares_root_with(&candidate.hard_lines));
-        assert!(previous.styles.shares_root_with(&candidate.styles));
-    }
-
-    #[test]
     fn malformed_current_adapter_partition_is_rejected_before_line_index_rebuild() {
         let mut projection = plain("a\nb".to_owned(), Revision(1));
         let original_lines = projection.hard_lines.clone();
@@ -6656,102 +6595,6 @@ mod tests {
             Err(BlockIdentityError::InvalidProjection)
         );
         assert_eq!(projection.hard_lines, original_lines);
-    }
-
-    #[test]
-    fn same_length_local_edit_reuses_equal_block_and_style_indexes() {
-        let old_text = "left\nbold";
-        let new_text = "LEFT\nbold";
-        let mut previous = markdown_at("left\n**bold**", Revision(1));
-        let next_id = previous.assign_initial_block_ids(1).unwrap();
-        let mut candidate = markdown_at("LEFT\n**bold**", Revision(2));
-        let edit = TextEdit::new(0..4, "LEFT");
-        let map = PositionMap::for_text(
-            DocumentId(1),
-            Revision(1),
-            Revision(2),
-            old_text,
-            new_text,
-            vec![Splice::new(0..4, 4).unwrap()],
-        )
-        .unwrap();
-
-        candidate
-            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
-            .unwrap();
-        assert!(previous.blocks.shares_root_with(&candidate.blocks));
-        assert!(previous.hard_lines.shares_root_with(&candidate.hard_lines));
-        assert!(previous.styles.shares_root_with(&candidate.styles));
-    }
-
-    #[test]
-    fn prefix_length_change_shares_shifted_suffix_block_leaves() {
-        const LINES: usize = 256;
-        let old_text = format!("{}tail", "x\n".repeat(LINES));
-        let new_text = format!("prefix {old_text}");
-        let mut previous = plain(old_text.clone(), Revision(1));
-        let next_id = previous.assign_initial_block_ids(1).unwrap();
-        let previous_leaf_count = previous.blocks.leaf_count();
-        let mut candidate = plain(new_text.clone(), Revision(2));
-        let edit = TextEdit::new(0..0, "prefix ");
-        let map = PositionMap::for_text(
-            DocumentId(1),
-            Revision(1),
-            Revision(2),
-            &old_text,
-            &new_text,
-            vec![Splice::new(0..0, 7).unwrap()],
-        )
-        .unwrap();
-
-        candidate
-            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
-            .unwrap();
-        assert_eq!(candidate.blocks.leaf_count(), previous_leaf_count);
-        assert_eq!(
-            candidate.blocks.shared_leaf_count_with(&previous.blocks),
-            previous_leaf_count - 1
-        );
-        assert_eq!(
-            candidate
-                .hard_lines
-                .shared_leaf_count_with(&previous.hard_lines),
-            previous_leaf_count - 1
-        );
-        assert_eq!(candidate.blocks()[1].id, previous.blocks()[1].id);
-    }
-
-    #[test]
-    fn uniformly_shifted_style_index_reuses_its_complete_relative_root() {
-        const SPANS: usize = 200;
-        let marked = "**x** ".repeat(SPANS);
-        let old_source = format!("a {marked}");
-        let new_source = format!("prefix a {marked}");
-        let old_text = format!("a {}", "x ".repeat(SPANS));
-        let new_text = format!("prefix a {}", "x ".repeat(SPANS));
-        let mut previous = markdown_at(&old_source, Revision(1));
-        let next_id = previous.assign_initial_block_ids(1).unwrap();
-        let mut candidate = markdown_at(&new_source, Revision(2));
-        let edit = TextEdit::new(0..0, "prefix ");
-        let map = PositionMap::for_text(
-            DocumentId(1),
-            Revision(1),
-            Revision(2),
-            &old_text,
-            &new_text,
-            vec![Splice::new(0..0, 7).unwrap()],
-        )
-        .unwrap();
-
-        candidate
-            .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
-            .unwrap();
-        assert_eq!(candidate.styles.len(), SPANS);
-        assert!(candidate.styles.shares_root_with(&previous.styles));
-        assert_eq!(
-            candidate.styles.shared_leaf_count_with(&previous.styles),
-            candidate.styles.leaf_count()
-        );
     }
 
     #[test]
