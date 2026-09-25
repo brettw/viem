@@ -51,6 +51,10 @@ recorded below. A terminal frontend remains outside the current scope.
   operator-pending form, undo grouping, and relevant edge cases have tests.
 - New layout work MUST include cache-invalidation tests and a large-document
   test. A correct full-document relayout on every edit is not acceptable.
+- Integration tests are modules of one test binary under `tests/all/`, listed
+  in `tests/all/main.rs`. Do not add top-level files to `tests/`: each would
+  become a separate executable that links the whole core again. Select one
+  file's tests with a module filter such as `cargo test --test all ex_sort::`.
 - Product behavior in this file takes precedence over Vim behavior where the
   two differ. Otherwise, use Vim 9.2 documentation as the behavioral reference.
 - Keep this file current when a requirement or supported-command decision

@@ -40,7 +40,7 @@ alternating switches. The final bundled app is built in release configuration.
 The standalone manual Rust benchmark is:
 
 ```sh
-cargo test --release --test format_switch_performance -- --ignored --nocapture
+cargo test --release --test all format_switch_performance:: -- --ignored --nocapture
 ```
 
 The native regression measures the complete status-menu action, checks one
