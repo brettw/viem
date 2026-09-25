@@ -6,7 +6,7 @@ impl Document {
     /// Text and payload edits share adapter dispatch, mapping, escaping and
     /// encoding. A payload supplies explicit hard-break identity and affinity;
     /// ordinary text treats every inserted LF as a requested logical break.
-    pub(super) fn translate_source_edits<'a>(
+    pub(in crate::document) fn translate_source_edits<'a>(
         &self,
         edits: impl IntoIterator<Item = (&'a TextEdit, Option<&'a FormattedPayloadEdit>)>,
     ) -> Result<Vec<SourcePatch>, ModelTransactionError> {

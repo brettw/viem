@@ -62,9 +62,24 @@ pub(super) fn remove_empty_edited_scopes(
         remove_if_empty(document, opening, closing, patches)?;
     }
     if patches.len() != original_patch_count {
+        let removed = patches[original_patch_count..].iter().map(SourcePatch::range).collect::<Vec<_>>();
         super::html_paragraph::preserve_after_inline_cleanup(document, edits, patches)?;
+        coalesce_removed_delimiters(patches, &removed);
     }
     Ok(())
+}
+
+/// A removed delimiter next to deleted text is one contiguous deletion; keep
+/// supporting patches such as protected whitespace separate.
+fn coalesce_removed_delimiters(patches: &mut Vec<SourcePatch>, removed: &[Range<usize>]) {
+    for range in removed {
+        let Some(index) = patches.iter().position(|patch|
+            patch.range() == *range && patch.replacement().is_empty()) else { continue };
+        let deletion = patches.remove(index);
+        if !patches.iter_mut().any(|patch| patch.absorb_adjacent_deletion(&deletion.range())) {
+            patches.insert(index, deletion);
+        }
+    }
 }
 
 fn covered(piece: &Range<usize>, patches: &[SourcePatch]) -> bool {
@@ -102,11 +117,7 @@ fn remove_if_empty(
     let mut support = Vec::new();
     super::source_edit::append_uncovered_deletions(&opening, patches, &mut support);
     super::source_edit::append_uncovered_deletions(&closing, patches, &mut support);
-    for deletion in support {
-        if !patches.iter_mut().any(|patch| patch.absorb_adjacent_deletion(&deletion.range())) {
-            patches.push(deletion);
-        }
-    }
+    patches.extend(support);
     Ok(())
 }
 
@@ -175,6 +186,8 @@ mod tests {
             "<p><a href='/x'><sup>x</sup></a><b>y<br>z</b></p>",
             "<div><b>x<p>y</p></b></div>",
         ];
+        let mut compared = 0;
+        let mut cleaned = 0;
         for source in sources {
             let document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
@@ -202,6 +215,8 @@ mod tests {
                         .filter(|span| super::intersects(&span.formatted, &edit.range) && !span.source.is_empty())
                         .map(|span| span.source)
                 }).collect::<Vec<_>>();
+                compared += 1;
+                if spelling(&document, &indexed) != spelling(&document, &translated) { cleaned += 1; }
                 let mut reference = translated.clone();
                 if !selected.is_empty() {
                     super::remove_with_full_tokens(&document, &selected, &mut reference, &edits).unwrap();
@@ -213,5 +228,6 @@ mod tests {
                 );
             }
         }
+        assert!(compared > 100 && cleaned > 10, "compared {compared}, cleaned {cleaned}");
     }
 }
