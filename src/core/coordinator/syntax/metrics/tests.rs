@@ -239,7 +239,7 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
         .document
         .projection()
         .compatibility_text_is_materialized();
-    core.publish_code_presentation(Arc::new(sheet.clone()), &runs);
+    core.publish_code_presentation_runs(Arc::new(sheet.clone()), &runs);
     for (index, id) in views.iter().enumerate() {
         let view = &core.views[id];
         assert_eq!(
@@ -301,7 +301,7 @@ fn large_code_metric_publication_refreshes_two_views_with_bounded_layout_and_reu
     // stay unchanged. Preserve exact measured heights and reuse all shaping.
     runs.push(run(12..15, "Keyword"));
     runs.sort_by_key(|run| run.range.start);
-    core.publish_code_presentation(Arc::new(sheet), &runs);
+    core.publish_code_presentation_runs(Arc::new(sheet), &runs);
     for (index, id) in views.iter().enumerate() {
         assert_eq!(core.views[id].layout.content_height(), prior[index].1);
         core.materialize_requested_viewport(*id, 0., prior[index].2)

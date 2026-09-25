@@ -1128,12 +1128,56 @@ impl Document {
         if !self.format().is_code() { self.code_presentation = None; return false; }
         let mut projection = self.state().projection.clone();
         projection.install_code_styles(sheet, runs);
+        self.publish_code_presentation(projection);
+        true
+    }
+
+    /// Install a publication from the run store, splicing the previous
+    /// presentation's spans when `delta` describes the change locally and the
+    /// presentation lineage connects the two revisions exactly. Otherwise the
+    /// presentation is rebuilt from every run. Returns whether the local
+    /// splice was used.
+    pub fn install_code_presentation_delta(
+        &mut self,
+        sheet: std::sync::Arc<StyleSheet>,
+        runs: &syntax::service::RunStore,
+        delta: &syntax::service::PublicationDelta,
+    ) -> bool {
+        if !self.format().is_code() { self.code_presentation = None; return false; }
+        let local = !delta.unbounded && self.code_presentation.as_ref().is_some_and(|previous| {
+            previous.transition.source_revision() == previous.projection.revision()
+                && previous.transition.target_revision() == self.revision()
+        });
+        if local {
+            let previous = self.code_presentation.as_ref().expect("checked above");
+            let mut projection = self.state().projection.clone();
+            if projection.install_code_styles_incrementally(
+                sheet.clone(),
+                &previous.projection,
+                delta.hull.as_ref(),
+                &delta.replaced,
+                &|region| runs.runs_in(region),
+            ) {
+                self.publish_code_presentation(projection);
+                return true;
+            }
+        }
+        self.install_code_presentation(sheet, &runs.runs());
+        false
+    }
+
+    fn publish_code_presentation(&mut self, projection: FormattedDocument) {
         self.code_presentation = Some(code_presentation::CodePresentation {
             projection,
             transition: PositionMap::identity(self.id, PositionDomain::FormattedText,
                 self.revision(), self.state().projection.text_tree().byte_len()),
         });
-        true
+    }
+
+    /// The retained Code presentation, including one published for an
+    /// earlier revision whose lineage is still tracked.
+    pub(crate) fn code_presentation_projection(&self) -> Option<&FormattedDocument> {
+        self.code_presentation.as_ref().map(|presentation| &presentation.projection)
     }
 
     pub(crate) fn record_layout_change(&mut self, record: LayoutChangeRecord) {

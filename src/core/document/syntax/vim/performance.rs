@@ -73,7 +73,7 @@ fn colors(output: &VimResult, range: Range<usize>) -> Vec<String> {
     for run in &output.runs {
         let clipped = run.range.start.max(range.start)..run.range.end.min(range.end);
         if clipped.start < clipped.end {
-            colors[clipped.start - range.start..clipped.end - range.start].fill(run.name.0.clone());
+            colors[clipped.start - range.start..clipped.end - range.start].fill(run.name.to_string());
         }
     }
     colors

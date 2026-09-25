@@ -42,14 +42,42 @@ impl SyntaxInputSnapshot {
     }
 }
 
+/// A canonical syntax style name. Names are shared between the many runs
+/// that reference them, so a run copies two pointers rather than two strings.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SyntaxStyleName(pub String);
+pub struct SyntaxStyleName(pub std::sync::Arc<str>);
+
+impl SyntaxStyleName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for SyntaxStyleName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for SyntaxStyleName {
+    fn eq(&self, other: &str) -> bool {
+        &*self.0 == other
+    }
+}
+
+impl PartialEq<&str> for SyntaxStyleName {
+    fn eq(&self, other: &&str) -> bool {
+        &*self.0 == *other
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SyntaxRun {
     pub range: Range<usize>,
     pub name: SyntaxStyleName,
-    pub origin: String,
+    pub origin: std::sync::Arc<str>,
     pub priority: i32,
 }
 

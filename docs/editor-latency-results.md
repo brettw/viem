@@ -165,14 +165,125 @@ Syntax (after): first highlight settle 2581.8 ms; highlight settle after an edit
 | G / gg / :N jumps (15) | — → 1.5 | — → 3.7 | — → 5.6 |
 | Second view: wrap toggle + G/Ctrl-U (10) | — → 2.3 | — → 3.1 | — → 3.1 |
 
+## Code typing follow-up
+
+After the changes above, Code typing with Tree-sitter highlighting still cost
+about 24 ms per keystroke against 7 ms with highlighting off. Profiling showed
+three per-keystroke costs proportional to everything the syntax service had
+retained, rather than to the edit:
+
+1. `SyntaxService::runs` concatenated and cloned every cached and retained run
+   (each carrying two heap `String`s) and sorted them, and `rebase_input`
+   then copied the whole set again to shift it past the edit.
+2. `install_code_styles` rebuilt the presentation's automatic style store from
+   every run, running name resolution and grapheme checks on each one.
+3. `ViewLayout::rebase_document_change` rebuilt the regional layout cache by
+   re-inserting every cached line, and re-measured each line's retained bytes
+   by walking its rows.
+
+The follow-up makes each of these proportional to the change:
+
+- **Shared run names.** `SyntaxStyleName` and `SyntaxRun::origin` are
+  `Arc<str>`. Tree-sitter already produces one name per capture; the Vim
+  provider interns group and origin names per job. Copying a run copies two
+  pointers.
+- **An indexed run store.** The service keeps the displayed runs of the
+  current input in one persistent interval index (`RunStore`) instead of a
+  run list per cached result plus a retained list. An edit drops the runs
+  inside the replaced hull and shifts the rest with one lazy coordinate
+  change; a completed result splices only the index span its coverage
+  overlaps. Result cache entries now record coverage only. Eviction removes
+  runs from the front of the document, preferring runs outside current
+  provider coverage. The store tracks referenced names with counts, so the
+  Character menu's name list no longer scans the runs.
+- **A publication delta.** The service records what changed since the last
+  publication: the one edit hull and the regions whose runs were replaced.
+  When the presentation lineage connects the previous publication to the
+  current revision exactly, `install_code_presentation_delta` splices the
+  previous presentation's automatic spans the same way and resolves only the
+  runs inside replaced regions. Two edits between publications, a new input
+  or configuration, or any inconsistency falls back to the previous
+  whole-store installation. Metric changes are compared only inside the delta
+  regions, and not at all when no Code style changes metrics (memoized per
+  sheet revision).
+- **In-place layout cache rebase.** Each cached line records its estimated
+  bytes when it is installed. A rebase removes only the invalidated lines and
+  lines crossing the hull, then adjusts the pending shift of later lines in
+  place. When the line count is unchanged it rewrites no keys and no recency
+  entries.
+
+`in_place_cache_rebase_keeps_accounting_and_matches_fresh_layout` checks
+running accounting and recency against the entries through typing, Enter
+and Backspace, and compares the rebased rows with a freshly built layout.
+Absolute y near line 10,000 differs by float summation order between a
+spliced and a fresh height index, so the test compares row y relative to the
+first compared row within two f32 ULPs.
+
+**2 MB Rust, Tree-sitter highlighting, follow-up** — "before" is the
+previous change set (`867d832`) and "after" is this one, built and run back
+to back on the same container; open 52.4 → 53.4 ms, first view 3.6 → 3.6 ms
+
+| Operation | p50 before → after (ms) | p95 before → after (ms) | max before → after (ms) |
+| --- | ---: | ---: | ---: |
+| Type one character (176 samples) | 27.7 → 3.5 | 40.2 → 4.7 | 50.7 → 5.8 |
+| Type with two views (25) | 36.2 → 6.4 | 41.9 → 8.3 | 44.3 → 9.5 |
+| Enter (4) | 33.2 → 4.0 | 35.2 → 4.2 | 35.2 → 4.2 |
+| Undo (4) | 44.4 → 25.6 | 46.2 → 39.8 | 46.2 → 39.8 |
+| Wheel step, 60 units (300) | 2.4 → 2.2 | 3.9 → 2.8 | 5.9 → 4.9 |
+| Page Down (60) | 6.1 → 3.9 | 29.1 → 8.3 | 36.1 → 10.9 |
+| G / gg / :N jumps (15) | 3.3 → 2.9 | 12.5 → 5.0 | 45.7 → 6.8 |
+| Second view: wrap toggle + G/Ctrl-U (10) | 5.3 → 4.6 | 6.8 → 5.8 | 6.8 → 5.8 |
+
+Syntax: first highlight settle 2611.6 → 2587.5 ms; highlight settle after an
+edit p50 2592.3 → 2594.2 ms; poll p95 0.03 → 0.02 ms, max 27.1 → 1.8 ms. The
+settle figures are dominated by the probe's two-second idle wait and the
+Tree-sitter parse itself, which runs on a worker.
+
+The container ran about 10–25% slower during this follow-up than for the
+first results table. Interleaved runs of both builds on the Markdown and HTML
+fixtures show no regression there: typing is equal or faster (Markdown
+6.6–7.4 → 6.2–6.6 ms, HTML 7.9–8.3 → 6.4–6.9 ms at p50), and Enter, undo and
+Page Down are within run-to-run noise.
+
+Code typing with highlighting now costs about the same as plain-text typing
+(2.5 ms per character on the 4 MB text fixture under the profiler). The
+remaining main-thread time is viewport layout of the edited line and snapshot
+publication.
+
+## Markdown Source Return between continuation lines
+
+In Markdown Source, pressing Return at the end of a line inside a
+multi-line paragraph failed with `VerificationFailed`. For example, `:2`,
+`A`, Enter on
+
+```text
+first line of prose
+second line of prose
+third line of prose
+fourth line
+```
+
+authored two source line endings after `second line of prose`. The following
+continuation line already owned one ending, so the source became three
+consecutive endings. Markdown Source pairs endings into paragraph separators,
+and three endings fold back to one displayed break, so the edit did not
+produce the requested boundary.
+
+Return now counts the displayed breaks adjacent to the caret and the physical
+endings they already own, using the same neighbour walk that source-text
+replacement uses (`markdown_source_break_neighbors`). It authors only the
+endings needed for every displayed break to own a canonical pair. The example
+above now writes four endings. Returning at a paragraph end and in the middle
+of a line keeps writing one pair. Regression tests cover both cases, source
+bytes and undo. The `markdown_source` probe scenario, which previously
+aborted on this edit, now completes.
+
 ## Remaining work
 
-- **Code typing with highlighting** is still about 24 ms per keystroke against
-  7 ms with highlighting off. Each publication remaps the retained syntax runs
-  overlapping the edit, rebuilds the automatic style store from every retained
-  run (`install_code_styles`), and the viewport materialization publishes the
-  ready result in the same turn. Splicing the retained runs and the style
-  store by the edit's hull instead of rebuilding them would remove most of it.
+- **Code publications after an unbounded change** (a new input identity
+  without a recorded hull, history navigation, a configuration change, or two
+  edits between publications) still install the presentation from every run
+  in the store. Undo in Code therefore still costs about 30 ms.
 
 - **Enter in HTML and Markdown WYSIWYG** (paragraph split, and exiting an
   empty list item) still prepares a whole-document candidate:
@@ -189,8 +300,8 @@ Syntax (after): first highlight settle 2581.8 ms; highlight settle after an edit
 - Unlimited history retention (used by the probe) grows the memory ledger's
   hash table, which shows up as a few percent of HTML typing; the shipped
   policy prunes.
-- **Pre-existing bug found by the probe (not fixed here):** in Markdown
-  Source, `:2`, `A`, Enter on the four-line file
-  `first line of prose\nsecond line of prose\nthird line of prose\nfourth line\n`
-  fails with `VerificationFailed`; it reproduces on the commit before this
-  change set, so the `markdown_source` scenario cannot complete yet.
+- **Markdown Source typing** reprojects the whole document: with the Return
+  failure fixed, the `markdown_source` scenario completes and measures about
+  870 ms per character and 950 ms per Enter at p50 on the 1.2 MB fixture.
+  Markdown WYSIWYG typing already uses the bounded route; the source-visible
+  view does not yet.
