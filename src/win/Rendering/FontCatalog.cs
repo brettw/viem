@@ -74,7 +74,24 @@ internal static class FontCatalog
         face ??= Discover(CanvasFontPropertyIdentifier.FullName, name).FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
         return names[name] = face;
     }
-    internal static string DisplayFamily(string name) => name.Length == 0 || IsFamily(name) ? name : Named(name)?.Family ?? name;
+    /// Portable request tokens for the family picker's built-in "use the
+    /// system font" entries. EVFontCatalog on macOS recognizes the identical
+    /// strings, so a style saved with one renders consistently on both
+    /// platforms; only the picker's label differs from a literal font name.
+    internal const string SystemDefaultFamily = "system-ui";
+    internal const string SystemMonospaceFamily = "ui-monospace";
+    private const string SystemDefaultDisplayName = "System Default";
+    private const string SystemMonospaceDisplayName = "System Monospace";
+    internal static string DisplayFamily(string name) =>
+        string.Equals(name, SystemDefaultFamily, StringComparison.OrdinalIgnoreCase) ? SystemDefaultDisplayName :
+        string.Equals(name, SystemMonospaceFamily, StringComparison.OrdinalIgnoreCase) ? SystemMonospaceDisplayName :
+        name.Length == 0 || IsFamily(name) ? name : Named(name)?.Family ?? name;
+    /// Reverses <see cref="DisplayFamily"/> for the picker's own two entries;
+    /// any other label (an installed font name typed or picked) yields null.
+    internal static string? StorageFamily(string displayName) =>
+        string.Equals(displayName, SystemDefaultDisplayName, StringComparison.OrdinalIgnoreCase) ? SystemDefaultFamily :
+        string.Equals(displayName, SystemMonospaceDisplayName, StringComparison.OrdinalIgnoreCase) ? SystemMonospaceFamily :
+        null;
     internal static FontFace[] Faces(string familyOrFace)
     {
         string family = Resolve(familyOrFace)?.Family ?? familyOrFace;
@@ -102,7 +119,7 @@ internal static class FontCatalog
     {
         if (requested.Length == 0) return null;
         string candidate = requested.ToLowerInvariant() switch {
-            "monospace" or "menlo" or "monaco" => IsFamily("Cascadia Mono") ? "Cascadia Mono" : "Consolas",
+            "monospace" or "ui-monospace" or "menlo" or "monaco" => IsFamily("Cascadia Mono") ? "Cascadia Mono" : "Consolas",
             "serif" or "times" => "Georgia",
             "sans-serif" or "system-ui" or "system" or "-apple-system" or "helvetica" or "helvetica neue" => "Segoe UI",
             _ => requested
