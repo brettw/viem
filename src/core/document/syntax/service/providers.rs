@@ -548,7 +548,7 @@ impl SyntaxProvider for BackendProvider {
                 .saturating_add(child.fallback.as_ref().map_or(0, VimSession::retained_bytes))
                 .saturating_add(context_bytes(&child.fallback_context))
                 .saturating_add(child.cache.as_ref().map_or(0, |cache| cache.runs.capacity() * std::mem::size_of::<SyntaxRun>()
-                    + cache.runs.iter().map(|run| run.name.0.capacity() + run.origin.capacity()).sum::<usize>()))
+                    + cache.runs.iter().map(|run| run.name.0.len() + run.origin.len()).sum::<usize>()))
         }).sum::<usize>();
         // Worker configuration/capped/fallback inputs may outlive a completed
         // parser. Conservative shared-input charges favor eviction under pressure.

@@ -277,6 +277,22 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
         self.inner.partition_point_start(offset)
     }
 
+    /// The first index whose span ends after `offset`, or the item count.
+    /// Max-end aggregates prune subtrees ending at or before `offset`, so
+    /// non-overlapping spans resolve this in `O(log n)`.
+    pub(super) fn first_index_ending_after(&self, offset: usize) -> usize {
+        self.inner.first_index_ending_after(offset)
+    }
+
+    /// The contiguous index span containing every item that strictly
+    /// overlaps `query` (an empty query matches items strictly containing its
+    /// offset). Overlapping stores may include non-matching items inside it.
+    pub(super) fn overlapping_index_span(&self, query: &Range<usize>) -> Range<usize> {
+        let first = self.first_index_ending_after(query.start);
+        let last = self.partition_point_start(query.end).max(first);
+        first..last
+    }
+
     pub(super) fn get(&self, index: usize) -> Option<T> {
         self.inner.get(index)
     }
@@ -486,6 +502,13 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         self.root.as_ref().map_or(0, |root| {
             count_starts_before(root, self.root_origin, offset)
         })
+    }
+
+    fn first_index_ending_after(&self, offset: usize) -> usize {
+        self.root
+            .as_ref()
+            .and_then(|root| first_index_ending_after(root, self.root_origin, offset, 0))
+            .unwrap_or(self.item_count)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -900,6 +923,38 @@ fn count_starts_before<T: RangedItem>(node: &RangeNode<T>, origin: usize, offset
                 left.item_count + count_starts_before(right, right_origin, offset)
             }
         }
+    }
+}
+
+fn first_index_ending_after<T: RangedItem>(
+    node: &RangeNode<T>,
+    origin: usize,
+    offset: usize,
+    base_index: usize,
+) -> Option<usize> {
+    if origin.checked_add(node.max_end)? <= offset {
+        return None;
+    }
+    match &node.kind {
+        RangeNodeKind::Leaf(items) => items
+            .iter()
+            .position(|item| origin.checked_add(item.range().end).is_some_and(|end| end > offset))
+            .and_then(|position| base_index.checked_add(position)),
+        RangeNodeKind::Branch {
+            left,
+            left_offset,
+            right,
+            right_offset,
+            ..
+        } => first_index_ending_after(left, origin.checked_add(*left_offset)?, offset, base_index)
+            .or_else(|| {
+                first_index_ending_after(
+                    right,
+                    origin.checked_add(*right_offset)?,
+                    offset,
+                    base_index.checked_add(left.item_count)?,
+                )
+            }),
     }
 }
 
@@ -1889,6 +1944,17 @@ mod tests {
                 .map(|item| item.1)
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "query {query:?}");
+            // The index span is the tightest contiguous cover of the matches.
+            let span = store.overlapping_index_span(&query);
+            let flat = store.as_slice();
+            let first_end_after = flat
+                .iter()
+                .position(|item| item.range().end > query.start)
+                .unwrap_or(flat.len());
+            assert_eq!(span.start, first_end_after, "query {query:?}");
+            assert!(flat[span.clone()].iter().all(|item| item.range().start < query.end));
+            assert!(flat[span.end..].iter().all(|item| item.range().start >= query.end));
+            assert!(expected.iter().all(|id| flat[span.clone()].iter().any(|item| item.1 == *id)));
         }
     }
 

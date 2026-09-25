@@ -13,6 +13,8 @@ use std::{
 
 mod providers;
 mod retention;
+mod runs;
+pub use runs::{PublicationDelta, RunStore};
 pub const MAX_REGION_BYTES: usize = 256 * 1024;
 pub const MAX_CACHED_REGIONS: usize = 16;
 pub const MAX_CACHED_RUN_BYTES: usize = 4 * 1024 * 1024;
@@ -348,8 +350,12 @@ pub struct SyntaxService {
     cache: VecDeque<SyntaxResult>,
     current: Option<SyntaxInputIdentity>,
     current_input: Option<SyntaxInputSnapshot>,
-    /// Mapped appearance only; these runs cannot satisfy analysis requests.
-    retained: Vec<SyntaxRun>,
+    /// The current input's displayed runs: accepted results plus appearance
+    /// mapped from earlier inputs. Presentation only; runs cannot satisfy
+    /// analysis requests, which the coverage cache decides.
+    runs: RunStore,
+    /// What changed in `runs` since the last publication took it.
+    delta: PublicationDelta,
     pub statistics: SyntaxServiceStatistics,
     diagnostics: Vec<String>,
     registry_generation: u64,
@@ -378,7 +384,8 @@ impl SyntaxService {
             cache: VecDeque::new(),
             current: None,
             current_input: None,
-            retained: Vec::new(),
+            runs: RunStore::default(),
+            delta: PublicationDelta::unbounded(),
             statistics: Default::default(),
             diagnostics: Vec::new(),
             registry_generation: 0,
@@ -408,7 +415,8 @@ impl SyntaxService {
         self.cache.clear();
         self.current = None;
         self.current_input = None;
-        self.retained.clear();
+        self.runs = RunStore::default();
+        self.delta = PublicationDelta::unbounded();
     }
     pub fn cancel(&mut self) {
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -502,40 +510,53 @@ impl SyntaxService {
         if result.continuation && result.coverage == Coverage::Missing {
             return false;
         }
-        let appearance_changed = !self.cache.iter().any(|old| {
+        // A result for coverage the cache does not hold yet is a publication
+        // even when the displayed runs are unchanged, so coverage state and
+        // diagnostics reach the coordinator.
+        let novel = !self.cache.iter().any(|old| {
             old.input == result.input
                 && old.configuration == result.configuration
                 && old.range == result.range
                 && old.coverage == result.coverage
-                && old.runs == result.runs
         });
-        self.replace_presentation_coverage(&result);
-        self.cache.push_back(result);
+        let appearance_changed = self.replace_presentation_coverage(&result) || novel;
+        // The store now holds the runs; the cache entry keeps only coverage.
+        let mut coverage = result;
+        coverage.runs = Vec::new();
+        self.cache.push_back(coverage);
         self.bound_presentation_cache();
         if appearance_changed {
             self.statistics.publications += 1;
         }
         appearance_changed
     }
+    /// Every displayed run of `input` in start order. This flattens the run
+    /// store; publications use `run_store` and `take_publication_delta`.
     pub fn runs(&self, input: SyntaxInputIdentity) -> Vec<SyntaxRun> {
-        let mut runs = self
-            .cache
-            .iter()
-            .filter(|r| r.input == input)
-            .flat_map(|r| r.runs.iter().cloned())
-            .collect::<Vec<_>>();
         if self.current == Some(input) {
-            runs.extend(self.retained.iter().cloned());
+            self.runs.runs()
+        } else {
+            Vec::new()
         }
-        runs.sort_by_key(|r| r.range.start);
-        runs
+    }
+    /// The indexed displayed runs of the current input.
+    pub fn run_store(&self) -> &RunStore {
+        &self.runs
+    }
+    /// The regions whose runs changed since the previous call, resetting the
+    /// record. The first call after a new input or configuration is unbounded.
+    pub fn take_publication_delta(&mut self) -> PublicationDelta {
+        std::mem::take(&mut self.delta)
+    }
+    /// Distinct names referenced by the displayed runs, sorted.
+    pub fn referenced_names(&self) -> Vec<String> {
+        self.runs.names().map(|name| name.to_string()).collect()
     }
     pub fn diagnostics(&self) -> String {
         self.diagnostics.join("\n")
     }
     pub fn retained_result_bytes(&self) -> usize {
-        self.cache.iter().map(SyntaxResult::bytes).sum::<usize>()
-            + self.retained.iter().map(retention::run_bytes).sum::<usize>()
+        self.cache.iter().map(SyntaxResult::bytes).sum::<usize>() + self.runs.bytes()
     }
 }
 impl Drop for SyntaxService {

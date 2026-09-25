@@ -102,7 +102,7 @@ fn names(result: &VimResult, len: usize) -> Vec<String> {
     let mut names = vec![String::new(); len];
     for run in &result.runs {
         for slot in &mut names[run.range.clone()] {
-            *slot = run.name.0.clone();
+            *slot = run.name.to_string();
         }
     }
     names
@@ -202,8 +202,8 @@ hi link bAR Comment
         result
             .runs
             .iter()
-            .filter(|run| run.name.0 == "Comment")
-            .map(|run| run.origin.as_str())
+            .filter(|run| run.name.as_str() == "Comment")
+            .map(|run| &*run.origin)
             .collect::<Vec<_>>(),
         ["bar", "bar"]
     );
@@ -218,8 +218,8 @@ hi link bAR Comment
     );
     assert_eq!(
         (
-            result.runs[0].origin.as_str(),
-            result.runs[0].name.0.as_str()
+            &*result.runs[0].origin,
+            result.runs[0].name.as_str()
         ),
         ("First", "CustomStyle")
     );
@@ -430,7 +430,7 @@ fn nextgroup_skipempty_implies_one_newline_and_then_skips_empty_lines() {
         let input = input(text, 1);
         let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 100);
         assert_eq!(
-            result.runs.iter().any(|run| run.name.0 == "Value"),
+            result.runs.iter().any(|run| run.name.as_str() == "Value"),
             expected,
             "{options}: {text:?}"
         );
@@ -485,7 +485,7 @@ fn external_delimiters_use_the_final_keyword_environment() {
             result
                 .runs
                 .iter()
-                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .map(|run| (run.range.clone(), run.name.as_str()))
                 .collect::<Vec<_>>(),
             [(0..expected_end, "Comment")]
         );
@@ -578,7 +578,7 @@ fn region_offsets_are_per_pattern_and_character_based() {
         result
             .runs
             .iter()
-            .map(|r| (r.range.clone(), r.name.0.as_str()))
+            .map(|r| (r.range.clone(), r.name.as_str()))
             .collect::<Vec<_>>(),
         [(0..2, "Open"), (2..3, "Body"), (3..5, "Close")]
     );
@@ -623,7 +623,7 @@ fn region_body_offsets_use_pattern_boundaries_for_both_delimiters() {
             result
                 .runs
                 .iter()
-                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .map(|run| (run.range.clone(), run.name.as_str()))
                 .collect::<Vec<_>>(),
             expected,
             "{syntax}"
@@ -641,7 +641,7 @@ fn region_body_offsets_use_pattern_boundaries_for_both_delimiters() {
         result
             .runs
             .iter()
-            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .map(|run| (run.range.clone(), run.name.as_str()))
             .collect::<Vec<_>>(),
         [(0..2, "Open"), (2..5, "Body"), (5..7, "Close")]
     );
@@ -661,7 +661,7 @@ fn transparent_make_target_keeps_colon_in_start_matchgroup() {
         result
             .runs
             .iter()
-            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .map(|run| (run.range.clone(), run.name.as_str()))
             .collect::<Vec<_>>(),
         [(0..4, "Function"), (9..14, "Function")]
     );
@@ -687,7 +687,7 @@ fn transparent_region_end_uses_body_transparency_for_its_own_group() {
             result
                 .runs
                 .iter()
-                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .map(|run| (run.range.clone(), run.name.as_str()))
                 .collect::<Vec<_>>(),
             expected
         );
@@ -715,7 +715,7 @@ fn keepend_preserves_contained_color_through_an_unstyled_end_pattern() {
             result
                 .runs
                 .iter()
-                .map(|run| (run.range.clone(), run.name.0.as_str()))
+                .map(|run| (run.range.clone(), run.name.as_str()))
                 .collect::<Vec<_>>(),
             expected
         );
@@ -736,7 +736,7 @@ fn shifted_region_end_allows_containment_until_its_delimiter_boundary() {
         result
             .runs
             .iter()
-            .map(|run| (run.range.clone(), run.name.0.as_str()))
+            .map(|run| (run.range.clone(), run.name.as_str()))
             .collect::<Vec<_>>(),
         [
             (0..1, "Delimiter"),

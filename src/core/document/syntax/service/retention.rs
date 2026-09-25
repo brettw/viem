@@ -1,15 +1,13 @@
 //! Preserve mapped appearance while new analysis is pending. Retained runs
 //! are deliberately separate from provider coverage and its cache-hit policy.
 use super::{
-    Coverage, SyntaxInputSnapshot, SyntaxResult, SyntaxRun, SyntaxService, MAX_CACHED_REGIONS,
+    runs::{run_bytes, PublicationDelta, RunStore},
+    Coverage, SyntaxInputSnapshot, SyntaxResult, SyntaxService, MAX_CACHED_REGIONS,
     MAX_CACHED_RUN_BYTES,
 };
 use crate::document::{DocumentId, PositionDomain, PositionMap, Revision, TextPoint, TextRange};
+use crate::document::range_index::RangedItem as _;
 use std::ops::Range;
-
-pub(super) fn run_bytes(run: &SyntaxRun) -> usize {
-    std::mem::size_of::<SyntaxRun>() + run.name.0.len() + run.origin.len()
-}
 
 impl SyntaxService {
     /// Advance only through an exact normalized-text map. Provider results
@@ -17,7 +15,8 @@ impl SyntaxService {
     ///
     /// `hull` is the exact formatted extent the transition replaced, before and
     /// after, when the document recorded one. Runs outside it keep their text,
-    /// so they are kept or shifted directly instead of being mapped one by one.
+    /// so the store drops the runs inside it and shifts the rest in one lazy
+    /// coordinate change instead of mapping every run.
     pub(crate) fn rebase_input(
         &mut self,
         input: SyntaxInputSnapshot,
@@ -27,118 +26,87 @@ impl SyntaxService {
         if self.current == Some(input.identity()) {
             return;
         }
-        let retained = match (&self.current_input, map) {
+        match (&self.current_input, map) {
             (Some(old), Some(map)) if matches_transition(old, &input, map) => {
-                let mut retained = Vec::new();
-                let mut bytes: usize = 0;
-                let shift = hull
-                    .as_ref()
-                    .filter(|(old_hull, new_hull)| {
-                        old_hull.start == new_hull.start
-                            && old_hull.end <= old.byte_len()
-                            && new_hull.end <= input.byte_len()
-                    })
-                    .map(|(old_hull, new_hull)| {
-                        (old_hull.clone(), new_hull.end as i128 - old_hull.end as i128)
-                    });
-                for run in self.runs(old.identity()) {
-                    if let Some((old_hull, delta)) = &shift {
-                        let untouched = if run.range.end <= old_hull.start {
-                            Some(run.range.clone())
-                        } else if run.range.start >= old_hull.end {
-                            let start = usize::try_from(run.range.start as i128 + delta).ok();
-                            let end = usize::try_from(run.range.end as i128 + delta).ok();
-                            start.zip(end).map(|(start, end)| start..end)
-                        } else {
-                            None
-                        };
-                        if let Some(range) = untouched.filter(|range| range.end <= input.byte_len()) {
-                            let size = run_bytes(&run);
-                            if bytes.saturating_add(size) > MAX_CACHED_RUN_BYTES {
-                                break;
-                            }
-                            let mut next = run.clone();
-                            next.range = range;
-                            retained.push(next);
-                            bytes += size;
-                            continue;
-                        }
+                let shift = hull.filter(|(old_hull, new_hull)| {
+                    old_hull.start == new_hull.start
+                        && old_hull.end <= old.byte_len()
+                        && new_hull.end <= input.byte_len()
+                        && old.byte_len() as i128 - old_hull.end as i128
+                            == input.byte_len() as i128 - new_hull.end as i128
+                });
+                match shift {
+                    Some((old_hull, new_hull)) if self.runs.shift_for_edit(&old_hull, &new_hull) => {
+                        self.delta.note_hull(old_hull, new_hull);
                     }
-                    let Some(range) = logical_range(old, run.range.clone()) else {
-                        continue;
-                    };
-                    let Ok(mapped) = map.map_text_range(range) else {
-                        continue;
-                    };
-                    let Some(mapped) = mapped.value() else {
-                        continue;
-                    };
-                    for range in mapped.segments() {
-                        if range.is_empty() {
-                            continue;
+                    _ => {
+                        let mut retained = Vec::new();
+                        let mut bytes: usize = 0;
+                        for run in self.runs.runs() {
+                            let Some(range) = logical_range(old, run.range.clone()) else {
+                                continue;
+                            };
+                            let Ok(mapped) = map.map_text_range(range) else {
+                                continue;
+                            };
+                            let Some(mapped) = mapped.value() else {
+                                continue;
+                            };
+                            for range in mapped.segments() {
+                                if range.is_empty() {
+                                    continue;
+                                }
+                                let size = run_bytes(&run);
+                                if bytes.saturating_add(size) > MAX_CACHED_RUN_BYTES {
+                                    break;
+                                }
+                                retained.push(run.with_range(range.start().offset()..range.end().offset()));
+                                bytes += size;
+                            }
                         }
-                        let size = run_bytes(&run);
-                        if bytes.saturating_add(size) > MAX_CACHED_RUN_BYTES {
-                            break;
-                        }
-                        let mut next = run.clone();
-                        next.range = range.start().offset()..range.end().offset();
-                        retained.push(next);
-                        bytes += size;
+                        self.runs = RunStore::new(retained);
+                        self.delta = PublicationDelta::unbounded();
                     }
                 }
-                retained
             }
-            _ => Vec::new(),
-        };
+            _ => {
+                self.runs = RunStore::default();
+                self.delta = PublicationDelta::unbounded();
+            }
+        }
         self.cache.clear();
-        self.retained = retained;
         self.current = Some(input.identity());
         self.current_input = Some(input);
     }
 
-    pub(super) fn replace_presentation_coverage(&mut self, result: &SyntaxResult) {
+    /// Install a completed result's runs over its declared coverage. Returns
+    /// whether the displayed runs in that region changed.
+    pub(super) fn replace_presentation_coverage(&mut self, result: &SyntaxResult) -> bool {
         let ready = result.coverage != Coverage::Missing;
+        let mut changed = false;
         if ready {
-            self.retained = self
-                .retained
-                .iter()
-                .flat_map(|run| outside(run, &result.range))
-                .collect();
-        }
-        for old in &self.cache {
-            if old.input != result.input || !overlaps(&old.range, &result.range) {
-                continue;
-            }
-            // A query replaces only its declared coverage. Keep the other
-            // displayed portions when regional cache entries overlap.
-            if ready {
-                self.retained
-                    .extend(old.runs.iter().flat_map(|run| outside(run, &result.range)));
-            } else {
-                self.retained.extend(old.runs.iter().cloned());
+            // A query replaces only its declared coverage. Runs crossing its
+            // edges keep their outside pieces.
+            let previous = self.runs.replace(&result.range, result.runs.clone());
+            changed = previous != result.runs;
+            if changed {
+                self.delta.note_replaced(result.range.clone());
             }
         }
         self.cache
             .retain(|old| !overlaps(&old.range, &result.range) && old.input == result.input);
+        changed
     }
 
     pub(super) fn bound_presentation_cache(&mut self) {
         while self.cache.len() > MAX_CACHED_REGIONS {
             self.cache.pop_front();
         }
-        let mut bytes = self.retained_result_bytes();
-        let mut removed = 0;
-        while bytes > MAX_CACHED_RUN_BYTES && removed < self.retained.len() {
-            bytes -= run_bytes(&self.retained[removed]);
-            removed += 1;
-        }
-        self.retained.drain(..removed);
-        while bytes > MAX_CACHED_RUN_BYTES {
-            let Some(old) = self.cache.pop_front() else {
-                break;
-            };
-            bytes -= old.bytes();
+        let cache_bytes = self.cache.iter().map(SyntaxResult::bytes).sum::<usize>();
+        let protected = self.cache.iter().map(|old| old.range.clone()).collect::<Vec<_>>();
+        let budget = MAX_CACHED_RUN_BYTES.saturating_sub(cache_bytes);
+        if let Some(removed) = self.runs.evict_front(budget, &protected) {
+            self.delta.note_replaced(removed);
         }
     }
 }
@@ -179,24 +147,6 @@ fn logical_range(input: &SyntaxInputSnapshot, range: Range<usize>) -> Option<Tex
 
 fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
     a.start < b.end && b.start < a.end
-}
-
-fn outside(run: &SyntaxRun, coverage: &Range<usize>) -> Vec<SyntaxRun> {
-    if !overlaps(&run.range, coverage) {
-        return vec![run.clone()];
-    }
-    let mut pieces = Vec::with_capacity(2);
-    if run.range.start < coverage.start {
-        let mut left = run.clone();
-        left.range.end = coverage.start;
-        pieces.push(left);
-    }
-    if run.range.end > coverage.end {
-        let mut right = run.clone();
-        right.range.start = coverage.end;
-        pieces.push(right);
-    }
-    pieces
 }
 
 #[cfg(test)]

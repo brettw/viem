@@ -50,6 +50,9 @@ pub(super) struct CoreSyntax {
     referenced_names: Vec<String>,
     implicit_limited: bool,
     sheet: Arc<crate::document::StyleSheet>,
+    /// Whether `sheet` has any automatic style with non-default metrics,
+    /// memoized by its revision.
+    metric_styles: Option<(crate::document::StyleSheetRevision, bool)>,
 }
 impl Default for CoreSyntax {
     fn default() -> Self {
@@ -65,6 +68,7 @@ impl Default for CoreSyntax {
             referenced_names: Vec::new(),
             implicit_limited: false,
             sheet: code_style::snapshot(),
+            metric_styles: None,
         }
     }
 }
@@ -310,39 +314,101 @@ impl<P: TextMeasurementProvider> Core<P> {
         if !completed && !style_changed && !input_changed {
             return false;
         }
-        let runs = self.syntax.service.runs(input.identity());
-        self.syntax.referenced_names = runs
-            .iter()
-            .map(|run| run.name.0.clone())
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
+        self.syntax.referenced_names = self.syntax.service.referenced_names();
         let generated =
             code_style::materialize(self.syntax.referenced_names.iter().map(String::as_str));
         self.syntax.implicit_limited = generated.limited;
         if let Some(generated) = generated.sheet {
             sheet = generated;
         }
-        self.publish_code_presentation(sheet, &runs);
+        let delta = self.syntax.service.take_publication_delta();
+        self.publish_code_presentation(sheet, &delta);
         self.syntax.published = Some(publication);
         true
+    }
+
+    /// Whether the current Code sheet can change metrics through a run.
+    fn sheet_has_metric_styles(&mut self, sheet: &crate::document::StyleSheet) -> Option<bool> {
+        match self.syntax.metric_styles {
+            Some((revision, answer)) if revision == sheet.revision => Some(answer),
+            _ => {
+                let answer = metrics::sheet_has_metric_styles(sheet).ok()?;
+                self.syntax.metric_styles = Some((sheet.revision, answer));
+                Some(answer)
+            }
+        }
+    }
+
+    /// Publish explicit runs, bypassing the service store. Tests inject
+    /// results this way; the interactive path publishes a delta.
+    #[cfg(test)]
+    pub(super) fn publish_code_presentation_runs(
+        &mut self,
+        sheet: Arc<crate::document::StyleSheet>,
+        runs: &[crate::document::syntax::SyntaxRun],
+    ) {
+        let caret_anchors = self.caret_anchors_for_publication();
+        let previous = self.document.projection().clone();
+        let sheet_changed = code_metrics_changed(&self.syntax.sheet, &sheet);
+        self.document.install_code_presentation(sheet.clone(), runs);
+        let change = if sheet_changed {
+            metrics::MetricChange::Unbounded
+        } else {
+            metrics::metric_change(&previous, self.document.projection())
+        };
+        self.apply_code_presentation_change(sheet, change, caret_anchors);
+    }
+
+    fn caret_anchors_for_publication(&self) -> BTreeMap<ViewId, ViewportTextAnchor> {
+        self.views.iter()
+            .filter_map(|(id, view)| capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor)))
+            .collect()
     }
 
     pub(super) fn publish_code_presentation(
         &mut self,
         sheet: Arc<crate::document::StyleSheet>,
-        runs: &[crate::document::syntax::SyntaxRun],
+        delta: &crate::document::syntax::service::PublicationDelta,
     ) {
-        let previous = self.document.projection().clone();
-        let caret_anchors: BTreeMap<_, _> = self.views.iter()
-            .filter_map(|(id, view)| capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor)))
-            .collect();
-        self.document.install_code_presentation(sheet.clone(), runs);
-        let change = if code_metrics_changed(&self.syntax.sheet, &sheet) {
-            metrics::MetricChange::Unbounded
-        } else {
-            metrics::metric_change(&previous, self.document.projection())
+        let caret_anchors = self.caret_anchors_for_publication();
+        let sheet_changed = code_metrics_changed(&self.syntax.sheet, &sheet);
+        let has_metric_styles = self.sheet_has_metric_styles(&sheet);
+        // The previous presentation is only compared when a run can change
+        // metrics; the unbounded comparison needs the projection as displayed.
+        let previous_presentation = match has_metric_styles {
+            Some(true) if !delta.unbounded => self.document.code_presentation_projection().cloned(),
+            _ => None,
         };
+        let previous = (delta.unbounded && has_metric_styles != Some(false))
+            .then(|| self.document.projection().clone());
+        let local = self
+            .document
+            .install_code_presentation_delta(sheet.clone(), self.syntax.service.run_store(), delta);
+        let change = if sheet_changed {
+            metrics::MetricChange::Unbounded
+        } else if local {
+            metrics::metric_change_local(
+                previous_presentation.as_ref(),
+                self.document.projection(),
+                delta,
+                has_metric_styles.unwrap_or(true),
+            )
+        } else if let Some(previous) = &previous {
+            metrics::metric_change(previous, self.document.projection())
+        } else if has_metric_styles == Some(false) {
+            metrics::MetricChange::None
+        } else {
+            metrics::MetricChange::Unbounded
+        };
+        self.apply_code_presentation_change(sheet, change, caret_anchors);
+    }
+
+    fn apply_code_presentation_change(
+        &mut self,
+        sheet: Arc<crate::document::StyleSheet>,
+        change: metrics::MetricChange,
+        caret_anchors: BTreeMap<ViewId, ViewportTextAnchor>,
+    ) {
         let metrics_changed = change != metrics::MetricChange::None;
         // Metric changes are exact: only the lines whose runs changed lose
         // their exact heights and cached geometry. Paint-only changes keep both.

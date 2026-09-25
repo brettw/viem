@@ -234,7 +234,7 @@ fn neovim_lua_match_uses_lua_patterns_and_rejects_malformed_ones() {
     let names = output
         .runs
         .iter()
-        .map(|run| (&text[run.range.clone()], run.name.0.as_str()))
+        .map(|run| (&text[run.range.clone()], run.name.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(
         names,
@@ -307,7 +307,7 @@ fn query_reload_preserves_native_tree_and_published_package() {
         )
         .runs[0]
             .name
-            .0,
+            .as_str(),
         "Old"
     );
     assert_eq!(
@@ -319,7 +319,7 @@ fn query_reload_preserves_native_tree_and_published_package() {
         )
         .runs[0]
             .name
-            .0,
+            .as_str(),
         "New"
     );
     assert!(!session
@@ -375,7 +375,7 @@ fn priorities_resolve_before_names_and_empty_coverage_is_exact() {
     let (tree, _) = parsed(&mut session, input("int value;", 0), &[]);
     let output = highlight(&tree, 0..10, &generous(), &AtomicBool::new(false));
     assert_eq!(output.runs.len(), 1);
-    assert_eq!(output.runs[0].name.0, "Missing.name");
+    assert_eq!(output.runs[0].name.as_str(), "Missing.name");
     assert!(output.runs[0].origin.ends_with(":@missing.name"));
     let empty = highlight(&tree, 0..3, &generous(), &AtomicBool::new(false));
     assert_eq!(empty.coverage, Coverage::Exact);
@@ -389,9 +389,9 @@ fn capture_names_are_canonical_but_diagnostics_keep_the_query_spelling() {
     let text = "/* doc */ int value;";
     let (snapshot, _) = parsed(&mut session, input(text, 1), &[]);
     let output = highlight(&snapshot, 0..text.len(), &generous(), &AtomicBool::new(false));
-    assert!(output.runs.iter().any(|run| run.name.0 == "Comment.documentation"
+    assert!(output.runs.iter().any(|run| run.name.as_str() == "Comment.documentation"
         && run.origin.ends_with(":@comment.documentation")));
-    assert!(output.runs.iter().any(|run| run.name.0 == "Custom.HTTPHeader"
+    assert!(output.runs.iter().any(|run| run.name.as_str() == "Custom.HTTPHeader"
         && run.origin.ends_with(":@custom.HTTPHeader")));
     assert!(output.runs.iter().all(|run| !run.name.0.starts_with('@')));
 }
@@ -414,11 +414,11 @@ fn nested_captures_keep_innermost_styles_and_ignore_spell_controls() {
     assert!(output
         .runs
         .iter()
-        .any(|run| run.name.0 == "Comment" && run.range == (0..10)));
-    assert!(output.runs.iter().any(|run| run.name.0 == "Number"));
-    assert!(!output.runs.iter().any(|run| run.name.0 == "Spell"));
+        .any(|run| run.name.as_str() == "Comment" && run.range == (0..10)));
+    assert!(output.runs.iter().any(|run| run.name.as_str() == "Number"));
+    assert!(!output.runs.iter().any(|run| run.name.as_str() == "Spell"));
     let clipped = highlight(&snapshot, 19..20, &generous(), &AtomicBool::new(false));
-    assert_eq!(clipped.runs[0].name.0, "Number");
+    assert_eq!(clipped.runs[0].name.as_str(), "Number");
 }
 
 #[test]

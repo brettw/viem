@@ -242,12 +242,16 @@ impl Document {
                     .projection()
                     .source_insertion_point(at, true)
                     .ok_or(DocumentError::AmbiguousProjection)?;
+                // A neighboring displayed break may already own one ending
+                // of the pair, such as a continuation line's single ending;
+                // three consecutive endings would fold back to one break.
+                let endings = self.markdown_source_enter_endings(at)?;
                 return self.prepare_text_edits_with_patches(
                     vec![edit],
                     Some(vec![SourcePatch::primary(
                         source_at..source_at,
                         self.encoding()
-                            .encode_fragment(&self.file_format().spelling().repeat(2))?,
+                            .encode_fragment(&self.file_format().spelling().repeat(endings))?,
                     )]),
                 );
             }

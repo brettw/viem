@@ -24,7 +24,7 @@ fn vim_provider_cancelled_compile_remains_retryable() {
     assert!(provider.fallback.is_none());
     let output = finish(&mut provider, &req);
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
-    assert_eq!(output.runs[0].name.0, "Native");
+    assert_eq!(output.runs[0].name.as_str(), "Native");
     assert!(provider.primary.is_none());
 }
 
@@ -43,7 +43,7 @@ fn vim_provider_prefix_changes_recompile_but_later_edits_reuse_setup() {
     let mut req = request(&text, "vim", 1);
     req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
     let mut provider = BackendProvider::default();
-    assert_eq!(finish(&mut provider, &req).runs[0].name.0, "Legacy");
+    assert_eq!(finish(&mut provider, &req).runs[0].name.as_str(), "Legacy");
 
     let tree = req.input.text_tree().splice(0..6, "vim9script").unwrap();
     let mut identity = req.input.identity();
@@ -52,7 +52,7 @@ fn vim_provider_prefix_changes_recompile_but_later_edits_reuse_setup() {
     req.range = 0..req.input.byte_len();
     let output = finish(&mut provider, &req);
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
-    assert_eq!(output.runs[0].name.0, "Modern");
+    assert_eq!(output.runs[0].name.as_str(), "Modern");
     let fresh = finish(&mut BackendProvider::default(), &req);
     assert_eq!(
         fresh.runs, output.runs,
@@ -69,7 +69,7 @@ fn vim_provider_prefix_changes_recompile_but_later_edits_reuse_setup() {
     req.input = SyntaxInputSnapshot::new(identity, tree);
     let output = finish(&mut provider, &req);
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
-    assert_eq!(output.runs[0].name.0, "Modern");
+    assert_eq!(output.runs[0].name.as_str(), "Modern");
 }
 
 #[test]
@@ -80,13 +80,13 @@ fn vim_provider_filename_changes_recompile_setup_for_unchanged_input() {
     req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
     req.configuration.filename = Some("/writing/first.h".into());
     let mut provider = BackendProvider::default();
-    assert_eq!(finish(&mut provider, &req).runs[0].name.0, "Header");
+    assert_eq!(finish(&mut provider, &req).runs[0].name.as_str(), "Header");
     let old_input = req.input.identity();
     req.configuration.filename = Some("/writing/first.rs".into());
     req.configuration.generation += 1;
     let output = finish(&mut provider, &req);
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
-    assert_eq!(output.runs[0].name.0, "Source");
+    assert_eq!(output.runs[0].name.as_str(), "Source");
     assert_eq!(req.input.identity(), old_input);
     assert_eq!(
         output.runs,
@@ -140,7 +140,7 @@ fn vim_provider_position_assertions_repair_after_body_edits() {
                 .runs
                 .iter()
                 .map(|run| {
-                    assert_eq!(run.name.0, "Positioned");
+                    assert_eq!(run.name.as_str(), "Positioned");
                     run.range.start - prefix.len()..run.range.end - prefix.len()
                 })
                 .collect::<Vec<_>>()
@@ -226,7 +226,7 @@ fn vim_provider_and_embedded_vim_ignore_registered_tree_sitter_packages() {
     req.configuration.vim_directory = fixture.0.to_str().unwrap().to_owned();
     let mut provider = BackendProvider::default();
     let output = finish(&mut provider, &req);
-    assert_eq!(output.runs[0].name.0, "Modern");
+    assert_eq!(output.runs[0].name.as_str(), "Modern");
     assert!(provider.primary.is_none());
 
     let mut req = request("host\nvim9script\ntoken", "c", 1);
@@ -250,7 +250,7 @@ fn vim_provider_and_embedded_vim_ignore_registered_tree_sitter_packages() {
     assert!(provider.children[0].session.is_none());
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
     assert_eq!(
-        output.runs[0].name.0, "Modern",
+        output.runs[0].name.as_str(), "Modern",
         "setup must see the embedded prefix"
     );
 }

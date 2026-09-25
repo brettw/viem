@@ -160,7 +160,7 @@ fn publish_large_runs(core: &mut Core<MockTextMeasurementProvider>, size: f32) {
         origin: "controlled provider".into(),
         priority: 100,
     });
-    core.publish_code_presentation(Arc::new(sheet), &runs);
+    core.publish_code_presentation_runs(Arc::new(sheet), &runs);
 }
 
 #[test]

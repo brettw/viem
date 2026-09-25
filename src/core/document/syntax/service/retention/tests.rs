@@ -1,5 +1,5 @@
 use super::*;
-use crate::document::syntax::{SyntaxInputIdentity, SyntaxStyleName};
+use crate::document::syntax::{SyntaxInputIdentity, SyntaxRun, SyntaxStyleName};
 use crate::document::{FormattedTextTree, Splice};
 use std::sync::Arc;
 
@@ -275,21 +275,21 @@ fn current_results_and_retained_colors_share_one_run_memory_budget() {
         .into_iter()
         .map(|range| {
             let mut run = run(range, "Comment");
-            run.origin = "x".repeat(MAX_CACHED_RUN_BYTES / 4);
+            run.origin = "x".repeat(MAX_CACHED_RUN_BYTES / 4).into();
             run
         })
         .collect();
     let mut service = seeded(&old, runs);
     let next = input(2, "abcdefgh");
     service.rebase_input(next.clone(), Some(&map(&old, &next, Vec::new())), None);
-    assert_eq!(service.retained.len(), 3);
+    assert_eq!(service.runs.len(), 3);
     let mut replacement = run(6..7, "String");
-    replacement.origin = "y".repeat(MAX_CACHED_RUN_BYTES / 2);
+    replacement.origin = "y".repeat(MAX_CACHED_RUN_BYTES / 2).into();
     let ready = result(&service, &next, 6..8, vec![replacement], Coverage::Exact);
     assert!(publish(&mut service, ready, &next));
     assert_eq!(
-        service.retained.len(),
-        1,
+        service.runs.runs().iter().map(|run| run.name.as_str()).collect::<Vec<_>>(),
+        ["Comment", "String"],
         "Old presentation is evicted before newly completed coverage"
     );
     assert_eq!(service.cache.len(), 1);

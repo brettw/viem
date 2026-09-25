@@ -1202,11 +1202,22 @@ struct CachedRegionalLine {
     line_delta: i128,
     byte_delta: i128,
     document_revision: Option<Revision>,
+    /// The line's estimated retained bytes, measured once at installation so
+    /// rebasing and eviction account for it without walking its rows.
+    bytes: usize,
 }
 
 impl CachedRegionalLine {
     fn unshifted(line: Arc<RegionalHardLineLayout>) -> Self {
-        Self { line, line_delta: 0, byte_delta: 0, document_revision: None }
+        let bytes = estimated_regional_line_bytes(&line);
+        Self { line, line_delta: 0, byte_delta: 0, document_revision: None, bytes }
+    }
+
+    fn current_range(&self) -> (i128, i128) {
+        (
+            self.line.hard_line_range.start as i128 + self.byte_delta,
+            self.line.hard_line_range.end as i128 + self.byte_delta,
+        )
     }
 
     fn is_shifted(&self) -> bool {
@@ -1253,12 +1264,25 @@ impl RegionalLayoutCache {
 
     fn insert_cached(&mut self, hard_line: usize, cached: CachedRegionalLine) {
         if let Some(previous) = self.lines.remove(&hard_line) {
-            self.remove_accounting(&previous.line);
+            self.remove_accounting(&previous);
             self.recency.retain(|index| *index != hard_line);
         }
-        self.add_accounting(&cached.line);
+        self.add_accounting(&cached);
         self.lines.insert(hard_line, cached);
         self.recency.push_back(hard_line);
+    }
+
+    /// Remove the given lines, keeping accounting and recency consistent.
+    fn remove_lines(&mut self, indices: &BTreeSet<usize>) {
+        if indices.is_empty() {
+            return;
+        }
+        for index in indices {
+            if let Some(removed) = self.lines.remove(index) {
+                self.remove_accounting(&removed);
+            }
+        }
+        self.recency.retain(|index| !indices.contains(index));
     }
 
     fn enforce_limits(&mut self, limits: RegionalLayoutCacheLimits) {
@@ -1270,24 +1294,20 @@ impl RegionalLayoutCache {
                 break;
             };
             if let Some(evicted) = self.lines.remove(&oldest) {
-                self.remove_accounting(&evicted.line);
+                self.remove_accounting(&evicted);
                 self.eviction_count = self.eviction_count.saturating_add(1);
             }
         }
     }
 
-    fn add_accounting(&mut self, line: &RegionalHardLineLayout) {
-        self.visual_row_count = self.visual_row_count.saturating_add(line.rows.len());
-        self.estimated_bytes = self
-            .estimated_bytes
-            .saturating_add(estimated_regional_line_bytes(line));
+    fn add_accounting(&mut self, cached: &CachedRegionalLine) {
+        self.visual_row_count = self.visual_row_count.saturating_add(cached.line.rows.len());
+        self.estimated_bytes = self.estimated_bytes.saturating_add(cached.bytes);
     }
 
-    fn remove_accounting(&mut self, line: &RegionalHardLineLayout) {
-        self.visual_row_count = self.visual_row_count.saturating_sub(line.rows.len());
-        self.estimated_bytes = self
-            .estimated_bytes
-            .saturating_sub(estimated_regional_line_bytes(line));
+    fn remove_accounting(&mut self, cached: &CachedRegionalLine) {
+        self.visual_row_count = self.visual_row_count.saturating_sub(cached.line.rows.len());
+        self.estimated_bytes = self.estimated_bytes.saturating_sub(cached.bytes);
     }
 }
 
@@ -1910,47 +1930,52 @@ impl ViewLayout {
                 && identity.document_hard_line_count == *old_line_count
         });
         if identity_matches {
-            let old = std::mem::take(&mut self.regional_cache);
-            let mut identity = old.identity.expect("checked above");
+            let cache = &mut self.regional_cache;
+            let identity = cache.identity.as_mut().expect("checked above");
             identity.document_revision = *new_revision;
             identity.document_hard_line_count = *new_line_count;
-            let mut next = RegionalLayoutCache::with_identity(identity);
-            next.latest_revision = old.latest_revision;
-            next.eviction_count = old.eviction_count;
-            let rank: BTreeMap<usize, usize> = old
-                .recency
-                .iter()
-                .enumerate()
-                .map(|(rank, index)| (*index, rank))
-                .collect();
-            let mut retained: Vec<(usize, usize, CachedRegionalLine)> = Vec::new();
-            for (index, cached) in old.lines.range(..old_invalidated.start) {
-                let current_end = cached.line.hard_line_range.end as i128 + cached.byte_delta;
-                if current_end < old_hull.start as i128 {
-                    retained.push((rank[index], *index, cached.clone()));
+            // Drop the invalidated lines and any cached line whose bytes
+            // cross the hull. Lines before it are untouched; lines after it
+            // record the pending shift in place rather than being re-inserted.
+            let mut removed: BTreeSet<usize> =
+                cache.lines.range(old_invalidated.clone()).map(|(index, _)| *index).collect();
+            for (index, cached) in cache.lines.range(..old_invalidated.start).rev() {
+                if cached.current_range().1 < old_hull.start as i128 {
+                    break;
+                }
+                removed.insert(*index);
+            }
+            for (index, cached) in cache.lines.range(old_invalidated.end..) {
+                if cached.current_range().0 <= old_hull.end as i128 {
+                    removed.insert(*index);
                 }
             }
-            for (index, cached) in old.lines.range(old_invalidated.end..) {
-                let current_start = cached.line.hard_line_range.start as i128 + cached.byte_delta;
-                let Some(new_index) = usize::try_from(*index as i128 + line_delta).ok() else { continue };
-                if current_start > old_hull.end as i128 {
-                    retained.push((
-                        rank[index],
-                        new_index,
-                        CachedRegionalLine {
-                            line: Arc::clone(&cached.line),
-                            line_delta: cached.line_delta + line_delta,
-                            byte_delta: cached.byte_delta + byte_delta,
-                            document_revision: Some(*new_revision),
-                        },
-                    ));
+            cache.remove_lines(&removed);
+            if line_delta == 0 {
+                for (_, cached) in cache.lines.range_mut(old_invalidated.end..) {
+                    cached.byte_delta += byte_delta;
+                    cached.document_revision = Some(*new_revision);
+                }
+            } else {
+                let tail = cache.lines.split_off(&old_invalidated.end);
+                for (index, mut cached) in tail {
+                    let Some(new_index) = usize::try_from(index as i128 + line_delta).ok() else {
+                        cache.remove_accounting(&cached);
+                        removed.insert(index);
+                        continue;
+                    };
+                    cached.line_delta += line_delta;
+                    cached.byte_delta += byte_delta;
+                    cached.document_revision = Some(*new_revision);
+                    cache.lines.insert(new_index, cached);
+                }
+                cache.recency.retain(|index| !removed.contains(index));
+                for index in cache.recency.iter_mut() {
+                    if *index >= old_invalidated.end {
+                        *index = (*index as i128 + line_delta) as usize;
+                    }
                 }
             }
-            retained.sort_by_key(|(rank, _, _)| *rank);
-            for (_, index, cached) in retained {
-                next.insert_cached(index, cached);
-            }
-            self.regional_cache = next;
         } else {
             self.regional_cache = RegionalLayoutCache::default();
         }
@@ -2316,6 +2341,23 @@ impl ViewLayout {
         }
     }
 
+    /// Whether the cache's running accounting and recency order agree with
+    /// its entries, and every entry's pending shift is well formed.
+    #[cfg(test)]
+    pub(crate) fn regional_cache_is_consistent(&self) -> bool {
+        let cache = &self.regional_cache;
+        let bytes = cache.lines.values().map(|cached| estimated_regional_line_bytes(&cached.line)).sum::<usize>();
+        let rows = cache.lines.values().map(|cached| cached.line.rows.len()).sum::<usize>();
+        let recency = cache.recency.iter().copied().collect::<BTreeSet<_>>();
+        bytes == cache.estimated_bytes
+            && rows == cache.visual_row_count
+            && recency.len() == cache.recency.len()
+            && recency == cache.lines.keys().copied().collect()
+            && cache.lines.iter().all(|(index, cached)| {
+                cached.line.hard_line_index as i128 + cached.line_delta == *index as i128
+            })
+    }
+
     pub fn regional_cache_limits(&self) -> RegionalLayoutCacheLimits {
         self.regional_cache_limits
     }
@@ -2401,7 +2443,7 @@ impl ViewLayout {
         let evicted: Vec<usize> = self.regional_cache.lines.range(lines).map(|(index, _)| *index).collect();
         for index in evicted {
             if let Some(cached) = self.regional_cache.lines.remove(&index) {
-                self.regional_cache.remove_accounting(&cached.line);
+                self.regional_cache.remove_accounting(&cached);
                 self.regional_cache.recency.retain(|candidate| *candidate != index);
             }
         }

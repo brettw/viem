@@ -631,6 +631,67 @@ mod tests {
         assert!(!core.document().history_status().can_undo);
     }
 
+    /// Typing, splitting and joining lines rebases the cached layout in
+    /// place. Accounting and recency must stay exact, cached lines after the
+    /// edit must be reused, and the result must match a fresh layout.
+    #[test]
+    fn in_place_cache_rebase_keeps_accounting_and_matches_fresh_layout() {
+        // Absolute y at line 10,000 differs by float summation order between
+        // a spliced and a freshly built height index; compare the geometry
+        // relative to the first compared row.
+        fn rows(core: &Core<MockTextMeasurementProvider>, view: ViewId) -> Vec<(usize, Range<usize>, f32)> {
+            core.layout(view).unwrap().snapshot().unwrap().rows.iter()
+                .map(|row| (row.hard_line_index, row.text_range.clone(), row.y))
+                .collect()
+        }
+        let mut core = Core::new(long_document());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400.0, 600.0);
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char(':')))).unwrap();
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::text("10000"))).unwrap();
+        core.handle_with_layout(view, key(Key::Enter)).unwrap();
+        core.handle_with_layout(view, key(Key::Char('A'))).unwrap();
+        let steps: Vec<CoreEvent> = vec![
+            CoreEvent::Input(InputEvent::text("x")),
+            CoreEvent::Input(InputEvent::text("yz")),
+            key(Key::Enter),
+            CoreEvent::Input(InputEvent::text("new")),
+            key(Key::Backspace),
+            key(Key::Backspace),
+            key(Key::Backspace),
+            key(Key::Backspace),
+            key(Key::Enter),
+            key(Key::Enter),
+        ];
+        for step in steps {
+            let lines_before = core.layout(view).unwrap().regional_cache_statistics().hard_line_count();
+            core.handle_with_layout(view, step).unwrap();
+            let layout = core.layout(view).unwrap();
+            assert!(layout.regional_cache_is_consistent());
+            assert!(layout.is_rebased_to(core.document().revision()));
+            // Only the edited neighbourhood is dropped from the cache.
+            assert!(layout.regional_cache_statistics().hard_line_count() + 8 >= lines_before);
+            let mut fresh = Core::new(Document::new(core.document().text().to_owned()));
+            let fresh_view = fresh.add_view(MockTextMeasurementProvider::new(), 400.0, 600.0);
+            let top = core.layout(view).unwrap().viewport_top();
+            fresh.handle(fresh_view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(top) }).unwrap();
+            fresh.materialize_requested_viewport(fresh_view, 0.0, top).unwrap();
+            let visible = |rows: Vec<(usize, Range<usize>, f32)>| {
+                let rows = rows.into_iter()
+                    .filter(|(line, _, _)| (9_990..10_020).contains(line)).collect::<Vec<_>>();
+                let origin = rows.first().map_or(0.0, |row| row.2);
+                rows.into_iter().map(|(line, range, y)| (line, range, y - origin)).collect::<Vec<_>>()
+            };
+            let (rebased, fresh) = (visible(rows(&core, view)), visible(rows(&fresh, fresh_view)));
+            assert_eq!(rebased.len(), fresh.len());
+            assert!(!rebased.is_empty());
+            for (a, b) in rebased.iter().zip(&fresh) {
+                assert_eq!((a.0, &a.1), (b.0, &b.1));
+                // One f32 ULP at y ≈ 1.2e6 is 0.125.
+                assert!((a.2 - b.2).abs() <= 0.25, "{a:?} {b:?}");
+            }
+        }
+    }
+
     #[test]
     fn wrapped_page_refill_estimates_hard_lines_from_visual_row_density() {
         let paragraph = "Words in a paragraph that occupies several wrapped visual rows. ".repeat(12);
