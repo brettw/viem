@@ -680,6 +680,27 @@ fn new_document_history(state: DocumentState) -> History<DocumentState, Position
     )
 }
 
+/// Formatted change of one committed state transaction. `local` names the
+/// exact old and new formatted hull when the projection was rebuilt only for a
+/// bounded region; `None` means anything outside it may also have changed.
+#[derive(Clone, Debug)]
+pub(crate) struct LayoutChangeRecord {
+    pub(crate) before: Revision,
+    pub(crate) after: Revision,
+    pub(crate) local: Option<LocalFormattedChange>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LocalFormattedChange {
+    pub(crate) old: Range<usize>,
+    pub(crate) new: Range<usize>,
+    /// Presentation line counts before and after, for hard lines and flow lines.
+    pub(crate) old_line_counts: [usize; 2],
+    pub(crate) new_line_counts: [usize; 2],
+}
+
+const RETAINED_LAYOUT_CHANGES: usize = 16;
+
 /// One editing buffer's document state and branching undo history.
 pub struct Document {
     id: DocumentId,
@@ -701,6 +722,9 @@ pub struct Document {
     /// still exposes one exact map from the event's input snapshot to its
     /// output snapshot. Ordinary document users pay no logging cost.
     position_map_capture: Option<PositionMap>,
+    /// Exact formatted change of recent committed transactions, so a view's
+    /// layout cache can rebase across a revision instead of discarding.
+    layout_changes: std::collections::VecDeque<LayoutChangeRecord>,
     artifact_binding: Option<ArtifactBinding>,
     pending_artifact_writes: HashMap<ArtifactWriteToken, PendingArtifactWrite>,
     next_artifact_write_token: u64,
@@ -870,6 +894,7 @@ impl Document {
             edit_group_depth: 0,
             edit_group_generation: 0,
             position_map_capture: None,
+            layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
             next_artifact_write_token: 1,
@@ -1029,6 +1054,7 @@ impl Document {
             edit_group_depth: 0,
             edit_group_generation: 0,
             position_map_capture: None,
+            layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
             next_artifact_write_token: 1,
@@ -1108,6 +1134,30 @@ impl Document {
                 self.revision(), self.state().projection.text_tree().byte_len()),
         });
         true
+    }
+
+    pub(crate) fn record_layout_change(&mut self, record: LayoutChangeRecord) {
+        if self.layout_changes.len() == RETAINED_LAYOUT_CHANGES {
+            self.layout_changes.pop_front();
+        }
+        self.layout_changes.push_back(record);
+    }
+
+    /// The exact bounded formatted change between two revisions, when exactly
+    /// one recorded regional transaction connects them. Any other transition,
+    /// including history navigation and whole-document reprojection, is
+    /// reported as unbounded.
+    pub(crate) fn layout_change_between(
+        &self,
+        before: Revision,
+        after: Revision,
+    ) -> Option<LocalFormattedChange> {
+        self.layout_changes
+            .iter()
+            .rev()
+            .find(|record| record.after == after)
+            .filter(|record| record.before == before)
+            .and_then(|record| record.local.clone())
     }
 
     /// Run one serial controller operation while composing every committed

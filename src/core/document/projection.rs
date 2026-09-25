@@ -1627,9 +1627,10 @@ impl FormattedDocument {
         } else {
             &self.hard_lines
         };
-        lines
-            .partition_point(|line| line.range.start <= offset)
-            .checked_sub(1)
+        // The persistent store answers this in logarithmic time; slicing it
+        // would flatten every line of the document on the first lookup after
+        // each edit.
+        lines.partition_point_start(offset + 1).checked_sub(1)
     }
 
     pub fn revision(&self) -> Revision {
@@ -2586,18 +2587,19 @@ impl FormattedDocument {
             });
         }
 
-        let mut upstream: Vec<_> = self
-            .provenance
-            .iter()
-            .filter(|span| span.source.end == source_offset)
-            .map(|span| span.formatted.end)
-            .collect();
-        let mut downstream: Vec<_> = self
-            .provenance
-            .iter()
-            .filter(|span| span.source.start == source_offset)
-            .map(|span| span.formatted.start)
-            .collect();
+        // The source-ordered boundary index holds every contributor edge, so
+        // an exact boundary is found without scanning the document's provenance.
+        let mut upstream = Vec::new();
+        let mut downstream = Vec::new();
+        for boundary in self.source_boundaries.query_touching(&(source_offset..source_offset)) {
+            if boundary.source.start != source_offset {
+                continue;
+            }
+            match boundary.side {
+                Side::Upstream => upstream.push(boundary.formatted),
+                Side::Downstream => downstream.push(boundary.formatted),
+            }
+        }
         upstream.sort_unstable();
         upstream.dedup();
         downstream.sort_unstable();
@@ -3218,7 +3220,15 @@ impl FormattedDocument {
         self.styles = IntervalRangeStore::new(runs.iter().filter_map(|run| {
             if run.range.start >= run.range.end || run.range.end > self.text.byte_len() { return None; }
             let ceil = |at| {
-                if self.is_logical_grapheme_boundary(at).ok()? { Some(at) }
+                // Two adjacent ASCII bytes other than CR LF always form a
+                // grapheme boundary, so most run edges need no cluster search.
+                let ascii_pair = at > 0 && at < self.text.byte_len() && {
+                    let before = self.text.byte_chunk_at(at - 1);
+                    let after = self.text.byte_chunk_at(at);
+                    before.first().is_some_and(|b| b.is_ascii() && *b != b'\r')
+                        && after.first().is_some_and(|b| b.is_ascii())
+                };
+                if ascii_pair || self.is_logical_grapheme_boundary(at).ok()? { Some(at) }
                 else { self.next_logical_grapheme_boundary(at).ok()? }
             };
             // A cluster's first character owns its appearance. A later
