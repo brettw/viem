@@ -558,11 +558,141 @@ pub struct RegionalHardLineLayout {
     next_checkpoint: Option<LongLineLayoutCheckpoint>,
     diagnostics: Vec<ShapingDiagnostic>,
     render_run_policy: Option<RenderRunPolicy>,
+    /// Style inputs this result was computed from. A cached line survives a
+    /// document revision only while its freshly resolved inputs still match.
+    inputs: LineLayoutInputs,
+}
+
+/// Every non-text, non-configuration input to one hard line's layout,
+/// expressed relative to the line so an unchanged line compares equal after
+/// preceding text was edited.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct LineLayoutInputs {
+    style_sheet_revision: StyleSheetRevision,
+    document_insets: EdgeInsets,
+    default_style: ResolvedTextStyle,
+    whitespace_style: ResolvedTextStyle,
+    paragraph: ParagraphLayoutStyle,
+    paragraph_offset: i128,
+    paragraph_len: usize,
+    marker_offset: Option<(i128, usize)>,
+    is_first_hard_line: bool,
+    /// Whether the following line starts another paragraph and that
+    /// paragraph's space before; `None` at the document end.
+    next: Option<(bool, f32)>,
+    runs: Vec<ShapeStyleRun>,
+}
+
+pub(super) fn line_layout_inputs(
+    line: &Range<usize>,
+    paragraph: &LineParagraphLayout,
+    next: Option<&LineParagraphLayout>,
+    style_runs: &[ShapeStyleRun],
+    document_styles: &DocumentLayoutStyles,
+) -> LineLayoutInputs {
+    let origin = line.start as i128;
+    let mut style = paragraph.style.clone();
+    let paragraph_offset = style.text_range.start as i128 - origin;
+    let paragraph_len = style.text_range.len();
+    let marker_offset = style
+        .list_marker_range
+        .as_ref()
+        .map(|marker| (marker.start as i128 - origin, marker.len()));
+    style.text_range = 0..0;
+    style.list_marker_range = None;
+    let first = style_runs.partition_point(|run| run.text_range.end <= line.start);
+    let runs = style_runs[first..]
+        .iter()
+        .take_while(|run| run.text_range.start < line.end.max(line.start + 1))
+        .map(|run| ShapeStyleRun {
+            text_range: run.text_range.start.saturating_sub(line.start)
+                ..run.text_range.end.saturating_sub(line.start),
+            style: run.style.clone(),
+        })
+        .collect();
+    LineLayoutInputs {
+        style_sheet_revision: document_styles.style_sheet_revision,
+        document_insets: document_styles.document_insets,
+        default_style: document_styles.default_shaping_style.clone(),
+        whitespace_style: document_styles.whitespace_shaping_style.clone(),
+        paragraph: style,
+        paragraph_offset,
+        paragraph_len,
+        marker_offset,
+        is_first_hard_line: paragraph.is_first_hard_line,
+        next: next.map(|next| (starts_new_paragraph(paragraph, next), next.style.spacing_before)),
+        runs,
+    }
+}
+
+fn shift_range(range: &Range<usize>, delta: i128) -> Option<Range<usize>> {
+    let start = usize::try_from(range.start as i128 + delta).ok()?;
+    let end = usize::try_from(range.end as i128 + delta).ok()?;
+    Some(start..end)
 }
 
 impl RegionalHardLineLayout {
     pub fn layout_revision(&self) -> LayoutRevision {
         self.layout_revision
+    }
+
+    /// The same geometry after preceding text changed length: every formatted
+    /// offset moves by `byte_delta` and the line number by `line_delta`.
+    fn shifted(&self, line_delta: i128, byte_delta: i128, document_revision: Revision) -> Option<Self> {
+        let hard_line_index = usize::try_from(self.hard_line_index as i128 + line_delta).ok()?;
+        let mut rows = Vec::with_capacity(self.rows.len());
+        for row in &self.rows {
+            let mut row = row.clone();
+            row.hard_line_index = hard_line_index;
+            row.hard_line_range = shift_range(&row.hard_line_range, byte_delta)?;
+            row.text_range = shift_range(&row.text_range, byte_delta)?;
+            for cluster in &mut row.clusters {
+                cluster.text_range = shift_range(&cluster.text_range, byte_delta)?;
+            }
+            for caret in &mut row.carets {
+                caret.point.text_offset =
+                    usize::try_from(caret.point.text_offset as i128 + byte_delta).ok()?;
+                caret.point.document_revision = document_revision;
+            }
+            rows.push(row);
+        }
+        let next_checkpoint = match &self.next_checkpoint {
+            None => None,
+            Some(checkpoint) => Some(LongLineLayoutCheckpoint {
+                document_revision,
+                hard_line_index,
+                hard_line_range: shift_range(&checkpoint.hard_line_range, byte_delta)?,
+                next_text_offset: usize::try_from(checkpoint.next_text_offset as i128 + byte_delta).ok()?,
+                last_candidate_break: match checkpoint.last_candidate_break {
+                    Some(at) => Some(usize::try_from(at as i128 + byte_delta).ok()?),
+                    None => None,
+                },
+                ..checkpoint.clone()
+            }),
+        };
+        let diagnostics = self
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                Some(ShapingDiagnostic {
+                    text_range: shift_range(&diagnostic.text_range, byte_delta)?,
+                    message: diagnostic.message.clone(),
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            layout_revision: self.layout_revision,
+            hard_line_index,
+            hard_line_range: shift_range(&self.hard_line_range, byte_delta)?,
+            text_coverage: shift_range(&self.text_coverage, byte_delta)?,
+            rows,
+            height: self.height,
+            height_is_exact: self.height_is_exact,
+            next_checkpoint,
+            diagnostics,
+            render_run_policy: self.render_run_policy,
+            inputs: self.inputs.clone(),
+        })
     }
 
     pub fn hard_line_index(&self) -> usize {
@@ -1063,11 +1193,40 @@ struct RegionalCacheIdentity {
     document_hard_line_count: usize,
 }
 
+/// One cached hard line. A rebase past an edit records the pending renumbering
+/// and offset shift instead of copying geometry that may never be requested;
+/// the shifted copy is produced only for an actual cache hit.
+#[derive(Clone, Debug, PartialEq)]
+struct CachedRegionalLine {
+    line: Arc<RegionalHardLineLayout>,
+    line_delta: i128,
+    byte_delta: i128,
+    document_revision: Option<Revision>,
+}
+
+impl CachedRegionalLine {
+    fn unshifted(line: Arc<RegionalHardLineLayout>) -> Self {
+        Self { line, line_delta: 0, byte_delta: 0, document_revision: None }
+    }
+
+    fn is_shifted(&self) -> bool {
+        self.line_delta != 0 || self.byte_delta != 0 || self.document_revision.is_some()
+    }
+
+    fn materialize(&self) -> Option<Arc<RegionalHardLineLayout>> {
+        if !self.is_shifted() {
+            return Some(Arc::clone(&self.line));
+        }
+        let revision = self.document_revision?;
+        self.line.shifted(self.line_delta, self.byte_delta, revision).map(Arc::new)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 struct RegionalLayoutCache {
     identity: Option<RegionalCacheIdentity>,
     latest_revision: Option<LayoutRevision>,
-    lines: BTreeMap<usize, Arc<RegionalHardLineLayout>>,
+    lines: BTreeMap<usize, CachedRegionalLine>,
     /// Installation-recency order. Regional reads are immutable, so installing
     /// or refreshing a line is the cache's LRU-equivalent touch operation.
     recency: VecDeque<usize>,
@@ -1085,13 +1244,20 @@ impl RegionalLayoutCache {
     }
 
     fn insert(&mut self, line: RegionalHardLineLayout) {
-        let hard_line = line.hard_line_index;
+        self.insert_arc(Arc::new(line));
+    }
+
+    fn insert_arc(&mut self, line: Arc<RegionalHardLineLayout>) {
+        self.insert_cached(line.hard_line_index, CachedRegionalLine::unshifted(line));
+    }
+
+    fn insert_cached(&mut self, hard_line: usize, cached: CachedRegionalLine) {
         if let Some(previous) = self.lines.remove(&hard_line) {
-            self.remove_accounting(&previous);
+            self.remove_accounting(&previous.line);
+            self.recency.retain(|index| *index != hard_line);
         }
-        self.recency.retain(|cached| *cached != hard_line);
-        self.add_accounting(&line);
-        self.lines.insert(hard_line, Arc::new(line));
+        self.add_accounting(&cached.line);
+        self.lines.insert(hard_line, cached);
         self.recency.push_back(hard_line);
     }
 
@@ -1104,7 +1270,7 @@ impl RegionalLayoutCache {
                 break;
             };
             if let Some(evicted) = self.lines.remove(&oldest) {
-                self.remove_accounting(&evicted);
+                self.remove_accounting(&evicted.line);
                 self.eviction_count = self.eviction_count.saturating_add(1);
             }
         }
@@ -1126,7 +1292,8 @@ impl RegionalLayoutCache {
 }
 
 fn estimated_regional_line_bytes(line: &RegionalHardLineLayout) -> usize {
-    let mut bytes = std::mem::size_of::<RegionalHardLineLayout>();
+    let mut bytes = std::mem::size_of::<RegionalHardLineLayout>()
+        + line.inputs.runs.capacity() * std::mem::size_of::<ShapeStyleRun>();
     for diagnostic in &line.diagnostics {
         bytes = bytes.saturating_add(std::mem::size_of::<ShapingDiagnostic>())
             .saturating_add(diagnostic.message.len());
@@ -1630,6 +1797,28 @@ pub struct ViewLayout {
     last_error: Option<LayoutError>,
     active_layout_job: Option<LayoutJobId>,
     last_installed_layout_job: Option<LayoutJobId>,
+    /// The document revision the height index and regional cache were last
+    /// rebased to through an exact change, ahead of the installed snapshot.
+    rebased_document_revision: Option<Revision>,
+}
+
+/// One committed document change as a view's layout state must absorb it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum DocumentLayoutChange {
+    /// Anything may have changed: exact heights and cached lines are dropped.
+    Full,
+    Local {
+        old_revision: Revision,
+        new_revision: Revision,
+        /// Formatted extent replaced by the transaction, before and after.
+        old_hull: Range<usize>,
+        new_hull: Range<usize>,
+        old_line_count: usize,
+        new_line_count: usize,
+        /// Lines, in the new numbering, whose layout inputs may differ even
+        /// where their text did not change.
+        invalidated_lines: Range<usize>,
+    },
 }
 
 /// Name used by the architecture specification. `ViewLayout` remains the short
@@ -1663,7 +1852,115 @@ impl ViewLayout {
             last_error: None,
             active_layout_job: None,
             last_installed_layout_job: None,
+            rebased_document_revision: None,
         }
+    }
+
+    pub(crate) fn height_index_hard_line_count(&self) -> usize {
+        self.height_index.hard_line_count()
+    }
+
+    pub(crate) fn is_rebased_to(&self, revision: Revision) -> bool {
+        self.rebased_document_revision == Some(revision)
+    }
+
+    /// Absorb one committed document change without discarding unaffected
+    /// exact heights or cached hard-line geometry. Lines before the change
+    /// are kept as they are; lines after it are renumbered and their offsets
+    /// shifted; lines the transaction may have restyled are dropped. Anything
+    /// inconsistent falls back to the complete invalidation.
+    pub(crate) fn rebase_document_change(&mut self, change: &DocumentLayoutChange) {
+        let DocumentLayoutChange::Local {
+            old_revision,
+            new_revision,
+            old_hull,
+            new_hull,
+            old_line_count,
+            new_line_count,
+            invalidated_lines,
+        } = change
+        else {
+            self.discard_for_document_change();
+            return;
+        };
+        let line_delta = *new_line_count as i128 - *old_line_count as i128;
+        let byte_delta = new_hull.end as i128 - old_hull.end as i128;
+        let old_invalidated_end = invalidated_lines.end as i128 - line_delta;
+        if self.height_index.hard_line_count() != *old_line_count
+            || invalidated_lines.start > invalidated_lines.end
+            || invalidated_lines.end > *new_line_count
+            || old_invalidated_end < invalidated_lines.start as i128
+            || old_invalidated_end > *old_line_count as i128
+            || new_hull.start != old_hull.start
+        {
+            self.discard_for_document_change();
+            return;
+        }
+        let old_invalidated = invalidated_lines.start..old_invalidated_end as usize;
+        if self
+            .height_index
+            .splice(old_invalidated.clone(), invalidated_lines.len())
+            .is_err()
+        {
+            self.discard_for_document_change();
+            return;
+        }
+        let identity_matches = self.regional_cache.identity.is_some_and(|identity| {
+            identity.document_revision == *old_revision
+                && identity.document_hard_line_count == *old_line_count
+        });
+        if identity_matches {
+            let old = std::mem::take(&mut self.regional_cache);
+            let mut identity = old.identity.expect("checked above");
+            identity.document_revision = *new_revision;
+            identity.document_hard_line_count = *new_line_count;
+            let mut next = RegionalLayoutCache::with_identity(identity);
+            next.latest_revision = old.latest_revision;
+            next.eviction_count = old.eviction_count;
+            let rank: BTreeMap<usize, usize> = old
+                .recency
+                .iter()
+                .enumerate()
+                .map(|(rank, index)| (*index, rank))
+                .collect();
+            let mut retained: Vec<(usize, usize, CachedRegionalLine)> = Vec::new();
+            for (index, cached) in old.lines.range(..old_invalidated.start) {
+                let current_end = cached.line.hard_line_range.end as i128 + cached.byte_delta;
+                if current_end < old_hull.start as i128 {
+                    retained.push((rank[index], *index, cached.clone()));
+                }
+            }
+            for (index, cached) in old.lines.range(old_invalidated.end..) {
+                let current_start = cached.line.hard_line_range.start as i128 + cached.byte_delta;
+                let Some(new_index) = usize::try_from(*index as i128 + line_delta).ok() else { continue };
+                if current_start > old_hull.end as i128 {
+                    retained.push((
+                        rank[index],
+                        new_index,
+                        CachedRegionalLine {
+                            line: Arc::clone(&cached.line),
+                            line_delta: cached.line_delta + line_delta,
+                            byte_delta: cached.byte_delta + byte_delta,
+                            document_revision: Some(*new_revision),
+                        },
+                    ));
+                }
+            }
+            retained.sort_by_key(|(rank, _, _)| *rank);
+            for (_, index, cached) in retained {
+                next.insert_cached(index, cached);
+            }
+            self.regional_cache = next;
+        } else {
+            self.regional_cache = RegionalLayoutCache::default();
+        }
+        self.rebased_document_revision = Some(*new_revision);
+    }
+
+    fn discard_for_document_change(&mut self) {
+        self.invalidate_all_heights();
+        self.regional_cache = RegionalLayoutCache::default();
+        self.rebased_document_revision = None;
     }
 
     pub fn resize(&mut self, width: f32, height: f32) {
@@ -2003,12 +2300,12 @@ impl ViewLayout {
         let mut contiguous_region_count = 0usize;
         let mut previous = None;
         let mut visual_row_count = 0usize;
-        for (hard_line, layout) in &self.regional_cache.lines {
+        for (hard_line, cached) in &self.regional_cache.lines {
             if previous.map_or(true, |value| *hard_line != value + 1) {
                 contiguous_region_count += 1;
             }
             previous = Some(*hard_line);
-            visual_row_count += layout.rows.len();
+            visual_row_count += cached.line.rows.len();
         }
         RegionalLayoutCacheStatistics {
             hard_line_count: self.regional_cache.lines.len(),
@@ -2034,7 +2331,13 @@ impl ViewLayout {
     /// Inspect one exact cached hard-line layout without materializing the
     /// rest of the document.
     pub fn regional_hard_line_layout(&self, hard_line: usize) -> Option<&RegionalHardLineLayout> {
-        self.regional_cache.lines.get(&hard_line).map(Arc::as_ref)
+        // A pending shift is resolved only by a layout hit; an inspection
+        // must not return geometry in stale coordinates.
+        self.regional_cache
+            .lines
+            .get(&hard_line)
+            .filter(|cached| !cached.is_shifted())
+            .map(|cached| cached.line.as_ref())
     }
 
     pub(super) fn capture_regional_cache_hits(
@@ -2054,8 +2357,8 @@ impl ViewLayout {
             return BTreeMap::new();
         }
         self.regional_cache.lines.range(range)
-            .filter(|(_, line)| line.height_is_exact && line.text_coverage == line.hard_line_range)
-            .map(|(index, line)| (*index, Arc::clone(line))).collect()
+            .filter(|(_, cached)| cached.line.height_is_exact && cached.line.text_coverage == cached.line.hard_line_range)
+            .filter_map(|(index, cached)| Some((*index, cached.materialize()?))).collect()
     }
 
     /// Ordered compact ranges currently represented by regional cache entries.
@@ -2084,8 +2387,38 @@ impl ViewLayout {
 
     /// A syntax/settings presentation revision is independent of text. Retain
     /// immutable old geometry until replacement; generation rejects stale jobs.
+    /// Metrics changed only within `lines`: their exact heights and cached
+    /// geometry are dropped, and every other line is retained as for a
+    /// paint-only publication.
+    pub(crate) fn invalidate_syntax_presentation_lines(&mut self, lines: Range<usize>) {
+        let count = self.height_index.hard_line_count();
+        let lines = lines.start.min(count)..lines.end.min(count);
+        if self.height_index.invalidate(lines.clone()).is_err() {
+            self.bump_configuration(true);
+            return;
+        }
+        self.invalidate_syntax_presentation(false);
+        let evicted: Vec<usize> = self.regional_cache.lines.range(lines).map(|(index, _)| *index).collect();
+        for index in evicted {
+            if let Some(cached) = self.regional_cache.lines.remove(&index) {
+                self.regional_cache.remove_accounting(&cached.line);
+                self.regional_cache.recency.retain(|candidate| *candidate != index);
+            }
+        }
+    }
+
     pub fn invalidate_syntax_presentation(&mut self, metrics_changed: bool) {
-        self.bump_configuration(metrics_changed);
+        if metrics_changed {
+            self.bump_configuration(true);
+            return;
+        }
+        // A paint-only publication changes no geometry. Cached hard lines
+        // carry their shaping inputs, so a line whose runs did change is
+        // re-laid on its next hit while the rest of the viewport is reused.
+        self.configuration_generation.0 = self.configuration_generation.0.wrapping_add(1).max(1);
+        if let Some(identity) = self.regional_cache.identity.as_mut() {
+            identity.configuration_generation = self.configuration_generation;
+        }
     }
 
     /// Prepare the compact height index for a newly observed document shape
@@ -2989,7 +3322,7 @@ struct PendingShape<'a> {
 }
 
 #[derive(Clone)]
-struct LineParagraphLayout {
+pub(super) struct LineParagraphLayout {
     paragraph_index: Option<usize>,
     paragraph_id: Option<u64>,
     is_first_hard_line: bool,
@@ -3412,19 +3745,34 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .map(|line| resolve_line_paragraph(line, paragraph_styles, &default_style));
 
         let render_run_policy = self.provider.render_run_policy();
-        let cached_line = |slice: &HardLineLayoutSlice| {
+        let line_inputs = line_slices
+            .iter()
+            .enumerate()
+            .map(|(offset, slice)| {
+                line_layout_inputs(
+                    &slice.full_range,
+                    &line_paragraphs[offset],
+                    line_paragraphs.get(offset + 1).or(following_paragraph.as_ref()),
+                    style_runs,
+                    document_styles,
+                )
+            })
+            .collect::<Vec<_>>();
+        let cached_line = |offset: usize, slice: &HardLineLayoutSlice| {
             view.cached_lines.get(&slice.hard_line_index).filter(|cached| {
                 cached.render_run_policy == render_run_policy
                     && cached.hard_line_range == slice.full_range
                     && cached.text_coverage == slice.work_range
                     && slice.checkpoint.is_none()
+                    && cached.inputs == line_inputs[offset]
             })
         };
         let fragment_ranges: Vec<Vec<Range<usize>>> = local_line_ranges
             .iter()
             .zip(line_slices)
-            .map(|(line, slice)| {
-                if cached_line(slice).is_some() {
+            .enumerate()
+            .map(|(offset, (line, slice))| {
+                if cached_line(offset, slice).is_some() {
                     Ok(Vec::new())
                 } else {
                     fragment_range_at_graphemes(region_text, line.clone(), &control)
@@ -3511,12 +3859,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for (line_offset, line_slice) in line_slices.iter().enumerate() {
             control.checkpoint()?;
             let hard_line_index = line_slice.hard_line_index;
-            if let Some(cached) = cached_line(line_slice) {
+            if let Some(cached) = cached_line(line_offset, line_slice) {
                 let mut line = cached.as_ref().clone();
                 line.layout_revision = layout_revision;
                 for row in &mut line.rows {
                     for caret in &mut row.carets {
                         caret.point.layout_revision = layout_revision;
+                        caret.point.document_revision = document_revision;
                     }
                 }
                 diagnostics.extend(line.diagnostics.iter().cloned());
@@ -3854,6 +4203,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 height,
                 height_is_exact: !extends_past_work,
                 next_checkpoint,
+                inputs: line_inputs[line_offset].clone(),
             });
         }
 

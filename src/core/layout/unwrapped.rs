@@ -1219,10 +1219,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
             decorate_quote_row(&mut row, &paragraph.style, view.scale);
             let mut height = row.y + row.height();
-            if let Some(next) = following
+            let next = following
                 .as_ref()
-                .map(|range| resolve_line_paragraph(range, &styles.paragraphs, default_style))
-            {
+                .map(|range| resolve_line_paragraph(range, &styles.paragraphs, default_style));
+            let inputs = super::line_layout_inputs(
+                &line_range, &paragraph, next.as_ref(), style_runs, styles,
+            );
+            if let Some(next) = next {
                 if starts_new_paragraph(&paragraph, &next) {
                     height += paragraph.style.spacing_after + next.style.spacing_before;
                 }
@@ -1247,6 +1250,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 height: f64::from(height),
                 height_is_exact: true,
                 next_checkpoint: None,
+                inputs,
             });
         }
         control.checkpoint()?;

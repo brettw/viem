@@ -14,7 +14,16 @@ pub(super) fn run_bytes(run: &SyntaxRun) -> usize {
 impl SyntaxService {
     /// Advance only through an exact normalized-text map. Provider results
     /// remain bound to their original input and are still rejected if stale.
-    pub(crate) fn rebase_input(&mut self, input: SyntaxInputSnapshot, map: Option<&PositionMap>) {
+    ///
+    /// `hull` is the exact formatted extent the transition replaced, before and
+    /// after, when the document recorded one. Runs outside it keep their text,
+    /// so they are kept or shifted directly instead of being mapped one by one.
+    pub(crate) fn rebase_input(
+        &mut self,
+        input: SyntaxInputSnapshot,
+        map: Option<&PositionMap>,
+        hull: Option<(Range<usize>, Range<usize>)>,
+    ) {
         if self.current == Some(input.identity()) {
             return;
         }
@@ -22,7 +31,39 @@ impl SyntaxService {
             (Some(old), Some(map)) if matches_transition(old, &input, map) => {
                 let mut retained = Vec::new();
                 let mut bytes: usize = 0;
+                let shift = hull
+                    .as_ref()
+                    .filter(|(old_hull, new_hull)| {
+                        old_hull.start == new_hull.start
+                            && old_hull.end <= old.byte_len()
+                            && new_hull.end <= input.byte_len()
+                    })
+                    .map(|(old_hull, new_hull)| {
+                        (old_hull.clone(), new_hull.end as i128 - old_hull.end as i128)
+                    });
                 for run in self.runs(old.identity()) {
+                    if let Some((old_hull, delta)) = &shift {
+                        let untouched = if run.range.end <= old_hull.start {
+                            Some(run.range.clone())
+                        } else if run.range.start >= old_hull.end {
+                            let start = usize::try_from(run.range.start as i128 + delta).ok();
+                            let end = usize::try_from(run.range.end as i128 + delta).ok();
+                            start.zip(end).map(|(start, end)| start..end)
+                        } else {
+                            None
+                        };
+                        if let Some(range) = untouched.filter(|range| range.end <= input.byte_len()) {
+                            let size = run_bytes(&run);
+                            if bytes.saturating_add(size) > MAX_CACHED_RUN_BYTES {
+                                break;
+                            }
+                            let mut next = run.clone();
+                            next.range = range;
+                            retained.push(next);
+                            bytes += size;
+                            continue;
+                        }
+                    }
                     let Some(range) = logical_range(old, run.range.clone()) else {
                         continue;
                     };

@@ -243,7 +243,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.syntax.detection = Some(detection);
             self.syntax.detected_for_code = true;
         }
-        self.syntax.service.rebase_input(input.clone(), self.document.code_presentation_change_map());
+        let map = self.document.code_presentation_change_map();
+        let hull = map
+            .and_then(|map| self.document.layout_change_between(map.source_revision(), map.target_revision()))
+            .map(|change| (change.old, change.new));
+        self.syntax.service.rebase_input(input.clone(), map, hull);
         let mut requests = Vec::new();
         for view in self.views.values() {
             let start = view
@@ -334,8 +338,28 @@ impl<P: TextMeasurementProvider> Core<P> {
             .filter_map(|(id, view)| capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor)))
             .collect();
         self.document.install_code_presentation(sheet.clone(), runs);
-        let metrics_changed = code_metrics_changed(&self.syntax.sheet, &sheet)
-            || metrics::runs_change_metrics(&previous, self.document.projection());
+        let change = if code_metrics_changed(&self.syntax.sheet, &sheet) {
+            metrics::MetricChange::Unbounded
+        } else {
+            metrics::metric_change(&previous, self.document.projection())
+        };
+        let metrics_changed = change != metrics::MetricChange::None;
+        // Metric changes are exact: only the lines whose runs changed lose
+        // their exact heights and cached geometry. Paint-only changes keep both.
+        let changed_lines = match &change {
+            metrics::MetricChange::Local(range) => {
+                let projection = self.document.projection();
+                let count = projection.presentation_line_count(false);
+                match (
+                    projection.presentation_line_at_offset(range.start, false),
+                    projection.presentation_line_at_offset(range.end, false),
+                ) {
+                    (Some(first), Some(last)) => Some(first.saturating_sub(1)..(last + 2).min(count)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
         self.syntax.sheet = sheet;
         for (id, view) in &mut self.views {
             cancel_active_layout_work(view);
@@ -344,7 +368,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     view.viewport_anchor = Some(*anchor);
                 }
             }
-            view.layout.invalidate_syntax_presentation(metrics_changed);
+            match (&change, &changed_lines) {
+                (metrics::MetricChange::None, _) => view.layout.invalidate_syntax_presentation(false),
+                (metrics::MetricChange::Local(_), Some(lines)) => {
+                    view.layout.invalidate_syntax_presentation_lines(lines.clone())
+                }
+                _ => view.layout.invalidate_syntax_presentation(true),
+            }
             if metrics_changed {
                 view.long_line_checkpoints = LongLineCheckpointCache::default();
             }
