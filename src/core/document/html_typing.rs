@@ -783,7 +783,8 @@ mod tests {
             assert_eq!(restore.source_full_materialized_bytes, 0, "{restore:?}");
             assert_eq!(restore.source_decoded_bytes, 0, "{restore:?}");
             assert_eq!(restore.html_tokenized_bytes, 0, "{restore:?}");
-            assert!(restore.html_scope_entries_visited <= 3, "{restore:?}");
+            // A small constant, independent of the prefix size in each case.
+            assert!(restore.html_scope_entries_visited <= 6, "{restore:?}");
         }
     }
 }

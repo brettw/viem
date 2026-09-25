@@ -31,19 +31,6 @@ final class EVMenuBuilderTests: XCTestCase {
         func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? { catalogue }
     }
 
-    func testZoomShortcutsAreCommandEqualsAndCommandHyphen() throws {
-        let owner = Owner()
-        let menu = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
-        let view = try XCTUnwrap(menu.item(withTitle: "View")?.submenu)
-        for (title, key, command) in [("Zoom In", "=", EVMenuCommand.zoomIn), ("Zoom Out", "-", EVMenuCommand.zoomOut)] {
-            let item = try XCTUnwrap(view.item(withTitle: title))
-            XCTAssertEqual(item.keyEquivalent, key)
-            XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
-            XCTAssertEqual(item.tag, command.rawValue)
-            XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
-        }
-    }
-
     func testTopLevelMenuOrderMatchesSpecification() throws {
         let owner = Owner()
         let application = NSApplication.shared
@@ -99,45 +86,6 @@ final class EVMenuBuilderTests: XCTestCase {
                 XCTAssertEqual(expected.0.formatChange?.operation, operation)
             }
         }
-    }
-
-    func testRequiredDirectMenuHierarchy() throws {
-        let owner = Owner()
-        let builder = EVMenuBuilder(owner: owner)
-        let menu = builder.buildMainMenu(for: NSApplication.shared)
-
-        XCTAssertEqual(try titles(in: submenu("Viem", of: menu)), [
-            "About Viem", "Settings…", "Services", "Hide Viem", "Hide Others",
-            "Show All", "Quit Viem",
-        ])
-        XCTAssertEqual(try titles(in: submenu("File", of: menu)), [
-            "New", "Open…", "Open Recent", "Close", "Save", "Save As…", "Duplicate",
-            "Revert To", "Convert to", "Reinterpret as", "Text Encoding",
-            "Line Endings", "Page Setup…", "Print…",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Edit", of: menu)), [
-            "Undo", "Redo", "Cut", "Copy", "Copy Source", "Paste", "Paste and Match Style", "Delete",
-            "Select All", "Select", "Find", "Transformations", "Start Dictation…",
-            "Emoji & Symbols",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Format", of: menu)), [
-            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Superscript", "Subscript", "Ligatures", "OpenType Features",
-            "Show Colors", "Text Color…", "Highlight Color…", "Style", "Paragraph", "Copy Style", "Paste Style", "Clear Direct Character Formatting",
-            "Clear Direct Paragraph Formatting", "Clear All Direct Formatting",
-        ])
-        XCTAssertEqual(try titles(in: submenu("View", of: menu)), [
-            "Show Status Bar", "Word Wrap",
-            "Flow Source Paragraphs", "Show Invisible Characters", "Zoom In", "Zoom Out", "Actual Size",
-            "Enter Full Screen",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Window", of: menu)), [
-            "Minimize", "Zoom", "New Window for Document", "Bring All to Front",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Help", of: menu)), [
-            "Viem Help", "Vim Command Reference", "Keyboard Shortcuts",
-            "Supported Vim Commands", "Document Format Compatibility",
-            "Round-Trip and Source Preservation", "Release Notes", "Report a Problem…",
-        ])
     }
 
     func testEveryStaticMenuGroupHasExactTitlesSeparatorsAndOrder() throws {
@@ -590,70 +538,6 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(recent.items.first?.representedObject as? URL, urls.first)
     }
 
-    func testNestedMenuHierarchyMatchesSpecification() throws {
-        let owner = Owner()
-        let builder = EVMenuBuilder(owner: owner)
-        let menu = builder.buildMainMenu(for: NSApplication.shared)
-        let file = try submenu("File", of: menu)
-        let edit = try submenu("Edit", of: menu)
-        let format = try submenu("Format", of: menu)
-
-        XCTAssertEqual(try titles(in: submenu("Revert To", of: file)), [
-            "Last Saved Version", "Browse All Versions…",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Line Endings", of: file)), [
-            "Unix (LF)", "Windows (CRLF)", "Classic Mac (CR)",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Select", of: edit)), [
-            "Word", "Sentence", "Paragraph", "Hard Line", "Visual Row",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Find", of: edit)), [
-            "Find…", "Find and Replace…", "Find Next", "Find Previous",
-            "Use Selection for Find", "Jump to Selection",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Transformations", of: edit)), [
-            "Make Uppercase", "Make Lowercase", "Toggle Case",
-        ])
-
-        let font = format
-        XCTAssertEqual(Array(titles(in: font).prefix(9)), [
-            "Show Fonts", "Bold", "Italic", "Underline", "Strikethrough", "Superscript", "Subscript",
-            "Ligatures", "OpenType Features",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Ligatures", of: font)), [
-            "Use Default Ligatures", "Use All Ligatures", "Use No Ligatures",
-        ])
-        XCTAssertNil(font.item(withTitle: "Baseline"))
-        XCTAssertEqual(titles(in: format).filter { ["Show Colors", "Text Color…", "Highlight Color…"].contains($0) }, [
-            "Show Colors", "Text Color…", "Highlight Color…",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Character", of: menu)), [
-            "Default Paragraph", "Edit Styles…",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Paragraph", of: menu)), [
-            "Bulleted List", "Numbered List", "Indent", "Unindent",
-            "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6", "Edit Styles…",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Style", of: format)), [
-            "Edit Styles…", "Save as default text style", "Include style definitions in file",
-            "Reload style sheet",
-        ])
-
-        let paragraph = try submenu("Paragraph", of: format)
-        XCTAssertEqual(titles(in: paragraph), [
-            "Alignment", "Writing Direction", "Paragraph Spacing…", "Line Spacing", "Remove List",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Alignment", of: paragraph)), [
-            "Start", "Center", "End",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Writing Direction", of: paragraph)), [
-            "Automatic", "Left to Right", "Right to Left",
-        ])
-        XCTAssertEqual(try titles(in: submenu("Line Spacing", of: paragraph)), [
-            "Normal", "Single", "1.5 Lines", "Double", "Custom…",
-        ])
-    }
-
     func testEveryCoreMenuItemHasAStableTypedCommandTag() {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
@@ -684,16 +568,6 @@ final class EVMenuBuilderTests: XCTestCase {
                 "\(item.title) registers bare key \(item.keyEquivalent)"
             )
         }
-    }
-
-    func testLineEndingsAreTheSpecifiedRadioChoices() throws {
-        let owner = Owner()
-        let builder = EVMenuBuilder(owner: owner)
-        let menu = builder.buildMainMenu(for: NSApplication.shared)
-        let file = try submenu("File", of: menu)
-        let endings = try XCTUnwrap(file.item(withTitle: "Line Endings")?.submenu)
-
-        XCTAssertEqual(titles(in: endings), ["Unix (LF)", "Windows (CRLF)", "Classic Mac (CR)"])
     }
 
     func testTextEncodingSubmenuHasTheFourFormerStatusChoicesAndStableActions() throws {

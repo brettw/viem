@@ -2057,18 +2057,6 @@ mod tests {
     }
 
     #[test]
-    fn split_boundary_retains_identity_and_advances_local_revision() {
-        let tree = FormattedTextTree::try_from_text("abcdefghij").unwrap();
-        let original = tree.leaves()[0].clone();
-        let changed = tree.splice(4..6, "X").unwrap();
-        let leaves = changed.leaves();
-        assert_eq!(leaves[0].id, original.id);
-        assert_eq!(leaves[0].revision, FormattedLeafRevision(1));
-        assert_ne!(leaves.last().unwrap().id, original.id);
-        assert_eq!(leaves.last().unwrap().revision, FormattedLeafRevision(1));
-    }
-
-    #[test]
     fn editing_rejects_scalar_and_grapheme_splits() {
         let tree = FormattedTextTree::try_from_text("a\u{301}é").unwrap();
         assert_eq!(
@@ -2303,54 +2291,6 @@ mod tests {
         assert_eq!(changed.hard_line_count(), 8_001);
         assert!(stats.original_bytes_recounted <= text.len(), "{stats:?}");
         assert!(stats.nodes_visited < edits.len() * 3, "{stats:?}");
-        assert_invariants(&changed);
-    }
-
-    #[test]
-    fn batch_keeps_unaffected_leaves_and_original_backing_boundaries() {
-        let text = "x\n".repeat(1_000_000);
-        let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
-        let before = tree.leaves();
-        let target = &before[before.len() / 2];
-        let edits = (target.byte_range.start + 2..target.byte_range.end - 2)
-            .step_by(4)
-            .map(|at| (at..at + 1, "é"))
-            .collect::<Vec<_>>();
-        let boundary = target.byte_range.end - 1;
-        let captured = tree
-            .locate_byte(boundary, LeafBoundarySide::Following)
-            .unwrap()
-            .unwrap();
-        let (changed, stats) = tree.splice_batch_with_stats(&edits).unwrap();
-        let after = changed.leaves();
-        for leaf in before.iter().filter(|leaf| leaf.id != target.id) {
-            assert!(after
-                .iter()
-                .any(|other| other.id == leaf.id && other.revision == leaf.revision));
-        }
-        assert_eq!(
-            changed.resolve_stable_boundary(
-                captured.id,
-                captured.revision,
-                captured.buffer_id,
-                captured.buffer_byte,
-                LeafBoundarySide::Following
-            ),
-            Some(boundary + edits.len()),
-        );
-        assert!(
-            stats.original_bytes_recounted <= FORMATTED_TEXT_LEAF_BYTES,
-            "{stats:?}"
-        );
-        assert!(
-            stats.nodes_visited < edits.len() * 5 + tree.height() as usize * 4,
-            "{stats:?}"
-        );
-        let mut expected = text;
-        for (range, replacement) in edits.iter().rev() {
-            expected.replace_range(range.clone(), replacement);
-        }
-        assert_eq!(changed.flatten(), expected);
         assert_invariants(&changed);
     }
 

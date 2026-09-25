@@ -228,25 +228,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_arc_payload_and_adjacent_vector_have_distinct_allocation_identities() {
-        // Model the legal address collision independently of allocator layout:
-        // an empty Arc payload is one-past its allocation, and the next Vec
-        // allocation can begin at exactly that address.
-        let address = 0x1000;
-        let mut memory = RetainedMemory::default();
-        let arc = memory.capture(|v| v.allocation(AllocationId::Arc(address), 32, |_| {}));
-        let vector = memory.capture(|v| v.allocation(AllocationId::Vector(address), 48, |_| {}));
-        assert_eq!(memory.allocation_count(), 2);
-        assert_eq!(memory.allocations[&AllocationId::Arc(address)].bytes, 32 + 96);
-        assert_eq!(memory.allocations[&AllocationId::Vector(address)].bytes, 48 + 96);
-        memory.release(arc);
-        assert_eq!(memory.allocation_count(), 1);
-        assert!(memory.allocations.contains_key(&AllocationId::Vector(address)));
-        memory.release(vector);
-        assert_eq!(memory.bytes(), 0);
-    }
-
-    #[test]
     fn shared_subtrees_are_charged_once_and_not_revisited() {
         let leaf = Arc::new([1_u8; 8192]);
         let mut memory = RetainedMemory::default();

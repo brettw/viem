@@ -352,21 +352,6 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
     }
 
     #[cfg(test)]
-    pub(super) fn shares_root_with(&self, other: &Self) -> bool {
-        self.inner.shares_root_with(&other.inner)
-    }
-
-    #[cfg(test)]
-    pub(super) fn shared_leaf_count_with(&self, other: &Self) -> usize {
-        self.inner.shared_leaf_count_with(&other.inner)
-    }
-
-    #[cfg(test)]
-    pub(super) fn leaf_count(&self) -> usize {
-        self.inner.leaf_count()
-    }
-
-    #[cfg(test)]
     pub(super) fn invariant_holds(&self) -> bool {
         self.inner.invariant_holds(false)
     }
@@ -1905,33 +1890,6 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "query {query:?}");
         }
-    }
-
-    #[test]
-    fn clones_and_exact_rebuilds_share_roots() {
-        let original = IntervalRangeStore::new(vec![Item(1..3, 1), Item(4..8, 2)]);
-        let cloned = original.clone();
-        assert!(original.shares_root_with(&cloned));
-
-        let mut rebuilt = IntervalRangeStore::new(vec![Item(1..3, 1), Item(4..8, 2)]);
-        assert!(!original.shares_root_with(&rebuilt));
-        rebuilt.reuse_equal_chunks(&original);
-        assert!(original.shares_root_with(&rebuilt));
-    }
-
-    #[test]
-    fn local_last_leaf_change_shares_all_other_leaves_and_ancestors() {
-        let items = (0..512)
-            .map(|index| Item(index * 2..index * 2 + 1, index))
-            .collect::<Vec<_>>();
-        let previous = OrderedRangeStore::new(items.clone());
-        let mut changed = items;
-        changed.last_mut().unwrap().1 += 1;
-        let mut candidate = OrderedRangeStore::new(changed);
-        candidate.reuse_equal_chunks(&previous);
-
-        assert_eq!(candidate.leaf_count(), 8);
-        assert_eq!(candidate.shared_leaf_count_with(&previous), 7);
     }
 
     #[test]

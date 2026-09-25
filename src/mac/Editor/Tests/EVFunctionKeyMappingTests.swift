@@ -117,6 +117,9 @@ final class EVFunctionKeyMappingTests: XCTestCase {
     func testMarkedTextKeepsFunctionKeysInTheInputMethod() throws {
         let (backend, document, controller, surface) = try fixture(startup: "map <C-F2> :sp<CR>\n")
         defer { controller.close(); document.close() }
+        // Only document text entry accepts marked text; Normal mode does not.
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.sendText("i") }
         let view = FunctionKeyCompositionView(surface: surface)
         view.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0),
                            replacementRange: NSRange(location: NSNotFound, length: 0))

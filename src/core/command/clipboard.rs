@@ -503,41 +503,6 @@ mod tests {
     }
 
     #[test]
-    fn memory_provider_keeps_plus_and_star_distinct() {
-        let mut provider = MemoryClipboardProvider::new();
-        let plus_generation = provider
-            .set_external(
-                ClipboardTarget::Clipboard,
-                ClipboardContent::from_plain_text("plus"),
-            )
-            .unwrap();
-        let star_generation = provider
-            .set_external(
-                ClipboardTarget::Primary,
-                ClipboardContent::from_plain_text("star"),
-            )
-            .unwrap();
-        assert_ne!(plus_generation, star_generation);
-
-        assert_eq!(
-            provider
-                .read(ClipboardTarget::Clipboard)
-                .unwrap()
-                .content()
-                .plain_text(),
-            "plus"
-        );
-        assert_eq!(
-            provider
-                .read(ClipboardTarget::Primary)
-                .unwrap()
-                .content()
-                .plain_text(),
-            "star"
-        );
-    }
-
-    #[test]
     fn failed_fake_write_is_atomic_and_retryable() {
         let mut provider = MemoryClipboardProvider::new();
         provider

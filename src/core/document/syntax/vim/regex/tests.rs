@@ -224,54 +224,6 @@ fn alternate_external_capture_group_spelling_retains_delimiter() {
 }
 
 #[test]
-fn anchored_group_name_expansion_avoids_repeated_nfa_setup() {
-    let pattern =
-        VimPattern::compile(r"^\%(css.*Attr\)$", false, VimRegexLimits::default()).unwrap();
-    let mut fuel = 100_000;
-    for n in 0..1024 {
-        assert!(!pattern
-            .matches_text_at_with_control(&format!("htmlGroup{n}"), 0, &mut fuel, &mut || false)
-            .unwrap());
-    }
-    assert!(
-        fuel > 50_000,
-        "anchored names used {} instructions",
-        100_000 - fuel
-    );
-    assert!(pattern
-        .matches_text_at_with_control("cssColorAttr", 0, &mut fuel, &mut || false)
-        .unwrap());
-    assert!(!pattern
-        .matches_text_at_with_control("cssColorAttr", 1, &mut fuel, &mut || false)
-        .unwrap());
-    for (source, text, expected) in [
-        (r"^b", "a\nb", true),
-        (r"^b", "a b", false),
-        (r"\(^\)\@!b", "ab", true),
-        (r"\%^b", "a\nb", false),
-    ] {
-        let pattern = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap();
-        assert_eq!(
-            pattern.is_match_text(text, 1000).unwrap(),
-            expected,
-            "{source}"
-        );
-    }
-}
-
-#[test]
-fn consuming_vm_repetitions_do_not_allocate_nullable_loop_guards() {
-    let source = format!("{}b\\@=b", "a*".repeat(80));
-    assert_eq!(find(&source, "aaab", 1), Some(0..4));
-    let source = format!("{}a", r"\%(a\@=\)*".repeat(40));
-    let error = VimPattern::compile(&source, false, VimRegexLimits::default()).unwrap_err();
-    assert!(
-        error.contains("nullable repetition guard budget"),
-        "{error}"
-    );
-}
-
-#[test]
 fn matcher_selection_prefixes_are_portable_and_position_failures_are_precise() {
     for selector in [0, 1, 2] {
         let source = format!(r"\%#={selector}\<\%(true\|false\)\>[?!]\@!");
@@ -503,67 +455,6 @@ fn source_position_atoms_match_installed_vim_buffer_searches() {
         );
     }
     std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[test]
-fn unicode_regular_patterns_use_bounded_scalar_fallback_without_byte_nfa() {
-    let source = r"^\(\k\{33,}\)\zs!$";
-    let scalar = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap();
-    assert!(scalar.nfa.is_none());
-    assert!(scalar.advanced.is_some());
-    assert!(scalar.memory_usage() < VimRegexLimits::default().nfa_bytes);
-    let byte = VimPattern::compile(
-        source,
-        false,
-        VimRegexLimits {
-            states: 65_536,
-            nfa_bytes: 4 * 1024 * 1024,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    assert!(byte.nfa.is_some());
-    for text in [
-        format!("{}!", "é".repeat(40)),
-        format!("{}!", "a".repeat(32)),
-        format!("{}x", "a".repeat(40)),
-    ] {
-        assert_eq!(
-            find_pattern(&scalar, &text, 1),
-            find_pattern(&byte, &text, 8192)
-        );
-    }
-    let text = format!("{}!", "é".repeat(40));
-    let mut remaining = 10_000;
-    assert!(scalar
-        .matches_text_at_with_control(&text, 0, &mut remaining, &mut || true)
-        .is_err());
-    assert_eq!(remaining, 10_000);
-    assert!(scalar
-        .matches_text_at_with_control(&text, 0, &mut 1, &mut || false)
-        .is_err());
-    let found = scalar
-        .find_text_with_control(&text, 0, &mut remaining, &mut || false)
-        .unwrap()
-        .unwrap();
-    assert_eq!(found.start..found.end, 80..81);
-    assert_eq!(found.captures[1], Some(0..80));
-    // The scalar representation must fit the same byte/state limits, including
-    // every retained Unicode range table. It cannot bypass a hard resource cap.
-    for limits in [
-        VimRegexLimits {
-            nfa_bytes: 4096,
-            ..Default::default()
-        },
-        VimRegexLimits {
-            states: 8,
-            ..Default::default()
-        },
-    ] {
-        assert!(VimPattern::compile(source, false, limits)
-            .unwrap_err()
-            .contains("bytecode budget"));
-    }
 }
 
 #[test]

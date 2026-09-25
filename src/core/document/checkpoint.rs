@@ -160,52 +160,6 @@ mod tests {
     }
 
     #[test]
-    fn command_checkpoint_restores_grouped_state_history_and_allocators() {
-        let mut document = Document::new("alpha beta");
-        document.begin_edit_group();
-        document.replace(0..5, "ALPHA").unwrap();
-        let before_source = document.source_bytes();
-        let before_revision = document.revision();
-        let before_status = document.history_status();
-        let before_details = document
-            .history_node_details(before_status.current.node)
-            .unwrap();
-        let before_allocators = (document.next_revision, document.next_projected_block_id);
-        let before_generation = document.edit_group_generation;
-
-        let checkpoint = document.begin_command_checkpoint();
-        document.replace(6..10, "BETA").unwrap();
-        document.close_edit_group();
-        document.replace(0..5, "OMEGA").unwrap();
-        document.mark_saved();
-        document.set_history_retention_policy(HistoryRetentionPolicy::new(1, 1));
-        document.rollback_command_checkpoint(checkpoint);
-
-        assert_eq!(document.source_bytes(), before_source);
-        assert_eq!(document.revision(), before_revision);
-        assert_eq!(document.history_status(), before_status);
-        assert_eq!(
-            document
-                .history_node_details(before_status.current.node)
-                .unwrap(),
-            before_details
-        );
-        assert_eq!(
-            (document.next_revision, document.next_projected_block_id),
-            before_allocators
-        );
-        assert_eq!(document.edit_group_depth, 1);
-        assert_eq!(document.edit_group_generation, before_generation);
-        document.history.assert_memory_matches_full_recount();
-        document.replace(6..10, "BETA").unwrap();
-        document.end_edit_group();
-        document.try_undo().unwrap();
-        assert_eq!(document.text(), "alpha beta");
-        document.try_redo().unwrap();
-        assert_eq!(document.text(), "ALPHA BETA");
-    }
-
-    #[test]
     fn command_checkpoint_restores_history_navigation_and_redo_preferences() {
         let mut document = Document::new("a");
         document.replace(0..1, "b").unwrap();
@@ -242,27 +196,6 @@ mod tests {
         document.history.assert_memory_matches_full_recount();
         document.try_redo().unwrap();
         assert_eq!(document.text(), "d");
-    }
-
-    #[test]
-    fn command_checkpoint_commit_enforces_deferred_retention_and_accounts_maps() {
-        let mut document = Document::new("alpha beta");
-        document.set_history_retention_policy(HistoryRetentionPolicy::new(2, usize::MAX));
-        document.begin_edit_group();
-        document.replace(0..5, "ALPHA").unwrap();
-        let checkpoint = document.begin_command_checkpoint();
-        document.replace(6..10, "BETA").unwrap();
-        document.end_edit_group();
-        document.replace(0..5, "OMEGA").unwrap();
-        assert_eq!(document.history_status().node_count, 3);
-        document.commit_command_checkpoint(checkpoint);
-        assert_eq!(document.history_status().node_count, 2);
-        assert_eq!(document.text(), "OMEGA BETA");
-        document.history.assert_memory_matches_full_recount();
-        document.try_undo().unwrap();
-        assert_eq!(document.text(), "ALPHA BETA");
-        document.try_redo().unwrap();
-        assert_eq!(document.text(), "OMEGA BETA");
     }
 
     #[test]

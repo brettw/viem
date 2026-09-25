@@ -24,7 +24,9 @@ fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styl
             .block_style_metadata(&"Paragraph".into())
             .unwrap()
             .origin,
-        viem_core::document::StyleDefinitionOrigin::SourceBacked
+        // Without an owned stylesheet, built-in definitions come from settings;
+        // the direct 30pt declaration above is the source-backed style.
+        viem_core::document::StyleDefinitionOrigin::GeneratedConfiguration
     );
     document
         .set_format(

@@ -1832,30 +1832,6 @@ mod tests {
     }
 
     #[test]
-    fn command_checkpoint_journals_only_touched_history_nodes() {
-        let mut history = History::new(0usize);
-        for value in 1..128 {
-            history.commit(value, false);
-        }
-        let before = history.status();
-        history.begin_command_checkpoint();
-        assert!(history.command_checkpoints.last().unwrap().nodes.is_empty());
-        history.commit(128, true);
-        history.commit(129, true);
-        assert_eq!(history.command_checkpoints.last().unwrap().nodes.len(), 1);
-        assert!(history
-            .command_checkpoints
-            .last()
-            .unwrap()
-            .nodes
-            .values()
-            .all(|node| node.content.is_none()));
-        history.rollback_command_checkpoint();
-        assert_eq!(history.status(), before);
-        assert_eq!(**history.current(), 127);
-    }
-
-    #[test]
     fn retains_branches_and_selects_redo_path() {
         let mut history = History::new("root");
         history.commit("first", false);

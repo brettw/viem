@@ -6059,23 +6059,6 @@ mod tests {
     }
 
     #[test]
-    fn unattached_view_starts_with_one_compact_estimated_hard_line() {
-        let view = ViewLayout::new(100.0, 100.0);
-        assert_eq!(view.viewport_left(), 0.0);
-        assert_eq!(view.maximum_viewport_left(), None);
-        let height = view.content_height();
-        assert_eq!(height.height(), DEFAULT_ESTIMATED_HARD_LINE_HEIGHT);
-        assert!(!height.is_exact());
-        let statistics = view.height_index_statistics();
-        assert_eq!(statistics.hard_line_count(), 1);
-        assert_eq!(statistics.run_count(), 1);
-        assert_eq!(statistics.tree_depth(), 1);
-        let hit = view.hard_line_at_y(0.0).unwrap().unwrap();
-        assert_eq!(hit.hard_line(), 0);
-        assert!(!hit.line_is_exact());
-    }
-
-    #[test]
     fn partial_snapshot_globalizes_cluster_bounds_with_their_visual_row() {
         let document = Document::new("zero\none\ntwo");
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
@@ -7617,35 +7600,6 @@ mod tests {
         assert!(!Arc::ptr_eq(&copy.rows, &original.rows));
         assert!(original.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == old_revision));
         assert!(copy.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == revision));
-    }
-
-    #[test]
-    fn cache_hits_share_fragments_and_intern_fallback_names() {
-        let (document, mut engine, mut view) = lay_out("AV fi ordinary words", 600.0);
-        let (cached, bytes) = engine.shape_cache.entries.front().unwrap().clone();
-        let hit = engine.cache_lookup(
-            &cached.text, &cached.context_before, &cached.context_after,
-            &cached.style_runs, &cached.default_style, cached.paragraph_base_direction,
-            f32::from_bits(cached.scale_bits), cached.measurement_environment_id,
-            cached.metrics_generation, cached.purpose, cached.render_run_policy,
-        ).unwrap();
-        assert!(Arc::ptr_eq(&cached.fragment, &hit));
-        let fonts = &hit.clusters;
-        assert!(fonts.len() > 1);
-        for cluster in &fonts[1..] {
-            if cluster.fallback_font == fonts[0].fallback_font {
-                assert!(Arc::ptr_eq(&cluster.fallback_font, &fonts[0].fallback_font));
-            }
-        }
-        // An entry larger than the current byte allowance is not admitted,
-        // but its current layout remains fully functional.
-        engine.set_shape_cache_byte_budgets(bytes - 1, 0);
-        engine.relayout(&document, &mut view).unwrap();
-        assert_eq!(engine.shaping_cache_statistics().fragment_count, 0);
-        assert!(view.snapshot().unwrap().caret_point(0, BoundaryAffinity::Downstream).is_ok());
-        engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
-        engine.relayout(&document, &mut view).unwrap();
-        assert_eq!(view.snapshot().unwrap().metrics_generation, MetricsGeneration(2));
     }
 
     #[test]

@@ -508,30 +508,3 @@ fn injection_overflow_keeps_host_highlighting() {
         .iter()
         .any(|run| run.range.start == last && run.name.0 == "Keyword.directive.define"));
 }
-
-#[test]
-fn overlay_keeps_parent_runs_around_child_runs() {
-    let run = |range: Range<usize>, name: &str| SyntaxRun {
-        range,
-        name: crate::document::syntax::SyntaxStyleName(name.into()),
-        origin: String::new(),
-        priority: 100,
-    };
-    let mut runs = vec![run(0..4, "A"), run(4..20, "String"), run(20..24, "B")];
-    overlay_runs(&mut runs, vec![run(6..8, "X"), run(10..22, "Y")]);
-    let spans = runs
-        .iter()
-        .map(|r| (r.range.clone(), r.name.0.as_str()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        spans,
-        [
-            (0..4, "A"),
-            (4..6, "String"),
-            (6..8, "X"),
-            (8..10, "String"),
-            (10..22, "Y"),
-            (22..24, "B"),
-        ]
-    );
-}

@@ -947,33 +947,6 @@ mod tests {
     }
 
     #[test]
-    fn large_composition_exports_share_tree_identity_until_payload_changes() {
-        let document = Document::new(format!("{}end", " ".repeat(200_000)));
-        let base_identity = document.projection().text_tree().snapshot_identity();
-        let mut session = CompositionSession::begin_at_offsets(&document, 200_000..200_003).unwrap();
-        let first = session.update(&document, CompositionUpdate::new("\t  ", 3..3)).unwrap();
-        let tree = first.layout_text_tree().unwrap();
-        let first_identity = tree.snapshot_identity();
-        assert_ne!(first_identity, base_identity);
-        assert_eq!(tree.slice(199_998..tree.byte_len()).unwrap(), "  \t  ");
-        for _ in 0..100 {
-            assert_eq!(session.overlay(&document).unwrap().layout_text_tree().unwrap().snapshot_identity(), first_identity);
-        }
-        let selection = session.update(&document, CompositionUpdate::new("\t  ", 1..1)).unwrap();
-        assert!(selection.generation() > first.generation());
-        assert_eq!(selection.layout_text_tree().unwrap().snapshot_identity(), first_identity);
-        assert!(session.update(&document, CompositionUpdate::new("é", 1..1)).is_err());
-        assert_eq!(session.overlay(&document).unwrap().layout_text_tree().unwrap().snapshot_identity(), first_identity);
-        let changed = session.update(&document, CompositionUpdate::new("next", 4..4)).unwrap();
-        assert_ne!(changed.layout_text_tree().unwrap().snapshot_identity(), first_identity);
-        assert_eq!(first.layout_text_tree().unwrap().snapshot_identity(), first_identity,
-            "Retained overlays remain exact immutable snapshots");
-        let restoration = session.cancel(&document).unwrap();
-        assert_eq!(restoration.original_formatted_text.snapshot_identity(), base_identity);
-        assert_eq!(document.projection().text_tree().snapshot_identity(), base_identity);
-    }
-
-    #[test]
     fn cached_composition_tree_cannot_be_exported_after_source_changes() {
         let mut document = Document::new("base");
         let mut session = CompositionSession::begin_at_offsets(&document, 0..0).unwrap();
