@@ -109,6 +109,23 @@ struct EVFontCatalogTests {
     #expect(EVFontCatalog.face(named: face.postScriptName)?.postScriptName == face.postScriptName)
     #expect(EVFontCatalog.displayFamilyName(for: "Helvetica") == "Helvetica")
   }
+
+  @Test func portableSystemFamiliesRoundTripThroughTheirPickerLabels() throws {
+    #expect(EVFontCatalog.displayFamilyName(for: "system-ui") == "System Default")
+    #expect(EVFontCatalog.displayFamilyName(for: "System-UI") == "System Default")
+    #expect(EVFontCatalog.displayFamilyName(for: "ui-monospace") == "System Monospace")
+    #expect(EVFontCatalog.portableFamily(forDisplayName: "System Default") == "system-ui")
+    #expect(EVFontCatalog.portableFamily(forDisplayName: "system default") == "system-ui")
+    #expect(EVFontCatalog.portableFamily(forDisplayName: "System Monospace") == "ui-monospace")
+    #expect(EVFontCatalog.portableFamily(forDisplayName: "Helvetica") == nil)
+    // Both tokens resolve to real, distinct system faces rather than an
+    // unrecognized/empty family.
+    #expect(!EVFontCatalog.faces(for: "system-ui").isEmpty)
+    #expect(!EVFontCatalog.faces(for: "ui-monospace").isEmpty)
+    let monospace = try #require(EVFontCatalog.faces(for: "ui-monospace").first)
+    #expect(EVFontCatalog.faces(for: "monospace").contains(monospace))
+  }
+
   @Test func catalogUsesRealFacesAndWeightClasses() throws {
     let faces = EVFontCatalog.faces(for: "Avenir Next")
     #expect(faces.count > 3)

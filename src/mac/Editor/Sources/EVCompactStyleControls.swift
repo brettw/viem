@@ -127,9 +127,23 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
     private let sectionSpacing = NSFont.systemFontSize
 
+    /// Non-selectable divider row between the picker's two portable system
+    /// entries and the sorted list of installed fonts. NSComboBox has no
+    /// native separator item, so a selection of this text is ignored instead.
+    private static let familyListSeparator = String(repeating: "─", count: 10)
+
+    private static func familyPickerItems() -> [String] {
+        let installed = NSFontManager.shared.availableFontFamilies.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        return [
+            EVFontCatalog.displayFamilyName(for: EVFontCatalog.systemDefaultFamily),
+            EVFontCatalog.displayFamilyName(for: EVFontCatalog.systemMonospaceFamily),
+            familyListSeparator,
+        ] + installed
+    }
+
     override init() {
         super.init()
-        family.addItems(withObjectValues: NSFontManager.shared.availableFontFamilies.sorted())
+        family.addItems(withObjectValues: Self.familyPickerItems())
         family.numberOfVisibleItems = 20
         family.completes = true
         family.usesDataSource = false
@@ -717,6 +731,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     func comboBoxSelectionDidChange(_ notification: Notification) {
         guard notification.object as? NSComboBox === family, !updating, !publishingFontChange,
               let value = family.objectValueOfSelectedItem as? String else { return }
+        guard value != Self.familyListSeparator else {
+            refreshFontControls()
+            return
+        }
         setFamilyText(value)
         changeFamily(to: value)
     }
@@ -728,6 +746,13 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
               value.caseInsensitiveCompare(chosen) != .orderedSame,
               value.caseInsensitiveCompare(EVFontCatalog.displayFamilyName(for: chosen)) != .orderedSame else {
             refreshFontControls()
+            return
+        }
+        // The two portable system entries store their generic request token
+        // rather than a concrete resolved face, so the same declaration
+        // renders correctly on Windows too.
+        if let portable = EVFontCatalog.portableFamily(forDisplayName: value) {
+            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: portable)))])
             return
         }
         if let member = EVFontCatalog.faceForFamilyChange(to: value, currentFace: currentFontFace) {

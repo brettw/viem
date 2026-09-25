@@ -1,12 +1,30 @@
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Rendering;
+using Windows.UI;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
 internal sealed partial class StyleWindow
 {
-    private readonly ComboBox fontFamily = new() { IsEditable = true, Width = 205, ItemsSource = FontCatalog.Families };
+    /// A real divider row: a disabled, hit-test-invisible ComboBoxItem drawn
+    /// as a thin line rather than text. ComboBoxItem recognizes an item that
+    /// is already a ComboBoxItem and uses it as its own container, so it
+    /// keeps the platform's default chrome apart from the properties set
+    /// here, and disabled containers are skipped by mouse and keyboard
+    /// selection like any other disabled item. A new instance is required
+    /// each call: a ComboBoxItem is a UIElement and can only sit in one
+    /// ItemsSource/visual tree at a time.
+    private static ComboBoxItem FontFamilySeparatorItem() => new() {
+        IsEnabled = false, IsHitTestVisible = false, IsTabStop = false, Height = 9, Padding = new(0),
+        Content = new Border { Height = 1, VerticalAlignment = VerticalAlignment.Center, Background = new SolidColorBrush(Color.FromArgb(96, 128, 128, 128)) },
+    };
+    private static object[] FontFamilyItems(string[] installed) => new object[] {
+        FontCatalog.DisplayFamily(FontCatalog.SystemDefaultFamily), FontCatalog.DisplayFamily(FontCatalog.SystemMonospaceFamily), FontFamilySeparatorItem(),
+    }.Concat(installed).ToArray();
+    private readonly ComboBox fontFamily = new() { IsEditable = true, Width = 205, ItemsSource = FontFamilyItems(FontCatalog.Families) };
     private readonly ComboBox fontVariant = new() { Width = 140 };
     private FontFace? CurrentFace => FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
         selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
@@ -33,12 +51,15 @@ internal sealed partial class StyleWindow
         refreshFields.Add(() => {
             string stored = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
             string display = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) ? FontCatalog.DisplayFamily(stored) : "";
-            // Include portable or unavailable stored names in the native list.
-            // A Text-only value set before ComboBox templating can appear blank.
-            var names = display.Length != 0 && !FontCatalog.Families.Contains(display, StringComparer.OrdinalIgnoreCase)
+            // Include unavailable stored names in the native list. A Text-only
+            // value set before ComboBox templating can appear blank. The two
+            // portable system entries are already pinned at the top below.
+            var installed = display.Length != 0 && FontCatalog.StorageFamily(display) == null
+                && !FontCatalog.Families.Contains(display, StringComparer.OrdinalIgnoreCase)
                 ? FontCatalog.Families.Append(display).OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase).ToArray() : FontCatalog.Families;
+            var names = FontFamilyItems(installed);
             fontFamily.ItemsSource = names;
-            fontFamily.SelectedItem = names.FirstOrDefault(f => string.Equals(f, display, StringComparison.OrdinalIgnoreCase));
+            fontFamily.SelectedItem = names.OfType<string>().FirstOrDefault(f => string.Equals(f, display, StringComparison.OrdinalIgnoreCase));
             fontFamily.Text = display;
             fontVariant.ItemsSource = FontCatalog.Faces(stored);
             fontVariant.SelectedItem = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) ? CurrentFace : null;
@@ -54,6 +75,10 @@ internal sealed partial class StyleWindow
         if (value.Length == 0) return;
         if (selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)
             && (string.Equals(value, chosen, StringComparison.OrdinalIgnoreCase) || string.Equals(value, FontCatalog.DisplayFamily(chosen), StringComparison.OrdinalIgnoreCase))) return;
+        // The two portable system entries store their generic request token
+        // rather than a concrete resolved face, so the same declaration
+        // renders correctly on macOS too.
+        if (FontCatalog.StorageFamily(value) is { } portable) { view.EditStyleFont(selected, ReplacePrimary(portable), null); return; }
         if (FontCatalog.ForFamilyChange(value, CurrentFace) is { } face) SetFace(face);
         else view.EditStyleFont(selected, ReplacePrimary(value), null);
     }

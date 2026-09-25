@@ -58,7 +58,7 @@ internal static class StyleAndSettingsTests
         bool sfProInstalled = FontCatalog.Families.Contains("SF Pro", StringComparer.OrdinalIgnoreCase);
         Check(sfProInstalled ? FontCatalog.Resolve("SF Pro")?.Family == "SF Pro" : FontCatalog.Resolve("SF Pro") == null && FontCatalog.Faces("SF Pro").Length == 0,
             "SF Pro resolves only when installed and never aliases Segoe UI");
-        Check(((IEnumerable<string>)styles.FontFamilyControl.ItemsSource).Contains("SF Pro", StringComparer.OrdinalIgnoreCase) == sfProInstalled,
+        Check(((IEnumerable<object>)styles.FontFamilyControl.ItemsSource).OfType<string>().Contains("SF Pro", StringComparer.OrdinalIgnoreCase) == sfProInstalled,
             "the default Windows font picker offers SF Pro only when installed");
         Check(!Children<TextBlock>(styles.RootControl).Any(t => t.Text == "Properties" || t.Text.StartsWith("Changes apply live")), "style inspector omits redundant headings and guidance");
         Check(styles.RootControl.ActualHeight <= styles.RootControl.XamlRoot.Size.Height + 1 && styles.RootControl.XamlRoot.Size.Height - styles.RootControl.ActualHeight < 24,
@@ -219,6 +219,11 @@ internal static class StyleAndSettingsTests
         Check(FontCatalog.Current(face.Name, face.Weight, 1) == face && FontCatalog.Current(face.Name, 617, 1) == null, "font variants match effective traits and leave unknown combinations unresolved");
         Check(FontCatalog.ForFamilyChange("Consolas", face)?.StyleName == face.StyleName, "family changes preserve a matching variant name");
         Check(FontCatalog.Faces("system-ui").Length > 1 && FontCatalog.Faces("viem-missing-font").Length == 0, "font variants resolve generic families without substituting unknown fonts");
+        Check(FontCatalog.Faces("ui-monospace").Length > 1, "the portable monospace token also resolves real font variants");
+        Check(FontCatalog.DisplayFamily("system-ui") == "System Default" && FontCatalog.DisplayFamily("ui-monospace") == "System Monospace",
+            "the style dialog labels the two portable system tokens instead of a resolved font name");
+        Check(FontCatalog.StorageFamily("System Default") == "system-ui" && FontCatalog.StorageFamily("System Monospace") == "ui-monospace"
+            && FontCatalog.StorageFamily("Segoe UI") == null, "only the picker's own two labels reverse to a portable token");
         foreach (string family in FontCatalog.Families.Where(f => f.Contains("Flightline", StringComparison.OrdinalIgnoreCase)))
             Check(FontCatalog.Faces(family).Length > 1, $"installed {family} exposes its font variants");
         using var doc = new CoreDocument("<p>A sample for font selection.</p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
@@ -280,6 +285,18 @@ internal static class StyleAndSettingsTests
             view.EditStyleFont(style, ["viem-missing-font", "serif"], null); await Task.Delay(100);
             Check(inspector.FontFamilyControl.Text == "viem-missing-font" && inspector.FontVariantControl.SelectedItem == null,
                 "unavailable document fonts remain visible without selecting a substitute variant");
+            var familyItemsSource = ((IEnumerable<object>)inspector.FontFamilyControl.ItemsSource).ToArray();
+            Check(familyItemsSource[2] is ComboBoxItem { IsEnabled: false, IsHitTestVisible: false },
+                "the font family picker's third row is a real disabled, unselectable separator, not text");
+            var familyItems = familyItemsSource.OfType<string>().ToArray();
+            Check(familyItems.Take(2).SequenceEqual(new[] { "System Default", "System Monospace" })
+                && familyItems.Skip(2).SequenceEqual(familyItems.Skip(2).OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase)),
+                "the font family picker lists the two system entries first, then a native separator, then installed fonts in order");
+            inspector.FontFamilyControl.SelectedItem = "System Default"; await Task.Delay(100);
+            sheet = view.Styles(); style = sheet.Styles.Single(s => s.Id == id);
+            Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "system-ui", "serif" }),
+                "choosing System Default in the native picker stores its portable token, not a resolved font name, and keeps the fallback tail");
+            Check(inspector.FontFamilyControl.Text == "System Default", "the stored portable token displays as its picker label again");
             string parentId = view.CreateStyle(1, "Parent"), childId = view.CreateStyle(1, "Child");
             var child = view.Styles().Styles.Single(s => s.Id == childId);
             view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId);

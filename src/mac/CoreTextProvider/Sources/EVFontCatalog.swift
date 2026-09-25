@@ -153,9 +153,23 @@ public enum EVFontCatalog {
     first.caseInsensitiveCompare(second) == .orderedSame
   }
 
+  /// Portable request tokens for the family picker's built-in "use the
+  /// system font" entries. FontCatalog.Resolve on Windows recognizes the
+  /// identical strings, so a style saved with one renders consistently on
+  /// both platforms; only the picker's label differs from a literal font name.
+  public static let systemDefaultFamily = "system-ui"
+  public static let systemMonospaceFamily = "ui-monospace"
+  private static let systemFamilyLabels: [(family: String, label: String)] = [
+    (systemDefaultFamily, "System Default"),
+    (systemMonospaceFamily, "System Monospace"),
+  ]
+
   /// Friendly presentation only; selected PostScript identities remain exact
   /// in document requests and in the face catalog.
   public static func displayFamilyName(for familyOrFace: String) -> String {
+    if let label = systemFamilyLabels.first(where: { sameName($0.family, familyOrFace) })?.label {
+      return label
+    }
     let family = face(named: familyOrFace)?.familyName ?? familyOrFace
     if familyOrFace.hasPrefix(".SFNS") || family.hasPrefix(".AppleSystemUIFont")
       || ["system-ui", "sf pro", "-apple-system"].contains(family.lowercased())
@@ -163,6 +177,12 @@ public enum EVFontCatalog {
       return "SF Pro"
     }
     return family
+  }
+
+  /// Reverses `displayFamilyName` for the picker's own two entries; any other
+  /// text (an installed font name, typed or picked) passes through unchanged.
+  public static func portableFamily(forDisplayName label: String) -> String? {
+    systemFamilyLabels.first { sameName($0.label, label) }?.family
   }
 
   public static func boldWeight(baseWeight: UInt16, faces: [EVFontFace]) -> UInt16 {
