@@ -1753,6 +1753,9 @@ internal static unsafe partial class Native
     public const uint VIEM_LINE_MODE_PHYSICAL_SOURCE = 1u;
     public const uint VIEM_SELECTED_STYLE_PARAGRAPH_MIXED = (1u << 0);
     public const uint VIEM_SELECTED_STYLE_CHARACTER_MIXED = (1u << 1);
+    public const uint VIEM_SELECTED_STYLE_HAS_BULLETS = (1u << 2);
+    public const uint VIEM_SELECTED_STYLE_HAS_NUMBERING = (1u << 3);
+    public const uint VIEM_SELECTED_STYLE_HAS_NON_LIST = (1u << 4);
     public const uint VIEM_SOURCE_MAX_BYTES = 1048576u;
     public const uint VIEM_SOURCE_MAX_COMMANDS = 10000u;
     public const uint VIEM_SOURCE_MAX_DEPTH = 16u;

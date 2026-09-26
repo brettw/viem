@@ -61,7 +61,7 @@ internal sealed partial class StyleWindow
         preview.ClearColor = preferences.Theme.Background;
         preview.Invalidate();
     }
-    private static Grid ColorSwatch(Border colorLayer)
+    internal static Grid ColorSwatch(Border colorLayer)
     {
         const double width = 28, height = 24, squareSize = 5;
         // WinUI layout units are DIPs. The rounded Grid clips both layers while

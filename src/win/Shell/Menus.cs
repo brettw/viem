@@ -99,8 +99,7 @@ internal sealed partial class EditorWindow
                 Sub("Line Spacing", Spacing("Normal", 1, 0), Spacing("Single", 2, 1), Spacing("1.5 Lines", 2, 1.5f), Spacing("Double", 2, 2))));
         paragraphMenu = Sub("Paragraph", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => Rich), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => Rich), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => Rich),
             ActionItem("Indent", () => View?.IndentList(false), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
-        for (uint level = 0; level <= 6; level++) { uint l = level; paragraphMenu.Items.Add(ActionItem(l == 0 ? "Base Paragraph" : $"Heading {l}", () => View?.SetParagraph(l), l < 6 ? $"Ctrl+{l}" : "", () => Rich)); }
-        characterMenu = Sub("Character", ActionItem("Default Paragraph", () => View?.AssignStyle(2, ""), enabled: () => Rich));
+        characterMenu = Sub("Character");
         validation.Add((paragraphMenu, () => Rich));
         validation.Add((characterMenu, () => Rich));
         Top("Style", "S", paragraphMenu, characterMenu, Separator(), StyleEditorItem(),
@@ -141,6 +140,7 @@ internal sealed partial class EditorWindow
         if (!menusDirty) return;
         menusDirty = false;
         using var measurement = Diagnostics.InputPerformance.Measure("menus");
+        RefreshStyleMenus();
         foreach (var (item, enabled) in validation) { try { item.IsEnabled = enabled(); } catch { item.IsEnabled = false; } }
         foreach (var (item, checkedValue) in checks) { try { item.IsChecked = checkedValue(); } catch { } }
         if (View == null || undoItem == null) return;
@@ -159,15 +159,35 @@ internal sealed partial class EditorWindow
     private void RefreshStyleMenus()
     {
         if (View == null || paragraphMenu == null) return;
-        // Dynamic definitions are inserted only when the backing sheet changes,
-        // never while native menu tracking is in progress.
+        var selected = View.SelectedNamedStyles();
+        var snapshot = View.Styles(selected.Identity);
+        var entries = CoreView.StyleChoices(snapshot, selected);
         foreach (var menu in new[] { paragraphMenu, characterMenu })
-            foreach (var old in menu.Items.Where(i => i.Tag is string).ToArray()) { menu.Items.Remove(old); validation.RemoveAll(v => v.Item == old); }
-        foreach (var style in View.Styles().Styles.Where(s => (s.Native.flags & (VIEM_STYLE_DEFINITION_INTERNAL | VIEM_STYLE_DEFINITION_INTERNAL_LIST)) == 0 && s.Has(VIEM_STYLE_CAPABILITY_ASSIGN)))
         {
-            var menu = style.Namespace == 1 ? paragraphMenu : characterMenu;
-            if (menu.Items.OfType<MenuFlyoutItem>().Any(i => (i.Tag as string) == style.Id)) continue;
-            var item = ActionItem(style.Name, () => View?.AssignStyle(style.Namespace, style.Id), enabled: () => Rich); item.Tag = style.Id; menu.Items.Add(item);
+            uint space = menu == paragraphMenu ? 1u : 2u;
+            var choices = entries.Where(e => e.Key.Namespace == space).ToArray();
+            var old = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Tag is StyleKey).ToArray();
+            if (!old.Select(i => (StyleKey)i.Tag).SequenceEqual(choices.Select(c => c.Key)))
+            {
+                foreach (var item in old) menu.Items.Remove(item);
+                foreach (var choice in choices)
+                {
+                    var item = new ToggleMenuFlyoutItem { Tag = choice.Key };
+                    item.Click += (_, _) => Safe(() => {
+                        if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
+                            View?.ChooseStyle((StyleKey)item.Tag, identity);
+                        formattingToolbar.RestoreEditorFocus(); return Task.CompletedTask;
+                    });
+                    menu.Items.Add(item);
+                }
+            }
+            var items = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Tag is StyleKey).ToArray();
+            for (int i = 0; i < choices.Length; i++)
+            {
+                items[i].Text = choices[i].Name; items[i].IsEnabled = View.HasFormattingSelection && choices[i].Enabled;
+                items[i].IsChecked = choices[i].Selected; items[i].CommandParameter = snapshot.Identity;
+                items[i].KeyboardAcceleratorTextOverride = CoreView.HeadingLevel(choices[i].Key) is { } level && level < 6 ? $"Ctrl+{level}" : "";
+            }
         }
     }
     private StyleWindow? styleInspector;
