@@ -133,9 +133,10 @@ fn text_error(error: crate::document::FormattedTextError) -> LayoutComputationEr
 fn next_break(
     tree: &FormattedTextTree,
     range: Range<usize>,
+    state: &mut WrapBreakState,
     cancellation: &dyn LayoutCancellationProbe,
 ) -> Result<usize, LayoutComputationError> {
-    super::super::line_breaks::first_line_break(tree, range, false, cancellation).map_err(|error| {
+    super::super::line_breaks::first_line_break(tree, range, false, state, cancellation).map_err(|error| {
         match error {
             super::super::jobs::LayoutJobError::Cancelled => LayoutComputationError::Cancelled,
             super::super::jobs::LayoutJobError::FormattedText(error) => text_error(error),
@@ -337,7 +338,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let start = checkpoint
                 .as_ref()
                 .map_or(full_range.start, |checkpoint| checkpoint.next_text_offset);
-            let first_break = next_break(tree, start..full_range.end, cancellation)?;
+            let mut break_state = checkpoint.as_ref().map_or_else(
+                || WrapBreakState::new(view.whitespace.format.is_code()),
+                |checkpoint| checkpoint.wrap_break_state,
+            );
+            let first_break = next_break(tree, start..full_range.end, &mut break_state, cancellation)?;
             let end = bounded_end(
                 tree,
                 start,
@@ -605,17 +610,20 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             line.height + f64::from(delta)
         };
         line.height_is_exact = !extends;
-        let whitespace_leading = slice
-            .checkpoint
-            .as_ref()
-            .map_or(true, |c| c.whitespace_leading)
-            && tree
-                .slice(slice.work_range.clone())
-                .map_err(text_error)?
-                .bytes()
-                .all(|b| b == b' ' || b == b'\t');
+        let mut wrap_break_state = slice.checkpoint.as_ref().map_or_else(
+            || WrapBreakState::new(view.whitespace.format.is_code()),
+            |checkpoint| checkpoint.wrap_break_state,
+        );
+        if extends {
+            // This slice is one indivisible overflow segment. Advance directly
+            // over tree leaves, retaining no flat copy of a potentially huge word.
+            let end = next_break(tree, slice.work_range.clone(), &mut wrap_break_state, cancellation)?;
+            debug_assert_eq!(end, slice.work_range.end);
+        }
         line.next_checkpoint = extends.then(|| LongLineLayoutCheckpoint {
-            whitespace_leading,
+            wrap_break_state,
+            // A soft wrap can no longer occur inside the initial whitespace.
+            whitespace_leading: false,
             code_wrap_indent,
             document_id,
             document_revision,
@@ -717,7 +725,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
             if view.wrap
                 && overflow_slice.is_none()
-                && next_break(tree, line_range.clone(), cancellation)? < line_range.end
+                && next_break(tree, line_range.clone(), &mut WrapBreakState::new(view.whitespace.format.is_code()), cancellation)? < line_range.end
             {
                 let preceding_height: f64 = lines.iter().map(|line| line.height).sum();
                 let desired_top = (view.regional_viewport_top - preceding_height as f32).max(0.0);

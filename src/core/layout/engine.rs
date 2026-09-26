@@ -18,7 +18,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
-use super::unicode_breaks::LineBreakState;
+use super::line_breaks::WrapBreakState;
 use unicode_segmentation::UnicodeSegmentation;
 use super::whitespace::{WhitespaceConfiguration, WhitespacePresentationOptions, ListCharsError, WhitespaceMarker};
 
@@ -61,6 +61,7 @@ const CANCELLATION_TEXT_SCAN_BYTES: usize = 64 * 1024;
 /// future cache admission.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LongLineLayoutCheckpoint {
+    pub(super) wrap_break_state: WrapBreakState,
     /// Original hard-line indentation plus the extra continuation margin.
     pub(super) code_wrap_indent: f32,
     pub(super) whitespace_leading: bool,
@@ -2034,6 +2035,10 @@ impl ViewLayout {
     }
 
     pub fn whitespace_presentation(&self) -> &WhitespacePresentationOptions { &self.whitespace.options }
+
+    pub(super) fn initial_wrap_break_state(&self) -> WrapBreakState {
+        WrapBreakState::new(self.whitespace.format.is_code())
+    }
     pub fn whitespace_tabstop(&self) -> u32 { self.whitespace.tabstop }
     pub fn set_whitespace_presentation(&mut self, options: WhitespacePresentationOptions, format: crate::document::Format, tabstop: u32) -> Result<(), ListCharsError> {
         options.validate()?;
@@ -4002,11 +4007,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 first_row_box
             };
+            let wrap_break_state = line_slice.checkpoint.as_ref().map_or_else(
+                || WrapBreakState::new(view.whitespace.format.is_code()),
+                |checkpoint| checkpoint.wrap_break_state,
+            );
             let breaks = if view.wrap {
-                unicode_line_break_opportunities_for_slice(
+                line_break_opportunities_for_slice(
                     &region_text[local_context_ranges[line_offset].clone()],
                     line_slice.shaping_context_range.start,
                     line_slice.work_range.start,
+                    wrap_break_state,
                     &control,
                 )?
             } else {
@@ -4027,13 +4037,26 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .maximum_wrap_checkpoint_clusters
                 .max(clusters.len().min(CANCELLATION_CLUSTER_BATCH));
             if extends_past_work {
-                // Drop a trailing row only when its end is an artificial
-                // capture boundary. Oversized words may intentionally extend
-                // the work slice through their first real break.
-                if row_cluster_ranges.last().is_some_and(|range| {
-                    !breaks.contains(&clusters[range.end - 1].text_range.end)
-                }) {
-                    row_cluster_ranges.pop();
+                // A real break at the capture edge is not enough: if this row
+                // still has room, following text might fit. Publish it only
+                // when the normal wrapper would stop here without lookahead.
+                // Oversized first words already reach their first real break.
+                if let Some(range) = row_cluster_ranges.last() {
+                    let available = if row_cluster_ranges.len() == 1 {
+                        first_row_box.width
+                    } else {
+                        continuation_box.width
+                    };
+                    let mut width = 0.0;
+                    for (index, cluster) in clusters[range.clone()].iter().enumerate() {
+                        if index % CANCELLATION_CLUSTER_BATCH == 0 {
+                            control.checkpoint()?;
+                        }
+                        width += cluster.advance;
+                    }
+                    if !breaks.contains(&clusters[range.end - 1].text_range.end) || width < available {
+                        row_cluster_ranges.pop();
+                    }
                 }
                 if row_cluster_ranges.is_empty() {
                     return Err(LayoutError::LongLineSliceNeedsMoreText {
@@ -4207,7 +4230,17 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .flat_map(|range| &clusters[range.clone()])
                 .map(|cluster| f64::from(cluster.advance))
                 .sum::<f64>();
+            let mut next_wrap_break_state = wrap_break_state;
+            if extends_past_work {
+                for (index, character) in region_text[line_range.start - text_origin..text_coverage_end - text_origin].chars().enumerate() {
+                    if index % CANCELLATION_CLUSTER_BATCH == 0 {
+                        control.checkpoint()?;
+                    }
+                    next_wrap_break_state.push(character);
+                }
+            }
             let next_checkpoint = extends_past_work.then(|| LongLineLayoutCheckpoint {
+                wrap_break_state: next_wrap_break_state,
                 code_wrap_indent,
                 whitespace_leading: whitespace_leading && region_text[line_range.start - text_origin..text_coverage_end - text_origin].bytes().all(|b| b == b' ' || b == b'\t'),
                 document_id,
@@ -4577,9 +4610,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 continuation_box
             };
             let breaks = if view.wrap {
-                unicode_line_break_opportunities(
+                line_break_opportunities(
                     &text[line_range.clone()],
                     line_range.start,
+                    WrapBreakState::new(view.whitespace.format.is_code()),
                     control,
                 )?
             } else {
@@ -5968,9 +6002,10 @@ fn wrap_cluster_ranges(
     Ok(rows)
 }
 
-fn unicode_line_break_opportunities(
+fn line_break_opportunities(
     line: &str,
     origin: usize,
+    mut state: WrapBreakState,
     control: &LayoutRunControl<'_>,
 ) -> Result<BTreeSet<usize>, LayoutComputationError> {
     control.checkpoint()?;
@@ -5978,12 +6013,11 @@ fn unicode_line_break_opportunities(
     // Keep portable Unicode decisions in absolute UTF-8 coordinates. Wrapping
     // accepts an opportunity only at the end of a legal shaping cluster.
     // Check cancellation by consumed input, including an unbreakable giant word.
-    let mut state = LineBreakState::new();
     for (index, (offset, character)) in line.char_indices().enumerate() {
         if index % CANCELLATION_CLUSTER_BATCH == 0 {
             control.checkpoint()?;
         }
-        if state.push(character).is_some() {
+        if state.push(character) && offset > 0 {
             let absolute = origin
                 .checked_add(offset)
                 .ok_or(LayoutError::InvalidTextOffset(origin))?;
@@ -5995,23 +6029,23 @@ fn unicode_line_break_opportunities(
     Ok(result)
 }
 
-fn unicode_line_break_opportunities_for_slice(
+fn line_break_opportunities_for_slice(
     captured: &str,
     capture_origin: usize,
     work_start: usize,
+    state: WrapBreakState,
     control: &LayoutRunControl<'_>,
 ) -> Result<BTreeSet<usize>, LayoutComputationError> {
     let local_work_start = work_start
         .checked_sub(capture_origin)
         .filter(|offset| *offset <= captured.len() && captured.is_char_boundary(*offset))
         .ok_or(LayoutError::InvalidTextOffset(work_start))?;
-    // Slice validation requires either the hard-line start or a checkpoint at
-    // an actual emitted break. These are exact restart boundaries for UAX #14.
-    // Shaping still uses its captured context; breaking needs no prefix copy,
-    // heuristic safe suffix, or scan back through an arbitrarily long run.
-    unicode_line_break_opportunities(
+    // Exact break state comes from the hard-line start or the resume checkpoint;
+    // shaping context alone cannot recover arbitrary Unicode prefix state.
+    line_break_opportunities(
         &captured[local_work_start..],
         work_start,
+        state,
         control,
     )
 }
@@ -7113,6 +7147,14 @@ mod tests {
         assert!(!ascii_punctuation.contains(&75));
         assert!(ascii_punctuation.contains(&80));
         assert!(ascii_punctuation.contains(&85));
+    }
+
+    fn unicode_line_break_opportunities(
+        line: &str,
+        origin: usize,
+        control: &LayoutRunControl<'_>,
+    ) -> Result<BTreeSet<usize>, LayoutComputationError> {
+        line_break_opportunities(line, origin, WrapBreakState::new(false), control)
     }
 
     #[test]

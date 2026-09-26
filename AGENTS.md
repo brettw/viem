@@ -3492,9 +3492,21 @@ accessibility text are unchanged by the setting. Continuation hit testing,
 selection, caret geometry, and vertical motion use the shifted content box.
 
 The margin reduces continuation-row usable width and is not clamped for deeply
-indented lines or narrow windows. Existing Unicode word wrapping and complete
-unbreakable-segment overflow still apply when no segment fits; indentation does
-not introduce syntax-specific break opportunities or character wrapping.
+indented lines or narrow windows. Complete unbreakable-segment overflow still
+applies when no segment fits; indentation does not introduce character wrapping.
+In every format, the original leading ASCII space/tab prefix supplies no soft
+wrap opportunities, including at its end. The first word stays on the first
+visual row with its indentation even when it overflows the available width.
+
+Code mode additionally permits a break after ASCII punctuation followed by a
+non-punctuation character. Punctuation runs stay together: `+foo` can break
+after `+`, and `++foo` only after its second `+`. A maintained exclusion list
+contains single and double quotes; neither supplies a break after itself, so
+an opening quote stays with its contents. A separate always-safe list contains
+`;` and `(`, which allow a break even before another punctuation character.
+These rules apply at legal grapheme and shaping-cluster boundaries and are
+independent of the syntax highlighter. Other opportunities follow Unicode
+word wrapping. Soft wraps never modify source text.
 Full, regional, and streamed long-line layout MUST agree. Original indentation
 measurements participate in bounded wrap checkpoints, so later viewport work
 does not repeatedly rescan an arbitrarily long prefix. Changes to the setting,
@@ -5959,7 +5971,11 @@ copied implementation table. The optional numeric-expression tailoring in
 UAX #14 section 8.2 is not enabled. Unicode version changes require deliberate
 data regeneration and conformance review. Streaming state must remain bounded;
 partial layout resumes at a verified break checkpoint rather than guessing
-context at an arbitrary text slice.
+context at an arbitrary text slice. The indentation and Code-mode policies
+above tailor these opportunities outside the Unicode rule engine. Checkpoints
+retain the exact bounded breaker state because a tailored Code break need not
+be a default Unicode restart boundary. A partial row at a capture edge is not
+published merely because that edge permits a break; following text may still fit.
 
 ## Core layout model
 

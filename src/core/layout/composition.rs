@@ -1,5 +1,5 @@
 //! Bounded transient text capture for marked-text layout.
-use super::{LayoutError, LayoutJobError, MAX_LONG_LINE_LAYOUT_SLICE_BYTES};
+use super::{LayoutError, LayoutJobError, LongLineLayoutCheckpoint, ViewLayout, MAX_LONG_LINE_LAYOUT_SLICE_BYTES};
 use crate::document::FormattedTextTree;
 use std::ops::Range;
 
@@ -7,7 +7,8 @@ pub(crate) fn capture_range(
     tree: &FormattedTextTree,
     start: usize,
     full: Range<usize>,
-    paragraph_flow: bool,
+    view: &ViewLayout,
+    checkpoint: Option<&LongLineLayoutCheckpoint>,
     cancellation: &dyn super::engine::LayoutCancellationProbe,
 ) -> Result<(usize, Range<usize>), LayoutJobError> {
     let invalid = |_| LayoutError::InvalidTextOffset(start);
@@ -36,7 +37,8 @@ pub(crate) fn capture_range(
         end = end.max(super::line_breaks::first_line_break(
             tree,
             start..full.end,
-            paragraph_flow,
+            view.paragraph_flow(),
+            &mut checkpoint.map_or_else(|| view.initial_wrap_break_state(), |c| c.wrap_break_state),
             cancellation,
         )?);
     }
@@ -69,11 +71,14 @@ mod tests {
         let prefix = "a".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 64);
         let tree = FormattedTextTree::try_from_text(format!("{prefix} \u{301}next\nend")).unwrap();
         for flow in [false, true] {
+            let mut view = ViewLayout::new(100.0, 100.0);
+            view.set_paragraph_flow(flow);
             let (end, capture) = capture_range(
                 &tree,
                 0,
                 0..tree.byte_len(),
-                flow,
+                &view,
+                None,
                 &LayoutCancellationToken::new(),
             )
             .unwrap();
@@ -86,7 +91,7 @@ mod tests {
         let cancelled = LayoutCancellationToken::new();
         cancelled.cancel();
         assert!(matches!(
-            capture_range(&tree, 0, 0..tree.byte_len(), false, &cancelled),
+            capture_range(&tree, 0, 0..tree.byte_len(), &ViewLayout::new(100.0, 100.0), None, &cancelled),
             Err(LayoutJobError::Cancelled)
         ));
     }

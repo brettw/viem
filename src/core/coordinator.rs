@@ -3742,7 +3742,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 &tree,
                 work_start,
                 full_range.clone(),
-                flow,
+                &composed_layout,
+                checkpoint.as_ref(),
                 &cancellation,
             )?;
             let stream_overflow = !flow && work_end - work_start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
