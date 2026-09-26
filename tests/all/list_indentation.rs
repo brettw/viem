@@ -546,3 +546,66 @@ fn empty_final_modern_rtf_item_can_indent_and_unindent() {
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
 }
+
+#[test]
+fn toolbar_capabilities_do_not_prepare_edits_or_scan_large_lists() {
+    for count in [32, 12_000] {
+        let markdown = format!("- Parent\n{}  - Target\n- Following", "  - Child\n".repeat(count));
+        let html = format!("<ul><li>Parent<ul>{}<li>Target</li></ul></li><li>Following</li></ul>", "<li>Child</li>".repeat(count));
+        let rtf = modern_rtf(4, false, &format!("Parent\\par\\ilvl1 {}Target\\par\\ilvl0 Following", "Child\\par ".repeat(count)));
+        for (source, format) in [
+            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource),
+            (&html, Format::Html), (&html, Format::HtmlSource), (&rtf, Format::Rtf),
+        ] {
+            let document = open(source, format);
+            let at = document.text().find("Target").unwrap();
+            let (capabilities, work) = measure_document_work(|| document.list_indent_capabilities(at..at));
+            assert_eq!(capabilities, (true, true), "{format:?}: {work:?}");
+            assert_eq!(work.source_full_materializations, 0, "{format:?}: {work:?}");
+            assert_eq!(work.source_decoded_bytes, 0, "{format:?}: {work:?}");
+            assert_eq!(work.full_projection_candidates, 0, "{format:?}: {work:?}");
+            assert_eq!(work.formatted_full_materialized_bytes, 0, "{format:?}: {work:?}");
+            assert_eq!(work.scratch_documents, 0, "{format:?}: {work:?}");
+            assert!(work.list_capability_nodes_visited < 200, "{format:?}: {work:?}");
+            assert!(work.list_capability_blocks_visited < 400, "{format:?}: {work:?}");
+        }
+    }
+}
+
+#[test]
+fn capability_index_follows_local_edits_structure_changes_and_history() {
+    for (source, format) in [
+        ("- A\n- Target\n\nOutside", Format::Markdown),
+        ("- A\n- Target\n\nOutside", Format::MarkdownSource),
+        ("<ul><li>A</li><li>Target</li></ul><p>Outside</p>", Format::Html),
+        ("<ul><li>A</li><li>Target</li></ul><p>Outside</p>", Format::HtmlSource),
+    ] {
+        let mut document = open(source, format);
+        let at = document.text().find("Target").unwrap();
+        assert_eq!(document.list_indent_capabilities(at..at), (true, false));
+        document.replace(at..at, "New ").unwrap();
+        let at = document.text().find("Target").unwrap();
+        assert_eq!(document.list_indent_capabilities(at..at), (true, false));
+        apply(&mut document, at..at, false).unwrap();
+        let at = document.text().find("Target").unwrap();
+        assert_eq!(document.list_indent_capabilities(at..at), (false, true));
+        assert!(document.undo());
+        let at = document.text().find("Target").unwrap();
+        assert_eq!(document.list_indent_capabilities(at..at), (true, false));
+        assert!(document.redo());
+        let at = document.text().find("Target").unwrap();
+        assert_eq!(document.list_indent_capabilities(at..at), (false, true));
+    }
+}
+
+#[test]
+fn recovered_html_lists_do_not_advertise_unavailable_reparenting() {
+    for source in ["<ul><li>A<li>B</ul>", "<ul><li>A</li><li>B</li>"] {
+        for format in [Format::Html, Format::HtmlSource] {
+            let document = open(source, format);
+            let at = document.text().find('B').unwrap();
+            assert_eq!(document.list_indent_capabilities(at..at), (false, false));
+            assert!(document.prepare_list_indent(at..at, false).is_err());
+        }
+    }
+}

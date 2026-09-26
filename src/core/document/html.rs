@@ -520,7 +520,22 @@ fn project_tokens_with_style_context(
     let lexical_tokens = tokenize(&input.text);
     let scope_index =
         super::html_scope_index::HtmlScopeIndex::from_tokens(input, revision, &lexical_tokens);
+    // Reparenting requires explicit, balanced list delimiters. Recovery may
+    // synthesize missing list tags for display, but cannot advertise an edit
+    // whose original source has no such boundary.
+    let mut list_stack = Vec::new();
+    let mut list_editable = true;
+    for token in &lexical_tokens {
+        if let TokenKind::Tag(tag) = &token.kind {
+            if list_element(&tag.name) {
+                if tag.end { list_editable &= list_stack.pop() == Some(tag.name.as_str()); }
+                else { list_stack.push(tag.name.as_str()); }
+            }
+        }
+    }
+    list_editable &= list_stack.is_empty();
     let mut builder = Builder::new(input, revision);
+    builder.list_indent_support = Some((list_editable, list_editable));
     builder.style_sheet = inherited_sheet.cloned().unwrap_or_else(|| {
         super::html_styles::read_with_tokens(&input.text, &tokens, &lexical_tokens).sheet
     });
@@ -2510,6 +2525,21 @@ pub(super) fn character_wrapper(properties: &CharacterProperties) -> (String, St
 /// When exactly one conventional element contributed the toggled property,
 /// its two tags are the declared canonicalization boundary. Descendant text
 /// and all unrelated source constructs remain outside these two patches.
+pub(super) fn indexed_conventional_removal(
+    document: &super::Document, source: &Range<usize>, bold: bool,
+) -> Option<Vec<(Range<usize>, String)>> {
+    let index = document.projection().html_scope_index()?;
+    let scopes = index.scopes_at(source.start);
+    let scope = scopes.last()?;
+    let start = index.adjacent_opening_before(source.start, scope)?;
+    let (name, end) = index.adjacent_closing_at(source.end)?;
+    if name != scope.tag.name { return None; }
+    let bytes = document.state().source.bytes_in(start..end)?;
+    let decoded = document.encoding().decode_region(&bytes, start).ok()?;
+    let normalized = super::line_endings::normalize(&decoded, document.file_format());
+    exact_conventional_removal(&normalized, source, bold)
+}
+
 pub(super) fn exact_conventional_removal(
     input: &NormalizedText,
     source: &Range<usize>,

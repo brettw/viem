@@ -840,6 +840,10 @@ pub(super) fn project(
                         })
                         .unwrap_or(super::BlockKind::Paragraph)
                 });
+            builder.list_indent_support = Some(paragraph_list.map_or((false, false), |(id, level, ordered, ..)| {
+                let compatible = |next| list_tables.level(id, next).is_some_and(|target| target.ordered == ordered);
+                (level.checked_add(1).is_some_and(compatible), level.checked_sub(1).is_some_and(compatible))
+            }));
             builder.paragraph_style = state.paragraph_style.clone();
             builder.named_character = state.named_character.clone();
             builder.paragraph = state.paragraph.clone();
@@ -1339,6 +1343,10 @@ pub(super) fn escape_insertion(
     Ok(syntax)
 }
 
+pub(super) fn character_properties_need_tables(properties: &CharacterProperties) -> bool {
+    properties.font_families.is_some() || properties.foreground.is_some() || properties.background.is_some()
+}
+
 pub(super) fn character_patches(
     input: &NormalizedText,
     range: &Range<usize>,
@@ -1519,9 +1527,6 @@ pub(super) fn character_patches(
                 .start
         })
     };
-    let header_insertion = root_control(&tokens, "rtf")
-        .map(|index| builder.source_range(tokens[index].range.clone()).end)
-        .ok_or(UnsupportedFormatting)?;
     let mut new_tables = String::new();
     for (destination, addition) in [("fonttbl", font_additions), ("colortbl", color_additions)] {
         if addition.is_empty() {
@@ -1534,6 +1539,9 @@ pub(super) fn character_patches(
         }
     }
     if !new_tables.is_empty() {
+        let header_insertion = root_control(&tokens, "rtf")
+            .map(|index| builder.source_range(tokens[index].range.clone()).end)
+            .ok_or(UnsupportedFormatting)?;
         patches.push((header_insertion..header_insertion, new_tables));
     }
     patches.push((range.start..range.start, format!("{{{control} ")));

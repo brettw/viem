@@ -684,14 +684,18 @@ fn resolve_block_runs(
     }
 
     let mut boundaries = BTreeSet::from([block.range.start, block.range.end]);
-    for span in input.style_spans {
+    let mut events = Vec::new();
+    for (index, span) in input.style_spans.iter().enumerate() {
         let start = span.range.start.max(block.range.start);
         let end = span.range.end.min(block.range.end);
         if start < end {
             boundaries.insert(start);
             boundaries.insert(end);
+            events.push((start, true, index));
+            events.push((end, false, index));
         }
     }
+    events.sort_unstable();
     // Search presentation supplies sorted, disjoint coverage. Restrict the
     // sweep to this block so dense matches do not make each style interval
     // rescan the entire viewport's match list.
@@ -713,9 +717,19 @@ fn resolve_block_runs(
     let boundaries: Vec<_> = boundaries.into_iter().collect();
 
     let mut match_index = 0;
+    let mut event_index = 0;
+    let mut active = BTreeSet::new();
     for pair in boundaries.windows(2) {
         let range = pair[0]..pair[1];
-        let mut character = resolve_character_at(input, block, range.clone())?;
+        while event_index < events.len() && events[event_index].0 <= range.start {
+            let (_, opening, index) = events[event_index];
+            if opening { active.insert(index); } else { active.remove(&index); }
+            event_index += 1;
+        }
+        // Original span order is the cascade order. A sweep avoids rescanning
+        // every unrelated decoration for each segment of a long source line.
+        let mut character = resolve_character_spans_at(input, block, range.clone(),
+            active.iter().map(|&index| &input.style_spans[index]))?;
         while match_index < search_matches.len() && search_matches[match_index].end <= range.start {
             match_index += 1;
         }
@@ -742,12 +756,18 @@ fn resolve_character_at(
     block: &Block,
     range: Range<usize>,
 ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
-    let sheet = input.style_sheet;
-    let active = input
-        .style_spans
-        .iter()
+    let active = input.style_spans.iter()
         .filter(|span| span.range.start <= range.start && range.end <= span.range.end);
+    resolve_character_spans_at(input, block, range.clone(), active)
+}
 
+fn resolve_character_spans_at<'a>(
+    input: StyleCascadeInput<'a>,
+    block: &Block,
+    range: Range<usize>,
+    active: impl Iterator<Item = &'a StyleSpan>,
+) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+    let sheet = input.style_sheet;
     let mut named: Option<&StyleId> = None;
     let mut semantic = CharacterProperties::default();
     let mut direct = CharacterProperties::default();
@@ -955,6 +975,39 @@ mod tests {
             style_sheet: sheet,
             document_style,
         })
+    }
+
+    #[test]
+    fn span_sweep_preserves_overlapping_cascade_order() {
+        let document = Document::new("x".repeat(257));
+        let projection = document.projection();
+        // Deliberately unordered starts, crossing extents, and coincident
+        // endpoints: source order still decides direct-property precedence.
+        let spans = (0..96).rev().map(|index| {
+            let start = index * 31 % 220;
+            StyleSpan { range: start..start + 1 + index % 30,
+                application: StyleApplication::Direct(CharacterProperties {
+                    bold: Some(index % 2 == 0),
+                    underline: (index % 3 == 0).then_some(true),
+                    size: Some((12.0 + (index % 5) as f32).into()),
+                    ..Default::default()
+                }) }
+        }).collect::<Vec<_>>();
+        let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans,
+            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
+        let actual = DocumentLayoutStyles::resolve_validated(input).unwrap();
+        let mut shapes = Vec::new();
+        let mut paints = Vec::new();
+        for at in 0..257 {
+            let range = at..at + 1;
+            let character = resolve_character_at(input, &projection.blocks()[0], range.clone()).unwrap();
+            let shape = shaping_style(&character).unwrap();
+            let paint = paint_style(&character);
+            if shape != actual.default_shaping_style { push_shape_run(&mut shapes, range.clone(), shape); }
+            if paint != actual.default_paint { push_paint_run(&mut paints, range, paint); }
+        }
+        assert_eq!(actual.shaping_runs, shapes);
+        assert_eq!(actual.paint_runs, paints);
     }
 
     #[test]

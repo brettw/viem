@@ -1,5 +1,5 @@
-//! Structural one-level list indentation. Capability and execution share the
-//! same preparation and candidate verification, including source provenance.
+//! Structural one-level list indentation. Presentation reads parsed structure;
+//! execution additionally prepares and verifies the complete source transaction.
 use super::super::{Block, BlockKind};
 use super::*;
 
@@ -18,13 +18,7 @@ fn level(block: &Block) -> Option<u8> {
     }
 }
 fn item_start(block: &Block) -> bool {
-    matches!(
-        block.kind,
-        BlockKind::ListItem {
-            item_start: true,
-            ..
-        }
-    )
+    block.list_editing.item_start
 }
 
 fn targets(
@@ -38,6 +32,7 @@ fn targets(
         .filter(|(_, block)| {
             if range.is_empty() {
                 block.range.start <= range.start && range.start <= block.range.end
+                    && (range.start < block.range.end || !blocks.iter().any(|next| next.range.start == range.start && next.range.start != block.range.start))
             } else {
                 block.range.start < range.end && range.start < block.range.end
             }
@@ -109,10 +104,35 @@ fn targets(
 
 impl Document {
     pub fn list_indent_capabilities(&self, range: Range<usize>) -> (bool, bool) {
-        (
-            self.prepare_list_indent(range.clone(), false).is_ok(),
-            self.prepare_list_indent(range, true).is_ok(),
-        )
+        if !(self.format().is_wysiwyg() || self.format().is_source_view()) || self.validate_range(&range).is_err() {
+            return (false, false);
+        }
+        let blocks = self.projection().list_indentation_blocks(self.format().is_source_view());
+        let Some(mut selected) = blocks.index_touching_point(range.start) else { return (false, false); };
+        // A nonempty half-open selection excludes the block ending at its
+        // start. Empty carets retain the downstream boundary owner.
+        if !range.is_empty() && blocks.get(selected).is_some_and(|block| block.range.end == range.start) {
+            selected += 1;
+        }
+        let Some(current) = blocks.get(selected) else { return (false, false); };
+        let Some(base) = level(&current).map(|level| u16::from(level) + 1) else { return (false, false); };
+        let last = if range.is_empty() { selected + 1 } else { blocks.partition_point_start(range.end) };
+        if selected >= last { return (false, false); }
+        let lower = |summary: super::super::range_index::NavigationSummary| summary.minimum < base;
+        let boundary = |summary: super::super::range_index::NavigationSummary| lower(summary) || summary.minimum_start <= base;
+        let Some(first) = blocks.find_navigation(0..selected + 1, true, boundary) else { return (false, false); };
+        if blocks.get(first).is_none_or(|block| level(&block).map(|level| u16::from(level) + 1) != Some(base))
+            || blocks.find_navigation(first..last, false, lower).is_some() {
+            return (false, false);
+        }
+        let end = blocks.find_navigation(last..blocks.len(), false, boundary).unwrap_or(blocks.len());
+        let previous = blocks.find_navigation(0..first, true, boundary)
+            .and_then(|index| blocks.get(index)).is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base));
+        let parent = base > 1 && blocks.find_navigation(0..first, true, lower)
+            .and_then(|index| blocks.get(index)).is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base - 1));
+        let indent = previous && blocks.find_navigation(first..end, false, |summary| summary.maximum >= 4 || summary.flags & 1 != 0).is_none();
+        let unindent = parent && blocks.find_navigation(first..end, false, |summary| summary.flags & 2 != 0).is_none();
+        (indent, unindent)
     }
 
     pub fn prepare_list_indent(

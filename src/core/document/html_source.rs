@@ -764,6 +764,43 @@ fn translate_style_impl(
     intent: &PersistedStyleIntent,
     clean_character: bool,
 ) -> Result<TranslatedStyle, ModelTransactionError> {
+    if let PersistedStyleIntent::SetDirectCharacterProperties { range, properties } = intent {
+        document.validate_style_text_range(*range)?;
+        let selected = range.start().offset()..range.end().offset();
+        if let Some(region) = independent_style_region(document, &selected)? {
+            let raw = document.projection().source_range(region.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document.state().source.bytes_in(raw.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            // Run the ordinary semantic translator in the proven independent
+            // fragment. Its identities belong to this scratch document; only
+            // verified source patches are rebased into the original artifact.
+            let mut local = Document::from_bytes_with_file_format(bytes, document.encoding(),
+                Format::HtmlSource, document.file_format())?;
+            let mut state = local.reproject_html_configuration(document.projection().style_sheet())?;
+            state.include_style_definitions_in_file = document.include_style_definitions_in_file();
+            state.projection.install_configuration_styles(state.revision,
+                document.projection().style_sheet().clone(), document.projection().document_style().clone());
+            local.history.initialize_projection(state);
+            let mapped = TextRange::new(local.text_point(selected.start - region.start)?,
+                local.text_point(selected.end - region.start)?)?;
+            let mut translated = translate_style_full(&local,
+                &PersistedStyleIntent::SetDirectCharacterProperties { range: mapped, properties: properties.clone() },
+                clean_character)?;
+            for patch in &mut translated.patches {
+                *patch = SourcePatch::primary(patch.range().start + raw.start..patch.range().end + raw.start, patch.replacement().to_vec());
+            }
+            return Ok(translated);
+        }
+    }
+    translate_style_full(document, intent, clean_character)
+}
+
+fn translate_style_full(
+    document: &Document,
+    intent: &PersistedStyleIntent,
+    clean_character: bool,
+) -> Result<TranslatedStyle, ModelTransactionError> {
     let mut visible = Document::from_bytes_with_file_format(
         document.source_bytes(),
         document.encoding(),
@@ -866,7 +903,7 @@ pub(super) fn independent_fragment(text: &str) -> bool {
             TokenKind::Tag(tag) => {
                 if !matches!(
                     tag.name.as_str(),
-                    "p" | "h1"
+                    "p" | "ul" | "ol" | "li" | "h1"
                         | "h2"
                         | "h3"
                         | "h4"
@@ -897,7 +934,7 @@ pub(super) fn independent_fragment(text: &str) -> bool {
                     }
                 } else if !matches!(tag.name.as_str(), "br" | "wbr") {
                     if stack.is_empty() {
-                        if !html::heading_or_paragraph(&tag.name) {
+                        if !html::heading_or_paragraph(&tag.name) && !matches!(tag.name.as_str(), "ul" | "ol") {
                             return false;
                         }
                         saw_root = true;
@@ -918,6 +955,56 @@ pub(super) fn independent_fragment(text: &str) -> bool {
         }
     }
     saw_root && stack.is_empty()
+}
+
+/// Find a bounded, balanced source-flow region with exactly the existing
+/// semantic entry context. Physical source lines may contain many paragraphs.
+/// Stateful/recovered contexts retain the complete grammar fallback.
+pub(super) fn independent_style_region(
+    document: &Document,
+    selected: &Range<usize>,
+) -> Result<Option<Range<usize>>, ModelTransactionError> {
+    let blocks = document.projection().list_indentation_blocks(true);
+    let Some(mut first) = blocks.index_touching_point(selected.start) else { return Ok(None); };
+    let Some(mut last) = blocks.index_touching_point(selected.end) else { return Ok(None); };
+    for _ in 0..8 {
+        let region = blocks.get(first).unwrap().range.start..blocks.get(last).unwrap().range.end;
+        if region.len() > 4096 { return Ok(None); }
+        let text = document.projection().text_tree().slice(region.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        if text.contains(['\r', '\n']) { return Ok(None); }
+        if independent_fragment(&text) {
+            let raw = document.projection().source_range(region.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document.state().source.bytes_in(raw.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, raw.start)?;
+            let normalized = super::line_endings::normalize(&decoded, document.file_format());
+            let isolated = project_with_configuration(&normalized, document.revision(), raw.start, raw.end,
+                Some(document.projection().style_sheet()));
+            let mut styles = document.projection().style_spans_for_region(&region);
+            if styles.iter().all(|span| region.start <= span.range.start && span.range.end <= region.end) {
+                for span in &mut styles {
+                    span.range = span.range.start - region.start..span.range.end - region.start;
+                }
+                let mut old_blocks = blocks.query_touching(&region);
+                old_blocks.retain(|block| block.range.start < region.end && region.start < block.range.end);
+                for block in &mut old_blocks {
+                    block.id = 0;
+                    block.range = block.range.start - region.start..block.range.end - region.start;
+                }
+                let mut parsed_blocks = isolated.list_indentation_blocks(true).to_vec();
+                for block in &mut parsed_blocks { block.id = 0; }
+                if styles == isolated.style_spans() && old_blocks == parsed_blocks { return Ok(Some(region)); }
+            }
+        }
+        let next_first = first.saturating_sub(1);
+        let next_last = (last + 1).min(blocks.len() - 1);
+        if first == next_first && last == next_last { break; }
+        first = next_first;
+        last = next_last;
+    }
+    Ok(None)
 }
 
 fn map_range(

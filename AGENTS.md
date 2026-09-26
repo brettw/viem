@@ -5041,6 +5041,18 @@ the style editor's controls but edit the current selection or pending typing
 style through the existing direct-formatting transaction. No toolbar action
 owns separate document, selection, or undo state.
 
+Refreshing the toolbar on cursor or selection changes MUST NOT build candidate
+source transactions, decode/reparse the document, or scan unrelated blocks
+and style spans.
+List affordances query the persistent structural index and parser-retained
+adapter capabilities; execution still verifies the source transaction. Native
+selectors retain their menu items and reuse exact-revision style catalogues
+until the document or stylesheet changes. Local inline formatting SHOULD reuse
+verified regional projections, including balanced HTML Source fragments inside
+long physical lines and table-independent RTF character groups. Resolving styled
+runs MUST preserve cascade order without rescanning every unrelated span for
+each text segment.
+
 ### macOS style editor
 
 Use [`docs/Word style.png`](<docs/Word style.png>) as the visual reference for
@@ -7377,8 +7389,9 @@ change actual item nesting by one level, including the item's contained
 paragraphs and child lists. Indent requires a preceding sibling to become the
 parent and cannot move any selected descendant past the fourth level. Unindent
 requires an existing parent; top-level items cannot be unindented. Availability
-uses the same verified preparation as execution, including each adapter's
-source constraints. Existing deeper source lists can still be unindented.
+queries parsed structure and adapter capabilities without preparing edits;
+execution verifies the complete source transaction. Existing deeper source
+lists can still be unindented.
 Modern RTF list items use local level-selector patches when their authored list
 table has a compatible target level; legacy flat RTF lists and unavailable
 target levels leave Indent and Unindent disabled.

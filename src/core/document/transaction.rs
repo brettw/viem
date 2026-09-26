@@ -5176,7 +5176,7 @@ impl Document {
             let prepared = self.prepare_text_edits(edits)?;
             if enabled {
                 if let PreparedPublication::State(candidate) = &prepared.publication {
-                    if !candidate.projection.style_spans().iter().any(|span| {
+                    if !candidate.projection.style_spans_for_region(&(range.start..range.end + added)).iter().any(|span| {
                         span.application == StyleApplication::Semantic(style)
                             && span.range == (range.start..range.end + added)
                     }) {
@@ -5195,20 +5195,22 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
-        let candidate = self.build_verified_candidate(
-            source,
-            self.state().file_format,
-            self.state().file_format_origin,
-            after_revision,
-            CandidateVerification {
-                expected_text: self.text().to_owned(),
-                expected_hard_breaks: None,
-                mismatch_error: DocumentError::VerificationFailed,
-            },
+        let unchanged = self.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let edits = [TextEdit::new(range.clone(), unchanged)];
+        let built = self.build_verified_text_edit_candidate(
+            source, after_revision, self.projection().text_tree(),
+            FormattedTextSpliceStats::default(), &edits, &source_patches,
         )?;
+        let verification_range = if built.work.scope == ProjectionWorkScope::RegionalHardLines {
+            self.line_local_projection_region(&edits, &source_patches)?.map(|region| region.old_formatted)
+        } else { None };
+        let candidate = built.state;
+        let before_styles = verification_range.as_ref().map(|region| self.projection().style_spans_for_region(region));
+        let after_styles = verification_range.as_ref().map(|region| candidate.projection.style_spans_for_region(region));
         if !semantic_style_edit_was_exactly_projected(
-            self.projection().style_spans(),
-            candidate.projection.style_spans(),
+            before_styles.as_deref().unwrap_or_else(|| self.projection().style_spans()),
+            after_styles.as_deref().unwrap_or_else(|| candidate.projection.style_spans()),
             &range,
             style,
             enabled,
@@ -5223,7 +5225,7 @@ impl Document {
             &candidate.projection,
             Vec::new(),
         )?;
-        let projection_work = ProjectionWorkStatistics::full(&candidate);
+        let projection_work = built.work;
         Ok(self.prepared(
             after_revision,
             ModelChangeSummary {
@@ -5236,7 +5238,7 @@ impl Document {
             },
             text_position_map,
             None,
-            self.next_projected_block_id,
+            built.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
     }
@@ -5250,10 +5252,16 @@ impl Document {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<(), ModelTransactionError> {
-        if self.format().is_rich_text()
-            && !style_contributors::boundary_materializations(self, &range)?.is_empty()
-        {
-            return self.prepare_semantic_style(range, style, enabled).map(|_| ());
+        if self.format().is_rich_text() {
+            rich_semantic_properties(style, enabled)?;
+            // The same contributor coverage used by execution, including
+            // indivisible entities, without decoding source or preparing an edit.
+            let mut contributors = range.clone();
+            for edit in style_contributors::boundary_materializations(self, &range)? {
+                contributors.start = contributors.start.min(edit.range.start);
+                contributors.end = contributors.end.max(edit.range.end);
+            }
+            return self.rich_character_source_ranges(&contributors).map(|_| ());
         }
         if self.format() == Format::HtmlSource {
             self.validate_range(&range)?;
@@ -5299,7 +5307,8 @@ impl Document {
         if range.is_empty() {
             return Ok(Vec::new());
         }
-        let containing = self.projection().style_spans().iter().find(|span| {
+        let spans = self.projection().style_spans_for_region(range);
+        let containing = spans.iter().find(|span| {
             span.application == StyleApplication::Semantic(style)
                 && span.range.start <= range.start
                 && range.end <= span.range.end
@@ -5308,10 +5317,7 @@ impl Document {
             if containing.is_some() {
                 return Ok(Vec::new());
             }
-            if self
-                .projection()
-                .style_spans()
-                .iter()
+            if spans.iter()
                 .any(|span| span.range.start < range.end && range.start < span.range.end)
             {
                 return Err(DocumentError::OverlappingFormatting.into());
@@ -5354,12 +5360,7 @@ impl Document {
         ])
     }
 
-    fn rich_character_source_patches(
-        &self,
-        range: &Range<usize>,
-        properties: &CharacterProperties,
-        remove_conventional: Option<SemanticInlineStyle>,
-    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+    fn rich_character_source_ranges(&self, range: &Range<usize>) -> Result<Vec<Range<usize>>, ModelTransactionError> {
         self.validate_range(range)?;
         let mut sources: Vec<Range<usize>> = Vec::new();
         let mut position = range.start;
@@ -5371,7 +5372,8 @@ impl Document {
                 return Err(DocumentError::AmbiguousProjection.into());
             }
             position = span.formatted.end;
-            if self.text().get(span.formatted.clone()) == Some("\n") {
+            if self.projection().text_tree().slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)? == "\n" {
                 continue;
             }
             if let Some(last) = sources
@@ -5386,8 +5388,24 @@ impl Document {
         if position != range.end {
             return Err(DocumentError::AmbiguousProjection.into());
         }
-        let decoded = self.state().encoding.decode(&self.source_bytes())?;
-        let normalized = normalize(&decoded, self.state().file_format);
+        Ok(sources)
+    }
+
+    fn rich_character_source_patches(
+        &self,
+        range: &Range<usize>,
+        properties: &CharacterProperties,
+        remove_conventional: Option<SemanticInlineStyle>,
+    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+        let sources = self.rich_character_source_ranges(range)?;
+        let normalized = if self.format() == Format::Rtf {
+            let decoded = if super::rtf::character_properties_need_tables(properties) {
+                self.state().encoding.decode(&self.source_bytes())?
+            } else {
+                self.encoding().decode_region(&[], 0)?
+            };
+            Some(normalize(&decoded, self.state().file_format))
+        } else { None };
         let mut syntax_patches = Vec::new();
         for source_range in sources {
             let mut authored = properties.clone();
@@ -5411,8 +5429,8 @@ impl Document {
             }
             let local = if self.format() == Format::Html {
                 if let Some(patches) = remove_conventional.and_then(|style| {
-                    super::html::exact_conventional_removal(
-                        &normalized,
+                    super::html::indexed_conventional_removal(
+                        self,
                         &source_range,
                         style == SemanticInlineStyle::Strong,
                     )
@@ -5457,7 +5475,7 @@ impl Document {
                     ]
                 }
             } else {
-                super::rtf::character_patches(&normalized, &source_range, &authored)?
+                super::rtf::character_patches(normalized.as_ref().unwrap(), &source_range, &authored)?
             };
             for patch in local {
                 if !syntax_patches.contains(&patch) {
@@ -5508,23 +5526,30 @@ impl Document {
                 self.rich_character_source_patches(&range, &properties, remove)?;
             validate_source_patches(&mut source_patches)?;
             let source = apply_source_patches(&self.state().source, &source_patches)?;
-            let candidate = self.build_verified_candidate(
-                source,
-                self.state().file_format,
-                self.state().file_format_origin,
-                after_revision,
-                CandidateVerification {
-                    expected_text: self.text().to_owned(),
-                    expected_hard_breaks: None,
-                    mismatch_error: DocumentError::VerificationFailed,
-                },
-            )?;
-            if !super::rich_text::character_edit_verified(
-                self.projection(),
-                &candidate.projection,
-                &range,
-                &properties,
-            ) {
+            let unchanged = self.projection().text_tree().slice(range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let edits = [TextEdit::new(range.clone(), unchanged)];
+            let local = self.build_rich_local_text_edit_candidate(&source, after_revision, self.projection().text_tree(),
+                FormattedTextSpliceStats::default(), &edits, &source_patches,
+                (self.format() == Format::Rtf).then_some(&properties))?;
+            let local = local.filter(|built| super::rich_text::character_edit_verified_in_region(
+                self.projection(), &built.state.projection, &range, &properties, &range));
+            let regional = local.is_some();
+            let (candidate, work, next_id) = if let Some(built) = local {
+                (built.state, built.work, built.next_projected_block_id)
+            } else {
+                let candidate = self.build_verified_candidate(source, self.file_format(), self.state().file_format_origin,
+                    after_revision, CandidateVerification { expected_text: self.text().to_owned(),
+                        expected_hard_breaks: None, mismatch_error: DocumentError::VerificationFailed })?;
+                let work = ProjectionWorkStatistics::full(&candidate);
+                (candidate, work, self.next_projected_block_id)
+            };
+            let verified = if regional {
+                super::rich_text::character_edit_verified_in_region(self.projection(), &candidate.projection, &range, &properties, &range)
+            } else {
+                super::rich_text::character_edit_verified(self.projection(), &candidate.projection, &range, &properties)
+            };
+            if !verified {
                 if remove.is_some() {
                     continue;
                 }
@@ -5538,7 +5563,6 @@ impl Document {
                 &candidate.projection,
                 Vec::new(),
             )?;
-            let work = ProjectionWorkStatistics::full(&candidate);
             return Ok(self.prepared(
                 after_revision,
                 ModelChangeSummary {
@@ -5551,7 +5575,7 @@ impl Document {
                 },
                 map,
                 None,
-                self.next_projected_block_id,
+                next_id,
                 PreparedPublication::State(candidate),
             ));
         }
@@ -5580,10 +5604,8 @@ impl Document {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
 
-        let matching = self
-            .projection()
-            .style_spans()
-            .iter()
+        let spans = self.projection().style_spans_for_region(range);
+        let matching = spans.iter()
             .filter(|span| {
                 span.application == StyleApplication::Semantic(style)
                     && span.range.start <= range.start
@@ -5602,10 +5624,7 @@ impl Document {
             }
         }
         if enabled
-            && self
-                .projection()
-                .style_spans()
-                .iter()
+            && spans.iter()
                 .any(|span| span.range.start < range.end && range.start < span.range.end)
         {
             return Err(DocumentError::OverlappingFormatting.into());
@@ -6387,6 +6406,7 @@ impl Document {
             text_splice_work,
             edits,
             source_patches,
+            None,
         )? {
             return Ok(candidate);
         }
@@ -6580,7 +6600,7 @@ impl Document {
                     source.len(),
                     self.format() == Format::MarkdownSource,
                     self.format().is_literal(),
-                    false,
+                    self.format() == Format::HtmlSource && region.hard_lines.len() == 1,
                     edits,
                     &mut next_projected_block_id,
                 )
@@ -6734,7 +6754,11 @@ impl Document {
         text_work: FormattedTextSpliceStats,
         edits: &[TextEdit],
         patches: &[SourcePatch],
+        rtf_character_properties: Option<&CharacterProperties>,
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
+        let rtf_wrapper = self.format() == Format::Rtf
+            && rtf_character_properties.is_some_and(|properties| !super::rtf::character_properties_need_tables(properties))
+            && edits.len() == 1 && patches.len() == 2;
         if !self.format().is_wysiwyg() || edits.is_empty() || patches.is_empty() {
             return Ok(None);
         }
@@ -6752,7 +6776,7 @@ impl Document {
         let combined_edit;
         let combined_patch;
         let (edit, patch) = if combined {
-            if self.format() != Format::Html
+            if (self.format() != Format::Html && !rtf_wrapper)
                 || edits
                     .windows(2)
                     .any(|pair| pair[1].range.start.saturating_sub(pair[0].range.end) > 1024)
@@ -6858,8 +6882,12 @@ impl Document {
             let decoded = self
                 .encoding()
                 .decode_region(&original, patch.range.start)?;
+            if rtf_wrapper && (decoded.text != edit.replacement || !decoded.text.is_ascii()
+                || decoded.text.contains(['\\', '{', '}'])) {
+                return Ok(None);
+            }
             if decoded.text.contains(['\r', '\n'])
-                || super::html::tokenize(&decoded.text)
+                || !rtf_wrapper && super::html::tokenize(&decoded.text)
                     .iter()
                     .any(|token| match &token.kind {
                         super::html::TokenKind::Text => false,
@@ -6918,7 +6946,7 @@ impl Document {
             // prove that edit; let ordinary source parsing verify it instead.
             return Ok(None);
         };
-        if patch.replacement != canonical_bytes {
+        if patch.replacement != canonical_bytes && !rtf_wrapper {
             if self.format() != Format::Html {
                 return Ok(None);
             }
@@ -7171,6 +7199,7 @@ impl Document {
         let mut decoded_bytes;
         let mut inserted_whitespace_context = Vec::new();
         let mut inserted_html_character_context = None;
+        let mut rtf_generated_styles = Vec::new();
         let collect_whitespace_context = |parsed: &FormattedDocument, parsed_start: usize| {
             let range = parsed_start..parsed_start + edit.replacement.len();
             parsed
@@ -7501,6 +7530,18 @@ impl Document {
                 if parsed.text() != edit.replacement {
                     return Ok(None);
                 }
+                if rtf_wrapper {
+                    // The generated balanced group changes only these sparse
+                    // declarations. Keep inherited named/direct layers beneath
+                    // the parsed control words, and verify the resolved result.
+                    rtf_generated_styles = parsed.style_spans_for_region(&(0..edit.replacement.len()))
+                        .into_iter().filter(|span| matches!(span.application, StyleApplication::Direct(_)))
+                        .map(|mut span| {
+                            span.range = span.range.start + edit.range.start - old_line.start
+                                ..span.range.end + edit.range.start - old_line.start;
+                            span
+                        }).collect();
+                }
                 (parsed.provenance().to_vec(), patch.replacement.len())
             };
             provenance = Vec::new();
@@ -7619,12 +7660,28 @@ impl Document {
             sampled_at = previous.formatted.end - 1;
             decoded_bytes += gap_bytes.len();
         }
-        let insertion_styles = old_styles
+        let mut insertion_styles = old_styles
             .iter()
             .filter(|span| span.range.contains(&sampled_at))
             .filter(|span| span.application != StyleApplication::SourcePreservedWhitespace)
             .map(|span| span.application.clone())
             .collect::<Vec<_>>();
+        if rtf_wrapper {
+            let mut inherited = CharacterProperties::default();
+            insertion_styles.retain(|application| {
+                if let StyleApplication::Direct(properties) = application {
+                    inherited.overlay(properties);
+                    false
+                } else { true }
+            });
+            for span in &mut rtf_generated_styles {
+                if let StyleApplication::Direct(properties) = &mut span.application {
+                    let mut combined = inherited.clone();
+                    combined.overlay(properties);
+                    *properties = combined;
+                }
+            }
+        }
         let mut styles = Vec::new();
         for span in old_styles {
             let prefix_end = if compacted_html_space.is_some()
@@ -7662,6 +7719,7 @@ impl Document {
                 });
             }
         }
+        styles.extend(rtf_generated_styles);
         styles.extend(inserted_whitespace_context);
         styles.sort_by_key(|span| span.range.start);
         let mut merged: Vec<StyleSpan> = Vec::new();
@@ -8163,7 +8221,7 @@ impl Document {
                 // Literal text preserves that choice only while a letter
                 // begins the content both before and after the edit.
                 let starts_with_letter =
-                    |text: &str| text[prefix..].chars().next().is_some_and(char::is_alphabetic);
+                    |text: &str| text[prefix..].trim_start_matches(['*', '_']).chars().next().is_some_and(char::is_alphabetic);
                 !next[prefix..].trim().is_empty()
                     && old[..prefix] == next[..prefix]
                     && old[prefix..].starts_with(' ') == next[prefix..].starts_with(' ')
@@ -8390,6 +8448,12 @@ impl Document {
                 old_formatted = extent.start.max(first_formatted.start)..extent.end.min(last_formatted.end);
             }
         }
+        if self.format() == Format::HtmlSource && first_line == last_line {
+            let selected = edits.first().unwrap().range.start..edits.last().unwrap().range.end;
+            if let Some(region) = super::html_source::independent_style_region(self, &selected)? {
+                old_formatted = region;
+            }
+        }
         let source_lines =
             if self.state().source_hard_lines.len() == self.projection().hard_line_count() {
                 hard_lines.clone()
@@ -8450,7 +8514,7 @@ impl Document {
                 .start
         };
         let mut old_source = old_source_start..old_source_end;
-        if self.format().is_literal()
+        if (self.format().is_literal() || self.format() == Format::HtmlSource)
             && (old_formatted.start != first_formatted.start || old_formatted.end != last_formatted.end)
         {
             old_source = self.projection().source_range(old_formatted.clone())
@@ -8478,7 +8542,7 @@ impl Document {
                 .unwrap();
             let flow_last = self
                 .projection()
-                .presentation_line_at_offset(old_formatted.end, true)
+                .presentation_line_at_offset(old_formatted.end.saturating_sub(1).max(old_formatted.start), true)
                 .unwrap();
             if self
                 .projection()
