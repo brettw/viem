@@ -4,6 +4,13 @@ import ViemAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
+  func listStylePresentation(_ command: EVMenuCommand) -> EVMenuItemPresentation {
+    guard let selected = try? session?.selectedNamedStyles() else { return .disabled }
+    return EVMenuItemPresentation(isEnabled: true,
+      state: command == .bulletedList ? selected.bulletState
+        : command == .numberedList ? selected.numberedState : .off)
+  }
+
   func listIndentPresentation(unindent: Bool) -> EVMenuItemPresentation {
     guard let session,
       let selection = try? session.listSelection(),

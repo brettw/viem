@@ -13687,7 +13687,10 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
             let info = ViemSelectedStylesInfoV1 {
                 struct_size: size_of::<ViemSelectedStylesInfoV1>() as u32,
                 flags: u32::from(selected.paragraph_mixed)
-                    | (u32::from(selected.character_mixed) << 1),
+                    | (u32::from(selected.character_mixed) << 1)
+                    | (u32::from(selected.has_bullets) << 2)
+                    | (u32::from(selected.has_numbering) << 3)
+                    | (u32::from(selected.has_non_list) << 4),
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 style_sheet_revision: core.document().projection().style_sheet().revision.0,

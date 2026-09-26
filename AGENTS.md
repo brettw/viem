@@ -5011,6 +5011,36 @@ dispatches the same typed core command or semantic intention as its keyboard
 equivalent and does not create separate AppKit editing, selection, formatting,
 source, or undo state.
 
+### Formatting toolbar
+
+The document title bar has an upper-right formatting-toolbar toggle, drawn as
+a monochrome thin outline of a horizontal rectangle containing three square
+buttons. Its on state uses the native neutral button fill without an accent
+highlight; its off state is transparent against the title-bar background.
+Both toggle and toolbar are absent in Text and Code. Other formats,
+including Source views, show both by default. Toolbar visibility is remembered
+independently per format in `formattingToolbar` in `config.json`; switching
+formats or focused panes restores that format's choice. macOS implements this
+with native title-bar accessories that share the title bar's appearance.
+
+Left to right, the toolbar contains Paragraph and Character style selectors;
+Bold, Italic, Underline, Strikethrough, character Code, Superscript, Subscript;
+then Text Color and Background Color; then Bulleted List, Numbered List, Code
+Block; then Indent and Unindent. Groups have spacing between them. Unsupported
+format controls are omitted, including colors and rich direct properties in
+Markdown. Supported actions may be temporarily unavailable for a selection.
+Narrow macOS windows keep the controls accessible through horizontal scrolling.
+
+Selectors reflect the current named styles (or Mixed), and use the same exact
+catalogue identities and assignment actions as Style menus. Formatting buttons
+reflect current on/off/mixed state. List toggles use structural membership,
+independent of list depth or named paragraph assignment; activating an already
+uniformly selected list kind removes it. Code toggles assign/clear the existing
+Code character or Code Block paragraph style. Native color wells behave like
+the style editor's controls but edit the current selection or pending typing
+style through the existing direct-formatting transaction. No toolbar action
+owns separate document, selection, or undo state.
+
 ### macOS style editor
 
 Use [`docs/Word style.png`](<docs/Word style.png>) as the visual reference for

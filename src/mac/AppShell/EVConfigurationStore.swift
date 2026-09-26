@@ -104,6 +104,12 @@ public final class EVConfigurationStore {
     Self.editingOptions(root, key: "whitespacePresentation") ?? EVWhitespacePresentationOptions()
   }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
+  public func showFormattingToolbar(for format: EVSourceFormat) -> Bool {
+    (root["formattingToolbar"] as? [String: Bool])?[format.rawValue] ?? true
+  }
+  public func setShowFormattingToolbar(_ visible: Bool, for format: EVSourceFormat) throws {
+    try update(section: "formattingToolbar", values: [format.rawValue: visible])
+  }
   public var recentDocumentURLs: [URL] { Self.recentDocumentURLs(in: root) }
   public var documentWindowFrame: CGRect? {
     Self.documentWindowFrame(in: root)
@@ -331,6 +337,12 @@ public final class EVConfigurationStore {
           guard let boolean = value as? NSNumber, CFGetTypeID(boolean) == CFBooleanGetTypeID() else { throw invalid("\(key) must be Boolean") }
         }
       }
+    }
+    if let raw = object["formattingToolbar"] {
+      guard let fields = raw as? [String: Any], fields.values.allSatisfy({ value in
+        guard let boolean = value as? NSNumber else { return false }
+        return CFGetTypeID(boolean) == CFBooleanGetTypeID()
+      }) else { throw invalid("Formatting toolbar visibility must be Boolean per format") }
     }
     if let value = (object["editing"] as? [String: Any])?["textWidth"], validTextWidth(value) == nil {
       throw invalid("textWidth must be a positive whole number of columns up to 4294967295")

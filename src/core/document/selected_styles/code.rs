@@ -13,6 +13,9 @@ impl FormattedDocument {
             character: None,
             paragraph_mixed: false,
             character_mixed: false,
+            has_bullets: false,
+            has_numbering: false,
+            has_non_list: true,
         };
         let tree = self.text_tree();
         if range.is_empty() {
