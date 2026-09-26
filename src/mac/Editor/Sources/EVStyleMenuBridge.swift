@@ -30,7 +30,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
       EVStyleMenuEntry(
         role: definition.kind.menuRole,
         stableID: definition.key.id.rawValue,
-        displayName: definition.displayTitle,
+        displayName: definition.name,
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
           isEnabled: selection != nil
@@ -76,7 +76,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
       EVStyleMenuEntry(
         role: definition.kind.menuRole,
         stableID: definition.key.id.rawValue,
-        displayName: definition.displayTitle,
+        displayName: definition.name,
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
           isEnabled: true,
@@ -96,16 +96,12 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     ), at: 0)
     // A referenced name is normally generated when its highlighting is
     // published. Until then, choosing it generates and opens its definition.
-    var sortNames = Dictionary(
-      snapshot.definitions.map { ($0.displayTitle, $0.name) }, uniquingKeysWith: { first, _ in first })
     let definedNames = Set(snapshot.definitions.filter { $0.kind == .character }.map(\.name))
     for name in (try? backend.syntaxStyleNames()) ?? [] where !definedNames.contains(name) {
-      let title = EVStyleDefinition.implicitTitle(name)
-      sortNames[title] = name
       entries.append(EVStyleMenuEntry(
         role: .character,
         stableID: "",
-        displayName: title,
+        displayName: name,
         isBase: false,
         presentation: .enabled,
         actionKind: .defineSyntax,
@@ -113,8 +109,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
       ))
     }
     entries.sort {
-      (sortNames[$0.displayName] ?? $0.displayName)
-        .localizedStandardCompare(sortNames[$1.displayName] ?? $1.displayName) == .orderedAscending
+      $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
     }
     return EVStyleMenuCatalogue(
       documentID: state.document_id,

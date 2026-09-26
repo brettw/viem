@@ -2250,7 +2250,10 @@ identities, so an open Styles editor keeps its selection. An edited definition
 based on an implicit one is saved together with that implicit ancestry, so the
 saved sheet never names a missing parent. Editing an implicit definition's
 declarations, parent, or name makes it an ordinary user definition, persisted
-in the sparse sheet. Deleting a definition whose name syntax still emits
+in the sparse sheet. Every explicitly saved definition remains present in the
+Styles picker after reload and restart, even before any syntax provider emits
+its name again; this includes saved definitions with no local declarations.
+Deleting a definition whose name syntax still emits
 records nothing; the next accepted result regenerates it as an empty implicit
 definition. Renaming a definition ends its association with the syntax name:
 the renamed definition keeps its declarations under the new name, and the
@@ -2293,9 +2296,9 @@ Loading does not rewrite the stylesheet file or add undo history.
 In Code, Style > Paragraph and Style > Character are disabled because named
 styles cannot be manually assigned. Style > Edit Styles… and F8 open the global
 Code stylesheet at the caret's current style, using the selection-following
-policy below. The Styles picker exposes global definitions and marks implicit
-definitions with an "(automatic)" suffix. Inspecting styles MUST NOT parse
-unvisited text, wait for a provider, or change source.
+policy below. The Styles picker exposes built-in, user, and generated definitions
+by their ordinary names, without an "(automatic)" suffix. Inspecting styles MUST
+NOT parse unvisited text, wait for a provider, or change source.
 When opened from a Code view, the Styles editor follows subsequent caret and
 selection movement in that view using the policy below while retaining global
 sheet ownership. These are global style edits shared live by Code buffers, with

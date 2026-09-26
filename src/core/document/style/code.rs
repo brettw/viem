@@ -911,6 +911,12 @@ mod tests {
         assert!(resolve_name(&reloaded, "Keyword.directive").is_some());
         assert!(resolve_name(&reloaded, "Variable.member").is_none());
         assert!(reloaded.implicit_characters.is_empty());
+        // A saved definition (including its declaration-free parent) remains
+        // ordinary through a later save and cold load without syntax discovery.
+        let cold = parse_json(&export_snapshot(&reloaded).unwrap()).unwrap();
+        assert_eq!(named(&cold, "Keyword.directive.define"), named(&reloaded, "Keyword.directive.define"));
+        assert_eq!(named(&cold, "Keyword.directive"), named(&reloaded, "Keyword.directive"));
+        assert!(cold.implicit_characters.is_empty());
     }
 
     #[test]
