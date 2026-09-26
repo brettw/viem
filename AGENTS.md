@@ -2458,17 +2458,23 @@ the highlighting path. A source patch in UTF-16 or a CRLF source is not itself
 a valid parser-coordinate edit. Full decoding/projection fallbacks on ordinary
 Code newline edits violate the large-document requirements below.
 
-The initial preferred Tree-sitter language families are **C, C++, Rust, Swift,
-Objective-C, C#, JavaScript, TypeScript, and Python**. Bundle compatible grammar
-artifacts, scanners, highlight queries, and required query dependencies for all
-nine. The package IDs include `c`, `cpp`, `rust`, `swift`, `objc`, `c_sharp`,
-`javascript`, `typescript`, and `python`; TypeScript also bundles the separate
-`tsx` grammar. JavaScript includes JSX queries. C and C++ use unmodified
-nvim-treesitter highlight and injection queries under the Neovim profile,
-with their license; missing query features are added to the host rather than
-by editing those queries. Detection aliases include Vim
-`cs`, `javascriptreact`, and `typescriptreact` without confusing filename,
-language-family, grammar, and query identities.
+The preferred bundled Tree-sitter language families are **C, C++, Rust, Swift,
+Objective-C, C#, JavaScript, TypeScript, Python, and JSON**. Bundle compatible
+grammar artifacts, scanners, highlight queries, and required query dependencies
+for all ten. The package IDs include `c`, `cpp`, `rust`, `swift`, `objc`,
+`c_sharp`, `javascript`, `typescript`, `python`, and `json`; TypeScript also
+bundles the separate `tsx` grammar. JSON and JSONC filename detection use the
+JSON grammar, which accepts comments. All bundled packages use unmodified,
+pinned nvim-treesitter highlight and injection queries under the Neovim profile.
+Retain their Apache license, the Rust and Python highlight queries' original
+MIT licenses and copyright notices, and the copied-file attribution inventory.
+Package these together under `Resources/Licenses/nvim-treesitter` in both native
+apps (inside `Contents` on macOS), including Windows build and publish output.
+Resolve query inheritance, including the shared ECMA and JSX
+queries, before compilation. Add missing query features to the host rather than
+editing those queries. C# preprocessor directives receive directive styles.
+Detection aliases include Vim `cs`, `javascriptreact`, and `typescriptreact`
+without confusing filename, language-family, grammar, and query identities.
 
 Vim script uses the bundled native Vim syntax program. For other selected
 languages, prefer a registered compatible Tree-sitter package.
@@ -2609,6 +2615,12 @@ or back-references compiles to the same bounded byte-mode DFA used for upstream
 patterns run on a budgeted backtracking matcher that charges each step to the
 query's predicate budget; exhaustion is incomplete coverage, never a match or
 a non-match. Malformed patterns reject the package at validation.
+Neovim literal `contains?` and `any-contains?` predicates and their `not-`
+forms use bounded all/any substring matching. Known `conceal` metadata and
+capture-specific `bo.commentstring` metadata are accepted without applying
+those presentation hints. Conceal captures do not emit styles; Code always
+shows every source character, and comment continuation retains its portable
+language-profile policy.
 Unknown/custom Lua handlers and unsupported directives produce diagnostics;
 they are not silently true or ignored. Optional locals queries require explicit
 scope analysis and invalidation; a highlights-only profile cannot claim them.
@@ -5362,7 +5374,7 @@ sessions/viminfo, remote server commands, and full Vim option/regex parity.
 Architecture must not gratuitously prevent these, but do not build speculative
 subsystems for them now.
 
-The Code syntax-provider system, nine bundled Tree-sitter language families,
+The Code syntax-provider system, ten bundled Tree-sitter language families,
 versioned query compatibility, and supported Vim syntax-loading/detection
 profiles specified above are required exceptions. They do not imply general
 Vimscript/Vim9script execution, Neovim Lua plugins, arbitrary runtime
@@ -6921,7 +6933,7 @@ structural gates. All cache and worker budgets must have tested finite defaults.
   persistence/live updates independently of document history and default
   rendering for unresolved names. For supported Vim rules, compare completed
   exact results to pinned Vim 9.2 and record deliberate heuristic/profile
-  differences; the local 9.1.1887 corpus is an additional fixture. For all nine
+  differences; the local 9.1.1887 corpus is an additional fixture. For all ten
   bundled Tree-sitter families and separately loaded packages, compare
   incremental trees/captures to fresh evaluation, including errors, injections,
   Unicode/encoding coordinates, query precedence, and fallback coverage.

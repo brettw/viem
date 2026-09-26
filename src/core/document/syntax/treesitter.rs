@@ -15,6 +15,7 @@ use tree_sitter::{
     QueryMatch, QueryPredicateArg, StreamingIterator, Tree,
 };
 
+mod bundled;
 mod lua_pattern;
 mod native;
 pub use native::{
@@ -33,6 +34,7 @@ pub const BUNDLED_LANGUAGES: &[&str] = &[
     "typescript",
     "tsx",
     "python",
+    "json",
 ];
 
 const MAX_REGISTERED_PACKAGES: usize = 64;
@@ -319,6 +321,12 @@ enum Predicate {
         values: Vec<String>,
         positive: bool,
     },
+    Contains {
+        capture: u32,
+        values: Vec<String>,
+        positive: bool,
+        any: bool,
+    },
     Match {
         capture: u32,
         matcher: Matcher,
@@ -436,98 +444,7 @@ impl TreeSitterPackage {
     }
 
     pub fn bundled(id: &str) -> Result<Arc<Self>, TreeSitterError> {
-        let javascript = include_str!("treesitter/javascript.scm");
-        let c = include_str!("treesitter/c.scm");
-        let c_injections = include_str!("treesitter/c_injections.scm");
-        // nvim-treesitter's inherited query is prepended to the inheriting one.
-        let inherit_c = |source: &str| source.replacen("; inherits: c", "", 1);
-        let (language, highlights, injections, profile) = match id {
-            "c" => (
-                tree_sitter_c::LANGUAGE.into(),
-                c.to_owned(),
-                Some(c_injections.to_owned()),
-                QueryProfile::NeovimV1,
-            ),
-            "cpp" => (
-                tree_sitter_cpp::LANGUAGE.into(),
-                format!("{c}\n{}", inherit_c(include_str!("treesitter/cpp.scm"))),
-                Some(format!(
-                    "{c_injections}\n{}",
-                    inherit_c(include_str!("treesitter/cpp_injections.scm"))
-                )),
-                QueryProfile::NeovimV1,
-            ),
-            "rust" => (
-                tree_sitter_rust::LANGUAGE.into(),
-                tree_sitter_rust::HIGHLIGHTS_QUERY.to_owned(),
-                Some(tree_sitter_rust::INJECTIONS_QUERY.to_owned()),
-                QueryProfile::Upstream,
-            ),
-            "swift" => (
-                tree_sitter_swift::LANGUAGE.into(),
-                tree_sitter_swift::HIGHLIGHTS_QUERY.to_owned(),
-                Some(tree_sitter_swift::INJECTIONS_QUERY.to_owned()),
-                QueryProfile::Upstream,
-            ),
-            "objc" => (
-                tree_sitter_objc::LANGUAGE.into(),
-                format!(
-                    "{}\n{}",
-                    tree_sitter_c::HIGHLIGHT_QUERY,
-                    tree_sitter_objc::HIGHLIGHTS_QUERY.replace("; inherits: c", "")
-                ),
-                None,
-                QueryProfile::Upstream,
-            ),
-            "c_sharp" | "cs" => (
-                tree_sitter_c_sharp::LANGUAGE.into(),
-                include_str!("treesitter/c_sharp.scm").to_owned(),
-                None,
-                QueryProfile::Upstream,
-            ),
-            "javascript" | "javascriptreact" => (
-                tree_sitter_javascript::LANGUAGE.into(),
-                format!(
-                    "{javascript}\n{}",
-                    tree_sitter_javascript::JSX_HIGHLIGHT_QUERY
-                ),
-                Some(include_str!("treesitter/javascript_injections.scm").to_owned()),
-                QueryProfile::Upstream,
-            ),
-            "typescript" => (
-                tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-                format!("{javascript}\n{}", tree_sitter_typescript::HIGHLIGHTS_QUERY),
-                None,
-                QueryProfile::Upstream,
-            ),
-            "tsx" | "typescriptreact" => (
-                tree_sitter_typescript::LANGUAGE_TSX.into(),
-                format!(
-                    "{javascript}\n{}\n{}",
-                    tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-                    tree_sitter_typescript::HIGHLIGHTS_QUERY
-                ),
-                Some(include_str!("treesitter/javascript_injections.scm").to_owned()),
-                QueryProfile::Upstream,
-            ),
-            "python" => (
-                tree_sitter_python::LANGUAGE.into(),
-                tree_sitter_python::HIGHLIGHTS_QUERY.to_owned(),
-                None,
-                QueryProfile::Upstream,
-            ),
-            _ => return Err(TreeSitterError::UnsupportedLanguage(id.to_owned())),
-        };
-        Self::compile(
-            id,
-            1,
-            language,
-            &highlights,
-            injections.as_deref(),
-            profile,
-            &TreeSitterBudget::default(),
-            None,
-        )
+        bundled::package(id)
     }
 }
 
@@ -666,6 +583,19 @@ fn compile_query(
                         positive: op == "any-of?",
                     });
                 }
+                "contains?" | "not-contains?" | "any-contains?" | "not-any-contains?"
+                    if profile == QueryProfile::NeovimV1 && args.len() >= 2 =>
+                {
+                    pattern.predicates.push(Predicate::Contains {
+                        capture: capture(args.first())?,
+                        values: args[1..]
+                            .iter()
+                            .map(|arg| string(Some(arg)))
+                            .collect::<Result<_, _>>()?,
+                        positive: !op.starts_with("not-"),
+                        any: op.contains("any-"),
+                    });
+                }
                 "match?" | "not-match?" | "any-match?" | "any-not-match?" if args.len() == 2 => {
                     let source = string(args.get(1))?;
                     let matcher = match profile {
@@ -735,6 +665,17 @@ fn compile_query(
                     });
                 }
                 "set!" => {
+                    // These known Neovim UI hints do not change Code's literal
+                    // source or its portable comment-continuation policy.
+                    if profile == QueryProfile::NeovimV1
+                        && !injection
+                        && matches!(args.first(), Some(QueryPredicateArg::Capture(_)))
+                        && args.len() == 3
+                        && string(args.get(1))? == "bo.commentstring"
+                    {
+                        string(args.get(2))?;
+                        continue;
+                    }
                     let key = string(args.first())?;
                     let value = args.get(1).map(|v| string(Some(v))).transpose()?;
                     if args.len() > 2 {
@@ -759,6 +700,10 @@ fn compile_query(
                         "injection.include-children" if injection => {
                             pattern.include_children = true
                         }
+                        "conceal"
+                            if profile == QueryProfile::NeovimV1
+                                && !injection
+                                && value.is_some() => {}
                         _ => {
                             return Err(TreeSitterError::UnsupportedQuery(format!(
                                 "property {key}"
@@ -1447,7 +1392,7 @@ fn execute_query(
             let name = compiled.query.capture_names()[capture.index as usize];
             if name.starts_with('_')
                 || name.starts_with("injection.")
-                || matches!(name, "spell" | "nospell")
+                || matches!(name, "spell" | "nospell" | "conceal")
             {
                 continue;
             }
@@ -1601,6 +1546,37 @@ fn predicates_match(
                     yes &= values.iter().any(|v| v.as_bytes() == text) == *positive;
                 }
                 yes
+            }
+            Predicate::Contains {
+                capture,
+                values,
+                positive,
+                any,
+            } => {
+                let mut accepted = !*any;
+                for text in capture_text(found, *capture, input, control)? {
+                    for value in values {
+                        // Bound the worst-case work of the literal byte search,
+                        // including long near-matching needles.
+                        control.charge_predicate(
+                            text.len().max(1).saturating_mul(value.len().max(1)),
+                        )?;
+                        let matched = value.is_empty()
+                            || text.windows(value.len()).any(|part| part == value.as_bytes());
+                        if *any {
+                            accepted |= matched;
+                        } else {
+                            accepted &= matched;
+                        }
+                        if accepted == *any {
+                            break;
+                        }
+                    }
+                    if accepted == *any {
+                        break;
+                    }
+                }
+                accepted == *positive
             }
             Predicate::Match {
                 capture,

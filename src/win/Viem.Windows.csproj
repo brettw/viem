@@ -34,6 +34,9 @@
     <None Include="../../target/$(RustProfile)/viem_core.dll" Link="viem_core.dll" CopyToOutputDirectory="PreserveNewest" />
     <Compile Remove="Tests/**/*.cs" />
     <Content Update="Assets\Viem.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../src/core/document/syntax/treesitter/*.LICENSE;../../src/core/document/syntax/treesitter/nvim.NOTICES.md"
+             Link="Resources/Licenses/nvim-treesitter/%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="CheckRustLibrary" BeforeTargets="BeforeBuild">
     <Error Condition="!Exists('../../target/$(RustProfile)/viem_core.dll')" Text="Build the Rust core first with scripts/build-win.ps1." />

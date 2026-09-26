@@ -12,42 +12,47 @@ pins all transitive build inputs.
 
 | Package | Grammar version | Highlight and injection composition |
 | --- | --- | --- |
-| c | 0.23.4 | nvim-treesitter highlights and injections (NeovimV1) |
-| cpp | 0.23.4 | nvim-treesitter C then C++ highlights and injections (NeovimV1) |
-| rust | 0.23.2 | Crate highlights and macro injections |
-| swift | 0.7.0 | Crate highlights and regex injections |
-| objc | 3.0.2 | C then Objective-C highlights; resolved C inheritance |
-| c_sharp | 0.23.1 | Copied upstream highlight query |
-| javascript | 0.23.1 | Audited JavaScript highlights plus JSX |
-| typescript | 0.23.2 | Audited JavaScript then TypeScript highlights |
-| tsx | 0.23.2 | Audited JavaScript, JSX, then TypeScript highlights |
-| python | 0.23.5 | Crate highlights |
+| c | 0.23.4 | C |
+| cpp | 0.23.4 | C, then C++ |
+| rust | 0.23.2 | Rust |
+| swift | 0.7.3 | Swift |
+| objc | 3.0.2 | C, then Objective-C |
+| c_sharp | 0.23.1 | C# |
+| javascript | 0.23.1 | ECMA, JSX, then JavaScript |
+| typescript | 0.23.2 | ECMA, then TypeScript |
+| tsx | 0.23.2 | ECMA, TypeScript, JSX, then TSX |
+| python | 0.23.5 | Python |
+| json | 0.24.8 | JSON (including comments) |
 
-The copied C# query is from
-[tree-sitter-c-sharp v0.23.1](https://github.com/tree-sitter/tree-sitter-c-sharp/blob/v0.23.1/queries/highlights.scm).
-The JavaScript query starts with
-[tree-sitter-javascript v0.23.1](https://github.com/tree-sitter/tree-sitter-javascript/blob/v0.23.1/queries/highlights.scm).
-Their upstream MIT licenses are adjacent to the query files.
-
-The C and C++ queries are copied unmodified from
-[nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter) commit
-40cca05b40438ddd74125132b0cec58c9afdccb2 (`runtime/queries/{c,cpp}`), whose
-Apache-2.0 license is adjacent as `c.LICENSE` and `cpp.LICENSE`. They compile
-against the pinned 0.23.4 grammars. The C++ files' `; inherits: c` is resolved
-by prepending the C query, as nvim-treesitter does. Their injections name
-`comment`, `doxygen`, `printf` and `re2c`, which have no bundled provider and so
-are not injected (Vim's doxygen syntax does not load in the native profile);
-macro bodies inject C/C++ into themselves and raw strings inject the language
-named by their delimiter.
-
-JavaScript's two local-variable-sensitive builtin classification patterns are
-omitted. Generic identifier/function captures remain. This highlights-only
-package does not claim local-variable analysis. Its audited injection query
-recognizes tagged-template fragments, regex patterns and JSDoc comments. A
-template fragment is an independent language region; it is not silently joined
-with unrelated templates. TypeScript uses its own grammar and TSX its separate
+All highlight and injection query files are copied unmodified from
+[nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter/tree/f603a2f4da48728f80257fb5fbb90145fd1dc173/runtime/queries)
+commit `f603a2f4da48728f80257fb5fbb90145fd1dc173`, except Swift's queries,
+which use compatible commit `13ddd4d7522ce3e5a1abc0ea34e10ec4e445908a`.
+The newer Swift queries require unreleased grammar nodes (including
+`nil_literal`); the compatible queries retain upstream's literal `"nil"` rule.
+Their Apache-2.0 license is adjacent as `nvim.LICENSE`. Rust and Python's
+highlight queries also retain MIT source notices, with the complete texts in
+`rust.LICENSE` and `python.LICENSE`. `nvim.NOTICES.md` maps every copied file
+to its origin. All four notice/license files are included in macOS and Windows
+app output under `Resources/Licenses/nvim-treesitter` (inside `Contents` on
+macOS). All packages select the NeovimV1 profile.
+`bundled.rs` resolves each file's `; inherits:` dependencies recursively,
+prepending each shared query once and removing only those loader headers
+from the compiled source. ECMA and JSX are query dependencies, not separately
+registered grammars. TypeScript uses its own grammar and TSX its separate
 grammar. Vim aliases cs, javascriptreact, and typescriptreact resolve to
 the corresponding family.
+
+The Swift grammar was updated to support the nodes used by these queries.
+The remaining existing grammars compile the pinned queries without upgrades.
+C# directives such as `#if` and `#endif` emit `Keyword.directive`; `DEBUG` in
+`#if DEBUG` emits `Constant`. JSON and JSONC filename detection selects the
+JSON package, including inside language-tagged injections.
+
+Queries may request child languages such as `comment`, `doxygen`, `printf`,
+`regex`, or `jsdoc`. A child is used only when a compatible Tree-sitter package
+or loadable bundled Vim syntax is available. Missing children leave the host
+highlighting intact. No locals-query scope analysis is claimed.
 
 ## Validation and matching
 
@@ -78,9 +83,16 @@ handlers. Single-capture supported handlers preserve Neovim behavior.
 `string.find` does. A pattern without `%b`, `%f` or a back-reference compiles
 to the same bounded byte DFA as upstream `match?`; the others run a port of
 Lua's backtracking matcher that charges every step to the predicate budget.
-Malformed patterns reject the package. `injection.self` injects the package's
-own language. Custom Lua, locals scopes, concealment, arbitrary metadata and
-unknown directives reject the package; they do not become successful predicates.
+Malformed patterns reject the package. Neovim `contains?`, `any-contains?`,
+and their `not-` forms perform bounded literal substring searches with Neovim's
+all/any semantics. `injection.self` injects the package's own language.
+
+Known `conceal` metadata and capture-specific `bo.commentstring` metadata are
+accepted as presentation hints without applying them: Code always shows literal
+source, and comment continuation uses its portable language profiles. The
+`conceal` capture never emits a visual style or overrides ordinary captures.
+Custom Lua, locals scopes, arbitrary metadata and unknown directives still
+reject the package; they do not become successful predicates.
 
 Query inheritance and extensions are composition responsibilities of a package
 loader. The bundled combinations above resolve their dependencies explicitly;

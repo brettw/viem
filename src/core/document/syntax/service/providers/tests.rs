@@ -178,6 +178,41 @@ fn embedded_provider_replaces_host_coverage_and_matches_fresh_after_language_cha
 }
 
 #[test]
+fn nvim_json_injections_use_the_bundled_parser_in_javascript_and_rust() {
+    let _registry = treesitter::package_registry_test_guard();
+    for (language, text) in [
+        (
+            "javascript",
+            "const value = json`{\"enabled\": true, \"count\": 42}`;\n",
+        ),
+        (
+            "rust",
+            "fn main() { let value = json!({\"enabled\": true, \"count\": 42}); }\n",
+        ),
+    ] {
+        let result = finish(&mut BackendProvider::default(), &request(text, language, 1));
+        assert_eq!(
+            result.coverage,
+            Coverage::Exact,
+            "{language}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            name_at(&result, text, "enabled").as_deref(),
+            Some("Property")
+        );
+        assert_eq!(name_at(&result, text, "true").as_deref(), Some("Boolean"));
+        assert!(
+            result
+                .runs
+                .iter()
+                .any(|run| run.origin.starts_with("treesitter:json:")),
+            "{language}"
+        );
+    }
+}
+
+#[test]
 fn cancelled_provider_does_not_load_fallback_or_parse() {
     let _registry = treesitter::package_registry_test_guard();
     let req = request("int x;", "c", 1);
