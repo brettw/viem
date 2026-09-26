@@ -61,6 +61,13 @@ rm -rf "$resources_dir/vim"
 cp -R "$project_dir/assets/vim" "$resources_dir/vim"
 python3 "$script_dir/vim-runtime.py" verify "$resources_dir/vim"
 
+# The syntax queries are embedded in the Rust library; distribute their
+# upstream licenses and attribution inventory alongside the executable.
+query_source_dir="$project_dir/src/core/document/syntax/treesitter"
+query_license_dir="$resources_dir/Licenses/nvim-treesitter"
+mkdir -p "$query_license_dir"
+cp "$query_source_dir/"*.LICENSE "$query_source_dir/nvim.NOTICES.md" "$query_license_dir/"
+
 codesign --force --sign - "$app_bundle"
 # Nested resource updates do not change the bundle directory's modification
 # time. Refresh it so Launch Services notices icon and metadata changes.

@@ -19,6 +19,33 @@ fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
     }
 }
 
+#[test]
+fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
+    for (filename, source) in [
+        (
+            "settings.json",
+            "{\"enabled\": true, \"text\": \"a\\\"b\"}\n",
+        ),
+        ("settings.jsonc", "// settings\n{\"enabled\": true}\n"),
+    ] {
+        let document = Document::from_bytes(
+            source.as_bytes().to_vec(),
+            Encoding::Utf8,
+            Format::PlainText,
+        )
+        .unwrap();
+        let mut core = Core::<MockTextMeasurementProvider>::new(document);
+        core.initialize_code_detection(filename, true).unwrap();
+        assert_eq!(core.document().format(), Format::Code);
+        assert_eq!(
+            core.code_language_detection().unwrap().language.as_deref(),
+            Some("json")
+        );
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert!(!core.document().is_dirty());
+    }
+}
+
 fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     let output = core
         .handle(view, CoreEvent::Input(InputEvent::Key(key)))

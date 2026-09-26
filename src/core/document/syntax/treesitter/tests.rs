@@ -49,6 +49,19 @@ fn custom(source: &str, profile: QueryProfile) -> Arc<TreeSitterPackage> {
 }
 
 #[test]
+fn all_bundled_nvim_queries_compile() {
+    let failures: Vec<_> = BUNDLED_LANGUAGES
+        .iter()
+        .filter_map(|id| {
+            TreeSitterPackage::bundled(id)
+                .err()
+                .map(|error| format!("{id}: {error}"))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn every_bundled_grammar_compiles_queries_parses_and_highlights() {
     let fixtures = [
         ("c", "int main(void) { return 42; }\n"),
@@ -76,6 +89,7 @@ fn every_bundled_grammar_compiles_queries_parses_and_highlights() {
         ),
         ("tsx", "const element: JSX.Element = <div>hello</div>;\n"),
         ("python", "def answer():\n    return 42\n"),
+        ("json", "{\"answer\": 42, \"enabled\": true, \"items\": [null, \"text\"]}\n"),
     ];
     for (language, text) in fixtures {
         let package =
@@ -99,6 +113,331 @@ fn every_bundled_grammar_compiles_queries_parses_and_highlights() {
             .runs
             .windows(2)
             .all(|p| p[0].range.end <= p[1].range.start));
+    }
+}
+
+#[test]
+fn nvim_language_captures_include_directives_and_inherited_queries() {
+    let fixtures = [
+        ("c_sharp", "#if DEBUG\nclass Example {}\n#elif TRACE\nclass Other {}\n#else\nclass Release {}\n#endif\n",
+         vec![("#if", "Keyword.directive"), ("DEBUG", "Constant"), ("#elif", "Keyword.directive"),
+              ("#else", "Keyword.directive"), ("#endif", "Keyword.directive"), ("Example", "Type")]),
+        ("rust", "fn main() { debug_assert!(true); let x = Some(1); }\n",
+         vec![("debug_assert", "Keyword.exception"), ("Some", "Constant.builtin")]),
+        ("swift", "#if DEBUG\nlet answer = 42\n#endif\n",
+         vec![("#if DEBUG", "Keyword.directive"), ("42", "Number")]),
+        ("objc", "#import <Foundation/Foundation.h>\n@interface Example : NSObject\n@end\n",
+         vec![("#import", "Keyword.import"), ("Example", "Type")]),
+        ("javascript", "const value = <div title=\"hello\">text</div>;\n",
+         vec![("const", "Keyword"), ("div", "Tag.builtin"), ("title", "Tag.attribute")]),
+        ("typescript", "const count: number = 42;\n",
+         vec![("const", "Keyword"), ("number", "Type.builtin"), ("42", "Number")]),
+        ("tsx", "const value: number = 42; const element = <div title=\"hello\" />;\n",
+         vec![("const", "Keyword"), ("number", "Type.builtin"), ("div", "Tag.builtin"), ("title", "Tag.attribute")]),
+        ("python", "@staticmethod\ndef answer():\n    return True\n",
+         vec![("staticmethod", "Attribute.builtin"), ("answer", "Function"), ("True", "Boolean")]),
+    ];
+    for (language, text, expected) in fixtures {
+        let mut session =
+            TreeSitterSession::new(TreeSitterPackage::bundled(language).unwrap()).unwrap();
+        let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+        assert!(
+            !snapshot.has_errors(),
+            "{language}: {}",
+            snapshot.tree.root_node().to_sexp()
+        );
+        let result = highlight(
+            &snapshot,
+            0..text.len(),
+            &generous(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            result.coverage,
+            Coverage::Exact,
+            "{language}: {:?}",
+            result.diagnostic
+        );
+        for (needle, expected) in expected {
+            let offset = text.find(needle).unwrap();
+            let name = result
+                .runs
+                .iter()
+                .find(|run| run.range.contains(&offset))
+                .map(|run| run.name.as_str());
+            assert_eq!(name, Some(expected), "{language}: {needle}");
+        }
+    }
+}
+
+#[test]
+fn json_styles_preserve_quotes_escapes_and_comments() {
+    let text = "{\"key\": \"say \\\"hi\\\"\", \"n\": -1.5e2, \"b\": true, \"a\": [false, null]} // comment\n";
+    let mut session = TreeSitterSession::new(TreeSitterPackage::bundled("json").unwrap()).unwrap();
+    let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+    assert!(!snapshot.has_errors());
+    let result = highlight(
+        &snapshot,
+        0..text.len(),
+        &generous(),
+        &AtomicBool::new(false),
+    );
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostic);
+    for (needle, expected) in [
+        ("\"key\"", "Property"),
+        ("\"say", "String"),
+        ("\\\"hi", "String.escape"),
+        ("-1.5e2", "Number"),
+        ("true", "Boolean"),
+        ("false", "Boolean"),
+        ("null", "Constant.builtin"),
+        ("{", "Punctuation.bracket"),
+        (":", "Punctuation.delimiter"),
+        ("// comment", "Comment"),
+    ] {
+        let offset = text.find(needle).unwrap();
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .find(|r| r.range.contains(&offset))
+                .map(|r| r.name.as_str()),
+            Some(expected),
+            "{needle}"
+        );
+    }
+    assert!(!result.runs.iter().any(|run| run.name.as_str() == "Conceal"));
+    assert_eq!(snapshot.input().slice(0..text.len()).unwrap(), text);
+}
+
+#[test]
+fn all_nvim_packages_match_fresh_highlighting_after_incremental_edits() {
+    for (language, text, old_token, new_token) in [
+        ("c", "int value = 42;\n", "42", "1.5"),
+        ("cpp", "auto value = nullptr;\n", "nullptr", "false"),
+        (
+            "rust",
+            "fn main() { debug_assert!(true); }\n",
+            "debug_assert",
+            "println",
+        ),
+        ("swift", "let value = true\n", "true", "nil"),
+        (
+            "objc",
+            "@interface Example : NSObject\n@end\n",
+            "Example",
+            "Changed",
+        ),
+        (
+            "c_sharp",
+            "#if DEBUG\nclass Example {}\n#endif\n",
+            "DEBUG",
+            "true",
+        ),
+        (
+            "javascript",
+            "const value = <div title=\"hi\" />;\n",
+            "title",
+            "href",
+        ),
+        (
+            "typescript",
+            "const value: number = 42;\n",
+            "number",
+            "string",
+        ),
+        (
+            "tsx",
+            "const value = <div title=\"hi\" />;\n",
+            "title",
+            "href",
+        ),
+        ("python", "value = True\n", "True", "None"),
+        ("json", "{\"value\": true}\n", "true", "null"),
+    ] {
+        let package = TreeSitterPackage::bundled(language).unwrap();
+        let mut session = TreeSitterSession::new(package.clone()).unwrap();
+        let old = input(text, 0);
+        let (original, _) = parsed(&mut session, old.clone(), &[]);
+        let original_runs = highlight(
+            &original,
+            0..text.len(),
+            &generous(),
+            &AtomicBool::new(false),
+        )
+        .runs;
+        let at = text.find(old_token).unwrap();
+        let changed = text.replacen(old_token, new_token, 1);
+        let new = input(&changed, 1);
+        let edit = SyntaxInputEdit::new(
+            &old,
+            &new,
+            at..at + old_token.len(),
+            at..at + new_token.len(),
+        )
+        .unwrap();
+        let (incremental, _) = parsed(&mut session, new.clone(), &[edit]);
+        let (fresh, _) = parsed(&mut TreeSitterSession::new(package).unwrap(), new, &[]);
+        assert!(!incremental.has_errors(), "{language}");
+        let result = highlight(
+            &incremental,
+            0..changed.len(),
+            &generous(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(
+            result.coverage,
+            Coverage::Exact,
+            "{language}: {:?}",
+            result.diagnostic
+        );
+        assert_eq!(
+            result.runs,
+            highlight(
+                &fresh,
+                0..changed.len(),
+                &generous(),
+                &AtomicBool::new(false)
+            )
+            .runs,
+            "{language}"
+        );
+        assert_eq!(
+            original_runs,
+            highlight(
+                &original,
+                0..text.len(),
+                &generous(),
+                &AtomicBool::new(false)
+            )
+            .runs,
+            "retained {language}"
+        );
+    }
+}
+
+#[test]
+fn json_large_document_edits_and_regional_queries_stay_local() {
+    let text = format!("[\n{}null\n]\n", "{\"key\": true},\n".repeat(10_000));
+    let package = TreeSitterPackage::bundled("json").unwrap();
+    let mut session = TreeSitterSession::new(package.clone()).unwrap();
+    let old = input(&text, 0);
+    let (original, _) = parsed(&mut session, old.clone(), &[]);
+    assert!(!original.has_errors());
+    let at = text.find("true").unwrap();
+    let changed = text.replacen("true", "null", 1);
+    let new = input(&changed, 1);
+    let edit = SyntaxInputEdit::new(&old, &new, at..at + 4, at..at + 4).unwrap();
+    let (snapshot, work) = parsed(&mut session, new, &[edit]);
+    assert!(work.input_bytes_supplied < 32 * 1024, "{work:?}");
+    let result = highlight(&snapshot, 0..32, &generous(), &AtomicBool::new(false));
+    assert_eq!(result.coverage, Coverage::Exact);
+    assert!(result.work.query_matches < 128, "{:?}", result.work);
+    assert_eq!(
+        result
+            .runs
+            .iter()
+            .find(|r| r.range.contains(&at))
+            .unwrap()
+            .name
+            .as_str(),
+        "Constant.builtin"
+    );
+}
+
+#[test]
+fn neovim_contains_matches_literal_text_with_all_any_and_negation() {
+    for (predicate, expected) in [
+        ("contains? @name \"assert\" \"debug\"", vec!["debug_assert"]),
+        (
+            "any-contains? @name \"assert\" \"print\"",
+            vec!["debug_assert", "assert_eq", "print"],
+        ),
+        (
+            "not-contains? @name \"assert\" \"debug\"",
+            vec!["assert_eq", "print", "other"],
+        ),
+        (
+            "not-any-contains? @name \"assert\" \"print\"",
+            vec!["other"],
+        ),
+        ("contains? @name \".*\"", vec![]),
+        (
+            "contains? @name \"\"",
+            vec!["debug_assert", "assert_eq", "print", "other"],
+        ),
+    ] {
+        let package = custom(
+            &format!("((identifier) @name (#{predicate}))"),
+            QueryProfile::NeovimV1,
+        );
+        let mut session = TreeSitterSession::new(package).unwrap();
+        let text = "int debug_assert, assert_eq, print, other;";
+        let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+        let result = highlight(
+            &snapshot,
+            0..text.len(),
+            &generous(),
+            &AtomicBool::new(false),
+        );
+        assert_eq!(result.coverage, Coverage::Exact);
+        assert_eq!(
+            result
+                .runs
+                .iter()
+                .map(|r| &text[r.range.clone()])
+                .collect::<Vec<_>>(),
+            expected,
+            "{predicate}"
+        );
+        let limited = TreeSitterBudget {
+            max_predicate_steps: 1,
+            ..generous()
+        };
+        let result = highlight(&snapshot, 0..text.len(), &limited, &AtomicBool::new(false));
+        assert_ne!(
+            result.coverage,
+            Coverage::Exact,
+            "predicate exhaustion cannot claim a complete result"
+        );
+    }
+}
+
+#[test]
+fn neovim_ui_metadata_never_hides_source_or_accepts_unknown_properties() {
+    let package = custom(
+        concat!(
+            "(identifier) @variable\n",
+            "((identifier) @conceal (#set! conceal \"\"))\n",
+            "((identifier) @_node (#set! @_node bo.commentstring \"// %s\"))\n",
+        ),
+        QueryProfile::NeovimV1,
+    );
+    let mut session = TreeSitterSession::new(package).unwrap();
+    let (snapshot, _) = parsed(&mut session, input("int value;", 0), &[]);
+    let result = highlight(&snapshot, 0..10, &generous(), &AtomicBool::new(false));
+    assert_eq!(result.coverage, Coverage::Exact);
+    assert_eq!(result.runs.len(), 1);
+    assert_eq!(result.runs[0].name.as_str(), "Variable");
+    for query in [
+        "((identifier) @name (#set! @name arbitrary \"x\"))",
+        "((identifier) @name (#set! conceal))",
+        "((identifier) @name (#set! bo.commentstring \"x\"))",
+    ] {
+        assert!(
+            TreeSitterPackage::compile(
+                "bad",
+                1,
+                tree_sitter_c::LANGUAGE.into(),
+                query,
+                None,
+                QueryProfile::NeovimV1,
+                &generous(),
+                None
+            )
+            .is_err(),
+            "{query}"
+        );
     }
 }
 

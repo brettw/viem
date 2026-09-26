@@ -24,7 +24,9 @@ workers outside core/mailbox locks. Closing a buffer cancels work without
 waiting for a native callback or destructor.
 
 The bundled families are C, C++, Rust, Swift, Objective-C, C#, JavaScript with
-JSX, TypeScript with its separate TSX grammar, and Python. Package registration
+JSX, TypeScript with its separate TSX grammar, Python, and JSON (including
+JSONC comments). Every bundled package uses pinned nvim-treesitter highlight
+and injection queries with their inherited dependencies. Package registration
 accepts a validated grammar/query package with a retained native resource owner;
 additional platform integrations can provide that owner and use the same
 snapshot/coverage interface. Package generation changes invalidate pending
