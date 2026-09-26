@@ -195,7 +195,9 @@ fn late_source_paragraph_edit_keeps_regional_work_after_many_hidden_separators()
         .unwrap();
     let work = prepared.summary().projection_work();
     assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
-    assert!(work.projected_hard_lines() <= 3);
+    // The edited paragraph and each neighboring paragraph, however far
+    // into the document the edit is.
+    assert!(work.projected_hard_lines() <= 6);
     assert!(work.decoded_source_bytes() < 200);
     document.commit_model_transaction(prepared).unwrap();
     let fresh = Document::from_bytes(
