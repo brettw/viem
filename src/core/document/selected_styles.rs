@@ -13,6 +13,11 @@ pub struct SelectedNamedStyles {
     pub character: Option<StyleId>,
     pub paragraph_mixed: bool,
     pub character_mixed: bool,
+    /// Structural list membership is independent of named paragraph styles
+    /// and nesting depth. A selection may contain more than one kind.
+    pub has_bullets: bool,
+    pub has_numbering: bool,
+    pub has_non_list: bool,
 }
 
 impl FormattedDocument {
@@ -84,6 +89,9 @@ impl FormattedDocument {
         let mut active_paragraphs = BTreeMap::new();
         let mut active_characters = BTreeMap::new();
         let mut active_code = BTreeSet::new();
+        let mut has_bullets = false;
+        let mut has_numbering = false;
+        let mut has_non_list = false;
         for point in boundaries {
             if point == end && start != end {
                 break;
@@ -121,6 +129,11 @@ impl FormattedDocument {
                 .map(|(_, id)| id.clone())
                 .or_else(|| block.map(|block| block.style.clone()))
                 .unwrap_or_else(|| self.style_sheet().base_paragraph.clone());
+            match block.map(|block| &block.kind) {
+                Some(super::BlockKind::ListItem { ordered: false, .. }) => has_bullets = true,
+                Some(super::BlockKind::ListItem { ordered: true, .. }) => has_numbering = true,
+                _ => has_non_list = true,
+            }
             let character = active_characters
                 .last_key_value()
                 .map(|(_, id)| id.clone())
@@ -138,6 +151,9 @@ impl FormattedDocument {
             }
         }
         SelectedNamedStyles {
+            has_bullets,
+            has_numbering,
+            has_non_list,
             paragraph_mixed: paragraphs.len() > 1,
             character_mixed: characters.len() > 1,
             paragraph: (paragraphs.len() == 1).then(|| paragraphs.into_iter().next().unwrap()),
@@ -150,6 +166,38 @@ impl FormattedDocument {
 mod tests {
     use super::*;
     use crate::document::{Document, Encoding, Format};
+
+    #[test]
+    fn list_membership_ignores_depth_and_retains_mixed_non_list_content() {
+        for (format, source) in [
+            (Format::Markdown, "- One\n  - Two\n\nPlain"),
+            (
+                Format::Html,
+                "<ul><li>One<ul><li>Two</li></ul></li></ul><p>Plain</p>",
+            ),
+        ] {
+            let document =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let projection = document.projection();
+            let lists = projection.selected_named_styles(0..7, BoundaryAffinity::Downstream);
+            assert!(lists.has_bullets);
+            assert!(!lists.has_numbering);
+            assert!(!lists.has_non_list);
+            assert!(lists.paragraph_mixed);
+            let mixed = projection.selected_named_styles(
+                0..document.text().len(),
+                BoundaryAffinity::Downstream,
+            );
+            assert!(mixed.has_bullets);
+            assert!(mixed.has_non_list);
+            assert!(!mixed.has_numbering);
+            let edge = projection.selected_named_styles(0..8, BoundaryAffinity::Downstream);
+            assert!(
+                !edge.has_non_list,
+                "The paragraph at a half-open upper edge is unselected"
+            );
+        }
+    }
 
     #[test]
     fn empty_terminal_paragraph_reports_its_own_style_for_either_affinity() {

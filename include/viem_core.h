@@ -2543,6 +2543,10 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
  * have zero bytes. The output is tied to the exact document revision. */
 #define VIEM_SELECTED_STYLE_PARAGRAPH_MIXED (1u << 0)
 #define VIEM_SELECTED_STYLE_CHARACTER_MIXED (1u << 1)
+/* Structural membership, independent of style assignment and list depth. */
+#define VIEM_SELECTED_STYLE_HAS_BULLETS (1u << 2)
+#define VIEM_SELECTED_STYLE_HAS_NUMBERING (1u << 3)
+#define VIEM_SELECTED_STYLE_HAS_NON_LIST (1u << 4)
 typedef struct ViemSelectedStylesInfoV1 {
   uint32_t struct_size;
   uint32_t flags;

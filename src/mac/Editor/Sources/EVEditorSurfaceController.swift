@@ -17,6 +17,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
+    lazy var formattingToolbar = EVFormattingToolbarView(surface: self)
     public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
 
     let backend: EVCoreDocumentBackend
@@ -820,7 +821,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .bulletedList, .numberedList, .removeList:
-            EVMenuItemPresentation(isEnabled: (try? session?.listSelection()) != nil)
+            listStylePresentation(menuCommand)
         case .increaseIndent, .decreaseIndent:
             listIndentPresentation(unindent: menuCommand == .decreaseIndent)
         case .save, .saveAs, .pageSetup,

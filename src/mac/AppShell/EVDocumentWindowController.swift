@@ -44,6 +44,8 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var sourceCommandCount = 0
   private let placement: EVDocumentWindowPlacement
   private var initialWindowFrame: NSRect?
+  private lazy var formattingToolbar = EVFormattingToolbarChrome(
+    window: window!, configuration: .shared)
 
   /// Injectable I/O boundary for launch and argument-list opens.
   var argumentDocumentOpener: ((URL, String?, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
@@ -100,6 +102,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     shouldCascadeWindows = false
     documentContentController.document = document
     (editorSurface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
+    updateActiveDocumentChrome()
   }
 
   public static func windowShowing(document: EVDocument) -> NSWindow? {
@@ -173,6 +176,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   func updateActiveDocumentChrome() {
     guard !isClosed, let document = activeDocument else { return }
+    formattingToolbar.synchronize(surface: editorSurface)
     window?.title =
       document.displayName
       + (paneContainer.panes.count > 1 ? " · \(paneContainer.panes.count) panes" : "")

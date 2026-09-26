@@ -1,3 +1,4 @@
+import AppKit
 import CViemCore
 
 struct EVSelectedNamedStyles {
@@ -6,6 +7,16 @@ struct EVSelectedNamedStyles {
   let character: EVStyleID?
   let paragraphMixed: Bool
   let characterMixed: Bool
+  let hasBullets: Bool
+  let hasNumbering: Bool
+  let hasNonList: Bool
+
+  var bulletState: NSControl.StateValue {
+    hasBullets ? (hasNumbering || hasNonList ? .mixed : .on) : .off
+  }
+  var numberedState: NSControl.StateValue {
+    hasNumbering ? (hasBullets || hasNonList ? .mixed : .on) : .off
+  }
 }
 
 extension EVCoreViewSession {
@@ -36,7 +47,10 @@ extension EVCoreViewSession {
       character: info.character_id_bytes == 0
         ? nil : EVStyleID(rawValue: String(decoding: bytes[split...], as: UTF8.self)),
       paragraphMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0,
-      characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0)
+      characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0,
+      hasBullets: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_BULLETS) != 0,
+      hasNumbering: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NUMBERING) != 0,
+      hasNonList: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_LIST) != 0)
   }
 }
 
