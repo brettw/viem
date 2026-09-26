@@ -632,7 +632,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             return
         }
         switch menuCommand {
-        case .editCharacterStyles, .editParagraphStyles, .editStyles:
+        case .editStyles:
             EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
             return
         case .reloadStyleSheet:
@@ -773,7 +773,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                let (property, value) = directParagraphEdit(for: menuCommand) {
                 performInput { _ = try session.editDirectProperty(property, value: value, expected: session.listSelection()) }
             }
-        case .editCharacterStyles, .editParagraphStyles, .editStyles:
+        case .editStyles:
             break // Routed above for both document and global Code styles.
         case .saveDefaultStyle:
             do { let url = try backend.saveDefaultStyle(); publishHostMessage("Saved default style to \(url.path)") }
@@ -808,13 +808,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         }
         if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
-            if [.editCharacterStyles, .editParagraphStyles, .editStyles, .reloadStyleSheet].contains(menuCommand) {
+            if [.editStyles, .reloadStyleSheet].contains(menuCommand) {
                 return .enabled
             }
             return .disabled
         }
         if let formatPresentation = additionalFormatPresentation(menuCommand) { return formatPresentation }
         return switch menuCommand {
+        case .paragraphStyles, .characterStyles:
+            EVMenuItemPresentation(isEnabled: session != nil && backend.sourceFormat != .plainText)
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
         case .bulletedList, .numberedList, .removeList:
@@ -919,7 +921,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
         case .reloadStyleSheet:
             .enabled
-        case .editCharacterStyles, .editParagraphStyles, .editStyles:
+        case .editStyles:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code)
         case .printDocument:
             .disabled

@@ -74,7 +74,7 @@ internal static class StyleAndSettingsTests
         await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-paragraph.png");
         window.Activate(); pane.FocusEditor(); await Task.Delay(100);
         Check(GetForegroundWindow() == window.Hwnd, "editor can be raised above the modeless style inspector");
-        var menu = window.Menu.Items.Single(m => m.Title == "Paragraph");
+        var menu = window.Menu.Items.Single(m => m.Title == "Style");
         new MenuBarItemAutomationPeer(menu).Expand(); await Task.Delay(100);
         var item = menu.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…");
         new MenuFlyoutItemAutomationPeer(item).Invoke(); await Task.Delay(200);

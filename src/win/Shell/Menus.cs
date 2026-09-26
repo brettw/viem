@@ -14,7 +14,7 @@ internal sealed partial class EditorWindow
     private readonly List<(ToggleMenuFlyoutItem Item, Func<bool> Checked)> checks = [];
     private bool menusDirty = true;
     private MenuFlyoutSubItem recentMenu = null!;
-    private MenuBarItem paragraphMenu = null!, characterMenu = null!;
+    private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!, boldItem = null!, italicItem = null!;
     private CoreView? View => ActivePane?.View;
@@ -94,15 +94,18 @@ internal sealed partial class EditorWindow
             DecorationItem("Strikethrough", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH),
             ScriptItem("Superscript", VIEM_SCRIPT_POSITION_SUPERSCRIPT), ScriptItem("Subscript", VIEM_SCRIPT_POSITION_SUBSCRIPT),
             Item("Text Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND), enabled: () => RichCharacterDocument), Item("Highlight Color…", () => ShowColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND), enabled: () => RichCharacterDocument),
-            Separator(), Sub("Style", StyleEditorItem(), ActionItem("Save as Default Style", SaveStyleDefaults, enabled: () => View != null), ActionItem("Reload Code Style Sheet", LoadCodeStyles)),
             Separator(), Sub("Paragraph", Sub("Alignment", ParagraphAction("Start", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 1), ParagraphAction("Center", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 3), ParagraphAction("End", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, 2)),
                 Sub("Writing Direction", ParagraphAction("Automatic", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 0), ParagraphAction("Left to Right", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 1), ParagraphAction("Right to Left", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, 2)),
                 Sub("Line Spacing", Spacing("Normal", 1, 0), Spacing("Single", 2, 1), Spacing("1.5 Lines", 2, 1.5f), Spacing("Double", 2, 2))));
-        paragraphMenu = Top("Paragraph", "P", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => Rich), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => Rich), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => Rich),
+        paragraphMenu = Sub("Paragraph", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => Rich), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => Rich), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => Rich),
             ActionItem("Indent", () => View?.IndentList(false), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
         for (uint level = 0; level <= 6; level++) { uint l = level; paragraphMenu.Items.Add(ActionItem(l == 0 ? "Base Paragraph" : $"Heading {l}", () => View?.SetParagraph(l), l < 6 ? $"Ctrl+{l}" : "", () => Rich)); }
-        paragraphMenu.Items.Add(Separator()); paragraphMenu.Items.Add(StyleEditorItem());
-        characterMenu = Top("Character", "C", ActionItem("Default Paragraph", () => View?.AssignStyle(2, ""), enabled: () => Rich), Separator(), StyleEditorItem());
+        characterMenu = Sub("Character", ActionItem("Default Paragraph", () => View?.AssignStyle(2, ""), enabled: () => Rich));
+        validation.Add((paragraphMenu, () => Rich));
+        validation.Add((characterMenu, () => Rich));
+        Top("Style", "S", paragraphMenu, characterMenu, Separator(), StyleEditorItem(),
+            ActionItem("Save as Default Style", SaveStyleDefaults, enabled: () => View != null),
+            ActionItem("Reload Code Style Sheet", LoadCodeStyles));
         wrapItem = Toggle("Word Wrap", b => View?.Wrap(b));
         Top("View", "V", Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
             Toggle("Flow Source Paragraphs", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
@@ -164,7 +167,7 @@ internal sealed partial class EditorWindow
         {
             var menu = style.Namespace == 1 ? paragraphMenu : characterMenu;
             if (menu.Items.OfType<MenuFlyoutItem>().Any(i => (i.Tag as string) == style.Id)) continue;
-            var item = ActionItem(style.Name, () => View?.AssignStyle(style.Namespace, style.Id), enabled: () => Rich); item.Tag = style.Id; menu.Items.Insert(menu.Items.Count - 2, item);
+            var item = ActionItem(style.Name, () => View?.AssignStyle(style.Namespace, style.Id), enabled: () => Rich); item.Tag = style.Id; menu.Items.Add(item);
         }
     }
     private StyleWindow? styleInspector;

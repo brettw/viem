@@ -42,10 +42,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
-        mainMenu.addItem(makeStyleMenu(title: "Paragraph", role: .paragraph,
-            baseTitle: "Base Paragraph", baseCommand: .baseParagraphStyle, editCommand: .editParagraphStyles))
-        mainMenu.addItem(makeStyleMenu(title: "Character", role: .character,
-            baseTitle: "Default Paragraph", baseCommand: .defaultParagraphStyle, editCommand: .editCharacterStyles))
+        mainMenu.addItem(topLevelItem("Style", submenu: makeStyleMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)
@@ -363,16 +360,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         for item in color.items { color.removeItem(item); menu.addItem(item) }
         menu.addItem(.separator())
 
-        let styles = NSMenu(title: "Style")
-        styles.addItem(coreItem("Edit Styles…", command: .editStyles,
-            key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
-        styles.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
-        styles.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
-        styles.addItem(.separator())
-        styles.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
-        menu.addItem(submenuItem("Style", submenu: styles))
-        menu.addItem(.separator())
-
         let paragraph = NSMenu(title: "Paragraph")
         let alignment = NSMenu(title: "Alignment")
         alignment.addItem(coreItem("Start", command: .alignStart))
@@ -474,12 +461,26 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func makeStyleMenu(
+    private func makeStyleMenu() -> NSMenu {
+        let menu = NSMenu(title: "Style")
+        menu.addItem(makeNamedStyleMenu(title: "Paragraph", role: .paragraph,
+            command: .paragraphStyles))
+        menu.addItem(makeNamedStyleMenu(title: "Character", role: .character,
+            command: .characterStyles))
+        menu.addItem(.separator())
+        menu.addItem(coreItem("Edit Styles…", command: .editStyles,
+            key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
+        menu.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
+        menu.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
+        menu.addItem(.separator())
+        menu.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
+        return menu
+    }
+
+    private func makeNamedStyleMenu(
         title: String,
         role: EVStyleMenuRole,
-        baseTitle: String,
-        baseCommand: EVMenuCommand,
-        editCommand: EVMenuCommand
+        command: EVMenuCommand
     ) -> NSMenuItem {
         let submenu = NSMenu(title: title)
         submenu.delegate = self
@@ -487,14 +488,12 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         submenu.showsStateColumn = true
         submenu.autoenablesItems = true
         styleMenuRoles[ObjectIdentifier(submenu)] = role
-        populateUnavailableStyleMenu(
-            submenu,
-            role: role,
-            baseTitle: baseTitle,
-            baseCommand: baseCommand,
-            editCommand: editCommand
-        )
-        return submenuItem(title, submenu: submenu)
+        populateUnavailableStyleMenu(submenu, role: role)
+        // Give submenu parents a responder-chain action so their availability
+        // is validated against the active document just like other commands.
+        let item = coreItem(title, command: command)
+        item.submenu = submenu
+        return item
     }
 
     private func rebuildStyleMenu(_ menu: NSMenu, role: EVStyleMenuRole) {
@@ -502,13 +501,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         guard let provider = styleMenuProvider(),
               let catalogue = provider.currentStyleMenuCatalogue()
         else {
-            populateUnavailableStyleMenu(
-                menu,
-                role: role,
-                baseTitle: specification.baseTitle,
-                baseCommand: specification.selectionCommand,
-                editCommand: specification.editCommand
-            )
+            populateUnavailableStyleMenu(menu, role: role)
             return
         }
 
@@ -544,39 +537,19 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
                 presentation: entry.presentation
             ))
         }
-        menu.addItem(.separator())
-
-        let requestedBaseID = entries.first(where: \.isBase)?.stableID
-            ?? specification.baseStableID
-        menu.addItem(styleActionItem(
-            title: "Edit Styles…",
-            command: specification.editCommand,
-            payload: EVStyleMenuAction(
-                kind: .editCurrent,
-                role: role,
-                stableID: requestedBaseID,
-                documentID: catalogue.documentID,
-                documentRevision: catalogue.documentRevision,
-                styleSheetRevision: catalogue.styleSheetRevision
-            ),
-            presentation: EVMenuItemPresentation(isEnabled: catalogue.canEditStyles)
-        ))
     }
 
     private func populateUnavailableStyleMenu(
         _ menu: NSMenu,
-        role: EVStyleMenuRole,
-        baseTitle: String,
-        baseCommand: EVMenuCommand,
-        editCommand: EVMenuCommand
+        role: EVStyleMenuRole
     ) {
         let specification = styleMenuSpecification(for: role)
         styleMenuCatalogues.removeValue(forKey: ObjectIdentifier(menu))
         menu.removeAllItems()
         if role == .paragraph { addParagraphListCommands(to: menu) }
         menu.addItem(styleActionItem(
-            title: baseTitle,
-            command: baseCommand,
+            title: specification.baseTitle,
+            command: specification.selectionCommand,
             payload: EVStyleMenuAction(
                 kind: .assign,
                 role: role,
@@ -592,20 +565,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
                 menu.addItem(coreItem("Heading \(level)", command: EVMenuCommand(rawValue: EVMenuCommand.heading0.rawValue + level)!, key: String(level)))
             }
         }
-        menu.addItem(.separator())
-        menu.addItem(styleActionItem(
-            title: "Edit Styles…",
-            command: editCommand,
-            payload: EVStyleMenuAction(
-                kind: .editCurrent,
-                role: role,
-                stableID: specification.baseStableID,
-                documentID: 0,
-                documentRevision: 0,
-                styleSheetRevision: 0
-            ),
-            presentation: .disabled
-        ))
     }
 
     private func addParagraphListCommands(to menu: NSMenu) {
@@ -635,13 +594,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             item.keyEquivalent = String(level)
             item.keyEquivalentModifierMask = [.command]
         } else { item.tag = command.rawValue }
-        if payload.kind == .editCurrent {
-            // AppKit only displays duplicate key equivalents when their actions
-            // match. Use the same route as Format > Style > Edit Styles.
-            item.action = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
-            item.keyEquivalent = String(UnicodeScalar(NSF8FunctionKey)!)
-            item.keyEquivalentModifierMask = []
-        }
         item.target = nil
         item.representedObject = payload
         item.isEnabled = presentation.isEnabled
@@ -664,12 +616,12 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     private func styleMenuSpecification(
         for role: EVStyleMenuRole
-    ) -> (baseTitle: String, baseStableID: String, selectionCommand: EVMenuCommand, editCommand: EVMenuCommand) {
+    ) -> (baseTitle: String, baseStableID: String, selectionCommand: EVMenuCommand) {
         switch role {
         case .character:
-            ("Default Paragraph", "", .defaultParagraphStyle, .editCharacterStyles)
+            ("Default Paragraph", "", .defaultParagraphStyle)
         case .paragraph:
-            ("Base Paragraph", "Paragraph", .baseParagraphStyle, .editParagraphStyles)
+            ("Base Paragraph", "Paragraph", .baseParagraphStyle)
         }
     }
 
