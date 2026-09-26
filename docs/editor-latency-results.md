@@ -278,6 +278,84 @@ of a line keeps writing one pair. Regression tests cover both cases, source
 bytes and undo. The `markdown_source` probe scenario, which previously
 aborted on this edit, now completes.
 
+## Markdown Source typing
+
+Typing one character in Markdown Source reprojected the whole document:
+about 850 ms per keystroke on the 1.2 MB fixture. Work counters showed one
+full projection per keystroke, which copied, decoded and projected every
+source byte. Cost grew linearly with the file: 4.7 ms at 4 KB, 856 ms at
+1.1 MB.
+
+**Cause.** Typing reaches the document as a formatted payload.
+`prepare_formatted_payload_edits` tried the regional text-edit route only for
+WYSIWYG formats, so Markdown Source always took the payload path's complete
+reparse. A second rule sent any edit next to a list item to the complete
+reparse, which included the prose line directly above a list.
+
+**Routing.** A Markdown Source payload without line breaks is now an ordinary
+text splice and goes through `prepare_text_edits_with_patches`. That route
+already keeps a proven line-local edit regional and reparses the whole
+source when it is not. An edit it cannot prepare falls back to the payload
+path, as before.
+
+**Proving a regional result exact.** The Markdown Source parser runs over the
+whole document in several passes, so a regional reparse is only correct when
+the region does not depend on the rest of the document. A regional result is
+now published only when `verify_markdown_source_region` proves two things:
+
+1. The old region, parsed on its own, reproduces the old full projection for
+   those rows: text, blocks, flow rows and style spans.
+2. Every unchanged row around the edited rows parses as before, so the edit
+   did not reshape its neighbours.
+
+The region is chosen so that these checks can pass. It covers the edited
+rows' whole paragraphs, since a link can span a paragraph's rows, and never
+ends on an empty row. It takes in an adjacent list from its first item, and
+starts and ends on paragraph boundaries when they fit within 64 rows. A
+region cut inside a longer paragraph is accepted only when the rows outside
+it keep their parser state. For plain paragraphs that state is whether a
+hard break has already occurred, since this parser ends a paragraph at the
+first row without a hard break that follows one. Edits in such a long
+paragraph must also leave link syntax and the row's hard-break state alone.
+
+An edit that cannot be proven is treated exactly like an edit without a
+local region: the complete reparse publishes whatever the new source parses
+to. The regional builder falls back to its complete candidate in the same
+way, for entry points such as list actions and paragraph styles.
+
+**List edits.** Edits inside a list item keep the old block partition, since
+a region cannot see the enclosing list. They now also accept ordinary
+punctuation. They require a letter to begin the row's content before and
+after the edit, since the first character selects the row's block syntax,
+and text inserted at a block's first character now belongs to that block.
+An inherited partition that no longer covers the text fails verification
+instead of panicking.
+
+**Tests.** `tests/all/markdown_source_typing_work.rs` types 17 characters,
+including Backspace and Markdown syntax, at every caret position of ten
+documents. Each result must match a fresh parse of the same bytes, and the
+source must contain exactly the typed text. A second test samples edits in
+blocks longer than the regional limit, and a third asserts regional work for
+typing on a 2,048-chapter document. On `main`, the first seven of those
+documents had 4 edits whose incremental projection differed from a fresh
+parse (Backspace in an indented code block's indentation), and 81 edits were
+rejected. With this change every edit is accepted and matches a fresh parse.
+`late_source_paragraph_edit_keeps_regional_work_after_many_hidden_separators`
+now allows 6 projected rows instead of 3, since the region covers the
+neighbouring paragraphs.
+
+**1.2 MB Markdown Source** — `main` (`1679353`) and this change, built and run
+back to back on the same container, two runs each
+
+| Operation | p50 `main` (ms) | p50 this change (ms) | max `main` (ms) | max this change (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Type one character | 842–851 | 4.4–4.7 | 992–1,030 | 8.0–11.0 |
+| Type with two views | 840–845 | 7.6–8.2 | 1,013–1,095 | 9.4–13.2 |
+| Enter | 837–874 | 857–869 | 840–911 | 876–890 |
+| Undo | 207 | 117–138 | 216–217 | 191–221 |
+
+Markdown WYSIWYG, run the same way, is unchanged within run-to-run noise.
+
 ## Remaining work
 
 - **Code publications after an unbounded change** (a new input identity
@@ -300,8 +378,10 @@ aborted on this edit, now completes.
 - Unlimited history retention (used by the probe) grows the memory ledger's
   hash table, which shows up as a few percent of HTML typing; the shipped
   policy prunes.
-- **Markdown Source typing** reprojects the whole document: with the Return
-  failure fixed, the `markdown_source` scenario completes and measures about
-  870 ms per character and 950 ms per Enter at p50 on the 1.2 MB fixture.
-  Markdown WYSIWYG typing already uses the bounded route; the source-visible
-  view does not yet.
+- **Enter in Markdown Source** still reparses the whole document, about
+  860 ms on the 1.2 MB fixture. Enter adds a row, and the line-local splice
+  for source-visible formats requires the row count to stay the same; only
+  Text and Code splice added rows today. The regional proof above applies
+  unchanged once the splice accepts added rows.
+- **Long quotes** (more than 64 rows) still take the complete reparse when
+  typed into.
