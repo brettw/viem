@@ -234,7 +234,10 @@ fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
                 .insert(id, StyleDefinitionMetadata::generated(name));
         }
     }
-    for name in if legacy_aliases { ["@embedded", "@spell"] } else { ["Embedded", "Spell"] } {
+    // `@none` is Neovim's explicit reset: it wins over an enclosing capture,
+    // such as a string around a C# interpolation, and shows default text.
+    let empty: &[&str] = if legacy_aliases { &["@embedded", "@spell"] } else { &["Embedded", "Spell", "None"] };
+    for &name in empty {
         let id = StyleId(format!("syntax:{name}"));
         sheet.character_styles.insert(
             id.clone(),
@@ -247,6 +250,36 @@ fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
         sheet
             .character_metadata
             .insert(id, StyleDefinitionMetadata::generated(name));
+    }
+    if !legacy_aliases {
+        // Neovim's markup captures, used by the JSX queries for text inside
+        // elements such as `<h1>` or `<em>`. They carry typographic meaning
+        // rather than a color.
+        let bold = CharacterProperties { bold: Some(true), ..Default::default() };
+        let markup: [(&str, CharacterProperties); 16] = [
+            ("Markup", Default::default()),
+            ("Markup.heading", bold.clone()),
+            ("Markup.heading.1", Default::default()),
+            ("Markup.heading.2", Default::default()),
+            ("Markup.heading.3", Default::default()),
+            ("Markup.heading.4", Default::default()),
+            ("Markup.heading.5", Default::default()),
+            ("Markup.heading.6", Default::default()),
+            ("Markup.strong", bold),
+            ("Markup.italic", CharacterProperties { slant: Some(FontSlant::Italic), ..Default::default() }),
+            ("Markup.underline", CharacterProperties { underline: Some(true), ..Default::default() }),
+            ("Markup.strikethrough", CharacterProperties { strikethrough: Some(true), ..Default::default() }),
+            ("Markup.raw", Default::default()),
+            ("Markup.link", Default::default()),
+            ("Markup.link.label", Default::default()),
+            ("Markup.link.url", CharacterProperties { underline: Some(true), ..Default::default() }),
+        ];
+        for (name, properties) in markup {
+            let id = StyleId(format!("syntax:{name}"));
+            let based_on = name.rsplit_once('.').map(|(parent, _)| StyleId(format!("syntax:{parent}")));
+            sheet.character_styles.insert(id.clone(), CharacterStyle { id: id.clone(), based_on, properties });
+            sheet.character_metadata.insert(id, StyleDefinitionMetadata::generated(name));
+        }
     }
     sheet
 }
@@ -983,13 +1016,15 @@ mod tests {
             "typescript",
             "tsx",
             "python",
+            "json",
         ] {
             let package =
                 crate::document::syntax::treesitter::TreeSitterPackage::bundled(language).unwrap();
             for capture in package.highlight_capture_names().iter().filter(|capture| {
                 !capture.starts_with('_')
                     && !capture.starts_with("injection.")
-                    && !matches!(**capture, "spell" | "nospell")
+                    // The provider emits no run for these captures.
+                    && !matches!(**capture, "spell" | "nospell" | "conceal")
             }) {
                 // Built-in definitions need not cover every name: a missing
                 // one takes its nearest defined dotted ancestor's appearance.

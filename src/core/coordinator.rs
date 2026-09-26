@@ -5553,15 +5553,32 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
-                let before = view.layout.configuration_generation();
+                // A view showing the document end stays pinned to it. The end
+                // request measures backward from the end and publishes only the
+                // terminal viewport, where preserving the anchor inside a long
+                // final paragraph would publish its whole resumed slice.
+                let text_len = self.document.projection().text_tree().byte_len();
+                let at_end = view.layout.snapshot().is_some_and(|snapshot| {
+                    snapshot.document_id == self.document.id()
+                        && snapshot.document_revision == self.document.revision()
+                        && snapshot.rows.last().is_some_and(|row| row.text_range.end == text_len)
+                        && snapshot.coverage.vertical_range().is_some_and(|coverage| {
+                            view.layout.viewport_top() + view.layout.height() >= coverage.end - 0.5
+                        })
+                });
+                let (left, before) = (view.layout.viewport_left(), view.layout.configuration_generation());
                 view.layout.resize(width, height);
                 if view.layout.configuration_generation() != before {
                     cancel_active_layout_work(view);
                 }
-                self.materialize_immediate_viewport(
-                    view_id,
-                    ImmediateLayoutIntent::PreserveViewport,
-                )?;
+                if at_end {
+                    self.materialize_requested_viewport(view_id, left, f32::MAX)?;
+                } else {
+                    self.materialize_immediate_viewport(
+                        view_id,
+                        ImmediateLayoutIntent::PreserveViewport,
+                    )?;
+                }
                 self.rematerialize_active_composition(view_id, true)?;
                 Ok(CoreOutcome {
                     command: None,

@@ -18,6 +18,12 @@ fn character_scope(tag: &Tag) -> bool {
             || name == "data-viem-character" && value == "none")
 }
 
+/// An anchor start tag inside another anchor implicitly ends the outer one.
+/// Removing its emptied scope would extend the outer link over retained text.
+fn closes_enclosing<'a>(tag: &Tag, mut enclosing: impl Iterator<Item = &'a Tag>) -> bool {
+    tag.name == "a" && enclosing.any(|outer| outer.name == "a")
+}
+
 fn intersects(left: &Range<usize>, right: &Range<usize>) -> bool {
     left.start < right.end && right.start < left.end
 }
@@ -45,8 +51,10 @@ pub(super) fn remove_empty_edited_scopes(
     let mut candidates = Vec::<(usize, usize, std::sync::Arc<HtmlScope>)>::new();
     for range in &selected {
         let scopes = index.scopes_at(range.start);
-        for (depth, scope) in scopes.into_iter().enumerate() {
-            if character_scope(&scope.tag) { candidates.push((depth, range.start, scope)); }
+        for (depth, scope) in scopes.iter().enumerate() {
+            if character_scope(&scope.tag) && !closes_enclosing(&scope.tag, scopes[..depth].iter().map(|outer| &outer.tag)) {
+                candidates.push((depth, range.start, scope.clone()));
+            }
         }
     }
     candidates.sort_by_key(|(depth, at, _)| (std::cmp::Reverse(*depth), *at));
@@ -143,8 +151,16 @@ fn remove_with_full_tokens(
             matches!(&opening.kind, TokenKind::Tag(open) if open.name == tag.name)
         }) else { continue };
         let opening = stack[index].clone();
-        stack.truncate(index);
+        let enclosing = stack[..index].iter().filter_map(|token| match &token.kind {
+            TokenKind::Tag(tag) => Some(tag),
+            _ => None,
+        });
         let TokenKind::Tag(open) = &opening.kind else { unreachable!() };
+        if closes_enclosing(open, enclosing) {
+            stack.truncate(index);
+            continue;
+        }
+        stack.truncate(index);
         if !character_scope(open) { continue; }
         let body = mapper.source_range(opening.range.end..token.range.start);
         if !selected.iter().any(|range| intersects(range, &body)) { continue; }
@@ -185,6 +201,7 @@ mod tests {
             "<p><b><i>A</b>B</i>C</p>",
             "<p><a href='/x'><sup>x</sup></a><b>y<br>z</b></p>",
             "<div><b>x<p>y</p></b></div>",
+            "<p>A<a href='x'>B<a href='y'>C</a>D</a>E</p>",
         ];
         let mut compared = 0;
         let mut cleaned = 0;
