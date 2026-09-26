@@ -35,7 +35,11 @@ fn keys(core: &mut Editor, view: ViewId, keys: &str) {
 /// Opens `chapters` copies of the fixture and enters Insert mode at the end
 /// of the continuation prose line in the middle chapter.
 fn fixture(chapters: usize, line: &str) -> (Editor, ViewId) {
-    let source = CHAPTER.repeat(chapters);
+    fixture_of(CHAPTER, chapters, line)
+}
+
+fn fixture_of(chapter: &str, chapters: usize, line: &str) -> (Editor, ViewId) {
+    let source = chapter.repeat(chapters);
     let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::MarkdownSource)
         .unwrap();
     let mut core = Core::new(document);
@@ -117,6 +121,7 @@ const DIFFERENTIAL_SOURCES: [&str; 10] = [
 ];
 
 const BACKSPACE: &str = "<BS>";
+const ENTER: &str = "<CR>";
 
 const TYPED: [&str; 17] = [
     BACKSPACE,
@@ -144,16 +149,21 @@ fn check_typing(source: &str, offset: usize, typed: &str) {
     )
     .unwrap();
     keys(&mut core, view, "i");
-    let event = if typed == BACKSPACE {
-        InputEvent::Key(Key::Backspace)
-    } else {
-        InputEvent::text(typed)
+    let event = match typed {
+        BACKSPACE => InputEvent::Key(Key::Backspace),
+        ENTER => InputEvent::Key(Key::Enter),
+        _ => InputEvent::text(typed),
     };
     // Every edit here is ordinary source text, which Markdown Source must
-    // accept wherever it would change the parse.
-    core.handle_with_layout(view, CoreEvent::Input(event))
-        .unwrap_or_else(|error| panic!("typing {typed:?} at {offset} in {source:?}: {error:?}"));
-    if typed != BACKSPACE {
+    // accept wherever it would change the parse. Enter still refuses a few
+    // positions, such as before a quote marker or inside some nested list
+    // continuations; a refusal must leave the document unchanged.
+    if let Err(error) = core.handle_with_layout(view, CoreEvent::Input(event)) {
+        assert!(typed == ENTER, "typing {typed:?} at {offset} in {source:?}: {error:?}");
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "Enter at {offset} in {source:?}");
+        return;
+    }
+    if typed != BACKSPACE && typed != ENTER && !typed.contains('\n') {
         // Source view writes the typed characters as literal source.
         let (before, after) = (source.as_bytes(), core.document().source_bytes());
         let at = before.iter().zip(&after).take_while(|(a, b)| a == b).count();
@@ -180,6 +190,19 @@ fn markdown_source_typing_matches_a_fresh_parse_at_every_position() {
     for source in DIFFERENTIAL_SOURCES {
         for offset in 0..=text_len(source) {
             for typed in TYPED {
+                check_typing(source, offset, typed);
+            }
+        }
+    }
+}
+
+/// Enter adds rows, and Backspace at a row start removes one; both reach
+/// the regional parse with rows after the edit moved by the change.
+#[test]
+fn markdown_source_breaks_match_a_fresh_parse_at_every_position() {
+    for source in DIFFERENTIAL_SOURCES {
+        for offset in 0..=text_len(source) {
+            for typed in [ENTER, "\n", "a\nb", "\n\n- x"] {
                 check_typing(source, offset, typed);
             }
         }
@@ -219,7 +242,7 @@ fn markdown_source_typing_in_long_blocks_matches_a_fresh_parse() {
             }
             let end = row_starts.get(row + 1).map_or(text.len(), |next| next - 1);
             for offset in start..=end {
-                for typed in ["a", " ", "\\", "[", "]", "#", "-", "<", ">", BACKSPACE] {
+                for typed in ["a", " ", "\\", "[", "]", "#", "-", "<", ">", BACKSPACE, ENTER] {
                     check_typing(source, offset, typed);
                 }
             }
@@ -265,6 +288,43 @@ fn markdown_source_typing_stays_regional_in_a_large_document() {
     }
 }
 
+/// Enter adds a row by splitting a paragraph, continuing a list or quote,
+/// or ending a row whose trailing hard-break spaces the new paragraph trims.
+/// It reparses only the rows around it, whatever the document size.
+#[test]
+fn markdown_source_enter_stays_regional_in_a_large_document() {
+    const HARD_BREAKS: &str = "Prose that ends in a hard break  \nand continues\\\nto a third row.\n\n";
+    const TYPED: [Key; 4] = [Key::Enter, Key::Char('x'), Key::Enter, Key::Backspace];
+    // Enter twice at the end of a list leaves it through an empty item.
+    const LEAVE_LIST: [Key; 4] = [Key::Enter, Key::Char('x'), Key::Enter, Key::Enter];
+    let cases = LINES
+        .iter()
+        .map(|line| (CHAPTER, *line, TYPED))
+        .chain([
+            (CHAPTER, "2. two", LEAVE_LIST),
+            (HARD_BREAKS, "Prose that ends in a hard break  ", TYPED),
+            (HARD_BREAKS, "and continues\\", TYPED),
+            (HARD_BREAKS, "to a third row.", TYPED),
+        ]);
+    for (chapter, line, typed) in cases {
+        let (mut core, view) = fixture_of(chapter, 2048, line);
+        for (step, key) in typed.into_iter().enumerate() {
+            let work = measure_document_work(|| input(&mut core, view, InputEvent::Key(key))).1;
+            assert_eq!(
+                (work.full_projection_candidates, work.regional_projection_candidates),
+                (0, 1),
+                "step {step}, {key:?} after {line:?}"
+            );
+            assert!(work.source_decoded_bytes < 4096, "{line:?}: {work:?}");
+            assert!(work.projected_formatted_bytes < 4096, "{line:?}: {work:?}");
+            assert_eq!(work.source_full_materialized_bytes, 0, "{line:?}: {work:?}");
+        }
+        let fresh = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::MarkdownSource)
+            .unwrap();
+        assert_eq!(projection_summary(core.document()), projection_summary(&fresh), "{line:?}");
+    }
+}
+
 #[test]
 #[ignore = "profile; run with --ignored --nocapture"]
 fn markdown_source_typing_profile() {
@@ -285,4 +345,6 @@ fn markdown_source_typing_profile() {
         }
     }
 }
+
+
 

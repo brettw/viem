@@ -3600,12 +3600,19 @@ impl Document {
         let without_breaks = edits.iter().all(|edit| {
             !edit.payload.text().contains('\n') && edit.payload.break_offsets().is_empty()
         });
-        // Markdown Source delimiters are literal, editable text, so a payload
-        // without breaks is an ordinary text splice. Text-edit preparation
+        // Markdown Source delimiters are literal, editable text, so such a
+        // payload is an ordinary text splice. Text-edit preparation
         // keeps a proven line-local edit regional and reparses the complete
         // source itself when a delimiter could reshape other lines. An edit
         // it cannot verify keeps the payload reparse below as its reference.
-        if self.format() == Format::MarkdownSource && without_breaks {
+        // Every Markdown Source U+000A is a hard-line boundary, so a payload
+        // whose breaks are exactly its newlines is also a text splice.
+        let breaks_are_newlines = edits.iter().all(|edit| {
+            !edit.payload.text().contains('\r')
+                && edit.payload.break_offsets().iter().copied()
+                    .eq(edit.payload.text().match_indices('\n').map(|(at, _)| at))
+        });
+        if self.format() == Format::MarkdownSource && (without_breaks || breaks_are_newlines) {
             let patches = self.translate_source_edits(
                 logical_edits.iter().zip(&edits)
                     .map(|(text, payload)| (text, Some(payload))),
@@ -5738,7 +5745,7 @@ impl Document {
         self.prepare_reprojected_source_patches(patches)
     }
 
-    fn prepare_reprojected_source_patches(
+    pub(super) fn prepare_reprojected_source_patches(
         &self,
         mut patches: Vec<SourcePatch>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
@@ -6383,10 +6390,11 @@ impl Document {
         )? {
             return Ok(candidate);
         }
-        // A regional Markdown Source result that cannot be proven exact leaves
-        // this block for the complete verified candidate below.
-        'regional: {
-            if let Some(region) = self.line_local_projection_region(edits, source_patches)? {
+        // A regional Markdown Source result that cannot be proven exact, or
+        // that the splice cannot place, leaves this block for the complete
+        // verified candidate below.
+        if let Some(region) = self.line_local_projection_region(edits, source_patches)? {
+            let regional = (|| -> Result<Option<TextEditCandidate>, ModelTransactionError> {
                 let html_validation =
                     (self.format() == Format::HtmlSource && !region.inherit_html_context).then_some((
                         region.old_source.len(),
@@ -6420,7 +6428,19 @@ impl Document {
                         .endings
                         .last()
                         .is_some_and(|ending| ending.source.end == new_source.end);
-                if self.format() != Format::Markdown && !self.format().is_literal()
+                // A Markdown Source break adds or removes source rows, even
+                // where the formatted rows stay, as when an empty list item
+                // becomes a paragraph. The regional parse's endings then
+                // delimit the region's new source rows.
+                let row_delta = if self.format() == Format::MarkdownSource {
+                    self.markdown_source_row_delta(edits)?
+                } else {
+                    0
+                };
+                let source_rows_change = self.format() == Format::MarkdownSource
+                    && normalized.endings.len() + usize::from(!unowned_terminal_row)
+                        != region.source_lines.len();
+                if self.format() != Format::Markdown && !self.format().is_literal() && !source_rows_change
                     && normalized.endings.len() + usize::from(!unowned_terminal_row)
                         != region.source_lines.len()
                 {
@@ -6538,11 +6558,11 @@ impl Document {
                     if self.format() == Format::MarkdownSource
                         && self.verify_markdown_source_region(&region, &regional_projection, edits, true).is_err()
                     {
-                        break 'regional;
+                        return Ok(None);
                     }
                 } else if self.format() == Format::MarkdownSource {
                     if self.verify_markdown_source_region(&region, &regional_projection, edits, false).is_err() {
-                        break 'regional;
+                        return Ok(None);
                     }
                 }
                 let projected_formatted_bytes = regional_projection.text().len();
@@ -6565,11 +6585,34 @@ impl Document {
                     &mut next_projected_block_id,
                 )
                 .map_err(super::block_identity_document_error)?;
-                if !self.format().is_literal() && projection.hard_line_count() != self.projection().hard_line_count() {
+                if !self.format().is_literal()
+                    && Some(projection.hard_line_count())
+                        != self.projection().hard_line_count().checked_add_signed(row_delta)
+                {
                     return Err(DocumentError::VerificationFailed.into());
                 }
 
-                let source_hard_lines = if self.format().is_literal() {
+                let source_hard_lines = if source_rows_change {
+                    let mut start = self.state().source_hard_lines.get(region.source_lines.start)
+                        .ok_or(DocumentError::VerificationFailed)?.start;
+                    let mut ranges = Vec::with_capacity(normalized.endings.len() + 1);
+                    for ending in &normalized.endings {
+                        ranges.push(start..ending.source.end);
+                        start = ending.source.end;
+                    }
+                    if !unowned_terminal_row {
+                        let line = region.source_lines.end - 1;
+                        let trailing = self.state().source_hard_lines.get(line)
+                            .ok_or(DocumentError::VerificationFailed)?;
+                        let association = if line + 1 == self.state().source_hard_lines.len() {
+                            Association::AfterInsertion
+                        } else {
+                            Association::BeforeInsertion
+                        };
+                        ranges.push(start..rebase_source_boundary(trailing.end, source_patches, association)?);
+                    }
+                    ranges
+                } else if self.format().is_literal() {
                     // A chunk can begin inside the first line. Preserve its
                     // unchanged source prefix while rebuilding only local breaks.
                     let mut start = self.state().source_hard_lines.get(region.source_lines.start)
@@ -6615,11 +6658,11 @@ impl Document {
                     return Err(DocumentError::VerificationFailed.into());
                 }
 
-                return Ok(TextEditCandidate {
+                return Ok(Some(TextEditCandidate {
                     state: DocumentState {
                         revision,
                         include_style_definitions_in_file: self.include_style_definitions_in_file(),
-                        source,
+                        source: source.clone(),
                         projection,
                         source_hard_lines,
                         encoding: self.state().encoding,
@@ -6648,7 +6691,13 @@ impl Document {
                     },
                     block_ids_already_reconciled: true,
                     next_projected_block_id,
-                });
+                }));
+                        })();
+            match regional {
+                Ok(Some(candidate)) => return Ok(candidate),
+                Ok(None) => {}
+                Err(_) if self.format() == Format::MarkdownSource => {}
+                Err(error) => return Err(error),
             }
         }
 
@@ -7829,8 +7878,33 @@ impl Document {
         ) else {
             return Err(failed());
         };
-        if regional.hard_line_count() != region.hard_lines.len() {
+        // Rows after the edited rows move by the number of breaks it adds.
+        let delta = self.markdown_source_row_delta(edits)?;
+        let new_line = |line: usize| {
+            let local = line - region.hard_lines.start;
+            if line > last_edited { local.checked_add_signed(delta) } else { Some(local) }
+        };
+        if Some(regional.hard_line_count()) != region.hard_lines.len().checked_add_signed(delta) {
             return Err(failed());
+        }
+        // Consecutive source endings pair into paragraph separators. A run
+        // of them just outside the region is bounded by the region's edge
+        // row, and would join endings an edit adds or removes there if that
+        // row became blank.
+        let changes_breaks = first_edited != last_edited
+            || edits.iter().any(|edit| edit.replacement.contains('\n'));
+        if changes_breaks {
+            let blank = |line: usize| -> Result<bool, ModelTransactionError> {
+                let row = regional.hard_line_range(line).ok_or_else(failed)?;
+                let text = regional.text_tree().slice(row).map_err(DocumentError::FormattedTextStorage)?;
+                Ok(text.trim().is_empty())
+            };
+            let last_row = regional.hard_line_count().checked_sub(1).ok_or_else(failed)?;
+            if (region.hard_lines.start > 0 && blank(0)?)
+                || (region.hard_lines.end < self.projection().hard_line_count() && blank(last_row)?)
+            {
+                return Err(failed());
+            }
         }
         // A region cut inside a paragraph too long to reparse must leave the
         // rows outside it with the parser state they had.
@@ -7843,9 +7917,8 @@ impl Document {
             };
             let last = region.hard_lines.end - 1;
             let old_row = self.projection().hard_line_range(last).ok_or_else(failed)?;
-            let new_row = regional
-                .hard_line_range(last - region.hard_lines.start)
-                .ok_or_else(failed)?;
+            let new_last = new_line(last).ok_or_else(failed)?;
+            let new_row = regional.hard_line_range(new_last).ok_or_else(failed)?;
             let old_owner = markdown_source_row_owner(self.projection(), &old_row).ok_or_else(failed)?;
             if old_owner.range.end > old_row.end {
                 // The rows after the region see one open plain paragraph and
@@ -7865,7 +7938,7 @@ impl Document {
                     let owner_first = regional
                         .hard_line_at_offset(new_owner.range.start)
                         .ok_or_else(failed)?;
-                    for local in owner_first..last - region.hard_lines.start {
+                    for local in owner_first..new_last {
                         let row = regional.hard_line_range(local).ok_or_else(failed)?;
                         if markdown_row_has_hard_break(&row_text(regional, row)?) {
                             return Err(failed());
@@ -7897,7 +7970,7 @@ impl Document {
             }
             let (Some(old_row), Some(new_row)) = (
                 self.projection().hard_line_range(line),
-                regional.hard_line_range(line - region.hard_lines.start),
+                new_line(line).and_then(|local| regional.hard_line_range(local)),
             ) else {
                 return Err(failed());
             };
@@ -7910,12 +7983,102 @@ impl Document {
         Ok(())
     }
 
+    /// The formatted edit a proven regional reparse makes for `edit`'s
+    /// source `patches`. It is `edit` itself unless the parse reshapes the
+    /// text beside it, such as trimming whitespace that now ends or begins a
+    /// paragraph; then it is the smallest change that covers `edit` and the
+    /// parse's text. `None` when the region cannot be proven.
+    pub(super) fn markdown_source_reparsed_edit(
+        &self,
+        edit: &TextEdit,
+        patches: &[SourcePatch],
+    ) -> Result<Option<TextEdit>, ModelTransactionError> {
+        if self.format() != Format::MarkdownSource {
+            return Ok(None);
+        }
+        let Some(region) = self.line_local_projection_region(std::slice::from_ref(edit), patches)? else {
+            return Ok(None);
+        };
+        let source = apply_source_patches(&self.state().source, patches)?;
+        let new_end = rebase_source_boundary(region.old_source.end, patches, Association::AfterInsertion)?;
+        let Some(bytes) = source.bytes_in(region.old_source.start..new_end) else {
+            return Ok(None);
+        };
+        let decoded = self.state().encoding.decode_region(&bytes, region.old_source.start)?;
+        let regional = project(
+            &normalize(&decoded, self.state().file_format),
+            self.state().format,
+            Revision(self.next_revision),
+            region.old_source.start,
+            new_end,
+        );
+        let old = self
+            .projection()
+            .text_tree()
+            .slice(region.old_formatted.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let new = regional.text();
+        let (local_start, local_end) = (
+            edit.range.start - region.old_formatted.start,
+            edit.range.end - region.old_formatted.start,
+        );
+        let prefix = old
+            .char_indices()
+            .zip(new.chars())
+            .take_while(|((at, a), b)| *at < local_start && a == b)
+            .map(|((at, a), _)| at + a.len_utf8())
+            .last()
+            .unwrap_or(0)
+            .min(local_start);
+        let suffix = old[prefix..]
+            .chars()
+            .rev()
+            .zip(new[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b)
+            .map(|(a, _)| a.len_utf8())
+            .scan(0, |length, add| {
+                *length += add;
+                Some(*length)
+            })
+            .take_while(|&length| length <= old.len() - local_end)
+            .last()
+            .unwrap_or(0);
+        let effective = TextEdit::new(
+            region.old_formatted.start + prefix..region.old_formatted.start + old.len() - suffix,
+            &new[prefix..new.len() - suffix],
+        );
+        let edits = std::slice::from_ref(&effective);
+        if self.verify_markdown_source_region(&region, &regional, edits, false).is_err() {
+            return Ok(None);
+        }
+        Ok(Some(effective))
+    }
+
+    /// The change in hard-line count made by `edits`: every U+000A in
+    /// Markdown Source formatted text is a hard-line boundary.
+    fn markdown_source_row_delta(&self, edits: &[TextEdit]) -> Result<isize, ModelTransactionError> {
+        let mut delta = 0isize;
+        for edit in edits {
+            let replaced = self
+                .projection()
+                .text_tree()
+                .slice(edit.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            delta += edit.replacement.matches('\n').count() as isize - replaced.matches('\n').count() as isize;
+        }
+        Ok(delta)
+    }
+
     /// Within a paragraph, only links and hard breaks connect rows: a link
     /// label can cross rows, and a row's trailing hard break divides the
     /// paragraph's flow. An edit is row-local when its rows contain no link
     /// syntax and keep their hard-break state.
     fn markdown_source_edit_is_row_local(&self, edits: &[TextEdit], rows: Range<usize>) -> bool {
         let link_syntax = |text: &str| text.contains(['[', ']', '(', ')', '<', '>', '\\', '"', '\'']);
+        // A break splits the paragraph, and with it any link crossing the row.
+        if edits.iter().any(|edit| edit.replacement.contains('\n')) {
+            return false;
+        }
         rows.into_iter().all(|line| {
             let Some(range) = self.projection().hard_line_range(line) else {
                 return false;
@@ -8045,6 +8208,10 @@ impl Document {
         if edits.is_empty() || self.format().is_rich_text() {
             return Ok(None);
         }
+        // Markdown Source rows are regional source rows: the regional proof
+        // below maps rows that follow an added or removed break by the change
+        // in the row count.
+        let splits_rows = self.format() == Format::MarkdownSource;
         for edit in edits.iter().filter(|_| !self.format().is_literal()) {
             let replaced = self
                 .projection()
@@ -8052,9 +8219,8 @@ impl Document {
                 .slice(edit.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
             if edit.replacement.contains('\r')
-                || edit.replacement.contains('\n')
                 || replaced.contains('\r')
-                || replaced.contains('\n')
+                || (!splits_rows && (edit.replacement.contains('\n') || replaced.contains('\n')))
             {
                 // Edits that change hard-line topology require the whole pipeline.
                 return Ok(None);
@@ -8070,11 +8236,13 @@ impl Document {
             let Some(line_range) = self.projection().hard_line_range(line) else {
                 return Ok(None);
             };
-            if edit.range.start < line_range.start || (!self.format().is_literal() && edit.range.end > line_range.end) {
+            if edit.range.start < line_range.start
+                || (!self.format().is_literal() && !splits_rows && edit.range.end > line_range.end)
+            {
                 return Ok(None);
             }
             first_line = first_line.min(line);
-            last_line = last_line.max(if self.format().is_literal() {
+            last_line = last_line.max(if self.format().is_literal() || splits_rows {
                 self.projection().hard_line_at_offset(edit.range.end).unwrap_or(line)
             } else { line });
         }
@@ -8113,12 +8281,12 @@ impl Document {
                 return Ok(None);
             }
             let edited_in_list = (first_line..=last_line).any(in_list);
-            if edited_in_list && !self.can_inherit_markdown_source_list_context(edits) {
-                // Structural list syntax depends on its enclosing stack and
-                // can change following siblings. Literal body edits below
-                // retain the validated old context without reparsing prefixes.
-                return Ok(None);
-            }
+            // Structural list syntax depends on its enclosing stack and can
+            // change following siblings. Literal body edits retain the
+            // validated old context without reparsing prefixes; any other
+            // list edit reparses the whole list, which the regional proof
+            // requires to parse alone as it does in the document.
+            let whole_list = edited_in_list && !self.can_inherit_markdown_source_list_context(edits);
             // A source marker can change whether either adjacent physical
             // break is prose whitespace, so the region captures unchanged
             // neighboring rows on each side, bounded by the regional limit.
@@ -8146,7 +8314,7 @@ impl Document {
             // A neighboring list parses independently only from its first
             // item, so an edit outside a list takes in the whole adjacent list
             // as context. The regional proof rejects a list that is cut off.
-            let extends = |line| empty(line) || (!edited_in_list && in_list(line));
+            let extends = |line| empty(line) || ((!edited_in_list || whole_list) && in_list(line));
             while first_line > 0 && !neighbor_is_code(first_line - 1) {
                 first_line -= 1;
                 if !extends(first_line) || last_line - first_line > MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
@@ -8164,7 +8332,7 @@ impl Document {
             // Parser state carries through a paragraph, so a region starts
             // and ends on block boundaries when they fit. Otherwise the
             // regional proof decides whether a cut paragraph is unaffected.
-            if !edited_in_list {
+            if !edited_in_list || whole_list {
                 let owner = |line| {
                     self.projection()
                         .hard_line_range(line)

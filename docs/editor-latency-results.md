@@ -356,6 +356,74 @@ back to back on the same container, two runs each
 
 Markdown WYSIWYG, run the same way, is unchanged within run-to-run noise.
 
+## Markdown Source Enter
+
+Enter in Markdown Source reparsed the whole document: about 820 ms on the
+1.2 MB fixture. Enter adds a row, and the regional route above refused any
+edit that adds or removes a row. The complete candidate also rejected Enter
+at positions where the new paragraph reshapes the text beside the break.
+
+**Rows that move.** `line_local_projection_region` now accepts Markdown
+Source edits that add or remove line breaks. In `verify_markdown_source_region`,
+rows after the edited rows are compared with their counterparts moved by the
+change in row count. The same mapping gives kept rows their identities in
+`splice_line_local_projection`. A row the edit adds gets a fresh identity,
+shared with the paragraph it starts. The region's source rows are rebuilt from
+the regional parse's line endings whenever their count changes. That can
+happen when the formatted rows do not change, as when an empty list item
+becomes a paragraph.
+
+**What the proof adds.** Consecutive source endings pair into paragraph
+separators. A run of them just outside the region would join endings an edit
+adds or removes at the region's edge if the edge row became blank, so such a
+result is rejected. A break inside a paragraph longer than 64 rows can cut a
+link spanning it, so it keeps the complete reparse. An edit inside a list
+that cannot keep the old block partition, such as Enter continuing an item,
+now reparses the whole list, up to 64 rows, instead of the whole document. A
+regional attempt that fails partway through falls back to the complete
+candidate instead of returning an error.
+
+**Enter that reshapes text.** Enter beside whitespace at a row edge, for
+example after a row's trailing hard-break spaces, starts a paragraph whose
+edge whitespace the parser trims. The complete candidate's text check then
+refused the keystroke. The inserted endings are the authoritative source
+edit. A proven regional parse now supplies the formatted edit: the smallest
+change covering the requested break and the parse's text. Unproven cases
+publish the complete reparse, as typing a delimiter already does.
+
+**Tests.** `tests/all/markdown_source_typing_work.rs` now also presses Enter,
+and types `\n`, `a\nb` and `\n\n- x`, at every caret position of the ten
+documents. It also presses Enter in the long-block samples. Every accepted
+result must match a fresh parse, and a refused Enter must leave the document
+unchanged. A new test asserts regional work on the 2,048-chapter document
+for these edits:
+- Enter at the end of every sample line, including list items, a quote and
+  hard-break rows;
+- continued typing and Backspace over the new row;
+- leaving a list through an empty item.
+
+A survey of 22,590 edits (Enter, Backspace, and typed breaks at every
+position of 15 documents) compared this change with `main`. Everywhere `main`
+accepted an edit, both produce the same source bytes and a projection equal
+to a fresh parse. `main` refused 496 Enter keystrokes; 127 are still refused,
+all before a quote marker or inside nested-list continuations. These fail
+the same way on `main` and are listed below.
+
+**1.2 MB Markdown Source**: `main` (`0193b9f`) and this change, built and
+run alternately on the same container, five runs each.
+
+| Operation | p50 `main` (ms) | p50 this change (ms) | max `main` (ms) | max this change (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Enter | 798–838 | 5.1–5.3 | 809–1,518 | 6.7–7.5 |
+| Undo | 107–118 | 7.5–10.7 | 174–186 | 13.1–13.9 |
+| Type one character | 4.2–4.3 | 4.4–4.7 | 7.1–9.0 | 6.9–8.4 |
+| Type with two views | 7.3–7.6 | 8.5–9.2 | 9.0–11.0 | 10.2–12.2 |
+
+Typing is measured after the Enter rounds. On `main`, each Enter's complete
+reparse also discards the view's layout cache, so the typing that follows
+starts from a smaller cache. With the Enter rounds skipped, `main` types
+with two views in 8.4–9.5 ms, the same as this change.
+
 ## Remaining work
 
 - **Code publications after an unbounded change** (a new input identity
@@ -378,10 +446,10 @@ Markdown WYSIWYG, run the same way, is unchanged within run-to-run noise.
 - Unlimited history retention (used by the probe) grows the memory ledger's
   hash table, which shows up as a few percent of HTML typing; the shipped
   policy prunes.
-- **Enter in Markdown Source** still reparses the whole document, about
-  860 ms on the 1.2 MB fixture. Enter adds a row, and the line-local splice
-  for source-visible formats requires the row count to stay the same; only
-  Text and Code splice added rows today. The regional proof above applies
-  unchanged once the splice accepts added rows.
+- **Enter in Markdown Source** is refused before a quote marker (`>`) and
+  in some nested-list continuation rows (`VerificationFailed` or
+  `AmbiguousProjection`, as on `main`). Enter inside a paragraph longer than
+  64 rows, and Enter on an empty list item followed by a lazy continuation
+  row, still take the complete reparse.
 - **Long quotes** (more than 64 rows) still take the complete reparse when
   typed into.

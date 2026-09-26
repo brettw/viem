@@ -4084,6 +4084,57 @@ impl ProjectionSpliceStatistics {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// How the rows of a regional Source reparse correspond to the rows it
+/// replaces. Rows before and including the first edited row keep their
+/// index, rows after the edited rows move by `delta`, and the rows between
+/// are new.
+struct RegionalRowMap {
+    first_edited: usize,
+    last_edited: usize,
+    delta: isize,
+}
+
+impl RegionalRowMap {
+    fn new(
+        previous: &FormattedDocument,
+        old_hard_lines: &Range<usize>,
+        regional: &FormattedDocument,
+        edits: &[TextEdit],
+        source_paragraphs: bool,
+    ) -> Result<Self, BlockIdentityError> {
+        let delta = regional.hard_lines.len() as isize - old_hard_lines.len() as isize;
+        if !source_paragraphs || delta == 0 {
+            return Ok(Self { first_edited: 0, last_edited: 0, delta: 0 });
+        }
+        let (Some(first), Some(last)) = (edits.first(), edits.last()) else {
+            return Err(BlockIdentityError::InvalidProjection);
+        };
+        let line_at = |at: usize| {
+            previous
+                .hard_line_at_offset(at)
+                .and_then(|line| line.checked_sub(old_hard_lines.start))
+                .filter(|&line| line < old_hard_lines.len())
+                .ok_or(BlockIdentityError::InvalidProjection)
+        };
+        let (first_edited, last_edited) = (line_at(first.range.start)?, line_at(last.range.end)?);
+        if last_edited.checked_add_signed(delta).is_none_or(|end| end < first_edited) {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        Ok(Self { first_edited, last_edited, delta })
+    }
+
+    /// The old region row for a regional row, or `None` for an added row.
+    fn old_line(&self, line: usize) -> Option<usize> {
+        if self.delta == 0 || line <= self.first_edited {
+            Some(line)
+        } else if (line as isize) > self.last_edited as isize + self.delta {
+            line.checked_add_signed(-self.delta)
+        } else {
+            None
+        }
+    }
+}
+
 pub(crate) fn splice_line_local_projection(
     previous: &FormattedDocument,
     regional: FormattedDocument,
@@ -4115,6 +4166,7 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
+    let row_map = RegionalRowMap::new(previous, &old_hard_lines, &regional, edits, source_paragraphs)?;
     let first_block = previous
         .blocks
         .index_touching_point(old_formatted.start)
@@ -4242,9 +4294,12 @@ pub(crate) fn splice_line_local_projection(
             let line = regional_lines
                 .partition_point(|line| line.range.start <= candidate.range.start)
                 .saturating_sub(1);
+            // A row a break adds takes its paragraph properties from the row
+            // it was split from, and a fresh identity.
+            let mapped = row_map.old_line(line);
             let old_line = previous
                 .hard_lines
-                .get(old_hard_lines.start + line)
+                .get(old_hard_lines.start + mapped.unwrap_or(row_map.first_edited))
                 .ok_or(BlockIdentityError::InvalidProjection)?;
             let old = previous_region_blocks
                 .iter()
@@ -4265,7 +4320,9 @@ pub(crate) fn splice_line_local_projection(
                     candidate.range.end = tail.range.end - old_formatted.end + new_formatted_end;
                 }
             }
-            candidate.id = if used.insert(old.id) {
+            candidate.id = if mapped.is_none() {
+                0
+            } else if used.insert(old.id) {
                 old.id
             } else {
                 old_line.id
@@ -4279,6 +4336,7 @@ pub(crate) fn splice_line_local_projection(
                 candidate.style = previous.style_sheet.base_paragraph.clone();
             }
         }
+        *next_projected_block_id = allocate_unassigned_block_ids(&mut regional_blocks, *next_projected_block_id)?;
     } else {
         for (candidate, old) in regional_blocks.iter_mut().zip(&previous_region_blocks) {
             candidate.range = shift_region_range(&candidate.range, old_formatted.start)?;
@@ -4314,7 +4372,9 @@ pub(crate) fn splice_line_local_projection(
         .get_range(&old_hard_lines)
         .ok_or(BlockIdentityError::InvalidProjection)?;
     let regional_lines = regional.hard_lines.to_vec();
-    if !literal_topology && regional_lines.len() != old_lines.len() {
+    if !literal_topology
+        && Some(regional_lines.len()) != old_lines.len().checked_add_signed(row_map.delta)
+    {
         return Err(BlockIdentityError::InvalidProjection);
     }
     let regional_hard_lines = if literal_topology {
@@ -4333,6 +4393,32 @@ pub(crate) fn splice_line_local_projection(
                 })
             })
             .collect::<Result<Vec<_>, BlockIdentityError>>()?
+    } else if row_map.delta != 0 {
+        // Rows kept from before the edit retain their identities. A row the
+        // edit adds shares the identity of the paragraph it starts, and
+        // otherwise gets its own.
+        let mut lines = Vec::with_capacity(regional_lines.len());
+        for (index, line) in regional_lines.iter().enumerate() {
+            let range = shift_region_range(&line.range, old_formatted.start)?;
+            let id = match row_map.old_line(index) {
+                Some(old) => old_lines[old].id,
+                None => match regional_blocks.iter().find(|block| block.range.start == range.start) {
+                    Some(block) => block.id,
+                    None => {
+                        let id = *next_projected_block_id;
+                        *next_projected_block_id =
+                            id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;
+                        id
+                    }
+                },
+            };
+            let separator_length = match row_map.old_line(index) {
+                Some(old) => old_lines[old].separator_length,
+                None => line.separator_length,
+            };
+            lines.push(HardLine { id, range, separator_length });
+        }
+        lines
     } else {
         regional_lines
             .iter()

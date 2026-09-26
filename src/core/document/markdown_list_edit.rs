@@ -246,14 +246,31 @@ impl Document {
                 // of the pair, such as a continuation line's single ending;
                 // three consecutive endings would fold back to one break.
                 let endings = self.markdown_source_enter_endings(at)?;
-                return self.prepare_text_edits_with_patches(
-                    vec![edit],
-                    Some(vec![SourcePatch::primary(
-                        source_at..source_at,
-                        self.encoding()
-                            .encode_fragment(&self.file_format().spelling().repeat(endings))?,
-                    )]),
-                );
+                let patches = vec![SourcePatch::primary(
+                    source_at..source_at,
+                    self.encoding()
+                        .encode_fragment(&self.file_format().spelling().repeat(endings))?,
+                )];
+                // The inserted endings are the authoritative source edit. When
+                // the parse reshapes the text around them, such as trimming
+                // whitespace that now ends or begins a paragraph, publish that
+                // parse, as typing a delimiter does.
+                // A proven regional parse supplies that reshaped text directly.
+                if let Some(reparsed) = self.markdown_source_reparsed_edit(&edit, &patches)? {
+                    if reparsed.range != edit.range || reparsed.replacement != edit.replacement {
+                        if let Ok(prepared) =
+                            self.prepare_text_edits_with_patches(vec![reparsed], Some(patches.clone()))
+                        {
+                            return Ok(prepared);
+                        }
+                    }
+                }
+                return match self.prepare_text_edits_with_patches(vec![edit], Some(patches.clone())) {
+                    Err(ModelTransactionError::Document(DocumentError::VerificationFailed)) => {
+                        self.prepare_reprojected_source_patches(patches)
+                    }
+                    result => result,
+                };
             }
             return self.prepare_text_edits_with_patches(vec![edit], None);
         }
