@@ -5022,6 +5022,8 @@ including Source views, show both by default. Toolbar visibility is remembered
 independently per format in `formattingToolbar` in `config.json`; switching
 formats or focused panes restores that format's choice. macOS implements this
 with native title-bar accessories that share the title bar's appearance.
+Windows places the toggle immediately to the right of its menu toggle, using
+the same neutral title-bar styling, and places the toolbar below the menu bar.
 
 Left to right, the toolbar contains Paragraph and Character style selectors;
 Bold, Italic, Underline, Strikethrough, character Code, Superscript, Subscript;
@@ -5029,7 +5031,7 @@ then Text Color and Background Color; then Bulleted List, Numbered List, Code
 Block; then Indent and Unindent. Groups have spacing between them. Unsupported
 format controls are omitted, including colors and rich direct properties in
 Markdown. Supported actions may be temporarily unavailable for a selection.
-Narrow macOS windows keep the controls accessible through horizontal scrolling.
+Narrow windows keep the controls accessible through horizontal scrolling.
 
 Selectors reflect the current named styles (or Mixed), and use the same exact
 catalogue identities and assignment actions as Style menus. Formatting buttons
@@ -6318,8 +6320,8 @@ ownership boundaries are in `src/win/README.md`. The screenshots under
 panes, the bottom command prompt, and the modeless style inspector.
 
 The window has a Windows menu bar below its title bar. A native toggle button
-immediately to the left of the caption controls shows or hides the menu and
-persists the preference. Panes stack vertically, with native resize dividers,
+to the left of the formatting-toolbar toggle and caption controls shows or hides
+the menu and persists the preference. Panes stack vertically, with native resize dividers,
 independent scrollbars, status bars, cursors, selections, and view options.
 The menu bar matches the title-bar background. Its visibility toggle blends
 into that background when off and uses WinUI's neutral default control fill

@@ -39,6 +39,13 @@ internal sealed class Preferences
     public T Get<T>(string section, string key, T fallback)
     { try { var node = root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
     public bool ShowMenu => Get("windows", "showMenu", true);
+    private static string ToolbarFormatKey(uint format) => format switch {
+        Native.VIEM_FORMAT_MARKDOWN => "markdown", Native.VIEM_FORMAT_MARKDOWN_SOURCE => "markdownSource",
+        Native.VIEM_FORMAT_HTML => "html", Native.VIEM_FORMAT_HTML_SOURCE => "htmlSource",
+        Native.VIEM_FORMAT_RTF => "rtf", Native.VIEM_FORMAT_CODE => "code", _ => "plainText"
+    };
+    public bool ShowFormattingToolbar(uint format) => Get("formattingToolbar", ToolbarFormatKey(format), true);
+    public void SetFormattingToolbar(uint format, bool visible) => Set("formattingToolbar", ToolbarFormatKey(format), visible);
     public WindowFrame? DocumentWindowFrame => WindowFrame.Read(root["windows"]?["documentFrame"]);
     public void SetDocumentWindowFrame(WindowFrame frame)
     {
@@ -86,7 +93,7 @@ internal sealed class Preferences
     }
     private static void Validate(JsonObject value)
     {
-        foreach (string section in new[] { "theme", "view", "editing", "appearance", "code", "windows" })
+        foreach (string section in new[] { "theme", "view", "editing", "appearance", "code", "windows", "formattingToolbar" })
             if (value.ContainsKey(section) && value[section] is not JsonObject) throw new InvalidDataException(section + " must be an object.");
         void Number(JsonNode? node, double min, double max, string name, bool integral = false)
         { if (node == null) return; double n = node.GetValue<double>(); if (!double.IsFinite(n) || n < min || n > max || (integral && n != Math.Truncate(n))) throw new InvalidDataException("Invalid " + name + "."); }
@@ -97,6 +104,9 @@ internal sealed class Preferences
         if (value["theme"]?["statusFontFamily"] is JsonNode family && (family.GetValue<string>().Length is 0 or >= 256)) throw new InvalidDataException("Invalid status font family.");
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
         foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
+        if (value["formattingToolbar"] is JsonObject toolbar)
+            foreach (string key in new[] { "plainText", "code", "markdown", "markdownSource", "html", "htmlSource", "rtf" })
+                if (toolbar[key] is JsonNode visible) _ = visible.GetValue<bool>();
         if (value["windows"] is JsonObject windows && windows.ContainsKey("documentFrame") && WindowFrame.Read(windows["documentFrame"]) == null)
             throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
         Number(value["editing"]?["textWidth"], 1, uint.MaxValue, "text width", true);

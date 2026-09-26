@@ -135,6 +135,12 @@ advanced typography controls and outgoing RTF are not claimed as implemented.
   core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
+Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
+visibility, selection/undo, color-picker, and large-document latency checks.
+The toolbar uses the active pane's core selection, the shared style catalogue,
+and the same commands as the menus. Refreshes reuse exact-revision style exports
+and native selector items; visibility uses the shared per-format
+`formattingToolbar` configuration keys.
 `scripts/test-win-vim-runtime.ps1` additionally checks build/publish inventories,
 stale-file removal, native syntax paint after relocation into a path containing
 spaces and non-ASCII characters, and editing/Tree-sitter with missing resources.

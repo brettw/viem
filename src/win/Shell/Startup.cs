@@ -55,6 +55,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
@@ -66,6 +67,8 @@ internal sealed partial class EditorWindow
                             Environment.Exit(0);
                             return;
                         }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1")
+                            await Diagnostics.FormattingToolbarTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
                         {
                             Diagnostics.StyleAndSettingsTests.StartupFontChecks();
@@ -129,6 +132,7 @@ internal sealed partial class EditorWindow
                     preferences.Set("windows", "showMenu", true);
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("titlebar menu visibility toggle reflows panes");
                     await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
+                    await Diagnostics.FormattingToolbarTests.Run(preferences);
                     await Diagnostics.WindowPlacementTests.Run(this, preferences.DirectoryPath);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                     await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);

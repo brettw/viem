@@ -39,6 +39,8 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
+        formattingToolbar = new(preferences);
+        ConfigureFormattingToolbar();
         menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
         if (document != null)
@@ -48,10 +50,11 @@ internal sealed partial class EditorWindow : Window
         }
         Title = "Viem";
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
-        root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 2);
-        titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
+        root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
+        root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(formattingToolbar); Grid.SetRow(formattingToolbar, 2); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 3);
+        titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
+        titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
         capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this);
@@ -91,6 +94,7 @@ internal sealed partial class EditorWindow : Window
     }
     public new void Close()
     {
+        if (formattingToolbar.DismissPopups()) { closeAfterToolbarPopup = true; return; }
         // WinUI's Closed event may run after the HWND is gone. Sample before
         // native teardown, including a move whose Changed callback is queued.
         capturePlacement();
@@ -100,7 +104,7 @@ internal sealed partial class EditorWindow : Window
     {
         double scale = root.XamlRoot?.RasterizationScale ?? 1;
         double inset = AppWindow.TitleBar.RightInset / scale;
-        titleBar.ColumnDefinitions[2].Width = new(Math.Max(inset, 138 / scale));
+        titleBar.ColumnDefinitions[3].Width = new(Math.Max(inset, 138 / scale));
     }
     private void ApplyPreferences()
     {
@@ -113,7 +117,8 @@ internal sealed partial class EditorWindow : Window
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
+        titleBar.Background = Menu.Background = formattingToolbar.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
+        SynchronizeFormattingToolbar();
         updatingPreferences = false;
         RefreshRecentMenu();
     }
@@ -191,6 +196,7 @@ internal sealed partial class EditorWindow : Window
         string value = ActivePane.Document.Name + (ActivePane.Document.IsDirty ? " •" : "") + (Panes.Count > 1 ? $" · {Panes.Count} panes" : "");
         if (titleText.Text != value) { Title = value + " — Viem"; titleText.Text = value; }
         menusDirty = true;
+        SynchronizeFormattingToolbar();
     }
     private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }
     internal async Task OpenDialog()
