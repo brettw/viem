@@ -39,7 +39,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let paragraph = try XCTUnwrap(main.item(withTitle: "Style")?.submenu?.item(withTitle: "Paragraph")?.submenu)
         builder.menuNeedsUpdate(character)
         builder.menuNeedsUpdate(paragraph)
-        let keyword = try XCTUnwrap(character.item(withTitle: "Keyword"))
+        let keyword = try XCTUnwrap(character.item(withTitle: "Keyword.function"))
         let baseCharacter = try XCTUnwrap(character.item(withTitle: "Default Paragraph"))
         let baseParagraph = try XCTUnwrap(paragraph.item(withTitle: "Base Paragraph"))
         XCTAssertNil(character.item(withTitle: "Edit Styles…"))
@@ -83,7 +83,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 2))
         var catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         XCTAssertEqual(catalogue.entries.filter { $0.role == .character && $0.presentation.state == .on }
-            .map(\.displayName), ["Keyword"])
+            .map(\.displayName), ["Keyword.function"])
         XCTAssertEqual(catalogue.entries.first { $0.role == .paragraph && $0.stableID == "Paragraph" }?
             .presentation.state, .on)
 
@@ -155,7 +155,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         let entry = try XCTUnwrap(catalogue.entries.first { $0.stableID == implicit.key.id.rawValue })
         XCTAssertEqual(entry.actionKind, .edit)
-        XCTAssertEqual(entry.displayName, "Keyword (automatic)")
+        XCTAssertEqual(entry.displayName, "Keyword")
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
@@ -164,10 +164,22 @@ final class EVCodeStyleMenuTests: XCTestCase {
         surface.editorView.performEditorStyleMenuAction(item)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, implicit.key)
         let editor = try XCTUnwrap(coordinator.styleWindow?.contentViewController as? EVStyleEditorViewController)
+        func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
+        let picker = try XCTUnwrap(descendants(editor.view).compactMap { $0 as? NSPopUpButton }
+            .first { $0.accessibilityLabel() == "Style" })
+        XCTAssertEqual(picker.selectedItem?.title, "Keyword")
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(19)), editor.inspection.diagnostic)
         let edited = try XCTUnwrap(code.snapshot().definition(for: implicit.key))
         XCTAssertFalse(edited.flags.contains(.implicit), "Editing makes an implicit definition ordinary")
         XCTAssertNotEqual(try surface.backend.configuration.codeStyleSheet(), savedAfterDelete)
+        let saved = try XCTUnwrap(surface.backend.configuration.codeStyleSheet())
+        XCTAssertEqual(saved.withUnsafeBytes {
+            viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
+        }, UInt32(VIEM_STATUS_OK))
+        let reloaded = try XCTUnwrap(code.snapshot().definition(for: implicit.key))
+        XCTAssertEqual(reloaded.name, "Keyword")
+        XCTAssertFalse(reloaded.flags.contains(.implicit))
+        XCTAssertEqual(reloaded.properties[.characterSize]?.declared, .float(19))
         XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
         XCTAssertFalse(surface.canUndo)
     }
@@ -190,7 +202,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertTrue(middle.flags.contains(.implicit))
         XCTAssertEqual(leaf.parentID, middle.key.id)
         XCTAssertEqual(middle.parentID, root.key.id)
-        XCTAssertEqual(leaf.displayTitle, "Keyword.directive.define (automatic)")
+        XCTAssertEqual(leaf.name, "Keyword.directive.define")
     }
 
     func testCodeEditStylesCommandsTargetBasesAndAssignmentsStayDisabled() async throws {

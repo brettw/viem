@@ -269,15 +269,6 @@ struct EVStyleDefinition: Equatable {
     var parentKey: EVStyleKey? {
         parentID.map { EVStyleKey(namespace: key.namespace, id: $0) }
     }
-
-    /// Pickers and menus mark generated Code syntax definitions.
-    var displayTitle: String {
-        flags.contains(.implicit) ? Self.implicitTitle(name) : name
-    }
-
-    static func implicitTitle(_ name: String) -> String {
-        "\(name) (automatic)"
-    }
 }
 
 struct EVStyleSheetSnapshot: Equatable {

@@ -9,8 +9,7 @@ internal readonly record struct StyleKey(uint Namespace, string Id);
 
 internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, string Name, string Parent, string Next, Dictionary<uint, ViemStylePropertyV1> Properties)
 {
-    // Pickers mark generated Code syntax definitions, matching the Mac editor.
-    public override string ToString() => (Native.flags & VIEM_STYLE_DEFINITION_IMPLICIT) != 0 ? $"{Name} (automatic)" : Name;
+    public override string ToString() => Name;
     public uint Namespace => Native.namespace_id;
     public StyleKey Key => new(Namespace, Id);
     public bool Has(uint capability) => (Native.capabilities & capability) != 0;

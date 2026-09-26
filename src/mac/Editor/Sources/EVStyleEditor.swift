@@ -907,7 +907,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         for (title, styles) in sections {
             menu.addItem(.sectionHeader(title: title))
             for definition in styles {
-                let item = NSMenuItem(title: definition.displayTitle, action: nil, keyEquivalent: "")
+                let item = NSMenuItem(title: definition.name, action: nil, keyEquivalent: "")
                 item.representedObject = EVStyleKeyBox(definition.key)
                 item.toolTip = "Stable ID: \(definition.key.id.rawValue)"
                 menu.addItem(item)
