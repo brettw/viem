@@ -1964,9 +1964,19 @@ impl FormattedDocument {
     /// their explicit hard-line records. Literal source newline characters in
     /// other adapters are never reinterpreted by this operation.
     pub(crate) fn install_paragraph_partition(&mut self, paragraphs: Vec<Block>) {
-        validate_block_partition(self.text(), &paragraphs)
+        self.try_install_paragraph_partition(paragraphs)
             .expect("rich projectors emit a valid paragraph partition");
+    }
+
+    /// Installs a partition derived from an earlier projection, which is only
+    /// a candidate until it is validated against this projection's text.
+    pub(crate) fn try_install_paragraph_partition(
+        &mut self,
+        paragraphs: Vec<Block>,
+    ) -> Result<(), BlockIdentityError> {
+        validate_block_partition(self.text(), &paragraphs)?;
         self.blocks = OrderedRangeStore::new(paragraphs);
+        Ok(())
     }
 
     pub(crate) fn install_hard_line_partition(&mut self, ranges: Vec<Range<usize>>) {

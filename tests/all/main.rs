@@ -136,6 +136,7 @@ mod markdown_source_layout;
 mod markdown_source_navigation;
 mod markdown_source_paragraphs;
 mod markdown_source_transfers;
+mod markdown_source_typing_work;
 mod markdown_structure;
 mod markdown_style_roundtrip;
 mod markdown_typing_boundaries;
