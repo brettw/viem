@@ -5,6 +5,43 @@ import XCTest
 
 @MainActor
 final class EVStyleEditorShortcutTests: XCTestCase {
+    func testNativeStyleSubmenusValidateWhenTheDocumentFormatChanges() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-style-menu-validation-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: Data("text".utf8), typeName: EVDocument.plainTextType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
+        defer { controller.window?.orderOut(nil) }
+        let owner = EVApplicationDelegate(configuration: configuration)
+        let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
+        let main = builder.buildMainMenu(for: NSApplication.shared)
+        let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
+        let paragraph = try XCTUnwrap(styles.item(withTitle: "Paragraph"))
+        let character = try XCTUnwrap(styles.item(withTitle: "Character"))
+        let edit = try XCTUnwrap(styles.item(withTitle: "Edit Styles…"))
+        // Supply the normal responder-chain target explicitly so native menu
+        // validation does not depend on which test window is currently key.
+        for item in [paragraph, character, edit] {
+            item.target = controller.documentContentController
+        }
+        for (command, enabled) in [
+            (EVMenuCommand.reinterpretAsText, false), (.reinterpretAsCode, false),
+            (.reinterpretAsMarkdown, true), (.reinterpretAsHTML, true),
+            (.reinterpretAsText, false), (.reinterpretAsMarkdown, true),
+        ] {
+            surface.perform(menuCommand: command, sender: nil)
+            styles.update()
+            XCTAssertEqual(paragraph.isEnabled, enabled, "\(command)")
+            XCTAssertEqual(character.isEnabled, enabled, "\(command)")
+            XCTAssertTrue(edit.isEnabled, "Styles remain editable through the inspector")
+        }
+        withExtendedLifetime((builder, owner, controller)) {}
+    }
+
     func testBareF8OpensTheModelessStyleEditorInNormalAndInsertWithoutEditing() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-style-shortcut-\(UUID().uuidString)")
@@ -37,24 +74,16 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
         let main = builder.buildMainMenu(for: application)
         application.mainMenu = main
-        let format = try XCTUnwrap(main.item(withTitle: "Format")?.submenu)
-        let styles = try XCTUnwrap(format.item(withTitle: "Style")?.submenu)
+        let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
         let item = try XCTUnwrap(styles.item(withTitle: "Edit Styles…"))
         XCTAssertEqual(item.keyEquivalent, String(UnicodeScalar(NSF8FunctionKey)!))
         XCTAssertTrue(item.keyEquivalentModifierMask.isEmpty)
         XCTAssertNil(item.target, "The shortcut uses the editor responder chain")
         for title in ["Paragraph", "Character"] {
-            let menu = try XCTUnwrap(main.item(withTitle: title)?.submenu)
-            // Exercise the live rebuild too: AppKit must retain duplicate F8
-            // labels both on installation and when a style menu opens.
-            for rebuild in [false, true] {
-                if rebuild { builder.menuNeedsUpdate(menu) }
-                let footer = try XCTUnwrap(menu.item(withTitle: "Edit Styles…"))
-                XCTAssertEqual(footer.keyEquivalent, item.keyEquivalent, title)
-                XCTAssertTrue(footer.keyEquivalentModifierMask.isEmpty, title)
-                XCTAssertEqual(footer.action, item.action, title)
-                XCTAssertNil(footer.target, title)
-            }
+            let menu = try XCTUnwrap(styles.item(withTitle: title)?.submenu)
+            XCTAssertNil(menu.item(withTitle: "Edit Styles…"))
+            builder.menuNeedsUpdate(menu)
+            XCTAssertNil(menu.item(withTitle: "Edit Styles…"))
         }
 
         let session = try XCTUnwrap(surface.session)

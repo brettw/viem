@@ -29,6 +29,19 @@ internal static class FormatMenuTests
         var pane = window.ActivePane!; var view = await pane.Ready;
         var menu = window.Menu.Items.Single(m => m.Title == "Format");
         var menuPeer = new MenuBarItemAutomationPeer(menu);
+        var styles = window.Menu.Items.Single(m => m.Title == "Style");
+        var stylesPeer = new MenuBarItemAutomationPeer(styles);
+        var paragraphStyles = styles.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Paragraph");
+        var characterStyles = styles.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Character");
+        async Task CheckStyleAvailability(bool enabled) {
+            window.Activate(); stylesPeer.Expand(); await Task.Delay(40);
+            Check(paragraphStyles.IsEnabled == enabled && characterStyles.IsEnabled == enabled,
+                $"Style submenus validate for format {window.ActivePane!.Document.State.format}");
+            Check(styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…").IsEnabled
+                && styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Reload Code Style Sheet").IsEnabled,
+                "style inspector and global stylesheet reload remain available");
+            stylesPeer.Collapse();
+        }
         async Task Open() { window.Activate(); menuPeer.Expand(); await Task.Delay(40); }
         MenuFlyoutItem Item(string name) => Descendants(menu.Items).OfType<MenuFlyoutItem>().Single(i => i.Text == name);
         ToggleMenuFlyoutItem Toggle(string name) => menu.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == name);
@@ -39,12 +52,18 @@ internal static class FormatMenuTests
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); menuPeer.Collapse(); await Task.Delay(40);
         }
         try {
+            Check(window.Menu.Items.All(m => m.Title is not ("Paragraph" or "Character"))
+                && styles.Items.Take(2).SequenceEqual(new MenuFlyoutItemBase[] { paragraphStyles, characterStyles }),
+                "Style replaces Paragraph and Character with the first two submenus");
+            Check(!Descendants(menu.Items).Any(i => i is MenuFlyoutSubItem { Text: "Style" })
+                && Descendants(styles.Items).OfType<MenuFlyoutItem>().Count(i => i.Text == "Edit Styles…") == 1,
+                "Style commands have one home and the assignment menus have no editor footers");
+            await CheckStyleAvailability(true);
             Check(!Descendants(menu.Items).Any(i => i is MenuFlyoutSubItem { Text: "Baseline" } || i is MenuFlyoutItem { Text: "Bigger" or "Smaller" }),
                 "Format omits Baseline, Bigger and Smaller and exposes top-level script toggles");
             view.Command("gg0viw"); await Open();
             Check(Descendants(menu.Items).OfType<MenuFlyoutItem>().All(i => i.IsEnabled)
                 && menu.Items.OfType<ToggleMenuFlyoutItem>().All(i => i.IsEnabled), "every applicable Format action is enabled for a rich linear selection");
-            Check(Item("Reload Code Style Sheet").IsEnabled, "global Code stylesheet reload remains available from other document formats");
             menuPeer.Collapse();
             foreach (var (name, style) in new[] { ("Bold", VIEM_SEMANTIC_STYLE_STRONG), ("Italic", VIEM_SEMANTIC_STYLE_EMPHASIS) }) {
                 await Flip(name); Check(view.SemanticStyle(style).state == VIEM_SEMANTIC_STYLE_STATE_ON, name + " Format action applies");
@@ -125,12 +144,17 @@ internal static class FormatMenuTests
             Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUPERSCRIPT, "script menu applies pending Insert typography");
             view.Key(VIEM_KEY_ESCAPE);
 
+            foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE }) {
+                var literal = window.AddPane(new CoreDocument("plain text"u8.ToArray(), format: format));
+                await literal.Ready;
+                await CheckStyleAvailability(false);
+            }
             var markdown = window.AddPane(new CoreDocument("plain markdown"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
-            (await markdown.Ready).SelectAll(); await Open();
+            (await markdown.Ready).SelectAll(); await CheckStyleAvailability(true); await Open();
             Check(!Toggle("Superscript").IsEnabled && !Toggle("Underline").IsEnabled && !Item("Center").IsEnabled && !Item("Font…").IsEnabled,
                 "unsupported Markdown direct formatting is disabled instead of failing after selection"); menuPeer.Collapse();
             var htmlSource = window.AddPane(new CoreDocument("<p>source</p>"u8.ToArray(), format: VIEM_FORMAT_HTML_SOURCE));
-            (await htmlSource.Ready).Command("3li"); await Open();
+            (await htmlSource.Ready).Command("3li"); await CheckStyleAvailability(true); await Open();
             Check(Toggle("Superscript").IsEnabled && Item("Text Color…").IsEnabled, "HTML Source exposes its supported rich formatting controls");
             menuPeer.Collapse(); await Task.Delay(200);
             Check(foreground.Picker.Color == Microsoft.UI.Colors.Blue,

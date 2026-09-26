@@ -1,5 +1,6 @@
 #if DEBUG
 using System.Text;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Viem.Windows.Core;
@@ -63,8 +64,9 @@ internal static class ListInteractionTests
         await Task.Delay(250);
         var pane = window.ActivePane!;
         var view = await pane.Ready;
-        var paragraph = window.Menu.Items.Single(item => item.Title == "Paragraph");
-        var paragraphPeer = new MenuBarItemAutomationPeer(paragraph);
+        var styles = window.Menu.Items.Single(item => item.Title == "Style");
+        var stylesPeer = new MenuBarItemAutomationPeer(styles);
+        var paragraph = styles.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Paragraph");
         var indent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Indent");
         var unindent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Unindent");
         ulong second = checked((ulong)document.FormattedText().IndexOf("Second", StringComparison.Ordinal));
@@ -75,7 +77,10 @@ internal static class ListInteractionTests
         async Task OpenParagraphMenu()
         {
             window.Activate();
-            paragraphPeer.Expand();
+            stylesPeer.Expand();
+            await Task.Delay(40);
+            Check(paragraph.Focus(FocusState.Programmatic), "Style Paragraph submenu receives keyboard focus");
+            await InputRoutingTests.Key(VirtualKey.Right);
             await Task.Delay(80);
         }
         async Task Invoke(MenuFlyoutItem item)
@@ -111,7 +116,7 @@ internal static class ListInteractionTests
             await OpenParagraphMenu();
             Check((view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0 && indent.IsEnabled && !unindent.IsEnabled,
                 "Paragraph Indent enables for the second list item at a mid-item caret");
-            paragraphPeer.Collapse();
+            stylesPeer.Collapse();
             await Invoke(indent);
             CheckNested("Paragraph Indent dispatches the verified structural list action");
             Check(DecorationLabels(view).Contains("a."),
@@ -119,7 +124,7 @@ internal static class ListInteractionTests
             await OpenParagraphMenu();
             Check(!indent.IsEnabled && unindent.IsEnabled,
                 "Paragraph menu refreshes Indent and Unindent after nesting changes");
-            paragraphPeer.Collapse();
+            stylesPeer.Collapse();
             await Invoke(unindent);
             CheckTopLevel("Paragraph Unindent restores the item to the top-level list");
 
@@ -157,7 +162,7 @@ internal static class ListInteractionTests
         }
         finally
         {
-            paragraphPeer.Collapse();
+            stylesPeer.Collapse();
             App.Instance.Windows.Remove(window);
             window.Close();
         }

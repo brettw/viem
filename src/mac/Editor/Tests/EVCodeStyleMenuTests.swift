@@ -35,15 +35,17 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let owner = EVApplicationDelegate(configuration: surface.backend.configuration)
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
         let main = builder.buildMainMenu(for: NSApplication.shared)
-        let character = try XCTUnwrap(main.item(withTitle: "Character")?.submenu)
-        let paragraph = try XCTUnwrap(main.item(withTitle: "Paragraph")?.submenu)
+        let character = try XCTUnwrap(main.item(withTitle: "Style")?.submenu?.item(withTitle: "Character")?.submenu)
+        let paragraph = try XCTUnwrap(main.item(withTitle: "Style")?.submenu?.item(withTitle: "Paragraph")?.submenu)
         builder.menuNeedsUpdate(character)
         builder.menuNeedsUpdate(paragraph)
         let keyword = try XCTUnwrap(character.item(withTitle: "Keyword"))
         let baseCharacter = try XCTUnwrap(character.item(withTitle: "Default Paragraph"))
         let baseParagraph = try XCTUnwrap(paragraph.item(withTitle: "Base Paragraph"))
-        let characterFooter = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
-        let paragraphFooter = try XCTUnwrap(paragraph.item(withTitle: "Edit Styles…"))
+        XCTAssertNil(character.item(withTitle: "Edit Styles…"))
+        XCTAssertNil(paragraph.item(withTitle: "Edit Styles…"))
+        XCTAssertFalse(surface.presentation(for: .characterStyles).isEnabled)
+        XCTAssertFalse(surface.presentation(for: .paragraphStyles).isEnabled)
         XCTAssertTrue(character.showsStateColumn)
         XCTAssertTrue(paragraph.showsStateColumn)
         XCTAssertEqual(keyword.state, .on)
@@ -57,8 +59,6 @@ final class EVCodeStyleMenuTests: XCTestCase {
         }
         XCTAssertEqual(keyword.state, .on, "Native validation must preserve the syntax checkmark")
         XCTAssertEqual(baseParagraph.state, .on)
-        XCTAssertEqual(characterFooter.state, .off)
-        XCTAssertEqual(paragraphFooter.state, .off)
 
         // Keep the existing NSMenuItem objects as AppKit does while tracking;
         // validation must refresh selection state without rebuilding the menu.
@@ -68,13 +68,6 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertTrue(surface.editorView.validateMenuItem(baseCharacter))
         XCTAssertEqual(keyword.state, .off)
         XCTAssertEqual(baseCharacter.state, .on, "The space after fn has the default character style")
-        characterFooter.state = .on
-        paragraphFooter.state = .on
-        XCTAssertTrue(surface.editorView.validateMenuItem(characterFooter))
-        XCTAssertTrue(surface.editorView.validateMenuItem(paragraphFooter))
-        XCTAssertEqual(characterFooter.state, .off, "The generic editor command is never a selected style")
-        XCTAssertEqual(paragraphFooter.state, .off)
-
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 0))
         XCTAssertTrue(surface.editorView.validateMenuItem(keyword))
         XCTAssertTrue(surface.editorView.validateMenuItem(baseCharacter))
@@ -210,8 +203,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         let coordinator = EVStyleEditorCoordinator.shared
         coordinator.close()
         defer { coordinator.close() }
-        for (command, key) in [(EVMenuCommand.editCharacterStyles, EVStyleKey.baseParagraph),
-                               (.editParagraphStyles, .baseParagraph), (.editStyles, .baseParagraph)] {
+        for (command, key) in [(EVMenuCommand.editStyles, EVStyleKey.baseParagraph)] {
             XCTAssertTrue(surface.presentation(for: command).isEnabled)
             surface.perform(menuCommand: command, sender: nil)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, key)

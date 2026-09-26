@@ -11,7 +11,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     private let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
     private let inlineCode = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
 
-    func testNativeEditStylesFootersAndCommandsOpenTheCurrentCaretStyle() throws {
+    func testNativeEditStylesMenuAndCommandOpenTheCurrentCaretStyle() throws {
         let surface = try markdownSurface()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
         let window = try XCTUnwrap(controller.window)
@@ -27,18 +27,14 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let owner = EVApplicationDelegate(configuration: surface.backend.configuration)
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
         let main = builder.buildMainMenu(for: NSApplication.shared)
-        for title in ["Character", "Paragraph"] {
-            coordinator.close()
-            let menu = try XCTUnwrap(main.item(withTitle: title)?.submenu)
-            builder.menuNeedsUpdate(menu)
-            let item = try XCTUnwrap(menu.item(withTitle: "Edit Styles…"))
-            XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
-            XCTAssertTrue(controller.documentContentController.validateMenuItem(item))
-            controller.documentContentController.performEditorMenuCommand(item)
-            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
-        }
+        let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
+        let item = try XCTUnwrap(styles.item(withTitle: "Edit Styles…"))
+        XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertTrue(controller.documentContentController.validateMenuItem(item))
+        controller.documentContentController.performEditorMenuCommand(item)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
 
-        let commands: [EVMenuCommand] = [.editCharacterStyles, .editParagraphStyles, .editStyles]
+        let commands: [EVMenuCommand] = [.editStyles]
         for command in commands {
             coordinator.close()
             surface.perform(menuCommand: command, sender: nil)
@@ -135,7 +131,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertNil(coordinator.inspection)
     }
 
-    func testMixedSelectionsFollowTheirUniformParagraphOrBaseAndCharacterFooterUsesBase() throws {
+    func testMixedSelectionsFollowTheirUniformParagraphOrBaseAndEditStylesUsesBase() throws {
         let surface = try markdownSurface()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
         let window = try XCTUnwrap(controller.window)
@@ -147,7 +143,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         coordinatorToSettle = coordinator
         coordinator.close()
         defer { coordinator.close() }
-        surface.perform(menuCommand: .editCharacterStyles, sender: nil)
+        surface.perform(menuCommand: .editStyles, sender: nil)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
 
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 10))
@@ -162,12 +158,12 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         let owner = EVApplicationDelegate(configuration: surface.backend.configuration)
         let builder = EVMenuBuilder(owner: owner, styleMenuProvider: { surface })
         let main = builder.buildMainMenu(for: NSApplication.shared)
-        let character = try XCTUnwrap(main.item(withTitle: "Character")?.submenu)
-        builder.menuNeedsUpdate(character)
-        let footer = try XCTUnwrap(character.item(withTitle: "Edit Styles…"))
-        XCTAssertEqual(footer.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
-        XCTAssertTrue(controller.documentContentController.validateMenuItem(footer))
-        controller.documentContentController.performEditorMenuCommand(footer)
+        let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
+        builder.menuNeedsUpdate(styles)
+        let item = try XCTUnwrap(styles.item(withTitle: "Edit Styles…"))
+        XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertTrue(controller.documentContentController.validateMenuItem(item))
+        controller.documentContentController.performEditorMenuCommand(item)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
                        "Mixed character assignments open the uniform current paragraph style")
 
@@ -177,7 +173,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertTrue(mixedParagraphs.paragraphMixed)
         XCTAssertNil(mixedParagraphs.paragraph)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
-        for command in [EVMenuCommand.editCharacterStyles, .editParagraphStyles, .editStyles] {
+        for command in [EVMenuCommand.editStyles] {
             coordinator.close()
             surface.perform(menuCommand: command, sender: nil)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
@@ -210,7 +206,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         coordinatorToSettle = coordinator
         coordinator.close()
         defer { coordinator.close() }
-        for command in [EVMenuCommand.editCharacterStyles, .editParagraphStyles, .editStyles] {
+        for command in [EVMenuCommand.editStyles] {
             coordinator.close()
             surface.perform(menuCommand: command, sender: nil)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey)
@@ -234,7 +230,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
 
         moveCaret(0, in: surface)
-        surface.perform(menuCommand: .editCharacterStyles, sender: nil)
+        surface.perform(menuCommand: .editStyles, sender: nil)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, captureKey)
         coordinator.documentDidClose(surface)
         XCTAssertNotNil(coordinator.styleWindow)

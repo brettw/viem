@@ -66,9 +66,9 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case textColor
     case highlightColor
     case defaultParagraphStyle
-    case editCharacterStyles
+    case characterStyles
     case baseParagraphStyle
-    case editParagraphStyles
+    case paragraphStyles
     case editStyles
     case saveDefaultStyle
     case alignStart
@@ -155,7 +155,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     func performEditorMenuCommand(_ sender: Any?)
 }
 
-/// The three style roles exposed by the native Format menu. Stable style IDs,
+/// The two style roles exposed by the native Style menu. Stable style IDs,
 /// rather than menu positions, identify the selected definition.
 public enum EVStyleMenuRole: UInt32, CaseIterable, Sendable {
     case character = 1

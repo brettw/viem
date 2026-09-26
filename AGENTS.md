@@ -1617,7 +1617,7 @@ sibling lists. Native assignment does not add a class or a CSS rule merely to
 identify a built-in style. An empty class attribute left by removing owned
 style assignments is removed.
 
-Format > Style includes **Include style definitions in file** in both HTML
+Style includes **Include style definitions in file** in both HTML
 WYSIWYG and HTML Source. This is portable buffer-local state shared by the two
 views, defaulting to off for new documents. Opening a file containing recognized
 owned native style definitions restores the enabled state; an explicit owned
@@ -2109,7 +2109,7 @@ needed to represent that assignment in a source-backed format. Source and
 WYSIWYG variants share their format's defaults. Loading defaults is presentation
 configuration and never changes source bytes, dirty state, or undo history.
 
-Format > Style contains Edit Styles and Save as default <format> style.
+The Style menu contains Edit Styles and Save as default <format> style.
 HTML also exposes Include style definitions in file, as specified above.
 A trailing separated Reload style sheet re-reads the global Code
 `code_style.json` from disk; it stays enabled in every format because that sheet
@@ -2173,7 +2173,7 @@ view without modifying source, dirty state, or document undo history; undoing
 a document edit does not restore an older global stylesheet.
 
 The file is read once per application profile at startup and is never polled.
-Format > Style > Reload style sheet re-reads it on demand, republishing it to
+Style > Reload style sheet re-reads it on demand, republishing it to
 every open Code buffer even when the file appears unchanged, and reports a
 missing, oversized, or malformed file without overwriting it. An in-app style
 edit that finds the file changed underneath it refuses the write and reloads.
@@ -2290,22 +2290,12 @@ copied declarations are unsupported. Reloads preserve explicit overrides even wh
 equal to default values.
 Loading does not rewrite the stylesheet file or add undo history.
 
-In Code, the Character menu MUST expose the global Code character definitions,
-including implicit definitions, and syntax names referenced by accepted,
-retained highlighting results for the current buffer. The Styles picker and the
-Character menu mark implicit definitions with an "(automatic)" suffix. Inspecting or opening this
-menu MUST NOT parse unvisited text, wait for a provider, generate definitions,
-or change source. Choosing a style opens that definition in the global Styles
-editor instead of assigning it to the selection. A referenced name that is not
-yet materialized, including one beyond the implicit-definition limit, is listed
-under its own name; choosing it explicitly generates its implicit definitions
-and opens it. The menu uses the actual case-sensitive syntax name and preserves
-normal menu tracking while highlighting changes asynchronously.
-
-Character > Edit Styles… opens the current character style in the global Code
-sheet; Paragraph > Edit Styles… opens the current paragraph style in that sheet.
-Use the corresponding base style when the selection has no single current style.
-Format > Document Style > Edit Styles… opens the global base document definition.
+In Code, Style > Paragraph and Style > Character are disabled because named
+styles cannot be manually assigned. Style > Edit Styles… and F8 open the global
+Code stylesheet at the caret's current style, using the selection-following
+policy below. The Styles picker exposes global definitions and marks implicit
+definitions with an "(automatic)" suffix. Inspecting styles MUST NOT parse
+unvisited text, wait for a provider, or change source.
 When opened from a Code view, the Styles editor follows subsequent caret and
 selection movement in that view using the policy below while retaining global
 sheet ownership. These are global style edits shared live by Code buffers, with
@@ -4707,8 +4697,8 @@ closures.
 
 ### macOS main menu
 
-The initial main-menu order is `Viem`, `File`, `Edit`, `Format`, `Paragraph`,
-`Character`, `View`, `Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
+The initial main-menu order is `Viem`, `File`, `Edit`, `Format`, `Style`,
+`View`, `Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
 Vim motions, mode changes, command-line entry, registers, marks, and macros
 remain available through the Vim command grammar and any separately specified
 UI; they are not duplicated into speculative menu hierarchies.
@@ -4814,10 +4804,6 @@ The menu hierarchy is:
   - Text Color…
   - Highlight Color…
   - separator
-  - Style
-    - Edit Styles…
-    - Save as default <format> style
-  - separator
   - Paragraph
     - Alignment
       - Start
@@ -4842,17 +4828,25 @@ The menu hierarchy is:
   - Clear Direct Character Formatting
   - Clear Direct Paragraph Formatting
   - Clear All Direct Formatting
-- **Paragraph**
-  - Base Paragraph (`Command-0`)
-  - Heading 1 through Heading 6 (`Command-1` through `Command-6`)
-  - dynamically listed paragraph styles, including generated list levels
+- **Style**
+  - Paragraph
+    - Bulleted List
+    - Numbered List
+    - Indent
+    - Unindent
+    - separator
+    - Base Paragraph (`Command-0`)
+    - Heading 1 through Heading 6 (`Command-1` through `Command-6`)
+    - dynamically listed paragraph styles, including generated list levels
+  - Character
+    - Default Paragraph (clear named character styling)
+    - dynamically listed named character styles
   - separator
-  - Edit Styles…
-- **Character**
-  - Default Paragraph (clear named character styling)
-  - dynamically listed named character styles
+  - Edit Styles… (`F8`)
+  - Save as default <format> style
+  - Include style definitions in file
   - separator
-  - Edit Styles…
+  - Reload style sheet
 - **View**
   - Show Status Bar
   - separator
@@ -4952,7 +4946,12 @@ Actions that cannot apply to the current selection or adapter are disabled.
 Rich-formatting actions are disabled for Text and Code; `Convert to` offers an
 explicit conversion into a format that supports them. Style and
 formatting items show a checkmark, mixed state, or no mark as appropriate.
-Character and Paragraph menus reserve the same mark column for every item,
+Style > Paragraph and Style > Character are the first two Style items and are
+disabled in Text and Code. Their contents retain their existing style and list
+actions without an Edit Styles footer. The former Format > Style commands
+follow them directly in Style and no longer appear in Format. Windows uses the
+same hierarchy with its existing platform-specific commands and shortcuts.
+Character and Paragraph submenus reserve the same mark column for every item,
 so labels align whether or not the item is checked. Active named styles remain
 checked when menu validation refreshes their command state.
 Choosing a character style clears direct character declarations and inline
@@ -5024,8 +5023,7 @@ their ownership or move their edits into document history.
   open brings the existing window forward, retargets it to the invoking
   document or explicitly requested global Code sheet, and selects the requested
   style by stable style ID.
-- Every general **Edit Styles…** action, including **F8**, **Paragraph**, and
-  **Character** menu actions, immediately selects the style at the invoking
+- **Style > Edit Styles…**, including **F8**, immediately selects the style at the invoking
   view's cursor using the same rules as subsequent caret following below.
   Reopening an existing editor also reselects that current style. Choosing an
   individual style definition from a menu or another explicit Edit Style action
@@ -5117,6 +5115,10 @@ remain disabled and cannot activate through a click. Clicking a property caption
 unit label, or icon only enables the property; it MUST NOT forward a native
 control action or open a field, menu, or color panel. A missing inherited
 background activates as explicitly transparent.
+Style-editor color swatches on both platforms composite the selected color over
+an opaque checkerboard of white and 30% gray (`#B3B3B3`), with 5-DIP squares
+(5 points on macOS). Fully transparent colors show the checkerboard; opaque
+colors cover it. The swatch retains its native color-picker interaction.
 
 Base Paragraph supplies every effective property. Its override checkboxes are
 always checked and disabled, while its supported value controls remain editable.
@@ -6820,9 +6822,10 @@ Required automated fixtures and assertions are:
    limit reports a diagnostic and resolves further names without
    materializing them. Cache invalidation remains lazy on the
    million-line fixture. No source/dirty/document-undo changes occur.
-   Exercise the Character menu with defined, implicit, and not-yet-materialized
+   Exercise the Code style catalogue with defined, implicit, and not-yet-materialized
    provider names: listing is read-only and generates nothing, and editing
-   targets the shared Code definition. Test asynchronous publication of mixed
+   targets the shared Code definition. Style's assignment submenus stay disabled
+   in Code while Edit Styles opens the shared inspector. Test asynchronous publication of mixed
    font sizes, weight, and slant in newly exposed rows; repaint and reflow use
    current identities and preserve text anchors across multiple Code buffers.
    Paint-only publications preserve unrelated exact heights even when another

@@ -61,10 +61,42 @@ internal sealed partial class StyleWindow
         preview.ClearColor = preferences.Theme.Background;
         preview.Invalidate();
     }
+    private static Grid ColorSwatch(Border colorLayer)
+    {
+        const double width = 28, height = 24, squareSize = 5;
+        // WinUI layout units are DIPs. The rounded Grid clips both layers while
+        // the selected color composites over a fixed, opaque checkerboard.
+        var swatch = new Grid {
+            Width = width, Height = height, CornerRadius = new(12),
+            Background = new SolidColorBrush(Microsoft.UI.Colors.White),
+            IsHitTestVisible = false
+        };
+        var checkerboard = new Canvas();
+        var gray = new SolidColorBrush(Color.FromArgb(255, 179, 179, 179));
+        for (int row = 0; row * squareSize < height; row++)
+            for (int column = 0; column * squareSize < width; column++)
+            {
+                if ((row + column) % 2 == 0) continue;
+                var square = new Microsoft.UI.Xaml.Shapes.Rectangle {
+                    Width = Math.Min(squareSize, width - column * squareSize),
+                    Height = Math.Min(squareSize, height - row * squareSize), Fill = gray
+                };
+                Canvas.SetLeft(square, column * squareSize); Canvas.SetTop(square, row * squareSize);
+                checkerboard.Children.Add(square);
+            }
+        swatch.Children.Add(checkerboard);
+        swatch.Children.Add(colorLayer);
+        swatch.Children.Add(new Border {
+            CornerRadius = new(12), BorderThickness = new(1),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(160, 150, 150, 150))
+        });
+        return swatch;
+    }
+
     private void ColorControl(Panel row, string label, uint property)
     {
-        var well = new Border { Width = 28, Height = 24, CornerRadius = new(12), BorderThickness = new(1), BorderBrush = new SolidColorBrush(Color.FromArgb(160, 150, 150, 150)) };
-        var button = new Button { Content = well, Padding = new(0), MinWidth = 28, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new(0) };
+        var well = new Border();
+        var button = new Button { Content = ColorSwatch(well), Padding = new(0), MinWidth = 28, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new(0) };
         var picker = new ColorPicker {
             IsAlphaEnabled = true, Orientation = Orientation.Horizontal,
             IsColorPreviewVisible = false, Height = 264,

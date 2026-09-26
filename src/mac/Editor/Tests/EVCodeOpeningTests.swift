@@ -280,7 +280,7 @@ final class EVCodeOpeningTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let before = try backend.recoverySnapshot()
-        let globalStyleCommands: Set<EVMenuCommand> = [.editCharacterStyles, .editParagraphStyles, .editStyles, .reloadStyleSheet]
+        let globalStyleCommands: Set<EVMenuCommand> = [.editStyles, .reloadStyleSheet]
         for command in EVMenuCommand.allCases where (300..<400).contains(command.rawValue) {
             if globalStyleCommands.contains(command) {
                 XCTAssertTrue(surface.presentation(for: command).isEnabled, "\(command)")

@@ -23,6 +23,12 @@ internal static class StyleInspectorBehaviorTests
         File.AppendAllText(FrontendSmokeTests.ReportPath + ".styles.log", message + Environment.NewLine);
     }
     private static StyleDefinition Selected(StyleWindow inspector) => (StyleDefinition)inspector.StylePicker.SelectedItem;
+    private static Color SwatchColor(Button button)
+    {
+        var colorLayer = ((Grid)button.Content).Children.OfType<Border>()
+            .Single(child => child.Background is SolidColorBrush);
+        return ((SolidColorBrush)colorLayer.Background).Color;
+    }
     private static void Move(CoreView view, ulong offset, bool extend = false)
         => view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.Document.State.document_revision, extend);
     private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
@@ -304,7 +310,7 @@ internal static class StyleInspectorBehaviorTests
             await Task.Delay(200);
             Check(await WindowCapture.SavePopup(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".color-picker.png"),
                 "the native color popup can visibly extend beyond the style dialog");
-            Check(picker.Color == preferences.Theme.Foreground && ((SolidColorBrush)((Border)button.Content).Background).Color == preferences.Theme.Foreground,
+            Check(picker.Color == preferences.Theme.Foreground && SwatchColor(button) == preferences.Theme.Foreground,
                 "default text color well and popup use the theme foreground instead of emergency black");
             await Close(flyout);
             Check(inspector.StyleLoads == initialLoads + 1, "color picking preserves a deferred document refresh until popup closure");
@@ -325,7 +331,7 @@ internal static class StyleInspectorBehaviorTests
             var custom = Color.FromArgb(102, 31, 64, 128); picker.Color = custom;
             Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision, "rapid color input queues one coalesced edit");
             await Task.Delay(150);
-            Check(inspector.PreviewForeground == custom && ((SolidColorBrush)((Border)button.Content).Background).Color == custom
+            Check(inspector.PreviewForeground == custom && SwatchColor(button) == custom
                 && inspector.StyleLoads == loads && document.IsDirty && !original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 $"picker changes update the committed document, preview and swatch without dialog reloads (error={inspector.Error})");
             Check(document.State.document_revision == revision + 1 && !inspector.ColorUpdateScheduled, "one color burst commits once and leaves no idle timer");
