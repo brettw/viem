@@ -19,7 +19,28 @@ use std::sync::{Arc, OnceLock};
 
 pub(super) const RANGE_INDEX_LEAF_ITEMS: usize = 64;
 
+/// Optional structural navigation keys. Minima/maxima and flags compose under
+/// persistent splices, allowing callers to skip unrelated subtrees.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NavigationSummary {
+    pub minimum: u16,
+    pub maximum: u16,
+    pub minimum_start: u16,
+    pub flags: u16,
+}
+impl Default for NavigationSummary {
+    fn default() -> Self { Self { minimum: u16::MAX, maximum: 0, minimum_start: u16::MAX, flags: 0 } }
+}
+impl NavigationSummary {
+    fn union(self, other: Self) -> Self {
+        Self { minimum: self.minimum.min(other.minimum), maximum: self.maximum.max(other.maximum),
+            minimum_start: self.minimum_start.min(other.minimum_start), flags: self.flags | other.flags }
+    }
+}
+
 pub(super) trait RangedItem {
+    fn navigation_summary(&self) -> NavigationSummary { NavigationSummary::default() }
+
     fn owned_heap_bytes(&self) -> usize { 0 }
 
     fn visit_shared_memory(&self, _visitor: &mut super::history_memory::MemoryVisitor<'_>) {}
@@ -156,6 +177,36 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// paragraph-boundary geometry.
     pub(super) fn query_touching(&self, query: &Range<usize>) -> Vec<T> {
         self.inner.query(query, Intersection::Touching, None)
+    }
+
+    /// Find the first/last matching structural record. The predicate must be
+    /// false for an aggregate only when no descendant can match it.
+    pub(super) fn find_navigation(&self, indices: Range<usize>, reverse: bool,
+        matches: impl Fn(NavigationSummary) -> bool) -> Option<usize> {
+        fn find<T: RangedItem>(node: &RangeNode<T>, base: usize, range: &Range<usize>, reverse: bool,
+            matches: &impl Fn(NavigationSummary) -> bool) -> Option<usize> {
+            super::work_statistics::record(|work| work.list_capability_nodes_visited += 1);
+            if base >= range.end || base + node.item_count <= range.start || !matches(node.navigation) { return None; }
+            match &node.kind {
+                RangeNodeKind::Leaf(items) => {
+                    let mut indices = range.start.saturating_sub(base)..items.len().min(range.end - base);
+                    let mut visit = |index: usize| {
+                        super::work_statistics::record(|work| work.list_capability_blocks_visited += 1);
+                        matches(items[index].navigation_summary()).then_some(base + index)
+                    };
+                    if reverse { indices.rev().find_map(visit) } else { indices.find_map(&mut visit) }
+                }
+                RangeNodeKind::Branch { left, right, .. } => {
+                    let right_base = base + left.item_count;
+                    if reverse {
+                        find(right, right_base, range, reverse, matches).or_else(|| find(left, base, range, reverse, matches))
+                    } else {
+                        find(left, base, range, reverse, matches).or_else(|| find(right, right_base, range, reverse, matches))
+                    }
+                }
+            }
+        }
+        self.inner.root.as_ref().and_then(|root| find(root, 0, &indices, reverse, &matches))
     }
 
     /// Reuses equal leaves and unchanged ancestor nodes from `previous`.
@@ -741,6 +792,7 @@ fn clone_once_lock<T>(source: &OnceLock<Arc<Vec<T>>>) -> OnceLock<Arc<Vec<T>>> {
 }
 
 struct RangeNode<T> {
+    navigation: NavigationSummary,
     max_end: usize,
     item_count: usize,
     leaf_count: usize,
@@ -801,6 +853,7 @@ impl<T: Clone + RangedItem> RangeNode<T> {
             auxiliary_shift: 0,
             revision: None,
             node: Arc::new(Self {
+                navigation: normalized.iter().fold(NavigationSummary::default(), |value, item| value.union(item.navigation_summary())),
                 max_end,
                 item_count: normalized.len(),
                 leaf_count: 1,
@@ -856,6 +909,7 @@ impl<T: Clone + RangedItem> RangeNode<T> {
             .checked_add(right.max_end)
             .expect("range-index right aggregate is representable");
         Arc::new(Self {
+            navigation: left.navigation.union(right.navigation),
             max_end: left_end.max(right_end),
             item_count: left.item_count + right.item_count,
             leaf_count: left.leaf_count + right.leaf_count,
@@ -1828,6 +1882,7 @@ fn validate_node<T: RangedItem>(node: &RangeNode<T>) -> Option<(usize, usize, us
             let max_end = items.iter().map(|item| item.range().end).max()?;
             (starts_ordered
                 && items.first()?.range().start == 0
+                && node.navigation == items.iter().fold(NavigationSummary::default(), |value, item| value.union(item.navigation_summary()))
                 && node.max_end == max_end
                 && node.item_count == items.len()
                 && node.leaf_count == 1
@@ -1848,6 +1903,7 @@ fn validate_node<T: RangedItem>(node: &RangeNode<T>) -> Option<(usize, usize, us
                 .max(right_offset.checked_add(right_max)?);
             (*left_offset == 0
                 && left_height.abs_diff(right_height) <= 1
+                && node.navigation == left.navigation.union(right.navigation)
                 && node.max_end == aggregate_max
                 && node.item_count == left_items + right_items
                 && node.leaf_count == left_leaves + right_leaves
@@ -1871,12 +1927,35 @@ mod tests {
     struct Item(Range<usize>, usize);
 
     impl RangedItem for Item {
+        fn navigation_summary(&self) -> NavigationSummary {
+            let key = (self.1 % 7) as u16;
+            NavigationSummary { minimum: key, maximum: key, minimum_start: key, flags: 0 }
+        }
         fn range(&self) -> &Range<usize> {
             &self.0
         }
 
         fn with_range(&self, range: Range<usize>) -> Self {
             Self(range, self.1)
+        }
+    }
+
+    #[test]
+    fn navigation_search_matches_flat_oracle_after_persistent_splicing() {
+        let before = OrderedRangeStore::new((0..10_000).map(|index| Item(index * 4..index * 4 + 3, index)).collect());
+        let after = before.splice(400..500, vec![Item(1600..1601, 13)], 2000, 1602, &mut RangeSpliceStats::default()).unwrap();
+        for store in [&before, &after] {
+            assert!(store.invariant_holds());
+            for start in [0, 1, 399, 400, 401, 600, 9000] {
+                for length in [0, 1, 7, 73, 500] {
+                    let range = start..(start + length).min(store.len());
+                    for key in 0..7 {
+                        let matching = range.clone().filter(|&index| store.get(index).unwrap().navigation_summary().minimum < key).collect::<Vec<_>>();
+                        assert_eq!(store.find_navigation(range.clone(), false, |summary| summary.minimum < key), matching.first().copied());
+                        assert_eq!(store.find_navigation(range.clone(), true, |summary| summary.minimum < key), matching.last().copied());
+                    }
+                }
+            }
         }
     }
 

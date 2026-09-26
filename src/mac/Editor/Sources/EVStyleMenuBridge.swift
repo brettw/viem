@@ -26,6 +26,13 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
 
+    return styleMenuCatalogue(snapshot: snapshot, selectedStyles: selectedStyles, selectionAvailable: selection != nil)
+  }
+
+  /// Menus and the persistent toolbar share assignment and selection policy.
+  /// The toolbar can reuse an exact-revision snapshot while the cursor moves.
+  func styleMenuCatalogue(snapshot: EVStyleSheetSnapshot, selectedStyles: EVSelectedNamedStyles?,
+                          selectionAvailable: Bool) -> EVStyleMenuCatalogue {
     var entries = snapshot.definitions.filter {
       !$0.flags.contains(.internalSyntax)
         && (!$0.flags.contains(.internalList)
@@ -40,7 +47,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         displayName: definition.name,
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
-          isEnabled: selection != nil
+          isEnabled: selectionAvailable
             && ((self.standardHeadingLevel(for: definition.key.id.rawValue) != nil
               && definition.kind == .paragraph)
               || (definition.capabilities.contains(.assign)
@@ -56,7 +63,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     entries.insert(EVStyleMenuEntry(
       role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
       presentation: EVMenuItemPresentation(
-        isEnabled: selection != nil && [.html, .htmlSource, .markdown, .markdownSource, .rtf].contains(backend.sourceFormat),
+        isEnabled: selectionAvailable && [.html, .htmlSource, .markdown, .markdownSource, .rtf].contains(backend.sourceFormat),
         state: selectedStyles?.identity == snapshot.identity
           && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off)
     ), at: 0)

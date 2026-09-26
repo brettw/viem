@@ -22,6 +22,9 @@ pub enum DocumentWorkFallback {
 /// Byte counts measure input consumed/copied, not unique source coverage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DocumentWorkStatistics {
+    /// Records and tree nodes inspected by structural list affordances.
+    pub list_capability_blocks_visited: usize,
+    pub list_capability_nodes_visited: usize,
     pub source_full_materializations: usize,
     pub source_full_materialized_bytes: usize,
     pub source_range_materializations: usize,
@@ -62,6 +65,8 @@ impl DocumentWorkStatistics {
     fn accumulate(&mut self, other: Self) {
         macro_rules! sum { ($($field:ident),+ $(,)?) => { $(self.$field = self.$field.saturating_add(other.$field);)+ }; }
         sum!(
+            list_capability_blocks_visited,
+            list_capability_nodes_visited,
             source_full_materializations,
             source_full_materialized_bytes,
             source_range_materializations,

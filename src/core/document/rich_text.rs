@@ -14,6 +14,7 @@ pub(super) struct Builder<'a> {
     pub spans: Vec<StyleSpan>,
     pub provenance: Vec<ProvenanceSpan>,
     pub kind: BlockKind,
+    pub list_indent_support: Option<(bool, bool)>,
     pub paragraph: BlockProperties,
     pub defaults: CharacterProperties,
     pub style_sheet: StyleSheet,
@@ -35,6 +36,7 @@ impl<'a> Builder<'a> {
             spans: Vec::new(),
             provenance: Vec::new(),
             kind: BlockKind::Paragraph,
+            list_indent_support: None,
             paragraph: BlockProperties::default(),
             defaults: CharacterProperties::default(),
             style_sheet: StyleSheet::default(),
@@ -249,7 +251,12 @@ impl<'a> Builder<'a> {
         {
             style = self.style_sheet.base_paragraph.clone();
         }
-        Block::new(0, start..self.text.len(), self.kind.clone(), style, super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()))
+        let mut block = Block::new(0, start..self.text.len(), self.kind.clone(), style, super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()));
+        if let Some((indent, unindent)) = self.list_indent_support.filter(|_| matches!(self.kind, BlockKind::ListItem { .. })) {
+            block.list_editing.indent = indent;
+            block.list_editing.unindent = unindent;
+        }
+        block
     }
     fn finish_line(&mut self) {
         self.blocks.push(self.current_block(self.line_start));
@@ -366,7 +373,19 @@ pub(super) fn character_edit_verified(
     selected: &Range<usize>,
     properties: &CharacterProperties,
 ) -> bool {
+    if std::ptr::eq(before, after) {
+        return character_edit_verified_in_region(before, after, selected, properties, selected);
+    }
     character_edit_verified_with_queries(before, after, selected, properties, |_, _| {})
+}
+
+/// Outside a verified regional splice, the old immutable style records and
+/// parser exit context are retained. Validate the changed region only.
+pub(super) fn character_edit_verified_in_region(
+    before: &FormattedDocument, after: &FormattedDocument, selected: &Range<usize>,
+    properties: &CharacterProperties, region: &Range<usize>,
+) -> bool {
+    verify_character_region(before, after, selected, properties, region, |_, _| {})
 }
 
 fn character_edit_verified_with_queries(
@@ -374,15 +393,25 @@ fn character_edit_verified_with_queries(
     after: &FormattedDocument,
     selected: &Range<usize>,
     properties: &CharacterProperties,
+    observe_queries: impl FnMut(usize, usize),
+) -> bool {
+    verify_character_region(before, after, selected, properties, &(0..before.text_tree().byte_len()), observe_queries)
+}
+
+fn verify_character_region(
+    before: &FormattedDocument, after: &FormattedDocument, selected: &Range<usize>,
+    properties: &CharacterProperties, region: &Range<usize>,
     mut observe_queries: impl FnMut(usize, usize),
 ) -> bool {
-    let mut boundaries = vec![0, before.text().len(), selected.start, selected.end];
-    for at in before.hard_breaks_for_region(&(0..before.text().len())) {
+    let mut boundaries = vec![region.start, region.end];
+    for at in [selected.start, selected.end] { if region.contains(&at) { boundaries.push(at); } }
+    for at in before.hard_breaks_for_region(region) {
         boundaries.extend([at, at + 1]);
     }
-    for span in before.style_spans().iter().chain(after.style_spans()) {
-        boundaries.extend([span.range.start, span.range.end]);
+    for span in before.style_spans_for_region(region).iter().chain(after.style_spans_for_region(region).iter()) {
+        boundaries.extend([span.range.start.max(region.start), span.range.end.min(region.end)]);
     }
+    boundaries.retain(|at| region.start <= *at && *at <= region.end);
     boundaries.sort_unstable();
     boundaries.dedup();
     let mut at = |document: &FormattedDocument,
@@ -440,7 +469,7 @@ fn character_edit_verified_with_queries(
             .map(|resolved| resolved.character)
     };
     boundaries.windows(2).all(|pair| {
-        if &before.text()[pair[0]..pair[1]] == "\n" {
+        if before.text_tree().slice(pair[0]..pair[1]).as_deref() == Ok("\n") {
             return true;
         }
         let override_properties =

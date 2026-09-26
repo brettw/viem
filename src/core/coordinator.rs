@@ -1290,8 +1290,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut covered = self
             .document
             .projection()
-            .style_spans()
-            .iter()
+            .style_spans_for_region(&range)
+            .into_iter()
             .filter(|span| span.application == StyleApplication::Semantic(style))
             .filter_map(|span| {
                 let start = span.range.start.max(range.start);

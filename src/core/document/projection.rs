@@ -126,11 +126,21 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub struct BlockAttributes {
+    /// Adapter support retained by the parser, including semantic item starts
+    /// when a source view suppresses generated list labels.
+    pub(super) list_editing: ListEditing,
     pub kind: BlockKind,
     pub style: StyleId,
     /// Absent for the overwhelmingly common inherited paragraph. Nonempty
     /// declarations are immutable and shared by projection/history clones.
     pub direct_formatting: Option<Arc<BlockDirectFormatting>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct ListEditing {
+    pub item_start: bool,
+    pub indent: bool,
+    pub unindent: bool,
 }
 
 impl Block {
@@ -139,13 +149,18 @@ impl Block {
         if kind == BlockKind::Paragraph && style.0 == "Paragraph" && direct_formatting.is_none() {
             return Self::paragraph(id, range);
         }
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting }) }
+        let list_editing = match kind {
+            BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
+            _ => ListEditing::default(),
+        };
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
             kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None,
+            list_editing: ListEditing::default(),
         })).clone() }
     }
 }
@@ -204,11 +219,21 @@ impl PartialEq for Block {
 
 impl PartialEq for BlockAttributes {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.style == other.style && **self == **other
+        self.kind == other.kind && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
 impl RangedItem for Block {
+    fn navigation_summary(&self) -> super::range_index::NavigationSummary {
+        // Zero is a non-list boundary; list levels use one through 256.
+        let key = match self.kind { BlockKind::ListItem { level, .. } => u16::from(level) + 1, _ => 0 };
+        super::range_index::NavigationSummary {
+            minimum: key, maximum: key,
+            minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
+            flags: u16::from(!self.list_editing.indent) | (u16::from(!self.list_editing.unindent) << 1),
+        }
+    }
+
     fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         visitor.arc_once(&self.attributes, |visitor| {
             visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + 16);
@@ -2839,6 +2864,10 @@ impl FormattedDocument {
         self.blocks.query_touching(range)
     }
 
+    pub(super) fn list_indentation_blocks(&self, source_view: bool) -> &OrderedRangeStore<Block> {
+        if source_view { self.flow_blocks.as_ref().unwrap_or(&self.blocks) } else { &self.blocks }
+    }
+
     /// Style spans with a non-empty intersection with a formatted region,
     /// located in `O(log n + k)` time. The `k` returned records are materialized
     /// with snapshot-absolute ranges and remain ordered by normalized span
@@ -4448,8 +4477,16 @@ pub(crate) fn splice_line_local_projection(
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
     let flow_lines = if let Some(old_flow) = &previous.flow_lines {
-        let indices = old_flow.partition_point(|line| line.range.end < old_formatted.start)
-            ..old_flow.partition_point(|line| line.range.start <= old_formatted.end);
+        let indices = if preserve_containing_paragraph {
+            // An independent fragment inside one physical source line must
+            // keep adjacent presentation paragraphs as separate records.
+            let first = old_flow.index_touching_point(old_formatted.start)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            first..old_flow.partition_point_start(old_formatted.end).max(first + 1)
+        } else {
+            old_flow.partition_point(|line| line.range.end < old_formatted.start)
+                ..old_flow.partition_point(|line| line.range.start <= old_formatted.end)
+        };
         let old = old_flow
             .get_range(&indices)
             .ok_or(BlockIdentityError::InvalidProjection)?;

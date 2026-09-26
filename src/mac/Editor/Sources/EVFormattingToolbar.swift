@@ -27,6 +27,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private let blockGroup = NSStackView()
   private let indentGroup = NSStackView()
   private var catalogue: EVStyleMenuCatalogue?
+  private var styleSnapshot: EVStyleSheetSnapshot?
+  private var paragraphEntries: [String] = []
+  private var characterEntries: [String] = []
   private var colorSelection: ViemLogicalSelectionIdentityV1?
   private var trackingMenus = Set<ObjectIdentifier>()
 
@@ -107,6 +110,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     scroll.autoresizingMask = [.width, .height]
     addSubview(scroll)
     refresh()
+    needsLayout = true
   }
 
   required init?(coder: NSCoder) { nil }
@@ -152,7 +156,15 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   func refresh() {
     guard let surface else { return }
-    let next = surface.currentStyleMenuCatalogue()
+    let selected = try? surface.session?.selectedNamedStyles()
+    let selection = try? surface.session?.listSelection()
+    if styleSnapshot?.identity != selected?.identity || styleSnapshot == nil {
+      styleSnapshot = try? surface.backend.styleSheetSnapshot()
+    }
+    let next = styleSnapshot.map {
+      surface.styleMenuCatalogue(snapshot: $0, selectedStyles: selected, selectionAvailable: selection != nil)
+    }
+    let indent = selection.flatMap { try? surface.session?.listIndentCapabilities(expected: $0) } ?? 0
     if trackingMenus.isEmpty {
       catalogue = next
       refresh(paragraphStyle, role: .paragraph)
@@ -162,55 +174,75 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     // native typography panels; Markdown has only its fixed inline vocabulary.
     let rich = surface.canInspectTypography
     for (command, button) in commandButtons {
-      let presentation = surface.presentation(for: command)
-      button.state = presentation.state
-      button.isEnabled = presentation.isEnabled
-      button.isHidden = [.underline, .strikethrough, .superscript, .subscriptText].contains(command) && !rich
+      let presentation: EVMenuItemPresentation
+      switch command {
+      case .increaseIndent, .decreaseIndent:
+        let flag = UInt32(command == .increaseIndent ? VIEM_LIST_CAN_INDENT : VIEM_LIST_CAN_UNINDENT)
+        presentation = EVMenuItemPresentation(isEnabled: indent & flag != 0)
+      case .bulletedList, .numberedList:
+        presentation = EVMenuItemPresentation(isEnabled: selected != nil,
+          state: (command == .bulletedList ? selected?.bulletState : selected?.numberedState) ?? .off)
+      default: presentation = surface.presentation(for: command)
+      }
+      if button.state != presentation.state { button.state = presentation.state }
+      if button.isEnabled != presentation.isEnabled { button.isEnabled = presentation.isEnabled }
+      setHidden([.underline, .strikethrough, .superscript, .subscriptText].contains(command) && !rich, for: button)
     }
     refreshCode(characterCode, role: .character, id: "Code", catalogue: next)
     refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
-    colorGroup.isHidden = !rich
-    colorSelection = rich ? try? surface.session?.listSelection() : nil
+    setHidden(!rich, for: colorGroup)
+    colorSelection = rich ? selection : nil
     if rich, let style = try? surface.session?.selectedTypography() {
-      foreground.color = style.foreground?.appKitColor ?? EVThemeStore.shared.theme.foreground.color
-      background.color = style.background?.appKitColor ?? .clear
+      let textColor = style.foreground?.appKitColor ?? EVThemeStore.shared.theme.foreground.color
+      let fillColor = style.background?.appKitColor ?? .clear
+      if foreground.color != textColor { foreground.color = textColor }
+      if background.color != fillColor { background.color = fillColor }
     }
+    let canEditColor = rich && surface.canEditTypography
     for well in [foreground, background] {
-      well.isEnabled = rich && surface.canEditTypography
+      if well.isEnabled != canEditColor { well.isEnabled = canEditColor }
       well.supportsAlpha = true
     }
-    needsLayout = true
+  }
+
+  private func setHidden(_ hidden: Bool, for view: NSView) {
+    if view.isHidden != hidden { view.isHidden = hidden; needsLayout = true }
   }
 
   private func refresh(_ popup: NSPopUpButton, role: EVStyleMenuRole) {
     let entries = catalogue?.entries.filter { $0.role == role && $0.actionKind == .assign } ?? []
     let selected = entries.first { $0.presentation.state == .on }
-    popup.removeAllItems()
-    if selected == nil {
-      popup.addItem(withTitle: "Mixed")
-      popup.lastItem?.isEnabled = false
+    // Keep AppKit menu objects across cursor moves. Only catalogue membership
+    // changes require rebuilding; action identities always follow the snapshot.
+    let keys = (selected == nil ? ["mixed"] : []) + entries.map { "style:" + $0.stableID }
+    let previous = role == .paragraph ? paragraphEntries : characterEntries
+    if keys != previous {
+      popup.removeAllItems()
+      if selected == nil { popup.addItem(withTitle: "Mixed"); popup.lastItem?.isEnabled = false }
+      for entry in entries { popup.menu?.addItem(NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")) }
+      if role == .paragraph { paragraphEntries = keys } else { characterEntries = keys }
     }
-    for entry in entries {
-      let item = NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")
-      item.isEnabled = entry.presentation.isEnabled
-      item.state = entry.presentation.state
-      if let catalogue {
-        item.representedObject = action(for: entry, in: catalogue)
-      }
-      popup.menu?.addItem(item)
-      if entry.stableID == selected?.stableID { popup.select(item) }
+    for (index, entry) in entries.enumerated() {
+      guard let item = popup.item(at: index + (selected == nil ? 1 : 0)) else { continue }
+      if item.title != entry.displayName { item.title = entry.displayName }
+      if item.isEnabled != entry.presentation.isEnabled { item.isEnabled = entry.presentation.isEnabled }
+      if item.state != entry.presentation.state { item.state = entry.presentation.state }
+      if let catalogue { item.representedObject = action(for: entry, in: catalogue) }
+      if entry.stableID == selected?.stableID, popup.selectedItem !== item { popup.select(item) }
     }
-    if selected == nil { popup.selectItem(at: 0) }
-    popup.isEnabled = entries.contains { $0.presentation.isEnabled }
+    if selected == nil, popup.indexOfSelectedItem != 0 { popup.selectItem(at: 0) }
+    let enabled = entries.contains { $0.presentation.isEnabled }
+    if popup.isEnabled != enabled { popup.isEnabled = enabled }
   }
 
   private func refreshCode(_ button: NSButton, role: EVStyleMenuRole, id: String, catalogue: EVStyleMenuCatalogue?) {
     let entry = catalogue?.entries.first { $0.role == role && $0.stableID == id }
-    button.state = entry?.presentation.state ?? .off
+    let state = entry?.presentation.state ?? .off
+    if button.state != state { button.state = state }
     let targetID = button.state == .on ? (role == .character ? "" : "Paragraph") : id
-    button.isHidden = catalogue?.entries.first {
+    setHidden(catalogue?.entries.first {
       $0.role == role && $0.stableID == targetID
-    }?.presentation.isEnabled != true
+    }?.presentation.isEnabled != true, for: button)
   }
 
   private func action(for entry: EVStyleMenuEntry, in catalogue: EVStyleMenuCatalogue) -> EVStyleMenuAction {
