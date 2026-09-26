@@ -9,15 +9,67 @@ use std::ops::Range;
 
 const CANCELLATION_SCAN_BYTES: usize = 4096;
 
+// Keep these separate so the code-wrap policy can grow without changing the
+// Unicode rule engine. Quotes stay attached to the start of their contents.
+const CODE_PUNCTUATION_EXCLUSIONS: &[char] = &['\'', '"'];
+const CODE_ALWAYS_BREAK_AFTER: &[char] = &[';', '('];
+
+fn code_punctuation(character: char) -> bool {
+    character.is_ascii_punctuation() && !CODE_PUNCTUATION_EXCLUSIONS.contains(&character)
+}
+
+/// Unicode opportunities with Viem's indentation and Code-mode tailoring.
+/// Retain the exact state at soft wraps: a Code boundary need not be a Unicode
+/// restart boundary, and continuation whitespace is not hard-line indentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct WrapBreakState {
+    unicode: LineBreakState,
+    code: bool,
+    leading: bool,
+    previous: Option<char>,
+}
+
+impl WrapBreakState {
+    pub(super) fn new(code: bool) -> Self {
+        Self { unicode: LineBreakState::new(), code, leading: true, previous: None }
+    }
+
+    /// Consume a scalar and report whether a break is allowed immediately before it.
+    /// Callers still restrict breaks to legal grapheme/shaping-cluster boundaries.
+    pub(super) fn push(&mut self, character: char) -> bool {
+        let unicode_break = self.unicode.push(character).is_some();
+        let leading = self.leading;
+        self.leading &= matches!(character, ' ' | '\t');
+        let previous = self.previous.replace(character);
+        if leading {
+            return false;
+        }
+        if self.code {
+            if let Some(previous) = previous {
+                if CODE_ALWAYS_BREAK_AFTER.contains(&previous) {
+                    return true;
+                }
+                if CODE_PUNCTUATION_EXCLUSIONS.contains(&previous) {
+                    return false;
+                }
+                if code_punctuation(previous) {
+                    return !code_punctuation(character);
+                }
+            }
+        }
+        unicode_break
+    }
+}
+
 /// First actual line-break boundary after the start, or the range end.
-/// The start must be a hard-line start or an actual Unicode break. Resuming
-/// at an emitted break is exact: the first-party rule engine tests that prior
-/// context cannot change subsequent opportunities after such a boundary.
+/// `state` describes the prefix before `range` and is advanced through the
+/// returned boundary, excluding the scalar on its right. Keep it when resuming.
 /// No string, scalar vector, or break-offset list grows with the range size.
 pub(super) fn first_line_break(
     tree: &FormattedTextTree,
     range: Range<usize>,
     paragraph_flow: bool,
+    state: &mut WrapBreakState,
     cancellation: &dyn LayoutCancellationProbe,
 ) -> Result<usize, LayoutJobError> {
     if range.start > range.end
@@ -29,7 +81,6 @@ pub(super) fn first_line_break(
             "line-break scan requires an ordered UTF-8 range",
         ));
     }
-    let mut state = LineBreakState::new();
     let mut at = range.start;
     let mut next_checkpoint = range.start;
     while at < range.end {
@@ -57,7 +108,9 @@ pub(super) fn first_line_break(
             // Unicode line-break opportunities can occur inside an extended
             // grapheme (for example after a space followed by a combining
             // mark). A captured/streamed row must end at a legal text boundary.
-            if state.push(character).is_some() && tree.is_grapheme_boundary(offset)? {
+            let before = *state;
+            if state.push(character) && offset > range.start && tree.is_grapheme_boundary(offset)? {
+                *state = before;
                 return Ok(at + local);
             }
         }
@@ -75,10 +128,45 @@ mod tests {
     use crate::document::Document;
 
     #[test]
+    fn streamed_code_breaks_retain_exact_state_and_grapheme_boundaries() {
+        let text = " \tfoo++bar--baz;(  quux) +\u{301}word;\"中文\" ('text') tail";
+        let tree = FormattedTextTree::try_from_text(text).unwrap();
+        let mut whole = WrapBreakState::new(true);
+        let mut expected = Vec::new();
+        for (offset, character) in text.char_indices() {
+            if whole.push(character) && tree.is_grapheme_boundary(offset).unwrap() {
+                expected.push(offset);
+            }
+        }
+        expected.push(text.len());
+        let mut streamed = WrapBreakState::new(true);
+        let mut offset = 0;
+        for expected in expected {
+            offset = first_line_break(
+                &tree, offset..text.len(), false, &mut streamed, &LayoutCancellationToken::new(),
+            ).unwrap();
+            assert_eq!(offset, expected);
+        }
+        assert_eq!(whole, streamed);
+    }
+
+    #[test]
+    fn giant_indented_first_word_is_one_segment_without_materializing_the_tree() {
+        let text = format!("{}{}++tail", " ".repeat(80_000), "a".repeat(100_000));
+        let document = Document::new(text);
+        let tree = document.projection().text_tree();
+        let end = first_line_break(
+            tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(true), &LayoutCancellationToken::new(),
+        ).unwrap();
+        assert_eq!(end, 180_002);
+        assert!(!document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
     fn streamed_breaks_do_not_split_a_space_with_combining_marks() {
         let tree = FormattedTextTree::try_from_text(" \u{301}x next").unwrap();
         assert_eq!(
-            first_line_break(&tree, 0..tree.byte_len(), false, &LayoutCancellationToken::default()).unwrap(),
+            first_line_break(&tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &LayoutCancellationToken::default()).unwrap(),
             5,
         );
     }
@@ -91,21 +179,21 @@ mod tests {
         let tree = document.projection().text_tree();
         let cancellation = LayoutCancellationToken::default();
         assert_eq!(
-            first_line_break(tree, 0..tree.byte_len(), false, &cancellation).unwrap(),
+            first_line_break(tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
             7
         );
         assert_eq!(
-            first_line_break(tree, 7..tree.byte_len(), false, &cancellation).unwrap(),
+            first_line_break(tree, 7..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
             8 + length
         );
         assert_eq!(
-            first_line_break(tree, 8 + length..tree.byte_len(), false, &cancellation).unwrap(),
+            first_line_break(tree, 8 + length..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
             tree.byte_len()
         );
         assert!(!document.projection().compatibility_text_is_materialized());
         cancellation.cancel();
         assert!(matches!(
-            first_line_break(tree, 0..tree.byte_len(), false, &cancellation),
+            first_line_break(tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation),
             Err(LayoutJobError::Cancelled)
         ));
     }
@@ -123,6 +211,7 @@ mod tests {
                     &tree,
                     0..text.len(),
                     false,
+                    &mut WrapBreakState::new(false),
                     &LayoutCancellationToken::default()
                 )
                 .unwrap(),
@@ -136,6 +225,7 @@ mod tests {
                 &tree,
                 0..text.len(),
                 true,
+                &mut WrapBreakState::new(false),
                 &LayoutCancellationToken::default()
             )
             .unwrap(),
@@ -158,7 +248,7 @@ mod tests {
         assert_eq!(tree.byte_len(), 200_001);
         let cancellation = CancelAfterThreeChecks(std::cell::Cell::new(0));
         assert!(matches!(
-            first_line_break(&tree, 0..tree.byte_len(), false, &cancellation),
+            first_line_break(&tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation),
             Err(LayoutJobError::Cancelled)
         ));
         assert_eq!(cancellation.0.get(), 4);

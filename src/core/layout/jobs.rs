@@ -618,6 +618,7 @@ fn bounded_long_line_work_end(
     start: usize,
     hard_line_end: usize,
     paragraph_flow: bool,
+    mut break_state: super::line_breaks::WrapBreakState,
     cancellation: &LayoutCancellationToken,
 ) -> Result<usize, LayoutJobError> {
     let bounded_end = grapheme_bounded_long_line_work_end(document, start, hard_line_end)?;
@@ -625,7 +626,7 @@ fn bounded_long_line_work_end(
         return Ok(bounded_end);
     }
     let first_break = super::line_breaks::first_line_break(
-        document.projection().text_tree(), start..hard_line_end, paragraph_flow, cancellation,
+        document.projection().text_tree(), start..hard_line_end, paragraph_flow, &mut break_state, cancellation,
     )?;
     // Ordinary text keeps a bounded work slice. An oversized first word must
     // reach its actual break so the worker can publish a complete overflow row.
@@ -841,7 +842,7 @@ where
     let giant_line = line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
     let stream_wrapped_region = view.wrap() && checkpoint.is_none()
         && (line_ranges.len() > 1 || (giant_line
-            && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), false, &cancellation)? == line_ranges[0].end));
+            && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), false, &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));
     let use_unwrapped_viewport = (!view.wrap() || stream_wrapped_region) && !view.paragraph_flow()
         && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
         && giant_line;
@@ -879,8 +880,11 @@ where
                 "the continuation is already at the hard-line end",
             ));
         }
+        let mut break_state = checkpoint.as_ref().map_or_else(
+            || view.initial_wrap_break_state(), |checkpoint| checkpoint.wrap_break_state,
+        );
         let work_end = bounded_long_line_work_end(
-            document, work_start, full_range.end, view.paragraph_flow(), &cancellation,
+            document, work_start, full_range.end, view.paragraph_flow(), break_state, &cancellation,
         )?;
         let context_start = bounded_context_start(document, work_start, full_range.start);
         let context_end = bounded_context_end(document, work_end, full_range.end);
@@ -888,7 +892,7 @@ where
         let stream_overflow = !view.paragraph_flow()
             && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
             && work_end - work_start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES
-            && super::line_breaks::first_line_break(document.projection().text_tree(), work_start..full_range.end, false, &cancellation)? == work_end;
+            && super::line_breaks::first_line_break(document.projection().text_tree(), work_start..full_range.end, false, &mut break_state, &cancellation)? == work_end;
         let text = if stream_overflow { None } else {
             Some(document.projection().text_tree().slice(capture_range.clone())?)
         };

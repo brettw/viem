@@ -15,7 +15,7 @@ pub(super) enum BreakOpportunity {
 }
 
 /// An effective character after LB1 and the combining-sequence rules LB9–LB10.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Character {
     class: Class,
     east_asian_fwh: bool,
@@ -27,7 +27,7 @@ struct Character {
 /// The state has constant size, even for arbitrary runs of spaces, combining
 /// marks or regional indicators. Cloning it creates an exact resume checkpoint.
 /// A fresh state means start of text, not an arbitrary slice of an existing line.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct LineBreakState {
     previous: Option<Character>,
     previous_raw: Option<Class>,

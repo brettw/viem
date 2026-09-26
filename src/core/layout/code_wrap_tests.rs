@@ -32,6 +32,90 @@ fn assert_continuation_margin(snapshot: &LayoutSnapshot, margin: f32) {
 }
 
 #[test]
+fn leading_whitespace_stays_with_the_first_word_even_when_it_overflows() {
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::HtmlSource] {
+        for prefix in ["        ", "\t \t"] {
+            for tail in ["", " next"] {
+                let text = format!("{prefix}longidentifier{tail}");
+                let (document, mut engine, mut view) = fixture(&text, format, 35.0);
+                engine.relayout(&document, &mut view).unwrap();
+                let rows = &view.snapshot().unwrap().rows;
+                let expected_end = text.find(" next").map_or(text.len(), |at| at + 1);
+                assert_eq!(rows[0].text_range, 0..expected_end, "{format:?}: {text:?}");
+                assert_eq!(rows.len(), if tail.is_empty() { 1 } else { 2 });
+                assert!(rows[0].width > view.width());
+                assert_eq!(document.source_bytes(), text.as_bytes());
+            }
+        }
+        let (document, mut engine, mut view) = fixture("    \t    ", format, 7.0);
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(view.snapshot().unwrap().rows.len(), 1);
+    }
+}
+
+#[test]
+fn code_wraps_punctuation_runs_but_keeps_quotes_with_string_contents() {
+    let control = LayoutRunControl::synchronous(&NeverCancelled);
+    for (text, interior) in [
+        ("+foo", vec![1]),
+        ("++foo", vec![2]),
+        ("foo--bar", vec![5]),
+        ("foo=>bar", vec![5]),
+        ("foo.bar", vec![4]),
+        ("++\"foo\"", vec![2]),
+        ("\"foo\"", vec![]),
+        ("'foo'", vec![]),
+        ("(\"foo\")", vec![1]),
+        ("('foo')", vec![1]),
+        ("a((b", vec![2, 3]),
+        ("a;;b", vec![2, 3]),
+        ("a();b", vec![2, 4]),
+    ] {
+        let breaks = line_break_opportunities(text, 0, WrapBreakState::new(true), &control).unwrap();
+        let mut expected: BTreeSet<_> = interior.into_iter().collect();
+        expected.insert(text.len());
+        assert_eq!(breaks, expected, "{text:?}");
+    }
+
+    // Added opportunities inside a combining grapheme must never become rows.
+    for text in ["+\u{301}foo", ";\u{301}foo", "\"foo\"", "'foo'"] {
+        let (document, mut engine, mut view) = fixture(text, Format::Code, 7.0);
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(view.snapshot().unwrap().rows.len(), 1, "{text:?}");
+    }
+}
+
+#[test]
+fn indented_csharp_call_breaks_after_member_access_and_before_the_string() {
+    let text = "        Environment.GetEnvironmentVariable(\"VIEM_TEST_DISABLE_PRELAYOUT\") != \"1\";";
+    let (document, mut engine, mut view) = fixture(text, Format::Code, 80.0);
+    engine.relayout(&document, &mut view).unwrap();
+    let rows: Vec<_> = view.snapshot().unwrap().rows.iter().map(|row| &text[row.text_range.clone()]).collect();
+    assert_eq!(rows[0], "        Environment.");
+    assert_eq!(rows[1], "GetEnvironmentVariable(");
+    assert!(rows[2].starts_with("\"VIEM_"));
+    assert!(!rows.iter().any(|row| *row == "\""));
+}
+
+#[test]
+fn switching_code_wrap_policy_invalidates_rows_but_reuses_shaping() {
+    let text = "alpha.beta.gamma.delta";
+    let (document, mut engine, mut view) = fixture(text, Format::PlainText, 56.0);
+    engine.relayout(&document, &mut view).unwrap();
+    let original_generation = view.configuration_generation();
+    let calls = engine.provider().request_calls();
+    assert_eq!(view.snapshot().unwrap().rows.len(), 1);
+    view.set_whitespace_presentation(Default::default(), Format::Code, 4).unwrap();
+    assert_ne!(view.configuration_generation(), original_generation);
+    engine.relayout(&document, &mut view).unwrap();
+    assert_eq!(view.snapshot().unwrap().rows.len(), 4);
+    assert_eq!(engine.provider().request_calls(), calls);
+    view.set_whitespace_presentation(Default::default(), Format::PlainText, 4).unwrap();
+    engine.relayout(&document, &mut view).unwrap();
+    assert_eq!(view.snapshot().unwrap().rows.len(), 1);
+}
+
+#[test]
 fn wrapped_indent_defaults_and_validation_are_backward_compatible_for_saved_settings() {
     let defaults = WhitespacePresentationOptions::default();
     assert_eq!(defaults.code_wrapped_line_indent, 4);
@@ -338,8 +422,45 @@ fn large_document_regional_wrapping_only_measures_requested_hard_lines() {
 }
 
 #[test]
-fn resumed_long_code_line_preserves_original_indent_and_matches_complete_geometry() {
-    let text = format!(" \t{}", "ab cd\t".repeat(24_000));
+fn giant_indented_code_word_streams_through_its_first_punctuation_break() {
+    let word = "x".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 64);
+    let text = format!("        {word}.Method(\"value\");next");
+    let first_end = 8 + word.len() + 1;
+    let (document, mut engine, mut view) = fixture(&text, Format::Code, 120.0);
+    let requirements = inspect_layout_provider(&engine);
+    let mut checkpoint = None;
+    let mut ranges = Vec::new();
+    for job in 1..=2 {
+        let region = checkpoint.take().map_or_else(
+            || ViewportLayoutRegion::new(0..1, 0.0, 160.0).unwrap(),
+            |checkpoint| ViewportLayoutRegion::resume_long_line(checkpoint, 0.0, 160.0).unwrap(),
+        );
+        let request = prepare_layout_job(
+            &document, &mut view, requirements, LayoutJobId(job),
+            LayoutJobPriority::ChangedVisibleRows, LayoutJobRegion::Viewport(region),
+            LayoutCancellationToken::new(),
+        ).unwrap();
+        assert!(request.captured_text_len() < 4096);
+        let result = compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+        let line = &result.regional_snapshot().lines()[0];
+        if job == 1 {
+            assert_eq!(line.rows().len(), 1);
+            assert_eq!(line.rows()[0].text_range, 0..first_end);
+            assert!(line.rows()[0].clusters.len() < 4096);
+            assert!(line.next_checkpoint().is_some());
+        }
+        ranges.extend(line.rows().iter().map(|row| row.text_range.clone()));
+        checkpoint = line.next_checkpoint().cloned();
+    }
+    assert!(checkpoint.is_none());
+    assert!(!document.projection().compatibility_text_is_materialized());
+    engine.relayout(&document, &mut view).unwrap();
+    assert_eq!(ranges, view.snapshot().unwrap().rows.iter().map(|row| row.text_range.clone()).collect::<Vec<_>>());
+}
+
+#[test]
+fn resumed_long_code_line_preserves_break_state_and_indent_and_matches_complete_geometry() {
+    let text = format!(" \t{}", "ab(\"x\");cd++ef--gh \t".repeat(8_000));
     let (document, mut engine, mut view) = fixture(&text, Format::Code, 240.0);
     let requirements = inspect_layout_provider(&engine);
     let mut checkpoint = None;
@@ -397,7 +518,7 @@ fn resumed_long_code_line_preserves_original_indent_and_matches_complete_geometr
 }
 
 #[test]
-fn changing_wrapped_indent_rejects_previous_long_line_checkpoints() {
+fn changing_wrapped_indent_or_code_policy_rejects_previous_long_line_checkpoints() {
     let text = format!("  {}", "aa bb ".repeat(15_000));
     let (document, mut engine, mut view) = fixture(&text, Format::Code, 140.0);
     let requirements = inspect_layout_provider(&engine);
@@ -414,6 +535,20 @@ fn changing_wrapped_indent_rejects_previous_long_line_checkpoints() {
     let result =
         compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
     let checkpoint = result.next_long_line_checkpoint().unwrap().clone();
+    let mut plain_view = view.clone();
+    plain_view.set_whitespace_presentation(Default::default(), Format::PlainText, 4).unwrap();
+    let result = prepare_layout_job(
+        &document,
+        &mut plain_view,
+        requirements,
+        LayoutJobId(2),
+        LayoutJobPriority::ChangedVisibleRows,
+        LayoutJobRegion::Viewport(
+            ViewportLayoutRegion::resume_long_line(checkpoint.clone(), 0.0, 160.0).unwrap(),
+        ),
+        LayoutCancellationToken::new(),
+    );
+    assert!(matches!(result, Err(LayoutJobError::InvalidLongLineCheckpoint(_))));
     view.set_whitespace_presentation(
         WhitespacePresentationOptions {
             code_wrapped_line_indent: 8,
