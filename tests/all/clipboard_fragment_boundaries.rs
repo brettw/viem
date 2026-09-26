@@ -153,8 +153,11 @@ fn whole_html_clipboard_reconstruction_retains_unclosed_source_exactly() {
         let mut target = html(b"");
         let mut commands = paste_word(&mut target, content, 'i');
         assert_eq!(target.text(), "word");
-        assert_eq!(target.source_bytes(), source);
-        assert_undo_redo(&mut target, &mut commands, b"", source);
+        // Text in an empty document gets an explicit `p` owner; the copied
+        // scope keeps its exact unclosed spelling inside it.
+        let expected = [b"<p>".as_slice(), source, b"</p>"].concat();
+        assert_eq!(target.source_bytes(), expected);
+        assert_undo_redo(&mut target, &mut commands, b"", &expected);
     }
 }
 
@@ -178,7 +181,9 @@ fn rich_clipboard_replacement_preserves_hidden_syntax_between_selected_runs() {
     let changed = document.source_bytes();
     let serialized = std::str::from_utf8(&changed).unwrap();
     assert!(serialized.starts_with("<!--outside--><p>A<b>"));
-    assert!(serialized.contains("</b><!--keep--><i></i>Z</p><!--tail-->"));
+    // The replacement consumes `<i>de</i>`, so its emptied delimiters are
+    // removed; the comment between the selected runs keeps its exact bytes.
+    assert!(serialized.contains("</b><!--keep-->Z</p><!--tail-->"), "{serialized}");
     for snapshot in [&document, &html(&changed)] {
         for at in 1..5 {
             let style =

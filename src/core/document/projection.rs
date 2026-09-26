@@ -4643,13 +4643,38 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
-    let provenance_indices = if literal_mapping {
+    let mut provenance_indices = if literal_mapping {
         let mut first = previous.provenance.partition_point_start(old_formatted.start);
         if first > 0 && previous.provenance.get(first - 1).is_some_and(|span| span.formatted.end > old_formatted.start) {
             first -= 1;
         }
         first..previous.provenance.partition_point_start(old_formatted.end)
     } else { contained_interval_indices(&previous.provenance, &old_formatted)? };
+    // A paragraph that ends inside inline markup, such as `<b>…</b></p>`,
+    // records its following break as an empty source span at the end of its
+    // last content, which lies inside the region. The break moves with that
+    // content: replace it at the regional parse's content end.
+    let content_end = |spans: &[ProvenanceSpan]| {
+        spans.iter().rev().find(|span| !span.source.is_empty()).map(|span| span.source.end)
+    };
+    let trailing_break = if literal_mapping {
+        None
+    } else {
+        let old_content = previous
+            .provenance
+            .get_range(&provenance_indices)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        previous.provenance.get(provenance_indices.end).filter(|span| {
+            span.source.is_empty()
+                && span.formatted.start >= old_formatted.end
+                && old_source.start < span.source.start
+                && span.source.start < old_source.end
+                && content_end(&old_content) == Some(span.source.start)
+        })
+    };
+    if trailing_break.is_some() {
+        provenance_indices.end += 1;
+    }
     let old_provenance = previous
         .provenance
         .get_range(&provenance_indices)
@@ -4681,6 +4706,12 @@ pub(crate) fn splice_line_local_projection(
             })
         })
         .collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    if let Some(boundary) = trailing_break {
+        let at = content_end(&regional_provenance).unwrap_or(new_source.start);
+        let formatted = shift_range_i128(&boundary.formatted, new_formatted_end as i128 - old_formatted.end as i128)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        regional_provenance.push(ProvenanceSpan { formatted, source: at..at });
+    }
     if literal_mapping {
         if let Some(first) = old_provenance.first().filter(|span| span.formatted.start < old_formatted.start) {
             let prefix = previous.clip_literal_span(first.clone(), &(first.formatted.start..old_formatted.start));
