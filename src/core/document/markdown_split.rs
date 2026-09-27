@@ -26,7 +26,7 @@ pub(super) fn hard_break_patches(
     patches_with_separator(document, &(at..at), "\n", separator, Some(source_at))
 }
 
-fn patches_with_separator(
+pub(super) fn patches_with_separator(
     document: &Document,
     range: &Range<usize>,
     replacement: &str,

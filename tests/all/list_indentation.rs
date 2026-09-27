@@ -104,7 +104,7 @@ fn ordered_indent_starts_a_canonical_child_run_and_unindent_removes_its_containe
     for (source, nested, format) in [
         (
             "1. One\n2. Two\n3. Three\n4. Four",
-            "1. One\n   1. Two\n   2. Three\n4. Four",
+            "1. One\n   1. Two\n   2. Three\n2. Four",
             Format::Markdown,
         ),
         (

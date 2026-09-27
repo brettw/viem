@@ -4441,9 +4441,13 @@ pub(crate) fn splice_line_local_projection(
                     }
                 },
             };
-            let separator_length = match row_map.old_line(index) {
-                Some(old) => old_lines[old].separator_length,
-                None => line.separator_length,
+            // A retained row identity does not retain its old EOF status.
+            // Splitting the last row gives it a real separator; only the
+            // region's outer boundary is inherited from the untouched suffix.
+            let separator_length = if index + 1 == regional_lines.len() {
+                old_lines.last().unwrap().separator_length
+            } else {
+                line.separator_length
             };
             lines.push(HardLine { id, range, separator_length });
         }
@@ -5295,6 +5299,7 @@ fn project_markdown(
     let quotes = super::markdown_quotes::classify(normalized);
     let quote_body = super::markdown_quotes::strip(normalized, &quotes);
     let quote_context = super::markdown_quotes::source_context(normalized);
+    let indented = super::markdown_indented_code::classify(normalized);
     let list_context = super::markdown_blocks::source_context(&quote_body);
     if preserve_markers {
         let (cooked, explicit) = super::paragraph_flow::markdown_source(normalized);
@@ -5319,6 +5324,7 @@ fn project_markdown(
             true,
             &list_context,
             &quote_context,
+            &indented,
         );
         let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
         // Source keeps physical lines, while inline link labels/destinations
@@ -5375,6 +5381,7 @@ fn project_markdown(
         false,
         &list_context,
         &quote_context,
+        &indented,
     );
     if let Some(ending) = normalized
         .endings
@@ -5435,6 +5442,7 @@ fn project_markdown_lines(
     preserve_markers: bool,
     list_context: &[(Range<usize>, super::markdown_blocks::ListLine)],
     quote_context: &[super::markdown_quotes::QuoteLine],
+    indented: &[super::markdown_indented_code::CodeBlock],
 ) -> FormattedDocument {
     let mut builder = MarkdownBuilder::new(
         &normalized.text,
@@ -5469,7 +5477,54 @@ fn project_markdown_lines(
                 .filter(|(range, _)| range.start <= at && at <= range.end)
                 .map(|(_, context)| context)
         });
-        if let Some((delimiter, length)) = markdown_fence(&normalized.text[semantic_start..line.end]) {
+        if let Some(code) = source_at.and_then(|at| indented
+            .get(indented.partition_point(|block| block.source.start <= at).saturating_sub(1))
+            .filter(|block| block.source.start <= at && at <= block.source.end))
+        {
+            let first = line_index;
+            while line_index < input_lines.len() {
+                let row = &input_lines[line_index];
+                let at = builder.unit_at(row.start).map_or(source_content_end, |unit| unit.source.start);
+                if at > code.source.end { break; }
+                let owner = &code.lines[(line_index - first).min(code.lines.len() - 1)];
+                let content = if preserve_markers { row.start } else {
+                    builder.units.get(builder.units.partition_point(|unit| unit.source.start < owner.content_start))
+                        .map_or(row.end, |unit| unit.normalized.start).min(row.end)
+                };
+                let output = builder.output.len();
+                if !preserve_markers && owner.padding > 0 {
+                    let index = builder.units.partition_point(|unit| unit.source.start < owner.content_start);
+                    if let Some(unit) = index.checked_sub(1).and_then(|index| builder.units.get(index)) {
+                        builder.output.push_str(&" ".repeat(owner.padding));
+                        builder.provenance.push(ProvenanceSpan { formatted: output..builder.output.len(), source: unit.source.clone() });
+                    }
+                }
+                builder.emit_range(content, row.end);
+                if output == builder.output.len() {
+                    builder.provenance.push(ProvenanceSpan { formatted: output..output, source: owner.content_start..owner.content_start });
+                }
+                builder.push_semantic_style(output, SemanticInlineStyle::Code);
+                line_index += 1;
+                if line_index - first >= code.lines.len() { break; }
+                if let Some(ending) = normalized.endings.get(line_index - 1) {
+                    hard_breaks.push(builder.output.len());
+                    builder.emit_unit_at(ending.normalized.start);
+                }
+            }
+            builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
+                context.map_or(BlockKind::Paragraph, |context| context.kind.clone()), preserve_markers),
+                "Code Block".into(), None));
+            if let Some(ending) = normalized.endings.get(line_index - 1) {
+                hard_breaks.push(builder.output.len());
+                builder.emit_unit_at(ending.normalized.start);
+            }
+            continue;
+        }
+        let fence_start = context.filter(|context| context.code && context.marker.is_some()).map_or(semantic_start, |context| {
+            builder.units.get(builder.units.partition_point(|unit| unit.source.start < context.content_start))
+                .map_or(line.end, |unit| unit.normalized.start).min(line.end)
+        });
+        if let Some((delimiter, length)) = markdown_fence(&normalized.text[fence_start..line.end]) {
             let mut closing = line_index + 1;
             while closing < input_lines.len() {
                 let raw = &normalized.text[input_lines[closing].clone()];

@@ -6,6 +6,101 @@ import XCTest
 
 final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
+    func testIndentedMarkdownCodeEnterAndTypingRoundTrip() throws {
+        let source = "    code\n\nTail"
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        XCTAssertEqual(surface.formattedText, "code\nTail")
+        let client: NSTextInputClient = surface.editorView
+        let implicit = NSRange(location: NSNotFound, length: 0)
+        client.insertText("A", replacementRange: implicit)
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
+        client.insertText("more", replacementRange: implicit)
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        XCTAssertEqual(surface.statusBarState.message, "")
+        XCTAssertEqual(surface.formattedText, "code\nmore\nTail")
+        let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
+        let reopened = EVCoreDocumentBackend()
+        try reopened.read(source: saved, typeName: EVDocument.markdownType)
+        let reopenedSurface = try XCTUnwrap(reopened.makeEditorSurface() as? EVEditorSurfaceController)
+        reopenedSurface.loadViewIfNeeded()
+        XCTAssertEqual(reopenedSurface.formattedText, surface.formattedText)
+        client.insertText("u", replacementRange: implicit)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
+    @MainActor
+    func testMarkdownSourceBulletEnterAndContinuedTypingPreserveTheNewItem() throws {
+        for (prefix, tail) in [
+            ("- ", ""), ("- ", "\n- Last"),
+            ("> - ", ""), ("> - ", "\n> - Last"),
+            ("  - ", ""), ("  - ", "\n  - Last"),
+        ] {
+            let source = "\(prefix)First\(tail)"
+            let backend = EVCoreDocumentBackend()
+            try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            surface.loadViewIfNeeded()
+            let client: NSTextInputClient = surface.editorView
+            let implicit = NSRange(location: NSNotFound, length: 0)
+            client.insertText("A", replacementRange: implicit)
+            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
+            XCTAssertEqual(surface.statusBarState.message, "")
+            client.insertText("Added", replacementRange: implicit)
+            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+            XCTAssertEqual(surface.statusBarState.message, "")
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
+                           Data("\(prefix)First\n\(prefix)Added\(tail)".utf8))
+            client.insertText("u", replacementRange: implicit)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        }
+    }
+
+    @MainActor
+    func testMarkdownSourceListEnterAndOpenContinueNumbering() throws {
+        for command in ["A", "o"] {
+            let source = "1.\tFirst\n2.\tLast"
+            let backend = EVCoreDocumentBackend()
+            try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            surface.loadViewIfNeeded()
+            let client: NSTextInputClient = surface.editorView
+            let implicit = NSRange(location: NSNotFound, length: 0)
+            client.insertText(command, replacementRange: implicit)
+            if command == "A" {
+                surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
+            }
+            XCTAssertEqual(surface.statusBarState.message, "")
+            client.insertText("Added", replacementRange: implicit)
+            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
+                           Data("1.\tFirst\n2.\tAdded\n3.\tLast".utf8))
+            client.insertText("u", replacementRange: implicit)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        }
+    }
+
+    @MainActor
+    func testMarkdownSourceBareEmptyNumberedItemEnterBecomesProse() throws {
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data("1.".utf8), typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let client: NSTextInputClient = surface.editorView
+        let implicit = NSRange(location: NSNotFound, length: 0)
+        client.insertText("A", replacementRange: implicit)
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
+        XCTAssertEqual(surface.statusBarState.message, "")
+        client.insertText("Plain", replacementRange: implicit)
+        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("Plain".utf8))
+        client.insertText("u", replacementRange: implicit)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("1.".utf8))
+    }
+
+    @MainActor
     func testNativeScalarChangeKeepsTheEntireHTMLRunStyle() throws {
         let source = "<p>Bold <b foo='keep'>words</b> and &#x26; text.</p><!--keep-->"
         let backend = EVCoreDocumentBackend()

@@ -53,7 +53,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Heading 2")
   }
 
-  func testCharacterCodeTogglesAndUnsupportedCodeBlockIsOmitted() throws {
+  func testCharacterCodeTogglesAndCodeBlockAvailability() throws {
     for (type, source) in [(EVDocument.htmlType, "<p>Words</p>"), (EVDocument.markdownType, "Words")] {
       let (_, surface) = try surface(source, type: type)
       let toolbar = surface.formattingToolbar
@@ -68,9 +68,77 @@ final class EVFormattingToolbarTests: XCTestCase {
       XCTAssertNil(surface.commandOutput)
       XCTAssertEqual(toolbar.characterCode.state, .off)
       XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Default Paragraph")
-      XCTAssertTrue(toolbar.codeBlock.isHidden,
-        "Generated Code Block styles without an assignment capability must not advertise an action")
+      XCTAssertEqual(toolbar.codeBlock.isHidden, type == EVDocument.htmlType)
     }
+  }
+
+  func testMarkdownCodeBlockToolbarTogglesAndRestoresExactSourceWithUndo() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      let source = "Before\n\nWords\n\nAfter"
+      let (backend, surface) = try surface(source, type: type)
+      let toolbar = surface.formattingToolbar
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 8, length: 0))
+      toolbar.refresh()
+      XCTAssertFalse(toolbar.codeBlock.isHidden)
+      toolbar.toggleCodeBlock(toolbar.codeBlock)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(toolbar.codeBlock.state, .on)
+      let fenced = Data("Before\n\n```\nWords\n```\n\nAfter".utf8)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), fenced)
+      toolbar.toggleCodeBlock(toolbar.codeBlock)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(toolbar.codeBlock.state, .off)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), fenced)
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+    }
+  }
+
+  func testMarkdownSourceListToolbarRemovalSeparatesTheMiddleParagraph() throws {
+    for (command, marker) in [(EVMenuCommand.bulletedList, "- "), (.numberedList, "3. ")] {
+      let source = "\(marker)Before\n\(marker)Middle\n\(marker)After"
+      let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+      let text = try backend.formattedText()
+      let at = try XCTUnwrap(text.range(of: "Middle"))
+      let location = text.distance(from: text.startIndex, to: at.lowerBound)
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: location, length: 0))
+      let toolbar = surface.formattingToolbar
+      toolbar.refresh()
+      let button = try XCTUnwrap(toolbar.commandButtons[command])
+      XCTAssertEqual(button.state, .on)
+      toolbar.performCommand(button)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(button.state, .off)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
+        Data("\(marker)Before\n\nMiddle\n\n\(command == .numberedList ? "1. " : marker)After".utf8))
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+    }
+  }
+
+  func testNumberedListToolbarRefreshesSplitAndRejoinedSourceNumbers() throws {
+    let source = "1. First\n2. Middle\n3. Third\n4. Fourth"
+    let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 12, length: 0))
+    let toolbar = surface.formattingToolbar
+    toolbar.refresh()
+    let numbered = try XCTUnwrap(toolbar.commandButtons[.numberedList])
+    toolbar.performCommand(numbered)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(numbered.state, .off)
+    let split = Data("1. First\n\nMiddle\n\n1. Third\n2. Fourth".utf8)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), split)
+    toolbar.performCommand(numbered)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(numbered.state, .on)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
+      Data("1. First\n\n2. Middle\n\n3. Third\n4. Fourth".utf8))
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), split)
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
   }
 
   func testSourceBackedCodeBlockCanBeToggledOff() throws {

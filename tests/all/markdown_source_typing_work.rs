@@ -154,15 +154,8 @@ fn check_typing(source: &str, offset: usize, typed: &str) {
         ENTER => InputEvent::Key(Key::Enter),
         _ => InputEvent::text(typed),
     };
-    // Every edit here is ordinary source text, which Markdown Source must
-    // accept wherever it would change the parse. Enter still refuses a few
-    // positions, such as before a quote marker or inside some nested list
-    // continuations; a refusal must leave the document unchanged.
-    if let Err(error) = core.handle_with_layout(view, CoreEvent::Input(event)) {
-        assert!(typed == ENTER, "typing {typed:?} at {offset} in {source:?}: {error:?}");
-        assert_eq!(core.document().source_bytes(), source.as_bytes(), "Enter at {offset} in {source:?}");
-        return;
-    }
+    core.handle_with_layout(view, CoreEvent::Input(event))
+        .unwrap_or_else(|error| panic!("typing {typed:?} at {offset} in {source:?}: {error:?}"));
     if typed != BACKSPACE && typed != ENTER && !typed.contains('\n') {
         // Source view writes the typed characters as literal source.
         let (before, after) = (source.as_bytes(), core.document().source_bytes());

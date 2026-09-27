@@ -20,7 +20,7 @@ pub(super) fn is_code_paragraph(document: &Document, block: &Block) -> Result<bo
         return Ok(true);
     }
     match document.format() {
-        Format::Markdown => super::markdown_quotes::is_fenced_block(document, block),
+        format if format.is_markdown() => super::markdown_quotes::is_fenced_block(document, block),
         Format::Html => super::html_quotes::in_native_pre(document, block.range.start),
         _ => Ok(false),
     }

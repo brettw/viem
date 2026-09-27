@@ -80,7 +80,7 @@ pub(super) fn preserve_deleted_source_prefixes(
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
     let mut support = Vec::new();
-    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n')) {
         let band = edit.range.start.saturating_sub(1)
             ..(edit.range.end + 1).min(document.projection().text_tree().byte_len());
         for span in document.projection().provenance_for_region(&band) {
@@ -178,7 +178,7 @@ pub(super) fn preserve_deleted_boundary_spaces(
 ) -> Result<(), DocumentError> {
     let projection = document.projection();
     let mut seen = BTreeSet::new();
-    for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
+    for edit in edits.iter().filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n')) {
         let band = edit.range.start.saturating_sub(1)
             ..(edit.range.end + 1).min(projection.text_tree().byte_len());
         for span in projection.provenance_for_region(&band) {
@@ -495,7 +495,8 @@ pub(super) fn preserve_split_literals(
                 .encoding()
                 .decode_region(&bytes, span.source.start)?;
             let normalized = line_endings::normalize(&decoded, document.file_format());
-            if !normalized.endings.is_empty() && normalized.text.chars().all(char::is_whitespace) {
+            if !normalized.endings.is_empty() && normalized.text.split('\n').all(|row|
+                row[crate::document::markdown_quotes::prefix(row)..].chars().all(char::is_whitespace)) {
                 folded.push(span);
             }
         }
@@ -519,6 +520,16 @@ pub(super) fn preserve_split_literals(
         let tail = &document.text()[edit.range.end..];
         let end = tail.find('\n').unwrap_or(tail.len());
         let line = &tail[..end];
+        let whitespace = line.bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
+        for span in projection.provenance_for_region(&(edit.range.end..edit.range.end + whitespace)) {
+            if span.formatted.is_empty() || span.source.is_empty() { continue; }
+            let body = projection.text_tree().slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if body.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+                let syntax = body.bytes().map(|byte| if byte == b' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+                support.push(SourcePatch::primary(span.source, document.encoding().encode_fragment(&syntax)?));
+            }
+        }
         let indent = line.bytes().take_while(|byte| *byte == b' ').count();
         let (_, kind) = crate::document::projection::markdown_block_prefix(line, 0, line.len());
         let punctuation = match kind {
@@ -863,6 +874,30 @@ pub(super) fn preserve_split_boundaries<'a>(
         if range.start < line.start {
             continue;
         }
+        // Opening a paragraph at its beginning also preserves the boundary
+        // behind it. A preceding fence may contribute only one physical ending.
+        if range.is_empty() && range.start == line.start && index > 0 {
+            let previous = crate::document::edit_boundary::paragraph_at(document, line.start - 1)?;
+            if let Some(previous) = previous.filter(|block| block.style.0 == "Code Block") {
+                if let Some(fence) = crate::document::markdown_code::fenced_source(document, &previous)? {
+                    if let Some(end) = fence.closing_content_end {
+                        let at = projection.source_insertion_point(range.start, true)
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        if let Some(patch) = patches.iter_mut().find(|patch| patch.range == (at..at)) {
+                            let bytes = document.state().source.bytes_in(end..at)
+                                .ok_or(DocumentError::AmbiguousProjection)?;
+                            let existing = document.encoding().decode_region(&bytes, end)?;
+                            let added = document.encoding().decode_region(&patch.replacement, at)?;
+                            let endings = line_endings::normalize(&existing, document.file_format()).endings.len()
+                                + line_endings::normalize(&added, document.file_format()).endings.len();
+                            if added.text.chars().all(char::is_whitespace) && endings < 4 {
+                                patch.replacement.extend(document.encoding().encode_fragment(&document.file_format().spelling().repeat(4 - endings))?);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if projection.hard_line_range(index + 1).is_none() {
             continue;
         }
@@ -907,6 +942,23 @@ pub(super) fn support_patches(
     range: &Range<usize>,
     make_structural: bool,
     remove_structure: bool,
+) -> Result<Vec<SourcePatch>, DocumentError> {
+    support_patches_impl(document, range, make_structural, remove_structure, false)
+}
+
+pub(super) fn code_removal_patches(
+    document: &Document,
+    range: &Range<usize>,
+) -> Result<Vec<SourcePatch>, DocumentError> {
+    support_patches_impl(document, range, false, true, true)
+}
+
+fn support_patches_impl(
+    document: &Document,
+    range: &Range<usize>,
+    make_structural: bool,
+    remove_structure: bool,
+    remove_code: bool,
 ) -> Result<Vec<SourcePatch>, DocumentError> {
     let projection = document.projection();
     let first = projection
@@ -986,8 +1038,9 @@ pub(super) fn support_patches(
                 .end;
         let mut fenced = BTreeSet::new();
         for block in projection.blocks_for_region(&adjacent) {
-            if block.style.0 == "Code Block"
-                || crate::document::markdown_quotes::is_fenced_block(document, &block)?
+            if !remove_code
+                && (block.style.0 == "Code Block"
+                    || crate::document::markdown_quotes::is_fenced_block(document, &block)?)
             {
                 fenced.insert(block.id);
             }
@@ -1025,6 +1078,15 @@ pub(super) fn support_patches(
             }
         };
         for index in boundaries {
+            let left = projection.hard_line_range(index).unwrap();
+            let right = projection.hard_line_range(index + 1).unwrap();
+            // A source continuation or literal code break is internal to one
+            // paragraph. Only its outer boundaries need prose separators.
+            if projection.blocks_for_region(&left).iter().any(|block| {
+                block.range.start <= left.start && right.end <= block.range.end
+            }) {
+                continue;
+            }
             let untouched_list = |at: usize| {
                 !(first..=last).contains(&at)
                     && projection.hard_line_range(at).is_some_and(|line| {

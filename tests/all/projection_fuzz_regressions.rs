@@ -163,7 +163,9 @@ fn source_open_lines_preserve_paired_separator_rows_and_code_breaks() {
                 )
                 .unwrap();
                 let mut expected = document.text().to_owned();
-                expected.insert(at, '\n');
+                let continues_item = source.starts_with("- ") && document.projection().blocks()
+                    .iter().any(|block| block.range.end == at);
+                expected.insert_str(at, if continues_item { "\n- " } else { "\n" });
                 document
                     .apply_model_request(ModelRequest::OpenLine {
                         document: document.id(),

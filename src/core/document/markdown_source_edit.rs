@@ -19,7 +19,8 @@ impl Document {
             .slice(line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
         for block in projection.blocks_for_region(&(at..at)) {
-            if block.style.0 != "Code Block" || at < block.range.start || at > block.range.end {
+            if !super::edit_boundary::is_code_paragraph(self, &block)?
+                || at < block.range.start || at > block.range.end {
                 continue;
             }
             if at < block.range.end {
@@ -30,9 +31,10 @@ impl Document {
                 .text_tree()
                 .slice(opening.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
+            let prefix = super::markdown_quotes::prefix;
             let closed = opening.start < line.start
-                && super::projection::markdown_fence(&opener).is_some_and(|(delimiter, length)| {
-                    let tail = text.trim();
+                && super::projection::markdown_fence(&opener[prefix(&opener)..]).is_some_and(|(delimiter, length)| {
+                    let tail = text[prefix(&text)..].trim();
                     tail.len() >= length && tail.bytes().all(|byte| byte == delimiter)
                 });
             return Ok(!closed);
