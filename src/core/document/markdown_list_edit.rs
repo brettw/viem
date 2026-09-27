@@ -50,7 +50,7 @@ impl Document {
             let Some(owner) = blocks.get(found) else { return Ok(None); };
             // Quote-only separator rows do not end an item's ownership of
             // the indented continuation paragraph after them.
-            if owner.style.0 == "Block quote" && owner.kind == BlockKind::Paragraph {
+            if (owner.style.0 == "Block quote" || owner.quote_depth > 0) && owner.kind == BlockKind::Paragraph {
                 let text = self.projection().text_tree().slice(owner.range.clone())
                     .map_err(DocumentError::FormattedTextStorage)?;
                 let quote = super::super::markdown_quotes::prefix(&text);
@@ -595,9 +595,9 @@ impl Document {
         let next = following_override.unwrap_or_else(|| {
             self.projection()
                 .style_sheet()
-                .block_style(&origin.style)
-                .and_then(|style| style.next_paragraph_style.clone())
-                .unwrap_or_else(|| origin.style.clone())
+                .next_paragraph_style(&origin.style)
+                .cloned()
+                .unwrap_or_else(|_| origin.style.clone())
         });
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
@@ -611,7 +611,7 @@ impl Document {
             }
         } else if self.format() == Format::Html {
             scratch.prepare_html_paragraph_split(at, &block, &block.style)?
-        } else if self.format() == Format::Markdown && block.style.0 == "Block quote" {
+        } else if self.format() == Format::Markdown && (block.style.0 == "Block quote" || block.quote_depth > 0) {
             scratch.prepare_markdown_quote_enter(at)?.ok_or(DocumentError::AmbiguousProjection)?
         } else {
             scratch.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], None)?

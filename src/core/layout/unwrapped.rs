@@ -589,6 +589,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             region.usable_width,
             &paragraph.style,
             right_to_left,
+            view.scale,
         );
         let code_wrap_indent = code_wrap_indent.unwrap_or(0.0);
         let continuation = if view.wrap && view.whitespace.format.is_code() {
@@ -974,6 +975,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 usable_width,
                 &paragraph.style,
                 right_to_left,
+                view.scale,
             );
             let code_wrap_indent = if view.wrap && view.whitespace.format.is_code() {
                 if let Some(checkpoint) = overflow_slice.and_then(|slice| slice.checkpoint.as_ref())
@@ -1060,11 +1062,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
             }
             let bands = merge_bands(bands);
-            let y = if hard_line_index == 0 {
-                content_insets.top + paragraph.style.spacing_before
+            let (y, limited_origin) = block_box::editable_flow_position(None, if hard_line_index == 0 {
+                content_insets.top + block_box::before(&paragraph.style) * view.scale
             } else {
                 0.0
-            };
+            }, view.scale);
+            if limited_origin { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
             let baseline = y + metrics.ascent;
             let mut row = VisualRow {
                 paragraph_id: paragraph.paragraph_id,
@@ -1233,13 +1236,21 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let inputs = super::line_layout_inputs(
                 &line_range, &paragraph, next.as_ref(), style_runs, styles,
             );
-            if let Some(next) = next {
+            let mut resolved_gap = 0.;
+            if let Some(next) = &next {
                 if starts_new_paragraph(&paragraph, &next) {
-                    height += paragraph.style.spacing_after + next.style.spacing_before;
+                    let (position, limited) = block_box::editable_flow_position(Some(y),
+                        height + block_box::between(&paragraph.style, &next.style) * view.scale, view.scale);
+                    resolved_gap = position - height;
+                    height = position;
+                    if limited { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
                 }
-            } else {
+            }
+            decorate_block_row(&mut row, &paragraph.style, resolved_gap,
+                content_insets.left, usable_width, view.scale, right_to_left);
+            if next.is_none() {
                 height = document_end_extent(
-                    height, Some(&row), paragraph.style.spacing_after, content_insets.bottom,
+                    height, Some(&row), block_box::after(&paragraph.style) * view.scale, content_insets.bottom,
                 );
             }
             statistics.positioned_cluster_count += row.clusters.len();

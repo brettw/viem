@@ -51,10 +51,10 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
             && ((self.standardHeadingLevel(for: definition.key.id.rawValue) != nil
               && definition.kind == .paragraph)
               || (definition.capabilities.contains(.assign)
-                && (definition.kind == .paragraph
+                && (definition.kind == .paragraph || definition.kind.isContainer
                   || definition.kind == .character))),
           state: selectedStyles?.identity == snapshot.identity
-            && ((definition.kind == .paragraph && selectedStyles?.paragraph == definition.key.id)
+            && ((definition.kind != .character && selectedStyles?.paragraph == definition.key.id)
                 || (definition.kind == .character && selectedStyles?.character == definition.key.id))
             ? .on : .off
         )
@@ -95,7 +95,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         presentation: EVMenuItemPresentation(
           isEnabled: true,
           state: selectionMatches
-            && ((definition.kind == .paragraph && selectedStyles?.paragraph == definition.key.id)
+            && ((definition.kind != .character && selectedStyles?.paragraph == definition.key.id)
               || (definition.kind == .character && selectedStyles?.character == definition.key.id))
             ? .on : .off
         ),
@@ -301,7 +301,7 @@ extension EVStyleKind {
   fileprivate var menuRole: EVStyleMenuRole {
     switch self {
     case .character: .character
-    case .paragraph: .paragraph
+    case .paragraph, .quote, .codeBlock, .list, .listItem: .paragraph
     }
   }
 }

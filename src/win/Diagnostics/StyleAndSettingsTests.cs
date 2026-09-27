@@ -173,6 +173,7 @@ internal static class StyleAndSettingsTests
 
     internal static async Task RunSettings(EditorPane pane, EditorWindow window, Preferences preferences)
     {
+        await StyleDefaultsLoadingTests.Run(preferences);
         window.Activate(); await window.ShowSettings(); await Task.Delay(350);
         var settings = window.SettingsInspector!;
         var theme = preferences.Theme; string font = preferences.Get("theme", "statusFontFamily", "System"); double size = preferences.StatusFontSize;

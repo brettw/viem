@@ -12,6 +12,12 @@ struct EVCoreTextStylePreviewLine: Equatable {
     let isCurrentStyle: Bool
 }
 
+struct EVCoreTextStylePreviewBox: Equatable {
+    let rect: CGRect
+    let color: EVStyleColor
+    let isBackground: Bool
+}
+
 struct EVCoreTextStylePreviewInspection: Equatable {
     let kind: EVStyleKind?
     let effectiveValues: [EVStyleProperty: EVStyleValue]
@@ -23,6 +29,8 @@ struct EVCoreTextStylePreviewInspection: Equatable {
     let canvasBackground: EVStyleColor
     let accessibilityText: String
     let lines: [EVCoreTextStylePreviewLine]
+    let boxes: [EVCoreTextStylePreviewBox]
+    let blockPreviewError: String?
 
     var currentStyleLines: [EVCoreTextStylePreviewLine] {
         lines.filter(\.isCurrentStyle)
@@ -47,6 +55,8 @@ final class EVCoreTextStylePreviewView: NSView {
     private static let unavailableText =
         "Select a document style to preview its effective formatting."
 
+    private var blockPreview: EVCoreBlockStylePreview?
+    private var blockPreviewError: String?
     private var kind: EVStyleKind?
     private var effectiveValues: [EVStyleProperty: EVStyleValue] = [:]
     private var canvasBackground = EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1)
@@ -80,12 +90,30 @@ final class EVCoreTextStylePreviewView: NSView {
         let content = makeAttributedContent(kind: kind, effectiveValues: effectiveValues)
         attributedContent = content.value
         currentStyleRange = content.currentRange
-        setAccessibilityValue(content.accessibilityText)
+        blockPreviewError = nil
+        if kind != .character {
+            do {
+                let context = contextualForegroundColor().usingColorSpace(.sRGB) ?? .gray
+                let foreground = EVStyleColor(red: Float(context.redComponent), green: Float(context.greenComponent),
+                    blue: Float(context.blueComponent), alpha: Float(context.alphaComponent))
+                if let blockPreview, blockPreview.kind == kind {
+                    try blockPreview.update(values: effectiveValues, contextForeground: foreground)
+                } else {
+                    blockPreview = try EVCoreBlockStylePreview(kind: kind, values: effectiveValues, contextForeground: foreground)
+                }
+            } catch {
+                blockPreview = nil
+                blockPreviewError = error.localizedDescription
+            }
+        } else { blockPreview = nil }
+        setAccessibilityValue(blockPreview?.accessibilityText ?? content.accessibilityText)
         needsDisplay = true
     }
 
     func showUnavailable() {
         kind = nil
+        blockPreview = nil
+        blockPreviewError = nil
         effectiveValues = [:]
         let attributes = contextualAttributes(size: CoreTextMeasurementProvider.defaultFontSize)
         attributedContent = NSAttributedString(string: Self.unavailableText, attributes: attributes)
@@ -118,7 +146,9 @@ final class EVCoreTextStylePreviewView: NSView {
             resolvedFontSize: CTFontGetSize(font),
             canvasBackground: canvasBackground,
             accessibilityText: (accessibilityValue() as? String) ?? "",
-            lines: lineGeometry(in: CGRect(origin: .zero, size: size))
+            lines: lineGeometry(in: CGRect(origin: .zero, size: size)),
+            boxes: blockPreview?.boxes(in: CGRect(origin: .zero, size: size)) ?? [],
+            blockPreviewError: blockPreviewError
         )
     }
 
@@ -126,6 +156,10 @@ final class EVCoreTextStylePreviewView: NSView {
         canvasBackground.appKitColor.setFill()
         dirtyRect.fill()
         guard let context = NSGraphicsContext.current?.cgContext else { return }
+        if let blockPreview {
+            blockPreview.draw(in: bounds, context: context)
+            return
+        }
         context.saveGState()
         context.textMatrix = .identity
         context.translateBy(x: 0, y: bounds.height)
@@ -152,7 +186,7 @@ final class EVCoreTextStylePreviewView: NSView {
         let selectedAttributes = styleAttributes(from: effectiveValues)
         let contextual = contextualAttributes(size: 12)
         let value = NSMutableAttributedString()
-        if kind == .paragraph {
+        if kind != .character {
             value.append(NSAttributedString(
                 string: "Previous paragraph gives the style context.\n",
                 attributes: contextual
@@ -314,10 +348,10 @@ final class EVCoreTextStylePreviewView: NSView {
         from values: [EVStyleProperty: EVStyleValue]
     ) -> NSParagraphStyle {
         let paragraph = NSMutableParagraphStyle()
-        if case let .float(value)? = values[.paragraphSpacingBefore] {
+        if case let .float(value)? = values[.blockMarginTop] {
             paragraph.paragraphSpacingBefore = CGFloat(value)
         }
-        if case let .float(value)? = values[.paragraphSpacingAfter] {
+        if case let .float(value)? = values[.blockMarginBottom] {
             paragraph.paragraphSpacing = CGFloat(value)
         }
         if case let .float(value)? = values[.paragraphFirstLineIndent] {
@@ -393,6 +427,7 @@ final class EVCoreTextStylePreviewView: NSView {
     }
 
     private func lineGeometry(in bounds: CGRect) -> [EVCoreTextStylePreviewLine] {
+        if let blockPreview { return blockPreview.lines(in: bounds) }
         if kind == .character {
             let line = CTLineCreateWithAttributedString(attributedContent)
             var ascent: CGFloat = 0

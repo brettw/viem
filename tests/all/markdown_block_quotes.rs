@@ -13,26 +13,26 @@ fn document(source: &str, format: Format) -> Document {
 #[test]
 fn quote_containers_project_bodies_and_keep_original_bytes() {
     for (source, expected, styles) in [
-        ("> first\n> second", "first second", vec!["Block quote"]),
+        ("> first\n> second", "first second", vec!["Paragraph"]),
         (
             "before\n> first\n> second\n\nafter",
             "before\nfirst second\nafter",
-            vec!["Paragraph", "Block quote", "Paragraph"],
+            vec!["Paragraph", "Paragraph", "Paragraph"],
         ),
         (
             "> first\nlazy\n>\n> second",
             "first lazy\nsecond",
-            vec!["Block quote", "Block quote"],
+            vec!["Paragraph", "Paragraph"],
         ),
         (
             "> outer\n>> inner\n> outer again",
             "outer\ninner\nouter again",
-            vec!["Block quote", "Block quote", "Block quote"],
+            vec!["Paragraph", "Paragraph", "Paragraph"],
         ),
         (
             "> quote\n# Heading",
             "quote\nHeading",
-            vec!["Block quote", "Heading1"],
+            vec!["Paragraph", "Heading1"],
         ),
     ] {
         let doc = document(source, Format::Markdown);
@@ -105,7 +105,7 @@ fn quote_assignment_is_local_and_restores_exact_source_on_removal_and_history() 
             assert_eq!(reopened.text(), doc.text());
             assert_eq!(
                 reopened.projection().blocks()[1].style,
-                "Block quote".into()
+                if format == Format::Markdown { "Paragraph" } else { "Block quote" }.into()
             );
             assert!(doc.undo());
             assert_eq!(doc.source_bytes(), source.as_bytes());
@@ -122,9 +122,9 @@ fn quote_assignment_is_local_and_restores_exact_source_on_removal_and_history() 
 fn quote_removal_preserves_body_structure_and_neighbor_boundaries() {
     for (source, expected) in [
         ("before\n> quote\n\nafter", "before\n\nquote\n\nafter"),
-        ("> # heading\n>\n> - item", "heading\n\nitem"),
+        ("> # heading\n>\n> - item", "> heading\n>\n> item"),
         ("> first\n>\n> second", "first\n\nsecond"),
-        ("> ```\n> > literal\n> ```", "\\> literal"),
+        ("> ```\n> > literal\n> ```", "> \\> literal"),
     ] {
         let mut doc = document(source, Format::Markdown);
         let before = doc.text().to_owned();
@@ -224,7 +224,8 @@ fn empty_quote_paragraph_has_a_valid_caret_and_can_return_to_plain_prose() {
         let mut doc = document("", format);
         doc.set_paragraph_style(0..0, "Block quote".into()).unwrap();
         assert_eq!(doc.source_bytes(), b"> ");
-        assert_eq!(doc.projection().blocks()[0].style, "Block quote".into());
+        assert_eq!(doc.projection().blocks()[0].style, if format == Format::Markdown { "Paragraph" } else { "Block quote" }.into());
+        assert_eq!(doc.projection().blocks()[0].quote_depth, 1);
         doc.text_point(doc.text().len()).unwrap();
         doc.set_paragraph_style(0..0, "Paragraph".into()).unwrap();
         assert_eq!(doc.source_bytes(), b"");

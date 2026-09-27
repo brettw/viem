@@ -334,7 +334,7 @@ fn code_enter_at_body_end_preserves_one_paragraph_and_exact_undo() {
 }
 
 #[test]
-fn assigning_paragraph_style_removes_canonical_bullet_without_source_regeneration() {
+fn assigning_paragraph_style_retains_list_container_without_source_regeneration() {
     let source = "+ First\n+ second\n\nTail";
     let mut document = open(source);
     let end = document.text().find("\nTail").unwrap();
@@ -342,7 +342,7 @@ fn assigning_paragraph_style_removes_canonical_bullet_without_source_regeneratio
         .set_paragraph_style(0..end, viem_core::document::StyleId::from("Heading2"))
         .unwrap();
     assert_eq!(document.text(), "First\nsecond\nTail");
-    assert_eq!(document.source_bytes(), b"## First\n## second\n\nTail");
+    assert_eq!(document.source_bytes(), b"+ ## First\n+ ## second\n\nTail");
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
 }

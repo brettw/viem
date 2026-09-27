@@ -194,6 +194,7 @@ pub(super) fn non_body(name: &str) -> bool {
 pub(super) struct State {
     pub character: CharacterProperties,
     pub paragraph: BlockProperties,
+    border_side: usize,
     hidden: bool,
     group_start: bool,
     uc: usize,
@@ -216,6 +217,7 @@ impl Default for State {
         Self {
             character: CharacterProperties::default(),
             paragraph: BlockProperties::default(),
+            border_side: 0,
             hidden: false,
             group_start: true,
             uc: 1,
@@ -241,7 +243,7 @@ pub(super) struct Tables {
     default_language: Option<String>,
     fonts: BTreeMap<i32, String>,
     charsets: BTreeMap<i32, i32>,
-    colors: Vec<Option<Color>>,
+    pub(super) colors: Vec<Option<Color>>,
 }
 /// A recognized document header is a direct child of the outer RTF group.
 /// Embedded or ignored destinations may contain arbitrary RTF-looking bytes;
@@ -487,6 +489,7 @@ pub(super) fn feature_control_tag(name: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, tables: &Tables) {
+    if super::rtf_styles::apply_box_control(&mut state.paragraph, name, number) { return; }
     let enabled = number.unwrap_or(1) != 0;
     let twips = number.map(|n| n as f32 / 20.0);
     match name {
@@ -648,8 +651,35 @@ pub(super) fn apply_control(state: &mut State, name: &str, number: Option<i32>, 
         "li" => state.paragraph.leading_indent = twips,
         "ri" => state.paragraph.trailing_indent = twips,
         "fi" => state.paragraph.first_line_indent = twips,
-        "sb" => state.paragraph.spacing_before = twips,
-        "sa" => state.paragraph.spacing_after = twips,
+        "brdrt" => state.border_side = 0,
+        "brdrr" => state.border_side = 1,
+        "brdrb" => state.border_side = 2,
+        "brdrl" => state.border_side = 3,
+        "brdrw" | "brdrnil" => {
+            let value = if name == "brdrnil" { Some(0.0) } else { twips.filter(|v| *v >= 0.0) };
+            match state.border_side {
+                0 => state.paragraph.border_top_width = value, 1 => state.paragraph.border_right_width = value,
+                2 => state.paragraph.border_bottom_width = value, _ => state.paragraph.border_left_width = value,
+            }
+        }
+        "brsp" => {
+            let value = twips.filter(|v| *v >= 0.0);
+            match state.border_side {
+                0 => state.paragraph.padding_top = value, 1 => state.paragraph.padding_right = value,
+                2 => state.paragraph.padding_bottom = value, _ => state.paragraph.padding_left = value,
+            }
+        }
+        "brdrcf" | "cbpat" => {
+            if let Some(color) = number.and_then(|n| usize::try_from(n).ok()).and_then(|i| tables.colors.get(i)).copied().flatten() {
+                if name == "cbpat" { state.paragraph.background = Some(color); }
+                else { match state.border_side {
+                    0 => state.paragraph.border_top_color = Some(color), 1 => state.paragraph.border_right_color = Some(color),
+                    2 => state.paragraph.border_bottom_color = Some(color), _ => state.paragraph.border_left_color = Some(color),
+                } }
+            }
+        }
+        "sb" => state.paragraph.margin_top = twips,
+        "sa" => state.paragraph.margin_bottom = twips,
         "ql" => state.paragraph.alignment = Some(ParagraphAlignment::Start),
         "qc" => state.paragraph.alignment = Some(ParagraphAlignment::Center),
         "qr" => state.paragraph.alignment = Some(ParagraphAlignment::End),
@@ -1153,7 +1183,9 @@ pub(super) fn project(
         }
     }
     flush(&mut pending_unicode, &mut builder);
-    builder.finish(start, end)
+    let mut projection = builder.finish(start, end);
+    projection.install_implicit_list_containers();
+    projection
 }
 
 /// Canonical list controls cover the selected paragraph and its terminator,

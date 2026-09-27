@@ -64,7 +64,7 @@ impl Document {
             .projection()
             .blocks_for_region(&(end..end))
             .iter()
-            .any(|block| block.range == (end..end) && block.style.0 == "Block quote")
+            .any(|block| block.range == (end..end) && (block.style.0 == "Block quote" || block.quote_depth > 0))
         {
             return Err(DocumentError::VerificationFailed.into());
         }

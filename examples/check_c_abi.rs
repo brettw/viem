@@ -72,6 +72,7 @@ _Static_assert(offsetof(ViemDirectStyleEditV1, expected_selection) == {direct_st
 _Static_assert(offsetof(ViemDirectStyleEditV1, value) == {direct_style_value}, "direct style value offset");
 static ViemStatus (*direct_style)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_style;
 static ViemStatus (*decoration_state)(ViemCoreHandle, ViemViewId, uint32_t, uint32_t *) = viem_core_view_decoration_state;
+static ViemStatus (*style_defaults)(ViemCoreHandle, uint64_t, const uint8_t *, uint64_t, ViemStyleDefaultsDiagnosticCallback, void *) = viem_core_initialize_style_defaults;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 == 3u,
     "provider ABI v3");

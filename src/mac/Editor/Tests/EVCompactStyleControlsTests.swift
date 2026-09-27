@@ -231,10 +231,10 @@ final class EVCompactStyleControlsTests: XCTestCase {
                     let declared = initial.properties.values.filter(\.isDeclared).map(\.property)
                     XCTAssertFalse(declared.isEmpty, "\(type) / \(id) must expose its default appearance")
                     if id == "Heading1" {
-                        XCTAssertEqual(Set(declared), [.characterSize, .characterWeight, .paragraphSpacingBefore, .paragraphSpacingAfter])
+                        XCTAssertEqual(Set(declared), [.characterSize, .characterWeight, .blockMarginTop, .blockMarginBottom])
                         XCTAssertEqual(try control(NSTextField.self, label: "Size", in: editor.view).floatValue, 24)
-                        XCTAssertEqual(try control(NSTextField.self, label: "Space before", in: editor.view).floatValue, 10)
-                        XCTAssertEqual(try control(NSTextField.self, label: "Space after", in: editor.view).floatValue, 5)
+                        XCTAssertEqual(try control(NSTextField.self, label: "Margin top", in: editor.view).floatValue, 10)
+                        XCTAssertEqual(try control(NSTextField.self, label: "Margin bottom", in: editor.view).floatValue, 5)
                     }
                     for property in declared {
                         let checkbox = try control(NSButton.self, label: "Override \(property.displayName.lowercased())", in: editor.view)
@@ -931,7 +931,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testEveryNumericControlHasAnAdjacentNativeStepperAndInheritedValue() throws {
         let (backend, surface, editor, _) = try makeEditor(html: true)
         defer { withExtendedLifetime(surface) {} }
-        let fields = ["Size", "Tracking", "Start indent", "End indent", "First line", "Space before", "Space after", "Line spacing value"]
+        let fields = ["Size", "Tracking", "Start indent", "End indent", "First line", "Margin top", "Margin bottom", "Line spacing value"]
         for title in fields {
             let field = try control(NSTextField.self, label: title, in: editor.view)
             let stepper = try control(EVStyleStepper.self, label: "Adjust \(title.lowercased())", in: editor.view)
@@ -1040,10 +1040,10 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let lineValue = try control(NSTextField.self, label: "Line spacing value", in: editor.view)
         let line = try control(EVStyleStepper.self, label: "Adjust line spacing value", in: editor.view)
         let unit = try control(NSTextField.self, label: "Line spacing unit", in: editor.view)
-        let spaceBefore = try control(NSTextField.self, label: "Space before", in: editor.view)
-        let spaceAfter = try control(NSTextField.self, label: "Space after", in: editor.view)
-        XCTAssertEqual(spaceBefore.constraints.first { $0.firstAttribute == .width }?.constant, 56)
-        XCTAssertEqual(spaceAfter.constraints.first { $0.firstAttribute == .width }?.constant, 56)
+        let spaceBefore = try control(NSTextField.self, label: "Margin top", in: editor.view)
+        let spaceAfter = try control(NSTextField.self, label: "Margin bottom", in: editor.view)
+        XCTAssertEqual(spaceBefore.constraints.first { $0.firstAttribute == .width }?.constant, 45)
+        XCTAssertEqual(spaceAfter.constraints.first { $0.firstAttribute == .width }?.constant, 45)
         XCTAssertEqual(kind.titleOfSelectedItem, "Normal")
         XCTAssertEqual(lineValue.stringValue, "1")
         XCTAssertTrue(line.isEnabled)

@@ -89,6 +89,7 @@ final class EVInheritedStyleControl: NSStackView {
 final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDelegate {
     let characterView = NSStackView()
     let paragraphView = NSStackView()
+    let blockView = NSStackView()
     var onMutations: (([EVStyleMutation]) -> Void)?
     var onEditBegan: (() -> Void)?
     var onEditEnded: (() -> Void)?
@@ -241,11 +242,37 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             control: overrideGroup(.paragraphLineSpacing, control: lineControls),
             property: .paragraphLineSpacing
         )
-        let spacing = row([
-            numeric(.paragraphSpacingBefore, title: "Space before", icon: .before, width: 56),
-            numeric(.paragraphSpacingAfter, title: "Space after", icon: .after, width: 56), line,
-        ])
-        configure(paragraphView, rows: [paraToolbar, separator(), indents, spacing])
+        configure(paragraphView, rows: [paraToolbar, separator(), indents, row([line, NSView()])])
+
+        // Each row describes one physical side of the CSS box. Reuse the same
+        // declaration-aware native controls and color chooser as text highlight.
+        let background = row([color(.blockBackground, title: "Background Color"), NSView()])
+        let sides: [(String, EVStyleProperty, EVStyleProperty, EVStyleProperty, EVStyleProperty)] = [
+            ("Top", .blockMarginTop, .blockPaddingTop, .blockBorderTopWidth, .blockBorderTopColor),
+            ("Right", .blockMarginRight, .blockPaddingRight, .blockBorderRightWidth, .blockBorderRightColor),
+            ("Bottom", .blockMarginBottom, .blockPaddingBottom, .blockBorderBottomWidth, .blockBorderBottomColor),
+            ("Left", .blockMarginLeft, .blockPaddingLeft, .blockBorderLeftWidth, .blockBorderLeftColor),
+        ]
+        let sideRows = sides.map { side, margin, padding, border, borderColor in
+            let label = NSTextField(labelWithString: side)
+            label.font = .systemFont(ofSize: 11, weight: .medium)
+            label.widthAnchor.constraint(equalToConstant: 42).isActive = true
+            return row([label,
+                numeric(margin, title: margin.displayName, width: 45, showsLabel: false),
+                numeric(padding, title: padding.displayName, width: 45, showsLabel: false),
+                numeric(border, title: border.displayName, width: 45, showsLabel: false),
+                color(borderColor, title: "", showsLabel: false), NSView()], spacing: 12)
+        }
+        let columns = row([NSTextField(labelWithString: ""),
+            NSTextField(labelWithString: "Margin"), NSTextField(labelWithString: "Padding"),
+            NSTextField(labelWithString: "Border weight"), NSTextField(labelWithString: "Color"), NSView()], spacing: 12)
+        for (index, width) in [CGFloat(42), 109, 109, 109, 52].enumerated() {
+            columns.arrangedSubviews[index].widthAnchor.constraint(equalToConstant: width).isActive = true
+            (columns.arrangedSubviews[index] as? NSTextField)?.font = .systemFont(ofSize: 10, weight: .medium)
+        }
+        configure(blockView, rows: [background, columns] + sideRows)
+        blockView.spacing = 5
+        blockView.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     }
 
     func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
@@ -501,7 +528,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let positive = property == .characterSize || relativeLineSpacing
         control.increment = relativeLineSpacing || property == .characterLetterSpacing ? 0.1 : 1
         control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), sourceFormat == .rtf && property == .characterSize ? 0.5 : 0.1)
-            : property == .paragraphLineSpacing ? 0 : -Double(Float.greatestFiniteMagnitude)
+            : property == .paragraphLineSpacing || EVStyleProperty.nonnegativeBlockProperties.contains(property) ? 0 : -Double(Float.greatestFiniteMagnitude)
         control.maxValue = Double(Float.greatestFiniteMagnitude)
         control.doubleValue = value
         control.isEnabled = enabled
@@ -604,7 +631,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
 
     private func canEdit(_ property: EVStyleProperty) -> Bool {
-        editable && (!EVStyleProperty.paragraphProperties.contains(property) || definition?.kind == .paragraph)
+        editable && (!EVStyleProperty.paragraphProperties.contains(property) || definition?.kind != .character)
+            && (!EVStyleProperty.blockProperties.contains(property) || definition?.kind != .character)
     }
 
     private func isOverridden(_ property: EVStyleProperty) -> Bool {
@@ -615,9 +643,13 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         guard canEdit(property), !isOverridden(property) else { return }
         var value = definition?.properties[property]?.effective
         if property == .characterScriptPosition, value == nil { value = .scriptPosition(0) }
-        if property == .characterBackground, value == nil {
+        if [.characterBackground, .blockBackground].contains(property), value == nil {
             value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0))
         }
+        if EVStyleProperty.blockBorderColors.contains(property), value == nil {
+            value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 1))
+        }
+        if EVStyleProperty.blockProperties.contains(property), value == nil { value = .float(0) }
         if property == .characterForeground, definition?.properties[property]?.usesThemeDefault == true {
             let color = theme.foreground
             value = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))
@@ -640,16 +672,17 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         else { send([.clearDeclaration(property)]) }
     }
 
-    private func color(_ property: EVStyleProperty, title: String) -> NSView {
+    private func color(_ property: EVStyleProperty, title: String, showsLabel: Bool = true) -> NSView {
         let well = EVStyleColorWell(frame: .zero)
         well.target = self
         well.action = #selector(colorChanged(_:))
         well.tag = Int(property.rawValue)
-        well.setAccessibilityLabel(property == .characterForeground ? "Text color" : "Background color")
+        well.setAccessibilityLabel(property == .characterForeground ? "Text color" : property == .characterBackground ? "Background color" : property.displayName)
         well.widthAnchor.constraint(equalToConstant: 31).isActive = true
         well.heightAnchor.constraint(equalToConstant: 27).isActive = true
         wells[property] = well
-        return labeled(title, control: overrideGroup(property, control: well), property: property)
+        let controls = overrideGroup(property, control: well)
+        return showsLabel ? labeled(title, control: controls, property: property) : controls
     }
     private func direction(_ property: EVStyleProperty, title: String) -> NSView {
         let popup = NSPopUpButton()
@@ -909,7 +942,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             send([.setDeclaration(property, .percentage(value))])
             return
         }
-        guard let value = Float(field.stringValue), value.isFinite, property != .characterSize || value > 0 else { field.textColor = .systemRed; steppers[property]?.isEnabled = false; hasInvalidDraft = true; return }
+        guard let value = Float(field.stringValue), value.isFinite, (property != .characterSize || value > 0), (!EVStyleProperty.nonnegativeBlockProperties.contains(property) || value >= 0) else { field.textColor = .systemRed; steppers[property]?.isEnabled = false; hasInvalidDraft = true; return }
         field.textColor = .labelColor
         hasInvalidDraft = false
         send([.setDeclaration(property, .float(value))])

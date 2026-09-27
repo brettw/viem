@@ -59,7 +59,7 @@ fn quote_menu_at_end_inserts_an_empty_paragraph_and_preserves_existing_prose() {
         let blocks = core.document().projection().blocks();
         assert_eq!(blocks.len(), 2, "{source}: {blocks:?}");
         assert_eq!(blocks[0].style.0, "Paragraph");
-        assert_eq!(blocks[1].style.0, "Block quote");
+        assert_eq!(blocks[1].quote_depth, 1);
         assert_eq!(blocks[1].range, after.len()..after.len());
         let cursor = core.command_state(view).unwrap().cursor();
         assert_eq!(cursor, after.len());
@@ -72,7 +72,7 @@ fn quote_menu_at_end_inserts_an_empty_paragraph_and_preserves_existing_prose() {
         let quoted = core.document().source_bytes();
         let reopened = Document::from_bytes(quoted.clone(), Encoding::Utf8, format).unwrap();
         assert_eq!(reopened.text(), after);
-        assert_eq!(reopened.projection().blocks()[1].style.0, "Block quote");
+        assert_eq!(reopened.projection().blocks()[1].quote_depth, 1);
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
             .unwrap();
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u'))))
@@ -87,8 +87,8 @@ fn quote_menu_at_end_inserts_an_empty_paragraph_and_preserves_existing_prose() {
             .unwrap();
         assert_eq!(core.document().text(), format!("{after}العربية"));
         assert_eq!(
-            core.document().projection().blocks()[1].style.0,
-            "Block quote"
+            core.document().projection().blocks()[1].quote_depth,
+            1
         );
     }
 }
@@ -126,9 +126,8 @@ fn quote_menu_uses_an_existing_empty_paragraph() {
                 .blocks()
                 .last()
                 .unwrap()
-                .style
-                .0,
-            "Block quote"
+                .quote_depth,
+            1
         );
         if !before.is_empty() {
             assert_eq!(

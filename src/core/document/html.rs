@@ -347,6 +347,7 @@ struct Frame {
     source_inner_start: usize,
     list_container_only: bool,
     styled_paragraph: bool,
+    container: Option<usize>,
 }
 impl Default for Frame {
     fn default() -> Self {
@@ -367,6 +368,7 @@ impl Default for Frame {
             source_inner_start: 0,
             list_container_only: false,
             styled_paragraph: false,
+            container: None,
         }
     }
 }
@@ -551,6 +553,7 @@ fn project_tokens_with_style_context(
             .retain_configuration_deletions(configuration);
     }
     let mut stack = vec![Frame::default()];
+    let mut owners: Vec<super::containers::SourceContainer> = Vec::new();
     let mut pending_break: Option<Range<usize>> = None;
     let mut pending_space: Option<Range<usize>> = None;
     let mut pending_space_style = CharacterProperties::default();
@@ -647,6 +650,9 @@ fn project_tokens_with_style_context(
             TokenKind::Tag(tag) => {
                 if tag.end {
                     if let Some(index) = stack.iter().rposition(|f| f.name == tag.name) {
+                        for closed in &stack[index..] {
+                            if let Some(owner) = closed.container { owners[owner].range.end = builder.source_range(token.range.clone()).end; }
+                        }
                         let was_hidden = stack.last().unwrap().hidden;
                         let was_opaque = stack.last().unwrap().opaque;
                         let closed = &stack[index];
@@ -700,6 +706,13 @@ fn project_tokens_with_style_context(
                 let mut frame = stack.last().cloned().unwrap_or_default();
                 let inherited_paragraph_direction = frame.paragraph.base_direction;
                 frame.name = tag.name.clone();
+                frame.container = None;
+                if block(&tag.name) { frame.paragraph.clear_box(); }
+                let container_kind = match tag.name.as_str() {
+                    "blockquote" => Some(super::ContainerKind::Quote), "pre" => Some(super::ContainerKind::CodeBlock),
+                    "ul" => Some(super::ContainerKind::List { ordered: false }), "ol" => Some(super::ContainerKind::List { ordered: true }),
+                    "li" => Some(super::ContainerKind::ListItem), _ => None,
+                };
                 frame.list_container_only =
                     tag.name == "li" && container_items.contains(&token.range.start);
                 frame.hidden |= hidden(&tag.name);
@@ -744,7 +757,7 @@ fn project_tokens_with_style_context(
                     tag.attribute("class").and_then(|classes|
                         super::html_styles::select_class(&builder.style_sheet, classes, false))
                 }).flatten();
-                frame.styled_paragraph = assigned_paragraph.is_some();
+                frame.styled_paragraph = assigned_paragraph.as_ref().is_some_and(|style| builder.style_sheet.block_style(style).is_some_and(|definition| !definition.role.is_container()));
                 let paragraph_element = (paragraph(&tag.name)
                     || frame.styled_paragraph
                     || tag.name == "blockquote"
@@ -841,38 +854,15 @@ fn project_tokens_with_style_context(
                     }
                     _ => {}
                 }
-                if paragraph_element {
-                    frame.paragraph_style = stack
-                        .iter()
-                        .any(|ancestor| ancestor.name == "blockquote")
-                        .then(|| super::StyleId::from("Block quote"));
-                }
-                if tag.name == "blockquote" {
-                    frame.paragraph_style = Some("Block quote".into());
-                }
+                if paragraph_element { frame.paragraph_style = None; }
                 if tag.name == "pre" {
                     frame.preserve_whitespace = true;
                     frame.preserve_newlines = true;
-                    if frame
-                        .paragraph_style
-                        .as_ref()
-                        .is_some_and(|style| style.0 == "Block quote")
-                    {
-                        frame.named_character = Some("Code".into());
-                    } else {
-                        frame.paragraph_style = Some("Code Block".into());
-                    }
+                    frame.paragraph_style = Some("Code Block".into());
                 } else if tag.name == "code" {
                     frame.named_character = Some("Code".into());
-                } else if containing_item.is_some()
-                    && tag.name.len() == 2
-                    && tag.name.starts_with('h')
-                {
-                    frame.paragraph_style = Some(
-                        format!("Heading{}", tag.name.as_bytes()[1] - b'0')
-                            .as_str()
-                            .into(),
-                    );
+                } else if containing_item.is_some() && tag.name.len() == 2 && tag.name.starts_with('h') {
+                    frame.paragraph_style = Some(format!("Heading{}", tag.name.as_bytes()[1] - b'0').as_str().into());
                 }
                 if let Some(classes) = tag.attribute("class") {
                     if paragraph(&tag.name) || frame.styled_paragraph {
@@ -898,9 +888,6 @@ fn project_tokens_with_style_context(
                 if tag.attribute("data-viem-character") == Some("none") {
                     frame.named_character = None;
                 }
-                if paragraph_element && stack.iter().any(|ancestor| ancestor.name == "blockquote") {
-                    frame.paragraph_style = Some("Block quote".into());
-                }
                 if frame.paragraph_style.is_none() {
                     if let BlockKind::Heading(level) = frame.kind {
                         if builder
@@ -914,7 +901,12 @@ fn project_tokens_with_style_context(
                     }
                 }
                 if let Some(css) = tag.attribute("style") {
-                    apply_css(css, &mut frame.character, &mut frame.paragraph);
+                    if block(&tag.name) {
+                        apply_css(css, &mut frame.character, &mut frame.paragraph);
+                    } else {
+                        // Inline declarations never change the containing block's box.
+                        apply_css(css, &mut frame.character, &mut BlockProperties::default());
+                    }
                     for (name, value) in cascade_declarations(css) {
                         if name.eq_ignore_ascii_case("white-space") {
                             match value.trim().to_ascii_lowercase().as_str() {
@@ -939,6 +931,28 @@ fn project_tokens_with_style_context(
                             }
                         }
                     }
+                }
+                if block(&tag.name) && frame.paragraph.background.is_some() {
+                    frame.character.background = stack.last().and_then(|parent| parent.character.background);
+                }
+                if let Some(kind) = container_kind.filter(|_| !frame.hidden && !frame.opaque) {
+                    let mut owner = super::containers::SourceContainer::new(builder.source_range(token.range.clone()).start..end, kind);
+                    owner.owns_empty_end = true;
+                    let mut own_character = CharacterProperties::default();
+                    let mut own_paragraph = BlockProperties::default();
+                    if let Some(css) = tag.attribute("style") { apply_css(css, &mut own_character, &mut own_paragraph); }
+                    own_character.background = None;
+                    owner.direct_formatting = super::BlockDirectFormatting::shared(own_paragraph, own_character);
+                    if let Some(style) = assigned_paragraph.as_ref().filter(|style| builder.style_sheet.block_style(style).is_some_and(|definition| definition.role == kind.style_role())) {
+                        owner.style = style.clone();
+                        frame.paragraph_style = (kind == super::ContainerKind::CodeBlock).then(|| "Code Block".into());
+                    }
+                    frame.container = Some(owners.len()); owners.push(owner);
+                    // Box declarations belong to this owner, not to each of its
+                    // paragraph descendants. Inherited text properties remain.
+                    frame.paragraph.clear_box();
+                    frame.paragraph.leading_indent = None;
+                    frame.paragraph.trailing_indent = None;
                 }
                 if let Some(lang) = tag.attribute("lang").filter(|s| {
                     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -1079,6 +1093,7 @@ fn project_tokens_with_style_context(
         }
     }
     let mut result = builder.finish(start, end);
+    result.install_source_containers(owners);
     result.install_html_scope_index(scope_index);
     super::links::style_html_links(&mut result, input, &lexical_tokens);
     result
@@ -2189,6 +2204,77 @@ fn font_features(value: &str) -> Option<BTreeMap<String, u32>> {
     }
     Some(features)
 }
+fn css_box_sides<T: Clone>(values: &[T]) -> Option<[T; 4]> {
+    Some(match values {
+        [all] => [all.clone(), all.clone(), all.clone(), all.clone()],
+        [vertical, horizontal] => [vertical.clone(), horizontal.clone(), vertical.clone(), horizontal.clone()],
+        [top, horizontal, bottom] => [top.clone(), horizontal.clone(), bottom.clone(), horizontal.clone()],
+        [top, right, bottom, left] => [top.clone(), right.clone(), bottom.clone(), left.clone()],
+        _ => return None,
+    })
+}
+
+/// Apply the physical box subset supported by the native block layout. Unsupported
+/// CSS remains in source but never receives an invented interpretation.
+fn apply_box_css(key: &str, value: &str, block: &mut BlockProperties) -> bool {
+    let words = split_css(value, ' ').into_iter().map(str::trim).filter(|v| !v.is_empty()).collect::<Vec<_>>();
+    let nonnegative = |value: &str| length(value).filter(|v| *v >= 0.0);
+    macro_rules! sides { ($field:ident, $top:ident, $right:ident, $bottom:ident, $left:ident, $parse:expr) => {
+        if let Some(values) = words.iter().map(|value| ($parse)(value)).collect::<Option<Vec<_>>>().and_then(|values| css_box_sides(&values)) {
+            [block.$top, block.$right, block.$bottom, block.$left] = values.map(Some);
+        }
+    }; }
+    match key {
+        "margin" => sides!(margin, margin_top, margin_right, margin_bottom, margin_left, length),
+        "padding" => sides!(padding, padding_top, padding_right, padding_bottom, padding_left, nonnegative),
+        "border-width" => sides!(border, border_top_width, border_right_width, border_bottom_width, border_left_width, nonnegative),
+        "border-color" => sides!(border, border_top_color, border_right_color, border_bottom_color, border_left_color, color),
+        "margin-top" => { if let Some(v) = length(value) { block.margin_top = Some(v); } },
+        "padding-top" => { if let Some(v) = nonnegative(value) { block.padding_top = Some(v); } },
+        "border-top-width" => { if let Some(v) = nonnegative(value) { block.border_top_width = Some(v); } },
+        "border-top-color" => { if value == "currentcolor" { block.border_top_color = None; } else if let Some(v) = color(value) { block.border_top_color = Some(v); } },
+        "border-top-style" if matches!(value, "none" | "hidden") => block.border_top_width = Some(0.0),
+        "margin-right" => { if let Some(v) = length(value) { block.margin_right = Some(v); } },
+        "padding-right" => { if let Some(v) = nonnegative(value) { block.padding_right = Some(v); } },
+        "border-right-width" => { if let Some(v) = nonnegative(value) { block.border_right_width = Some(v); } },
+        "border-right-color" => { if value == "currentcolor" { block.border_right_color = None; } else if let Some(v) = color(value) { block.border_right_color = Some(v); } },
+        "border-right-style" if matches!(value, "none" | "hidden") => block.border_right_width = Some(0.0),
+        "margin-bottom" => { if let Some(v) = length(value) { block.margin_bottom = Some(v); } },
+        "padding-bottom" => { if let Some(v) = nonnegative(value) { block.padding_bottom = Some(v); } },
+        "border-bottom-width" => { if let Some(v) = nonnegative(value) { block.border_bottom_width = Some(v); } },
+        "border-bottom-color" => { if value == "currentcolor" { block.border_bottom_color = None; } else if let Some(v) = color(value) { block.border_bottom_color = Some(v); } },
+        "border-bottom-style" if matches!(value, "none" | "hidden") => block.border_bottom_width = Some(0.0),
+        "margin-left" => { if let Some(v) = length(value) { block.margin_left = Some(v); } },
+        "padding-left" => { if let Some(v) = nonnegative(value) { block.padding_left = Some(v); } },
+        "border-left-width" => { if let Some(v) = nonnegative(value) { block.border_left_width = Some(v); } },
+        "border-left-color" => { if value == "currentcolor" { block.border_left_color = None; } else if let Some(v) = color(value) { block.border_left_color = Some(v); } },
+        "border-left-style" if matches!(value, "none" | "hidden") => block.border_left_width = Some(0.0),
+        "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
+            let none = words.iter().any(|value| matches!(*value, "none" | "hidden"));
+            let solid = words.contains(&"solid");
+            if !none && !solid { return true; }
+            let width = if none { Some(0.0) } else { words.iter().find_map(|value| nonnegative(value)) };
+            let color = words.iter().find_map(|value| color(value));
+            for side in ["top", "right", "bottom", "left"] {
+                if key != "border" && key != format!("border-{side}") { continue; }
+                match side {
+                    "top" => { block.border_top_width = width; block.border_top_color = color; },
+                    "right" => { block.border_right_width = width; block.border_right_color = color; },
+                    "bottom" => { block.border_bottom_width = width; block.border_bottom_color = color; },
+                    "left" => { block.border_left_width = width; block.border_left_color = color; },
+                    _ => unreachable!(),
+                }
+            }
+        }
+        "border-style" if matches!(value, "none" | "hidden") => {
+            block.border_top_width = Some(0.0); block.border_right_width = Some(0.0);
+            block.border_bottom_width = Some(0.0); block.border_left_width = Some(0.0);
+        }
+        _ => return false,
+    }
+    true
+}
+
 pub(super) fn apply_css(
     css: &str,
     character: &mut CharacterProperties,
@@ -2197,6 +2283,7 @@ pub(super) fn apply_css(
     for (key, value) in cascade_declarations(css) {
         let value = value.as_str();
         let lower = value.to_ascii_lowercase();
+        if apply_box_css(key.as_str(), &lower, paragraph) { continue; }
         match key.as_str() {
             "font-family" => {
                 if let Some(values) = font_families(value) {
@@ -2237,9 +2324,10 @@ pub(super) fn apply_css(
                     character.foreground = Some(c);
                 }
             }
-            "background-color" => {
+            "background-color" | "background" => {
                 if let Some(c) = color(value) {
                     character.background = Some(c);
+                    paragraph.background = Some(c);
                 }
             }
             "text-decoration" | "text-decoration-line" => {
@@ -2285,12 +2373,12 @@ pub(super) fn apply_css(
             }
             "margin-block-start" => {
                 if let Some(n) = length(&lower) {
-                    paragraph.spacing_before = Some(n);
+                    paragraph.margin_top = Some(n);
                 }
             }
             "margin-block-end" => {
                 if let Some(n) = length(&lower) {
-                    paragraph.spacing_after = Some(n);
+                    paragraph.margin_bottom = Some(n);
                 }
             }
             "margin-inline-start" => {

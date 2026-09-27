@@ -1,5 +1,5 @@
 use viem_core::document::{
-    ConversionWarning, Document, Encoding, Format, FormatOperation, ModelRequest, ProjectionWorkScope,
+    BlockKind, ConversionWarning, Document, Encoding, Format, FormatOperation, ModelRequest, ProjectionWorkScope,
     StyleApplication, TextEdit,
 };
 fn open(source: &str, format: Format) -> Document {
@@ -171,7 +171,7 @@ fn large_fenced_code_edit_is_local_and_fresh_projection_matches() {
 #[test]
 fn nested_lists_and_code_delimiters_survive_supported_conversion() {
     let mut document = open(
-        "- parent\n  4. child\n- tail\n\nUse ``a`b``.",
+        "- parent\n\n  4. child\n- tail\n\nUse ``a`b``.",
         Format::Markdown,
     );
     convert(&mut document, Format::Html);
@@ -180,7 +180,7 @@ fn nested_lists_and_code_delimiters_survive_supported_conversion() {
         .unwrap()
         .contains(
             "<ul><li>parent<ol start=\"4\"><li value=\"4\">child</li></ol></li><li>tail</li></ul>"
-        ));
+        ), "{}", String::from_utf8_lossy(&document.source_bytes()));
     convert(&mut document, Format::Markdown);
     assert_eq!(document.text(), "parent\nchild\ntail\nUse a`b.");
     assert!(String::from_utf8(document.source_bytes())
@@ -495,7 +495,7 @@ fn quotes_and_supported_markup_convert_semantically_in_both_directions() {
     let visible = document.text().to_owned();
     convert(&mut document, Format::Markdown);
     assert_eq!(document.text(), visible);
-    assert_eq!(document.projection().blocks()[0].style.0, "Block quote");
+    assert_eq!(document.projection().blocks()[0].quote_depth, 1);
 }
 
 #[test]
@@ -764,7 +764,7 @@ fn quoted_literal_block_markers_remain_visible_when_converting_to_markdown() {
         convert(&mut document, Format::Markdown);
         assert_eq!(document.text(), text);
         assert_eq!(document.projection().blocks().len(), 1);
-        assert_eq!(document.projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(document.projection().blocks()[0].quote_depth, 1);
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
@@ -794,5 +794,60 @@ fn object_fallback_text_cannot_close_surrounding_markdown_code_delimiters() {
         );
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn nested_quote_list_and_code_owners_survive_cross_format_conversion() {
+    for (source, from, target) in [
+        ("> First paragraph\n>\n> Second paragraph\n>\n> > ## Nested heading\n> >\n> > ```\n> > code\n> >\n> > more\n> > ```\n>\n> - first\n> - second\n\nOutside", Format::Markdown, Format::Html),
+        ("<blockquote><p>one</p><blockquote><h2>two</h2><pre><code>a\n\nb</code></pre></blockquote><ol start='3'><li><p>first</p><p>second</p><blockquote><p>quoted item</p></blockquote></li><li>last</li></ol></blockquote><p>end</p>", Format::Html, Format::Markdown),
+    ] {
+        let mut document = open(source, from);
+        let before = document.text().to_owned();
+        let paths = |document: &Document| document.projection().blocks().iter().map(|block|
+            block.containers.iter().map(|m| m.container.kind).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let expected = paths(&document);
+        convert(&mut document, target);
+        assert_eq!(document.text(), before, "{source}\n{}", String::from_utf8_lossy(&document.source_bytes()));
+        assert_eq!(paths(&document), expected, "{}", String::from_utf8_lossy(&document.source_bytes()));
+        convert(&mut document, from);
+        assert_eq!(document.text(), before);
+        assert_eq!(paths(&document), expected);
+        assert!(document.undo());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn quote_conversion_keeps_one_owner_for_multiple_paragraphs_and_separate_sibling_quotes() {
+    let mut document = open("<blockquote><p>first</p><p>second</p></blockquote><blockquote><p>third</p></blockquote>", Format::Html);
+    convert(&mut document, Format::Markdown);
+    let blocks = document.projection().blocks();
+    assert_eq!(document.text(), "first\nsecond\nthird");
+    assert_eq!(blocks[0].containers[0].container.id, blocks[1].containers[0].container.id);
+    assert_ne!(blocks[1].containers[0].container.id, blocks[2].containers[0].container.id);
+    convert(&mut document, Format::Html);
+    let source = String::from_utf8(document.source_bytes()).unwrap();
+    assert!(source.contains("<blockquote><p>first</p><p>second</p></blockquote>"), "{source}");
+    assert_eq!(source.matches("<blockquote>").count(), 2);
+}
+
+#[test]
+fn numbered_container_after_prose_retains_its_start_when_converting_to_markdown() {
+    for source in [
+        "<p>Introduction</p><ol start='3'><li>third</li><li>fourth</li></ol>",
+        "<blockquote><p>Introduction</p><ol start='3'><li>third</li><li>fourth</li></ol></blockquote>",
+        "<ul><li><p>Introduction</p><ol start='3'><li>third</li><li>fourth</li></ol></li></ul>",
+    ] {
+        let mut document = open(source, Format::Html);
+        let before = document.text().to_owned();
+        convert(&mut document, Format::Markdown);
+        let markdown = String::from_utf8(document.source_bytes()).unwrap();
+        assert_eq!(document.text(), before, "{markdown}");
+        let blocks = document.projection().blocks();
+        assert!(matches!(blocks[1].kind, BlockKind::ListItem { ordinal: 3, .. }), "{markdown}");
+        assert!(matches!(blocks[2].kind, BlockKind::ListItem { ordinal: 4, .. }), "{markdown}");
     }
 }

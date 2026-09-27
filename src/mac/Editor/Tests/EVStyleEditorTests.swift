@@ -97,7 +97,7 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertEqual(editor.inspection.styleCount, try backend.styleSheetSnapshot().definitions.count)
         XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
         XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
-        XCTAssertEqual(editor.inspection.paragraphPropertyCount, 8)
+        XCTAssertEqual(editor.inspection.paragraphPropertyCount, 6)
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
         XCTAssertTrue(editor.inspection.nameEditable)
@@ -577,7 +577,7 @@ final class EVStyleEditorTests: XCTestCase {
             accuracy: 0.01
         )
 
-        XCTAssertTrue(editor.setPropertyForTesting(.paragraphSpacingBefore, value: .float(24)))
+        XCTAssertTrue(editor.setPropertyForTesting(.blockMarginTop, value: .float(24)))
         let spacedBefore = editor.previewInspectionForTesting(layoutSize: layoutSize)
         XCTAssertNotEqual(
             try XCTUnwrap(spacedBefore.currentStyleLines.first).origin.y,
@@ -602,7 +602,7 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertNotEqual(exactLineGap, priorLineGap, accuracy: 0.01)
         XCTAssertEqual(exactLineGap, 34, accuracy: 0.5)
 
-        XCTAssertTrue(editor.setPropertyForTesting(.paragraphSpacingAfter, value: .float(22)))
+        XCTAssertTrue(editor.setPropertyForTesting(.blockMarginBottom, value: .float(22)))
         let spacedAfter = editor.previewInspectionForTesting(layoutSize: layoutSize)
         let beforeFollowing = try XCTUnwrap(exactLineSpacing.lines.last(where: { !$0.isCurrentStyle }))
         let afterFollowing = try XCTUnwrap(spacedAfter.lines.last(where: { !$0.isCurrentStyle }))

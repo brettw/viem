@@ -10,6 +10,8 @@ use std::{
     ops::Range,
 };
 use unicode_segmentation::UnicodeSegmentation;
+#[path = "conversion_containers.rs"]
+mod containers;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ConversionLoss {
@@ -316,7 +318,9 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
     } else {
         semantic.blocks()
     };
-    let mut index = 0;
+    let container_conversion = !to_text && blocks.iter().any(|block| !block.containers.is_empty());
+    if container_conversion { containers::write(&semantic, blocks, target, &mut losses, &mut output); }
+    let mut index = if container_conversion { blocks.len() } else { 0 };
     while index < blocks.len() {
         let block = &blocks[index];
         if index > 0 {
@@ -372,7 +376,7 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         let quoted = block.style.0 == "Block quote";
         let (open, close) = match &block.kind {
             _ if to_text => {
-                if block.kind != BlockKind::Paragraph || block.style.0 != "Paragraph" {
+                if block.kind != BlockKind::Paragraph || block.style.0 != "Paragraph" || !block.containers.is_empty() {
                     losses.insert(ConversionLoss::Styling);
                 }
                 (String::new(), String::new())

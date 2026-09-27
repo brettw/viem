@@ -314,7 +314,8 @@ fn generated_native_code_style_edits_recompute_relative_source_formatting_withou
             .apply_style_request(StyleModelRequest::new(
                 document.id(),
                 document.revision(),
-                StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(edit)),
+                if character { StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(edit)) }
+                else { StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition { origin: StyleDefinitionOrigin::SourceBacked, edit }) },
             ))
             .unwrap();
         let after =

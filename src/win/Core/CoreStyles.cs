@@ -199,11 +199,11 @@ internal sealed unsafe partial class CoreView
         using var arena = new NativeArena(); var slice = arena.Utf8(id); var identity = expected ?? Styles().Identity;
         Apply(o => { var r = New<ViemAssignStyleV1>(); r.@namespace = space; r.identity = identity; r.style_id = slice; r.expected_selection = LogicalSelection(); return viem_core_view_assign_style(Document.Handle, Id, &r, o); });
     }
-    public string CreateStyle(uint space, string name)
+    public string CreateStyle(uint space, string name, string parentId = "")
     {
         using var arena = new NativeArena(); var r = New<ViemCreateStyleV1>(); r.@namespace = space; r.identity = Styles().Identity;
         string id = Document.State.format == VIEM_FORMAT_RTF ? $"Rtf{(space == 1 ? "P" : "C")}{Enumerable.Range(1, 32766).First(n => !Styles().Styles.Any(s => s.Id == $"Rtf{(space == 1 ? "P" : "C")}{n}"))}" : "Style" + Guid.NewGuid().ToString("N");
-        r.style_id = arena.Utf8(id); r.display_name = arena.Utf8(name);
+        r.style_id = arena.Utf8(id); r.display_name = arena.Utf8(name); r.parent_id = arena.Utf8(parentId);
         if (UsesGlobalStyles) { var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_create_style(&r, &info), "Create style"); Document.NotifyChanged(); Refresh(); }
         else { var copy = r; Apply(o => { var request = copy; return viem_core_view_create_style(Document.Handle, Id, &request, o); }); }
         return id;
@@ -227,7 +227,7 @@ internal sealed unsafe partial class CoreView
         if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) { EditStyleFont(style, sheet.StringList(effective), null); return; }
         var value = New<ViemStyleEditValueV1>(); value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
         // An absent background is a transparent declaration when overridden.
-        if (property == VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND && effective.kind == VIEM_STYLE_VALUE_NONE) value.kind = VIEM_STYLE_VALUE_COLOR;
+        if (property is VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND or VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && effective.kind == VIEM_STYLE_VALUE_NONE) value.kind = VIEM_STYLE_VALUE_COLOR;
         EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
     }
 }

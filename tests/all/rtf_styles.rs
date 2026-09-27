@@ -209,7 +209,7 @@ fn creates_assigns_and_deletes_native_style_without_renumbering() {
                 role: BlockRole::Paragraph,
                 character: CharacterProperties::default(),
                 block: BlockProperties {
-                    spacing_after: Some(8.0),
+                    margin_bottom: Some(8.0),
                     ..Default::default()
                 },
             },
@@ -500,7 +500,7 @@ fn mid_paragraph_enter_retains_current_style_and_copies_sparse_direct_defaults()
     assert_eq!(
         document.projection().blocks()[1]
             .direct_paragraph
-            .spacing_after,
+            .margin_bottom,
         Some(6.0)
     );
     assert!(document.projection().style_spans().iter().any(|span|span.range.contains(&4)&&matches!(&span.application,StyleApplication::Direct(properties) if properties.slant==Some(FontSlant::Italic))));

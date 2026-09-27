@@ -103,8 +103,8 @@ final class EVFormatMenuActionsTests: XCTestCase {
     let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
     surface.applyParagraphSpacing(before: 7, after: 13, expected: try session.listSelection())
     let formatted = try session.selectedFormatting()
-    XCTAssertEqual(formatted[.paragraphSpacingBefore], .float(7))
-    XCTAssertEqual(formatted[.paragraphSpacingAfter], .float(13))
+    XCTAssertEqual(formatted[.blockMarginTop], .float(7))
+    XCTAssertEqual(formatted[.blockMarginBottom], .float(13))
     surface.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original,
                    "Both spacing fields form one undo unit")

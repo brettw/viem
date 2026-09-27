@@ -52,6 +52,275 @@ struct File {
     character_styles: Vec<CharacterDefault>,
 }
 
+#[derive(Deserialize)]
+struct InputFile {
+    version: u32,
+    #[serde(default)]
+    block_styles: serde_json::Value,
+    #[serde(default)]
+    character_styles: serde_json::Value,
+}
+
+fn input_entries(value: serde_json::Value, group: &str, diagnostics: &mut Vec<String>) -> Vec<serde_json::Value> {
+    match value {
+        serde_json::Value::Array(entries) => entries,
+        serde_json::Value::Null => Vec::new(),
+        _ => {
+            diagnostics.push(format!("Ignored {group}: expected an array of style definitions."));
+            Vec::new()
+        }
+    }
+}
+
+/// Property records are sparse and each declaration can be checked in isolation.
+fn valid_properties<T>(
+    raw: serde_json::Value,
+    id: &StyleId,
+    group: &str,
+    validate: impl Fn(&T) -> Result<(), StyleError>,
+    diagnostics: &mut Vec<String>,
+) -> T
+where T: Default + Serialize + serde::de::DeserializeOwned {
+    let known = serde_json::to_value(T::default()).expect("property schema serializes");
+    let fields = match raw {
+        serde_json::Value::Object(fields) => fields,
+        serde_json::Value::Null => return T::default(),
+        _ => {
+            diagnostics.push(format!("Ignored style {:?}.{group}: expected a property object.", id.0));
+            return T::default();
+        }
+    };
+    let mut accepted = serde_json::Map::new();
+    for (property, value) in fields {
+        if value.is_null() || known.get(&property).is_none() { continue; }
+        let reason = {
+            let one = serde_json::Value::Object([(property.clone(), value.clone())].into_iter().collect());
+            match serde_json::from_value::<T>(one) {
+                Err(error) => Some(error.to_string()),
+                Ok(properties) => validate(&properties).err().map(|_| "invalid value for this style".to_owned()),
+            }
+        };
+        if let Some(reason) = reason {
+            diagnostics.push(format!("Ignored style {:?}.{group}.{property}: {reason}.", id.0));
+        } else {
+            accepted.insert(property, value);
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(accepted)).expect("individually validated sparse properties combine")
+}
+
+fn input_object(value: serde_json::Value, group: &str, index: usize, diagnostics: &mut Vec<String>)
+    -> Option<serde_json::Map<String, serde_json::Value>> {
+    match value {
+        serde_json::Value::Object(object) => Some(object),
+        _ => {
+            diagnostics.push(format!("Ignored {group}[{index}]: expected a style definition object."));
+            None
+        }
+    }
+}
+
+fn input_label(object: &serde_json::Map<String, serde_json::Value>, group: &str, index: usize) -> String {
+    object.get("id").and_then(serde_json::Value::as_str)
+        .map_or_else(|| format!("{group}[{index}]"), |id| format!("style {id:?}"))
+}
+
+fn parse_block_defaults(
+    entries: Vec<serde_json::Value>,
+    builtins: &StyleSheet,
+    diagnostics: &mut Vec<String>,
+) -> BTreeMap<StyleId, BlockDefault> {
+    let mut accepted = BTreeMap::new();
+    for (index, value) in entries.into_iter().enumerate() {
+        let Some(mut object) = input_object(value, "block_styles", index, diagnostics) else { continue; };
+        let label = input_label(&object, "block_styles", index);
+        let block = object.insert("block".into(), serde_json::json!({})).unwrap_or_default();
+        let character = object.insert("character".into(), serde_json::json!({})).unwrap_or_default();
+        if let Some(next) = object.get("next_paragraph_style") {
+            if serde_json::from_value::<Option<StyleId>>(next.clone()).is_err() {
+                diagnostics.push(format!("Ignored {label}.next_paragraph_style: expected a style ID or null."));
+                object.remove("next_paragraph_style");
+            }
+        }
+        let mut entry: BlockDefault = match serde_json::from_value(serde_json::Value::Object(object)) {
+            Ok(entry) => entry,
+            Err(error) => { diagnostics.push(format!("Ignored {label}: {error}.")); continue; }
+        };
+        let id = &entry.style.id;
+        if id.0.is_empty() || validate_definition_metadata(id, &StyleDefinitionMetadata::generated(&entry.name)).is_err() {
+            diagnostics.push(format!("Ignored {label}: invalid style ID or display name."));
+            continue;
+        }
+        if let Some(builtin) = builtins.block_styles.get(id) {
+            if entry.style.role != builtin.role {
+                diagnostics.push(format!("Ignored {label}: role {:?} is incompatible with built-in role {:?}.", entry.style.role, builtin.role));
+                continue;
+            }
+        }
+        if *id == builtins.base_paragraph && entry.style.based_on.is_some() {
+            diagnostics.push(format!("Ignored {label}.based_on: Base Paragraph cannot inherit another style."));
+            entry.style.based_on = None;
+        }
+        if accepted.contains_key(id) {
+            diagnostics.push(format!("Ignored duplicate {label}."));
+            continue;
+        }
+        entry.style.character = valid_properties(character, id, "character", |properties: &CharacterProperties| {
+            validate_character_properties(id, properties)?;
+            if *id == builtins.base_paragraph && matches!(properties.size, Some(FontSize::Percentage(_))) {
+                return Err(invalid_style_value(id, StyleProperty::CharacterSize));
+            }
+            Ok(())
+        }, diagnostics);
+        entry.style.block = valid_properties(block, id, "block", |properties: &BlockProperties| {
+            let mut style = entry.style.clone();
+            style.block = properties.clone();
+            validate_block_properties(&style)
+        }, diagnostics);
+        accepted.insert(id.clone(), entry);
+    }
+    accepted
+}
+
+fn parse_character_defaults(entries: Vec<serde_json::Value>, diagnostics: &mut Vec<String>)
+    -> BTreeMap<StyleId, CharacterDefault> {
+    let mut accepted = BTreeMap::new();
+    for (index, value) in entries.into_iter().enumerate() {
+        let Some(mut object) = input_object(value, "character_styles", index, diagnostics) else { continue; };
+        let label = input_label(&object, "character_styles", index);
+        let properties = object.insert("properties".into(), serde_json::json!({})).unwrap_or_default();
+        let mut entry: CharacterDefault = match serde_json::from_value(serde_json::Value::Object(object)) {
+            Ok(entry) => entry,
+            Err(error) => { diagnostics.push(format!("Ignored {label}: {error}.")); continue; }
+        };
+        let id = &entry.style.id;
+        if id.0.is_empty() || validate_definition_metadata(id, &StyleDefinitionMetadata::generated(&entry.name)).is_err()
+            || (id.is_internal() && entry.style.based_on.is_some()) {
+            diagnostics.push(format!("Ignored {label}: invalid style ID, display name, or internal-style relationship."));
+            continue;
+        }
+        if accepted.contains_key(id) {
+            diagnostics.push(format!("Ignored duplicate {label}."));
+            continue;
+        }
+        entry.style.properties = valid_properties(properties, id, "properties",
+            |properties| validate_character_properties(id, properties), diagnostics);
+        accepted.insert(id.clone(), entry);
+    }
+    accepted
+}
+
+fn discard_block_dependency(
+    sheet: &StyleSheet, start: &StyleId, entries: &mut BTreeMap<StyleId, BlockDefault>,
+    reason: &str, diagnostics: &mut Vec<String>,
+) -> bool {
+    let mut current = Some(start.clone());
+    let mut seen = BTreeSet::new();
+    while let Some(id) = current {
+        if !seen.insert(id.clone()) { break; }
+        if entries.remove(&id).is_some() {
+            diagnostics.push(format!("Ignored style {:?}: invalid parent relationship ({reason}).", id.0));
+            return true;
+        }
+        current = sheet.block_styles.get(&id).and_then(|style| style.based_on.clone());
+    }
+    false
+}
+
+fn discard_character_dependency(
+    sheet: &StyleSheet, start: &StyleId, entries: &mut BTreeMap<StyleId, CharacterDefault>,
+    reason: &str, diagnostics: &mut Vec<String>,
+) -> bool {
+    let mut current = Some(start.clone());
+    let mut seen = BTreeSet::new();
+    while let Some(id) = current {
+        if !seen.insert(id.clone()) { break; }
+        if let Some(saved) = entries.get_mut(&id) {
+            if saved.style.based_on.take().is_some() {
+                diagnostics.push(format!("Ignored character style {:?}.based_on: {reason}.", id.0));
+                return true;
+            }
+        }
+        current = sheet.character_styles.get(&id).and_then(|style| style.based_on.clone());
+    }
+    false
+}
+
+/// Each repair removes a saved definition or one optional declaration. Rebuild
+/// from the valid baseline afterwards so omitted built-ins regain their actual
+/// definitions, and forward references never depend on file order.
+fn repair_default_graph(
+    sheet: &StyleSheet,
+    blocks: &mut BTreeMap<StyleId, BlockDefault>,
+    characters: &mut BTreeMap<StyleId, CharacterDefault>,
+    diagnostics: &mut Vec<String>,
+) -> bool {
+    for style in sheet.block_styles.values() {
+        if style.id != sheet.base_paragraph {
+            if let Err(error) = sheet.validate_block_parent(style) {
+                if discard_block_dependency(sheet, &style.id, blocks, &format!("{error:?}"), diagnostics) { return true; }
+            }
+        }
+    }
+    // Reject missing immediate edges before walking any complete chains. This
+    // keeps a long chain ending in a missing parent bounded during recovery.
+    for style in sheet.character_styles.values() {
+        if let Some(parent) = &style.based_on {
+            if !sheet.character_styles.contains_key(parent) {
+                if discard_character_dependency(sheet, &style.id, characters, &format!("missing parent {:?}", parent.0), diagnostics) { return true; }
+            }
+        }
+    }
+    for style in sheet.block_styles.values() {
+        if let Err(error) = sheet.validate_next_paragraph_style(style) {
+            if let Some(saved) = blocks.get_mut(&style.id).filter(|saved| saved.style.next_paragraph_style.is_some()) {
+                saved.style.next_paragraph_style = None;
+                diagnostics.push(format!("Ignored style {:?}.next_paragraph_style: {error:?}.", style.id.0));
+                return true;
+            }
+            if let Some(next) = &style.next_paragraph_style {
+                if discard_block_dependency(sheet, next, blocks, &format!("invalid next style for {:?}", style.id.0), diagnostics) { return true; }
+            }
+        }
+        match sheet.block_chain(&style.id, style.role) {
+            Err(StyleError::InheritanceCycle(id)) => {
+                if discard_block_dependency(sheet, &id, blocks, "inheritance cycle", diagnostics) { return true; }
+            }
+            Ok(chain) => {
+                let mut size = sheet.intrinsic_character_defaults.size
+                    .map_or(DEFAULT_FONT_SIZE, |value| value.resolve(DEFAULT_FONT_SIZE));
+                let mut saved_size = None;
+                for ancestor in chain {
+                    if let Some(value) = ancestor.character.size {
+                        if blocks.get(&ancestor.id).is_some_and(|saved| saved.style.character.size.is_some()) {
+                            saved_size = Some(ancestor.id.clone());
+                        }
+                        size = value.resolve(size);
+                    }
+                    if !size.is_finite() || size <= 0.0 {
+                        if let Some(id) = saved_size {
+                            blocks.get_mut(&id).unwrap().style.character.size = None;
+                            diagnostics.push(format!("Ignored style {:?}.character.size: inherited font size is not finite and positive.", id.0));
+                            return true;
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    for style in sheet.character_styles.values() {
+        match sheet.character_chain(&style.id) {
+            Err(StyleError::InheritanceCycle(id)) => {
+                if discard_character_dependency(sheet, &id, characters, "inheritance cycle", diagnostics) { return true; }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 impl StyleSheet {
     pub(crate) fn has_html_native_definitions(&self) -> bool {
         self.source_defined_blocks
@@ -237,84 +506,76 @@ impl StyleSheet {
     ) {
         self.source_character_defaults.insert(id, properties);
     }
-    pub(crate) fn with_default_json(&self, bytes: &[u8]) -> Result<Self, StyleDefaultsError> {
+    pub(crate) fn with_default_json(&self, bytes: &[u8]) -> Result<(Self, Vec<String>), StyleDefaultsError> {
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(StyleDefaultsError::Json("file exceeds 4 MiB".into()));
         }
-        let file: File =
+        let file: InputFile =
             serde_json::from_slice(bytes).map_err(|e| StyleDefaultsError::Json(e.to_string()))?;
         if file.version != 1 {
             return Err(StyleDefaultsError::UnsupportedVersion(file.version));
         }
-        if file.block_styles.len() + file.character_styles.len() > 4096 {
-            return Err(StyleDefaultsError::Json(
-                "too many style definitions".into(),
-            ));
+        let mut diagnostics = Vec::new();
+        let block_entries = input_entries(file.block_styles, "block_styles", &mut diagnostics);
+        let character_entries = input_entries(file.character_styles, "character_styles", &mut diagnostics);
+        if block_entries.len() + character_entries.len() > 4096 {
+            return Err(StyleDefaultsError::Json("too many style definitions".into()));
         }
-        let mut defaults = StyleSheet::default();
-        // Preserve adapter-specific built-ins (for example RTF's intrinsic
-        // 12-point default) when a user file omits their definition.
+        let builtins = StyleSheet::default();
+        let mut blocks = parse_block_defaults(block_entries, &builtins, &mut diagnostics);
+        let mut characters = parse_character_defaults(character_entries, &mut diagnostics);
+        let mut baseline = builtins;
+        // Keep adapter-specific defaults and already installed configuration.
+        // Source-owned definitions remain authoritative in the final candidate.
         for (id, style) in &self.block_styles {
             if !self.source_defined_blocks.contains(id) {
-                defaults.block_styles.insert(id.clone(), style.clone());
+                baseline.block_styles.insert(id.clone(), style.clone());
                 if let Some(metadata) = self.block_metadata.get(id) {
-                    defaults.block_metadata.insert(id.clone(), metadata.clone());
+                    baseline.block_metadata.insert(id.clone(), metadata.clone());
                 }
             }
         }
         for (id, style) in &self.character_styles {
             if !self.source_defined_characters.contains(id) {
-                defaults.character_styles.insert(id.clone(), style.clone());
+                baseline.character_styles.insert(id.clone(), style.clone());
                 if let Some(metadata) = self.character_metadata.get(id) {
-                    defaults
-                        .character_metadata
-                        .insert(id.clone(), metadata.clone());
+                    baseline.character_metadata.insert(id.clone(), metadata.clone());
                 }
             }
         }
-        defaults.install_html_source_styles();
-        let mut seen = BTreeSet::new();
-        let mut definitions = Vec::new();
-        for entry in file.block_styles {
-            if !seen.insert((0, entry.style.id.clone())) {
-                return Err(StyleDefaultsError::Json("duplicate block style".into()));
+        baseline.install_html_source_styles();
+        // A repair removes an entry, next-style declaration, parent edge, or
+        // size declaration. This finite bound also guards future repair changes.
+        let repair_limit = 4 * (blocks.len() + characters.len());
+        for _ in 0..=repair_limit {
+            let mut defaults = baseline.clone();
+            for (id, entry) in &blocks {
+                defaults.block_styles.insert(id.clone(), entry.style.clone());
+                defaults.block_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(&entry.name));
             }
-            definitions.push(StyleDefinitionEdit::InsertBlock {
-                style: entry.style,
-                metadata: StyleDefinitionMetadata::generated(entry.name),
-            });
-        }
-        for entry in file.character_styles {
-            if !seen.insert((1, entry.style.id.clone())) {
-                return Err(StyleDefaultsError::Json("duplicate character style".into()));
+            for (id, entry) in &characters {
+                defaults.character_styles.insert(id.clone(), entry.style.clone());
+                defaults.character_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(&entry.name));
             }
-            definitions.push(StyleDefinitionEdit::InsertCharacter {
-                style: entry.style,
-                metadata: StyleDefinitionMetadata::generated(entry.name),
-            });
+            if repair_default_graph(&defaults, &mut blocks, &mut characters, &mut diagnostics) { continue; }
+            defaults.validate_block_cycles()?;
+            defaults.validate_character_cycles()?;
+            let mut candidate = self.clone();
+            candidate.default_blocks = defaults.block_styles;
+            candidate.default_characters = defaults.character_styles;
+            candidate.default_characters.retain(|id, _| !id.is_internal() || self.character_styles.contains_key(id));
+            candidate.install_default_definitions(&defaults.block_metadata, &defaults.character_metadata);
+            if repair_default_graph(&candidate, &mut blocks, &mut characters, &mut diagnostics) { continue; }
+            candidate.validate_block_cycles()?;
+            candidate.validate_character_cycles()?;
+            candidate.resolve_document_style(
+                &candidate.base_paragraph,
+                &BlockProperties::default(),
+                &CharacterProperties::default(),
+            )?;
+            return Ok((candidate, diagnostics));
         }
-        defaults.install_source_definitions(&definitions)?;
-        if defaults.block_styles[&defaults.base_paragraph].role != BlockRole::Paragraph
-            || defaults.block_styles[&defaults.base_paragraph].based_on.is_some() {
-            return Err(StyleDefaultsError::Json("invalid base paragraph relationship".into()));
-        }
-        let mut candidate = self.clone();
-        candidate.default_blocks = defaults.block_styles;
-        candidate.default_characters = defaults.character_styles;
-        // Keep only internal styles available in this projection: the search
-        // overlay is universal; HTML syntax styles require HTML Source.
-        candidate
-            .default_characters
-            .retain(|id, _| !id.is_internal() || self.character_styles.contains_key(id));
-        candidate.install_default_definitions(&defaults.block_metadata, &defaults.character_metadata);
-        candidate.validate_block_cycles()?;
-        candidate.validate_character_cycles()?;
-        candidate.resolve_document_style(
-            &candidate.base_paragraph,
-            &BlockProperties::default(),
-            &CharacterProperties::default(),
-        )?;
-        Ok(candidate)
+        Err(StyleDefaultsError::Json("style relationship validation did not converge".into()))
     }
 
     fn install_default_definitions(

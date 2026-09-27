@@ -127,7 +127,7 @@ fn quote_rules_and_loose_lists_invalidate_layout_and_keep_large_documents_local(
     core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(), text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
     core.handle(view, CoreEvent::SetParagraphStyle { expected: core.list_selection_identity(view).unwrap(), style: "Paragraph".into() }).unwrap();
     let snapshot = core.layout(view).unwrap().snapshot().unwrap();
-    assert_eq!(borders(&snapshot.rows[1]), 0);
+    assert_eq!(borders(&snapshot.rows[1]), 1);
     core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     core.handle(view, CoreEvent::Input(InputEvent::text("X"))).unwrap();
     let snapshot = core.layout(view).unwrap().snapshot().unwrap();
@@ -135,7 +135,7 @@ fn quote_rules_and_loose_lists_invalidate_layout_and_keep_large_documents_local(
     assert!(snapshot.coverage.hard_lines().len() < 100);
     let tight = DocumentLayoutStyles::resolve(open("- a\n- b").projection()).unwrap();
     let loose = DocumentLayoutStyles::resolve(open("- a\n\n- b").projection()).unwrap();
-    assert!(loose.paragraphs[0].spacing_after > tight.paragraphs[0].spacing_after);
+    assert!(loose.paragraphs[0].margin_bottom > tight.paragraphs[0].margin_bottom);
 }
 
 #[test]

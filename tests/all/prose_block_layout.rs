@@ -38,11 +38,11 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
         let document = open(source, format);
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
         assert_eq!(styles.paragraphs.len(), 3);
-        for paragraph in &styles.paragraphs {
-            assert_eq!(paragraph.spacing_before, 7.);
-            assert_eq!(paragraph.spacing_after, 7.);
+        for (index, paragraph) in styles.paragraphs.iter().enumerate() {
+            assert_eq!(paragraph.margin_top, if index == 1 { 0. } else { 7. });
+            assert_eq!(paragraph.margin_bottom, if index == 1 { 0. } else { 7. });
         }
-        assert_eq!(styles.paragraphs[1].leading_indent, code_indent);
+        assert_eq!(styles.paragraphs[1].containers.iter().map(|c| c.style.left()).sum::<f32>(), code_indent);
         assert_eq!(document.text(), "Before.\n  one\n\n  two\nAfter.");
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 800., 800.);
@@ -56,7 +56,7 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
             let expected_gap = if row.paragraph_id == next.paragraph_id {
                 0.
             } else {
-                14.
+                7.
             };
             assert!((next.y - row.y - row.line_advance - expected_gap).abs() < 0.01);
         }
@@ -70,8 +70,8 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
         };
         let document = open(source, format);
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
-        assert_eq!(styles.paragraphs[0].spacing_before, 0.);
-        assert_eq!(styles.paragraphs[0].spacing_after, 0.);
+        assert_eq!(styles.paragraphs[0].margin_top, 0.);
+        assert_eq!(styles.paragraphs[0].margin_bottom, 0.);
     }
 }
 
@@ -81,8 +81,8 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
         serde_json::from_slice(&Document::new("").export_style_defaults().unwrap()).unwrap();
     for style in defaults["block_styles"].as_array_mut().unwrap() {
         if style["id"] == "Paragraph" {
-            style["block"]["spacing_before"] = 11.into();
-            style["block"]["spacing_after"] = 13.into();
+            style["block"]["margin_top"] = 11.into();
+            style["block"]["margin_bottom"] = 13.into();
         }
     }
     for (format, source, expected_before) in [
@@ -99,8 +99,8 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
             .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
             .unwrap();
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
-        assert_eq!(styles.paragraphs[0].spacing_before, expected_before);
-        assert_eq!(styles.paragraphs[0].spacing_after, 13.);
+        assert_eq!(styles.paragraphs[0].margin_top, expected_before);
+        assert_eq!(styles.paragraphs[0].margin_bottom, 13.);
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert_eq!(document.revision().0, 0);
     }
@@ -148,7 +148,7 @@ fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset(
         document_style: projection.document_style(),
     })
     .unwrap();
-    assert_eq!(styles.paragraphs[0].leading_indent, 32.);
+    assert_eq!(styles.paragraphs[0].leading_indent + styles.paragraphs[0].containers.iter().map(|c| c.style.left()).sum::<f32>(), 32.);
 }
 
 #[test]

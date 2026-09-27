@@ -67,10 +67,33 @@ internal static class StyleInspectorBehaviorTests
     }
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
+        BlockPreview(pane, preferences);
         await BuiltinDeclarations(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
+    }
+    private static unsafe void BlockPreview(EditorPane pane, Preferences preferences)
+    {
+        byte[] source = System.Text.Encoding.UTF8.GetBytes("<blockquote><p>Preview source stays unchanged.</p></blockquote>");
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_HTML);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var quote = view.Styles().Styles.Single(s => s.Id == "Block quote" && s.Namespace == 1);
+        view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(17));
+        var background = New<ViemStyleEditValueV1>(); background.kind = VIEM_STYLE_VALUE_COLOR;
+        background.color = new() { red = .6f, green = .2f, blue = .7f, alpha = .5f };
+        view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND, background);
+        var sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        using var preview = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
+        preview.Update(sheet, quote, preferences.Theme.Foreground);
+        var layout = preview.Layout(560, 300);
+        var boxes = layout.Decorations.Where(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0).ToArray();
+        Check(boxes.Length >= 2 && boxes.Select(box => box.typographic_bounds.x).Distinct().Count() == 2,
+            "Block preview uses core nested-container geometry");
+        Check(boxes.All(box => Math.Abs(box.paint.foreground.alpha - .5f) < .001f),
+            "Block preview copies committed background opacity");
+        Check(document.Source(document.State.document_revision).SequenceEqual(source),
+            "Block preview leaves the inspected document source unchanged");
     }
     private static async Task BuiltinDeclarations(EditorPane pane, Preferences preferences)
     {
@@ -85,12 +108,12 @@ internal static class StyleInspectorBehaviorTests
             inspector.Activate(); await Task.Delay(150);
             try
             {
-                inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == "Heading1");
+                inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading1");
                 var properties = new[] {
                     ("Size", VIEM_STYLE_PROPERTY_CHARACTER_SIZE, false),
                     ("Variant", VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, false),
-                    ("Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, true),
-                    ("Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, true),
+                    ("Space before", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, true),
+                    ("Space after", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, true),
                 };
                 Check(Selected(inspector).Properties.Values.Count(p => (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0) == properties.Length,
                     $"format {format}: Heading 1 exposes its size, weight and both paragraph gaps as declarations");
@@ -158,7 +181,7 @@ internal static class StyleInspectorBehaviorTests
             Check(Selected(inspector).Id == "Heading1" && inspector.CaretStyleQueries == queries + 1 && !inspector.CaretFollowScheduled,
                 "a drag burst produces one settled paragraph-style update");
             queries = inspector.CaretStyleQueries;
-            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == "Heading2");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
             view.Refresh(); view.Zoom(1.1f); document.NotifyChanged(); Move(view, 1);
             await Task.Delay(1100);
             Check(Selected(inspector).Id == "Heading2" && inspector.CaretStyleQueries == queries && !inspector.CaretFollowScheduled,
@@ -166,7 +189,7 @@ internal static class StyleInspectorBehaviorTests
             inspector.Retarget(view);
             Check(Selected(inspector).Id == "Heading1" && !inspector.CaretFollowScheduled, "reopening the same inspector immediately reselects the caret style");
             Move(view, 7);
-            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => s.Id == "Heading2");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
             await Task.Delay(1100);
             Check(Selected(inspector).Id == "Heading2" && !inspector.CaretFollowScheduled, "an explicit picker choice cancels a pending caret follow");
             Move(view, 0); Move(view, 10, true); await Task.Delay(1100);
@@ -288,7 +311,7 @@ internal static class StyleInspectorBehaviorTests
         }
         try
         {
-            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             var button = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Text Color");
             var flyout = (Flyout)button.Flyout;
             var picker = (ColorPicker)flyout.Content;
@@ -370,7 +393,7 @@ internal static class StyleInspectorBehaviorTests
             using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
             IncludeStyles(other);
             inspector.Retarget(other);
-            inspector.StylePicker.SelectedItem = ((StyleDefinition[])inspector.StylePicker.ItemsSource).Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
             Check(second.IsDirty && !document.IsDirty, "a retargeted inspector edits the new view rather than its constructor's view");
             colored = second.Source(second.State.document_revision);

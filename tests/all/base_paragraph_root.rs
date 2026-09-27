@@ -72,12 +72,13 @@ fn native_base_paragraph_next_style_is_same_without_rewriting_source() {
 #[test]
 fn user_defaults_cannot_change_base_paragraph_next_style() {
     let mut document = Document::new("Text");
-    let before = document.projection().style_sheet().clone();
+    let before = document.export_style_defaults().unwrap();
     let mut defaults: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
     let root = defaults["block_styles"].as_array_mut().unwrap().iter_mut()
         .find(|style| style["id"] == "Paragraph").unwrap();
     root["next_paragraph_style"] = "Heading1".into();
-    assert!(document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).is_err());
-    assert_eq!(document.projection().style_sheet(), &before);
+    let diagnostics = document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap();
+    assert!(diagnostics.iter().any(|message| message.contains("Paragraph") && message.contains("next_paragraph_style")));
+    assert_eq!(document.export_style_defaults().unwrap(), before);
     assert_eq!(document.source_bytes(), b"Text");
 }

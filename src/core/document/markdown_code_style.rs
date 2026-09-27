@@ -35,11 +35,9 @@ impl Document {
                 .map_err(DocumentError::FormattedTextStorage)?;
             let (source, raw) = self.markdown_paragraph_source(&block, !enabled)?;
             let (syntax, body_range, body_syntax, opening, closing) = if enabled {
-                let body = if self.format().is_source_view() {
-                    raw.as_str()
-                } else {
-                    &visible
-                };
+                let container = &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))];
+                let source_body = if container.is_empty() { raw.clone() } else { strip_quote_prefixes(&raw, container.bytes().filter(|byte| *byte == b'>').count()) };
+                let body = if self.format().is_source_view() { source_body.as_str() } else { &visible };
                 // A fence must be longer than every possible closing run in
                 // its literal body, including pasted backtick-only lines.
                 let width = body
@@ -50,12 +48,13 @@ impl Document {
                     .max(2)
                     + 1;
                 let fence = "`".repeat(width);
+                let body = quote_lines(body, container);
                 (
-                    format!("{fence}\n{body}\n{fence}"),
+                    format!("{container}{fence}\n{body}\n{container}{fence}"),
                     0..raw.len(),
-                    body.to_owned(),
-                    format!("{fence}\n"),
-                    format!("\n{fence}"),
+                    body,
+                    format!("{container}{fence}\n"),
+                    format!("\n{container}{fence}"),
                 )
             } else if let Some(code) = super::super::markdown_indented_code::source_block(self, &block)? {
                 let mut lines = Vec::new();
@@ -79,7 +78,9 @@ impl Document {
                 let closed = super::super::markdown_syntax::fence_close(&closing[prefix..], delimiter, width);
                 let body_end = if closed { last_start - 1 } else { raw.len() };
                 let body = &raw[(first_end + 1).min(body_end)..body_end];
-                let prose = prose_from_code(if self.format().is_source_view() { body } else { &visible });
+                let source_body = if quote > 0 { strip_quote_prefixes(body, opening[..quote].bytes().filter(|byte| *byte == b'>').count()) } else { body.to_owned() };
+                let prose = prose_from_code(if self.format().is_source_view() { &source_body } else { &visible });
+                let prose = quote_lines(&prose, &opening[..quote]);
                 (
                     prose.clone(),
                     (first_end + 1).min(body_end)..body_end,
@@ -176,7 +177,8 @@ impl Document {
                 .projection
                 .blocks_for_region(&(at..at))
                 .iter()
-                .any(|block| block.range.start == at && block.style.0 == expected)
+                .any(|block| block.range.start == at && (block.style.0 == expected
+                    || !enabled && self.format().is_source_view() && block.quote_depth > 0 && block.style.0 == "Block quote"))
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
@@ -274,4 +276,23 @@ fn prose_from_code(body: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
+}
+
+fn strip_quote_prefixes(body: &str, depth: usize) -> String {
+    body.split('\n').map(|line| {
+        let mut start = 0;
+        for _ in 0..depth {
+            let tail = &line[start..];
+            if super::super::markdown_quotes::prefix(tail) == 0 { break; }
+            let marker = tail.find('>').unwrap();
+            start += marker + 1;
+            if line.as_bytes().get(start).is_some_and(|byte| matches!(byte, b' ' | b'\t')) { start += 1; }
+        }
+        &line[start..]
+    }).collect::<Vec<_>>().join("\n")
+}
+
+fn quote_lines(body: &str, prefix: &str) -> String {
+    if prefix.is_empty() { return body.to_owned(); }
+    body.split('\n').map(|line| format!("{prefix}{line}")).collect::<Vec<_>>().join("\n")
 }

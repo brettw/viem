@@ -61,6 +61,13 @@ internal sealed partial class EditorPane
     private void DrawTextBackgrounds(CanvasDrawingSession drawing)
     {
         if (snapshot == null) return;
+        foreach (var decoration in snapshot.Decorations)
+        {
+            if ((decoration.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) == 0) continue;
+            if (decoration.typographic_bounds.y + decoration.typographic_bounds.height < drawnTop - 4
+                || decoration.typographic_bounds.y > drawnBottom + 4) continue;
+            drawing.FillRectangle(OffsetRect(decoration.typographic_bounds, viewport), (decoration.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? preferences.Theme.Foreground : Color(decoration.paint.foreground));
+        }
         // Explicit character backgrounds precede selection, which must remain
         // visible even over opaque source-authored highlights.
         foreach (var cluster in snapshot.Clusters)
@@ -102,8 +109,8 @@ internal sealed partial class EditorPane
             if (d.typographic_bounds.y + d.typographic_bounds.height < drawnTop - 4
                 || d.typographic_bounds.y > drawnBottom + 4) continue;
             Color foreground = (d.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(d.paint.foreground);
-            if ((d.flags & VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0) { glyphs.Flush(); drawing.FillRectangle(OffsetRect(d.typographic_bounds, viewport), foreground); }
-            else glyphs.Draw(d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
+            if ((d.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) != 0) continue;
+            glyphs.Draw(d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
         }
         glyphs.Flush();
         if (whitespace != null) View.Provider.DrawWhitespace(drawing, whitespace, snapshot, viewport, offset => {

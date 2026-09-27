@@ -37,6 +37,8 @@ mod html_typing;
 pub(crate) use html_typing::ReplacementTypingContext;
 mod html_whitespace;
 mod lists;
+mod containers;
+pub use containers::{ContainerIdentity, ContainerKind, ContainerAttributes, ContainerMembership, ContainerNode, ContainerStructure};
 mod markdown_blocks;
 mod markdown_syntax;
 mod markdown_code;
@@ -758,11 +760,11 @@ impl Document {
 
     /// Install immutable user defaults before the first view/edit. Source bytes,
     /// projection identity, savepoint, and undo depth remain unchanged.
-    pub fn initialize_style_defaults(&mut self, json: &[u8]) -> Result<(), StyleDefaultsError> {
+    pub fn initialize_style_defaults(&mut self, json: &[u8]) -> Result<Vec<String>, StyleDefaultsError> {
         if self.revision().0 != 0 || self.history_status().node_count != 1 {
             return Err(StyleDefaultsError::NotPristine);
         }
-        let mut sheet = self.projection().style_sheet().with_default_json(json)?;
+        let (mut sheet, diagnostics) = self.projection().style_sheet().with_default_json(json)?;
         let generation = sheet
             .revision
             .0
@@ -783,7 +785,7 @@ impl Document {
         // Reserve the consumed style generation so the next source/model
         // transaction still advances both style and projection identities.
         self.next_revision = self.next_revision.max(generation);
-        Ok(())
+        Ok(diagnostics)
     }
 
     /// Relative source declarations must resolve after buffer defaults and

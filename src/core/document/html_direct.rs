@@ -59,6 +59,14 @@ fn tag_with_properties(
     if let Some(css) = tag.attribute("style") {
         html::apply_css(css, &mut character, &mut paragraph);
     }
+    // CSS background belongs to the element's own box. Its portable slot
+    // depends on whether that element is inline or a block, just as in the
+    // projection. Keeping both would recreate a cleared inline highlight.
+    if inline(&tag.name) {
+        paragraph.background = None;
+    } else {
+        character.background = None;
+    }
     if let Some(direction) = tag.attribute("dir").and_then(html::direction) {
         character.direction = Some(direction);
         paragraph.base_direction = Some(direction);
@@ -313,6 +321,7 @@ fn clear_character_patches_impl(
         if let Some(css) = tag.attribute("style") {
             html::apply_css(css, &mut original, &mut block);
         }
+        if !inline(&tag.name) { original.background = None; }
         if tag.attribute("lang").is_some() {
             original.language = Some("x".into());
         }

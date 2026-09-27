@@ -6,7 +6,7 @@ fn native_inline_breaks_preserve_paragraph_ownership_and_literal_contexts() {
     for (source, text, style) in [
         ("# a<br>b", "a\nb", "Heading1"),
         ("a<BR/>b", "a\nb", "Paragraph"),
-        ("> a<br />b", "a\nb", "Block quote"),
+        ("> a<br />b", "a\nb", "Paragraph"),
         ("- a<br\t/>b", "a\nb", "BulletedList1"),
         ("**a<br>b**", "a\nb", "Paragraph"),
     ] {

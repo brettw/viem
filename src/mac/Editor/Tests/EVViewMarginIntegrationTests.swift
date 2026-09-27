@@ -1,11 +1,161 @@
 import AppKit
 import CViemCore
-import ViemAppShell
+@testable import ViemAppShell
 import XCTest
 @testable import ViemEditor
 
 @MainActor
 final class EVViewMarginIntegrationTests: XCTestCase {
+    private func markdownDemo() throws -> Data {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        return try Data(contentsOf: root.appendingPathComponent("docs/markdown_demo.md"))
+    }
+
+    private var partlyInvalidMarkdownDefaults: String {
+        #"""
+        {"version":1,"block_styles":[
+          {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph",
+           "based_on":null,"next_paragraph_style":null,
+           "block":{"padding_left":-8},"character":{"size":21}},
+          {"id":"Block quote","name":"Block quote","role":"Paragraph",
+           "based_on":"Paragraph","next_paragraph_style":"Block quote",
+           "block":{"leading_indent":32,"trailing_indent":32},
+           "character":{"size":19}},
+          {"id":"Code Block","name":"Code Block","role":"Paragraph",
+           "based_on":"Paragraph","next_paragraph_style":"Paragraph",
+           "block":{"leading_indent":24},
+           "character":{"font_families":["monospace"],"size":16}}
+        ],"character_styles":[]}
+        """#
+    }
+
+    func testMarkdownDemoReadBeforeNativeViewAttachmentAppliesMargins() throws {
+        let source = try markdownDemo()
+        let savedDefaults: [String?] = [nil, partlyInvalidMarkdownDefaults, "{invalid", #"{"version":99}"#]
+        for useDocumentURL in [true, false] {
+            for defaults in savedDefaults {
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("viem-markdown-startup-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+                let configuration = EVConfigurationStore(directory: directory)
+                let settings = directory.appendingPathComponent("markdown_style.json")
+                if let defaults { try Data(defaults.utf8).write(to: settings) }
+                let backend = EVCoreDocumentBackend(configuration: configuration)
+                let document = EVDocument(editorBackend: backend)
+                defer { document.close() }
+                if useDocumentURL {
+                    let url = directory.appendingPathComponent("markdown_demo.md")
+                    try source.write(to: url)
+                    try document.read(from: url, ofType: EVDocument.plainTextType)
+                    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+                } else {
+                    try backend.read(source: source, typeName: EVDocument.markdownType)
+                    XCTAssertEqual(backend.sourceFormat, .markdown)
+                }
+                let surface = EVEditorSurfaceController(backend: backend,
+                    viewPreferences: EVViewPreferences(configuration: configuration))
+                surface.loadViewIfNeeded()
+                if defaults != nil {
+                    let warning = try XCTUnwrap(backend.configurationWarning)
+                    XCTAssertTrue(warning.contains(settings.path), warning)
+                    XCTAssertEqual(surface.commandOutput, warning)
+                    if defaults != partlyInvalidMarkdownDefaults {
+                        XCTAssertTrue(warning.contains("Using built-in defaults"), warning)
+                    }
+                } else {
+                    XCTAssertNil(backend.configurationWarning)
+                    XCTAssertNil(surface.commandOutput)
+                }
+                let session = try XCTUnwrap(surface.session)
+                let styles = try backend.styleSheetSnapshot()
+                let quote = try XCTUnwrap(styles.definition(for: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Block quote"))))
+                let code = try XCTUnwrap(styles.definition(for: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))))
+                XCTAssertEqual(quote.kind, .quote)
+                XCTAssertEqual(code.kind, .codeBlock)
+                let expectedSize: Float = defaults == partlyInvalidMarkdownDefaults ? 21 : 14
+                XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(expectedSize))
+                XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.blockPaddingLeft]?.effective, .float(0))
+                XCTAssertEqual(quote.properties[.characterSize]?.effective, .float(expectedSize))
+                XCTAssertEqual(code.properties[.characterSize]?.effective, .float(expectedSize))
+                XCTAssertNil(quote.nextStyleID)
+                XCTAssertNil(code.nextStyleID)
+                surface.view.frame = NSRect(x: 0, y: 0, width: 920, height: 655)
+                surface.viewDidLayout()
+                XCTAssertNotNil(surface.layoutSnapshot)
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+                XCTAssertFalse(backend.persistenceState.isDirty)
+                surface.performInput { _ = try session.sendText("iX") }
+                XCTAssertNil(surface.commandOutput)
+                XCTAssertNotEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+                surface.performInput { _ = try session.undo() }
+                XCTAssertNil(surface.commandOutput)
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+                if let defaults { XCTAssertEqual(try Data(contentsOf: settings), Data(defaults.utf8)) }
+            }
+        }
+    }
+
+    func testReplacingAnAttachedDocumentShowsPartialStyleLoadWarningsAndKeepsValidProperties() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-replacement-style-warning-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        XCTAssertNil(surface.commandOutput)
+        let settings = directory.appendingPathComponent("markdown_style.json")
+        let defaults = Data(partlyInvalidMarkdownDefaults.utf8)
+        try defaults.write(to: settings)
+        let source = try markdownDemo()
+        try backend.read(source: source, typeName: EVDocument.markdownSourceType,
+            filename: "markdown_demo.md", allowAutomaticCode: false)
+        let warning = try XCTUnwrap(backend.configurationWarning)
+        XCTAssertTrue(warning.contains(settings.path), warning)
+        XCTAssertEqual(surface.commandOutput, warning)
+        XCTAssertNotNil(surface.session)
+        XCTAssertNotNil(surface.layoutSnapshot)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(21))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+        XCTAssertEqual(try Data(contentsOf: settings), defaults)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+
+    func testUntitledStartupAppliesViewMarginsBeforeTheFirstPresentationAndAcceptsTyping() throws {
+        for margins in [EVViewMargins(), EVViewMargins(top: 23, left: 31, bottom: 17, right: 29)] {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("viem-untitled-view-margins-\(UUID().uuidString)")
+            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            let configuration = EVConfigurationStore(directory: directory)
+            try configuration.setViewMargins(margins)
+            let preferences = EVViewPreferences(configuration: configuration)
+            // Untitled startup uses the initial empty core, without reading a
+            // source file or priming layout before the native view attaches.
+            let backend = EVCoreDocumentBackend(configuration: configuration)
+            XCTAssertEqual(try backend.formattedText(), "")
+            let surface = EVEditorSurfaceController(backend: backend, viewPreferences: preferences)
+            surface.loadViewIfNeeded()
+            XCTAssertNil(surface.commandOutput, "Untitled startup: \(surface.commandOutput ?? "")")
+            let session = try XCTUnwrap(surface.session, "View-margin setup must complete before installing the initial session")
+            surface.view.frame = NSRect(x: 0, y: 0, width: 920, height: 655)
+            surface.viewDidLayout()
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            XCTAssertEqual(snapshot.info.content_insets.top, Float(margins.top))
+            XCTAssertEqual(snapshot.info.content_insets.left, Float(margins.left))
+            XCTAssertEqual(snapshot.info.content_insets.bottom, Float(margins.bottom))
+            XCTAssertEqual(snapshot.info.content_insets.right, Float(margins.right))
+            XCTAssertEqual(snapshot.rows.count, 1)
+            XCTAssertFalse(backend.persistenceState.isDirty)
+            _ = try session.sendText("iFirst words")
+            surface.refreshPresentation()
+            XCTAssertEqual(try backend.formattedText(), "First words")
+            XCTAssertNil(surface.commandOutput)
+        }
+    }
+
     func testHiddenLegacyHorizontalScrollbarDoesNotClipTheBottomTextBand() throws {
         let (_, surface, _) = try fixture(style: .legacy)
         let view = surface.editorView

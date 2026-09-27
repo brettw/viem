@@ -16,6 +16,7 @@ internal sealed unsafe class CoreDocument : IDisposable
     public string StartupDiagnostics { get; private set; } = "";
     private string? configurationKey;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StartupDiagnostic(nint context, ulong line, byte* message, ulong length);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StyleDefaultsDiagnostic(nint context, byte* message, ulong length);
     public ViemDocumentStateV1 State
     {
         get { var state = New<ViemDocumentStateV1>(); Check(viem_core_document_state(Handle, &state), "Read document"); return state; }
@@ -93,9 +94,21 @@ internal sealed unsafe class CoreDocument : IDisposable
         fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         configurationKey = key;
     }
-    public void InitializeStyleDefaults(byte[] json)
+    public string[] InitializeStyleDefaults(byte[] json)
     {
-        fixed (byte* p = json) Check(viem_core_initialize_style_defaults(Handle, State.document_revision, p, (ulong)json.Length), "Load style defaults");
+        var diagnostics = new List<string>();
+        StyleDefaultsDiagnostic callback = (_, message, length) => {
+            try { diagnostics.Add(Encoding.UTF8.GetString(new ReadOnlySpan<byte>(message, checked((int)length)))); }
+            catch { /* Exceptions cannot cross the native callback boundary. */ }
+        };
+        uint status;
+        fixed (byte* p = json) status = viem_core_initialize_style_defaults(Handle, State.document_revision,
+            p, (ulong)json.Length, Marshal.GetFunctionPointerForDelegate(callback), null);
+        GC.KeepAlive(callback);
+        if (status != VIEM_STATUS_OK && diagnostics.Count > 0)
+            throw new InvalidDataException(string.Join(Environment.NewLine, diagnostics));
+        Check(status, "Load style defaults");
+        return diagnostics.ToArray();
     }
     public void NotifyChanged() => Changed?.Invoke();
     public void RedetectLanguage()

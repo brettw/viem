@@ -68,8 +68,31 @@ final class EVFormattingToolbarTests: XCTestCase {
       XCTAssertNil(surface.commandOutput)
       XCTAssertEqual(toolbar.characterCode.state, .off)
       XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Default Paragraph")
-      XCTAssertEqual(toolbar.codeBlock.isHidden, type == EVDocument.htmlType)
+      XCTAssertFalse(toolbar.codeBlock.isHidden)
     }
+  }
+
+  func testHTMLCodeContainerToolbarTogglesAndRestoresSourceWithUndo() throws {
+    let source = "<p>Words</p>"
+    let (backend, surface) = try surface(source)
+    let toolbar = surface.formattingToolbar
+    toolbar.refresh()
+    XCTAssertFalse(toolbar.codeBlock.isHidden)
+    toolbar.toggleCodeBlock(toolbar.codeBlock)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(toolbar.codeBlock.state, .on)
+    XCTAssertEqual(try backend.formattedText(), "Words")
+    let code = try backend.serializedSource(typeName: EVDocument.htmlType)
+    XCTAssertTrue(String(decoding: code, as: UTF8.self).contains("<pre"))
+    toolbar.toggleCodeBlock(toolbar.codeBlock)
+    XCTAssertNil(surface.commandOutput)
+    XCTAssertEqual(toolbar.codeBlock.state, .off)
+    XCTAssertEqual(try backend.formattedText(), "Words")
+    let paragraph = try backend.serializedSource(typeName: EVDocument.htmlType)
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), code)
+    surface.perform(menuCommand: .redo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), paragraph)
   }
 
   func testMarkdownCodeBlockToolbarTogglesAndRestoresExactSourceWithUndo() throws {

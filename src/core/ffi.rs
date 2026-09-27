@@ -85,7 +85,7 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 6;
+pub const VIEM_CORE_ABI_VERSION: u32 = 7;
 
 /// Adds paragraph base direction in the request's fixed-layout extension slot
 /// and the context-owned cluster contract, plus explicit fragment resource
@@ -1221,6 +1221,11 @@ pub const VIEM_STYLE_NAMESPACE_CHARACTER: u32 = 2;
 pub const VIEM_STYLE_ROLE_NONE: u32 = 0;
 pub const VIEM_STYLE_ROLE_DOCUMENT: u32 = 1;
 pub const VIEM_STYLE_ROLE_PARAGRAPH: u32 = 2;
+pub const VIEM_STYLE_ROLE_QUOTE: u32 = 3;
+pub const VIEM_STYLE_ROLE_CODE_BLOCK: u32 = 4;
+pub const VIEM_STYLE_ROLE_LIST: u32 = 5;
+pub const VIEM_STYLE_ROLE_LIST_ITEM: u32 = 6;
+
 
 pub const VIEM_STYLE_ORIGIN_SOURCE_BACKED: u32 = 1;
 pub const VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION: u32 = 2;
@@ -1246,8 +1251,8 @@ pub const VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP: u32 = 2;
 pub const VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT: u32 = 3;
 pub const VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM: u32 = 4;
 pub const VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT: u32 = 5;
-pub const VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE: u32 = 6;
-pub const VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER: u32 = 7;
+pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP: u32 = 6;
+pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM: u32 = 7;
 pub const VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING: u32 = 8;
 pub const VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT: u32 = 9;
 pub const VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT: u32 = 10;
@@ -1268,6 +1273,22 @@ pub const VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION: u32 = 23;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES: u32 = 24;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING: u32 = 25;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION: u32 = 26;
+pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT: u32 = 28;
+pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT: u32 = 29;
+pub const VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP: u32 = 30;
+pub const VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT: u32 = 31;
+pub const VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM: u32 = 32;
+pub const VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT: u32 = 33;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH: u32 = 34;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR: u32 = 35;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH: u32 = 36;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR: u32 = 37;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH: u32 = 38;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR: u32 = 39;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH: u32 = 40;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR: u32 = 41;
+pub const VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND: u32 = 42;
+
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -1750,6 +1771,8 @@ pub struct ViemLayoutDecorationV1 {
 }
 pub const VIEM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<ViemLayoutDecorationV1>() as u32;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
+pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
+pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutDecorationsInfoV1 {
@@ -5163,6 +5186,11 @@ fn style_role_to_ffi(role: BlockRole) -> u32 {
     match role {
         BlockRole::Document => VIEM_STYLE_ROLE_DOCUMENT,
         BlockRole::Paragraph => VIEM_STYLE_ROLE_PARAGRAPH,
+        BlockRole::Quote => VIEM_STYLE_ROLE_QUOTE,
+        BlockRole::CodeBlock => VIEM_STYLE_ROLE_CODE_BLOCK,
+        BlockRole::List => VIEM_STYLE_ROLE_LIST,
+        BlockRole::ListItem => VIEM_STYLE_ROLE_LIST_ITEM,
+
     }
 }
 
@@ -5176,13 +5204,28 @@ fn style_origin_to_ffi(origin: StyleDefinitionOrigin) -> u32 {
 
 fn style_property_to_ffi(property: StyleProperty) -> u32 {
     match property {
+        StyleProperty::BlockMarginRight => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT,
+        StyleProperty::BlockMarginLeft => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT,
+        StyleProperty::BlockPaddingTop => VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP,
+        StyleProperty::BlockPaddingRight => VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT,
+        StyleProperty::BlockPaddingBottom => VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM,
+        StyleProperty::BlockPaddingLeft => VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT,
+        StyleProperty::BlockBorderTopWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH,
+        StyleProperty::BlockBorderTopColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR,
+        StyleProperty::BlockBorderRightWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH,
+        StyleProperty::BlockBorderRightColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR,
+        StyleProperty::BlockBorderBottomWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH,
+        StyleProperty::BlockBorderBottomColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR,
+        StyleProperty::BlockBorderLeftWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH,
+        StyleProperty::BlockBorderLeftColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR,
+        StyleProperty::BlockBackground => VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND,
         StyleProperty::CanvasBackground => VIEM_STYLE_PROPERTY_CANVAS_BACKGROUND,
         StyleProperty::CanvasPaddingTop => VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP,
         StyleProperty::CanvasPaddingRight => VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT,
         StyleProperty::CanvasPaddingBottom => VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM,
         StyleProperty::CanvasPaddingLeft => VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT,
-        StyleProperty::ParagraphSpacingBefore => VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE,
-        StyleProperty::ParagraphSpacingAfter => VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER,
+        StyleProperty::BlockMarginTop => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP,
+        StyleProperty::BlockMarginBottom => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM,
         StyleProperty::ParagraphLineSpacing => VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING,
         StyleProperty::ParagraphFirstLineIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT,
         StyleProperty::ParagraphLeadingIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT,
@@ -5391,15 +5434,31 @@ fn declared_block_property(
     property: StyleProperty,
 ) -> Option<StylePropertyValue> {
     declared_character_property(character, property).or_else(|| match property {
+        StyleProperty::BlockMarginRight => block.margin_right.map(StylePropertyValue::Float),
+        StyleProperty::BlockMarginLeft => block.margin_left.map(StylePropertyValue::Float),
+        StyleProperty::BlockPaddingTop => block.padding_top.map(StylePropertyValue::Float),
+        StyleProperty::BlockPaddingRight => block.padding_right.map(StylePropertyValue::Float),
+        StyleProperty::BlockPaddingBottom => block.padding_bottom.map(StylePropertyValue::Float),
+        StyleProperty::BlockPaddingLeft => block.padding_left.map(StylePropertyValue::Float),
+        StyleProperty::BlockBorderTopWidth => block.border_top_width.map(StylePropertyValue::Float),
+        StyleProperty::BlockBorderTopColor => block.border_top_color.map(StylePropertyValue::Color),
+        StyleProperty::BlockBorderRightWidth => block.border_right_width.map(StylePropertyValue::Float),
+        StyleProperty::BlockBorderRightColor => block.border_right_color.map(StylePropertyValue::Color),
+        StyleProperty::BlockBorderBottomWidth => block.border_bottom_width.map(StylePropertyValue::Float),
+        StyleProperty::BlockBorderBottomColor => block.border_bottom_color.map(StylePropertyValue::Color),
+        StyleProperty::BlockBorderLeftWidth => block.border_left_width.map(StylePropertyValue::Float),
+        StyleProperty::BlockBorderLeftColor => block.border_left_color.map(StylePropertyValue::Color),
+        StyleProperty::BlockBackground => block.background.map(StylePropertyValue::Color),
+
         StyleProperty::CanvasBackground => block.background.map(StylePropertyValue::Color),
         StyleProperty::CanvasPaddingTop => block.padding_top.map(StylePropertyValue::Float),
         StyleProperty::CanvasPaddingRight => block.padding_right.map(StylePropertyValue::Float),
         StyleProperty::CanvasPaddingBottom => block.padding_bottom.map(StylePropertyValue::Float),
         StyleProperty::CanvasPaddingLeft => block.padding_left.map(StylePropertyValue::Float),
-        StyleProperty::ParagraphSpacingBefore => {
-            block.spacing_before.map(StylePropertyValue::Float)
+        StyleProperty::BlockMarginTop => {
+            block.margin_top.map(StylePropertyValue::Float)
         }
-        StyleProperty::ParagraphSpacingAfter => block.spacing_after.map(StylePropertyValue::Float),
+        StyleProperty::BlockMarginBottom => block.margin_bottom.map(StylePropertyValue::Float),
         StyleProperty::ParagraphLineSpacing => {
             block.line_spacing.map(StylePropertyValue::LineSpacing)
         }
@@ -5488,11 +5547,27 @@ fn effective_paragraph_property(
     property: StyleProperty,
 ) -> Option<StylePropertyValue> {
     effective_character_property(&resolved.character, property).or(match property {
-        StyleProperty::ParagraphSpacingBefore => {
-            Some(StylePropertyValue::Float(resolved.spacing_before))
+        StyleProperty::BlockMarginRight => Some(StylePropertyValue::Float(resolved.margin_right)),
+        StyleProperty::BlockMarginLeft => Some(StylePropertyValue::Float(resolved.margin_left)),
+        StyleProperty::BlockPaddingTop => Some(StylePropertyValue::Float(resolved.padding_top)),
+        StyleProperty::BlockPaddingRight => Some(StylePropertyValue::Float(resolved.padding_right)),
+        StyleProperty::BlockPaddingBottom => Some(StylePropertyValue::Float(resolved.padding_bottom)),
+        StyleProperty::BlockPaddingLeft => Some(StylePropertyValue::Float(resolved.padding_left)),
+        StyleProperty::BlockBorderTopWidth => Some(StylePropertyValue::Float(resolved.border_top_width)),
+        StyleProperty::BlockBorderTopColor => Some(StylePropertyValue::Color(resolved.border_top_color.unwrap_or(resolved.character.foreground))),
+        StyleProperty::BlockBorderRightWidth => Some(StylePropertyValue::Float(resolved.border_right_width)),
+        StyleProperty::BlockBorderRightColor => Some(StylePropertyValue::Color(resolved.border_right_color.unwrap_or(resolved.character.foreground))),
+        StyleProperty::BlockBorderBottomWidth => Some(StylePropertyValue::Float(resolved.border_bottom_width)),
+        StyleProperty::BlockBorderBottomColor => Some(StylePropertyValue::Color(resolved.border_bottom_color.unwrap_or(resolved.character.foreground))),
+        StyleProperty::BlockBorderLeftWidth => Some(StylePropertyValue::Float(resolved.border_left_width)),
+        StyleProperty::BlockBorderLeftColor => Some(StylePropertyValue::Color(resolved.border_left_color.unwrap_or(resolved.character.foreground))),
+        StyleProperty::BlockBackground => resolved.background.map(StylePropertyValue::Color),
+
+        StyleProperty::BlockMarginTop => {
+            Some(StylePropertyValue::Float(resolved.margin_top))
         }
-        StyleProperty::ParagraphSpacingAfter => {
-            Some(StylePropertyValue::Float(resolved.spacing_after))
+        StyleProperty::BlockMarginBottom => {
+            Some(StylePropertyValue::Float(resolved.margin_bottom))
         }
         StyleProperty::ParagraphLineSpacing => {
             Some(StylePropertyValue::LineSpacing(resolved.line_spacing))
@@ -5659,7 +5734,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         .try_reserve(sheet.block_style_count() + sheet.character_style_count())
         .map_err(|_| ViemStatus::ResourceExhausted)?;
 
-    for style in sheet.block_styles().filter(|style| style.role == BlockRole::Paragraph) {
+    for style in sheet.block_styles().filter(|style| style.role != BlockRole::Document) {
         let metadata = sheet
             .block_style_metadata(&style.id)
             .ok_or(ViemStatus::CoreFailure)?;
@@ -5670,7 +5745,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
             .concat(),
-            BlockRole::Paragraph => [
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem => [
                 PARAGRAPH_STYLE_PROPERTIES.as_slice(),
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
@@ -5701,7 +5776,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     )?;
                 }
             }
-            BlockRole::Paragraph => {
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem => {
                 let resolved = sheet
                     .resolve_assigned_paragraph_style_with_contributions(
                         &assignment,
@@ -6840,13 +6915,28 @@ fn parse_style_namespace(raw: u32) -> Result<StyleNamespace, ViemStatus> {
 
 fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
     match raw {
+        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT => Ok(StyleProperty::BlockMarginRight),
+        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT => Ok(StyleProperty::BlockMarginLeft),
+        VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP => Ok(StyleProperty::BlockPaddingTop),
+        VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT => Ok(StyleProperty::BlockPaddingRight),
+        VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM => Ok(StyleProperty::BlockPaddingBottom),
+        VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT => Ok(StyleProperty::BlockPaddingLeft),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH => Ok(StyleProperty::BlockBorderTopWidth),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR => Ok(StyleProperty::BlockBorderTopColor),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH => Ok(StyleProperty::BlockBorderRightWidth),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR => Ok(StyleProperty::BlockBorderRightColor),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH => Ok(StyleProperty::BlockBorderBottomWidth),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR => Ok(StyleProperty::BlockBorderBottomColor),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH => Ok(StyleProperty::BlockBorderLeftWidth),
+        VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR => Ok(StyleProperty::BlockBorderLeftColor),
+        VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND => Ok(StyleProperty::BlockBackground),
         VIEM_STYLE_PROPERTY_CANVAS_BACKGROUND => Ok(StyleProperty::CanvasBackground),
         VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP => Ok(StyleProperty::CanvasPaddingTop),
         VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT => Ok(StyleProperty::CanvasPaddingRight),
         VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM => Ok(StyleProperty::CanvasPaddingBottom),
         VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT => Ok(StyleProperty::CanvasPaddingLeft),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE => Ok(StyleProperty::ParagraphSpacingBefore),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER => Ok(StyleProperty::ParagraphSpacingAfter),
+        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP => Ok(StyleProperty::BlockMarginTop),
+        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM => Ok(StyleProperty::BlockMarginBottom),
         VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING => Ok(StyleProperty::ParagraphLineSpacing),
         VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT => {
             Ok(StyleProperty::ParagraphFirstLineIndent)
@@ -6949,12 +7039,22 @@ unsafe fn parse_style_property_value<O>(
     }
     let invalid = || ViemStatus::InvalidStyleValue;
     match property {
-        StyleProperty::CanvasPaddingTop
+        StyleProperty::BlockMarginRight
+        | StyleProperty::BlockMarginLeft
+        | StyleProperty::BlockPaddingTop
+        | StyleProperty::BlockPaddingRight
+        | StyleProperty::BlockPaddingBottom
+        | StyleProperty::BlockPaddingLeft
+        | StyleProperty::BlockBorderTopWidth
+        | StyleProperty::BlockBorderRightWidth
+        | StyleProperty::BlockBorderBottomWidth
+        | StyleProperty::BlockBorderLeftWidth
+        | StyleProperty::CanvasPaddingTop
         | StyleProperty::CanvasPaddingRight
         | StyleProperty::CanvasPaddingBottom
         | StyleProperty::CanvasPaddingLeft
-        | StyleProperty::ParagraphSpacingBefore
-        | StyleProperty::ParagraphSpacingAfter
+        | StyleProperty::BlockMarginTop
+        | StyleProperty::BlockMarginBottom
         | StyleProperty::ParagraphFirstLineIndent
         | StyleProperty::ParagraphLeadingIndent
         | StyleProperty::ParagraphTrailingIndent
@@ -7010,7 +7110,12 @@ unsafe fn parse_style_property_value<O>(
             style_edit_value_has_no_text(value)?;
             Ok(StylePropertyValue::Boolean(value.enum_value != 0))
         }
-        StyleProperty::CanvasBackground
+        StyleProperty::BlockBorderTopColor
+        | StyleProperty::BlockBorderRightColor
+        | StyleProperty::BlockBorderBottomColor
+        | StyleProperty::BlockBorderLeftColor
+        | StyleProperty::BlockBackground
+        | StyleProperty::CanvasBackground
         | StyleProperty::CharacterForeground
         | StyleProperty::CharacterBackground => {
             if value.kind != VIEM_STYLE_VALUE_COLOR {
@@ -8182,17 +8287,19 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
             if decoration_capacity >= info.decoration_count && label_capacity >= info.label_bytes {
                 values.reserve(count);
                 bytes.reserve(length);
-                for (row_index, row) in snapshot.rows.iter().enumerate() {
-                    for item in &row.decorations {
+                for (row_index, item) in snapshot.decorations_in_paint_order() {
                         values.push(ViemLayoutDecorationV1 {
                             struct_size: VIEM_LAYOUT_DECORATION_V1_SIZE,
                             flags: (if item.render_run.is_some() {
                                 VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN
                             } else {
                                 0
-                            }) | if matches!(item.kind, crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak) {
-                                VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER
-                            } else { 0 },
+                            }) | match item.kind {
+                                crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak => VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER,
+                                crate::layout::DecorationKind::BlockBackground => VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND,
+                                crate::layout::DecorationKind::BlockBorder => VIEM_LAYOUT_DECORATION_BLOCK_BORDER,
+                                _ => 0,
+                            },
                             row_index: checked_export_count(row_index)?,
                             label_byte_start: checked_export_count(bytes.len())?,
                             label_byte_length: checked_export_count(item.text.len())?,
@@ -8206,7 +8313,6 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                             paint: text_paint_to_ffi(&item.paint),
                         });
                         bytes.extend_from_slice(item.text.as_bytes());
-                    }
                 }
             }
             Ok((info, values, bytes))
@@ -9951,7 +10057,7 @@ pub unsafe extern "C" fn viem_core_view_edit_direct_style(
             return Err(ViemStatus::InvalidArgument);
         }
         let property = parse_style_property(request.property)?;
-        if property < StyleProperty::ParagraphSpacingBefore {
+        if CANVAS_STYLE_PROPERTIES.contains(&property) {
             return Err(ViemStatus::UnsupportedOperation);
         }
         let value = match request.operation {
@@ -10241,6 +10347,7 @@ pub unsafe extern "C" fn viem_core_view_create_style(
             let parent = if parent.is_empty() {
                 (namespace == StyleNamespace::Block).then(|| sheet.base_paragraph.clone())
             } else { Some(StyleId(parent)) };
+            let role = parent.as_ref().and_then(|id| sheet.block_style(id)).map_or(BlockRole::Paragraph, |s| if s.role.is_container() { s.role } else { BlockRole::Paragraph });
             let metadata = crate::document::StyleDefinitionMetadata {
                 display_name: name,
                 origin: StyleDefinitionOrigin::SourceBacked,
@@ -10251,7 +10358,7 @@ pub unsafe extern "C" fn viem_core_view_create_style(
                         id: StyleId(id),
                         based_on: parent,
                         next_paragraph_style: (!next.is_empty()).then_some(StyleId(next)),
-                        role: BlockRole::Paragraph,
+                        role,
                         character: CharacterProperties::default(),
                         block: BlockProperties::default(),
                     },
@@ -11452,6 +11559,65 @@ mod tests {
     }
 
     #[test]
+    fn style_defaults_diagnostics_preserve_valid_settings_and_release_the_core_lease() {
+        use super::*;
+        struct Diagnostics {
+            handle: ViemCoreHandle,
+            messages: Vec<String>,
+            read_statuses: Vec<ViemStatus>,
+        }
+        unsafe extern "C" fn collect(context: *mut c_void, message: *const u8, length: u64) {
+            let diagnostics = unsafe { &mut *context.cast::<Diagnostics>() };
+            let bytes = unsafe { std::slice::from_raw_parts(message, length as usize) };
+            diagnostics.messages.push(String::from_utf8_lossy(bytes).into_owned());
+            let mut state = ViemDocumentStateV1::default();
+            diagnostics.read_statuses.push(unsafe {
+                viem_core_document_state(diagnostics.handle, &mut state)
+            });
+        }
+        let source = "> Quote\n\n```\ncode\n```";
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let handle = register_core(Core::new(document)).unwrap();
+        let mut diagnostics = Diagnostics { handle, messages: Vec::new(), read_statuses: Vec::new() };
+        let settings = br#"{"version":1,"block_styles":[
+          {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","based_on":null,
+           "next_paragraph_style":null,"block":{},"character":{"size":23}},
+          {"id":"Block quote","name":"Block quote","role":"Paragraph","based_on":"Paragraph",
+           "next_paragraph_style":"Block quote","block":{},"character":{}}
+        ]}"#;
+        assert_eq!(unsafe {
+            viem_core_initialize_style_defaults(handle, 0, settings.as_ptr(), settings.len() as u64,
+                Some(collect), (&mut diagnostics as *mut Diagnostics).cast())
+        }, ViemStatus::Ok);
+        assert!(diagnostics.messages.iter().any(|message| message.contains("Block quote")));
+        assert!(diagnostics.read_statuses.iter().all(|status| *status == ViemStatus::Ok));
+        let configured = {
+            let lease = checkout_core(handle).unwrap();
+            let document = lease.core().document();
+            let sheet = document.projection().style_sheet();
+            assert_eq!(sheet.block_style(&"Paragraph".into()).unwrap().character.size,
+                Some(crate::document::FontSize::Points(23.)));
+            assert_eq!(sheet.block_style(&"Block quote".into()).unwrap().role,
+                crate::document::BlockRole::Quote);
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            document.export_style_defaults().unwrap()
+        };
+        diagnostics.messages.clear();
+        let invalid = br#"{"version":99}"#;
+        assert_eq!(unsafe {
+            viem_core_initialize_style_defaults(handle, 0, invalid.as_ptr(), invalid.len() as u64,
+                Some(collect), (&mut diagnostics as *mut Diagnostics).cast())
+        }, ViemStatus::InvalidArgument);
+        assert!(diagnostics.messages.iter().any(|message| message.contains("99")));
+        assert!(diagnostics.read_statuses.iter().all(|status| *status == ViemStatus::Ok));
+        {
+            let lease = checkout_core(handle).unwrap();
+            assert_eq!(lease.core().document().export_style_defaults().unwrap(), configured);
+        }
+        assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
+    }
+
+    #[test]
     fn style_sheet_export_exposes_builtin_default_deltas_after_loading_configuration() {
         use super::*;
         use crate::document::Revision;
@@ -11473,8 +11639,8 @@ mod tests {
                 ..(heading.first_property + heading.property_count) as usize];
             for (key, expected) in [
                 (VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 24.),
-                (VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, 10.),
-                (VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, 5.),
+                (VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, 10.),
+                (VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, 5.),
             ] {
                 let property = properties.iter().find(|property| property.property == key).unwrap();
                 assert_ne!(property.flags & VIEM_STYLE_PROPERTY_DECLARED, 0, "{format:?} property {key}");
@@ -11500,8 +11666,8 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.definition_count, 19);
-        assert_eq!(info.property_count, 402);
+        assert_eq!(info.definition_count, 22);
+        assert_eq!(info.property_count, 768);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();
@@ -13717,21 +13883,41 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
     })
 }
 
-/// Load validated JSON defaults only before a core has views or edits. No source mutation.
+pub type ViemStyleDefaultsDiagnosticCallback =
+    Option<unsafe extern "C" fn(*mut c_void, *const u8, u64)>;
+
+/// Load usable JSON defaults before a core has views or edits. No source mutation.
+/// Diagnostics describe ignored settings and run after releasing the core lease.
+///
+/// # Safety
+/// JSON must be readable for this call. The callback and context must be valid
+/// for synchronous invocation and must not unwind through C. Diagnostic bytes
+/// are borrowed only for the duration of the callback.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_initialize_style_defaults(
     handle: ViemCoreHandle,
     expected_revision: u64,
     json: *const u8,
     length: u64,
+    diagnostic: ViemStyleDefaultsDiagnosticCallback,
+    context: *mut c_void,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let bytes = unsafe { input_bytes(json, length)? };
-        with_core_mut(handle, |core| {
+        let result = with_core_mut(handle, |core| {
             validate_revision(core.document(), expected_revision)?;
-            core.initialize_style_defaults(bytes)
-                .map_err(|_| ViemStatus::InvalidArgument)
-        })
+            Ok(core.initialize_style_defaults(bytes))
+        })?;
+        let (messages, status) = match result {
+            Ok(messages) => (messages, Ok(())),
+            Err(error) => (vec![error.to_string()], Err(ViemStatus::InvalidArgument)),
+        };
+        if let Some(callback) = diagnostic {
+            for message in messages {
+                unsafe { callback(context, message.as_ptr(), message.len() as u64) };
+            }
+        }
+        status
     })
 }
 

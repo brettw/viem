@@ -214,7 +214,7 @@ impl Document {
         };
         if projection.text_tree().byte_len() != 0
             || projection.blocks().iter().any(|block| {
-                block.style == StyleId::from("Block quote")
+                (block.style == StyleId::from("Block quote") || block.quote_depth > 0)
                     || block.style.is_internal_list()
                     || matches!(block.kind, super::super::BlockKind::ListItem { .. })
             })

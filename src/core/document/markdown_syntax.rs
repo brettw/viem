@@ -131,6 +131,7 @@ pub(super) struct Container {
 pub(super) struct Blocks {
     pub blocks: Vec<BlockSyntax>,
     pub containers: Vec<Container>,
+    pub owners: Vec<super::containers::SourceContainer>,
     pub definitions: Vec<Range<usize>>,
 }
 impl Blocks {
@@ -147,10 +148,15 @@ impl Blocks {
             match event {
                 Event::Start(Tag::BlockQuote(_)) => {
                     quotes += 1;
+                    result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::Quote));
                     result.containers.push(Container { range, quote_depth: quotes, list: None, loose: false });
                 }
                 Event::End(TagEnd::BlockQuote(_)) => quotes -= 1,
-                Event::Start(Tag::List(ordinal)) => lists.push((range, ordinal, false, result.containers.len())),
+                Event::Start(Tag::List(ordinal)) => {
+                    result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::List { ordered: ordinal.is_some() }));
+                    lists.push((range, ordinal, false, result.containers.len()));
+                }
+                Event::Start(Tag::CodeBlock(_)) => result.owners.push(super::containers::SourceContainer::new(range, super::ContainerKind::CodeBlock)),
                 Event::End(TagEnd::List(_)) => {
                     let (range, _, loose, first) = lists.pop().unwrap();
                     if loose {
@@ -163,6 +169,7 @@ impl Blocks {
                     }
                 }
                 Event::Start(Tag::Item) => {
+                    result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::ListItem));
                     let level = lists.len().saturating_sub(1).min(255) as u8;
                     let (list_range, ordinal, _, _) = lists.last().unwrap();
                     let kind = super::BlockKind::ListItem { ordered: ordinal.is_some(), ordinal: ordinal.unwrap_or(1), level,
@@ -209,6 +216,7 @@ impl Blocks {
         let at = |at| input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
             .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start);
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
+        for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }
         for container in &mut self.containers { container.range = at(container.range.start)..at(container.range.end); }
         for range in &mut self.definitions { *range = at(range.start)..at(range.end); }
         self

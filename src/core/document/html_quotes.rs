@@ -194,7 +194,7 @@ pub(super) fn remove_patches(
                 |(_, token)| matches!(&token.kind, TokenKind::Tag(tag) if tag.name == "blockquote"),
             )
             .collect::<Vec<_>>();
-        for (index, quote) in quotes {
+        for (index, quote) in quotes.into_iter().rev().take(1) {
             let end = closing(&tokens, quote, input.text.len());
             let inner = &stack[index + 1..];
             let paragraph = inner.iter().find(|token| {

@@ -970,7 +970,7 @@ fn style_runs(
             direction => direction,
         };
         paragraphs.push(json!({"start":selected.start-range.start,"end":selected.end-range.start,
-            "spacing_before":paragraph.spacing_before,"spacing_after":paragraph.spacing_after,
+            "margin_top":paragraph.margin_top,"margin_bottom":paragraph.margin_bottom,
             "line_spacing":paragraph.line_spacing,"first_line_indent":paragraph.first_line_indent,
             "leading_indent":paragraph.leading_indent,"trailing_indent":paragraph.trailing_indent,
             "alignment":paragraph.alignment,"base_direction":paragraph.base_direction,"resolved_direction":resolved_direction}));

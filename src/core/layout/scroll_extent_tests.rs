@@ -42,10 +42,10 @@ fn terminal_document_extent_matches_full_regional_and_streamed_long_rows() {
     let ranges = hard_line_ranges(text, 0);
     let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
     styles.document_insets = EdgeInsets { top: 7.0, bottom: 11.0, ..Default::default() };
-    styles.paragraphs[0].spacing_before = 3.0;
-    styles.paragraphs[0].spacing_after = 5.0;
-    styles.paragraphs[1].spacing_before = 2.0;
-    styles.paragraphs[1].spacing_after = 17.0;
+    styles.paragraphs[0].margin_top = 3.0;
+    styles.paragraphs[0].margin_bottom = 5.0;
+    styles.paragraphs[1].margin_top = 2.0;
+    styles.paragraphs[1].margin_bottom = 17.0;
 
     // A short exact advance must retain overflowing ink; a long one must
     // retain its blank leading. Both must add trailing spacing and padding once.

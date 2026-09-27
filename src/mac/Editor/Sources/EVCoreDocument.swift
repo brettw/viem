@@ -80,6 +80,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var openingFilename = ""
     private var allowAutomaticCode = false
     private var recoveryInterpretation: EVRecoverySnapshot?
+    private var isStylePreview = false
     private(set) var currentDocumentState = ViemDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []
@@ -116,6 +117,16 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         if let syntaxTimer { RunLoop.main.add(syntaxTimer, forMode: .common) }
     }
 
+    /// Style specimens use the document/layout pipeline without loading startup
+    /// commands or mutating the application-wide syntax-style authority.
+    init(stylePreviewHTML: String) throws {
+        configuration = .shared
+        isStylePreview = true
+        source = Data(stylePreviewHTML.utf8)
+        typeName = "public.html"
+        try createCore(publishDiagnostics: false)
+    }
+
     /// A replacement has no observers, timers, surfaces, or persistence
     /// callbacks until its fully configured core is transferred to the owner.
     private init(preparing source: Data, typeName: String, filename: String,
@@ -132,7 +143,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     deinit {
         let source = syntaxDiagnosticSource
-        Task { @MainActor in EVCodePreferences.shared.reportLoadDiagnostics([], source: source) }
+        if !isStylePreview { Task { @MainActor in EVCodePreferences.shared.reportLoadDiagnostics([], source: source) } }
         syntaxTimer?.invalidate()
         for observer in codeObservers { NotificationCenter.default.removeObserver(observer) }
         if core != 0 {
@@ -466,8 +477,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func createCore(publishDiagnostics: Bool = true) throws {
         configurationWarning = configuration.lastError
-        do { try EVCodeStyleSession.initialize(configuration: configuration) }
-        catch { configurationWarning = error.localizedDescription }
+        if !isStylePreview {
+            do { try EVCodeStyleSession.initialize(configuration: configuration) }
+            catch { configurationWarning = error.localizedDescription }
+        }
         var options = ViemDocumentOptions()
         options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         // Opening policy belongs to the portable encoding projection. The
@@ -491,6 +504,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         core = handle
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
+        if isStylePreview { return }
         configureSyntax()
         try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
         try configureWhitespace(indentation: configuration.indentation, presentation: configuration.whitespacePresentation)
@@ -505,15 +519,25 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
         try checked(detected, operation: "Detect code language")
         _ = try documentState()
+        let defaultStyleName = sourceFormat.defaultStyleName
+        let defaultStyleFile = configuration.directory.appendingPathComponent("\(defaultStyleName)_style.json")
         do {
-            if sourceFormat != .code, let defaults = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) {
-                let result = defaults.withUnsafeBytes { raw in
-                    viem_core_initialize_style_defaults(core, currentDocumentState.document_revision,
-                        raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+            if sourceFormat != .code, let defaults = try configuration.styleDefaults(named: defaultStyleName) {
+                let result = EVCoreStyleDefaults.initialize(core: core,
+                    revision: currentDocumentState.document_revision, json: defaults, path: defaultStyleFile.path)
+                var warnings = result.messages
+                if result.status != Status.ok {
+                    let reason = warnings.isEmpty ? " Core status \(result.status)." : ""
+                    warnings.append("\(defaultStyleFile.path): Could not load saved styles. Using built-in defaults.\(reason)")
                 }
-                try checked(result, operation: "Load default style")
+                if !warnings.isEmpty {
+                    configurationWarning = ([configurationWarning].compactMap { $0 } + warnings).joined(separator: "\n")
+                }
             }
-        } catch { configurationWarning = error.localizedDescription }
+        } catch {
+            let warning = "Could not load saved styles from \(defaultStyleFile.path). Using built-in defaults. \(error.localizedDescription)"
+            configurationWarning = ([configurationWarning].compactMap { $0 } + [warning]).joined(separator: "\n")
+        }
         let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
         try EVSelectionPreferences.attach(self)
         if !startupDiagnostics.isEmpty {
@@ -1254,13 +1278,14 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func createStyle(_ key: EVStyleKey, name: String, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
+    func createStyle(_ key: EVStyleKey, name: String, parent: EVStyleID? = nil, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
         var request = ViemCreateStyleV1()
         request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
         let idBytes = Array(key.id.rawValue.utf8)
         let nameBytes = Array(name.utf8)
+        let parentBytes = Array((parent?.rawValue ?? "").utf8)
         return try performCoreOperation("Create named style") { outcome in
             idBytes.withUnsafeBufferPointer { id in
                 nameBytes.withUnsafeBufferPointer { name in
@@ -1268,7 +1293,11 @@ final class EVCoreViewSession {
                     request.style_id.length = UInt64(id.count)
                     request.display_name.data = name.baseAddress
                     request.display_name.length = UInt64(name.count)
-                    return viem_core_view_create_style(document.core, viewID, &request, outcome)
+                    return parentBytes.withUnsafeBufferPointer { parent in
+                        request.parent_id.data = parent.baseAddress
+                        request.parent_id.length = UInt64(parent.count)
+                        return viem_core_view_create_style(document.core, viewID, &request, outcome)
+                    }
                 }
             }
         }

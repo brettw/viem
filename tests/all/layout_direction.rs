@@ -16,6 +16,8 @@ fn html(body: &str) -> Document {
 fn leading_x(document: &Document, rtl: bool) -> f32 {
     let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
     styles.document_insets.left
+        + styles.paragraphs[0].containers.iter().map(|c| c.style.left_in_direction(rtl)).sum::<f32>()
+        + styles.paragraphs[0].block_box.left()
         + if rtl {
             styles.paragraphs[0].trailing_indent
         } else {

@@ -208,8 +208,12 @@ pub(super) fn project_with_configuration(
             .partition_point(|block| block.range.start <= provenance.formatted.start)
             .saturating_sub(1);
         let block = &semantic.blocks()[index];
+        let shown_style = if block.style == semantic.style_sheet().base_paragraph || block.style.0 == "Code Block" {
+            block.containers.iter().rev().find(|member| matches!(member.container.kind, ContainerKind::Quote | ContainerKind::CodeBlock))
+                .map(|member| member.container.style.clone()).unwrap_or_else(|| block.style.clone())
+        } else { block.style.clone() };
         let mut applications = vec![StyleApplication::SourceParagraph {
-            style: block.style.clone(),
+            style: shown_style,
             defaults: block.direct_default_character.clone(),
         }];
         applications.extend(

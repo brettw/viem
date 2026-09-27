@@ -64,7 +64,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let bytes = Data(#"{"version":1}"#.utf8)
     let revision = try backend.documentState().document_revision
     let status = bytes.withUnsafeBytes { raw in
-      viem_core_initialize_style_defaults(backend.core, revision, raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+      viem_core_initialize_style_defaults(backend.core, revision, raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), nil, nil)
     }
     XCTAssertEqual(status, UInt32(VIEM_STATUS_INVALID_ARGUMENT))
     XCTAssertEqual(try backend.documentState().document_revision, revision)

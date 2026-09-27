@@ -127,7 +127,12 @@ impl FormattedDocument {
             let paragraph = active_paragraphs
                 .last_key_value()
                 .map(|(_, id)| id.clone())
-                .or_else(|| block.map(|block| block.style.clone()))
+                .or_else(|| block.map(|block| {
+                    if block.style == self.style_sheet().base_paragraph || block.style.0 == "Code Block" {
+                        block.containers.iter().rev().find(|member| matches!(member.container.kind, super::ContainerKind::Quote | super::ContainerKind::CodeBlock))
+                            .map(|member| member.container.style.clone()).unwrap_or_else(|| block.style.clone())
+                    } else { block.style.clone() }
+                }))
                 .unwrap_or_else(|| self.style_sheet().base_paragraph.clone());
             match block.map(|block| &block.kind) {
                 Some(super::BlockKind::ListItem { ordered: false, .. }) => has_bullets = true,

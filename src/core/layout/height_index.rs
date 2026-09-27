@@ -121,6 +121,7 @@ impl ViewHeightIndex {
             let run = HeightRun {
                 line_count: hard_line_count,
                 height: estimated_line_height,
+                extent: estimated_line_height,
                 exact: false,
             };
             result.root = Some(Node::new(run));
@@ -143,6 +144,14 @@ impl ViewHeightIndex {
     pub fn total_height(&self) -> HeightMeasurement {
         HeightMeasurement {
             height: subtree_height(&self.root),
+            exact: subtree_exact(&self.root),
+        }
+    }
+
+    /// Furthest painted or flow edge, including earlier rows that overlap later lines.
+    pub(crate) fn total_extent(&self) -> HeightMeasurement {
+        HeightMeasurement {
+            height: subtree_extent(&self.root),
             exact: subtree_exact(&self.root),
         }
     }
@@ -253,6 +262,43 @@ impl ViewHeightIndex {
         unreachable!("height aggregates did not contain an in-range coordinate")
     }
 
+    /// Earliest flow band whose retained painted extent reaches this y. The
+    /// max-prefix aggregate prunes preceding subtrees without scanning rows.
+    pub(crate) fn first_line_reaching_y(
+        &self,
+        y: f64,
+    ) -> Result<Option<usize>, ViewHeightIndexError> {
+        if !y.is_finite() || y < 0. {
+            return Err(ViewHeightIndexError::InvalidVerticalCoordinate);
+        }
+        if y >= subtree_extent(&self.root) {
+            return Ok(None);
+        }
+        let (mut tree, mut top, mut first) = (self.root.as_deref(), 0., 0usize);
+        while let Some(node) = tree {
+            if top + subtree_extent(&node.left) > y {
+                tree = node.left.as_deref();
+                continue;
+            }
+            top += subtree_height(&node.left);
+            first += subtree_lines(&node.left);
+            if top + node.run.total_extent() > y {
+                let offset = if y < top + node.run.extent {
+                    0
+                } else {
+                    (((y - top - node.run.extent) / node.run.height).floor() as usize)
+                        .saturating_add(1)
+                }
+                .min(node.run.line_count - 1);
+                return Ok(Some(first + offset));
+            }
+            top += node.run.total_height();
+            first += node.run.line_count;
+            tree = node.right.as_deref();
+        }
+        Ok(None)
+    }
+
     /// Mark one hard line exact. This is a constant-size replacement bracketed
     /// by two AVL-tree splits and joins, hence O(log n).
     pub fn set_exact_height(
@@ -290,10 +336,10 @@ impl ViewHeightIndex {
         let replacement = Some(Node::new(HeightRun {
             line_count,
             height,
+            extent: height,
             exact: true,
         }));
-        self.replace_range(range, replacement);
-        Ok(())
+        self.replace_range(range, replacement)
     }
 
     /// Batch exact heights are compacted into equal adjacent runs before one
@@ -303,43 +349,50 @@ impl ViewHeightIndex {
         start: usize,
         heights: &[f64],
     ) -> Result<(), ViewHeightIndexError> {
+        let measurements = heights
+            .iter()
+            .map(|height| (*height, *height))
+            .collect::<Vec<_>>();
+        self.set_exact_heights_with_extents(start, &measurements)
+    }
+
+    /// Flow advances and local painted extents are distinct when margins overlap.
+    /// Extents survive viewport eviction and splices without shifting later records.
+    pub(crate) fn set_exact_heights_with_extents(
+        &mut self,
+        start: usize,
+        measurements: &[(f64, f64)],
+    ) -> Result<(), ViewHeightIndexError> {
         let end = start
-            .checked_add(heights.len())
+            .checked_add(measurements.len())
             .ok_or(ViewHeightIndexError::LineCountOverflow)?;
         let range = start..end;
         self.validate_range(&range)?;
-        if heights.is_empty() {
+        if measurements.is_empty() {
             return Ok(());
         }
-
-        let mut replacement_height = 0.0;
-        for height in heights {
-            validate_height(*height)?;
-            replacement_height = checked_height_sum(replacement_height, *height)
-                .ok_or(ViewHeightIndexError::HeightOverflow)?;
-        }
-        self.validate_replacement(&range, heights.len(), replacement_height)?;
-
+        let mut replacement_height = 0.;
         let mut runs: Vec<HeightRun> = Vec::new();
-        for height in heights {
-            if let Some(last) = runs.last_mut() {
-                if last.height.to_bits() == height.to_bits() {
-                    last.line_count = last
-                        .line_count
-                        .checked_add(1)
-                        .expect("the validated input length bounds each run");
-                    continue;
-                }
-            }
-            runs.push(HeightRun {
+        for &(height, extent) in measurements {
+            validate_height(height)?;
+            validate_height(extent)?;
+            replacement_height = checked_height_sum(replacement_height, height)
+                .ok_or(ViewHeightIndexError::HeightOverflow)?;
+            let run = HeightRun {
                 line_count: 1,
-                height: *height,
+                height,
+                extent: extent.max(height),
                 exact: true,
-            });
+            };
+            if let Some(last) = runs.last_mut().filter(|last| last.can_merge(run)) {
+                last.line_count += 1;
+            } else {
+                runs.push(run);
+            }
         }
+        self.validate_replacement(&range, measurements.len(), replacement_height)?;
         let replacement = self.tree_from_runs(runs);
-        self.replace_range(range, replacement);
-        Ok(())
+        self.replace_range(range, replacement)
     }
 
     /// Revert a range to this index's estimate in O(log n).
@@ -354,10 +407,10 @@ impl ViewHeightIndex {
         let replacement = Some(Node::new(HeightRun {
             line_count,
             height: self.estimated_line_height,
+            extent: self.estimated_line_height,
             exact: false,
         }));
-        self.replace_range(range, replacement);
-        Ok(())
+        self.replace_range(range, replacement)
     }
 
     /// Delete `removed` and insert `inserted_hard_lines` estimated entries at
@@ -387,11 +440,11 @@ impl ViewHeightIndex {
             Node::new(HeightRun {
                 line_count: inserted_hard_lines,
                 height: self.estimated_line_height,
+                extent: self.estimated_line_height,
                 exact: false,
             })
         });
-        self.replace_range(removed, replacement);
-        Ok(())
+        self.replace_range(removed, replacement)
     }
 
     fn validate_range(&self, range: &Range<usize>) -> Result<(), ViewHeightIndexError> {
@@ -424,12 +477,21 @@ impl ViewHeightIndex {
         Ok(())
     }
 
-    fn replace_range(&mut self, range: Range<usize>, replacement: Link) {
-        let root = self.root.take();
+    fn replace_range(
+        &mut self,
+        range: Range<usize>,
+        replacement: Link,
+    ) -> Result<(), ViewHeightIndexError> {
+        let root = self.root.clone();
         let (left, remainder) = split(root, range.start);
         let (_, right) = split(remainder, range.end - range.start);
         let joined = join(left, replacement);
-        self.root = join(joined, right);
+        let next = join(joined, right);
+        if !subtree_extent(&next).is_finite() {
+            return Err(ViewHeightIndexError::HeightOverflow);
+        }
+        self.root = next;
+        Ok(())
     }
 
     fn tree_from_runs(&mut self, runs: Vec<HeightRun>) -> Link {
@@ -443,6 +505,7 @@ type Link = Option<Arc<Node>>;
 struct HeightRun {
     line_count: usize,
     height: f64,
+    extent: f64,
     exact: bool,
 }
 
@@ -452,8 +515,14 @@ impl HeightRun {
             .expect("tree runs have validated finite aggregate heights")
     }
 
+    fn total_extent(self) -> f64 {
+        (self.height * (self.line_count - 1) as f64 + self.extent).max(self.total_height())
+    }
+
     fn can_merge(self, other: Self) -> bool {
-        self.exact == other.exact && self.height.to_bits() == other.height.to_bits()
+        self.exact == other.exact
+            && self.height.to_bits() == other.height.to_bits()
+            && self.extent.to_bits() == other.extent.to_bits()
     }
 }
 
@@ -464,6 +533,7 @@ struct Node {
     right: Link,
     subtree_lines: usize,
     subtree_height: f64,
+    subtree_extent: f64,
     subtree_exact: bool,
     subtree_runs: usize,
     subtree_depth: usize,
@@ -481,6 +551,7 @@ impl Node {
             right: None,
             subtree_lines: run.line_count,
             subtree_height: run.total_height(),
+            subtree_extent: run.total_extent(),
             subtree_exact: run.exact,
             subtree_runs: 1,
             subtree_depth: 1,
@@ -496,6 +567,11 @@ impl Node {
             checked_height_sum(subtree_height(&self.left), self.run.total_height())
                 .and_then(|height| checked_height_sum(height, subtree_height(&self.right)))
                 .expect("public mutation validation prevents aggregate-height overflow");
+        self.subtree_extent = subtree_extent(&self.left)
+            .max(subtree_height(&self.left) + self.run.total_extent())
+            .max(
+                subtree_height(&self.left) + self.run.total_height() + subtree_extent(&self.right),
+            );
         self.subtree_exact =
             subtree_exact(&self.left) && self.run.exact && subtree_exact(&self.right);
         self.subtree_runs = subtree_runs(&self.left)
@@ -547,6 +623,10 @@ fn subtree_lines(tree: &Link) -> usize {
 
 fn subtree_height(tree: &Link) -> f64 {
     tree.as_ref().map_or(0.0, |node| node.subtree_height)
+}
+
+fn subtree_extent(tree: &Link) -> f64 {
+    tree.as_ref().map_or(0., |node| node.subtree_extent)
 }
 
 fn subtree_exact(tree: &Link) -> bool {
@@ -642,6 +722,7 @@ fn join(left: Link, right: Link) -> Link {
             .checked_add(right_run.line_count)
             .expect("public mutation validation prevents line-count overflow"),
         height: left_run.height,
+        extent: left_run.extent,
         exact: left_run.exact,
     };
     join_with_run(left, combined, right)
@@ -914,6 +995,69 @@ mod tests {
         assert_eq!(checked.lines, index.hard_line_count());
         assert_eq!(checked.runs, index.statistics().run_count());
         assert_eq!(checked.depth, index.statistics().tree_depth());
+    }
+
+    #[test]
+    fn painted_extents_survive_splices_and_reset_without_changing_flow_prefixes() {
+        let mut index = ViewHeightIndex::new_estimated(1_000_000, 10.).unwrap();
+        index
+            .set_exact_heights_with_extents(2, &[(1., 20_000_000.), (2., 3.)])
+            .unwrap();
+        let checkpoint = index.clone();
+        assert_eq!(index.total_extent().height(), 20_000_020.);
+        assert_eq!(index.prefix_height(4).unwrap().height(), 23.);
+        index.splice(0..1, 3).unwrap();
+        assert_eq!(index.total_extent().height(), 20_000_040.);
+        assert_eq!(checkpoint.total_extent().height(), 20_000_020.);
+        assert!(index.statistics().run_count() < 8);
+        index.invalidate(4..5).unwrap();
+        assert_eq!(index.total_extent().height(), index.total_height().height());
+        assert_valid_index(&index);
+        let before = index.clone();
+        assert_eq!(
+            index.set_exact_heights_with_extents(0, &[(10., f64::INFINITY)]),
+            Err(ViewHeightIndexError::InvalidHeight)
+        );
+        assert_eq!(index, before);
+    }
+
+    #[test]
+    fn randomized_painted_extents_match_flat_oracle_through_updates_and_splices() {
+        let mut oracle = vec![(10., 10.); 32];
+        let mut index = ViewHeightIndex::new_estimated(oracle.len(), 10.).unwrap();
+        let mut random = 9817342;
+        for _ in 0..2000 {
+            let at = next_random(&mut random) as usize % (oracle.len() + 1);
+            if at < oracle.len() && next_random(&mut random) % 2 == 0 {
+                let pair = (
+                    (next_random(&mut random) % 30 + 1) as f64,
+                    (next_random(&mut random) % 300 + 1) as f64,
+                );
+                index.set_exact_heights_with_extents(at, &[pair]).unwrap();
+                oracle[at] = (pair.0, pair.1.max(pair.0));
+            } else {
+                let remove = (next_random(&mut random) as usize % 3).min(oracle.len() - at);
+                let insert = next_random(&mut random) as usize % 3;
+                index.splice(at..at + remove, insert).unwrap();
+                oracle.splice(at..at + remove, std::iter::repeat_n((10., 10.), insert));
+            }
+            let (mut top, mut extent): (f64, f64) = (0., 0.);
+            for (height, end) in &oracle {
+                extent = extent.max(top + end);
+                top += height;
+            }
+            assert_eq!(index.total_extent().height(), extent.max(top));
+            assert_eq!(index.total_height().height(), top);
+            let y = (next_random(&mut random) % (extent.max(top) as u64 + 1)) as f64;
+            let mut start = 0.;
+            let expected = oracle.iter().position(|(height, end)| {
+                let intersects = start + end > y;
+                start += height;
+                intersects
+            });
+            assert_eq!(index.first_line_reaching_y(y).unwrap(), expected);
+            assert_valid_index(&index);
+        }
     }
 
     #[test]

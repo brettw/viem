@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Block containers</title></head><body>
+<h1>Block containers</h1>
+<p>Open Styles and choose a Container or Paragraph style. The Block tab controls its background, margins, padding, and each border side.</p>
+<blockquote style="margin:16pt 12pt;padding:12pt;border-left:4pt solid #8250df;background-color:#f5f0ff">
+  <p style="margin:0 0 12pt">This paragraph belongs to the outer quotation. Its background and border continue around all the children below.</p>
+  <blockquote style="margin:8pt 10pt;padding:10pt;border:2pt solid #0969da;background-color:#eef6ff">
+    <p style="margin:0 0 10pt;padding:8pt;border-bottom:2pt solid #1a7f37;background-color:#ffffff">This paragraph has its own padding, background, and bottom border inside the nested quotation.</p>
+    <p style="margin:6pt 0 0">This paragraph shares the inner quotation. The adjoining 10pt and 6pt margins collapse to 10pt.</p>
+  </blockquote>
+  <p style="margin:12pt 0">This paragraph returns to the outer quotation.</p>
+  <pre style="margin:10pt 0;padding:10pt;border:1pt solid #8c959f;background-color:#ffffff">A code block is one container.
+Its literal lines remain together.
+
+Blank code lines remain inside its box.</pre>
+  <ul style="margin:12pt 0;padding:4pt 4pt 4pt 28pt;border-left:2pt solid #1a7f37">
+    <li>List items have a list container and an item container.</li>
+    <li><p>A list item can contain several paragraphs.</p><p>This is its second paragraph.</p></li>
+  </ul>
+</blockquote>
+<p>The quotation has ended. This paragraph has only its own box.</p>
+</body></html>

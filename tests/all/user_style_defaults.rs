@@ -129,12 +129,16 @@ fn explicit_source_style_update_does_not_materialize_default_font() {
     }
 }
 #[test]
-fn default_files_validate_atomically_and_export_current_overrides() {
+fn default_files_skip_invalid_definitions_and_export_current_overrides() {
     let mut doc = Document::new("Text");
     let before = doc.source_bytes();
-    for invalid in [br#"{"version":2}"#.as_slice(),br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Bad","role":"Document","based_on":null,"next_paragraph_style":null,"character":{},"block":{}}]}"#.as_slice()] {
-        assert!(doc.initialize_style_defaults(invalid).is_err());assert_eq!(doc.source_bytes(),before);assert_eq!(doc.revision(),Revision(0));
-    }
+    assert!(doc.initialize_style_defaults(br#"{"version":2}"#).is_err());
+    let diagnostics = doc.initialize_style_defaults(br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Bad","role":"Document","based_on":null,"next_paragraph_style":null,"character":{},"block":{}}]}"#).unwrap();
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("Paragraph") && diagnostics[0].contains("role"));
+    assert_eq!(doc.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().role, BlockRole::Paragraph);
+    assert_eq!(doc.source_bytes(),before);
+    assert_eq!(doc.revision(),Revision(0));
     doc.initialize_style_defaults(&defaults()).unwrap();
     let exported = doc.export_style_defaults().unwrap();
     let mut reopened = Document::new("Other");

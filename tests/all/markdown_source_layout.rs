@@ -23,8 +23,8 @@ fn spaced_document(source: &str) -> Document {
         serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
     for style in defaults["block_styles"].as_array_mut().unwrap() {
         if style["id"] == "Paragraph" {
-            style["block"]["spacing_before"] = 7.into();
-            style["block"]["spacing_after"] = 11.into();
+            style["block"]["margin_top"] = 7.into();
+            style["block"]["margin_bottom"] = 11.into();
             style["block"]["first_line_indent"] = 10.into();
         }
     }
@@ -53,7 +53,7 @@ fn source_group_spacing_and_indent_apply_once_with_flow_off_or_on() {
     assert_eq!(rows[2].paragraph_id, rows[3].paragraph_id);
     assert_ne!(rows[0].paragraph_id, rows[2].paragraph_id);
     assert!((rows[1].y - rows[0].y - rows[0].height()).abs() < 0.001);
-    assert!((rows[2].y - rows[1].y - rows[1].height() - 18.).abs() < 0.001);
+    assert!((rows[2].y - rows[1].y - rows[1].height() - 11.).abs() < 0.001);
     assert!((rows[3].y - rows[2].y - rows[2].height()).abs() < 0.001);
     assert!((rows[0].paragraph_content_x - rows[1].paragraph_content_x - 10.).abs() < 0.001);
     assert!((rows[2].paragraph_content_x - rows[3].paragraph_content_x - 10.).abs() < 0.001);
@@ -64,7 +64,7 @@ fn source_group_spacing_and_indent_apply_once_with_flow_off_or_on() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].text_range, document.projection().blocks()[0].range);
     assert_eq!(rows[1].text_range, document.projection().blocks()[1].range);
-    assert!((rows[1].y - rows[0].y - rows[0].height() - 18.).abs() < 0.001);
+    assert!((rows[1].y - rows[0].y - rows[0].height() - 11.).abs() < 0.001);
     view.set_paragraph_flow(false);
     engine.relayout(&document, &mut view).unwrap();
     let restored = view.snapshot().unwrap();
@@ -104,7 +104,7 @@ fn source_explicit_breaks_keep_one_paragraph_geometry_even_when_flow_is_on() {
             "flow={flow}"
         );
         assert!(
-            (rows[3].y - rows[2].y - rows[2].height() - 18.).abs() < 0.001,
+            (rows[3].y - rows[2].y - rows[2].height() - 11.).abs() < 0.001,
             "flow={flow}"
         );
         assert!(
@@ -162,8 +162,8 @@ fn fenced_source_blank_lines_keep_code_paragraph_geometry_when_flowed() {
         serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
     for style in defaults["block_styles"].as_array_mut().unwrap() {
         if style["id"] == "Code Block" {
-            style["block"]["spacing_before"] = 9.into();
-            style["block"]["spacing_after"] = 13.into();
+            style["block"]["margin_top"] = 9.into();
+            style["block"]["margin_bottom"] = 13.into();
             style["block"]["first_line_indent"] = 6.into();
         }
     }
@@ -186,7 +186,7 @@ fn fenced_source_blank_lines_keep_code_paragraph_geometry_when_flowed() {
             );
         }
         assert!((rows[0].paragraph_content_x - rows[1].paragraph_content_x - 6.).abs() < 0.001);
-        assert!((rows[5].y - rows[4].y - rows[4].height() - 20.).abs() < 0.001);
+        assert!((rows[5].y - rows[4].y - rows[4].height() - 13.).abs() < 0.001);
     }
     assert_eq!(document.source_bytes(), source.as_bytes());
 }

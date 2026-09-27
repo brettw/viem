@@ -49,7 +49,7 @@ fn generated_families_are_four_levels_and_deeper_source_is_preserved() {
         let document = open(source, format);
         let sheet = document.projection().style_sheet();
         assert_eq!(sheet.block_styles().filter(|style| style.id.is_internal_list()).count(), 8);
-        assert!(!sheet.block_styles().any(|style| style.id.0.starts_with("List")));
+        assert!(!sheet.block_styles().any(|style| (1..=4).any(|level| style.id.0 == format!("List{level}"))));
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert_eq!(levels(&document), [(false,0),(true,1),(false,2),(true,3),(false,4)]);
         let names = document.projection().blocks().iter().map(|block| block.style.0.as_str()).collect::<Vec<_>>();
@@ -313,10 +313,13 @@ fn legacy_source_list_definitions_remain_active_and_lossless() {
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert_eq!(
             document.projection().blocks().iter().map(|b| b.style.0.as_str()).collect::<Vec<_>>(),
-            ["List1", "List1"]
+            ["BulletedList1", "NumberedList1"]
         );
         let sheet = document.projection().style_sheet();
-        assert_eq!(sheet.block_style(&"List1".into()).unwrap().block.leading_indent, Some(48.0));
+        assert_eq!(sheet.block_style(&"List item".into()).unwrap().block.leading_indent, Some(16.0));
+        let layout = viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        assert_eq!(layout.paragraphs.iter().map(|p| p.leading_indent
+            + p.containers.iter().map(|c| c.style.left()).sum::<f32>()).collect::<Vec<_>>(), [48.0, 48.0]);
         assert_eq!(sheet.block_styles().filter(|style| style.id.is_internal_list()).count(), 8);
         assert_eq!(viem_core::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
             .unwrap().font_families, [DEFAULT_FONT_FAMILY]);
@@ -338,7 +341,7 @@ fn deeper_authored_levels_use_fourth_style_plus_structural_inset() {
         styles
             .paragraphs
             .iter()
-            .map(|p| p.leading_indent)
+            .map(|p| p.leading_indent + p.containers.iter().map(|c| c.style.left()).sum::<f32>())
             .collect::<Vec<_>>(),
         [32.0, 64.0, 96.0, 128.0, 160.0]
     );

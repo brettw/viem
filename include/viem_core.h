@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 6u
+#define VIEM_CORE_ABI_VERSION 7u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 3u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
   VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3
@@ -955,6 +955,11 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_ROLE_NONE 0u
 #define VIEM_STYLE_ROLE_DOCUMENT 1u
 #define VIEM_STYLE_ROLE_PARAGRAPH 2u
+#define VIEM_STYLE_ROLE_QUOTE 3u
+#define VIEM_STYLE_ROLE_CODE_BLOCK 4u
+#define VIEM_STYLE_ROLE_LIST 5u
+#define VIEM_STYLE_ROLE_LIST_ITEM 6u
+
 
 #define VIEM_STYLE_ORIGIN_SOURCE_BACKED 1u
 #define VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION 2u
@@ -980,8 +985,8 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT 3u
 #define VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM 4u
 #define VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT 5u
-#define VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE 6u
-#define VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER 7u
+#define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP 6u
+#define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM 7u
 #define VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING 8u
 #define VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT 9u
 #define VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT 10u
@@ -1002,6 +1007,22 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING 25u
 #define VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION 26u
 #define VIEM_STYLE_PROPERTY_CHARACTER_BOLD 27u
+#define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT 28u
+#define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT 29u
+#define VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP 30u
+#define VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT 31u
+#define VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM 32u
+#define VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT 33u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH 34u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR 35u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH 36u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR 37u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH 38u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR 39u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH 40u
+#define VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR 41u
+#define VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND 42u
+
 
 #define VIEM_STYLE_VALUE_NONE 0u
 #define VIEM_STYLE_VALUE_FLOAT 1u
@@ -1346,6 +1367,8 @@ typedef struct ViemPositionedClusterV1 {
   ((uint32_t)sizeof(ViemPositionedClusterV1))
 
 #define VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER (1u << 1)
+#define VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND (1u << 2)
+#define VIEM_LAYOUT_DECORATION_BLOCK_BORDER (1u << 3)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {
@@ -2562,8 +2585,13 @@ ViemStatus viem_core_view_selected_styles_export(ViemCoreHandle core,
 
 /* Version 1 UTF-8 JSON defaults. Initialization requires a pristine core with no views;
  * it does not change source, revision, dirty state, or history. Export is two-pass,
- * reports required bytes, and never writes a partial output. */
-ViemStatus viem_core_initialize_style_defaults(ViemCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length);
+ * reports required bytes, and never writes a partial output. Invalid entries or
+ * declarations are ignored with diagnostics while valid defaults are applied.
+ * An unreadable or unsupported file leaves all existing defaults unchanged.
+ * Diagnostic callbacks run synchronously after releasing the core lease;
+ * message bytes are borrowed only for the duration of each callback. */
+typedef void (*ViemStyleDefaultsDiagnosticCallback)(void *context, const uint8_t *message, uint64_t length);
+ViemStatus viem_core_initialize_style_defaults(ViemCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length, ViemStyleDefaultsDiagnosticCallback diagnostic, void *context);
 ViemStatus viem_core_export_style_defaults(ViemCoreHandle core, uint64_t expected_revision, uint8_t *output, uint64_t capacity, uint64_t *required);
 
 /* Command prompt selection and editing carry the exact exported prompt identity. */
