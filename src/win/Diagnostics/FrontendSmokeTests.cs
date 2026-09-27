@@ -78,9 +78,10 @@ internal static class FrontendSmokeTests
         void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); checks.Add(name); }
         Check(CoreDocument.FormatForPath("document.md") == VIEM_FORMAT_MARKDOWN_SOURCE
             && CoreDocument.FormatForPath("document.markdown") == VIEM_FORMAT_MARKDOWN_SOURCE
-            && CoreDocument.FormatForPath("document.html") == VIEM_FORMAT_HTML_SOURCE
-            && CoreDocument.FormatForPath("document.htm") == VIEM_FORMAT_HTML_SOURCE,
-            "Markdown and HTML paths default to source presentation");
+            && CoreDocument.FormatForPath("document.html") == VIEM_FORMAT_CODE
+            && CoreDocument.FormatForPath("document.htm") == VIEM_FORMAT_CODE
+            && CoreDocument.FormatForPath("document.XHTML") == VIEM_FORMAT_CODE,
+            "Markdown paths default to source presentation and HTML paths use Code");
         GlobalSelectionOptionTests.Run(device, dispatcher, Check);
         void Scenario(string text, uint format, Action<CoreDocument, CoreView> run)
         { using var doc = new CoreDocument(Encoding.UTF8.GetBytes(text), format: format); using var view = new CoreView(doc, device, dispatcher, 700, 400); run(doc, view); }
@@ -132,7 +133,7 @@ internal static class FrontendSmokeTests
             Check(doc.FormattedText() == "日本pha beta", "Select IME commits over the selected range rather than at its active caret");
             view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "one undo restores a Select IME replacement");
         });
-        Scenario("<p>alpha beta</p>", VIEM_FORMAT_HTML, (doc, view) => {
+        Scenario("{\\rtf1 alpha beta}", VIEM_FORMAT_RTF, (doc, view) => {
             view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key,cmd");
             byte[] before = doc.Source(doc.State.document_revision);
             view.SelectFromCommand("viw");
@@ -217,12 +218,12 @@ internal static class FrontendSmokeTests
             Check(view.Provider.GlyphBoundsQueries > beforeBounds, "glyph-ink queries are recomputed after font metrics change");
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Markdown paging preserves source bytes");
         });
-        Scenario("<p>Text</p>", 3, (doc, view) => {
+        Scenario("{\\rtf1 Text}", VIEM_FORMAT_RTF, (doc, view) => {
             view.Command("i"); view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); view.Text("Bold "); view.Key(VIEM_KEY_ESCAPE);
-            Check(doc.FormattedText().Contains("Bold Text"), "HTML typing style");
-            using (var reopened = new CoreDocument(doc.Source(doc.State.document_revision), format: VIEM_FORMAT_HTML))
+            Check(doc.FormattedText().Contains("Bold Text"), "RTF typing style");
+            using (var reopened = new CoreDocument(doc.Source(doc.State.document_revision), format: VIEM_FORMAT_RTF))
             using (var reopenedView = new CoreView(reopened, device, dispatcher, 700, 400))
-            { reopenedView.Command("ggviw"); Check(reopenedView.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON, "HTML style survives reopening"); }
+            { reopenedView.Command("ggviw"); Check(reopenedView.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON, "RTF style survives reopening"); }
             view.Undo(); Check(doc.FormattedText() == "Text", "formatted undo");
             string id = view.CreateStyle(2, "Test Character"); var style = view.Styles().Styles.Single(s => s.Id == id);
             view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, CoreView.Enum(VIEM_STYLE_VALUE_UNSIGNED, 650));
@@ -231,27 +232,25 @@ internal static class FrontendSmokeTests
             string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, 4));
             Check(ClipboardFormats.Html(fragment).Contains("font-weight:650"), "HTML clipboard preserves character style");
         });
-        Scenario("<p style='text-align:center;line-height:1.5;margin-inline-start:12pt'>one<br>two</p><p>three</p>", 3, (doc, view) => {
+        Scenario("{\\rtf1\\pard\\qc\\sl360\\slmult1\\li240 one\\line two\\par\\pard three}", VIEM_FORMAT_RTF, (doc, view) => {
             string text = doc.FormattedText(); string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(text)));
             string html = ClipboardFormats.Html(fragment);
-            using var imported = new CoreDocument(Encoding.UTF8.GetBytes(html), format: VIEM_FORMAT_HTML);
-            Check(imported.FormattedText() == text, "HTML clipboard preserves paragraph and hard-break boundaries");
+            var imported = ClipboardFormats.Import(html, VIEM_CLIPBOARD_FORMAT_HTML);
+            Check(imported.Text == text, "HTML clipboard preserves paragraph and hard-break boundaries");
             Check(html.Contains("text-align:center") && html.Contains("line-height:1.5") && html.Contains("margin-inline-start:12pt"), "HTML clipboard preserves paragraph declarations");
-            using var importedView = new CoreView(imported, device, dispatcher, 700, 400);
-            using var actual = JsonDocument.Parse(importedView.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(text))); using var expected = JsonDocument.Parse(fragment);
+            using var actual = JsonDocument.Parse(imported.Fragment); using var expected = JsonDocument.Parse(fragment);
             Check(actual.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle() == expected.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle(), "HTML clipboard preserves point sizes");
         });
-        Scenario("<p>x<sup>2</sup> H<sub>2</sub>O</p>", VIEM_FORMAT_HTML, (doc, view) => {
+        Scenario("{\\rtf1 x{\\super 2} H{\\sub 2}O}", VIEM_FORMAT_RTF, (doc, view) => {
             string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(doc.FormattedText())));
             string html = ClipboardFormats.Html(fragment);
             Check(html.Contains("<sup>") && html.Contains("<sub>"), "Windows HTML clipboard writes semantic script tags");
-            using var imported = new CoreDocument(Encoding.UTF8.GetBytes(html), format: VIEM_FORMAT_HTML);
-            using var importedView = new CoreView(imported, device, dispatcher, 700, 400);
-            using var actual = JsonDocument.Parse(importedView.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(imported.FormattedText())));
+            var imported = ClipboardFormats.Import(html, VIEM_CLIPBOARD_FORMAT_HTML);
+            using var actual = JsonDocument.Parse(imported.Fragment);
             Check(actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Superscript")
                 && actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Subscript"), "script clipboard data survives HTML reopening");
         });
-        Scenario(string.Concat(Enumerable.Repeat("<p>Wide words with superscript and subscript.</p>", 25_000)), VIEM_FORMAT_HTML, (doc, view) => {
+        Scenario("{\\rtf1 " + string.Join("\\par ", Enumerable.Repeat("Wide words with superscript and subscript.", 25_000)) + "}", VIEM_FORMAT_RTF, (doc, view) => {
             var normal = view.Layout(); long shaped = view.Provider.ShapedCharacters;
             view.Command("ggviw"); view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT);
             var superscript = view.Layout();

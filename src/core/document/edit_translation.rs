@@ -12,9 +12,7 @@ impl Document {
     ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
         let mut patches = Vec::new();
         let mut rich_edits = Vec::new();
-        let mut logical_edits = Vec::new();
         for (edit, payload) in edits {
-            logical_edits.push(edit);
             if let Some(translated) = self.translate_source_edit(edit, payload)? {
                 patches.extend(translated);
             } else {
@@ -28,34 +26,63 @@ impl Document {
             self,
             &rich_edits,
         )?);
-        super::super::html_paragraph::preserve_deleted_content_boundaries(self, &logical_edits, &mut patches)?;
         Ok(patches)
     }
 
-    /// `None` defers an ordinary HTML/RTF edit to contributor-aware batch
+    /// `None` defers an ordinary rich edit to contributor-aware batch
     /// translation, where edits sharing one source entity are combined once.
     fn translate_source_edit(
         &self,
         edit: &TextEdit,
         payload: Option<&FormattedPayloadEdit>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
-        if self.format() == Format::Markdown && !edit.replacement.contains('\n')
-            && super::super::source_edit::complete_contributors(self.projection(), edit)?.range != edit.range { return Ok(None); }
-        if let Some(patches) = self.markdown_rule_text_patches(edit)? { return Ok(Some(patches)); }
+        if self.format() == Format::Markdown
+            && !edit.replacement.contains('\n')
+            && super::super::source_edit::complete_contributors(self.projection(), edit)?.range
+                != edit.range
+        {
+            return Ok(None);
+        }
+        if let Some(patches) = self.markdown_rule_text_patches(edit)? {
+            return Ok(Some(patches));
+        }
         if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
             let literal = self.projection().style_spans_for_region(&edit.range).iter().any(|span| {
                 span.range.start <= edit.range.start && edit.range.end <= span.range.end
                     && matches!(&span.application, StyleApplication::Automatic(id) if matches!(id.0.as_str(), "Markdown reference" | "Comment"))
             });
-            let html = self.projection().blocks_for_region(&edit.range).iter().any(|block| block.markdown_html
-                && block.range.start <= edit.range.start && edit.range.end <= block.range.end);
+            let html = self
+                .projection()
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| {
+                    block.markdown_html
+                        && block.range.start <= edit.range.start
+                        && edit.range.end <= block.range.end
+                });
             if literal || html {
                 let range = if edit.range.is_empty() {
-                    let at = super::super::source_edit::insertion_point(self.projection(), edit.range.start, None).ok_or(DocumentError::AmbiguousProjection)?;
+                    let at = super::super::source_edit::insertion_point(
+                        self.projection(),
+                        edit.range.start,
+                        None,
+                    )
+                    .ok_or(DocumentError::AmbiguousProjection)?;
                     at..at
-                } else { self.projection().source_range(edit.range.clone()).ok_or(DocumentError::AmbiguousProjection)? };
-                let replacement = if html && !literal { edit.replacement.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;") } else { edit.replacement.clone() };
-                return Ok(Some(vec![SourcePatch::primary(range, self.encoding().encode_fragment(&replacement)?)]));
+                } else {
+                    self.projection()
+                        .source_range(edit.range.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?
+                };
+                let replacement = if html && !literal {
+                    super::markdown_html_edit::literal_html(&edit.replacement, self.encoding())
+                } else {
+                    edit.replacement.clone()
+                };
+                return Ok(Some(vec![SourcePatch::primary(
+                    range,
+                    self.encoding().encode_fragment(&replacement)?,
+                )]));
             }
         }
         if let Some(patches) = self.structural_text_patches(edit)? {
@@ -171,14 +198,14 @@ impl Document {
         } else {
             let syntax = match self.format() {
                 Format::MarkdownSource => self.markdown_source_replacement(edit)?,
-                Format::PlainText | Format::Code | Format::HtmlSource => edit.replacement.clone(),
+                Format::PlainText | Format::Code => edit.replacement.clone(),
                 Format::Markdown if in_code && !edit.replacement.contains('`') => {
                     edit.replacement.clone()
                 }
                 Format::Markdown => self
                     .escape_markdown_source_text(source_range.start, &edit.replacement)?
                     .replace('\n', "\n\n"),
-                Format::Html | Format::Rtf => unreachable!("rich edits are translated as a batch"),
+                Format::Rtf => unreachable!("rich edits are translated as a batch"),
             };
             spell_logical_breaks(&syntax, self.file_format())
         };
@@ -195,10 +222,26 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
-            if edits.iter().all(|edit| !edit.replacement.contains('\n') && !self.text()[edit.range.clone()].contains('\n')
-                && self.projection().style_spans_for_region(&edit.range).iter().any(|span| span.range.start <= edit.range.start && edit.range.end <= span.range.end
-                    && span.application == StyleApplication::Automatic("Markdown reference".into())
-                    && self.text()[span.range.clone()].trim_start().starts_with('[') && self.text()[span.range.clone()].contains("]:"))) { return Ok(()); }
+            if edits.iter().all(|edit| {
+                !edit.replacement.contains('\n')
+                    && !self.text()[edit.range.clone()].contains('\n')
+                    && self
+                        .projection()
+                        .style_spans_for_region(&edit.range)
+                        .iter()
+                        .any(|span| {
+                            span.range.start <= edit.range.start
+                                && edit.range.end <= span.range.end
+                                && span.application
+                                    == StyleApplication::Automatic("Markdown reference".into())
+                                && self.text()[span.range.clone()]
+                                    .trim_start()
+                                    .starts_with('[')
+                                && self.text()[span.range.clone()].contains("]:")
+                        })
+            }) {
+                return Ok(());
+            }
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
             super::super::markdown_code::preserve_edited_inline_delimiters(self, edits, patches)?;
             markdown_split::remove_empty_emphasis(self, edits, patches)?;
@@ -219,79 +262,6 @@ impl Document {
             self.repair_markdown_reference_spaces(edits, patches)?;
         }
         Ok(())
-    }
-
-    pub(super) fn prepare_recovered_source_edit(
-        &self,
-        edits: &[TextEdit],
-    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        self.prepare_with_recovered_source(edits, |scratch| {
-            scratch.prepare_text_edits(edits.to_vec())
-        })
-    }
-
-    pub(super) fn prepare_with_recovered_source(
-        &self,
-        edits: &[TextEdit],
-        prepare: impl FnOnce(&Document) -> Result<PreparedModelTransaction, ModelTransactionError>,
-    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if self.format() != Format::Html {
-            return Ok(None);
-        }
-        let patches = super::super::html_merge::recovered_source_patches(self, edits)?;
-        if patches.is_empty() {
-            return Ok(None);
-        }
-        let mut scratch = self.scratch_document();
-        let materialized = scratch.prepare_source_only_patches(patches)?;
-        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
-        for patch in materialized.summary.source_patches.iter().rev() {
-            sources.splice(patch.range(), patch.replacement());
-        }
-        scratch.commit_model_transaction(materialized)?;
-        if !self
-            .projection()
-            .has_same_hard_line_structure(scratch.projection())
-            || !same_paragraph_assignments(self.projection(), scratch.projection())
-            || !super::super::rich_text::character_edit_verified(
-                self.projection(),
-                scratch.projection(),
-                &(0..0),
-                &CharacterProperties::default(),
-            )
-            || !super::super::html_merge::recovered_source_patches(&scratch, edits)?.is_empty()
-        {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        let edited = prepare(&scratch)?;
-        if edited.is_no_op() {
-            return Ok(Some(self.no_op_prepared()));
-        }
-        for patch in edited.summary.source_patches.iter().rev() {
-            sources.splice(patch.range(), patch.replacement());
-        }
-        scratch.commit_model_transaction(edited)?;
-        let prepared = self.prepare_text_edits_with_patches(
-            edits.to_vec(),
-            Some(sources.source_patches(&scratch.state().source)?),
-        )?;
-        let PreparedPublication::State(candidate) = &prepared.publication else {
-            return Err(DocumentError::VerificationFailed.into());
-        };
-        if !candidate
-            .projection
-            .has_same_hard_line_structure(scratch.projection())
-            || !same_paragraph_assignments(&candidate.projection, scratch.projection())
-            || !super::super::rich_text::character_edit_verified(
-                scratch.projection(),
-                &candidate.projection,
-                &(0..0),
-                &CharacterProperties::default(),
-            )
-        {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        Ok(Some(prepared))
     }
 
     /// Adjacent structural edits can share closing syntax. Compose them on an
@@ -365,11 +335,8 @@ impl Document {
             map = map.then(prepared.text_position_map())?;
             scratch.commit_model_transaction(prepared)?;
         }
-        self.prepare_text_edits_with_patches(
-            edits.to_vec(),
-            Some(sources.source_patches(&scratch.state().source)?),
-        )
-        .map(Some)
+        self.prepare_text_edits_with_patches(edits.to_vec(), Some(sources.source_patches()))
+            .map(Some)
     }
 
     /// Rich fragments can supply their own inline syntax after the selection's
@@ -408,7 +375,7 @@ impl Document {
         scratch.commit_model_transaction(inserted)?;
         self.prepare_text_edits_with_patches(
             vec![TextEdit::new(range, text)],
-            Some(sources.source_patches(&scratch.state().source)?),
+            Some(sources.source_patches()),
         )
         .map(Some)
     }
@@ -418,11 +385,7 @@ impl Document {
         edit: &TextEdit,
     ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
         if edit.range.is_empty() {
-            return if self.format() == Format::Html && edit.replacement.contains('\n') {
-                super::super::html_merge::anonymous_break_patches(self, edit)
-            } else {
-                Ok(None)
-            };
+            return Ok(None);
         }
         if self.format() == Format::Markdown {
             if let Some(patches) =
@@ -450,15 +413,7 @@ impl Document {
                 return Ok(Some(patches));
             }
         }
-        let patches = if self.format() == Format::Html {
-            if let Some(patches) = super::super::html_merge::patches(self, &input, edit)? {
-                return Ok(Some(patches));
-            } else if edit.replacement.is_empty() {
-                super::super::html_paragraph::deletion_patches(self, &input, &edit.range, false)?
-            } else {
-                None
-            }
-        } else if edit.replacement.is_empty() {
+        let patches = if edit.replacement.is_empty() {
             super::super::rtf_structure::deletion_patches(self, &input, &edit.range, false)?
         } else {
             None
@@ -476,20 +431,4 @@ impl Document {
             })
             .transpose()
     }
-}
-
-fn same_paragraph_assignments(before: &FormattedDocument, after: &FormattedDocument) -> bool {
-    before.blocks().len() == after.blocks().len()
-        && before
-            .blocks()
-            .iter()
-            .zip(after.blocks())
-            .all(|(left, right)| {
-                left.range == right.range
-                    && left.kind == right.kind
-                    && left.style == right.style
-                    && left.direct_paragraph == right.direct_paragraph
-                    && (!left.range.is_empty()
-                        || left.direct_default_character == right.direct_default_character)
-            })
 }

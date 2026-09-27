@@ -3,21 +3,6 @@
 //! unlike candidate projection statistics they do not stop at commit boundaries.
 use std::cell::Cell;
 
-/// Explicit causes of a broader HTML query or parse. Counts are independent
-/// of candidate counts: one operation can encounter several causes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(usize)]
-pub enum DocumentWorkFallback {
-    /// A complete HTML candidate was built. This identifies the broader
-    /// parse; it does not distinguish every structural/style policy causing it.
-    FullHtmlGrammarProjection,
-    /// Incremental lexical scope maintenance could not prove a safe splice.
-    IndexRegionNonConvergence,
-    /// A regional HTML fragment could not reproduce its enclosing recovery
-    /// or inherited style context safely.
-    HtmlRecoveryContext,
-}
-
 /// Aggregate actual work, including repeated work on discarded candidates.
 /// Byte counts measure input consumed/copied, not unique source coverage.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -35,17 +20,6 @@ pub struct DocumentWorkStatistics {
     pub html_tokenized_bytes: usize,
     pub html_tree_tokenization_calls: usize,
     pub html_tree_tokenized_bytes: usize,
-    pub html_scope_queries: usize,
-    pub html_scope_entries_visited: usize,
-    pub html_scope_entries_copied: usize,
-    pub html_scope_syntax_bytes_copied: usize,
-    pub html_index_nodes_visited: usize,
-    pub html_index_nodes_copied: usize,
-    pub html_index_entries_rebuilt: usize,
-    /// Largest newly charged index allocation graph in one ledger visit.
-    /// An existing ledger skips shared nodes; an initial open charges the complete index.
-    pub html_index_newly_retained_bytes: usize,
-    pub fallback_counts: [usize; 3],
     pub scratch_documents: usize,
     pub retained_memory_allocation_visits: usize,
     pub retained_memory_allocations_registered: usize,
@@ -77,13 +51,6 @@ impl DocumentWorkStatistics {
             html_tokenized_bytes,
             html_tree_tokenization_calls,
             html_tree_tokenized_bytes,
-            html_scope_queries,
-            html_scope_entries_visited,
-            html_scope_entries_copied,
-            html_scope_syntax_bytes_copied,
-            html_index_nodes_visited,
-            html_index_nodes_copied,
-            html_index_entries_rebuilt,
             scratch_documents,
             retained_memory_allocation_visits,
             retained_memory_allocations_registered,
@@ -98,21 +65,9 @@ impl DocumentWorkStatistics {
             projection_persistent_nodes_copied,
             formatted_full_materialized_bytes
         );
-        self.html_index_newly_retained_bytes = self
-            .html_index_newly_retained_bytes
-            .max(other.html_index_newly_retained_bytes);
-        for (total, value) in self.fallback_counts.iter_mut().zip(other.fallback_counts) {
-            *total = total.saturating_add(value);
-        }
+
     }
 
-    pub fn fallback_count(self, reason: DocumentWorkFallback) -> usize {
-        self.fallback_counts[reason as usize]
-    }
-
-    pub(crate) fn note_fallback(&mut self, reason: DocumentWorkFallback) {
-        self.fallback_counts[reason as usize] += 1;
-    }
 }
 
 thread_local! {

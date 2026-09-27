@@ -24,14 +24,14 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     public BlockStylePreview(uint role, CanvasDevice device, DispatcherQueue dispatcher)
     {
         Role = role;
-        (string id, string html) = role switch {
-            VIEM_STYLE_ROLE_QUOTE => ("Block quote", "<blockquote><p>A quotation contains a paragraph.</p><p>Another paragraph shares its border.</p><blockquote><p>A nested quotation has its own box.</p></blockquote></blockquote>"),
-            VIEM_STYLE_ROLE_CODE_BLOCK => ("Code Block", "<pre>A literal code block\n\nkeeps its lines and spaces.</pre>"),
-            VIEM_STYLE_ROLE_LIST => ("Bulleted List", "<ul><li><p>A list item contains a paragraph.</p><p>And a second paragraph.</p></li><li><p>Another item.</p></li></ul>"),
-            VIEM_STYLE_ROLE_LIST_ITEM => ("List item", "<ul><li><p>A list item contains a paragraph.</p><p>And a second paragraph.</p></li><li><p>Another item.</p></li></ul>"),
-            _ => ("Heading1", "<p>Previous paragraph gives the style context.</p><h1>A calm writing surface shaped with the selected style,<br>with line spacing and alignment visible.</h1><p>Following paragraph shows spacing and inheritance.</p>")
+        (string id, string markdown) = role switch {
+            VIEM_STYLE_ROLE_QUOTE => ("Block quote", "> A quotation contains a paragraph.\n>\n> Another paragraph shares its border.\n>\n>> A nested quotation has its own box."),
+            VIEM_STYLE_ROLE_CODE_BLOCK => ("Code Block", "```\nA literal code block\n\nkeeps its lines and spaces.\n```"),
+            VIEM_STYLE_ROLE_LIST => ("Bulleted List", "- A list item contains a paragraph.\n\n  And a second paragraph.\n\n- Another item."),
+            VIEM_STYLE_ROLE_LIST_ITEM => ("List item", "- A list item contains a paragraph.\n\n  And a second paragraph.\n\n- Another item."),
+            _ => ("Heading1", "Previous paragraph gives the style context.\n\n# A calm writing surface shaped with the selected style, with line spacing and alignment visible.\n\nFollowing paragraph shows spacing and inheritance.")
         };
-        document = new(Encoding.UTF8.GetBytes(html), format: VIEM_FORMAT_HTML);
+        document = new(Encoding.UTF8.GetBytes(markdown), format: VIEM_FORMAT_MARKDOWN);
         CoreView? created = null;
         try {
             view = created = new(document, device, dispatcher, 560, 200);

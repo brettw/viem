@@ -40,7 +40,6 @@ internal sealed partial class StyleWindow : Window
     private readonly StackPanel character = new() { Spacing = 12 };
     private readonly StackPanel paragraph = new() { Spacing = 8 };
     private readonly StackPanel block = new() { Spacing = 8 };
-    private readonly MenuFlyoutItem createContainer = new() { Text = "Container style" };
     private readonly CanvasControl preview = new() { Height = 200 };
     private BlockStylePreview? blockPreview;
     private readonly TextBlock error = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, Visibility = Visibility.Collapsed };
@@ -66,8 +65,6 @@ internal sealed partial class StyleWindow : Window
         var createMenu = new MenuFlyout();
         foreach (var (title, space) in new[] { ("Paragraph style", 1u), ("Character style", 2u) })
         { var item = space == 1 ? createParagraph : new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Try(() => { string id = view.CreateStyle(space, "New " + title); CancelCaretFollow(); Load(new(space, id)); }); createMenu.Items.Add(item); }
-        createContainer.Click += (_, _) => Try(() => { string parentId = selected.Native.role >= VIEM_STYLE_ROLE_QUOTE ? selected.Id : "Block quote"; string id = view.CreateStyle(1, "New container style", parentId); CancelCaretFollow(); Load(new(1, id)); });
-        createMenu.Items.Add(createContainer);
         create.Flyout = createMenu;
         Field(properties, "Style", choiceRow); Field(properties, "Name", name); Field(properties, "Style type", kind); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
         Add(properties);
@@ -174,9 +171,8 @@ internal sealed partial class StyleWindow : Window
             availability.Text = view.UsesGlobalStyles ? "Shared by every Code document. Changes are saved to code_style.json." : "";
             availability.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
             restoreDefaults.Visibility = availability.Visibility;
-            create.IsEnabled = view.UsesGlobalStyles || view.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
+            create.IsEnabled = view.UsesGlobalStyles || view.Document.State.format is VIEM_FORMAT_RTF;
             createParagraph.Visibility = view.UsesGlobalStyles ? Visibility.Collapsed : Visibility.Visible;
-            createContainer.Visibility = !view.UsesGlobalStyles && view.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE ? Visibility.Visible : Visibility.Collapsed;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();

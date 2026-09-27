@@ -44,7 +44,6 @@ fn ordinals(document: &Document) -> Vec<u64> {
 fn generated_families_are_four_levels_and_deeper_source_is_preserved() {
     for (source, format) in [
         ("- a\n  1. b\n     - c\n       1. d\n          - e", Format::Markdown),
-        ("<ul><li>a<ol><li>b<ul><li>c<ol><li>d<ul><li>e</li></ul></li></ol></li></ul></li></ol></li></ul>", Format::Html),
     ] {
         let document = open(source, format);
         let sheet = document.projection().style_sheet();
@@ -60,10 +59,6 @@ fn generated_families_are_four_levels_and_deeper_source_is_preserved() {
 fn indent_requires_a_previous_sibling_and_unindent_restores_source_exactly() {
     for (source, format) in [
         ("- Alpha\n- **Beta**\n- Gamma", Format::Markdown),
-        (
-            "<!--keep--><ul><li>Alpha</li><li><b>Beta</b></li><li>Gamma</li></ul><!--end-->",
-            Format::Html,
-        ),
     ] {
         let mut document = open(source, format);
         assert_eq!(document.list_indent_capabilities(0..0), (false, false));
@@ -107,11 +102,6 @@ fn ordered_indent_starts_a_canonical_child_run_and_unindent_removes_its_containe
             "1. One\n   1. Two\n   2. Three\n2. Four",
             Format::Markdown,
         ),
-        (
-            "<ol><li>One</li><li>Two</li><li>Three</li><li>Four</li></ol>",
-            "<ol><li>One<ol type=\"a\"><li>Two</li><li>Three</li></ol></li><li>Four</li></ol>",
-            Format::Html,
-        ),
     ] {
         let mut document = open(source, format);
         let start = document.text().find("Two").unwrap();
@@ -137,36 +127,6 @@ fn ordered_indent_starts_a_canonical_child_run_and_unindent_removes_its_containe
 }
 
 #[test]
-fn html_cross_container_indent_restarts_numbering_and_preserves_other_attributes() {
-    let source = "<ol><li>One</li></ol><ol data-keep='yes' start='5' class=x><li>Two</li></ol>";
-    let mut document = open(source, Format::Html);
-    let at = document.text().find("Two").unwrap();
-    apply(&mut document, at..at, false).unwrap();
-    assert_eq!(
-        document.source_bytes(),
-        b"<ol><li>One<ol data-keep='yes' class=x type=\"a\"><li>Two</li></ol></li></ol>"
-    );
-    assert_eq!(levels(&document), [(true, 0), (true, 1)]);
-    assert_eq!(ordinals(&document), [1, 1]);
-}
-
-#[test]
-fn html_unindenting_first_child_reparents_following_siblings_without_an_empty_list() {
-    let source = "<ol><li>Parent<ol><li>First</li><li>Following</li></ol></li></ol>";
-    let mut document = open(source, Format::Html);
-    let at = document.text().find("First").unwrap();
-    apply(&mut document, at..at, true).unwrap();
-    assert_eq!(
-        document.source_bytes(),
-        b"<ol><li>Parent</li><li>First<ol><li>Following</li></ol></li></ol>"
-    );
-    assert_eq!(document.text(), "Parent\nFirst\nFollowing");
-    assert_eq!(levels(&document), [(true, 0), (true, 0), (true, 1)]);
-    assert_eq!(ordinals(&document), [1, 2, 1]);
-    assert!(!String::from_utf8_lossy(&document.source_bytes()).contains("<ol></ol>"));
-}
-
-#[test]
 fn markdown_mixed_family_indent_moves_subtree_and_stops_at_fourth_level() {
     let mut document = open(
         "- Parent\n1. Child\n   - Grandchild\n     - Deep\n- Tail",
@@ -188,7 +148,7 @@ fn markdown_mixed_family_indent_moves_subtree_and_stops_at_fourth_level() {
 }
 #[test]
 fn unavailable_actions_are_atomic() {
-    let mut document = open("<ul><li>A</li><li>B</li></ul>", Format::Html);
+    let mut document = open("- A\n- B", Format::Markdown);
     let source = document.source_bytes();
     let revision = document.revision();
     for unindent in [false, true] {
@@ -199,43 +159,11 @@ fn unavailable_actions_are_atomic() {
 }
 
 #[test]
-fn indent_handles_mixed_html_containers_and_keeps_each_family() {
-    for source in [
-        "<ul><li>A</li></ul><!--keep--><ol start='5'><li>B</li><li>C</li></ol>",
-        "<ul><li>A</li></ul><ol><li>B</li></ol>",
-    ] {
-        let mut document = open(source, Format::Html);
-        let at = document.text().find('B').unwrap();
-        assert!(
-            document.list_indent_capabilities(at..at).0,
-            "{source} {:?}: {:?}",
-            document.text(),
-            document.prepare_list_indent(at..at, false)
-        );
-        apply(&mut document, at..at, false).unwrap();
-        assert_eq!(levels(&document)[1], (true, 1));
-        assert!(
-            document.list_indent_capabilities(at..at).1,
-            "{}",
-            String::from_utf8_lossy(&document.source_bytes())
-        );
-        apply(&mut document, at..at, true).unwrap();
-        assert_eq!(levels(&document)[1], (true, 0));
-        assert!(document.undo());
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-#[test]
 fn complete_item_continuations_and_code_move_with_the_selection() {
     for (source, format) in [
         (
             "- A\n- B\n\n  continuation\n\n  ```\n  literal\n  ```\n- C",
             Format::Markdown,
-        ),
-        (
-            "<ul><li>A</li><li>B<p>continuation</p><pre>literal</pre></li><li>C</li></ul>",
-            Format::Html,
         ),
     ] {
         let mut document = open(source, format);
@@ -256,7 +184,6 @@ fn complete_item_continuations_and_code_move_with_the_selection() {
 fn source_modes_use_the_same_structural_policy_and_exact_history() {
     for (source, format) in [
         ("- A\n- B", Format::MarkdownSource),
-        ("<ul><li>A</li><li>B</li></ul>", Format::HtmlSource),
     ] {
         let mut document = open(source, format);
         let at = document.text().find('B').unwrap();
@@ -304,33 +231,7 @@ fn quoted_markdown_list_indentation_preserves_every_quote_marker() {
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
-#[test]
-fn legacy_source_list_definitions_remain_active_and_lossless() {
-    let source="<style id=\"viem-styles\" data-viem-version=\"2\">li {\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: 'SF Pro';\n  font-size: 14pt;\n  margin-inline-start: 16pt;\n}\n</style><ul><li>Bullet</li></ul><ol><li>Number</li></ol>";
-    for family in ["'SF Pro'", "'Segoe UI'", "system-ui"] {
-        let source = source.replace("'SF Pro'", family);
-        let document = open(&source, Format::Html);
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert_eq!(
-            document.projection().blocks().iter().map(|b| b.style.0.as_str()).collect::<Vec<_>>(),
-            ["BulletedList1", "NumberedList1"]
-        );
-        let sheet = document.projection().style_sheet();
-        assert_eq!(sheet.block_style(&"List item".into()).unwrap().block.leading_indent, Some(16.0));
-        let layout = viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
-        assert_eq!(layout.paragraphs.iter().map(|p| p.leading_indent
-            + p.containers.iter().map(|c| c.style.left()).sum::<f32>()).collect::<Vec<_>>(), [48.0, 48.0]);
-        assert_eq!(sheet.block_styles().filter(|style| style.id.is_internal_list()).count(), 8);
-        assert_eq!(viem_core::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
-            .unwrap().font_families, [DEFAULT_FONT_FAMILY]);
 
-        // A foreign default must not relax validation of other declarations.
-        let opaque = source.replace("font-size: 14pt;", "font-size: 14pt;\n  future-property: keep;");
-        let document = open(&opaque, Format::Html);
-        assert_eq!(document.source_bytes(), opaque.as_bytes());
-        assert_eq!(document.projection().blocks()[0].style.0, "BulletedList1");
-    }
-}
 #[test]
 fn deeper_authored_levels_use_fourth_style_plus_structural_inset() {
     use viem_core::layout::DocumentLayoutStyles;
@@ -351,10 +252,6 @@ fn deeper_authored_levels_use_fourth_style_plus_structural_inset() {
 fn multi_item_selection_moves_every_selected_subtree_one_level() {
     for (source, format) in [
         ("- A\n- B\n  - child\n- C\n- D", Format::Markdown),
-        (
-            "<ul><li>A</li><li>B<ul><li>child</li></ul></li><li>C</li><li>D</li></ul>",
-            Format::Html,
-        ),
     ] {
         let mut document = open(source, format);
         let start = document.text().find('B').unwrap();
@@ -389,64 +286,6 @@ fn tabbed_markers_use_columns_and_preserve_the_original_marker_bytes() {
         assert!(String::from_utf8_lossy(&document.source_bytes()).contains("\ttwo"));
         apply(&mut document, at..at, true).unwrap();
         assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-#[test]
-fn list_commands_create_empty_html_items_then_typing_and_history_work() {
-    use viem_core::command::InputEvent;
-    use viem_core::layout::MockTextMeasurementProvider;
-    use viem_core::{Core, CoreEvent};
-    for (list, tag) in [(ListStyle::Bullet, "ul"), (ListStyle::Numbered, "ol")] {
-        for source in ["", "<p></p>", "<!--keep-->", "<body></body>"] {
-            let mut core = Core::new(open(source, Format::Html));
-            let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 200.0);
-            core.handle(view, CoreEvent::Input(InputEvent::key('i')))
-                .unwrap();
-            let expected = core.list_selection_identity(view).unwrap();
-            core.handle(
-                view,
-                CoreEvent::SetListStyle {
-                    expected,
-                    style: Some(list),
-                },
-            )
-            .unwrap_or_else(|error| panic!("{source:?} {list:?}: {error:?}"));
-            let listed = core.document().source_bytes();
-            assert!(
-                String::from_utf8_lossy(&listed).contains(&format!("<{tag}><li></li></{tag}>")),
-                "{source:?}: {:?}",
-                listed
-            );
-            assert_eq!(core.document().text(), "");
-            core.handle(view, CoreEvent::Input(InputEvent::text("a")))
-                .unwrap();
-            let typed = core.document().source_bytes();
-            assert_eq!(core.document().text(), "a");
-            assert!(String::from_utf8_lossy(&typed).contains("<li>a</li>"));
-            core.handle(
-                view,
-                CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-            )
-            .unwrap();
-            assert_eq!(core.document().source_bytes(), listed);
-            core.handle(
-                view,
-                CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-            )
-            .unwrap();
-            assert_eq!(core.document().source_bytes(), source.as_bytes());
-            core.handle(
-                view,
-                CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
-            )
-            .unwrap();
-            core.handle(
-                view,
-                CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
-            )
-            .unwrap();
-            assert_eq!(core.document().source_bytes(), typed);
-        }
     }
 }
 
@@ -554,11 +393,9 @@ fn empty_final_modern_rtf_item_can_indent_and_unindent() {
 fn toolbar_capabilities_do_not_prepare_edits_or_scan_large_lists() {
     for count in [32, 12_000] {
         let markdown = format!("- Parent\n{}  - Target\n- Following", "  - Child\n".repeat(count));
-        let html = format!("<ul><li>Parent<ul>{}<li>Target</li></ul></li><li>Following</li></ul>", "<li>Child</li>".repeat(count));
         let rtf = modern_rtf(4, false, &format!("Parent\\par\\ilvl1 {}Target\\par\\ilvl0 Following", "Child\\par ".repeat(count)));
         for (source, format) in [
-            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource),
-            (&html, Format::Html), (&html, Format::HtmlSource), (&rtf, Format::Rtf),
+            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource), (&rtf, Format::Rtf),
         ] {
             let document = open(source, format);
             let at = document.text().find("Target").unwrap();
@@ -580,8 +417,6 @@ fn capability_index_follows_local_edits_structure_changes_and_history() {
     for (source, format) in [
         ("- A\n- Target\n\nOutside", Format::Markdown),
         ("- A\n- Target\n\nOutside", Format::MarkdownSource),
-        ("<ul><li>A</li><li>Target</li></ul><p>Outside</p>", Format::Html),
-        ("<ul><li>A</li><li>Target</li></ul><p>Outside</p>", Format::HtmlSource),
     ] {
         let mut document = open(source, format);
         let at = document.text().find("Target").unwrap();
@@ -598,17 +433,5 @@ fn capability_index_follows_local_edits_structure_changes_and_history() {
         assert!(document.redo());
         let at = document.text().find("Target").unwrap();
         assert_eq!(document.list_indent_capabilities(at..at), (false, true));
-    }
-}
-
-#[test]
-fn recovered_html_lists_do_not_advertise_unavailable_reparenting() {
-    for source in ["<ul><li>A<li>B</ul>", "<ul><li>A</li><li>B</li>"] {
-        for format in [Format::Html, Format::HtmlSource] {
-            let document = open(source, format);
-            let at = document.text().find('B').unwrap();
-            assert_eq!(document.list_indent_capabilities(at..at), (false, false));
-            assert!(document.prepare_list_indent(at..at, false).is_err());
-        }
     }
 }

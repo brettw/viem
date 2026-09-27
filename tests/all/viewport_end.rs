@@ -124,11 +124,11 @@ fn trailing_empty_and_short_lines_share_only_the_visible_long_paragraph_tail() {
         assert!(snapshot.rows.first().unwrap().text_range.start > source.len() - 5_000);
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
-    let source = format!("<p><b>{long}</b></p><h2>Tail</h2><p></p>");
+    let source = format!("**{long}**\n\n## Tail\n\n");
     let document = Document::from_bytes(
         source.as_bytes().to_vec(),
         viem_core::document::Encoding::Utf8,
-        viem_core::document::Format::Html,
+        viem_core::document::Format::Markdown,
     )
     .unwrap();
     let mut core = Core::new(document);

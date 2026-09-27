@@ -53,10 +53,10 @@ internal sealed unsafe partial class CoreView
         return null;
     }
     public bool UsesGlobalStyles => Document.State.format == VIEM_FORMAT_CODE;
-    public bool CanFormatCharacter => Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF
+    public bool CanFormatCharacter => Document.State.format is VIEM_FORMAT_RTF
         && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
             || Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
-    public bool CanFormatParagraph => Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF
+    public bool CanFormatParagraph => Document.State.format is VIEM_FORMAT_RTF
         && LogicalSelection().kind != VIEM_LOGICAL_SELECTION_KIND_BLOCK;
     public ViemLogicalSelectionIdentityV1 LogicalSelection()
     { var value = New<ViemLogicalSelectionIdentityV1>(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }

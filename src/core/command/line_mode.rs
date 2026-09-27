@@ -36,7 +36,6 @@ impl CommandInterpreter {
         };
         self.clear_pending();
         self.typing_style = Default::default();
-        self.input_assistance.clear_tag();
         self.preferred_column = None;
         self.desired_x = None;
         self.visual_position = None;

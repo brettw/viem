@@ -99,25 +99,7 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         self.inner.get(index)
     }
 
-    pub(super) fn get_with_stats(&self, index: usize) -> (Option<T>, QueryStats) {
-        let mut stats = QueryStats::default();
-        let result = self
-            .inner
-            .root
-            .as_ref()
-            .filter(|_| index < self.inner.item_count)
-            .map(|root| {
-                get_item(
-                    root,
-                    self.inner.root_origin,
-                    self.inner.root_auxiliary_shift,
-                    self.inner.root_revision,
-                    index,
-                    Some(&mut stats),
-                )
-            });
-        (result, stats)
-    }
+
 
     /// Materializes one half-open ordinal item range with one tree descent and
     /// a sequential walk of the covered leaves.
@@ -236,10 +218,7 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         Some((items, stats))
     }
 
-    #[cfg(test)]
-    pub(super) fn shares_root_with(&self, other: &Self) -> bool {
-        self.inner.shares_root_with(&other.inner)
-    }
+
 
     #[cfg(test)]
     pub(super) fn shared_leaf_count_with(&self, other: &Self) -> usize {
@@ -731,14 +710,7 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         }
     }
 
-    #[cfg(test)]
-    fn shares_root_with(&self, other: &Self) -> bool {
-        match (&self.root, &other.root) {
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            (None, None) => true,
-            _ => false,
-        }
-    }
+
 
     #[cfg(test)]
     fn shared_leaf_count_with(&self, other: &Self) -> usize {

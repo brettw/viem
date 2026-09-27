@@ -16,8 +16,6 @@ enum SourceFormat {
     Plain,
     Markdown,
     MarkdownSource,
-    Html,
-    HtmlSource,
     Rtf,
 }
 impl SourceFormat {
@@ -26,8 +24,6 @@ impl SourceFormat {
             Self::Plain => Format::PlainText,
             Self::Markdown => Format::Markdown,
             Self::MarkdownSource => Format::MarkdownSource,
-            Self::Html => Format::Html,
-            Self::HtmlSource => Format::HtmlSource,
             Self::Rtf => Format::Rtf,
         }
     }
@@ -218,19 +214,7 @@ impl Oracle {
                             if document.format() != Format::MarkdownSource =>
                         {
                             let mut expected = before.text.clone();
-                            let preserves_whitespace =
-                                document.projection().style_spans().iter().any(|span| {
-                                    span.application == StyleApplication::SourcePreservedWhitespace
-                                        && span.range.start <= *start
-                                        && *start <= span.range.end
-                                });
-                            let replacement =
-                                if document.format() == Format::Html && !preserves_whitespace {
-                                    text.replace('\t', " ")
-                                } else {
-                                    text.clone()
-                                };
-                            expected.replace_range(*start..*end, &replacement);
+                            expected.replace_range(*start..*end, text);
                             Some(expected)
                         }
                         _ => None,
@@ -287,9 +271,7 @@ impl Oracle {
                                 &document.revision(),
                                 &revision,
                             )?;
-                            if !expected_rejection(&error)
-                                && !unreprojectable_request(document, action, &error)
-                            {
+                            if !expected_rejection(&error) {
                                 return Err(format!("unexpected model failure: {error:?}"));
                             }
                             compare_fresh(document)?;
@@ -324,22 +306,10 @@ impl Oracle {
                         &expected_bytes,
                     )?;
                     if let Some(expected) = expected_text {
-                        // HTML preserves authored spacing with NBSP where an
-                        // ordinary space would collapse, and can simplify a
-                        // generated NBSP once adjacent content makes it safe.
-                        // Compare the scalar spacing sequence, not its chosen
-                        // nonbreaking spelling; never collapse or discard it.
-                        let canonical = |text: &str| {
-                            if before.format == Format::Html {
-                                text.replace('\u{a0}', " ")
-                            } else {
-                                text.to_owned()
-                            }
-                        };
                         same(
                             "requested formatted replacement",
-                            &canonical(document.text()),
-                            &canonical(&expected),
+                            &document.text().to_owned(),
+                            &expected,
                         )?;
                     }
                     if let Some(expected) = source_intention {
@@ -440,21 +410,7 @@ fn source_visible_replacement_intention(document: &Document, action: &Action) ->
     Some(expected)
 }
 
-fn unreprojectable_request(
-    document: &Document,
-    action: &Action,
-    error: &ModelTransactionError,
-) -> bool {
-    // The generic edit API requests literal CR. HTML's tokenization cannot
-    // recreate it (even a numeric reference is normalized), so this exact
-    // intention remains rejected. Do not excuse other verification failures.
-    document.format() == Format::Html
-        && matches!(action, Action::Replace { text, .. } if text.contains('\r'))
-        && matches!(
-            error,
-            ModelTransactionError::Document(DocumentError::VerificationFailed)
-        )
-}
+
 
 fn expected_rejection(error: &ModelTransactionError) -> bool {
     matches!(
@@ -471,6 +427,16 @@ fn expected_rejection(error: &ModelTransactionError) -> bool {
     )
 }
 
+// A fresh document has independent identities. Canonicalize first appearances
+// while retaining shared-owner relationships across all paragraphs.
+fn canonical_container_id(
+    identities: &mut std::collections::BTreeMap<viem_core::document::ContainerIdentity, viem_core::document::ContainerIdentity>,
+    id: viem_core::document::ContainerIdentity,
+) -> viem_core::document::ContainerIdentity {
+    let next = viem_core::document::ContainerIdentity { anchor: 0, slot: identities.len().try_into().unwrap() };
+    *identities.entry(id).or_insert(next)
+}
+
 fn compare_fresh(document: &Document) -> Result<(), String> {
     let bytes = document.source_bytes();
     let fresh = Document::from_bytes_with_file_format(
@@ -485,6 +451,7 @@ fn compare_fresh(document: &Document) -> Result<(), String> {
     let left = document.projection();
     let right = fresh.projection();
     let blocks = |document: &Document| {
+        let mut identities = std::collections::BTreeMap::new();
         document
             .projection()
             .blocks()
@@ -492,6 +459,10 @@ fn compare_fresh(document: &Document) -> Result<(), String> {
             .cloned()
             .map(|mut block| {
                 block.id = 0;
+                for membership in std::sync::Arc::make_mut(&mut block.containers) {
+                    let container = std::sync::Arc::make_mut(&mut membership.container);
+                    container.id = canonical_container_id(&mut identities, container.id);
+                }
                 block
             })
             .collect::<Vec<_>>()
@@ -566,8 +537,12 @@ fn compare_fresh(document: &Document) -> Result<(), String> {
         let mut styles = DocumentLayoutStyles::resolve(document.projection())
             .map_err(|error| format!("style resolution: {error:?}"))?;
         styles.style_sheet_revision.0 = 0;
+        let mut identities = std::collections::BTreeMap::new();
         for paragraph in &mut styles.paragraphs {
             paragraph.block_id = 0;
+            for container in std::sync::Arc::make_mut(&mut paragraph.containers) {
+                container.id = canonical_container_id(&mut identities, container.id);
+            }
         }
         Ok(styles)
     };
@@ -588,32 +563,11 @@ fn style_coverage(spans: &[StyleSpan]) -> Vec<(std::ops::Range<usize>, Vec<Style
     boundaries.dedup();
     let mut result: Vec<(std::ops::Range<usize>, Vec<StyleApplication>)> = Vec::new();
     for pair in boundaries.windows(2) {
-        let mut applications = spans
+        let applications = spans
             .iter()
             .filter(|span| span.range.start <= pair[0] && span.range.end >= pair[1])
             .map(|span| span.application.clone())
             .collect::<Vec<_>>();
-        // Grammar annotations do not participate in the ordered style cascade.
-        // Their relative position beside a direct declaration is immaterial.
-        let mut annotations = Vec::new();
-        applications.retain(|application| {
-            if matches!(
-                application,
-                StyleApplication::SourceSyntax
-                    | StyleApplication::SourceRawText
-                    | StyleApplication::SourcePreservedWhitespace
-            ) {
-                if !annotations.contains(application) {
-                    annotations.push(application.clone());
-                }
-                false
-            } else {
-                true
-            }
-        });
-        annotations.sort_by_key(|annotation| format!("{annotation:?}"));
-        annotations.extend(applications);
-        let applications = annotations;
         if applications.is_empty() {
             continue;
         }
@@ -745,24 +699,6 @@ fn fixture(rng: &mut Rng) -> Action {
             "Malformed *one **two_ [link](unfinished\n\n`code\n",
         ),
         (
-            Html,
-            "<p>A <b data-keep='yes'>bold</b> &amp; é.</p><!--keep--><p>Tail</p>",
-        ),
-        (
-            HtmlSource,
-            "<p>A <b>bold</b> &amp; é.</p>\n<!--keep-->\n<p>Tail</p>",
-        ),
-        (
-            Html,
-            "<ol start='3'><li>One<p>Second paragraph</p></li><li><i>Two</i></li></ol><p>Tail</p>",
-        ),
-        (Html, "<pre>one\n\ntwo &lt; é</pre><p>after<br>break</p>"),
-        (
-            HtmlSource,
-            "<script>if (a < b) x='&amp;';</script><p style='color:red'>Text</p>",
-        ),
-        (Html, "<p><b>unclosed<i>nest</b> &bogus; <tag x='unfinished"),
-        (
             Rtf,
             r"{\rtf1\ansi First {\b bold} and {\i italic}.\par Tail.}",
         ),
@@ -838,8 +774,8 @@ mod tests {
         let mut replayed = Oracle::default();
         let actions = [
             Action::Init {
-                bytes: b"<p>word</p><p>tail</p>".to_vec(),
-                format: SourceFormat::Html,
+                bytes: b"word\n\ntail".to_vec(),
+                format: SourceFormat::Markdown,
                 encoding: SourceEncoding::Utf8,
                 endings: Endings::Unix,
             },
@@ -857,7 +793,7 @@ mod tests {
             Action::SourceReplace {
                 start: 0,
                 end: 0,
-                text: "<!--preserved-->".into(),
+                text: "Prefix\n\n".into(),
             },
             Action::NoOpFormat,
             Action::Check,
@@ -927,61 +863,6 @@ mod tests {
             .execute(&Action::Undo)
             .unwrap_err()
             .contains("exact history restoration"));
-    }
-
-    #[test]
-    fn html_oracle_accepts_protected_spacing_and_retains_preformatted_tabs() {
-        for (source, replacement, expected) in [
-            ("<p>A B</p>", " ", "\u{a0} B"),
-            ("<p>A B</p>", "\t", "\u{a0} B"),
-            ("<pre>A B</pre>", "\t", "\t B"),
-        ] {
-            let mut oracle = Oracle::default();
-            oracle
-                .execute(&Action::Init {
-                    bytes: source.as_bytes().to_vec(),
-                    format: SourceFormat::Html,
-                    encoding: SourceEncoding::Utf8,
-                    endings: Endings::Unix,
-                })
-                .unwrap();
-            assert!(!oracle
-                .execute(&Action::Replace {
-                    start: 0,
-                    end: 1,
-                    text: replacement.into(),
-                })
-                .unwrap());
-            assert_eq!(oracle.document.as_ref().unwrap().text(), expected);
-        }
-    }
-
-    #[test]
-    fn only_explicit_unreprojectable_html_cr_excuses_verification_failure() {
-        let document =
-            Document::from_bytes(b"<p>A</p>".to_vec(), Encoding::Utf8, Format::Html).unwrap();
-        let error = ModelTransactionError::Document(DocumentError::VerificationFailed);
-        let replacement = |text: &str| Action::Replace {
-            start: 0,
-            end: 1,
-            text: text.into(),
-        };
-        assert!(unreprojectable_request(
-            &document,
-            &replacement("\r"),
-            &error
-        ));
-        assert!(!unreprojectable_request(
-            &document,
-            &replacement("\n"),
-            &error
-        ));
-        assert!(!unreprojectable_request(
-            &document,
-            &replacement(" "),
-            &error
-        ));
-        assert!(!expected_rejection(&error));
     }
 
     #[test]

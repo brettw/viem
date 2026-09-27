@@ -118,23 +118,6 @@ final class EVBlockStyleEditorTests: XCTestCase {
             "The nested paragraph receives ten additional points from each quote level")
     }
 
-    func testCustomContainerStyleKeepsItsRoleAndCompatibleParents() throws {
-        let (backend, surface, editor) = try makeEditor()
-        defer { withExtendedLifetime(surface) {} }
-        try backend.read(source: Data("<blockquote><p>Quoted text</p></blockquote>".utf8), typeName: EVDocument.htmlType)
-        editor.retarget(document: surface, styleKey: quote)
-        XCTAssertTrue(editor.createStyle(kind: .quote), editor.inspection.diagnostic)
-        let key = try XCTUnwrap(editor.inspection.selectedStyleKey)
-        let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: key))
-        XCTAssertEqual(definition.kind, .quote)
-        XCTAssertEqual(definition.parentKey, quote)
-        XCTAssertTrue(editor.inspection.parentChoices.contains(.baseParagraph))
-        XCTAssertTrue(editor.inspection.parentChoices.contains(quote))
-        XCTAssertFalse(editor.inspection.parentChoices.contains(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))))
-        XCTAssertTrue(editor.setPropertyForTesting(.blockBorderTopWidth, value: .float(2)))
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: key)?.properties[.blockBorderTopWidth]?.declared, .float(2))
-    }
-
     func testPaddingAndBorderNativeInputsRejectNegativeValuesButMarginsAcceptThem() throws {
         let (backend, surface, editor) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }

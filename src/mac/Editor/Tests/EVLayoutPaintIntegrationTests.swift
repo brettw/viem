@@ -135,8 +135,8 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
   func testBlockCaretRetainsItalicInkFromNeighboringCharactersAfterResizeAndMetricsChange() throws {
     let backend = EVCoreDocumentBackend()
-    let source = "<p style='font-family: Georgia; font-size: 56pt'><i>fifty riffraff</i></p>"
-    try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+    let source = #"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}}{\pard \f2 \fs112 {\i fifty riffraff}}}"#
+    try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -160,7 +160,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
       XCTAssertTrue(redraw.allSatisfy {
         $0.render_run.metrics_generation == session.provider.metricsGeneration
       })
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
     }
   }
 

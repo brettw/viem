@@ -72,12 +72,12 @@ final class EVMenuBuilderTests: XCTestCase {
         let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
         let file = try submenu("File", of: main)
         for (title, commands, operation) in [
-            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML], EVFormatOperation.convert),
-            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown, .reinterpretAsHTML], EVFormatOperation.reinterpret),
+            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown], EVFormatOperation.convert),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown], EVFormatOperation.reinterpret),
         ] {
             let menu = try submenu(title, of: file)
-            let formats: [EVSourceFormat] = operation == .reinterpret ? [.plainText, .code, .markdown, .html] : [.plainText, .markdown, .html]
-            XCTAssertEqual(tokens(in: menu), operation == .reinterpret ? ["Text", "Code", "Markdown", "HTML"] : ["Text", "Markdown", "HTML"])
+            let formats: [EVSourceFormat] = operation == .reinterpret ? [.plainText, .code, .markdown] : [.plainText, .markdown]
+            XCTAssertEqual(tokens(in: menu), operation == .reinterpret ? ["Text", "Code", "Markdown"] : ["Text", "Markdown"])
             for (item, expected) in zip(menu.items, zip(commands, formats)) {
                 XCTAssertEqual(item.tag, expected.0.rawValue)
                 XCTAssertEqual(item.action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
@@ -99,7 +99,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         XCTAssertEqual(tokens(in: try submenu("File", of: main)), [
             "New", "Open…", "Open Recent", "-", "Close", "Save", "Save As…",
-            "Duplicate", "Revert To", "-",
+            "Export…", "Duplicate", "Revert To", "-",
             "Convert to", "Reinterpret as", "Text Encoding", "Line Endings", "-",
             "Page Setup…", "Print…",
         ])
@@ -173,7 +173,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6",
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: main)), [
-            "Paragraph", "Character", "-", "Edit Styles…", "Save as default text style", "Include style definitions in file",
+            "Paragraph", "Character", "-", "Edit Styles…", "Save as default text style",
             "-", "Reload style sheet",
         ])
 

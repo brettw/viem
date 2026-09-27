@@ -8,7 +8,7 @@ import XCTest
 final class EVListDecorationIntegrationTests: XCTestCase {
     private func makeSurface(_ source: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.editorView.frame = NSRect(x: 0, y: 0, width: 500, height: 240)
@@ -22,7 +22,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     }
 
     func testMarkersExportAsNonTextFurnitureIncludingEmptyItemsAndSourceToggle() throws {
-        let source = "<ol start='9'><li>Alpha</li><li></li><li>Third</li></ol>"
+        let source = "9. Alpha\n10. \n11. Third"
         let (backend, surface) = try makeSurface(source)
         let session = try XCTUnwrap(surface.session)
         XCTAssertEqual(try backend.formattedText(), "Alpha\n\nThird")
@@ -41,16 +41,16 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         snapshot = try session.layoutExport()
         XCTAssertEqual(snapshot.decorations[0].font_size, 24.5, accuracy: 0.001)
         XCTAssertGreaterThan(snapshot.decorations[0].advance, first.advance)
-        _ = try session.setFormat(.htmlSource, expected: backend.documentState())
+        _ = try session.setFormat(.markdownSource, expected: backend.documentState())
         XCTAssertTrue(try session.layoutExport().decorations.isEmpty)
         XCTAssertEqual(try backend.formattedText(), source)
         _ = try session.undo()
         XCTAssertEqual(String(decoding: try session.layoutExport().decorationLabels, as: UTF8.self), "9.10.11.")
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }
 
     func testNativeTabAndShiftTabIndentInsideTheVisibleItem() throws {
-        let (backend, surface) = try makeSurface("<ol><li>Parent</li><li><b>Body</b></li></ol>")
+        let (backend, surface) = try makeSurface("1. Parent\n2. **Body**")
         let session = try XCTUnwrap(surface.session)
         surface.performInput { _ = try session.sendText("jlli") }
         let original = try session.layoutExport()
@@ -78,12 +78,12 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         XCTAssertEqual(try markerLabels(session), "1.2.")
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
         XCTAssertEqual(try backend.formattedText(), "Parent\nBody")
-        XCTAssertFalse(String(decoding: try backend.serializedSource(typeName: EVDocument.htmlType), as: UTF8.self).contains("\t"))
+        XCTAssertFalse(String(decoding: try backend.serializedSource(typeName: EVDocument.markdownType), as: UTF8.self).contains("\t"))
         XCTAssertNil(surface.commandOutput)
     }
 
     func testBackspaceAtNestedItemStartUnindentsThenRemovesTheTopLevelMarker() throws {
-        let source = "<ol data-keep='yes'><li>Parent<ol><li>Child<ol><li><b>Deep</b></li></ol></li></ol></li></ol><!--keep-->"
+        let source = "1. Parent\n   1. Child\n      1. **Deep**"
         let (backend, surface) = try makeSurface(source)
         let session = try XCTUnwrap(surface.session)
         let text = "Parent\nChild\nDeep"
@@ -118,9 +118,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         XCTAssertEqual(try markerLabels(session), "1.a.")
         XCTAssertNil(surface.commandOutput)
 
-        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("data-keep='yes'"))
-        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<!--keep-->"))
+        let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
         let (reopened, reopenedSurface) = try makeSurface(String(decoding: saved, as: UTF8.self))
         reopenedSurface.editorView.setAccessibilitySelectedTextRange(NSRange(location: deepStart, length: 0))
         XCTAssertEqual(try reopened.formattedText(), text)
@@ -128,7 +126,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     }
 
     func testEscapeKeepsTheNativeCaretOnTheTerminalEmptyParagraph() throws {
-        let (backend, surface) = try makeSurface("<p>Body</p>")
+        let (backend, surface) = try makeSurface("Body")
         let session = try XCTUnwrap(surface.session)
         surface.performInput { _ = try session.sendText("A") }
         surface.editorView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
@@ -148,7 +146,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     }
 
     func testNativeArrowReturnToAnEmptyItemKeepsBackspaceAtItsVisibleStart() throws {
-        for source in ["<ul><li><b>Body</b></li></ul>", "<ol><li><p><b>Body</b></p></li><li>Tail</li></ol>"] {
+        for source in ["- **Body**", "1. **Body**\n2. Tail"] {
             let (backend, surface) = try makeSurface(source)
             let session = try XCTUnwrap(surface.session)
             surface.performInput { _ = try session.sendText("A") }
@@ -167,7 +165,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     }
 
     func testMarkerDrawingCullsOutsideDirtyRegionAtOrdinaryZoomStops() throws {
-        let (_, surface) = try makeSurface("<ul><li>First body</li><li>Second body</li></ul>")
+        let (_, surface) = try makeSurface("- First body\n- Second body")
         let session = try XCTUnwrap(surface.session)
         for scale: CGFloat in [1, 1.25, 2] {
             _ = try session.setScale(scale)
@@ -183,7 +181,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     }
 
     func testDecorationExportRejectsStaleIdentityAndDoesNotPartiallyCopy() throws {
-        let (backend, surface) = try makeSurface("<ol><li>Alpha</li></ol>")
+        let (backend, surface) = try makeSurface("1. Alpha")
         let session = try XCTUnwrap(surface.session)
         let snapshot = try session.layoutExport()
         var identity = snapshot.info.identity
@@ -206,7 +204,14 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         let theme = EVThemeStore.shared.theme
         EVThemeStore.shared.update(.paper)
         defer { EVThemeStore.shared.update(theme) }
-        let (_, surface) = try makeSurface("<ol><li style='font-size:28pt;color:#ff0000'>Body</li></ol>")
+        let (backend, surface) = try makeSurface("1. Body")
+        let session = try XCTUnwrap(surface.session)
+        let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "NumberedList1"))
+        try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
+            mutation: .setDeclaration(.characterSize, .float(28)))
+        try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
+            mutation: .setDeclaration(.characterForeground, .color(EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1))))
+        surface.refreshPresentation()
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
         let marker = try XCTUnwrap(snapshot.decorations.first)
         XCTAssertEqual(marker.paint.foreground.red, 1, accuracy: 0.001)

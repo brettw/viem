@@ -75,20 +75,22 @@ impl Document {
         range: Range<usize>,
         assignment: Assignment,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !matches!(
-            self.format(),
-            Format::Html | Format::Markdown | Format::MarkdownSource
-        ) {
+        if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
             return Ok(None);
         }
         self.validate_range(&range)?;
         let wants_quote =
             matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Block quote");
-        if wants_quote { return Ok(None); }
+        if wants_quote {
+            return Ok(None);
+        }
         let wants_plain = matches!(&assignment, Assignment::Paragraph(style)
             if style == &self.projection().style_sheet().base_paragraph);
-        if wants_plain { return self.prepare_contextual_base_style(range).map(Some); }
-        let wants_code = matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
+        if wants_plain {
+            return self.prepare_contextual_base_style(range).map(Some);
+        }
+        let wants_code =
+            matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
@@ -114,7 +116,8 @@ impl Document {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
                 (wants_plain || wants_code || block.style.0 == "Code Block")
-                    && structural_body(block) && !(wants_code && block.style.0 == "Code Block")
+                    && structural_body(block)
+                    && !(wants_code && block.style.0 == "Code Block")
                     || wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
@@ -158,8 +161,8 @@ impl Document {
             &mut sources,
             &mut formatted,
         )?;
-        let source_patches = sources.source_patches(&scratch.state().source)?;
-        let edits = formatted.formatted_edits(&scratch)?;
+        let source_patches = sources.source_patches();
+        let edits = formatted.formatted_edits();
         let mut prepared = if scratch.text() == self.text() {
             self.prepare_reprojected_source_patches(source_patches)?
         } else {
@@ -194,12 +197,23 @@ impl Document {
 
     /// The picker exposes one active treatment. Reset that treatment once per
     /// leaf, preserving enclosing owners instead of repeatedly flattening them.
-    fn prepare_contextual_base_style(&self, range: Range<usize>) -> Result<PreparedModelTransaction, ModelTransactionError> {
+    fn prepare_contextual_base_style(
+        &self,
+        range: Range<usize>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let selected = selected_blocks(self, &range);
-        if !selected.is_empty() && selected.iter().all(|block| block.quote_depth > 0
-            && matches!(block.kind, super::super::BlockKind::Paragraph)
-            && (block.style == self.projection().style_sheet().base_paragraph || block.style.0 == "Block quote")) {
-            return self.prepare_structural_assignment_raw(range, Assignment::Paragraph(self.projection().style_sheet().base_paragraph.clone()));
+        if !selected.is_empty()
+            && selected.iter().all(|block| {
+                block.quote_depth > 0
+                    && matches!(block.kind, super::super::BlockKind::Paragraph)
+                    && (block.style == self.projection().style_sheet().base_paragraph
+                        || block.style.0 == "Block quote")
+            })
+        {
+            return self.prepare_structural_assignment_raw(
+                range,
+                Assignment::Paragraph(self.projection().style_sheet().base_paragraph.clone()),
+            );
         }
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
@@ -207,18 +221,40 @@ impl Document {
         for block in selected.into_iter().rev() {
             let mut target = block.range;
             let style = scratch.projection().style_sheet().base_paragraph.clone();
-            let prepared = scratch.prepare_structural_assignment_raw(target.clone(), Assignment::Paragraph(style))?;
-            publish(&mut scratch, prepared, &mut target, &mut sources, &mut formatted)?;
+            let prepared = scratch
+                .prepare_structural_assignment_raw(target.clone(), Assignment::Paragraph(style))?;
+            publish(
+                &mut scratch,
+                prepared,
+                &mut target,
+                &mut sources,
+                &mut formatted,
+            )?;
         }
-        let patches = sources.source_patches(&scratch.state().source)?;
-        if patches.is_empty() { return Ok(self.no_op_prepared()); }
+        let patches = sources.source_patches();
+        if patches.is_empty() {
+            return Ok(self.no_op_prepared());
+        }
         let mut prepared = self.prepare_reprojected_source_patches(patches)?;
-        let PreparedPublication::State(candidate) = &prepared.publication else { return Err(DocumentError::VerificationFailed.into()); };
+        let PreparedPublication::State(candidate) = &prepared.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
         if candidate.projection.text() != scratch.text()
-            || !candidate.projection.has_same_hard_line_structure(scratch.projection())
+            || !candidate
+                .projection
+                .has_same_hard_line_structure(scratch.projection())
             || candidate.projection.style_spans() != scratch.projection().style_spans()
-            || candidate.projection.blocks().iter().map(|block| (&block.range, &block.attributes))
-                .ne(scratch.projection().blocks().iter().map(|block| (&block.range, &block.attributes))) {
+            || candidate
+                .projection
+                .blocks()
+                .iter()
+                .map(|block| (&block.range, &block.attributes))
+                .ne(scratch
+                    .projection()
+                    .blocks()
+                    .iter()
+                    .map(|block| (&block.range, &block.attributes)))
+        {
             return Err(DocumentError::VerificationFailed.into());
         }
         prepared.summary.kind = ModelChangeKind::SemanticStyle;
@@ -232,14 +268,6 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         match assignment {
             Assignment::List(style) => self.prepare_list_style_raw(range, style),
-            Assignment::Paragraph(style) if self.format() == Format::Html => self
-                .prepare_html_named_style_raw(PersistedStyleIntent::AssignBlockStyle {
-                    target: StyleBlockTarget::Paragraphs(TextRange::new(
-                        self.text_point(range.start)?,
-                        self.text_point(range.end)?,
-                    )?),
-                    style,
-                }, false),
             Assignment::Paragraph(style) => {
                 if style == self.projection().style_sheet().base_paragraph {
                     if let Some(prepared) = self.prepare_markdown_code_as_prose(&range)? {
@@ -256,7 +284,9 @@ impl Document {
         range: &Range<usize>,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
         if !self.format().is_markdown()
-            || !selected_blocks(self, range).iter().any(|block| block.style.0 == "Code Block")
+            || !selected_blocks(self, range)
+                .iter()
+                .any(|block| block.style.0 == "Code Block")
         {
             return Ok(None);
         }
@@ -264,7 +294,10 @@ impl Document {
     }
 }
 
-pub(super) fn selected_blocks(document: &Document, range: &Range<usize>) -> Vec<super::super::Block> {
+pub(super) fn selected_blocks(
+    document: &Document,
+    range: &Range<usize>,
+) -> Vec<super::super::Block> {
     document
         .projection()
         .blocks_for_region(range)

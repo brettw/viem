@@ -17,52 +17,107 @@ pub(super) fn preserve_retained_literals(
 ) -> Result<(), DocumentError> {
     let mut support = Vec::new();
     for edit in edits {
-        if document.projection().markdown_replacement_begins_in_code(&edit.range)
-            || document.projection().blocks_for_region(&edit.range).iter().any(|block| block.markdown_html) {
+        if document
+            .projection()
+            .markdown_replacement_begins_in_code(&edit.range)
+            || document
+                .projection()
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| block.markdown_html)
+        {
             continue;
         }
         let text = document.projection().text_tree();
         let is_boundary = |ch: char| ch.is_ascii_punctuation() || matches!(ch, ' ' | '\t');
         let mut start = edit.range.start;
         while let Some(previous) = document.previous_grapheme_boundary(start) {
-            if !text.slice(previous..start).map_err(DocumentError::FormattedTextStorage)?
-                .chars().all(is_boundary) { break; }
+            if !text
+                .slice(previous..start)
+                .map_err(DocumentError::FormattedTextStorage)?
+                .chars()
+                .all(is_boundary)
+            {
+                break;
+            }
             start = previous;
         }
         let mut end = edit.range.end;
         while let Some(next) = document.next_grapheme_boundary(end) {
-            if !text.slice(end..next).map_err(DocumentError::FormattedTextStorage)?
-                .chars().all(is_boundary) { break; }
+            if !text
+                .slice(end..next)
+                .map_err(DocumentError::FormattedTextStorage)?
+                .chars()
+                .all(is_boundary)
+            {
+                break;
+            }
             end = next;
         }
-        let spans = document.projection().provenance_for_region(&(start..end))
-            .into_iter().filter(|span| {
-                !span.formatted.is_empty() && !span.source.is_empty()
-                    && !(edit.range.start < span.formatted.end && span.formatted.start < edit.range.end)
-                    && !patches.iter().any(|patch| patch.range.start < span.source.end && span.source.start < patch.range.end)
-                    && text.slice(span.formatted.clone()).is_ok_and(|text| text.chars().all(|ch| ch.is_ascii_punctuation()))
-            }).collect::<Vec<_>>();
-        let Some(last) = spans.last() else { continue; };
-        let Some(candidate) = project_local_candidate(document, &(start..end), &last.source, patches, false)? else {
+        let spans = document
+            .projection()
+            .provenance_for_region(&(start..end))
+            .into_iter()
+            .filter(|span| {
+                !span.formatted.is_empty()
+                    && !span.source.is_empty()
+                    && !(edit.range.start < span.formatted.end
+                        && span.formatted.start < edit.range.end)
+                    && !patches.iter().any(|patch| {
+                        patch.range.start < span.source.end && span.source.start < patch.range.end
+                    })
+                    && text
+                        .slice(span.formatted.clone())
+                        .is_ok_and(|text| text.chars().all(|ch| ch.is_ascii_punctuation()))
+            })
+            .collect::<Vec<_>>();
+        let Some(last) = spans.last() else {
             continue;
         };
-        let projected = crate::document::projection::project(&candidate.normalized, super::Format::Markdown,
-            document.revision(), 0, candidate.source_len);
+        let Some(candidate) =
+            project_local_candidate(document, &(start..end), &last.source, patches, false)?
+        else {
+            continue;
+        };
+        let projected = crate::document::projection::project(
+            &candidate.normalized,
+            super::Format::Markdown,
+            document.revision(),
+            0,
+            candidate.source_len,
+        );
         for span in spans {
-            let visible = text.slice(span.formatted.clone()).map_err(DocumentError::FormattedTextStorage)?;
+            let visible = text
+                .slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
             if document.state().source.bytes_in(span.source.clone())
-                != Some(document.encoding().encode_fragment(&visible)?) {
+                != Some(document.encoding().encode_fragment(&visible)?)
+            {
                 continue;
             }
-            let delta = candidate.patches.iter().filter(|patch| patch.range.end <= span.source.start)
-                .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize).sum::<isize>();
-            let at = (span.source.start - candidate.source_start).checked_add_signed(delta)
+            let delta = candidate
+                .patches
+                .iter()
+                .filter(|patch| patch.range.end <= span.source.start)
+                .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize)
+                .sum::<isize>();
+            let at = (span.source.start - candidate.source_start)
+                .checked_add_signed(delta)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let after = at..at + span.source.len();
-            if !projected.provenance_contained_in_source(&after).iter().any(|mapped| {
-                mapped.source == after && !mapped.formatted.is_empty()
-                    && projected.text_tree().slice(mapped.formatted.clone()).as_deref() == Ok(visible.as_str())
-            }) {
+            if !projected
+                .provenance_contained_in_source(&after)
+                .iter()
+                .any(|mapped| {
+                    mapped.source == after
+                        && !mapped.formatted.is_empty()
+                        && projected
+                            .text_tree()
+                            .slice(mapped.formatted.clone())
+                            .as_deref()
+                            == Ok(visible.as_str())
+                })
+            {
                 escape_retained_punctuation(document, span.formatted.start, &mut support)?;
             }
         }
@@ -81,7 +136,10 @@ pub(super) fn preserve_deleted_source_prefixes(
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
     let mut support = Vec::new();
-    for edit in edits.iter().filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n')) {
+    for edit in edits
+        .iter()
+        .filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n'))
+    {
         let band = edit.range.start.saturating_sub(1)
             ..(edit.range.end + 1).min(document.projection().text_tree().byte_len());
         for span in document.projection().provenance_for_region(&band) {
@@ -179,7 +237,10 @@ pub(super) fn preserve_deleted_boundary_spaces(
 ) -> Result<(), DocumentError> {
     let projection = document.projection();
     let mut seen = BTreeSet::new();
-    for edit in edits.iter().filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n')) {
+    for edit in edits
+        .iter()
+        .filter(|edit| !edit.range.is_empty() || edit.replacement.contains('\n'))
+    {
         let band = edit.range.start.saturating_sub(1)
             ..(edit.range.end + 1).min(projection.text_tree().byte_len());
         for span in projection.provenance_for_region(&band) {
@@ -205,7 +266,9 @@ pub(super) fn preserve_deleted_boundary_spaces(
                 // into the following paragraph separator. A following break
                 // may instead legitimately acquire the newly empty body's
                 // source contributor; preserve_join_boundaries owns that side.
-                if edit.range.end <= span.formatted.start && !edit.replacement.contains('\n') { continue; }
+                if edit.range.end <= span.formatted.start && !edit.replacement.contains('\n') {
+                    continue;
+                }
                 let bytes = document
                     .state()
                     .source
@@ -343,7 +406,11 @@ pub(super) fn remove_empty_continuation_prefixes(
                 })
             {
                 super::super::source_edit::append_uncovered_deletions(
-                    &(line.start + document.encoding().encode_fragment(&decoded.text[..quote_prefix])?.len()..body_start),
+                    &(line.start
+                        + document
+                            .encoding()
+                            .encode_fragment(&decoded.text[..quote_prefix])?
+                            .len()..body_start),
                     patches,
                     &mut support,
                 );
@@ -364,49 +431,97 @@ pub(super) fn preserve_empty_continuation_paragraphs(
 ) -> Result<(), DocumentError> {
     let projection = document.projection();
     let mut seen = BTreeSet::new();
-    let mut deletions = edits.iter().filter(|edit| !edit.range.is_empty() && edit.replacement.is_empty())
+    let mut deletions = edits
+        .iter()
+        .filter(|edit| !edit.range.is_empty() && edit.replacement.is_empty())
         .collect::<Vec<_>>();
     deletions.sort_by_key(|edit| (edit.range.start, edit.range.end));
     for edit in &deletions {
         for block in projection.blocks_for_region(&edit.range) {
-            if block.range.is_empty() || block.style.0 == "Code Block"
-                || !matches!(block.kind, BlockKind::ListItem { item_start: false, .. })
-                || block.range.start != edit.range.start || block.range.start == 0
+            if block.range.is_empty()
+                || block.style.0 == "Code Block"
+                || !matches!(
+                    block.kind,
+                    BlockKind::ListItem {
+                        item_start: false,
+                        ..
+                    }
+                )
+                || block.range.start != edit.range.start
+                || block.range.start == 0
                 || block.range.end >= projection.text_tree().byte_len()
                 || !seen.insert(block.id)
-            { continue; }
+            {
+                continue;
+            }
             let mut deleted_end = block.range.start;
             for deletion in &deletions {
-                if deletion.range.start == deleted_end { deleted_end = deletion.range.end; }
+                if deletion.range.start == deleted_end {
+                    deleted_end = deletion.range.end;
+                }
             }
-            if deleted_end != block.range.end { continue; }
-            let boundaries = [block.range.start - 1..block.range.start, block.range.end..block.range.end + 1];
-            if edits.iter().any(|other| boundaries.iter().any(|boundary|
-                other.range.start < boundary.end && boundary.start < other.range.end))
-            { continue; }
+            if deleted_end != block.range.end {
+                continue;
+            }
+            let boundaries = [
+                block.range.start - 1..block.range.start,
+                block.range.end..block.range.end + 1,
+            ];
+            if edits.iter().any(|other| {
+                boundaries.iter().any(|boundary| {
+                    other.range.start < boundary.end && boundary.start < other.range.end
+                })
+            }) {
+                continue;
+            }
             let mut count = 0;
             for boundary in boundaries {
-                let Some(source) = hard_boundary_contributor(document, boundary) else { count = 4; break; };
-                let bytes = document.state().source.bytes_in(source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                let Some(source) = hard_boundary_contributor(document, boundary) else {
+                    count = 4;
+                    break;
+                };
+                let bytes = document
+                    .state()
+                    .source
+                    .bytes_in(source.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
                 let decoded = document.encoding().decode_region(&bytes, source.start)?;
                 let normalized = line_endings::normalize(&decoded, document.file_format());
-                if !normalized.text.split('\n').all(|line|
-                    line[super::super::markdown_quotes::prefix(line)..].chars().all(char::is_whitespace))
-                { count = 4; break; }
+                if !normalized.text.split('\n').all(|line| {
+                    line[super::super::markdown_quotes::prefix(line)..]
+                        .chars()
+                        .all(char::is_whitespace)
+                }) {
+                    count = 4;
+                    break;
+                }
                 count += normalized.endings.len();
             }
-            if count >= 4 { continue; }
-            let at = projection.source_insertion_point(block.range.end, false)
+            if count >= 4 {
+                continue;
+            }
+            let at = projection
+                .source_insertion_point(block.range.end, false)
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            let source_line = document.state().source_hard_lines.line_at_offset(at)
+            let source_line = document
+                .state()
+                .source_hard_lines
+                .line_at_offset(at)
                 .and_then(|index| document.state().source_hard_lines.get(index))
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            let bytes = document.state().source.bytes_in(source_line.start..at)
+            let bytes = document
+                .state()
+                .source
+                .bytes_in(source_line.start..at)
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            let decoded = document.encoding().decode_region(&bytes, source_line.start)?;
+            let decoded = document
+                .encoding()
+                .decode_region(&bytes, source_line.start)?;
             let prefix = &decoded.text[..super::super::markdown_quotes::prefix(&decoded.text)];
             let separator = format!("{}{prefix}", document.file_format().spelling());
-            let added = document.encoding().encode_fragment(&separator.repeat(4 - count))?;
+            let added = document
+                .encoding()
+                .encode_fragment(&separator.repeat(4 - count))?;
             if let Some(patch) = patches.iter_mut().find(|patch| patch.range.end == at) {
                 patch.replacement.extend(added);
             } else {
@@ -429,7 +544,11 @@ pub(super) fn preserve_split_literals(
     let mut support = Vec::new();
     for edit in edits {
         if projection.markdown_replacement_begins_in_code(&edit.range)
-            || projection.blocks_for_region(&edit.range).iter().any(|block| block.markdown_html) {
+            || projection
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| block.markdown_html)
+        {
             continue;
         }
         // Inserting an escaped delimiter can split a previously literal run
@@ -497,8 +616,13 @@ pub(super) fn preserve_split_literals(
                 .encoding()
                 .decode_region(&bytes, span.source.start)?;
             let normalized = line_endings::normalize(&decoded, document.file_format());
-            if !normalized.endings.is_empty() && normalized.text.split('\n').all(|row|
-                row[crate::document::markdown_quotes::prefix(row)..].chars().all(char::is_whitespace)) {
+            if !normalized.endings.is_empty()
+                && normalized.text.split('\n').all(|row| {
+                    row[crate::document::markdown_quotes::prefix(row)..]
+                        .chars()
+                        .all(char::is_whitespace)
+                })
+            {
                 folded.push(span);
             }
         }
@@ -522,14 +646,28 @@ pub(super) fn preserve_split_literals(
         let tail = &document.text()[edit.range.end..];
         let end = tail.find('\n').unwrap_or(tail.len());
         let line = &tail[..end];
-        let whitespace = line.bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
-        for span in projection.provenance_for_region(&(edit.range.end..edit.range.end + whitespace)) {
-            if span.formatted.is_empty() || span.source.is_empty() { continue; }
-            let body = projection.text_tree().slice(span.formatted.clone())
+        let whitespace = line
+            .bytes()
+            .take_while(|byte| matches!(byte, b' ' | b'\t'))
+            .count();
+        for span in projection.provenance_for_region(&(edit.range.end..edit.range.end + whitespace))
+        {
+            if span.formatted.is_empty() || span.source.is_empty() {
+                continue;
+            }
+            let body = projection
+                .text_tree()
+                .slice(span.formatted.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
             if body.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
-                let syntax = body.bytes().map(|byte| if byte == b' ' { "&#32;" } else { "&#9;" }).collect::<String>();
-                support.push(SourcePatch::primary(span.source, document.encoding().encode_fragment(&syntax)?));
+                let syntax = body
+                    .bytes()
+                    .map(|byte| if byte == b' ' { "&#32;" } else { "&#9;" })
+                    .collect::<String>();
+                support.push(SourcePatch::primary(
+                    span.source,
+                    document.encoding().encode_fragment(&syntax)?,
+                ));
             }
         }
         let indent = line.bytes().take_while(|byte| *byte == b' ').count();
@@ -577,9 +715,14 @@ fn escape_retained_punctuation(
     let Some(end) = document.next_grapheme_boundary(at) else {
         return Ok(());
     };
-    let text = document.projection().text_tree().slice(at..end)
+    let text = document
+        .projection()
+        .text_tree()
+        .slice(at..end)
         .map_err(DocumentError::FormattedTextStorage)?;
-    let Some(character) = text.chars().next().filter(char::is_ascii_punctuation) else { return Ok(()); };
+    let Some(character) = text.chars().next().filter(char::is_ascii_punctuation) else {
+        return Ok(());
+    };
     let range = at..at + character.len_utf8();
     let Some(span) = document
         .projection()
@@ -881,19 +1024,37 @@ pub(super) fn preserve_split_boundaries<'a>(
         if range.is_empty() && range.start == line.start && index > 0 {
             let previous = crate::document::edit_boundary::paragraph_at(document, line.start - 1)?;
             if let Some(previous) = previous.filter(|block| block.style.0 == "Code Block") {
-                if let Some(fence) = crate::document::markdown_code::fenced_source(document, &previous)? {
+                if let Some(fence) =
+                    crate::document::markdown_code::fenced_source(document, &previous)?
+                {
                     if let Some(end) = fence.closing_content_end {
-                        let at = projection.source_insertion_point(range.start, true)
+                        let at = projection
+                            .source_insertion_point(range.start, true)
                             .ok_or(DocumentError::AmbiguousProjection)?;
-                        if let Some(patch) = patches.iter_mut().find(|patch| patch.range == (at..at)) {
-                            let bytes = document.state().source.bytes_in(end..at)
+                        if let Some(patch) =
+                            patches.iter_mut().find(|patch| patch.range == (at..at))
+                        {
+                            let bytes = document
+                                .state()
+                                .source
+                                .bytes_in(end..at)
                                 .ok_or(DocumentError::AmbiguousProjection)?;
                             let existing = document.encoding().decode_region(&bytes, end)?;
-                            let added = document.encoding().decode_region(&patch.replacement, at)?;
-                            let endings = line_endings::normalize(&existing, document.file_format()).endings.len()
-                                + line_endings::normalize(&added, document.file_format()).endings.len();
+                            let added =
+                                document.encoding().decode_region(&patch.replacement, at)?;
+                            let endings =
+                                line_endings::normalize(&existing, document.file_format())
+                                    .endings
+                                    .len()
+                                    + line_endings::normalize(&added, document.file_format())
+                                        .endings
+                                        .len();
                             if added.text.chars().all(char::is_whitespace) && endings < 4 {
-                                patch.replacement.extend(document.encoding().encode_fragment(&document.file_format().spelling().repeat(4 - endings))?);
+                                patch
+                                    .replacement
+                                    .extend(document.encoding().encode_fragment(
+                                        &document.file_format().spelling().repeat(4 - endings),
+                                    )?);
                             }
                         }
                     }
@@ -1084,9 +1245,11 @@ fn support_patches_impl(
             let right = projection.hard_line_range(index + 1).unwrap();
             // A source continuation or literal code break is internal to one
             // paragraph. Only its outer boundaries need prose separators.
-            if projection.blocks_for_region(&left).iter().any(|block| {
-                block.range.start <= left.start && right.end <= block.range.end
-            }) {
+            if projection
+                .blocks_for_region(&left)
+                .iter()
+                .any(|block| block.range.start <= left.start && right.end <= block.range.end)
+            {
                 continue;
             }
             let untouched_list = |at: usize| {

@@ -78,25 +78,3 @@ fn heading_break_is_a_local_encoded_insertion_and_deleting_it_restores_exact_sou
         assert_eq!(document.source_bytes(), bytes);
     }
 }
-
-#[test]
-fn literal_tag_typing_and_html_conversion_keep_visible_text() {
-    let mut typed =
-        Document::from_bytes(b"# heading ".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-    typed.insert(typed.text().len(), "<br>").unwrap();
-    assert_eq!(typed.text(), "heading<br>");
-    assert_eq!(typed.line_count(), 1);
-
-    let mut converted =
-        Document::from_bytes(b"<p>&lt;br&gt;</p>".to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    converted
-        .apply_model_request(ModelRequest::SetFormat {
-            document: converted.id(),
-            revision: converted.revision(),
-            target: Format::Markdown,
-            operation: viem_core::document::FormatOperation::Convert,
-        })
-        .unwrap();
-    assert_eq!(converted.text(), "<br>");
-    assert_eq!(converted.line_count(), 1);
-}

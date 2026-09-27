@@ -86,7 +86,7 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertNil(document.recoveryFailure)
     }
 
-    func testMarkdownAndHTMLDocumentURLsDefaultToSourcePresentation() throws {
+    func testMarkdownOpensAsSourceAndHTMLOpensAsCode() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-source-default-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -101,13 +101,17 @@ final class EVCodeOpeningTests: XCTestCase {
             EVDocument.defaultOpeningType(
                 for: directory.appendingPathComponent("typed-html"),
                 nativeType: EVDocument.htmlType),
-            EVDocument.htmlSourceType)
+            EVDocument.codeType)
 
         for (filename, nativeType, expected, source) in [
             ("notes.md", EVDocument.markdownType, EVSourceFormat.markdownSource,
              Data("# Heading\n\n**body**\n".utf8)),
-            ("page.html", EVDocument.htmlType, EVSourceFormat.htmlSource,
+            ("page.html", EVDocument.htmlType, EVSourceFormat.code,
              Data("<h1>Heading</h1>\n<p>body</p>\n".utf8)),
+            ("page.HTM", "public.data", EVSourceFormat.code,
+             Data("<p>HTML source &amp; text</p>\r\n".utf8)),
+            ("page.xhtml", "public.xml", EVSourceFormat.code,
+             Data("<html xmlns='http://www.w3.org/1999/xhtml'><p>Text</p></html>".utf8)),
         ] {
             let backend = backend()
             let url = directory.appendingPathComponent(filename)
@@ -119,8 +123,33 @@ final class EVCodeOpeningTests: XCTestCase {
             try document.read(from: url, ofType: nativeType)
 
             XCTAssertEqual(backend.sourceFormat, expected, filename)
-            XCTAssertEqual(try document.data(ofType: nativeType), source, filename)
+            XCTAssertEqual(try document.data(ofType: EVDocument.typeName(for: expected)), source, filename)
             XCTAssertFalse(backend.persistenceState.isDirty, filename)
+        }
+    }
+
+    func testNativeHTMLDataAndLegacyRecoveryOpenAsCode() throws {
+        let backend = backend()
+        let document = EVDocument(editorBackend: backend)
+        defer { document.close() }
+        let source = Data("<h1>Literal</h1>\r\n".utf8)
+        for type in [EVDocument.htmlType] {
+            try document.read(from: source, ofType: type)
+            document.fileType = type
+            XCTAssertEqual(backend.sourceFormat, .code)
+            XCTAssertEqual(document.fileType, EVDocument.plainTextType)
+            XCTAssertEqual(document.writableTypes(for: .saveAsOperation), [EVDocument.plainTextType])
+            XCTAssertEqual(try document.data(ofType: EVDocument.plainTextType), source)
+            XCTAssertFalse(backend.persistenceState.isDirty)
+        }
+        for legacy in ["html", "htmlSource"] {
+            let format = try JSONDecoder().decode(EVSourceFormat.self, from: Data("\"\(legacy)\"".utf8))
+            try backend.restoreRecovery(EVRecoverySnapshot(source: source, format: format,
+                encoding: UInt32(VIEM_ENCODING_UTF8), fileFormat: UInt32(VIEM_FILE_FORMAT_DOS),
+                documentID: 1, documentRevision: 1))
+            XCTAssertEqual(backend.sourceFormat, .code)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+            XCTAssertTrue(backend.persistenceState.isRecovered)
         }
     }
 
@@ -206,7 +235,7 @@ final class EVCodeOpeningTests: XCTestCase {
         for (type, automatic, expected) in [
             (EVDocument.plainTextType, false, EVSourceFormat.plainText),
             (EVDocument.markdownType, true, .markdown),
-            (EVDocument.htmlType, true, .html),
+            (EVDocument.htmlType, true, .code),
             (EVDocument.codeType, false, .code),
         ] {
             try backend.read(source: Data(text.utf8), typeName: type, filename: "file.rs", allowAutomaticCode: automatic)
@@ -305,7 +334,7 @@ final class EVCodeOpeningTests: XCTestCase {
     func testConvertingCodeKeepsItsLiteralVisibleContentAndUndoRestoresCode() throws {
         let backend = backend()
         let source = "# literal\n<b>tags &amp;</b>"
-        for command in [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML] {
+        for command in [EVMenuCommand.convertToText, .convertToMarkdown] {
             try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()

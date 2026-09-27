@@ -13,7 +13,6 @@ It has several presentation modes.
 - Text (for plain text files)
 - Code (for source code)
 - Markdown source and WYSIWYG
-- HTML source and WYSIWYG
 - RTF
 
 ### Code editing
@@ -24,12 +23,12 @@ Code mode supports optional word wrapping for long lines which are indented by o
 
 In code mode, leading spaces are always treated as 1en wide. This allows the use of proportional fonts while maintaining reasonable indenting.
 
-### Markdown and HTML modes
+### Markdown modes
 
-These modes are more experimental.
+Markdown files open in Source mode, which keeps markup visible while applying its styles. The status control switches to WYSIWYG to show the interpreted document.
 
-The “source” modes show the literal source of the file while styling the formatting, at least to some extent.
+HTML files open as literal Code, with syntax highlighting and ordinary code editing.
 
-Markdown and HTML files open in their source modes by default; the status control can switch to the corresponding WYSIWYG presentation.
+### HTML export
 
-The “WYSIWYG” modes attempt to display a version of the final rendering. HTML is treated very simply, showing basic headings, paragraphs, and things like bold, but it is not a full HTML renderer.
+File > Export… writes a standalone HTML copy with the document’s styles translated to CSS. Markdown exports its formatted content from either view. Code exports its literal text with syntax highlighting and preserved whitespace. Export does not change the open document’s format, filename, source bytes, or saved state.

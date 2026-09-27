@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
     func testFontSizeUnitConversionTracksBasedOnParagraphAndKeepsDeclaration() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
@@ -65,13 +65,15 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testCharacterPercentagePreviewIgnoresNamedParentPointSizeAndOverrideClears() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)))
-        let parent = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link"))
+        let parent = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC1"))
+        _ = try XCTUnwrap(surface.session).createStyle(parent, name: "Parent", identity: backend.styleSheetSnapshot().identity)
         editor.selectStyle(parent)
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(100)))
-        let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
+        let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC2"))
+        _ = try XCTUnwrap(surface.session).createStyle(code, name: "Child", identity: backend.styleSheetSnapshot().identity)
         editor.selectStyle(code)
         XCTAssertTrue(editor.setParentForTesting(parent), editor.inspection.diagnostic)
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
@@ -100,7 +102,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFontSizePercentageDraftsRequireIntegersWithinBoundsAndStepperUsesPercent() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -131,7 +133,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFontSizeUnitConversionRoundsAndClampsOnlyThePercentageDeclaration() throws {
-        let (_, surface, editor, _) = try makeEditor(html: true)
+        let (_, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
         editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
@@ -149,7 +151,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFirstClickOnInheritedFontSizeUnitActivatesPercentageAsOneUndoGesture() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -203,95 +205,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         }
     }
 
-    func testHTMLBuiltinDeclarationsAreVisibleAndClearingThemRestoresBaseParagraph() throws {
-        for type in [EVDocument.htmlType, EVDocument.htmlSourceType] {
-            for includeDefinitions in [false, true] {
-                let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-builtin-controls-\(UUID().uuidString)")
-                addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-                let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
-                let backend = EVCoreDocumentBackend(configuration: configuration)
-                let original = Data("<h1>Title</h1><p>Body <code>code</code> <a href='/x'>link</a></p><pre>block</pre><!--keep-->".utf8)
-                try backend.read(source: original, typeName: type)
-                let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-                surface.loadViewIfNeeded()
-                defer { withExtendedLifetime(surface) {} }
-                if includeDefinitions {
-                    try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
-                }
-                let editor = EVStyleEditorViewController()
-                editor.themeStore = EVThemeStore(configuration: configuration)
-                editor.retarget(document: surface, styleKey: .baseParagraph)
-                let base = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph))
-                let basePreview = editor.inspection.preview.effectiveValues
-                let styles: [(EVStyleNamespace, String)] = [(.block, "Heading1"), (.block, "Code Block"), (.character, "Code"), (.character, "Link")]
-                for (namespace, id) in styles {
-                    let key = EVStyleKey(namespace: namespace, id: EVStyleID(rawValue: id))
-                    editor.selectStyle(key)
-                    let initial = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: key))
-                    let declared = initial.properties.values.filter(\.isDeclared).map(\.property)
-                    XCTAssertFalse(declared.isEmpty, "\(type) / \(id) must expose its default appearance")
-                    if id == "Heading1" {
-                        XCTAssertEqual(Set(declared), [.characterSize, .characterWeight, .blockMarginTop, .blockMarginBottom])
-                        XCTAssertEqual(try control(NSTextField.self, label: "Size", in: editor.view).floatValue, 24)
-                        XCTAssertEqual(try control(NSTextField.self, label: "Margin top", in: editor.view).floatValue, 10)
-                        XCTAssertEqual(try control(NSTextField.self, label: "Margin bottom", in: editor.view).floatValue, 5)
-                    }
-                    for property in declared {
-                        let checkbox = try control(NSButton.self, label: "Override \(property.displayName.lowercased())", in: editor.view)
-                        XCTAssertEqual(checkbox.state, .on, "\(id): \(property)")
-                        XCTAssertTrue(checkbox.isEnabled)
-                        checkbox.performClick(nil)
-                        XCTAssertEqual(checkbox.state, .off, editor.inspection.diagnostic)
-                    }
-                    let cleared = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: key))
-                    XCTAssertTrue(cleared.properties.values.allSatisfy { !$0.isDeclared })
-                    let properties = namespace == .block
-                        ? EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties
-                        : EVStyleProperty.characterProperties
-                    for property in properties {
-                        XCTAssertEqual(cleared.properties[property]?.effective, base.properties[property]?.effective,
-                                       "\(type) / \(id) / \(property)")
-                        XCTAssertEqual(editor.inspection.preview.effectiveValues[property], basePreview[property],
-                                       "The preview must reflect cleared \(id) / \(property)")
-                    }
-                }
-                let saved = try backend.serializedSource(typeName: type)
-                if includeDefinitions {
-                    let reopened = EVCoreDocumentBackend(configuration: configuration)
-                    try reopened.read(source: saved, typeName: type)
-                    let fresh = try reopened.styleSheetSnapshot()
-                    let reopenedBase = try XCTUnwrap(fresh.definition(for: .baseParagraph))
-                    for (namespace, id) in styles where id != "Link" {
-                        let key = EVStyleKey(namespace: namespace, id: EVStyleID(rawValue: id))
-                        let style = try XCTUnwrap(fresh.definition(for: key))
-                        XCTAssertTrue(style.properties.values.allSatisfy { !$0.isDeclared }, "Cleared defaults must not return after reopening \(id)")
-                        for property in namespace == .block ? EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties : EVStyleProperty.characterProperties {
-                            XCTAssertEqual(style.properties[property]?.effective, reopenedBase.properties[property]?.effective)
-                        }
-                    }
-                } else {
-                    XCTAssertEqual(saved, original, "Presentation defaults do not rewrite source while style export is disabled")
-                }
-                // Link appearance is an application default rather than an
-                // owned native HTML selector. Persist its cleared definition
-                // through the explicit default-style settings operation.
-                surface.perform(menuCommand: .saveDefaultStyle, sender: nil)
-                XCTAssertNotNil(try configuration.styleDefaults(named: "html"))
-                let withDefaults = EVCoreDocumentBackend(configuration: configuration)
-                try withDefaults.read(source: saved, typeName: type)
-                let defaults = try withDefaults.styleSheetSnapshot()
-                let link = try XCTUnwrap(defaults.definition(namespace: .character, id: EVStyleID(rawValue: "Link")))
-                let defaultBase = try XCTUnwrap(defaults.definition(for: .baseParagraph))
-                XCTAssertTrue(link.properties.values.allSatisfy { !$0.isDeclared }, "Cleared Link defaults must not return after settings reload")
-                for property in EVStyleProperty.characterProperties {
-                    XCTAssertEqual(link.properties[property]?.effective, defaultBase.properties[property]?.effective)
-                }
-            }
-        }
-    }
-
     func testScriptButtonsShareOneOverrideAndAreExclusive() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -389,7 +304,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testClearingFaceOverrideResolvesInheritedWeightForAnExplicitPostScriptFont() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let styleKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(styleKey)
@@ -565,7 +480,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testUnderlineButtonHasVisibleUnderlineAndNativeAction() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let button = try control(NSButton.self, label: "Underline", in: editor.view)
         XCTAssertEqual(button.attributedTitle.string, "U")
@@ -573,9 +488,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
         button.performClick(nil)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterUnderline]?.declared, .boolean(true))
     }
-    private func makeEditor(theme: EVTheme = .paper, html: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
+    private func makeEditor(theme: EVTheme = .paper, rich: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data((html ? "<p>Text</p>" : "Text").utf8), typeName: html ? EVDocument.htmlType : EVDocument.markdownType)
+        try backend.read(source: Data((rich ? #"{\rtf1{\stylesheet{\s0\fs28 Paragraph;}}\s0 Text}"# : "Text").utf8), typeName: rich ? EVDocument.rtfType : EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let suite = "viem-style-theme-\(UUID().uuidString)"
@@ -696,7 +611,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testNativeLightFaceThenBoldCommitsSourceBackedStyle() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         XCTAssertEqual(family.numberOfVisibleItems, 20)
@@ -714,15 +629,11 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(family.stringValue, "SF Pro")
     }
 
-    func testPrimaryFamilyAndFaceKeepImportedOrderedFallbackTail() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+    func testPrimaryFamilyAndFaceKeepOrderedFallbackTail() throws {
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
-        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
         let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"] + tail)))
-        let imported = try backend.serializedSource(typeName: EVDocument.htmlType)
-        try backend.read(source: imported, typeName: EVDocument.htmlType)
-        editor.retarget(document: surface, styleKey: .baseParagraph)
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         family.stringValue = "SF Pro"
         XCTAssertTrue(family.sendAction(try XCTUnwrap(family.action), to: family.target))
@@ -732,22 +643,19 @@ final class EVCompactStyleControlsTests: XCTestCase {
         guard case let .stringList(request)? = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared else { return XCTFail("Missing font request") }
         XCTAssertEqual(Array(request.dropFirst()), tail)
         XCTAssertTrue(request[0].contains("Light"))
-        let reopened = EVCoreDocumentBackend()
-        try reopened.read(source: backend.serializedSource(typeName: EVDocument.htmlType), typeName: EVDocument.htmlType)
-        XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList(request))
+
     }
 
     func testFamilySelectionKeepsLightFaceAndFallbacksThroughDuplicateNativeCallbacksAsOneUndo() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
-        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
         let initial = try XCTUnwrap(EVFontCatalog.faces(for: "SF Pro").first { $0.styleName == "Light" })
         let expected = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([initial.postScriptName] + tail)))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(initial.weight))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterSlant, value: .fontSlant(initial.italic ? 1 : 0)))
-        let source = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let source = try backend.serializedSource(typeName: EVDocument.markdownType)
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
         let owner = try XCTUnwrap(family.target as? EVCompactStyleControls)
@@ -779,20 +687,20 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList([expected.postScriptName] + tail))
         XCTAssertEqual(definition.properties[.characterWeight]?.declared, .unsigned(UInt32(expected.weight)))
         XCTAssertEqual(definition.properties[.characterSlant]?.declared, .fontSlant(expected.italic ? 1 : 0))
-        let changed = try backend.serializedSource(typeName: EVDocument.htmlType)
-        XCTAssertNotEqual(changed, source)
+        let changed = try backend.serializedSource(typeName: EVDocument.markdownType)
+        XCTAssertEqual(changed, source)
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source, "One undo restores family, weight, and slant together")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source, "One undo restores family, weight, and slant together")
         XCTAssertEqual(family.stringValue, "SF Pro")
         XCTAssertEqual(face.titleOfSelectedItem, "Light")
         surface.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), changed)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), changed)
         XCTAssertEqual(family.stringValue, "Helvetica Neue")
         XCTAssertEqual(face.titleOfSelectedItem, "Light")
     }
 
     func testTypedFamilyUsesRegularWhenPriorNamedFaceDoesNotExist() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         let georgia = EVFontCatalog.faces(for: "Georgia")
@@ -818,7 +726,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testUnmatchedFaceAndUnavailableFamilyDoNotSelectAnUnrelatedFirstFace() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica", "Menlo"])))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(700)))
@@ -840,7 +748,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testRejectedFamilyMutationRestoresCommittedComboAndActiveFieldEditor() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName])))
@@ -871,7 +779,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testNativeFallbackPopoverOrdersAddsRemovesAppliesAndCancels() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let original = ["Helvetica", "Georgia", "Apple Color Emoji"]
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(original)))
@@ -929,7 +837,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         withExtendedLifetime(surface) {}
     }
     func testEveryNumericControlHasAnAdjacentNativeStepperAndInheritedValue() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let fields = ["Size", "Tracking", "Start indent", "End indent", "First line", "Margin top", "Margin bottom", "Line spacing value"]
         for title in fields {
@@ -956,10 +864,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testStepperAutorepeatIsLiveAndOneSourceBackedUndoGesture() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
-        try XCTUnwrap(surface.session).setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
-        let source = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let source = try backend.serializedSource(typeName: EVDocument.rtfType)
         let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
         stepper.performTrackingGesture {
             for expected in [15, 16, 17] {
@@ -970,13 +877,13 @@ final class EVCompactStyleControlsTests: XCTestCase {
             }
         }
         XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
-        let changed = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let changed = try backend.serializedSource(typeName: EVDocument.rtfType)
         XCTAssertNotEqual(changed, source)
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), source)
         XCTAssertEqual(stepper.doubleValue, 14)
         surface.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), changed)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), changed)
         XCTAssertEqual(stepper.doubleValue, 17)
         let indent = try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view)
         indent.doubleValue = -2
@@ -986,7 +893,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testLineSpacingDraftPreservesIntermediateDecimalTextAndCaretUntilEditingEnds() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor(rich: true)
         defer { withExtendedLifetime(surface) {} }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770),
             styleMask: [.titled], backing: .buffered, defer: false)
@@ -1015,7 +922,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testNumericFieldDraftAndLineSpacingPrecisionAndKindTransitions() throws {
-        let (backend, surface, editor, _) = try makeEditor(html: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = editor
@@ -1023,13 +930,13 @@ final class EVCompactStyleControlsTests: XCTestCase {
         defer { window.orderOut(nil) }
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         let sizeStepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
-        let before = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let before = try backend.serializedSource(typeName: EVDocument.markdownType)
         XCTAssertTrue(window.makeFirstResponder(size))
         let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView)
         fieldEditor.insertText("-", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
         XCTAssertTrue(editor.inspection.hasInvalidDraft)
         XCTAssertFalse(sizeStepper.isEnabled)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), before)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), before)
         fieldEditor.insertText("18.5", replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
         XCTAssertFalse(editor.inspection.hasInvalidDraft)
         XCTAssertTrue(sizeStepper.isEnabled)
@@ -1072,7 +979,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let noisy: Float = 0.7999999523
         XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,
             value: .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: noisy))))
-        let sourceWithNoisyValue = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let sourceWithNoisyValue = try backend.serializedSource(typeName: EVDocument.markdownType)
         XCTAssertEqual(lineValue.stringValue, "0.8")
         XCTAssertEqual(line.doubleValue, 0.8, accuracy: 0.0001)
         guard case let .lineSpacing(noisyDeclaration)? = try backend.styleSheetSnapshot()
@@ -1081,7 +988,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         }
         XCTAssertEqual(noisyDeclaration.value, noisy, "Rendering rounds only the display and must not rewrite source")
         editor.selectStyle(EVStyleKey.baseParagraph)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), sourceWithNoisyValue)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), sourceWithNoisyValue)
 
         let noisyPoints: Float = 12.299999237
         XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,

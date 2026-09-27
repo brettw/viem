@@ -1,5 +1,5 @@
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use viem_core::command::{CommandInterpreter, InputEvent, Key, LineMode, Mode};
+use viem_core::command::{CommandInterpreter, InputEvent, Key, LineMode};
 use viem_core::document::{
     Document, Encoding, FontSlant, Format, SemanticInlineStyle, StyleApplication, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue,
@@ -68,7 +68,6 @@ fn named_at(document: &Document, range: Range<usize>, name: &str) {
 #[test]
 fn named_choice_is_pending_in_normal_insert_and_replace_until_text_commits() {
     for (format, source, name) in [
-        (Format::Html, "<p data-keep='x'>word</p><!--keep-->", "Code"),
         (Format::Markdown, "word", "Code"),
         (
             Format::Rtf,
@@ -200,33 +199,8 @@ fn named_identity_and_sparse_direct_overrides_remain_separate() {
 }
 
 #[test]
-fn failed_named_replace_retains_pending_identity_and_existing_restore_entry() {
-    let source = "<p>word</p><!--keep-->";
-    let (mut core, view) = fixture(Format::Html, source);
-    key(&mut core, view, Key::Char('R'));
-    assign(&mut core, view, "Code");
-    text(&mut core, view, "x");
-    let bytes = core.document().source_bytes();
-    let revision = core.document().revision();
-    let cursor = core.command_state(view).unwrap().cursor();
-    assert!(core
-        .handle(view, CoreEvent::Input(InputEvent::text("y\0")))
-        .is_err());
-    assert_eq!(core.document().source_bytes(), bytes);
-    assert_eq!(core.document().revision(), revision);
-    assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
-    assert_eq!(
-        core.selected_named_styles(view).unwrap().character,
-        Some("Code".into())
-    );
-    key(&mut core, view, Key::Backspace);
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Replace);
-}
-
-#[test]
 fn named_choice_replays_with_dot_and_resets_on_normal_movement() {
-    let (mut core, view) = fixture(Format::Html, "<p>word</p>");
+    let (mut core, view) = fixture(Format::Markdown, "word");
     assign(&mut core, view, "Code");
     key(&mut core, view, Key::Char('l'));
     assert_eq!(
@@ -247,8 +221,8 @@ fn named_choice_replays_with_dot_and_resets_on_normal_movement() {
 
 #[test]
 fn ime_commits_named_identity_and_retains_it_for_subsequent_typing() {
-    let source = "<p>word</p>";
-    let (mut core, view) = fixture(Format::Html, source);
+    let source = "word";
+    let (mut core, view) = fixture(Format::Markdown, source);
     key(&mut core, view, Key::Char('i'));
     assign(&mut core, view, "Code");
     let target = CompositionTarget::at_offsets(core.document(), 0..0).unwrap();
@@ -282,7 +256,7 @@ fn ime_commits_named_identity_and_retains_it_for_subsequent_typing() {
 
 #[test]
 fn selected_text_assignment_changes_only_the_selection_and_does_not_start_typing() {
-    let (mut core, view) = fixture(Format::Html, "<p>word</p>");
+    let (mut core, view) = fixture(Format::Markdown, "word");
     key(&mut core, view, Key::Char('v'));
     key(&mut core, view, Key::Char('l'));
     assign(&mut core, view, "Code");
@@ -300,7 +274,7 @@ fn selected_text_assignment_changes_only_the_selection_and_does_not_start_typing
 
 #[test]
 fn empty_documents_accept_pending_identity_and_invalid_choices_leave_it_unchanged() {
-    for format in [Format::Html, Format::Markdown] {
+    for format in [ Format::Markdown] {
         for entry in ['i', 'R'] {
             let (mut core, view) = fixture(format, "");
             assign(&mut core, view, "Code");
@@ -368,7 +342,7 @@ fn clearing_direct_typing_properties_keeps_the_pending_named_identity() {
 #[test]
 fn vertical_navigation_resets_pending_name_in_both_line_policies() {
     for policy in [LineMode::Visual, LineMode::PhysicalSource] {
-        let (mut core, view) = fixture(Format::Html, "<p>word</p>\n<p>tail</p>");
+        let (mut core, view) = fixture(Format::Markdown, "word\n\ntail");
         core.handle(view, CoreEvent::SetLineMode(policy)).unwrap();
         assign(&mut core, view, "Code");
         key(&mut core, view, Key::Char('j'));
@@ -388,26 +362,8 @@ fn vertical_navigation_resets_pending_name_in_both_line_policies() {
 }
 
 #[test]
-fn default_paragraph_typing_in_unstyled_html_keeps_ordinary_source() {
-    let source = "<p data-keep='x'>word</p><!--keep-->";
-    let (mut core, view) = fixture(Format::Html, source);
-    key(&mut core, view, Key::Char('i'));
-    assign(&mut core, view, "");
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-    text(&mut core, view, "a");
-    text(&mut core, view, "b");
-    text(&mut core, view, "c");
-    assert_eq!(core.document().source_bytes(), b"<p data-keep='x'>abcword</p><!--keep-->");
-    assert_eq!(core.selected_named_styles(view).unwrap().character, None);
-    key(&mut core, view, Key::Escape);
-    key(&mut core, view, Key::Char('u'));
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
-
-#[test]
 fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_replace() {
     for (format, source, named) in [
-        (Format::Html, "<p><span style='font-size:30pt;color:red'><b><sup>word</sup></b></span></p><!--keep-->", "Code"),
         (Format::Rtf, r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}{\fs60\b\super word}{\*\opaque keep}}", "RtfC2"),
         (Format::Markdown, "***word***", "Code"),
     ] {
@@ -435,19 +391,19 @@ fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_repl
 
 #[test]
 fn reselecting_pending_style_resets_new_overrides_and_preserves_named_identity() {
-    let (mut core, view) = fixture(Format::Html, "<p><b>word</b></p>");
+    let (mut core, view) = fixture(Format::Rtf, r"{\rtf1{\stylesheet{\*\cs1\fs28 Code;}}\fs28{\b word}}");
     key(&mut core, view, Key::Char('i'));
-    assign(&mut core, view, "Code");
+    assign(&mut core, view, "RtfC1");
     core.handle(view, CoreEvent::SetDirectCharacterProperties {
         expected: core.list_selection_identity(view).unwrap(),
         values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(22.))],
     }).unwrap();
     assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
-    assign(&mut core, view, "Code");
+    assign(&mut core, view, "RtfC1");
     assert_eq!(core.selected_typography(view).unwrap().0.size, 14.);
     assert!(!core.selected_typography(view).unwrap().0.bold);
     text(&mut core, view, "X");
-    named_at(core.document(), 0..1, "Code");
+    named_at(core.document(), 0..1, "RtfC1");
     let resolved = DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false).unwrap();
     assert_eq!(resolved.size, 14.);
     assert!(!resolved.bold);
@@ -457,10 +413,10 @@ fn reselecting_pending_style_resets_new_overrides_and_preserves_named_identity()
 fn select_replacement_keeps_later_direct_edits_after_a_clean_named_choice() {
     use viem_core::command::NavigationKey;
     use viem_core::document::{ParagraphAlignment, ScriptPosition};
-    for chosen in ["Code", ""] {
+    for chosen in ["RtfC1", ""] {
         for operation in 0..5 {
-            let source = "<p><span style='color:red;font-size:30pt'><b><sup>word</sup></b></span></p>";
-            let (mut core, view) = fixture(Format::Html, source);
+            let source = r"{\rtf1{\stylesheet{\*\cs1\fs28 Code;}}\fs28{\fs60\b\super word}}";
+            let (mut core, view) = fixture(Format::Rtf, source);
             key(&mut core, view, Key::ModifiedNavigation { key: NavigationKey::Right, modifiers: 1 });
             assign(&mut core, view, chosen);
             let expected = core.list_selection_identity(view).unwrap();

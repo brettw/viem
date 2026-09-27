@@ -30,6 +30,8 @@ mod prelayout;
 pub use prelayout::*;
 mod whitespace;
 pub use whitespace::*;
+mod html_export;
+pub use html_export::*;
 mod startup;
 mod ex_files;
 pub use ex_files::*;
@@ -116,11 +118,12 @@ pub const VIEM_ENCODING_UTF16_BE: u32 = 4;
 
 pub const VIEM_FORMAT_PLAIN_TEXT: u32 = 1;
 pub const VIEM_FORMAT_MARKDOWN: u32 = 2;
-pub const VIEM_FORMAT_HTML: u32 = 3;
 pub const VIEM_FORMAT_RTF: u32 = 4;
 pub const VIEM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
-pub const VIEM_FORMAT_HTML_SOURCE: u32 = 6;
 pub const VIEM_FORMAT_CODE: u32 = 7;
+
+pub const VIEM_CLIPBOARD_FORMAT_HTML: u32 = 1;
+pub const VIEM_CLIPBOARD_FORMAT_RTF: u32 = 2;
 
 /// Detect the line-ending interpretation through the core's shared open
 /// policy.
@@ -147,7 +150,6 @@ pub const VIEM_DOCUMENT_STATE_CAN_REDO: u32 = 1 << 2;
 pub const VIEM_DOCUMENT_STATE_IS_DIRTY: u32 = 1 << 3;
 pub const VIEM_DOCUMENT_STATE_READ_ONLY: u32 = 1 << 4;
 pub const VIEM_DOCUMENT_STATE_RECOVERED: u32 = 1 << 5;
-pub const VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS: u32 = 1 << 6;
 
 /// Immutable model/history metadata captured in one serial core query.
 #[repr(C)]
@@ -520,7 +522,6 @@ pub const VIEM_EX_OPTION_EXPANDTAB: u32 = 13;
 pub const VIEM_EX_OPTION_SMARTTAB: u32 = 14;
 pub const VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER: u32 = 15;
 pub const VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE: u32 = 16;
-
 
 pub const VIEM_EX_OPTION_VALUE_BOOLEAN: u32 = 1;
 pub const VIEM_EX_OPTION_VALUE_FILE_FORMAT: u32 = 2;
@@ -1226,7 +1227,6 @@ pub const VIEM_STYLE_ROLE_CODE_BLOCK: u32 = 4;
 pub const VIEM_STYLE_ROLE_LIST: u32 = 5;
 pub const VIEM_STYLE_ROLE_LIST_ITEM: u32 = 6;
 
-
 pub const VIEM_STYLE_ORIGIN_SOURCE_BACKED: u32 = 1;
 pub const VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION: u32 = 2;
 pub const VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY: u32 = 3;
@@ -1288,7 +1288,6 @@ pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR: u32 = 39;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH: u32 = 40;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR: u32 = 41;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND: u32 = 42;
-
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -2120,30 +2119,6 @@ pub struct ViemSetFileFormatV1 {
 
 pub const VIEM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<ViemSetFileFormatV1>() as u32;
 
-/// Shared HTML style-serialization policy bound to one exact snapshot.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemSetIncludeStyleDefinitionsV1 {
-    pub struct_size: u32,
-    pub enabled: u32,
-    pub document_id: u64,
-    pub document_revision: u64,
-}
-
-pub const VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE: u32 =
-    size_of::<ViemSetIncludeStyleDefinitionsV1>() as u32;
-
-impl Default for ViemSetIncludeStyleDefinitionsV1 {
-    fn default() -> Self {
-        Self {
-            struct_size: VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE,
-            enabled: 0,
-            document_id: 0,
-            document_revision: 0,
-        }
-    }
-}
-
 pub const VIEM_FORMAT_OPERATION_REINTERPRET: u32 = 0;
 pub const VIEM_FORMAT_OPERATION_CONVERT: u32 = 1;
 
@@ -2194,7 +2169,6 @@ pub struct ViemListIndentV1 {
     pub expected_selection: ViemLogicalSelectionIdentityV1,
 }
 pub const VIEM_LIST_INDENT_V1_SIZE: u32 = size_of::<ViemListIndentV1>() as u32;
-
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2451,10 +2425,8 @@ fn parse_format(raw: u32) -> Result<Format, ViemStatus> {
     match raw {
         VIEM_FORMAT_PLAIN_TEXT => Ok(Format::PlainText),
         VIEM_FORMAT_MARKDOWN => Ok(Format::Markdown),
-        VIEM_FORMAT_HTML => Ok(Format::Html),
         VIEM_FORMAT_RTF => Ok(Format::Rtf),
         VIEM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
-        VIEM_FORMAT_HTML_SOURCE => Ok(Format::HtmlSource),
         VIEM_FORMAT_CODE => Ok(Format::Code),
         _ => Err(ViemStatus::InvalidFormat),
     }
@@ -2487,10 +2459,10 @@ fn format_to_ffi(format: Format) -> u32 {
     match format {
         Format::PlainText => VIEM_FORMAT_PLAIN_TEXT,
         Format::Markdown => VIEM_FORMAT_MARKDOWN,
-        Format::Html => VIEM_FORMAT_HTML,
+
         Format::Rtf => VIEM_FORMAT_RTF,
         Format::MarkdownSource => VIEM_FORMAT_MARKDOWN_SOURCE,
-        Format::HtmlSource => VIEM_FORMAT_HTML_SOURCE,
+
         Format::Code => VIEM_FORMAT_CODE,
     }
 }
@@ -4692,9 +4664,7 @@ fn summarize_document_state(document: &Document) -> ViemDocumentStateV1 {
     if document.is_recovered() {
         flags |= VIEM_DOCUMENT_STATE_RECOVERED;
     }
-    if document.include_style_definitions_in_file() {
-        flags |= VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS;
-    }
+
     ViemDocumentStateV1 {
         struct_size: VIEM_DOCUMENT_STATE_V1_SIZE,
         flags,
@@ -5021,9 +4991,6 @@ struct StyleSheetExport {
     dependencies: Vec<ViemStyleDependencyV1>,
     strings: Vec<u8>,
 }
-
-
-
 
 fn style_sheet_identity(document: &Document) -> ViemStyleSheetIdentityV1 {
     ViemStyleSheetIdentityV1 {
@@ -5838,8 +5805,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 format.has_rich_source(),
             ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if sheet.has_user_default(&style.id, false)
                 && style.role == BlockRole::Paragraph
-                && (format.is_html()
-                    || (format == Format::Rtf && style.id.0.starts_with("RtfP")))
+                && ((format == Format::Rtf && style.id.0.starts_with("RtfP")))
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
@@ -9781,43 +9747,6 @@ pub unsafe extern "C" fn viem_core_view_set_file_format(
     })
 }
 
-/// Change shared HTML style serialization through one exact model transaction.
-/// The enabled value must be zero or one; unsupported formats are rejected.
-///
-/// # Safety
-///
-/// `request` and `out_outcome` must identify distinct aligned readable and
-/// writable v1 values.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_include_style_definitions(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemSetIncludeStyleDefinitionsV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let enabled = parse_ffi_bool(request.enabled)?;
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::SetIncludeStyleDefinitionsInFile {
-                    document: DocumentId(request.document_id),
-                    revision: Revision(request.document_revision),
-                    enabled,
-                },
-            )
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
 /// Query an exact list-action target without requiring current layout.
 ///
 /// # Safety
@@ -10708,6 +10637,8 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8(
 #[cfg(test)]
 mod tests {
     mod prelayout_tests;
+    mod html_export_tests;
+    mod clipboard_import_tests;
     use super::{
         checkout_core, viem_core_copy_formatted_utf8_range,
         viem_core_copy_style_sheet, viem_core_destroy, viem_core_formatted_point_info,
@@ -11625,8 +11556,7 @@ mod tests {
             (Format::PlainText, "Text"),
             (Format::Markdown, "# Heading"),
             (Format::MarkdownSource, "# Heading"),
-            (Format::Html, "<h1>Heading</h1>"),
-            (Format::HtmlSource, "<h1>Heading</h1>"),
+
             (Format::Rtf, r"{\rtf1 Text}"),
         ] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -14505,6 +14435,41 @@ pub unsafe extern "C" fn viem_core_copy_clipboard_json(
                 .map_err(|_| ViemStatus::InvalidArgument)
         })?;
         unsafe { copy_clipboard_json_bytes(fragment.json().as_bytes(),output,output_capacity,out_required) }
+    })
+}
+
+/// Import passive HTML or RTF into a portable styled clipboard fragment.
+/// This does not create an editable HTML document or execute document content.
+/// # Safety
+/// Input and output storage must be valid, aligned where typed, and non-overlapping.
+#[no_mangle]
+pub unsafe extern "C" fn viem_import_clipboard_json(
+    format: u32,
+    source: *const u8,
+    source_length: u64,
+    output: *mut u8,
+    output_capacity: u64,
+    out_required: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let input_region = typed_pointer_region(source, source_length)?;
+        let output_region = typed_pointer_region(output, output_capacity)?;
+        let required_region = typed_pointer_region(out_required, 1)?;
+        if regions_overlap(input_region, output_region)
+            || regions_overlap(input_region, required_region)
+            || regions_overlap(output_region, required_region)
+            || source_length > 64 * 1024 * 1024
+        { return Err(ViemStatus::InvalidArgument); }
+        unsafe { out_required.write(0); }
+        let bytes = unsafe { input_bytes(source, source_length)? };
+        let fragment = match format {
+            VIEM_CLIPBOARD_FORMAT_HTML => crate::document::ClipboardFragment::from_html_utf8(bytes)
+                .map(|value| value.0),
+            VIEM_CLIPBOARD_FORMAT_RTF => Document::from_bytes(bytes.to_vec(), Encoding::Utf8, Format::Rtf)
+                .and_then(|document| document.clipboard_fragment(0..document.projection().text_tree().byte_len())),
+            _ => return Err(ViemStatus::InvalidArgument),
+        }.map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { copy_clipboard_json_bytes(fragment.json().as_bytes(), output, output_capacity, out_required) }
     })
 }
 

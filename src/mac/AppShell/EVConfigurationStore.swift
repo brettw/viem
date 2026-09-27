@@ -247,7 +247,7 @@ public final class EVConfigurationStore {
   }
 
   private func styleURL(_ name: String) throws -> URL {
-    guard ["text", "html", "markdown", "rtf", "code"].contains(name) else { throw invalid("Unknown style format") }
+    guard ["text", "markdown", "rtf", "code"].contains(name) else { throw invalid("Unknown style format") }
     return directory.appendingPathComponent("\(name)_style.json")
   }
   private func update(section: String, values: [String: Any], notify: Bool = true) throws {
@@ -439,7 +439,6 @@ extension EVSourceFormat {
     switch self {
     case .plainText: "text"
     case .markdown, .markdownSource: "markdown"
-    case .html, .htmlSource: "html"
     case .rtf: "rtf"
     case .code: "code"
     }

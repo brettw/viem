@@ -73,8 +73,7 @@ fn format(name: &str) -> Result<Format, String> {
         "plain" => Format::PlainText,
         "markdown" => Format::Markdown,
         "markdown_source" => Format::MarkdownSource,
-        "html" => Format::Html,
-        "html_source" => Format::HtmlSource,
+        "code" => Format::Code,
         "rtf" => Format::Rtf,
         _ => return Err(format!("invalid format {name}")),
     })
@@ -112,10 +111,8 @@ fn initial(rng: &mut Rng) -> Action {
         ("plain","e\u{301} 👩\u{200d}💻 🇨🇦 العربية עברית 中文\n\tTabs\0NUL\n"),
         ("markdown","# Heading\n\nA **bold** paragraph with _emphasis_.\ncontinued prose.\n\n1. First item\n   continued\n2. Second\n\n```rust\nfn main() {}\n\n```\n\nEnd."),
         ("markdown_source","- first\n  continuation\n- second\n\n> quote\n\nA [link](https://example.test).\n"),
-        ("html","<html><body><h1>Heading</h1><p>First <b>bold</b> &amp; prose.</p><ol><li>one</li><li>two<br>continued</li></ol><pre>a &lt; b\n\ncode</pre><p><br></p></body></html>"),
-        ("html_source","<!doctype html><p>Prose\ncontinues <em>here</em>.</p>\n<!--keep--><ul><li>last</li></ul>"),
         ("rtf","{\\rtf1\\ansi First {\\b bold} paragraph.\\par second\\line continued\\par }"),
-        ("html","<p></p>"),("markdown",""),("plain",""),
+        ("markdown",""),("plain",""),
     ];
     let (format, source) = cases[rng.usize(cases.len())];
     let source = if rng.chance(1, 12) {
@@ -246,8 +243,6 @@ fn generate(
             let name = match core.document().format() {
                 Format::Markdown => "markdown_source",
                 Format::MarkdownSource => "markdown",
-                Format::Html => "html_source",
-                Format::HtmlSource => "html",
                 Format::Rtf => "rtf",
                 Format::PlainText => "plain",
                 Format::Code => "code",

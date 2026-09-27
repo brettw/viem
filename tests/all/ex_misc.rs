@@ -138,7 +138,6 @@ fn alignment_uses_logical_columns_and_preserves_terminators_and_undo() {
 #[test]
 fn rich_alignment_changes_paragraph_properties_without_padding_or_style_loss() {
     for (format, text) in [
-        (Format::Html, "<p><b>one</b></p><p>two</p>"),
         (Format::Rtf, "{\\rtf1 one\\par two}"),
     ] {
         let mut doc =
@@ -321,8 +320,6 @@ fn alignment_preserves_current_line_uses_default_for_zero_and_clears_blank_left_
 #[test]
 fn rich_alignment_handles_empty_paragraphs_and_retains_character_scopes() {
     for (format, source) in [
-        (Format::Html, "<p></p>"),
-        (Format::Html, "<p><b>one</b></p><p><i>two</i></p>"),
         (Format::Rtf, r"{\rtf1 }"),
         (Format::Rtf, r"{\rtf1 {\b one}\par {\i two}}"),
     ] {
@@ -353,8 +350,6 @@ fn rich_alignment_handles_empty_paragraphs_and_retains_character_scopes() {
 #[test]
 fn empty_rich_alignment_survives_typing_and_does_not_change_other_paragraphs() {
     for (format, source) in [
-        (Format::Html, "<p></p><p>other</p>"),
-        (Format::Html, "<p><b></b></p><p>other</p>"),
         (Format::Rtf, r"{\rtf1 \par other}"),
         (Format::Rtf, r"{\rtf1 {\b }\par other}"),
     ] {
@@ -396,7 +391,7 @@ fn empty_rich_alignment_survives_typing_and_does_not_change_other_paragraphs() {
         assert!(doc.undo());
         assert_eq!(doc.source_bytes(), source.as_bytes());
     }
-    for (format, source) in [(Format::Html, "<p></p>"), (Format::Rtf, r"{\rtf1 }")] {
+    for (format, source) in [ (Format::Rtf, r"{\rtf1 }")] {
         let mut doc =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         run(&mut doc, &ExExecutionContext::default(), ":center");

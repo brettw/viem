@@ -69,7 +69,6 @@ impl FormattedDocument {
             if !matches!(
                 span.application,
                 StyleApplication::Named(_)
-                    | StyleApplication::SourceParagraph { .. }
                     | StyleApplication::Semantic(super::SemanticInlineStyle::Code)
             ) {
                 continue;
@@ -86,7 +85,6 @@ impl FormattedDocument {
         }
         let mut paragraphs = BTreeSet::new();
         let mut characters = BTreeSet::new();
-        let mut active_paragraphs = BTreeMap::new();
         let mut active_characters = BTreeMap::new();
         let mut active_code = BTreeSet::new();
         let mut has_bullets = false;
@@ -98,7 +96,6 @@ impl FormattedDocument {
             }
             if let Some(indices) = ends.get(&point) {
                 for index in indices {
-                    active_paragraphs.remove(index);
                     active_characters.remove(index);
                     active_code.remove(index);
                 }
@@ -109,9 +106,7 @@ impl FormattedDocument {
                         StyleApplication::Named(id) if !id.is_internal() => {
                             active_characters.insert(*index, id.clone());
                         }
-                        StyleApplication::SourceParagraph { style, .. } => {
-                            active_paragraphs.insert(*index, style.clone());
-                        }
+
                         StyleApplication::Semantic(super::SemanticInlineStyle::Code) => {
                             active_code.insert(*index);
                         }
@@ -124,15 +119,12 @@ impl FormattedDocument {
                 .checked_sub(1)
                 .and_then(|index| blocks.get(index))
                 .or_else(|| blocks.first());
-            let paragraph = active_paragraphs
-                .last_key_value()
-                .map(|(_, id)| id.clone())
-                .or_else(|| block.map(|block| {
+            let paragraph = block.map(|block| {
                     if block.style == self.style_sheet().base_paragraph || block.style.0 == "Code Block" {
                         block.containers.iter().rev().find(|member| matches!(member.container.kind, super::ContainerKind::Quote | super::ContainerKind::CodeBlock))
                             .map(|member| member.container.style.clone()).unwrap_or_else(|| block.style.clone())
                     } else { block.style.clone() }
-                }))
+                })
                 .unwrap_or_else(|| self.style_sheet().base_paragraph.clone());
             match block.map(|block| &block.kind) {
                 Some(super::BlockKind::ListItem { ordered: false, .. }) => has_bullets = true,
@@ -176,10 +168,7 @@ mod tests {
     fn list_membership_ignores_depth_and_retains_mixed_non_list_content() {
         for (format, source) in [
             (Format::Markdown, "- One\n  - Two\n\nPlain"),
-            (
-                Format::Html,
-                "<ul><li>One<ul><li>Two</li></ul></li></ul><p>Plain</p>",
-            ),
+
         ] {
             let document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -207,7 +196,7 @@ mod tests {
     #[test]
     fn empty_terminal_paragraph_reports_its_own_style_for_either_affinity() {
         for (format, source) in [
-            (Format::Html, "<p>prose</p><blockquote><p></p></blockquote>"),
+
             (Format::Markdown, "prose\n\n> "),
         ] {
             let doc =
@@ -224,10 +213,7 @@ mod tests {
     #[test]
     fn uniform_character_assignment_across_paragraphs_ignores_separator_gaps() {
         for (format, source) in [
-            (
-                Format::Html,
-                "<p><code>one</code></p><p><code>two</code></p><p><code>three</code></p>",
-            ),
+
             (Format::Markdown, "`one`\n\n`two`\n\n`three`"),
         ] {
             let document =
@@ -249,7 +235,7 @@ mod tests {
             None
         );
         for (format, source) in [
-            (Format::Html, "<p><code>one</code><br>two</p>"),
+
             (Format::Markdown, "`one`  \ntwo"),
         ] {
             let document =
@@ -260,31 +246,6 @@ mod tests {
             assert!(selected.character_mixed, "{format:?}");
             assert_eq!(selected.character, None);
         }
-    }
-
-    #[test]
-    fn source_syntax_preserves_surrounding_paragraph_assignment() {
-        let source = "<h2 title='value'>Heading &amp; text</h2><p>Body</p>";
-        let document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::HtmlSource,
-        )
-        .unwrap();
-        for needle in ["h2", "title", "value", "Heading", "amp"] {
-            let at = source.find(needle).unwrap();
-            let selected = document
-                .projection()
-                .selected_named_styles(at..at, BoundaryAffinity::Downstream);
-            assert_eq!(selected.paragraph, Some("Heading2".into()), "{needle}");
-            assert_eq!(selected.character, None);
-        }
-        let selected = document
-            .projection()
-            .selected_named_styles(0..source.len(), BoundaryAffinity::Downstream);
-        assert!(selected.paragraph_mixed);
-        assert_eq!(selected.paragraph, None);
-        assert!(!selected.character_mixed);
     }
 
     #[test]
@@ -302,12 +263,9 @@ mod tests {
                 },
                 crate::document::StyleSpan {
                     range: 0..6,
-                    application: StyleApplication::Automatic("* HTML Tag name".into()),
+                    application: StyleApplication::Automatic("Syntax keyword".into()),
                 },
-                crate::document::StyleSpan {
-                    range: 0..6,
-                    application: StyleApplication::SourceSyntax,
-                },
+
             ],
             base.provenance().to_vec(),
             vec![],

@@ -1,5 +1,8 @@
 # Test-suite audit — 19 September 2026
 
+Historical measurements: standalone HTML modes and their dedicated test modules
+were subsequently removed. References below record the suite at the audit date.
+
 The initial audit implemented speedups without removing or newly ignoring tests,
 or reducing fixture sizes or iteration counts.
 

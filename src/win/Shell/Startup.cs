@@ -142,6 +142,7 @@ internal sealed partial class EditorWindow
                     pane.View.Command("ggi"); pane.View.Text("Saved "); pane.View.Key(VIEM_KEY_ESCAPE); await Save(pane);
                     if (pane.Document.IsDirty || !File.ReadAllBytes(saved).AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision))) throw new InvalidOperationException("Native save did not preserve source bytes or clear dirty state.");
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native save and atomic replacement preserve source bytes");
+                    await Diagnostics.HtmlExportTests.Run(this, pane, preferences.DirectoryPath);
                     string renamed = Path.Combine(preferences.DirectoryPath, "renamed.md");
                     string priorSlot = recoveries[pane.Document].Slot;
                     pane.View.Ex("file " + renamed); await effectQueue;

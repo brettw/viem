@@ -39,6 +39,10 @@ fn keys<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId, text: &str
 }
 
 fn scroll<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId, top: f32) {
+    if core.document().format().is_source_view() {
+        core.handle(view, CoreEvent::SetParagraphFlow(false)).unwrap();
+    }
+    core.handle(view, CoreEvent::SetLineMode(viem_core::command::LineMode::PhysicalSource)).unwrap();
     core.handle(
         view,
         CoreEvent::SetViewportOrigin {
@@ -69,7 +73,7 @@ fn assert_cursor_is_materialized<P: TextMeasurementProvider>(core: &Core<P>, vie
 
 #[test]
 fn counted_noop_outdent_recovers_an_offscreen_empty_line() {
-    for format in [Format::HtmlSource, Format::PlainText] {
+    for format in [ Format::PlainText] {
         for count in [1, 3] {
             let source = "\n".repeat(9);
             let mut core = Core::new(document(&source, format));
@@ -95,14 +99,14 @@ fn counted_outdent_changes_only_the_requested_source_lines() {
     );
     let source = format!("  alpha\n\n   \n{tail}");
     let expected = format!("alpha\n\n\n{tail}");
-    let mut core = Core::new(document(&source, Format::HtmlSource));
+    let mut core = Core::new(document(&source, Format::MarkdownSource));
     let view = core.add_view(MockTextMeasurementProvider::new(), 180., 16.);
     scroll(&mut core, view, 1000.);
     keys(&mut core, view, "3<<");
     assert_eq!(core.document().source_bytes(), expected.as_bytes());
     assert_eq!(core.command_state(view).unwrap().cursor(), 0);
     assert_cursor_is_materialized(&core, view);
-    let reopened = document(&expected, Format::HtmlSource);
+    let reopened = document(&expected, Format::MarkdownSource);
     assert_eq!(reopened.text(), core.document().text());
     key(&mut core, view, Key::Char('u'));
     assert_eq!(core.document().source_bytes(), source.as_bytes());
@@ -113,7 +117,7 @@ fn counted_outdent_changes_only_the_requested_source_lines() {
 #[test]
 fn another_views_edit_invalidates_the_scrolled_command_layout() {
     let source = format!("\n\n\n{}last", "line\n".repeat(40));
-    let mut core = Core::new(document(&source, Format::HtmlSource));
+    let mut core = Core::new(document(&source, Format::PlainText));
     let editing = core.add_view(MockTextMeasurementProvider::new(), 240., 80.);
     let scrolled = core.add_view(MockTextMeasurementProvider::new(), 180., 16.);
     scroll(&mut core, scrolled, 800.);
@@ -192,7 +196,7 @@ fn offscreen_shift_with_changed_metrics_shapes_bounded_large_document_work() {
         requests: Arc::clone(&requests),
         bytes: Arc::clone(&bytes),
     };
-    let mut core = Core::new(document(&source, Format::HtmlSource));
+    let mut core = Core::new(document(&source, Format::MarkdownSource));
     let view = core.add_view(provider, 180., 80.);
     scroll(&mut core, view, 100_000.);
     let old_layout = core.layout(view).unwrap().snapshot().unwrap().revision;

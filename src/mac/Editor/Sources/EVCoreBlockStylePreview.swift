@@ -1,7 +1,7 @@
 import AppKit
 import CViemCore
 
-/// The block specimen is an isolated HTML document. The ordinary Rust cascade,
+/// The block specimen is an isolated Markdown document. The ordinary Rust cascade,
 /// box layout and Core Text provider produce both its geometry and its paint;
 /// the style dialog does not implement a second margin or padding algorithm.
 @MainActor
@@ -28,21 +28,21 @@ final class EVCoreBlockStylePreview {
         case .quote:
             target = "Block quote"
             selected = "A quotation contains a paragraph.\nAnother paragraph shares its border.\nA nested quotation has its own box."
-            source = "<blockquote><p>A quotation contains a paragraph.</p><p>Another paragraph shares its border.</p><blockquote><p>A nested quotation has its own box.</p></blockquote></blockquote>"
+            source = " > A quotation contains a paragraph.\n >\n > Another paragraph shares its border.\n >\n >> A nested quotation has its own box."
         case .codeBlock:
             target = "Code Block"
             selected = "A literal code block\n\nkeeps its lines and spaces."
-            source = "<pre>A literal code block\n\nkeeps its lines and spaces.</pre>"
+            source = "```\nA literal code block\n\nkeeps its lines and spaces.\n```"
         case .list, .listItem:
             target = kind == .list ? "Bulleted List" : "List item"
             selected = "A list item contains a paragraph.\nAnd a second paragraph.\nAnother item."
-            source = "<ul><li><p>A list item contains a paragraph.</p><p>And a second paragraph.</p></li><li><p>Another item.</p></li></ul>"
+            source = "- A list item contains a paragraph.\n\n  And a second paragraph.\n\n- Another item."
         default:
             target = "Heading1"
-            selected = "A calm writing surface shaped with the selected style,\nwith line spacing and alignment visible."
-            source = "<p>Previous paragraph gives the style context.</p><h1>A calm writing surface shaped with the selected style,<br>with line spacing and alignment visible.</h1><p>Following paragraph shows spacing and inheritance.</p>"
+            selected = "A calm writing surface shaped with the selected style, with line spacing and alignment visible."
+            source = "Previous paragraph gives the style context.\n\n# A calm writing surface shaped with the selected style, with line spacing and alignment visible.\n\nFollowing paragraph shows spacing and inheritance."
         }
-        backend = try EVCoreDocumentBackend(stylePreviewHTML: source)
+        backend = try EVCoreDocumentBackend(stylePreviewMarkdown: source)
         session = try EVCoreViewSession(document: backend, width: 560, height: 500)
         let sheet = try backend.styleSheetSnapshot()
         let selectedDefinition = sheet.definitions.first { $0.key.id.rawValue == target && $0.kind == kind }

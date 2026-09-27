@@ -364,11 +364,6 @@ pub enum CoreEvent {
         revision: Revision,
         target: FileFormat,
     },
-    SetIncludeStyleDefinitionsInFile {
-        document: DocumentId,
-        revision: Revision,
-        enabled: bool,
-    },
     SetFormat {
         document: DocumentId,
         revision: Revision,
@@ -952,8 +947,6 @@ pub struct Core<P: TextMeasurementProvider> {
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
     compound_replay_event_limit: usize,
-    #[cfg(test)]
-    input_position_map_override: Option<PositionMap>,
 }
 
 #[derive(Clone, Debug)]
@@ -1107,8 +1100,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             replay_undo_floor: None,
             queued_replay: None,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
-            #[cfg(test)]
-            input_position_map_override: None,
         }
     }
 
@@ -1232,14 +1223,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             let supported = !values.is_empty()
                 && self.document.validate_typing_properties(&values).is_ok()
-                && (self.document.format() != Format::HtmlSource
-                    || self
-                        .document
-                        .html_source_prose_at(
-                            view.commands.cursor(),
-                            view.commands.insertion_boundary_affinity(),
-                        )
-                        .unwrap_or(false));
+;
             let (current, _) = self.selected_typography(view_id)?;
             let on = match style {
                 SemanticInlineStyle::Strong => current.bold,
@@ -2186,8 +2170,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .ok_or(CoreError::UnknownView(view_id))?;
         Ok(match self.document.format() {
-            Format::Markdown | Format::Html => true,
-            Format::MarkdownSource | Format::HtmlSource => view.layout.paragraph_flow(),
+            Format::Markdown => true,
+            Format::MarkdownSource => view.layout.paragraph_flow(),
             _ => false,
         })
     }
@@ -5210,20 +5194,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
-            CoreEvent::SetIncludeStyleDefinitionsInFile {
-                document,
-                revision,
-                enabled,
-            } => {
-                return self.apply_native_model_request(
-                    view_id,
-                    ModelRequest::SetIncludeStyleDefinitionsInFile {
-                        document,
-                        revision,
-                        enabled,
-                    },
-                );
-            }
             CoreEvent::SetFormat {
                 document,
                 revision,
@@ -6018,8 +5988,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                         }));
                     }
                     let map = committed_position_map;
-                    #[cfg(test)]
-                    let map = self.input_position_map_override.take().unwrap_or(map);
                     outcome.position_map = Some(map.clone());
                     if let Some((checkpoint, anchors)) = active_position_state {
                         let commands = &mut self
@@ -6301,7 +6269,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::EditDirectProperty { .. }
             | CoreEvent::EditDirectProperties { .. }
             | CoreEvent::SetFileFormat { .. }
-            | CoreEvent::SetIncludeStyleDefinitionsInFile { .. }
             | CoreEvent::SetFormat { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
@@ -7696,155 +7663,6 @@ mod tests {
     };
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Arc;
-
-    #[test]
-    fn html_open_line_post_edit_rebase_failure_rolls_back_model_and_all_views() {
-        for inactive_failure in [false, true] {
-            let original = b"<p data-keep='x'>A\n\nB</p><!--keep-->".to_vec();
-            let mut document =
-                Document::from_bytes(original.clone(), Encoding::Utf8, Format::Html).unwrap();
-            // Keep an existing redo branch: rollback must remove the tentative
-            // node and restore branch preference, not synthesize an undo.
-            document.insert(0, "X").unwrap();
-            let redo_source = document.source_bytes();
-            assert!(document.undo());
-            let mut core = Core::new(document);
-            let view = core.add_view(MockTextMeasurementProvider::new(), 20., 300.);
-            core.handle(
-                view,
-                CoreEvent::PlaceCursor {
-                    document_revision: core.document.revision(),
-                    text_offset: 2,
-                    affinity: BoundaryAffinity::Downstream,
-                    extend_selection: false,
-                },
-            )
-            .unwrap();
-            if inactive_failure {
-                let other = core.add_view(MockTextMeasurementProvider::new(), 200., 300.);
-                core.handle(
-                    other,
-                    CoreEvent::PlaceCursor {
-                        document_revision: core.document.revision(),
-                        text_offset: 2,
-                        affinity: BoundaryAffinity::Downstream,
-                        extend_selection: false,
-                    },
-                )
-                .unwrap();
-            } else {
-                // Active cursor mapping succeeds; a retained mark will expose
-                // the invalid rebase while capturing history restoration.
-                core.handle(view, CoreEvent::Input(InputEvent::key('m')))
-                    .unwrap();
-                core.handle(view, CoreEvent::Input(InputEvent::key('a')))
-                    .unwrap();
-            }
-            let revision = core.document.revision();
-            let prepared = core
-                .document
-                .prepare_model_request(ModelRequest::OpenLine {
-                    document: core.document.id(),
-                    revision,
-                    at: 2,
-                    origin: 2,
-                    after: true,
-                })
-                .unwrap();
-            // Model a defective post-edit map that retains the old offset 2.
-            // Its dimensions/revisions are correct, but that offset is inside
-            // NBSP in the real candidate "A\u{a0}\nB". This is injected only
-            // after the actual source transaction has committed.
-            core.input_position_map_override = Some(
-                PositionMap::for_text(
-                    core.document.id(),
-                    revision,
-                    prepared.after_revision(),
-                    "A B",
-                    "A Bxy",
-                    vec![crate::document::Splice::new(3..3, 2).unwrap()],
-                )
-                .unwrap(),
-            );
-            let history = core.document.history_status();
-            let node = core
-                .document
-                .history_node_details(history.current.node)
-                .unwrap();
-            let controllers = core
-                .views
-                .iter()
-                .map(|(id, view)| {
-                    (
-                        *id,
-                        format!(
-                            "{:?}",
-                            view.commands
-                                .capture_position_anchors(&core.document)
-                                .unwrap()
-                        ),
-                    )
-                })
-                .collect::<Vec<_>>();
-            let group = (
-                core.document.edit_group_depth(),
-                core.document.edit_group_generation(),
-            );
-            let error = core
-                .handle(view, CoreEvent::Input(InputEvent::key('O')))
-                .unwrap_err();
-            assert_eq!(
-                error,
-                CoreError::Document(DocumentError::NotGraphemeBoundary(2))
-            );
-            assert_eq!(core.document.source_bytes(), original);
-            assert_eq!(core.document.text(), "A B");
-            assert_eq!(core.document.revision(), revision);
-            assert_eq!(core.document.history_status(), history);
-            assert_eq!(
-                core.document
-                    .history_node_details(history.current.node)
-                    .unwrap(),
-                node
-            );
-            assert_eq!(
-                (
-                    core.document.edit_group_depth(),
-                    core.document.edit_group_generation()
-                ),
-                group
-            );
-            assert_eq!(core.views[&view].commands.mode(), Mode::Normal);
-            assert_eq!(core.views[&view].commands.cursor(), 2);
-            assert_eq!(core.edit_group_owner, None);
-            for (id, anchors) in controllers {
-                assert_eq!(
-                    format!(
-                        "{:?}",
-                        core.views[&id]
-                            .commands
-                            .capture_position_anchors(&core.document)
-                            .unwrap()
-                    ),
-                    anchors
-                );
-            }
-            // The old branch still works, and a retry uses the unconsumed
-            // revision and opens one ordinary Insert undo unit.
-            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
-                .unwrap();
-            assert_eq!(core.document.source_bytes(), redo_source);
-            core.handle(view, CoreEvent::Input(InputEvent::key('u')))
-                .unwrap();
-            core.handle(view, CoreEvent::Input(InputEvent::key('O')))
-                .unwrap();
-            assert_eq!(core.document.revision(), prepared.after_revision());
-            assert_eq!(core.views[&view].commands.mode(), Mode::Insert);
-            core.document
-                .text_point(core.views[&view].commands.cursor())
-                .unwrap();
-        }
-    }
 
     #[derive(Clone, Debug)]
     struct ControlledFailureProvider {
@@ -10537,13 +10355,13 @@ mod tests {
     fn giant_word_composition_streams_geometry_and_invalidates_overlay_caches() {
         let word_bytes = 2_000_000;
         let source = format!(
-            "<p>{}<b>bold</b> tail</p><p>following</p>",
+            "{}**bold** tail\n\nfollowing",
             "a".repeat(word_bytes)
         );
         let document = Document::from_bytes(
             source.as_bytes().to_vec(),
             crate::document::Encoding::Utf8,
-            crate::document::Format::Html,
+            crate::document::Format::Markdown,
         )
         .unwrap();
         let mut core = Core::new(document);

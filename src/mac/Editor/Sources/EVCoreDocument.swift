@@ -119,11 +119,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     /// Style specimens use the document/layout pipeline without loading startup
     /// commands or mutating the application-wide syntax-style authority.
-    init(stylePreviewHTML: String) throws {
+    init(stylePreviewMarkdown: String) throws {
         configuration = .shared
         isStylePreview = true
-        source = Data(stylePreviewHTML.utf8)
-        typeName = "public.html"
+        source = Data(stylePreviewMarkdown.utf8)
+        typeName = "net.daringfireball.markdown"
         try createCore(publishDiagnostics: false)
     }
 
@@ -550,7 +550,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         switch format {
         case .code: EVDocument.codeType
         case .markdownSource: EVDocument.markdownSourceType
-        case .htmlSource: EVDocument.htmlSourceType
         default: EVDocument.typeName(for: format)
         }
     }
@@ -795,8 +794,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         switch state.format {
         case UInt32(VIEM_FORMAT_MARKDOWN): .markdown
         case UInt32(VIEM_FORMAT_MARKDOWN_SOURCE): .markdownSource
-        case UInt32(VIEM_FORMAT_HTML): .html
-        case UInt32(VIEM_FORMAT_HTML_SOURCE): .htmlSource
         case UInt32(VIEM_FORMAT_RTF): .rtf
         case UInt32(VIEM_FORMAT_CODE): .code
         default: .plainText
@@ -809,10 +806,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             UInt32(VIEM_FORMAT_MARKDOWN)
         case .markdownSource:
             UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
-        case .html:
-            UInt32(VIEM_FORMAT_HTML)
-        case .htmlSource:
-            UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf:
             UInt32(VIEM_FORMAT_RTF)
         case .code:
@@ -1225,21 +1218,6 @@ final class EVCoreViewSession {
         }
     }
 
-    @discardableResult
-    func setIncludeStyleDefinitionsInFile(
-        _ enabled: Bool,
-        expected state: ViemDocumentStateV1
-    ) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetIncludeStyleDefinitionsV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetIncludeStyleDefinitionsV1>.size)
-        request.enabled = enabled ? 1 : 0
-        request.document_id = state.document_id
-        request.document_revision = state.document_revision
-        return try performCoreOperation("Change inclusion of style definitions") { outcome in
-            viem_core_view_set_include_style_definitions(document.core, viewID, &request, outcome)
-        }
-    }
-
     func listSelection() throws -> ViemLogicalSelectionIdentityV1 {
         var selection = ViemLogicalSelectionIdentityV1()
         selection.struct_size = UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
@@ -1357,8 +1335,6 @@ final class EVCoreViewSession {
         case .plainText: UInt32(VIEM_FORMAT_PLAIN_TEXT)
         case .markdown: UInt32(VIEM_FORMAT_MARKDOWN)
         case .markdownSource: UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
-        case .html: UInt32(VIEM_FORMAT_HTML)
-        case .htmlSource: UInt32(VIEM_FORMAT_HTML_SOURCE)
         case .rtf: UInt32(VIEM_FORMAT_RTF)
         case .code: UInt32(VIEM_FORMAT_CODE)
         }

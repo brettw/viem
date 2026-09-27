@@ -31,8 +31,12 @@ fn targets(
         .enumerate()
         .filter(|(_, block)| {
             if range.is_empty() {
-                block.range.start <= range.start && range.start <= block.range.end
-                    && (range.start < block.range.end || !blocks.iter().any(|next| next.range.start == range.start && next.range.start != block.range.start))
+                block.range.start <= range.start
+                    && range.start <= block.range.end
+                    && (range.start < block.range.end
+                        || !blocks.iter().any(|next| {
+                            next.range.start == range.start && next.range.start != block.range.start
+                        }))
             } else {
                 block.range.start < range.end && range.start < block.range.end
             }
@@ -104,34 +108,78 @@ fn targets(
 
 impl Document {
     pub fn list_indent_capabilities(&self, range: Range<usize>) -> (bool, bool) {
-        if !(self.format().is_wysiwyg() || self.format().is_source_view()) || self.validate_range(&range).is_err() {
+        if !(self.format().is_wysiwyg() || self.format().is_source_view())
+            || self.validate_range(&range).is_err()
+        {
             return (false, false);
         }
-        let blocks = self.projection().list_indentation_blocks(self.format().is_source_view());
-        let Some(mut selected) = blocks.index_touching_point(range.start) else { return (false, false); };
+        let blocks = self
+            .projection()
+            .list_indentation_blocks(self.format().is_source_view());
+        let Some(mut selected) = blocks.index_touching_point(range.start) else {
+            return (false, false);
+        };
         // A nonempty half-open selection excludes the block ending at its
         // start. Empty carets retain the downstream boundary owner.
-        if !range.is_empty() && blocks.get(selected).is_some_and(|block| block.range.end == range.start) {
+        if !range.is_empty()
+            && blocks
+                .get(selected)
+                .is_some_and(|block| block.range.end == range.start)
+        {
             selected += 1;
         }
-        let Some(current) = blocks.get(selected) else { return (false, false); };
-        let Some(base) = level(&current).map(|level| u16::from(level) + 1) else { return (false, false); };
-        let last = if range.is_empty() { selected + 1 } else { blocks.partition_point_start(range.end) };
-        if selected >= last { return (false, false); }
-        let lower = |summary: super::super::range_index::NavigationSummary| summary.minimum < base;
-        let boundary = |summary: super::super::range_index::NavigationSummary| lower(summary) || summary.minimum_start <= base;
-        let Some(first) = blocks.find_navigation(0..selected + 1, true, boundary) else { return (false, false); };
-        if blocks.get(first).is_none_or(|block| level(&block).map(|level| u16::from(level) + 1) != Some(base))
-            || blocks.find_navigation(first..last, false, lower).is_some() {
+        let Some(current) = blocks.get(selected) else {
+            return (false, false);
+        };
+        let Some(base) = level(&current).map(|level| u16::from(level) + 1) else {
+            return (false, false);
+        };
+        let last = if range.is_empty() {
+            selected + 1
+        } else {
+            blocks.partition_point_start(range.end)
+        };
+        if selected >= last {
             return (false, false);
         }
-        let end = blocks.find_navigation(last..blocks.len(), false, boundary).unwrap_or(blocks.len());
-        let previous = blocks.find_navigation(0..first, true, boundary)
-            .and_then(|index| blocks.get(index)).is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base));
-        let parent = base > 1 && blocks.find_navigation(0..first, true, lower)
-            .and_then(|index| blocks.get(index)).is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base - 1));
-        let indent = previous && blocks.find_navigation(first..end, false, |summary| summary.maximum >= 4 || summary.flags & 1 != 0).is_none();
-        let unindent = parent && blocks.find_navigation(first..end, false, |summary| summary.flags & 2 != 0).is_none();
+        let lower = |summary: super::super::range_index::NavigationSummary| summary.minimum < base;
+        let boundary = |summary: super::super::range_index::NavigationSummary| {
+            lower(summary) || summary.minimum_start <= base
+        };
+        let Some(first) = blocks.find_navigation(0..selected + 1, true, boundary) else {
+            return (false, false);
+        };
+        if blocks
+            .get(first)
+            .is_none_or(|block| level(&block).map(|level| u16::from(level) + 1) != Some(base))
+            || blocks.find_navigation(first..last, false, lower).is_some()
+        {
+            return (false, false);
+        }
+        let end = blocks
+            .find_navigation(last..blocks.len(), false, boundary)
+            .unwrap_or(blocks.len());
+        let previous = blocks
+            .find_navigation(0..first, true, boundary)
+            .and_then(|index| blocks.get(index))
+            .is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base));
+        let parent = base > 1
+            && blocks
+                .find_navigation(0..first, true, lower)
+                .and_then(|index| blocks.get(index))
+                .is_some_and(|block| {
+                    level(&block).map(|level| u16::from(level) + 1) == Some(base - 1)
+                });
+        let indent = previous
+            && blocks
+                .find_navigation(first..end, false, |summary| {
+                    summary.maximum >= 4 || summary.flags & 1 != 0
+                })
+                .is_none();
+        let unindent = parent
+            && blocks
+                .find_navigation(first..end, false, |summary| summary.flags & 2 != 0)
+                .is_none();
         (indent, unindent)
     }
 
@@ -145,11 +193,7 @@ impl Document {
             let visible = Document::from_bytes_with_file_format(
                 self.source_bytes(),
                 self.encoding(),
-                if self.format() == Format::HtmlSource {
-                    Format::Html
-                } else {
-                    Format::Markdown
-                },
+                Format::Markdown,
                 self.file_format(),
             )?;
             let raw = self
@@ -168,7 +212,8 @@ impl Document {
                 visible.visible_point_for_source(raw.end, false)?
             };
             let prepared = visible.prepare_list_indent(start..end, unindent)?;
-            return self.prepare_html_source_patches(prepared.summary().source_patches().to_vec());
+            return self
+                .prepare_visible_source_patches(prepared.summary().source_patches().to_vec());
         }
         if !self.format().is_wysiwyg() {
             return Err(DocumentError::UnsupportedFormatting.into());
@@ -179,7 +224,6 @@ impl Document {
         let input = normalize(&decoded, self.file_format());
         let mut table_indents = BTreeMap::new();
         let patches = match self.format() {
-            Format::Html => html_patches(self, &input, blocks, &target, unindent)?,
             Format::Rtf => {
                 rtf_patches(self, &input, blocks, &target, unindent, &mut table_indents)?
             }
@@ -434,7 +478,10 @@ fn markdown_patches(
         }
     }
     if unindent && end < lines.len() {
-        let last_root = *target.roots.last().ok_or(DocumentError::AmbiguousProjection)?;
+        let last_root = *target
+            .roots
+            .last()
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let root_line = line_for(&blocks[last_root])?;
         let root = &input.text[lines[root_line].clone()];
         let marker = super::super::markdown_blocks::marker_prefix_length(root)
@@ -442,12 +489,15 @@ fn markdown_patches(
         let indentation = root.len() - root.trim_start_matches([' ', '\t']).len();
         let marker = &root[indentation..marker];
         let digits = marker.bytes().take_while(u8::is_ascii_digit).count();
-        let marker = canonical_ordinals.get(&root_line)
-            .map_or_else(|| marker.to_owned(), |ordinal| format!("{ordinal}{}", &marker[digits..]));
+        let marker = canonical_ordinals.get(&root_line).map_or_else(
+            || marker.to_owned(),
+            |ordinal| format!("{ordinal}{}", &marker[digits..]),
+        );
         let required = marker.bytes().fold(desired_indent, |column, byte| {
             column + if byte == b'\t' { 4 - column % 4 } else { 1 }
         });
-        let next = (end..lines.len()).find(|&index| !input.text[lines[index].clone()].trim().is_empty());
+        let next =
+            (end..lines.len()).find(|&index| !input.text[lines[index].clone()].trim().is_empty());
         let next_indent = next.map_or(required, |index| columns(&input.text[lines[index].clone()]));
         let new_level = level(&blocks[target.first]).unwrap() - 1;
         if next.and_then(|index| contexts[index].as_ref()).is_some_and(|context|
@@ -468,280 +518,6 @@ fn markdown_patches(
         }
     }
     Ok(patches)
-}
-
-#[derive(Clone)]
-struct Element {
-    name: String,
-    open: Range<usize>,
-    close: Range<usize>,
-    parent: Option<usize>,
-    start_attributes: usize,
-}
-
-fn generated_list_open(name: &str, level: u8) -> Result<String, DocumentError> {
-    let list_type = match (name, level.min(3)) {
-        ("ol", 1) => "a",
-        ("ol", 2) => "i",
-        ("ol", _) => "1",
-        ("ul", 1) => "circle",
-        ("ul", 2) => "square",
-        ("ul", _) => "disc",
-        _ => return Err(DocumentError::UnsupportedFormatting),
-    };
-    Ok(format!("<{name} type=\"{list_type}\">"))
-}
-
-fn reparented_list_open(
-    input: &str,
-    container: &Element,
-    level: u8,
-) -> Result<String, DocumentError> {
-    let mut open = input[container.open.clone()].to_owned();
-    if container.name == "ol" {
-        for _ in 0..container.start_attributes {
-            let length = open.len();
-            let (range, replacement) =
-                super::super::html_styles::attribute_patch(&open, 0..length, "start", "");
-            open.replace_range(range, &replacement);
-        }
-    }
-    let list_type = match (container.name.as_str(), level.min(3)) {
-        ("ol", 1) => "a",
-        ("ol", 2) => "i",
-        ("ol", _) => "1",
-        ("ul", 1) => "circle",
-        ("ul", 2) => "square",
-        ("ul", _) => "disc",
-        _ => return Err(DocumentError::UnsupportedFormatting),
-    };
-    let length = open.len();
-    let (range, replacement) =
-        super::super::html_styles::attribute_patch(&open, 0..length, "type", list_type);
-    open.replace_range(range, &replacement);
-    Ok(open)
-}
-
-fn html_patches(
-    document: &Document,
-    input: &super::super::line_endings::NormalizedText,
-    blocks: &[Block],
-    target: &Targets,
-    unindent: bool,
-) -> Result<Vec<SourcePatch>, DocumentError> {
-    use super::super::html::TokenKind;
-    let tokens = super::super::html::tokenize(&input.text);
-    let mut elements: Vec<Element> = Vec::new();
-    let mut stack: Vec<usize> = Vec::new();
-    for token in &tokens {
-        let TokenKind::Tag(tag) = &token.kind else {
-            continue;
-        };
-        if !super::super::html::list_element(&tag.name) {
-            continue;
-        }
-        if tag.end {
-            if let Some(index) = stack.pop() {
-                if elements[index].name != tag.name {
-                    return Err(DocumentError::UnsupportedFormatting);
-                }
-                elements[index].close = token.range.clone();
-            }
-        } else {
-            let index = elements.len();
-            elements.push(Element {
-                name: tag.name.clone(),
-                open: token.range.clone(),
-                close: 0..0,
-                parent: stack.last().copied(),
-                start_attributes: tag
-                    .attributes
-                    .iter()
-                    .filter(|(name, _)| name.eq_ignore_ascii_case("start"))
-                    .count(),
-            });
-            stack.push(index);
-        }
-    }
-    let converter = super::super::rich_text::Builder::new(input, Revision(0));
-    let item_for = |block: &Block| -> Result<usize, DocumentError> {
-        let source_at = block_source_at(document, block)?;
-        elements
-            .iter()
-            .enumerate()
-            .filter(|(_, element)| {
-                element.name == "li"
-                    && !element.close.is_empty()
-                    && converter.source_range(element.open.clone()).end <= source_at
-                    && source_at <= converter.source_range(element.close.clone()).start
-            })
-            .max_by_key(|(_, element)| element.open.start)
-            .map(|(index, _)| index)
-            .ok_or(DocumentError::AmbiguousProjection)
-    };
-    let first_index = item_for(&blocks[target.first])?;
-    let last_index = item_for(&blocks[*target.roots.last().unwrap()])?;
-    let first = &elements[first_index];
-    let last = &elements[last_index];
-    let container_index = first.parent.ok_or(DocumentError::UnsupportedFormatting)?;
-    let container = &elements[container_index];
-    if container.close.is_empty()
-        || target.roots.iter().any(|index| {
-            item_for(&blocks[*index]).ok().map_or(true, |index| {
-                elements[index].parent != Some(container_index)
-            })
-        })
-    {
-        return Err(DocumentError::UnsupportedFormatting);
-    }
-    let mut raw = Vec::new();
-    if !unindent {
-        let previous_index = item_for(&blocks[target.previous.unwrap()])?;
-        let previous = &elements[previous_index];
-        let same_container = previous.parent == first.parent;
-        let previous_container = previous
-            .parent
-            .and_then(|index| elements.get(index))
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        if !same_container
-            && (previous_container.parent != container.parent
-                || previous_container.close.is_empty()
-                || elements.iter().any(|element| {
-                    element.name == "li"
-                        && element.parent == previous.parent
-                        && element.open.start >= previous.close.end
-                }))
-        {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
-        // Indenting starts a new child container, whose counter begins at one.
-        // Spell the generated level style in HTML as well as presenting it in
-        // Viem, so another HTML renderer sees the same marker family.
-        let nested_level = level(&blocks[target.first])
-            .unwrap()
-            .saturating_add(1)
-            .min(3);
-        let open = generated_list_open(&container.name, nested_level)?;
-        if same_container {
-            raw.push((previous.close.clone(), open));
-            raw.push((
-                last.close.end..last.close.end,
-                format!(
-                    "</{}>{}",
-                    container.name,
-                    &input.text[previous.close.clone()]
-                ),
-            ));
-        } else {
-            raw.push((
-                container.open.clone(),
-                reparented_list_open(&input.text, container, nested_level)?,
-            ));
-            raw.push((previous.close.clone(), String::new()));
-            raw.push((previous_container.close.clone(), String::new()));
-            let following = elements.iter().any(|element| {
-                element.name == "li"
-                    && element.parent == first.parent
-                    && element.open.start >= last.close.end
-            });
-            if following {
-                raw.push((
-                    last.close.end..last.close.end,
-                    format!(
-                        "</{}>{}{}{}",
-                        container.name,
-                        &input.text[previous.close.clone()],
-                        &input.text[previous_container.close.clone()],
-                        &input.text[container.open.clone()]
-                    ),
-                ));
-            } else {
-                raw.push((
-                    container.close.end..container.close.end,
-                    format!(
-                        "{}{}",
-                        &input.text[previous.close.clone()],
-                        &input.text[previous_container.close.clone()]
-                    ),
-                ));
-            }
-        }
-    } else {
-        let parent_index = container
-            .parent
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let parent = &elements[parent_index];
-        if parent.name != "li" || parent.close.is_empty() {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
-        let parent_container = parent
-            .parent
-            .and_then(|index| elements.get(index))
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let mixed = parent_container.name != container.name;
-        let following = elements.iter().any(|element| {
-            element.name == "li"
-                && element.parent == Some(container_index)
-                && element.open.start >= last.close.end
-        });
-        let preceding = elements.iter().any(|element| {
-            element.name == "li"
-                && element.parent == Some(container_index)
-                && element.close.end <= first.open.start
-        });
-        let remove_original_container = !mixed && !preceding;
-        let mut close_parent = if remove_original_container {
-            input.text[parent.close.clone()].to_owned()
-        } else {
-            format!(
-                "{}{}",
-                &input.text[container.close.clone()],
-                &input.text[parent.close.clone()]
-            )
-        };
-        if mixed {
-            if parent_container.close.is_empty() {
-                return Err(DocumentError::UnsupportedFormatting);
-            }
-            close_parent.push_str(&input.text[parent_container.close.clone()]);
-            close_parent.push_str(&input.text[container.open.clone()]);
-            raw.push((
-                parent.close.end..parent.close.end,
-                format!(
-                    "{}{}",
-                    &input.text[container.close.clone()],
-                    &input.text[parent_container.open.clone()]
-                ),
-            ));
-        }
-        raw.push((first.open.start..first.open.start, close_parent));
-        if following {
-            raw.push((
-                last.close.clone(),
-                input.text[container.open.clone()].to_owned(),
-            ));
-        } else {
-            // With no preceding child, this same-family container no longer
-            // belongs under the old parent. A following run is reopened under
-            // the last moved item above; otherwise the container disappears.
-            if remove_original_container {
-                raw.push((container.open.clone(), String::new()));
-            }
-            raw.push((container.close.clone(), String::new()));
-            raw.push((parent.close.clone(), String::new()));
-        }
-        if following && remove_original_container {
-            raw.push((container.open.clone(), String::new()));
-        }
-    }
-    raw.into_iter()
-        .map(|(range, text)| {
-            Ok(SourcePatch::primary(
-                converter.source_range(range),
-                document.encoding().encode_fragment(&text)?,
-            ))
-        })
-        .collect()
 }
 
 fn rtf_patches(

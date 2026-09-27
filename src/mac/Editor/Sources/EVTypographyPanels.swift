@@ -210,7 +210,7 @@ extension EVStyleColor {
 
 extension EVEditorSurfaceController {
   var canInspectTypography: Bool {
-    [.html, .htmlSource, .rtf].contains(backend.sourceFormat) && session != nil
+    backend.sourceFormat == .rtf && session != nil
   }
 
   var canEditTypography: Bool {

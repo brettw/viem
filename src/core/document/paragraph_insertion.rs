@@ -9,7 +9,7 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !matches!(self.format(), Format::Html | Format::Markdown)
+        if !matches!(self.format(), Format::Markdown)
             || at != self.projection().text_tree().byte_len()
         {
             return Ok(None);
@@ -64,12 +64,15 @@ impl Document {
             .projection()
             .blocks_for_region(&(end..end))
             .iter()
-            .any(|block| block.range == (end..end) && (block.style.0 == "Block quote" || block.quote_depth > 0))
+            .any(|block| {
+                block.range == (end..end)
+                    && (block.style.0 == "Block quote" || block.quote_depth > 0)
+            })
         {
             return Err(DocumentError::VerificationFailed.into());
         }
-        let patches = sources.source_patches(&scratch.state().source)?;
-        let edits = formatted.formatted_edits(&scratch)?;
+        let patches = sources.source_patches();
+        let edits = formatted.formatted_edits();
         // Replacing an internal break with a paragraph boundary deliberately
         // changes block ownership without changing flat text. A source-only
         // style transaction forbids that structural change, so verify this

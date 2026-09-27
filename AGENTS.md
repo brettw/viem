@@ -15,7 +15,7 @@ word-processor-quality text surface:
 - kerning, ligatures, font fallback, and OpenType shaping;
 - different font families, sizes, and attributes in different text spans;
 - lossless, format-aware projections from source such as plain text, Markdown,
-  HTML, or RTF into an editable formatted view;
+  or RTF into an editable formatted view;
 - optional soft word wrapping to the current window width;
 - visual-row navigation when wrapping is enabled; and
 - responsive editing and scrolling in large documents.
@@ -23,6 +23,14 @@ word-processor-quality text surface:
 Code is an additional literal-text format with pluggable syntax highlighting,
 bundled Tree-sitter languages, and Vim syntax fallback. Its source remains
 fully visible and editable while optional highlighting is computed separately.
+HTML files use Code. There are no HTML WYSIWYG or HTML Source formats,
+conversion targets, tag-typing assistance, editable HTML style definitions, or
+HTML-specific editing/projection caches. Retained HTML utilities serve passive
+Markdown interpretation, clipboard import, entity decoding, and styled export.
+
+File > Export… writes a standalone styled HTML copy through the portable core.
+It reuses the document's normalized style cascade and CSS serialization; native
+frontends only choose the destination and write the resulting UTF-8 bytes.
 
 **Markdown interpretation MUST target GitHub Flavored Markdown (GFM).** The
 reference is GitHub's rendering of repository Markdown files, using the
@@ -181,19 +189,20 @@ Use these terms consistently in code, tests, and documentation:
 - **Document**: a source artifact, its configured transformation pipeline, and
   cached derived projections.
 - **WYSIWYG view**: a format which presents block structure and named styles
-  instead of the syntax spelling them: Markdown, HTML, and RTF.
+  instead of the syntax spelling them: Markdown and RTF.
 - **Source view**: a format whose own markup is visible, editable text:
-  Markdown Source and HTML Source.
+  Markdown Source.
 - **Code**: a literal-text format with automatic syntax styles, distinct from
   the Normal/Insert/Replace command modes and from rich-format Code styles.
   It has no WYSIWYG counterpart. All pre-existing format-family predicates
   below are false for Code; `Format::is_code` is true only for Code.
 - **Rich text**: a WYSIWYG view whose source persists arbitrary character and
-  paragraph declarations: HTML and RTF. Markdown carries structure but only a
-  fixed inline vocabulary, so it is structured without being rich text.
+  paragraph declarations: RTF. Markdown carries
+  structure but only a fixed inline vocabulary, so it is structured without
+  being rich text.
 
   These families are `const fn` predicates on `Format` (`is_wysiwyg`,
-  `is_source_view`, `is_rich_text`, `is_markdown`, `is_html`,
+  `is_source_view`, `is_rich_text`, `is_markdown`,
   `has_rich_source`, `has_structural_lists`, and `is_code`). Implementations
   MUST ask through these predicates rather than spelling a `matches!` set of
   variants, so that adding a format is a deliberate decision at each predicate
@@ -608,7 +617,7 @@ SourceArtifact (original bytes or package parts)
 The implementation MAY fuse stages for efficiency, but their responsibilities,
 revision identities, provenance, invalidation, and reverse-edit behavior must
 remain observable and testable. Plain text uses an identity format projection
-after decoding. Markdown, HTML, and RTF are motivating format adapters, not an
+after decoding. Markdown and RTF are motivating format adapters, not an
 implicit commitment that every feature of each format is in the first release.
 
 ### Preservation guarantees
@@ -624,7 +633,7 @@ Every editable format pipeline MUST define and test these guarantees:
 
 A patch set may include supporting changes outside the selected formatted
 range when the source format requires them, such as an RTF font/color table,
-an HTML encoding declaration, or a shared style definition. Such patches must
+a shared style definition. Such patches must
 be minimal, explicit, and reported as part of the same atomic transaction.
 Never regenerate an entire document merely because a small local edit is
 easier to serialize that way.
@@ -677,7 +686,7 @@ retained unless the edit necessarily changes that source region.
   use a semantically exact format escape, change the document encoding and any
   declarations, or reject/request a user decision. Silent substitution or data
   loss is forbidden.
-- HTML and RTF use exact native escapes for otherwise unencodable input.
+- RTF uses exact native escapes for otherwise unencodable input.
   Markdown WYSIWYG prose uses numeric references where they reproduce the
   requested Unicode character. Code spans/fences and literal/source views retain
   exact literal semantics; an entity spelling must not masquerade as a character
@@ -688,8 +697,8 @@ retained unless the edit necessarily changes that source region.
 Line-ending interpretation is a reusable pipeline component, not behavior
 reimplemented by each format adapter and not a base class from which adapters
 inherit. A text-like adapter composes a `TextLineEndingProjection` immediately
-after decoding and before its lossless format projection. Text, Code, Markdown,
-and HTML use this component. Formats whose source grammar owns all line-break
+after decoding and before its lossless format projection. Text, Code, and
+Markdown use this component. Formats whose source grammar owns all line-break
 semantics may omit it.
 
 The component consumes decoded Unicode with source-byte provenance and emits a
@@ -698,8 +707,8 @@ token retains whether its original spelling was LF, CRLF, or CR and the exact
 decoded and source-byte ranges that produced it. The later format adapter
 decides whether a source-line-break token becomes a formatted hard line, a
 paragraph boundary, collapsible whitespace, trivia, or no visible content. For
-example, raw source line endings do not automatically become visible hard lines
-in HTML.
+example, raw source line endings inside a Markdown HTML block do not
+automatically become visible hard lines.
 
 The normalized interface is shared, but semantic paragraph construction remains
 adapter-specific. Adapters use composition and delegation rather than subtype
@@ -708,7 +717,7 @@ inheritance:
 ```text
 DecodedText
     -> TextLineEndingProjection(fileformat/open policy)
-    -> PlainText | Code | Markdown | HTML lossless format projection
+    -> PlainText | Code | Markdown lossless format projection
 ```
 
 #### Detection and interpretation
@@ -759,7 +768,7 @@ line-ending conversion does not add or remove a final terminator.
 #### Changing `fileformat`
 
 Pipelines containing this component expose `fileformat` as a shared capability,
-regardless of whether their later adapter is Text, Code, Markdown, or HTML. The
+regardless of whether their later adapter is Text, Code, or Markdown. The
 commands `:set fileformat?`, `:set fileformat=unix|dos|mac`, their `ff`
 abbreviations, and corresponding `:setlocal` forms query or change it. An
 adapter must delegate these commands to the component rather than implement
@@ -842,11 +851,10 @@ Core Text, RTF, or another source format's object model to general core code.
 Format adapters project their native styling systems into this model and retain
 the original syntax and provenance needed for lossless reverse edits.
 Source-language cascade rules remain adapter responsibilities to the extent an
-adapter claims them. The initial HTML adapter deliberately supports only the
-element mappings, Viem-owned class rules, and inline declarations specified in
-"HTML and RTF import and round-trip adapters"; it does not claim general CSS
-selector or cascade support. The generic style resolver does not reinterpret
-source CSS or RTF control state.
+adapter claims them. Passive HTML import supports semantic elements and a
+bounded set of inline CSS declarations, with no authored stylesheets or general
+CSS cascade. The generic style resolver does not reinterpret source CSS or RTF
+control state.
 
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
@@ -896,7 +904,7 @@ typing at the caret without a source edit until text is inserted.
 
 There are no Base Document or Base Character definitions. View margins belong
 to Settings > View, not to a style. Source-root declarations needed to preserve
-HTML or RTF source semantics remain distinct from editable named styles.
+Embedded Markdown HTML or RTF source semantics remain distinct from editable named styles.
 
 #### Declarations and values
 
@@ -987,8 +995,8 @@ fallbacks.
 
 Each paragraph stores a Paragraph-role block-style ID plus sparse direct
 paragraph and paragraph-default-character declarations. Source-root context
-retains direct canvas and default-character declarations when needed for source
-constructs such as HTML body styling, without a separate named document style.
+retains direct canvas and default-character declarations when needed by the
+source format, without a separate named document style.
 Character-style assignments and direct character formatting are separate range
 maps. At most one named character style applies at a position; absence is
 Default Paragraph. Different direct properties may overlap independently.
@@ -1094,12 +1102,7 @@ Direct character choices without a selection likewise remain pending view
 state. Moving the caret or starting a new selection discards pending character
 choices without creating source syntax, dirty state, or an undo entry. Typing
 outside an existing character scope must not manufacture an empty copy of that
-scope at a split boundary. When an HTML text edit consumes the final content of
-a character-only scope, remove its now-empty delimiters, including nested
-scopes, in the same verified undoable transaction. Preserve contained comments,
-unrelated authored empty scopes, unknown elements, and scopes carrying anchors
-or other non-formatting metadata. Paragraph owners are not character cleanup
-targets.
+scope at a split boundary.
 
 With a selection, character-style assignment applies to the selected text in
 each containing block. Format wrappers must remain inside paragraph, heading,
@@ -1156,8 +1159,7 @@ share structural delimiters are composed before one atomic publication; logical
 selection ranges and position maps remain unchanged by supporting source edits.
 
 Deleting a displayed row obeys the same rules as deleting a character range.
-HTML line/owner deletion must protect retained spaces that become exposed at a
-paragraph edge using the existing nonbreaking-space policy. Markdown deletion
+Markdown deletion
 and replacement must escape retained literal punctuation when newly adjacent
 text or a new line boundary would otherwise activate markup. These are local
 supporting source repairs, not reasons to reject an ordinary visible-text edit.
@@ -1205,9 +1207,9 @@ properties (alignment, line spacing, direction, and first-line indent) cascade
 outermost to innermost before a child's explicit declarations. A container's
 margin, padding, border, and background never become declarations on its child.
 
-HTML and Markdown expose Block quote as a Quote container style mapped to
+Markdown exposes Block quote as a Quote container style mapped to
 native `blockquote` containers and Markdown `>` prefixes. The default quote
-has a left border and inset. Source HTML retains its tags; Markdown Source
+has a left border and inset. Markdown Source
 retains every `>`. Markdown Source quote-container geometry is applied when Flow
 Source Paragraphs is enabled and suppressed when disabled; existing code and
 list presentation remains available in both source layouts. Quote wrapping
@@ -1253,8 +1255,7 @@ Committed edits follow this path:
    registers, marks, cursor, and invalidations—or commit nothing.
 
 Formatting syntax is adapter policy. A Markdown adapter may preserve nearby
-`**` versus `__` convention; an HTML adapter must deliberately choose among
-`<b>`, `<strong>`, a class, or inline CSS; an RTF adapter must respect group and
+`**` versus `__` convention; an RTF adapter must respect group and
 formatting state. Each adapter defines a deterministic local-style-preservation
 rule and a configurable default for newly authored syntax.
 
@@ -1321,15 +1322,14 @@ can translate it.
   result and reverse-edit semantics commute. Transformation order is otherwise
   document configuration and part of the projection identity.
 
-## HTML and RTF import and round-trip adapters
+## Passive HTML import and the RTF round-trip adapter
 
-HTML and RTF are editable source formats, not lossy import/export filters.
-Their adapters obey the source-authority, preservation, semantic-intention,
-and verified reverse-projection requirements above. Opening either format,
-including malformed or partially unsupported input, never grants permission to
+RTF is an editable source format. Its adapter obeys source-authority,
+preservation, semantic-intention, and verified reverse-projection requirements.
+Opening malformed or partially unsupported RTF never grants permission to
 normalize or regenerate the file.
 
-Both adapters maintain two related structures:
+The RTF adapter maintains two related structures:
 
 1. a lossless concrete syntax representation containing every original byte,
    delimiter, escape, spelling choice, comment, unknown construct, error, and
@@ -1368,16 +1368,15 @@ syntax may affect neither display nor editing, but it is never discarded.
   effective supported properties, opaque-content anchors, and source
   well-formedness expectations satisfy the intention.
 
-### Links in Markdown and HTML
+### Links in Markdown
 
-Markdown inline links `[label](destination)` and HTML anchors with `href`
+Markdown inline links `[label](destination)` and passive embedded HTML anchors with `href`
 contribute an automatic Link character style, blue and underlined by default.
 The style remains editable in the format's style sheet; explicit authored
 character styles and direct declarations take precedence over its defaults.
 Markdown WYSIWYG shows
 the formatted label; Markdown Source styles the entire inline link construct.
-HTML WYSIWYG styles visible anchor contents; HTML Source styles only the content
-between the anchor tags, excluding the opening and closing anchor tags.
+Embedded HTML anchors style their visible contents.
 Recognition is passive and keeps source bytes unchanged. Inline and fenced code
 do not acquire Markdown link styling. Escaped punctuation, balanced destination
 parentheses, angle destinations, optional titles, and character references are
@@ -1395,377 +1394,20 @@ passed to a shell. Existing percent escapes are preserved, additional invalid
 URI bytes are encoded once, and control characters or executable URL schemes
 are rejected. Other document interaction does not launch links.
 
-### HTML adapter
+### Passive HTML utilities
 
-#### Parsing, preservation, and active content
+HTML is parsed only for embedded Markdown semantics and clipboard import. The
+shared tokenizer/entity decoder and passive fragment projector retain their
+bounded semantic mappings. Markdown ignores authored CSS, preserves visible
+comments and unsupported literal syntax, and never loads resources. Clipboard
+import may translate supported inline CSS into the normalized style model; it
+never installs authored stylesheet rules or executes active content. Imported
+clipboard fragments contain plain-text backing plus resolved style runs, not
+an editable HTML document or HTML source-format identity.
 
-The HTML adapter uses `text/html` parsing semantics, including error recovery,
-implied elements, optional tags, raw-text elements, and character references.
-A browser-like semantic tree is not sufficient for round trip, because HTML
-parsing can repair structure and discard syntax distinctions. The adapter
-therefore retains a separate lossless token/concrete tree containing original
-tag-name case, start/end-tag presence, attribute order, duplicate attributes,
-quote style, whitespace, comments, doctypes, character-reference spelling,
-parse errors, and bytes outside the document element.
-
-`script` and `style` are raw-text elements. Script contents and all event-handler
-attributes are preserved but never executed. `head` metadata, comments,
-`template` content, scripts, non-Viem style elements, linked stylesheets, and
-other nonprinting nodes produce no editable body text. Unsupported visible
-elements retain their source structure; their unambiguous visible descendant
-text may still be projected using supported inline semantics. Unsupported
-atomic content may instead appear as an opaque object with no editable interior
-when omitting it would conceal a visible document item. Its source extent remains
-one complete contributor for whole-object deletion and replacement.
-
-The adapter does not apply external stylesheets, arbitrary selectors, layout
-scripts, or browser default CSS. It interprets only:
-
-- the element-to-structure and element-to-format mappings in this section;
-- the first applicable Viem-owned class named on an element;
-- supported declarations in an element's inline `style` attribute; and
-- the canonical Viem-owned inline stylesheet described below.
-
-All other CSS, including unknown properties, unsupported values, `@` rules,
-selectors outside the canonical subset, and additional style elements, is
-opaque source. It is preserved byte-for-byte while untouched and ignored by
-the formatted projection.
-
-#### HTML block and inline projection
-
-The initial structural mapping is:
-
-- `body` supplies the formatted document's body content;
-- `p` creates a paragraph assigned Base Paragraph unless an applicable
-  Viem-owned paragraph class overrides that assignment;
-- `h1` through `h6` create paragraphs assigned the adapter-provided Heading 1
-  through Heading 6 paragraph styles respectively, again subject to an
-  applicable Viem-owned paragraph class;
-- `br` creates a formatted hard-line boundary inside the current paragraph;
-- a block container with a recognized paragraph-style assignment owns a logical
-  paragraph, including when empty; source-flow layout uses the same ownership;
-- visible phrasing content outside an explicit supported paragraph is grouped
-  into the minimum anonymous Base Paragraph blocks necessary to represent it;
-  and
-- unsupported containers are structurally transparent only when their visible
-  descendant text and boundaries can be projected without ambiguity.
-
-Typing into an empty HTML WYSIWYG document authors an explicit `p` element.
-Nonempty text edits in an anonymous prose paragraph materialize that paragraph's
-`p` owner when needed, preserving its existing inline content and surrounding
-source. Existing paragraph owners (including headings, list items, preformatted
-blocks, and assigned block containers) are reused. This is local editing policy,
-not normalization on open, save, or navigation; unrelated paragraphs and empty
-containers retain their original bytes. Empty character-scope cleanup does not
-authorize collapsing paragraph boundaries or removing empty paragraph owners.
-Deleting only a paragraph's text retains its empty owner and paragraph style.
-Deleting a paragraph separator merges the adjacent paragraphs and retains the
-first paragraph's style; intentional blank paragraphs remain until their own
-boundaries are deleted. Explicit whole-document content deletion, including
-linewise deletion of every paragraph, leaves one normal empty `p`. Replacement
-typing can still restore the first selected paragraph's captured context.
-Deleting nothing in an already empty normal paragraph leaves its source intact.
-These operations preserve unrelated empty containers, comments, hidden metadata,
-and source-only whitespace. Supporting source patches may move an untouched
-empty container to the following boundary when it cannot remain inside the
-merged paragraph, retaining its exact bytes and preventing style leakage.
-An empty preformatted paragraph's insertion boundary follows any initial line
-ending ignored by HTML parsing; typing retains that original source spelling
-without exposing a new visible line.
-
-Heading 1 through Heading 6 have stable adapter-defined style identities,
-derive from Base Paragraph, and exist even when no Viem stylesheet is present.
-Changing a paragraph's block kind between Base Paragraph and a heading rewrites
-the corresponding `p`/`h1`…`h6` tags. Editing a heading style definition writes
-or updates its canonical rule in the Viem-owned stylesheet; it does not replace
-heading elements with generic paragraphs.
-
-A verified paragraph merge MAY use a flow-capable `div` with the same assigned
-paragraph style when a retained child such as a table cannot remain inside `p`.
-Recovered HTML source order is materialized only for the affected contributors,
-with unchanged text, paragraph assignments, character styles, and hard lines,
-before applying the requested edit as one atomic transaction.
-
-In normal HTML text contexts, source whitespace that HTML treats as
-collapsible projects to the corresponding visible spacing with many-to-one
-provenance. Original whitespace spelling remains untouched until an edit
-necessarily replaces that source range. Preformatted or otherwise unsupported
-whitespace behavior is preserved as opaque/read-only unless the adapter has an
-explicit reversible mapping for it.
-
-The initial semantic inline element mappings are:
-
-- `b` and `strong` contribute bold weight;
-- `i` and `em` contribute italic slant;
-- `u` contributes underline;
-- `s`, `strike`, and `del` contribute strike decoration;
-- `sup` and `sub` contribute exclusive superscript and subscript; and
-- `span` contributes no property by itself but can carry a supported class or
-  inline declaration.
-
-`lang` contributes the supported language property and `dir` contributes the
-supported writing-direction override when their values are understood.
-Explicit Automatic direction writes `dir="auto"` in HTML, including when it
-must override an inherited LTR/RTL value. It is distinct from clearing a direct
-declaration. RTF has no corresponding explicit automatic-direction control, so
-that menu choice is disabled there. Other attributes do not affect the
-normalized projection unless this section later adds an explicit mapping.
-
-For example, `<b foo="bar">text</b>` projects `text` as bold. The unknown
-`foo` attribute remains byte-identical through text edits inside the element
-and through unrelated edits elsewhere. If a style operation changes the
-formatting contributed by that exact `b` element, its start/end tags form the
-canonicalization boundary and may be replaced by canonical markup; `foo` is
-then inside the declared patch and need not be retained.
-
-#### Supported inline CSS
-
-An inline `style` attribute is parsed as a CSS declaration list using
-forward-compatible parsing. Only declarations that convert exactly to the
-normalized property schema are applied. Invalid declarations, unsupported
-properties, unsupported values, and declarations using units or expressions
-that cannot be reversibly represented are ignored semantically and preserved
-as source while the formatting construct remains untouched.
-
-The initial supported Character-property mappings are:
-
-- `font-family` -> ordered font-family/fallback request;
-- `font-size` -> font size;
-- `font-weight` -> numeric weight;
-- `font-style` -> slant;
-- `color` and `background-color` -> foreground and background color;
-- `text-decoration-line`, and the `text-decoration` shorthand when its value is
-  only `none`, `underline`, and/or `line-through`, -> underline and strike decoration;
-- `letter-spacing` -> letter spacing;
-- `vertical-align` values `baseline`, `super`, and `sub` -> script position;
-- `font-feature-settings` -> OpenType feature settings; and
-- `direction` -> writing-direction override.
-
-The CSS property is `font-family`; `font-face` is not a supported declaration
-(`@font-face` is a stylesheet rule) and is preserved but ignored. The initial
-supported Paragraph-property mappings are:
-
-- `margin-block-start` and `margin-block-end` -> margin top and bottom; physical margin/padding and solid border widths/colors map to Block Box declarations;
-- `margin-inline-start` and `margin-inline-end` -> logical start and end
-  indents;
-- `text-indent` -> first-line indent;
-- `line-height` -> the supported line-spacing kind/value;
-- `text-align` values `start`, `center`, and `end` -> logical alignment; and
-- `direction` -> base writing direction.
-
-The canonical writer uses one documented absolute unit for each length domain
-and lowercase property names in schema order. It does not claim to preserve the
-semantics of arbitrary CSS shorthand, variables, `calc()`, viewport units,
-media queries, or selector cascades.
-
-Script position is a semantic enum, independent of font size: Normal,
-Superscript, or Subscript. Superscript and subscript are mutually exclusive;
-selecting the active choice again restores Normal. Rendering uses 70% of the
-resolved font size and offsets superscript upward by one third of the original
-size or subscript downward by one fifth. Normal retains the original size and
-position. HTML `sup`/`sub` and CSS `vertical-align: super/sub/baseline` map to
-these values; new simple inline edits use `sup`/`sub` tags. RTF uses
-`\super`, `\sub`, and `\nosupersub`. Arbitrary CSS vertical lengths and RTF
-`\up`/`\dn` remain untouched source but do not contribute formatting.
-There is no editable numeric baseline-shift property.
-
-Element semantics and style sources resolve in this order, with later sources
-winning for supported properties:
-
-1. adapter defaults and the `p`/heading/inline-element mapping;
-2. the selected Viem-owned paragraph or character style; and
-3. supported inline `style` and `lang`/`dir` declarations.
-
-If duplicate attributes or otherwise malformed syntax reports more than one
-candidate under HTML parsing semantics, the semantic projection uses the first
-effective attribute while the lossless tree preserves them all.
-
-#### Canonical direct formatting
-
-New direct inline formatting uses a deterministic wrapper:
-
-- bold as the primary conventional property uses `b`;
-- italic uses `i`;
-- underline uses `u`;
-- strike uses `s`; and
-- when other or multiple Character properties are required, the first
-  applicable conventional wrapper above is retained and remaining properties
-  are written in one canonical `style` attribute; if no conventional wrapper
-  applies, use `span style="…"`.
-
-Thus bold plus a font request may be written as
-`<b style="font-family: …">…</b>`. Removing bold while retaining that font
-rewrites it canonically as `<span style="font-family: …">…</span>`. Paragraph
-direct formatting is written on the existing paragraph-bearing element's
-`style` attribute.
-
-When a supported formatting change targets an existing formatting element or
-`style` attribute, the adapter may rewrite that declared canonicalization
-boundary using only supported canonical attributes/declarations. Unknown
-attributes or declarations inside that boundary may therefore be removed.
-Untouched ancestors, descendants outside the formatted range, and sibling
-attributes remain original bytes. Partial-range edits split wrappers as needed,
-preserving the original wrapper bytes around unaffected left/right content when
-their source structure can remain valid.
-
-HTML whitespace follows CSS Text processing across inline element boundaries.
-In normal and nowrap contexts, spaces, tabs, and segment breaks collapse;
-leading and trailing collapsible whitespace at hard-line boundaries is removed.
-Source segment breaks join words with a space. Form feed, NBSP, and other
-Unicode separators are not ordinary collapsible spaces. `pre`, `pre-wrap`, and
-`break-spaces` preserve spaces and tabs; `pre-line` preserves segment breaks
-while collapsing spaces and tabs. These values inherit and can be overridden.
-
-WYSIWYG formatted edits interpret spaces and tabs in their HTML context. Each requested
-space that would collapse MUST become a nonbreaking U+00A0, serialized as
-`&nbsp;`, rather than generating a whitespace style wrapper. Ordinary word
-spaces MUST use literal source spaces. Subsequent typing SHOULD replace an
-editor-generated protective NBSP with an ordinary space when it becomes safe;
-that supporting edit belongs to the same verified transaction and position map.
-Explicitly inserted or imported NBSPs remain nonbreaking. Typed hard breaks
-remain hard breaks rather than collapsible source newlines. In whitespace-
-preserving contexts, typing keeps literal spaces and tabs.
-
-This policy also applies to paste, substitution, deletion, paragraph splitting,
-and the semantic formatted replacement APIs. When deleting or splitting exposes
-an existing space to collapse, a minimal supporting patch MUST protect it with
-`&nbsp;` and include its U+00A0 replacement in the formatted position map.
-These edits MUST NOT generate `white-space` spans. Imported/source-authored
-whitespace syntax retains its original bytes outside declared patches. Exact
-source restoration retains its recorded bytes and character semantics. Every
-edit MUST verify reopen equivalence and exact undo/redo, including changes in
-UTF-8 byte length when a space becomes NBSP.
-
-New text is escaped canonically for its HTML context. Existing character
-references such as `&amp;`, `&#38;`, and `&#x26;` retain their original spelling
-until their source range is edited.
-
-#### Native HTML elements and optional style definitions
-
-HTML authoring MUST use native elements whenever they represent the selected
-style: `p` for Paragraph, `h1` through `h6` for headings, `li` inside `ul` or
-`ol` for list items, `pre` for Code Block, `blockquote` for Block quote, and
-`code` for inline Code. Applying Bulleted List to a blank paragraph creates an
-editable `<ul><li></li></ul>`;
-typing then inserts inside `li`. List markers are decorations, never inserted
-text or characters in style spans. Existing ordered lists retain their
-numbering and nested lists retain their structure. Applying a deeper built-in
-level to a plain paragraph creates the necessary native list/item ancestors.
-An ancestor `li` containing only a nested list is structural and does not
-invent an empty formatted paragraph; a genuinely empty item remains editable.
-A named level MUST NOT be
-simulated by a styled `p` or by an invented class that changes the apparent
-level without changing list structure. Unsupported structural changes return a
-structured failure rather than producing misleading markup.
-
-Structural assignments replace only the needed tag names and container
-syntax. They preserve unrelated attributes, comments, inline markup, and source
-spelling. Adjacent selected paragraphs SHOULD share one list container. An
-ordinary numbered list starts with `<ol>`; a `start` attribute is needed only
-for a non-default ordinal or to override an existing conflicting declaration.
-Removing a complete list removes its containers instead of leaving empty
-sibling lists. Native assignment does not add a class or a CSS rule merely to
-identify a built-in style. An empty class attribute left by removing owned
-style assignments is removed.
-
-Style includes **Include style definitions in file** in both HTML
-WYSIWYG and HTML Source. This is portable buffer-local state shared by the two
-views, defaulting to off for new documents. Opening a file containing recognized
-owned native style definitions restores the enabled state; an explicit owned
-marker preserves an enabled state when no non-default rule is necessary.
-Changing it is one atomic, undoable source transaction. Undo and redo restore
-both the exact source and the option; changing views preserves the option.
-
-When the option is off, built-in style definitions come from the saved HTML
-settings and MUST NOT be copied into the source on assignment or ordinary
-editing. Direct formatting remains source-backed because it was applied
-separately from a style. A custom style without an HTML-native representation
-uses a class and its required owned definition even with this option off.
-Turning the option off removes only recognized owned native definitions;
-custom definitions, direct formatting, and unrelated or unsupported CSS remain
-intact. Merely opening or saving never rewrites source CSS.
-
-When the option is on, Viem writes the necessary CSS for its style sheet using
-native selectors. Default HTML behavior MUST NOT produce redundant declarations:
-zero text indent, normal letter spacing, normal baseline alignment, and other
-browser-default values are omitted unless an override is needed. List styling
-belongs to `li`, with descendant `li` selectors for deeper levels, while `ul`
-and `ol` retain their ordinary container and marker semantics. Native defaults
-do not require per-paragraph or per-character metadata classes.
-
-#### Canonical Viem style sheet and classes
-
-New owned definitions use the exact marker
-`<style id="viem-styles" data-viem-version="2">`. A style element without a
-recognized marker, or content outside the supported grammar inside a marked
-element, is never silently adopted or rewritten. Version 1 remains readable as
-an import format; all authoring uses version 2. The next explicit persisted
-stylesheet operation, such as editing a definition or changing Include Style
-Definitions, migrates recognized version-one rules to version two in the same
-verified source transaction and undo unit. This migration may update recognized
-owned rules beyond the individual definition being edited, but preserves
-unrelated CSS, comments, unknown rules, and body content. Ordinary text editing
-and no-edit open/save do not trigger migration. Rules retain their source order:
-fully recognized elements change version in place, while mixed elements split
-into adjacent owned and opaque runs without moving rules across intervening CSS.
-Multiple recognized owned elements may coexist for this purpose.
-
-An owned style element is inserted near the beginning of `head`, after an
-encoding declaration whose placement is constrained. If a full document lacks
-`head`, the transaction inserts the minimum explicit head. For an accepted
-HTML fragment, it inserts the element at the fragment's beginning. No element
-is inserted for a native style assignment while inclusion is off.
-
-Canonical version-two selectors are `body`, `p`, `h1` through `h6`, `li` and
-its repeated descendant forms, `pre`, `code`, `.viem-p-<stable-id>` for Paragraph
-styles, and `.viem-c-<stable-id>` for Character styles. Classes ordinarily name
-custom styles; imported legacy classes may also retain native style IDs so
-existing body elements and assignments remain intact. Stable class-ID suffixes
-are lowercase hexadecimal UTF-8, independent of display names.
-Native selectors supply their built-in identity, role, and default links;
-ordinary sparse CSS carries browser-representable properties. Empty native
-rules are omitted. Class rules additionally carry required stable ID, name,
-role, and optional parent and next-style links as namespaced metadata. Their CSS
-is computed for class context rather than assuming native heading, list, or code
-element defaults. When a native style retains a legacy class, authoring keeps
-its class and native rules synchronized so newly assigned native elements use
-the same definition.
-
-A deleted native block definition emits the effective Paragraph CSS after
-resetting its defaults, so passive readers match its paragraph fallback.
-The exact earlier version-two deletion rule containing only `font: inherit`
-and `margin: 0` remains readable; subsequent stylesheet authoring updates it.
-
-Only normalized distinctions that CSS cannot recover exactly need residual
-`--viem-prop-<schema-key>` declarations. These include relative bold and
-at-least line spacing. `--viem-inherit` records sparse inherited properties
-where browser interoperability requires a derived declaration. Direct
-formatting is never flattened into a named-style rule. CSS declaration order,
-whitespace, quoting, and escaping are fixed by the version-two golden fixtures;
-unsupported versions and noncanonical rules remain opaque.
-
-Version 1 retains its original authoritative namespaced-property grammar:
-`--viem-style-id`, `--viem-style-name`, `--viem-style-role`, optional
-`--viem-based-on` and `--viem-next-style`, and
-`--viem-prop-<schema-key>` for explicit normalized properties. Values are CSS
-double-quoted strings; control characters, quote, backslash, and `<`, `>`, `{`,
-`}` use lowercase hexadecimal CSS escapes followed by a space. Standard CSS
-in these legacy rules is derived interoperability output. The legacy reader
-validates exact canonical spelling rather than guessing another interpretation.
-
-After migration, editing a definition patches only its owned rule and the
-necessary dependent rules. Creating, renaming, rebasing, or deleting a custom
-style preserves unrelated stylesheets and assignments. Reopening with the same
-saved defaults reconstructs the same normalized assignments and effective
-formatting.
-
-A custom Paragraph style class is attached to its paragraph-bearing element,
-including `li` for a list item. A custom Character style class is attached to a
-`span` enclosing the assigned range. With several recognized class tokens of
-one role, the first supplies the normalized assignment. Assignment changes
-remove recognized tokens of that role, retain unsupported tokens in their
-original order, and add a selected custom class only when native HTML cannot
-represent the style.
+Styled export uses the same normalized style resolution and CSS serializers.
+It is a one-way file operation; it does not restore HTML editing, tag completion,
+HTML-specific typing/whitespace repair, or source-owned CSS editing.
 
 ### RTF adapter
 
@@ -1890,40 +1532,17 @@ RTF's canonical Viem extension preserves semantic base weight with
 controls are ignored by conventional RTF readers; ordinary `\b` and other
 standard controls provide the interoperable appearance fallback. Viem must retain
 feature state through partial clearing, named styles, `\plain`, and reopening.
-HTML owned version-1 style metadata accepts additive `character-bold` and
-explicit generated-style deletion declarations; inline base-weight/bold helpers
-must not leak into the owned-sheet fallback grammar.
+### Import and RTF conformance tests
 
-### HTML and RTF conformance tests
+The RTF adapter has corpus, property, and targeted golden tests. Passive HTML
+import and export have separate tests for semantic styling, escaping, and
+absence of active content or resource loading.
 
-Each adapter has corpus, property, and targeted golden tests. At minimum:
-
-- Opening and immediately saving complex browser/author-generated HTML and
-  Word/other-writer RTF is byte-identical, including malformed syntax, mixed
-  encodings, unknown controls, comments, duplicate/oddly quoted attributes,
-  scripts, arbitrary CSS, ignorable destinations, binary data, fields, and
-  embedded-object groups.
+- Opening and immediately saving RTF is byte-identical, including malformed
+  syntax, mixed encodings, unknown controls, ignorable destinations, binary
+  data, fields, and embedded-object groups.
 - A targeted body-text edit changes only its declared source range and required
-  escaping bytes. Surrounding tags, attributes, scripts, CSS, RTF controls,
-  destinations, tables, and original whitespace remain byte-identical.
-- Editing text inside `<b foo="bar">…</b>` preserves both tags and `foo`.
-  Changing the bold formatting exercises the declared HTML
-  canonicalization boundary and produces the canonical expected markup.
-- Supported inline CSS properties project to the correct normalized direct
-  declarations; unsupported properties remain unchanged and have no layout
-  effect. Multiple applicable Viem class tokens select the first, while
-  unrelated class tokens survive assignment changes.
-- Creating, renaming, rebasing, editing, applying, and deleting canonical
-  Viem HTML class styles update only the owned style rules, affected
-  assignments, and materialized dependent rules. Reopening reconstructs the
-  same stable identities, sparse declarations, parent/next links, and effective
-  values.
-- Native HTML style tests cover blank List Level 1 assignment followed by
-  typing, grouped list containers, existing numbering and nesting, empty
-  paragraph anchors, native heading/code assignments, exact undo/redo, source
-  patch locality, and clean-reopen equivalence. Export tests exercise both
-  inclusion settings, saved defaults, custom styles, direct formatting, and
-  omission of browser-default CSS declarations.
+  escaping bytes, preserving unrelated controls, destinations, and tables.
 - RTF tests cover nested state, `\plain`/`\pard` resets, font/color tables,
   Unicode and code-page text, `\par`/`\line`, paragraph and character style
   definitions, based-on/next relationships, and unknown controls adjacent to
@@ -1985,9 +1604,7 @@ Each adapter has corpus, property, and targeted golden tests. At minimum:
   breaks alone do not make a payload linewise. A linewise system-clipboard write
   therefore ends its plain-text representation in a line break, including when
   the source's final physical line has none. Private payloads retain their
-  declared break semantics. When pasting into HTML WYSIWYG, NUL becomes the
-  visible U+2400 SYMBOL FOR NULL (`␀`), because HTML cannot retain the exact
-  character. These transformations never ask modal questions or rewrite the
+  declared break semantics. These transformations never ask modal questions or rewrite the
   clipboard. Exact internal registers, command-prompt input, literal-input
   commands, and representable NUL characters retain their existing semantics.
 
@@ -2003,10 +1620,10 @@ and explicit format choices still take precedence.
 Format changes carry an explicit operation in the portable core. Reinterpret
 changes only the adapter applied to the current source artifact: every source
 byte, encoding, BOM, and line-ending spelling remains unchanged. It must never
-implicitly convert markup, including between Markdown and HTML.
+implicitly convert markup.
 
-Convert explicitly serializes the current formatted semantics into Text,
-Markdown, or HTML. Source views first use their corresponding WYSIWYG
+Convert explicitly serializes the current formatted semantics into Text
+or Markdown. Source views first use their corresponding WYSIWYG
 projection. Code uses its literal text, without syntax styles, as Text input
 to conversion. This is a best-effort lossy operation: retain representable
 paragraphs, headings, lists, code, and inline formatting; unsupported formatting
@@ -2018,8 +1635,8 @@ anchor remapping, reprojection, and undo machinery rather than a frontend
 serializer. Existing conversion-loss messages remain available.
 
 For conversion, blank physical lines delimit Text paragraphs. A single newline
-inside a Text paragraph remains a hard line break, represented by an HTML `br`
-or a Markdown hard break. Each pair of breaks separates paragraphs; surplus
+inside a Text paragraph remains a hard line break, represented by a Markdown
+hard break. Each pair of breaks separates paragraphs; surplus
 pairs create empty paragraphs and an unmatched break remains internal. Preserve
 these empty paragraphs where the destination can represent them.
 Conversion to Text places a blank line between
@@ -2028,12 +1645,41 @@ generated list markers while retaining their text.
 
 Each successful operation is one undo unit restoring both source and format.
 Reinterpret and Convert are distinct from encoding conversion. The File menu
-offers Text, Markdown, and HTML conversion targets and additionally Code as a
+offers Text and Markdown conversion targets and additionally Code as a
 reinterpretation target. Selecting Code in the format popup or Reinterpret as
 preserves source bytes and reveals their literal decoded text; Code introduces
 no new serialization or separate Convert to Code action. Choosing a different
 rich/structured family selects its WYSIWYG display when available. A same-family
 source/view switch elsewhere can still reinterpret without changing bytes.
+
+### Styled HTML export
+
+File > Export… opens the platform Save As-style dialog with HTML as its only
+file type and a suggested `.html` filename. Export writes a separate UTF-8 HTML
+document and MUST NOT change the buffer's source, format, path, dirty state,
+undo history, or last-saved baseline. Cancelling or failing the write leaves
+those values unchanged. Export is available for every selectable format.
+An export destination MUST NOT replace the source of any open document; an
+HTML source file suggests a distinct `-export.html` destination.
+
+Markdown and Markdown Source export the shared interpreted document, including
+headings, inline formatting, links, list and quote structure, code blocks,
+thematic rules, and retained empty paragraphs. Existing Markdown presentation
+exceptions still apply. Literal Code exports its source as escaped text with
+preserved line breaks, spaces, and tabs and the active Code syntax styles.
+Syntax coverage MUST include the whole exported snapshot, not only the visible
+viewport; disabled or unavailable highlighting uses the normal Code defaults.
+Text and RTF export their formatted content through the same path.
+
+The portable exporter MUST reuse the existing normalized style cascade used by
+layout and the existing CSS property serializers. Paragraph/container styles,
+character styles, direct declarations, font families and sizes, colors,
+decorations, spacing, indentation, and borders use their resolved values.
+Export MUST NOT include transient editor furniture such as selections, search
+highlights, caret, line numbers, or whitespace markers. It MUST escape literal
+content and CSS values so HTML code, comments, and other authored source cannot
+become executable markup in the exported document. Generated HTML is standalone
+and requires no network resources to display its content and styles.
 
 ### Application theme and settings
 
@@ -2141,7 +1787,7 @@ the menu item's open target and tooltip. The menu reads the application
 settings authority rather than a separate operating-system recent-file list.
 
 Per-document format defaults live beside it in `text_style.json`,
-`html_style.json`, `markdown_style.json`, and `rtf_style.json`. A document loads
+`markdown_style.json`, and `rtf_style.json`. A document loads
 the matching sparse style defaults before source declarations are applied. The
 cascade is built-in styles, user format defaults, source definitions/assignments, then direct
 formatting. Built-in defaults seed ordinary editable definitions: Heading 1 is
@@ -2168,7 +1814,6 @@ remains usable. Loading MUST NOT migrate obsolete definitions or rewrite the
 saved file, and the installed style sheet MUST remain valid.
 
 The Style menu contains Edit Styles and Save as default <format> style.
-HTML also exposes Include style definitions in file, as specified above.
 A trailing separated Reload style sheet re-reads the global Code
 `code_style.json` from disk; it stays enabled in every format because that sheet
 is application-wide. Saving defaults exports the current style configuration to
@@ -2184,7 +1829,7 @@ Code style change updates existing Code buffers as well as future ones.
 
 #### Literal content and editing
 
-Code is a selectable source format alongside Text, Markdown, and HTML. It
+Code is a selectable source format alongside Text, Markdown, and RTF. It
 always displays every decoded content character, including delimiters, tags,
 entities, comments, indentation, and empty lines. Only the shared encoding and
 line-ending projections interpret physical serialization; invalid bytes retain
@@ -2198,8 +1843,8 @@ Code unconditionally suppresses smart quotes in every input path, even when
 Smart Quotes is enabled, the language is unknown, or highlighting is missing.
 Typing, Replace, `r`, IME/accessibility commits, paste, and register puts retain
 the supplied quote characters. Existing curly quotes are not converted back.
-HTML tag assistance, Markdown marker escaping, and prose/list continuation do
-not run in Code. Syntax availability never changes editing semantics.
+Markdown marker escaping and prose/list continuation do not run in Code.
+Syntax availability never changes editing semantics.
 
 Code has no source-backed formatting, manually assigned character/paragraph
 styles, direct formatting, or pending typing styles. Rich paste takes its plain
@@ -2208,11 +1853,11 @@ payloads, registers, semantic format conversion, or document undo history.
 Reinterpreting into or out of Code preserves bytes using the normal transaction
 and anchor-remapping rules; undo restores that format choice.
 
-Explicit format selection takes precedence on open. Existing Markdown, HTML,
+Explicit format selection takes precedence on open. Existing Markdown
 and RTF opening defaults remain unchanged. Otherwise, a recognized code-language
 filename or load-time marker can select Code where opening would use Text;
 unrecognized input remains Text. Once Code is selected, detecting a language
-such as Markdown or HTML does not select its WYSIWYG format. Language and
+such as Markdown does not select its WYSIWYG format. Language and
 source-format selection are separate buffer state.
 
 Vim-script filenames, including `.vimrc`, `_vimrc`, `vimrc`, their gVim
@@ -3388,8 +3033,7 @@ replaced by a literal U+000D while existing semantic hard-line items are
 preserved. Visual Block `r<Enter>` removes the selected content and inserts
 exactly one semantic hard-line item in each nonempty selected visual row,
 regardless of the rectangle width; empty or short rows with no selected content
-remain unchanged. Outside HTML visual typing's whitespace normalization, a
-literal CR or LF supplied through text input remains literal and may be rejected
+remain unchanged. A literal CR or LF supplied through text input remains literal and may be rejected
 atomically when the active source pipeline cannot
 reverse-project it without changing the logical hard-line sequence. Dot repeat
 retains this typed operand distinction.
@@ -3425,7 +3069,7 @@ next input is quoted. Byte-valued decimal and octal entry clamp values above
 than creating invalid UTF-8.
 
 Quoted input bypasses automatic indentation, comment continuation, smart
-quotes, and HTML typing assistance, while retaining normal source projection
+quotes, while retaining normal source projection
 verification and atomic failure for unrepresentable content. It belongs to the
 current Insert/Replace undo group; counts, dot repeat, macro replay, and Replace
 Backspace retain the literal intent rather than reapplying typing assistance.
@@ -3447,7 +3091,7 @@ operator without changing text, registers, search state, or the jumplist.
 
 #### Editing columns and automatic indentation
 
-Literal Text, Code, Markdown Source and HTML Source use Neovim-style logical
+Literal Text, Code, and Markdown Source use Neovim-style logical
 indentation columns. The defaults are `autoindent`, `tabstop=2`, `shiftwidth=2`,
 `softtabstop=2`, `expandtab`, and `smarttab`. WYSIWYG structural breaks keep
 their format-aware behavior; a generic indentation operation must not create
@@ -3714,7 +3358,7 @@ recentering when the caret is already visible.
 #### Paragraphs and comment leaders
 
 The initial formatter supports Text and Code, operating on their literal hard
-lines. Markdown Source, HTML Source, and WYSIWYG Markdown, HTML, and RTF require
+lines. Markdown Source and WYSIWYG Markdown and RTF require
 separate format-aware semantics and initially return a non-destructive
 unsupported-format result. They MUST NOT acquire structural paragraph breaks
 through a generic text reflow implementation. Formatting is internal portable
@@ -4225,8 +3869,8 @@ including Code files, unknown extensions, dotfiles, and extensionless files.
 Format selection is an in-memory operation until an explicit write. When the
 serialization family differs from the last-loaded/saved format, native Save
 requests Save As and every write entry point rejects the original destination.
-Text/Code, Markdown/Markdown Source, and HTML/HTML Source each share one
-serialization family, so those presentation changes do not require a new file.
+Text/Code and Markdown/Markdown Source each share one serialization family,
+so those presentation changes do not require a new file.
 A successful Save As establishes the destination's new format baseline. Native
 rename/move entry points use the same write-and-adopt semantics as Save As, and
 the File menu exposes Save As rather than destructive Rename/Move commands.
@@ -4465,7 +4109,7 @@ restricts conversion to leading whitespace. Omitted or zero tabstop retains
 the current value; a valid nonzero value also sets the buffer's tabstop.
 Invalid arguments do not partially edit source or options.
 
-In HTML and RTF formatted views, `:left`, `:right`, and `:center` set sparse
+In RTF formatted views, `:left`, `:right`, and `:center` set sparse
 direct paragraph alignment on the addressed paragraphs, retaining their text
 and other styles. Alignment follows paragraph start/end direction. Numeric
 indent/width arguments are rejected in these views. Formatted Markdown reports
@@ -4521,8 +4165,8 @@ and command chaining are not supported.
 Sorting is one verified source permutation and undo unit; original encoding,
 final terminator, and delimiter spellings are retained. Source-visible formats
 sort literal displayed source rows and reparse their styling. WYSIWYG sorting
-supports complete Markdown paragraphs with one hard line and balanced sibling
-HTML `p`/heading elements, retaining each paragraph's source syntax and styles.
+supports complete Markdown paragraphs with one hard line, retaining each
+paragraph's source syntax and styles.
 RTF sorting and ambiguous or split rich paragraph owners return an unsupported
 result without changing source.
 
@@ -4835,6 +4479,7 @@ The menu hierarchy is:
   - Close (`Command-W`)
   - Save (`Command-S`)
   - Save As… (`Shift-Command-S`)
+  - Export…
   - Duplicate
   - Revert To
     - Last Saved Version
@@ -4843,12 +4488,10 @@ The menu hierarchy is:
   - Convert to
     - Text
     - Markdown
-    - HTML
   - Reinterpret as
     - Text
     - Code
     - Markdown
-    - HTML
   - Text Encoding
     - UTF-8
     - Latin-1
@@ -5037,7 +4680,7 @@ Read-only buffers retain these in-memory operations; their external write
 restriction remains unchanged.
 
 `Flow Source Paragraphs` is a portable per-view option, initially off, available
-in Markdown Source and HTML Source. It suppresses nonstructural physical line
+in Markdown Source. It suppresses nonstructural physical line
 breaks in layout while retaining source characters, editing coordinates, and
 serialization. Semantic paragraph boundaries and preformatted code retain
 their breaks. Toggling it changes only view layout; it does not change document
@@ -5131,8 +4774,7 @@ List affordances query the persistent structural index and parser-retained
 adapter capabilities; execution still verifies the source transaction. Native
 selectors retain their menu items and reuse exact-revision style catalogues
 until the document or stylesheet changes. Local inline formatting SHOULD reuse
-verified regional projections, including balanced HTML Source fragments inside
-long physical lines and table-independent RTF character groups. Resolving styled
+verified regional projections, including table-independent RTF character groups. Resolving styled
 runs MUST preserve cascade order without rescanning every unrelated span for
 each text segment.
 
@@ -6666,8 +6308,7 @@ Maintain automated fixtures for at least:
 5. two views of one buffer at different widths; and
 6. rapid live resize through many widths followed immediately by an edit.
 
-The source/transform suite additionally includes Text, Code, Markdown, HTML,
-and RTF samples as adapters are implemented, with alternate equivalent syntax,
+The source/transform suite additionally includes Text, Code, Markdown, and RTF samples as adapters are implemented, with alternate equivalent syntax,
 comments/trivia, malformed and unknown constructs, legacy encodings, and
 characters that cannot be represented in the original encoding.
 
@@ -6676,21 +6317,9 @@ bytes projected, bytes segmented and shaped, hard lines wrapped, cache hits,
 height-tree operations, and discarded stale tasks. Assert bounded work
 structurally; avoid brittle wall-clock-only tests.
 
-HTML replacement context uses a persistent, revision-bound source scope index.
-Lexical inline scopes and anchor destinations remain distinct from recovered
-semantic character and paragraph context. Ordinary replacement and continued
-typing MUST NOT scan unrelated source or the untouched prefix of a long
-paragraph to recover these contexts. Local index updates share untouched
-branches and validate their exit context before reusing a suffix; grammar
-changes without a verified regional boundary retain full projection validation.
-The index participates in snapshot history and retained-memory accounting.
-
-Replacement work measurements MUST include context capture before preparation,
-scratch transactions, IME preparation, commit, and continued typing. Track actual
-source materialization, decoding, tokenization, index traversal and maintenance,
-and broader-parse causes separately from final candidate projection counters.
-The implementation and measured limits are recorded in
-[`docs/html-replacement-work-results.md`](docs/html-replacement-work-results.md).
+Replacement work measurements include context capture, scratch transactions,
+IME preparation, commit, and continued typing. Track actual source
+materialization, decoding, tokenization, and final candidate projection work.
 
 ### TODO: Compact document projections and measure large-file memory
 
@@ -6844,7 +6473,7 @@ alone accounts for the entire amplification.
    anchor remapping, and exact reverse-edit translation. Rich formats retain
    relational provenance, hidden syntax, indivisible entities, and structured
    ambiguous/synthetic/unresolvable results. An identity fast path for Code/Text
-   must not incorrectly assume those properties for Markdown, HTML, or RTF.
+   must not incorrectly assume those properties for Markdown or RTF.
 7. **Resolve the undo-budget consequence explicitly.** The original 256 MiB
    combined history policy charged the live document state as well as retained
    history. The implemented default now allows 256 MiB of additional history
@@ -7068,7 +6697,7 @@ structural gates. All cache and worker budgets must have tested finite defaults.
   edits.
 - **Line-ending tests**: LF, CRLF, CR, mixed endings, literal CR/LF content,
   empty files, and files with and without a final terminator exercise every
-  detected, forced, and defaulted mode. Text, Code, Markdown, and HTML use the
+  detected, forced, and defaulted mode. Text, Code, and Markdown use the
   same conformance suite. No-op saves are byte-identical; inserted breaks use
   `fileformat`; conversions declare every patch and preserve the logical token
   sequence or return the required policy result.
@@ -7197,7 +6826,7 @@ Primary source-preservation and transformation references:
 - [ICU character conversion behavior](https://unicode-org.github.io/icu/userguide/conversion/converters.html)
 - [Bidirectional lens round-trip laws](https://www.cis.upenn.edu/~bcpierce/papers/wagner-thesis.pdf)
 
-Primary HTML and RTF adapter references:
+Primary passive HTML and RTF adapter references:
 
 - [WHATWG HTML syntax](https://html.spec.whatwg.org/multipage/syntax.html)
 - [WHATWG HTML parsing](https://html.spec.whatwg.org/multipage/parsing.html)
@@ -7232,9 +6861,8 @@ File submenus, not in the status bar. A choice is a checked core transaction
 shared by the buffer's views and reversible with undo. Completing a format
 selection returns keyboard focus to the document as soon as the popup closes. Format
 selection within a format family or to Text/Code changes interpretation while
-preserving source bytes. An explicit HTML-to-Markdown or Markdown-to-HTML
-conversion instead translates the formatted text and representable styling to
-new source syntax as one undoable transaction, including source-visible variants.
+preserving source bytes. An explicit Text/Markdown conversion instead translates
+the formatted text and representable styling to new source syntax as one undoable transaction, including source-visible variants.
 This explicitly requested conversion may replace the entire source and reports
 lost unsupported information through command output in the status line. It is distinct
 from no-op saves and ordinary local edits, which remain lossless.
@@ -7308,27 +6936,22 @@ directions, rather than relying only on a warmed projection cache.
 
 The rich-format Code character style and Code Block container style are
 independent of the Code format and its global stylesheet. These rich styles
-use the system monospace family and dark green (`#006400`). HTML `<code>` and
-`<pre>` and Markdown inline, fenced, and indented code project to these roles; code whitespace remains
-editable and preserved. New simple HTML bold and italic formatting uses `<b>`
-and `<i>` where those tags express the requested change. More complex or
-interacting properties use sparse CSS declarations as needed. Existing untouched
-HTML spelling remains exact.
+use the system monospace family and dark green (`#006400`). Markdown inline,
+fenced, and indented code and passive embedded `<code>`/`<pre>` elements project
+to these roles; code whitespace remains editable and preserved.
 
-Markdown and HTML Paragraph defaults have 7pt top and bottom margins
+Markdown Paragraph defaults have 7pt top and bottom margins
 at the default 14pt font size. Adjoining margins collapse, giving a 7pt gap
 between ordinary paragraphs. Code Block owns its container box, with no duplicate
 paragraph box on its literal body; Markdown Code Block has a 32pt left margin. User defaults and
 explicit source style declarations can override these defaults without
 materializing them in untouched source.
 
-Each fenced or indented Markdown block or HTML `<pre>` is one CodeBlock container
+Each fenced or indented Markdown block is one CodeBlock container
 with one literal paragraph body, including in source-visible views. Its internal source endings produce explicit line breaks
 within that paragraph, so spacing is applied only around the block. These
 breaks preserve code indentation and blank rows and are distinct from automatic
-word wrapping. HTML entities are decoded in WYSIWYG code; source-visible code
-retains the literal source. Enter inside HTML preformatted content inserts a
-`<br>` when needed to preserve the requested line on reprojection.
+word wrapping.
 Indented Markdown code follows GFM's four-column rule, including tab stops,
 paragraph interruption restrictions, and indentation relative to list and quote
 containers. WYSIWYG hides the code indentation and preserves the literal body;
@@ -7339,7 +6962,7 @@ the affected block to a fence as an explicit supporting patch in the same verifi
 undo transaction. Clearing Code Block removes code indentation just as it removes
 fences, preserving the text and surrounding paragraph boundaries.
 In WYSIWYG, Shift-Enter inserts an explicit line break within the current paragraph:
-HTML uses `<br>`, Markdown uses a backslash followed by a source line ending,
+Markdown uses a backslash followed by a source line ending,
 and RTF uses `\line`. Markdown uses inline `<br>` where a physical source
 ending would change paragraph structure, such as headings and empty items.
 Bare inline `<br>` and `<br />` project as breaks; escaped tags and code spans
@@ -7348,14 +6971,12 @@ inside the same paragraph and item. In preformatted Markdown code, Text, and
 Code, the source line ending itself expresses the break. This is distinct from
 automatic soft wrapping and from Enter's paragraph-splitting behavior. Source
 views retain literal source-line-ending insertion for Shift-Enter.
-Typing spaces or tabs in an HTML context that already preserves whitespace
-uses literal source whitespace; it does not add nested preservation spans.
-Explicit HTML whitespace overrides retain their own semantics.
+
 
 Markdown ordered and bulleted item continuations flow together into item
 paragraphs, including lazy continuations and indented continuation paragraphs.
 Ordered display labels count from the first source ordinal; untouched source
-marker spellings remain exact. Markdown and HTML list levels default to a
+marker spellings remain exact. Markdown list levels default to a
 32pt logical start inset per level, zero paragraph spacing for tight lists, zero first-line body
 indent, and hanging labels. Loose Markdown items use the paragraph spacing of
 ordinary prose. The label gutter is independent of the signed
@@ -7370,69 +6991,14 @@ first body grapheme is the first editable character. At a wrapped list row end,
 `$` and `A` target the final body grapheme and its following boundary before
 wrap-separator whitespace. Source-visible views retain literal list syntax.
 
-The two HTML views similarly share one physical HTML serialization. Opening an
-HTML file defaults to HTML Source; the status popup can select HTML WYSIWYG:
-
-- **HTML WYSIWYG** displays the interpreted document. Typed `<`, `&`, quotes,
-  and other syntax-sensitive characters are encoded as appropriate HTML text
-  or entity syntax and must not accidentally create markup. Nonstructural
-  source line endings collapse with HTML whitespace. Return and open-below at
-  the end of a document retain editable blank rows using `<br>` where needed;
-  later input, Backspace, and undo preserve those semantic boundaries.
-- **HTML Source** displays every decoded source character, including tags,
-  comments, attributes, entities, and uninterpreted script/style contents.
-  Encoding and logical line-ending normalization still use the shared pipeline;
-  original bytes and delimiter spellings remain authoritative. Source edits
-  immediately update semantic formatting, and formatting actions update the
-  corresponding source markup. Switching views preserves source bytes.
-
-HTML Source overlays configurable internal character styles on brackets, tag
-names, attribute keys, attribute values, attribute equals signs, entity names,
-and uninterpreted content. Their names start with `* HTML`. Generated defaults
-declare only foreground colors; all other properties come from the underlying
-content style. Automatic applications form a separate sparse overlay, so they
-do not reset the underlying font, weight, size, or semantic styling. Internal
-definitions appear in Edit Styles, but cannot be manually assigned and do not
-appear in Paragraph or Character assignment menus. Current-style queries and
-typing inheritance ignore the automatic layer. These definitions use stable
-identities and generated buffer configuration, like generated Markdown styles.
-Their customization survives edits and history navigation in that buffer,
-never changes HTML bytes, and returns to defaults when a document is reopened.
-
-With Flow Source Paragraphs disabled, HTML Source uses physical source lines as
-its displayed paragraph units, except that each preformatted block shares one
-paragraph across its source lines.
-Recovered semantic paragraph styles contribute character defaults and named
-style identity to their source spans. Paragraph spacing and alignment remain
-editable source properties and take full effect in WYSIWYG; independent HTML
-paragraphs on one physical source line cannot each align that same displayed
-line differently. With Flow Source Paragraphs enabled, semantic blocks have
-independent presentation paragraphs, including adjacent blocks on a single
-physical source line and empty blocks. Their paragraph styles, spacing,
-alignment, and indentation apply as in WYSIWYG, with the surrounding source tags
-additionally visible. Nonstructural physical breaks flow within the corresponding
-structural presentation paragraph; preformatted internal breaks remain literal.
-These presentation boundaries do not change source bytes or source coordinates.
-The default source view does not invent additional visible line breaks.
+HTML files, including `.html`, `.htm`, and `.xhtml`, open in Code. They keep
+literal tags, attributes, entities, comments, scripts, and styles visible, using
+the normal syntax provider and global Code style sheet. There is no HTML view
+switch, paragraph flow, authored formatting, or automatic tag insertion.
+Exporting such a file displays its highlighted source in a standalone HTML copy;
+it does not interpret that source as a web page.
 
 ### Authored-input assistance
-
-In HTML Source prose, typing a single `<` inserts `<>` and leaves the caret
-between them. As the opening name is authored, Viem maintains a generated end
-tag: `<b|></b>` becomes `<br|>` when `r` is typed because `br` is a void element.
-All standard HTML void elements and explicit self-closing tags omit the end
-tag. Attributes retain literal quote syntax. Typing `>` at the generated
-opening delimiter advances over it rather than duplicating it; Backspace while
-authoring the opening tag updates its generated suffix, and backspacing the
-initial `<` removes the empty generated pair.
-
-Only the most recent automatic insertion is tracked, using persistent anchors
-and exact generated-text validation. Changing generated text, moving the caret
-away, leaving Insert mode, or an unresolvable rebase retires that annotation.
-Existing and pasted source is never automatically repaired. Assistance does not
-run inside tags, attribute values, comments, entities, or uninterpreted raw
-text. Each assisted keystroke is one verified transaction within the enclosing
-Insert undo group; counted insertion, dot, and macros retain its input intent.
 
 Settings includes an **Editing** category with **Smart quotes**, initially off.
 This application preference is propagated to every view and never changes
@@ -7444,8 +7010,7 @@ remain literal. The entire Code format always suppresses quote conversion,
 regardless of this setting, language detection, syntax coverage, or style name.
 In other formats, Code character spans and code paragraphs always suppress quote
 conversion, including pending Code typing styles and code in pasted rich text.
-Source input also preserves syntax-required quotes in HTML attributes and
-Markdown code/link/tag constructs, including constructs inside an input batch.
+Source input also preserves syntax-required quotes in Markdown code/link/tag constructs, including constructs inside an input batch.
 Existing curly quotes are preserved as supplied. Quote conversion and its text
 edit form one transaction; undo restores the original source exactly.
 If a generated quote cannot be represented in the current encoding or through
@@ -7453,25 +7018,23 @@ a supported format escape, preserve the entered straight quote.
 Beginning of text or a logical line, whitespace, opening brackets, opening
 quotes, and hyphen/en-dash/em-dash favor opening `‘` or `“`. Letters, digits,
 closing punctuation, and other preceding content favor closing `’` or `”`;
-apostrophes within words therefore close. HTML tags are ignored when finding
-the surrounding prose, entities contribute their decoded text, hidden content
-is excluded, and paragraph tags supply a line boundary. Context queries are
-bounded; when preceding prose cannot be established within that bound, quotes
-retain their literal spelling.
+apostrophes within words therefore close. WYSIWYG context uses the formatted
+text, including decoded entities and paragraph boundaries, with hidden markup
+excluded. Context queries are bounded; when preceding prose cannot be
+established within that bound, quotes retain their literal spelling.
 
 ### Caret formatting and native selection
 
 With no selected text in Insert or Replace mode, supported character-formatting
 actions update a sparse, view-local typing override tied to the exact caret.
-They do not insert empty HTML/Markdown/RTF wrappers, change source, or create an
+They do not insert empty Markdown/RTF wrappers, change source, or create an
 undo unit. The next nonempty insertion combines text and its requested style
 into one verified transaction. Repeated typing retains the override; explicit
 caret movement, leaving the insertion mode, or changing projection retires it.
 Menu checkmarks and typography queries show inherited style plus pending
 overrides, without including automatic source-syntax colors. Formatting with a
 selection continues to modify that exact range. Bold, Italic, and other
-supported character actions work in RTF as well as the compatible HTML and
-Markdown views.
+supported character actions work in RTF and compatible Markdown views.
 
 Turning off an inherited inline property at the end of its element exits that
 formatting context. In a source-visible view the caret moves over the matching
@@ -7570,40 +7133,26 @@ supported positive range. Marker spelling in source-visible modes remains
 literal and editable rather than being replaced by this generated furniture.
 For a structural indent, Markdown starts a new ordered run at one and updates
 the affected source and destination runs; unrelated marker bytes remain unchanged.
-HTML gives a newly created nested container the matching `type` value and no
-inherited `start`, so saved HTML has the same marker family and restart.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
 sequential numbers across the selected items. Source-visible Markdown displays
 and edits those markers; Markdown WYSIWYG renders canonical bullets and ordered
-labels as described above. Markdown/HTML/RTF WYSIWYG labels are shaped and painted
+labels as described above. Markdown/RTF WYSIWYG labels are shaped and painted
 from list metadata by layout; source marker syntax remains losslessly preserved.
 
 Linewise deletion of complete list items removes their source structure and
 selected paragraph boundaries as one structural edit. Characterwise deletion or
 replacement of the entire body retains an empty list item. Deleting partial
-visual rows retains the containing item. For HTML/RTF, surviving items retain their
-displayed ordinals. The transaction may add explicit HTML `li value` attributes
-or scoped RTF numbering overrides to preserve those ordinals; source tables and
+visual rows retains the containing item. For RTF, surviving items retain their
+displayed ordinals. The transaction may add scoped RTF numbering overrides to preserve those ordinals; source tables and
 unrelated opaque content remain untouched. Markdown numbering follows the
 container's starting ordinal and semantic item deletion updates the affected
 source labels in the same transaction.
-Deleting a hard line within an HTML list paragraph retains its item and any
-unselected continuation paragraphs or nested lists. Only completely selected
-item structure is removed; surviving descendants are not implicitly selected.
-Enter advances following item numbers within the same list until an explicit restart or container boundary. HTML `li value`
-restarts bound that change; RTF updates the affected legacy numbering controls
+Enter advances following item numbers within the same list until an explicit
+restart or container boundary. RTF updates the affected legacy numbering controls
 or adds scoped overrides while preserving table handles. New RTF paragraphs
 clear inherited modern numbering with `\ls0`; the original selector resumes
 at the existing following-paragraph boundary when necessary.
 
-HTML lists use `ul`/`ol` and `li`, retaining unrelated attributes and descendant
-markup. Leaving an HTML list converts the current item into a paragraph in
-place, reusing existing paragraph children instead of creating another empty
-placeholder. Intentional continuation paragraphs and nested lists remain. An
-attribute-free item wrapper is removed when its children already supply the
-paragraph owners; a container remains when needed to retain attributes or mixed
-block content. After leaving an empty item, another Backspace deletes its
-preceding paragraph separator and merges normally.
 Canonical RTF list paragraphs use scoped groups with `\ls0\li400\fi-200`,
 `\pntext`, and the standard `\pn` destination: `\pnlvlblt` for bullets or
 `\pnlvlbody\pndec\pnstartN` with `\pntxta .` for decimal numbering. Clearing a

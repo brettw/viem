@@ -41,20 +41,11 @@ internal static class StyleFontSizeTests
             && property.effective.kind == VIEM_STYLE_VALUE_FLOAT && Math.Abs(property.effective.number - points) < .001,
             $"{id} retains {percent}% while resolving to {points} points");
     }
-    private static unsafe void IncludeStyles(CoreView view)
-    {
-        view.Apply(outcome => {
-            var state = view.Document.State;
-            var request = New<ViemSetIncludeStyleDefinitionsV1>();
-            request.enabled = 1; request.document_id = state.document_id; request.document_revision = state.document_revision;
-            return viem_core_view_set_include_style_definitions(view.Document.Handle, view.Id, &request, outcome);
-        });
-    }
+
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
-        using var document = new CoreDocument("<h1>Title</h1><p>Body</p><!--keep-->"u8.ToArray(), format: VIEM_FORMAT_HTML);
+        using var document = new CoreDocument("{\\rtf1{\\stylesheet{\\s0 Paragraph;}{\\s1\\sbasedon0\\b\\fs48 Heading1;}{\\s2\\sbasedon0\\b\\fs36 Heading2;}{\\*\\cs1\\f1 Code;}}{\\fonttbl{\\f0 Times New Roman;}{\\f1 Courier New;}}\\s1 Title\\par\\s0 Body}"u8.ToArray(), format: VIEM_FORMAT_RTF);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-        IncludeStyles(view);
         SetPoints(view, 1, "Paragraph", 20);
         var inspector = new StyleWindow(view, preferences, followCaret: false);
         inspector.Activate(); await Task.Delay(150);
@@ -63,41 +54,41 @@ internal static class StyleFontSizeTests
             Check(((string[])inspector.FontSizeUnitControl.ItemsSource).SequenceEqual(new[] { "pt" })
                 && !inspector.FontSizeUnitControl.IsEnabled,
                 "Base Paragraph font size only offers points");
-            Select(inspector, 1, "Heading1");
+            Select(inspector, 1, "RtfP1");
             Check(inspector.FontSizeControl.Value == 24 && inspector.FontSizeUnitControl.SelectedIndex == 0,
                 "an absolute heading size initially shows points");
             inspector.FontSizeUnitControl.SelectedIndex = 1;
-            AssertSize(view, 1, "Heading1", 120, 24);
+            AssertSize(view, 1, "RtfP1", 120, 24);
             view.Undo();
             Check(inspector.FontSizeUnitControl.SelectedIndex == 0 && inspector.FontSizeControl.Value == 24,
                 "one undo restores the prior font-size unit and value");
             view.Redo();
-            AssertSize(view, 1, "Heading1", 120, 24);
+            AssertSize(view, 1, "RtfP1", 120, 24);
             Check(inspector.FontSizeControl.Value == 120 && inspector.FontSizeControl.Minimum == 10
                 && inspector.FontSizeControl.Maximum == 1000 && inspector.FontSizeControl.SmallChange == 1,
                 "percentage font sizes display their declaration with integer stepper bounds 10–1000");
             inspector.FontSizeControl.Value = 150;
-            AssertSize(view, 1, "Heading1", 150, 30);
+            AssertSize(view, 1, "RtfP1", 150, 30);
             inspector.FontSizeControl.Value = 150.5;
             Check(inspector.Error.Length > 0 && inspector.FontSizeControl.Value == 150,
                 "fractional percentage input is rejected and the last committed size remains visible");
-            AssertSize(view, 1, "Heading1", 150, 30);
+            AssertSize(view, 1, "RtfP1", 150, 30);
             inspector.FontSizeControl.Value = 10;
-            AssertSize(view, 1, "Heading1", 10, 2);
+            AssertSize(view, 1, "RtfP1", 10, 2);
             inspector.FontSizeControl.Value = 1000;
-            AssertSize(view, 1, "Heading1", 1000, 200);
+            AssertSize(view, 1, "RtfP1", 1000, 200);
             inspector.FontSizeControl.Value = 150;
             SetPoints(view, 1, "Paragraph", 40);
-            AssertSize(view, 1, "Heading1", 150, 60);
-            Select(inspector, 1, "Heading1");
+            AssertSize(view, 1, "RtfP1", 150, 60);
+            Select(inspector, 1, "RtfP1");
             Check(inspector.FontSizeControl.Value == 150, "changing the parent does not replace the percentage declaration with points");
             inspector.FontSizeUnitControl.SelectedIndex = 0;
             Check(inspector.FontSizeControl.Value == 60
-                && Style(view, 1, "Heading1").Properties[VIEM_STYLE_PROPERTY_CHARACTER_SIZE].declared.kind == VIEM_STYLE_VALUE_FLOAT,
+                && Style(view, 1, "RtfP1").Properties[VIEM_STYLE_PROPERTY_CHARACTER_SIZE].declared.kind == VIEM_STYLE_VALUE_FLOAT,
                 "switching back to points preserves the resolved appearance");
 
             string paragraphChild = view.CreateStyle(1, "Relative paragraph");
-            view.EditStyleString(Style(view, 1, paragraphChild), VIEM_STYLE_EDIT_SET_PARENT, 0, "Heading1");
+            view.EditStyleString(Style(view, 1, paragraphChild), VIEM_STYLE_EDIT_SET_PARENT, 0, "RtfP1");
             Select(inspector, 1, paragraphChild);
             var paragraphDeclaration = Children<CheckBox>(inspector.RootControl)
                 .Single(box => AutomationProperties.GetName(box) == "Declare Size");
@@ -106,7 +97,7 @@ internal static class StyleFontSizeTests
             AssertSize(view, 1, paragraphChild, 100, 60);
             inspector.FontSizeControl.Value = 150;
             AssertSize(view, 1, paragraphChild, 150, 90);
-            SetPoints(view, 1, "Heading1", 80);
+            SetPoints(view, 1, "RtfP1", 80);
             AssertSize(view, 1, paragraphChild, 150, 120);
 
             // A character percentage uses the underlying paragraph, even when
@@ -131,7 +122,7 @@ internal static class StyleFontSizeTests
                 "character percentage controls retain the authored percentage after inherited sizes change");
 
             byte[] saved = document.Source(document.State.document_revision);
-            using var reopened = new CoreDocument(saved, format: VIEM_FORMAT_HTML);
+            using var reopened = new CoreDocument(saved, format: VIEM_FORMAT_RTF);
             using var reopenedView = new CoreView(reopened, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
             AssertSize(reopenedView, 1, paragraphChild, 150, 120);
             AssertSize(reopenedView, 2, child, 200, 60);

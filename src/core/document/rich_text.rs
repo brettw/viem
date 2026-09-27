@@ -86,7 +86,6 @@ impl<'a> Builder<'a> {
         // Collapsible HTML whitespace may be emitted after an empty inline
         // element closes. Its source still precedes that element's typing
         // anchor, so the anchor follows the newly materialized space.
-        let mut moved_empty_boundary = false;
         for anchor in self
             .provenance
             .iter_mut()
@@ -95,18 +94,9 @@ impl<'a> Builder<'a> {
         {
             if !source.is_empty() && source.end <= anchor.source.start {
                 anchor.formatted = range.end..range.end;
-                moved_empty_boundary = true;
             }
         }
-        if moved_empty_boundary {
-            for span in self.spans.iter_mut().rev().take_while(|span| span.range.start >= start) {
-                if span.range == (start..start)
-                    && span.application == StyleApplication::SourcePreservedWhitespace
-                {
-                    span.range = range.end..range.end;
-                }
-            }
-        }
+
         self.provenance.push(ProvenanceSpan {
             formatted: range.clone(),
             source: source.clone(),
@@ -171,16 +161,18 @@ impl<'a> Builder<'a> {
             // sibling may have supplied an earlier seed at the same logical
             // boundary; retaining it would redirect typing into that sibling
             // and create an unintended paragraph before the actual owner.
-            while self.provenance.last().is_some_and(|span|
-                span.formatted == (self.text.len()..self.text.len()) && span.source.is_empty())
-            {
+            while self.provenance.last().is_some_and(|span| {
+                span.formatted == (self.text.len()..self.text.len()) && span.source.is_empty()
+            }) {
                 self.provenance.pop();
             }
             // Point annotations belong to that same discarded empty context.
             // In particular, a preceding whitespace-preserving container must
             // not make the new paragraph's spaces behave as preformatted text.
-            while self.spans.last().is_some_and(|span|
-                span.range == (self.text.len()..self.text.len()))
+            while self
+                .spans
+                .last()
+                .is_some_and(|span| span.range == (self.text.len()..self.text.len()))
             {
                 self.spans.pop();
             }
@@ -251,8 +243,17 @@ impl<'a> Builder<'a> {
         {
             style = self.style_sheet.base_paragraph.clone();
         }
-        let mut block = Block::new(0, start..self.text.len(), self.kind.clone(), style, super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()));
-        if let Some((indent, unindent)) = self.list_indent_support.filter(|_| matches!(self.kind, BlockKind::ListItem { .. })) {
+        let mut block = Block::new(
+            0,
+            start..self.text.len(),
+            self.kind.clone(),
+            style,
+            super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()),
+        );
+        if let Some((indent, unindent)) = self
+            .list_indent_support
+            .filter(|_| matches!(self.kind, BlockKind::ListItem { .. }))
+        {
             block.list_editing.indent = indent;
             block.list_editing.unindent = unindent;
         }
@@ -270,7 +271,8 @@ impl<'a> Builder<'a> {
         self.line_start = self.text.len();
     }
     fn finish_paragraph(&mut self) {
-        self.paragraphs.push(self.current_block(self.paragraph_start));
+        self.paragraphs
+            .push(self.current_block(self.paragraph_start));
     }
     /// A paragraph boundary is a hard break plus a separate paragraph identity.
     /// Inline br/line breaks keep paragraph styles, first-indent and spacing
@@ -318,7 +320,6 @@ pub(super) fn text_source_range(
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let normalized = super::line_endings::normalize(&decoded, document.file_format());
     let at = match document.format() {
-        super::Format::Html => super::html::empty_insertion_point(&normalized),
         super::Format::Rtf => super::rtf::empty_insertion_point(&normalized)
             .or_else(|| document.source_bytes().is_empty().then_some(0)),
         _ => None,
@@ -382,8 +383,11 @@ pub(super) fn character_edit_verified(
 /// Outside a verified regional splice, the old immutable style records and
 /// parser exit context are retained. Validate the changed region only.
 pub(super) fn character_edit_verified_in_region(
-    before: &FormattedDocument, after: &FormattedDocument, selected: &Range<usize>,
-    properties: &CharacterProperties, region: &Range<usize>,
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    selected: &Range<usize>,
+    properties: &CharacterProperties,
+    region: &Range<usize>,
 ) -> bool {
     verify_character_region(before, after, selected, properties, region, |_, _| {})
 }
@@ -395,28 +399,49 @@ fn character_edit_verified_with_queries(
     properties: &CharacterProperties,
     observe_queries: impl FnMut(usize, usize),
 ) -> bool {
-    verify_character_region(before, after, selected, properties, &(0..before.text_tree().byte_len()), observe_queries)
+    verify_character_region(
+        before,
+        after,
+        selected,
+        properties,
+        &(0..before.text_tree().byte_len()),
+        observe_queries,
+    )
 }
 
 fn verify_character_region(
-    before: &FormattedDocument, after: &FormattedDocument, selected: &Range<usize>,
-    properties: &CharacterProperties, region: &Range<usize>,
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    selected: &Range<usize>,
+    properties: &CharacterProperties,
+    region: &Range<usize>,
     mut observe_queries: impl FnMut(usize, usize),
 ) -> bool {
     let mut boundaries = vec![region.start, region.end];
-    for at in [selected.start, selected.end] { if region.contains(&at) { boundaries.push(at); } }
+    for at in [selected.start, selected.end] {
+        if region.contains(&at) {
+            boundaries.push(at);
+        }
+    }
     for at in before.hard_breaks_for_region(region) {
         boundaries.extend([at, at + 1]);
     }
-    for span in before.style_spans_for_region(region).iter().chain(after.style_spans_for_region(region).iter()) {
-        boundaries.extend([span.range.start.max(region.start), span.range.end.min(region.end)]);
+    for span in before
+        .style_spans_for_region(region)
+        .iter()
+        .chain(after.style_spans_for_region(region).iter())
+    {
+        boundaries.extend([
+            span.range.start.max(region.start),
+            span.range.end.min(region.end),
+        ]);
     }
     boundaries.retain(|at| region.start <= *at && *at <= region.end);
     boundaries.sort_unstable();
     boundaries.dedup();
     let mut at = |document: &FormattedDocument,
-              offset,
-              override_properties: Option<&CharacterProperties>| {
+                  offset,
+                  override_properties: Option<&CharacterProperties>| {
         let blocks = document.blocks_for_region(&(offset..offset));
         let spans = document.style_spans_touching(&(offset..offset));
         observe_queries(blocks.len(), spans.len());
@@ -424,21 +449,20 @@ fn verify_character_region(
         let mut direct = CharacterProperties::default();
         let mut link_defaults = CharacterProperties::default();
         let mut named = None;
-        for span in spans.iter().filter(|span| span.range.contains(&offset))
-        {
+        for span in spans.iter().filter(|span| span.range.contains(&offset)) {
             match &span.application {
                 StyleApplication::Direct(layer) => overlay(&mut direct, layer),
                 StyleApplication::Named(style) => named = Some(style),
-                StyleApplication::SourcePreservedWhitespace => {}
                 StyleApplication::Automatic(id) if id.0 == "Link" => {
-                    overlay(&mut link_defaults,
-                        &document.style_sheet().automatic_character_properties(id).ok()?);
+                    overlay(
+                        &mut link_defaults,
+                        &document
+                            .style_sheet()
+                            .automatic_character_properties(id)
+                            .ok()?,
+                    );
                 }
-                StyleApplication::Semantic(_)
-                | StyleApplication::Automatic(_)
-                | StyleApplication::SourceSyntax
-                | StyleApplication::SourceRawText
-                | StyleApplication::SourceParagraph { .. } => return None,
+                StyleApplication::Semantic(_) | StyleApplication::Automatic(_) => return None,
             }
         }
         if let Some(properties) = override_properties {
@@ -481,32 +505,6 @@ fn verify_character_region(
 
 pub(super) fn overlay_block(target: &mut BlockProperties, source: &BlockProperties) {
     target.merge_declarations(source);
-}
-
-/// HTML direction on a paragraph supplies both the paragraph base and an
-/// inherited character direction. Permit that one native side effect while
-/// verifying every other effective character property and all outside runs.
-pub(super) fn paragraph_direction_edit_verified(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    ranges: &[Range<usize>],
-) -> bool {
-    let mut boundaries = vec![0, before.text().len()];
-    for span in before.style_spans().iter().chain(after.style_spans()) {
-        boundaries.extend([span.range.start, span.range.end]);
-    }
-    for block in before.blocks() { boundaries.extend([block.range.start, block.range.end]); }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    boundaries.windows(2).all(|pair| {
-        if before.text().get(pair[0]..pair[1]) == Some("\n") { return true; }
-        let Some(mut expected) = resolved_character_at(before, pair[0]) else { return false; };
-        let Some(actual) = resolved_character_at(after, pair[0]) else { return false; };
-        if ranges.iter().any(|range| range.start <= pair[0] && pair[1] <= range.end) {
-            expected.direction = actual.direction;
-        }
-        expected == actual
-    })
 }
 
 pub(super) fn character_clear_verified(
@@ -559,384 +557,16 @@ pub(super) fn character_clear_verified(
     })
 }
 
-/// Escape new text exactly without changing the source encoding. Characters
-/// unavailable in the original converter use HTML numeric references.
-pub(super) fn escape_html_text(text: &str, encoding: super::Encoding) -> String {
-    escape_html_text_in_context(text, encoding, false, false, false)
-}
-
-fn escape_html_text_in_context(
-    text: &str,
-    encoding: super::Encoding,
-    preserve: bool,
-    before: bool,
-    after: bool,
-) -> String {
-    escape_html_text_with_spaces(text, encoding, preserve, before, after, &[])
-}
-
-fn escape_html_text_with_spaces(
-    text: &str,
-    encoding: super::Encoding,
-    preserve: bool,
-    before: bool,
-    after: bool,
-    protective_spaces: &[usize],
-) -> String {
-    let syntax = if preserve {
-        super::html::escape_preserving_whitespace(text)
-    } else {
-        super::html::escape_with_context(text, before, after)
-    };
-    let mut nbsp_offsets = text.char_indices().filter_map(|(at, ch)| (ch == '\u{a0}').then_some(at));
-    let syntax = syntax.chars().map(|ch| {
-        if ch == '\u{a0}' {
-            if nbsp_offsets.next().is_some_and(|at| protective_spaces.binary_search(&at).is_ok()) {
-                "&nbsp;".to_owned()
-            } else {
-                "&#160;".to_owned()
-            }
-        } else {
-            ch.to_string()
-        }
-    }).collect::<String>();
-    if encoding.encode_fragment(&syntax).is_ok() {
-        return syntax;
-    }
-    syntax
-        .chars()
-        .map(|c| {
-            if encoding.encode_fragment(&c.to_string()).is_ok() {
-                c.to_string()
-            } else {
-                format!("&#x{:X};", c as u32)
-            }
-        })
-        .collect()
-}
-
-/// Prevent a local splice from completing a character reference across its
-/// boundary. The untouched prefix may itself be a valid semicolonless
-/// reference. Escaping the first new character, or inserting an empty comment
-/// for a deletion, preserves that prefix's existing interpretation.
-pub(super) fn escape_html_source_edit(
-    document: &super::Document,
-    source_start: usize,
-    text: &str,
-) -> Result<String, DocumentError> {
-    let neighbors = html_text_neighbors_at_source(document, source_start)?;
-    escape_html_source_edit_with_context(document, source_start, text, neighbors, &[], false)
-}
-
-pub(super) fn escape_html_text_edit(
-    document: &super::Document,
-    source_start: usize,
-    edit: &super::TextEdit,
-) -> Result<String, DocumentError> {
-    let (before, _) = html_text_neighbors_at_text(document, edit.range.start)?;
-    let (_, after) = html_text_neighbors_at_text(document, edit.range.end)?;
-    escape_html_source_edit_with_context(
-        document,
-        source_start,
-        &edit.replacement,
-        (before, after),
-        &edit.html_protective_spaces,
-        edit.html_normalized,
-    )
-}
-
-fn escape_html_source_edit_with_context(
-    document: &super::Document,
-    source_start: usize,
-    text: &str,
-    (before, after): (bool, bool),
-    protective_spaces: &[usize],
-    normalized: bool,
-) -> Result<String, DocumentError> {
-    // A normalized edit already accounts for the whole intended batch. Its
-    // spaces must not be reinterpreted against the old snapshot's neighbors.
-    let preserve = normalized
-        || text.contains([' ', '\t'])
-            && html_preserves_whitespace_at_source(document, source_start)?;
-    let syntax = escape_html_text_with_spaces(text, document.encoding(), preserve, before, after, protective_spaces);
-    if source_start == 0
-        || syntax
-            .chars()
-            .next()
-            .is_some_and(|c| !c.is_ascii_alphanumeric() && c != ';')
-    {
-        return Ok(syntax);
-    }
-    // Named references have bounded length. Longer uninterrupted suffixes
-    // can still be numeric references, so conservatively isolate them too.
-    // 128 is even, retaining UTF-16 source-code-unit alignment.
-    let start = source_start.saturating_sub(128);
-    let bytes = document
-        .state()
-        .source
-        .bytes_in(start..source_start)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    let prefix = document.encoding().decode_region(&bytes, start)?;
-    let mut incomplete_reference = start != 0;
-    for c in prefix.text.chars().rev() {
-        if c == '&' {
-            incomplete_reference = true;
-            break;
-        }
-        if !c.is_ascii_alphanumeric() && c != '#' {
-            incomplete_reference = false;
-            break;
-        }
-    }
-    if !incomplete_reference {
-        return Ok(syntax);
-    }
-    Ok(match text.chars().next() {
-        Some(first) => format!(
-            "&#x{:X};{}",
-            first as u32,
-            escape_html_text_with_spaces(
-                &text[first.len_utf8()..],
-                document.encoding(),
-                preserve,
-                !super::html_whitespace::collapsible(first),
-                after
-                , &protective_spaces.iter().filter_map(|at| at.checked_sub(first.len_utf8())).collect::<Vec<_>>()
-            )
-        ),
-        None => "<!---->".to_owned(),
-    })
-}
-
-fn html_text_neighbors_at_source(
-    document: &super::Document,
-    source_at: usize,
-) -> Result<(bool, bool), DocumentError> {
-    let Ok(mapped) = document.projection().map_source_boundary(
-        document.revision(),
-        source_at,
-        super::BoundaryAffinity::Downstream,
-    ) else {
-        return Ok((false, false));
-    };
-    html_text_neighbors_at_text(document, mapped.formatted_offset)
-}
-
-pub(super) fn html_text_neighbors_at_text(
-    document: &super::Document,
-    at: usize,
-) -> Result<(bool, bool), DocumentError> {
-    let tree = document.projection().text_tree();
-    let previous = tree
-        .previous_grapheme_boundary(at)
-        .map_err(DocumentError::FormattedTextStorage)?;
-    let next = tree
-        .next_grapheme_boundary(at)
-        .map_err(DocumentError::FormattedTextStorage)?;
-    let is_content = |character: Option<char>, sample: usize| {
-        character.is_some_and(|character| {
-            if character == '\n' {
-                return false;
-            }
-            !super::html_whitespace::collapsible(character)
-                || document
-                    .projection()
-                    .style_spans_for_region(&(sample..sample + 1))
-                    .iter()
-                    .any(|span| {
-                        span.range.contains(&sample)
-                            && span.application == StyleApplication::SourcePreservedWhitespace
-                    })
-        })
-    };
-    let before = if let Some(start) = previous {
-        let character = tree
-            .slice(start..at)
-            .map_err(DocumentError::FormattedTextStorage)?
-            .chars()
-            .next_back();
-        is_content(character, at - 1)
-    } else {
-        false
-    };
-    let after = if let Some(end) = next {
-        let character = tree
-            .slice(at..end)
-            .map_err(DocumentError::FormattedTextStorage)?
-            .chars()
-            .next();
-        is_content(character, at)
-    } else {
-        false
-    };
-    Ok((before, after))
-}
-
-/// Compact only syntax emitted by our text encoder in this document. Authored
-/// and reopened whitespace wrappers retain their exact source spelling.
-pub(super) fn generated_html_space_before(
-    document: &super::Document,
-    at: usize,
-) -> Result<Option<Range<usize>>, DocumentError> {
-    let tree = document.projection().text_tree();
-    if at == 0 || tree.slice(at - 1..at).as_deref() != Ok(" ") {
-        return Ok(None);
-    }
-    let spans = document.projection().provenance_for_region(&(at - 1..at));
-    let Some(space) = spans.iter().find(|span| span.formatted == (at - 1..at)) else {
-        return Ok(None);
-    };
-    let opening = document
-        .encoding()
-        .encode_fragment("<span style=\"white-space: pre-wrap\">")?;
-    let closing = document.encoding().encode_fragment("</span>")?;
-    let Some(start) = space.source.start.checked_sub(opening.len()) else {
-        return Ok(None);
-    };
-    let end = space.source.end + closing.len();
-    let range = start..end;
-    if !document
-        .state()
-        .source
-        .range_is_generated_text(range.clone())
-    {
-        return Ok(None);
-    }
-    let Some(bytes) = document.state().source.bytes_in(range.clone()) else {
-        return Ok(None);
-    };
-    if !bytes.starts_with(&opening) || !bytes.ends_with(&closing) {
-        return Ok(None);
-    }
-    let content = document.encoding().decode_region(
-        &bytes[opening.len()..bytes.len() - closing.len()],
-        space.source.start,
-    )?;
-    if !matches!(content.text.as_str(), " " | "&#32;") {
-        return Ok(None);
-    }
-    Ok(Some(range))
-}
-
-pub(super) fn compact_generated_html_space(
-    document: &super::Document,
-    edit: &super::TextEdit,
-    source_at: usize,
-) -> Result<Option<(Range<usize>, String)>, DocumentError> {
-    if !edit.range.is_empty()
-        || !edit
-            .replacement
-            .chars()
-            .next()
-            .is_some_and(|c| !super::html_whitespace::collapsible(c))
-    {
-        return Ok(None);
-    }
-    let at = edit.range.start;
-    let Some(wrapper) = generated_html_space_before(document, at)? else {
-        return Ok(None);
-    };
-    let closing = document.encoding().encode_fragment("</span>")?;
-    if source_at != wrapper.end - closing.len() && source_at != wrapper.end {
-        return Ok(None);
-    }
-    let tree = document.projection().text_tree();
-    let Some(previous) = tree
-        .previous_grapheme_boundary(at - 1)
-        .map_err(DocumentError::FormattedTextStorage)?
-    else {
-        return Ok(None);
-    };
-    if !tree
-        .slice(previous..at - 1)
-        .map_err(DocumentError::FormattedTextStorage)?
-        .chars()
-        .next_back()
-        .is_some_and(|c| !super::html_whitespace::collapsible(c))
-    {
-        return Ok(None);
-    }
-    let (_, after) = html_text_neighbors_at_source(document, source_at)?;
-    let syntax = escape_html_text_in_context(
-        &format!(" {}", edit.replacement),
-        document.encoding(),
-        false,
-        true,
-        after,
-    );
-    Ok(Some((wrapper, syntax)))
-}
-
-pub(super) fn html_preserves_whitespace_at_source(
-    document: &super::Document,
-    source_start: usize,
-) -> Result<bool, DocumentError> {
-    let projection = document.projection();
-    let Ok(mapped) = projection.map_source_boundary(
-        document.revision(),
-        source_start,
-        super::BoundaryAffinity::Downstream,
-    ) else {
-        return Ok(false);
-    };
-    let at = mapped.formatted_offset;
-    let point = at..at;
-    let boundary_provenance = projection.provenance_touching(&point);
-    if boundary_provenance.iter().any(|span| {
-        span.formatted == point && span.source == (source_start..source_start)
-    }) {
-        return Ok(projection.style_spans_touching(&point).iter().any(|span| {
-            span.range == point && span.application == StyleApplication::SourcePreservedWhitespace
-        }));
-    }
-    let range = at.saturating_sub(1)..(at + 1).min(projection.text_tree().byte_len());
-    let styles = projection.style_spans_for_region(&range);
-    let preserved = |sample| {
-        styles.iter().any(|span| {
-            span.range.contains(&sample)
-                && span.application == StyleApplication::SourcePreservedWhitespace
-        })
-    };
-    let provenance = projection.provenance_for_region(&range);
-    for span in &provenance {
-        if span.formatted.is_empty() {
-            continue;
-        }
-        if span.source.start == source_start {
-            return Ok(preserved(span.formatted.start));
-        }
-        if span.source.end == source_start {
-            return Ok(preserved(span.formatted.end - 1));
-        }
-    }
-    // For other source gaps, inspect only the local syntax after the previous
-    // visible character, never the complete code paragraph. Exact empty
-    // element anchors already carry their context above.
-    let previous = provenance
-        .iter()
-        .filter(|span| !span.formatted.is_empty() && span.source.end <= source_start)
-        .max_by_key(|span| span.source.end);
-    let start = previous.map_or(0, |span| span.source.end);
-    if source_start.saturating_sub(start) > 1024 {
-        return Ok(false);
-    }
-    let bytes = document
-        .state()
-        .source
-        .bytes_in(start..source_start)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    let gap = document.encoding().decode_region(&bytes, start)?;
-    Ok(super::html::whitespace_after_source_gap(
-        &gap.text,
-        previous.is_some_and(|span| preserved(span.formatted.end - 1)),
-    ))
-}
-
 pub(super) fn resolved_character_at(
     document: &FormattedDocument,
     at: usize,
 ) -> Option<super::ResolvedCharacterStyle> {
-    resolved_character_at_with_style_context(document, at, document.style_sheet(), document.document_style())
+    resolved_character_at_with_style_context(
+        document,
+        at,
+        document.style_sheet(),
+        document.document_style(),
+    )
 }
 
 pub(super) fn resolved_character_at_with_style_context(
@@ -947,22 +577,22 @@ pub(super) fn resolved_character_at_with_style_context(
 ) -> Option<super::ResolvedCharacterStyle> {
     let blocks = document.blocks_for_region(&(at..at));
     let block = blocks.iter().find(|block| block.range.contains(&at))?;
-    let mut paragraph_style = &block.style;
-    let mut paragraph_defaults = &block.direct_default_character;
+    let paragraph_style = &block.style;
+    let paragraph_defaults = &block.direct_default_character;
     let mut direct = CharacterProperties::default();
     let mut semantic = CharacterProperties::default();
     let mut named = None;
     let spans = document.style_spans_for_region(&(at..at + 1));
     for span in spans.iter().filter(|span| span.range.contains(&at)) {
         match &span.application {
-            StyleApplication::Semantic(super::SemanticInlineStyle::Strong) => semantic.bold = Some(true),
-            StyleApplication::Semantic(super::SemanticInlineStyle::Emphasis) => semantic.slant = Some(super::FontSlant::Italic),
+            StyleApplication::Semantic(super::SemanticInlineStyle::Strong) => {
+                semantic.bold = Some(true)
+            }
+            StyleApplication::Semantic(super::SemanticInlineStyle::Emphasis) => {
+                semantic.slant = Some(super::FontSlant::Italic)
+            }
             StyleApplication::Direct(properties) => overlay(&mut direct, properties),
             StyleApplication::Named(id) => named = Some(id),
-            StyleApplication::SourceParagraph { style, defaults } => {
-                paragraph_style = style;
-                paragraph_defaults = defaults;
-            }
             _ => {}
         }
     }
@@ -991,59 +621,75 @@ pub(super) fn text_source_runs(
         return Ok(vec![text_source_range(document, range)?]);
     }
     let visible = super::source_edit::visible_runs(document.projection(), range)?;
-    let mut runs = visible.into_iter().map(|run| run.source).collect::<Vec<_>>();
-    // HTML whitespace may have additional collapsed contributors separated by
-    // hidden syntax. Preserve that grammar-specific relation alongside the
-    // shared minimal visible runs.
-    if document.format() == super::Format::Html {
-        let end = document.hard_line_snapshot().next_grapheme_boundary(range.end)
-            .unwrap_or(range.end);
-        let spans = document.projection().provenance_for_region(&(range.start..end));
-        for (index, span) in spans.iter().enumerate().filter(|(_, span)| {
-            !span.formatted.is_empty() && span.formatted.end <= range.end
-        }) {
-            if let Some(following) = spans[index + 1..].iter().find(|s| !s.formatted.is_empty()) {
-                runs.extend(super::html_whitespace::collapsed_space_tail(
-                    document, span, following.source.start,
-                )?);
-            }
-        }
-        runs.sort_by_key(|run| (run.start, run.end));
-    }
+    let runs = visible
+        .into_iter()
+        .map(|run| run.source)
+        .collect::<Vec<_>>();
     Ok(runs)
 }
 
 #[cfg(test)]
 mod character_verification_tests {
     use super::*;
-    use crate::document::{Document, Encoding, Format};
+    use crate::document::Encoding;
 
     #[test]
     fn complete_character_verification_uses_bounded_context_queries_in_large_documents() {
         let paragraphs = 10_000;
         let source = "<p><span style='color:#123456'>A</span>B</p>".repeat(paragraphs);
-        let before = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+        let normalized =
+            super::super::line_endings::normalize(&decoded, super::super::FileFormat::Unix);
+        let before = super::super::html::project_fragment(
+            &normalized,
+            super::super::Revision(0),
+            0,
+            source.len(),
+        );
         let mut block_records = 0;
         let mut style_records = 0;
         assert!(character_edit_verified_with_queries(
-            before.projection(), before.projection(), &(0..0), &CharacterProperties::default(),
-            |blocks, styles| { block_records += blocks; style_records += styles; },
+            &before,
+            &before,
+            &(0..0),
+            &CharacterProperties::default(),
+            |blocks, styles| {
+                block_records += blocks;
+                style_records += styles;
+            },
         ));
         // Each complete-document interval needs only its adjacent paragraph
         // and style runs, regardless of all the other paragraphs in the file.
-        assert!(block_records <= paragraphs * 8, "{block_records} block records");
-        assert!(style_records <= paragraphs * 8, "{style_records} style records");
+        assert!(
+            block_records <= paragraphs * 8,
+            "{block_records} block records"
+        );
+        assert!(
+            style_records <= paragraphs * 8,
+            "{style_records} style records"
+        );
         assert!(block_records >= paragraphs * 2);
         assert!(style_records >= paragraphs);
 
         let mut changed = source;
         let at = changed.rfind("#123456").unwrap();
         changed.replace_range(at..at + 7, "#654321");
-        let after = Document::from_bytes(changed.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        let decoded = Encoding::Utf8.decode(changed.as_bytes()).unwrap();
+        let normalized =
+            super::super::line_endings::normalize(&decoded, super::super::FileFormat::Unix);
+        let after = super::super::html::project_fragment(
+            &normalized,
+            super::super::Revision(0),
+            0,
+            changed.len(),
+        );
         // A late, unselected style change must still be rejected: indexing
         // accelerates complete verification rather than narrowing its scope.
         assert!(!character_edit_verified(
-            before.projection(), after.projection(), &(0..1), &CharacterProperties::default(),
+            &before,
+            &after,
+            &(0..1),
+            &CharacterProperties::default(),
         ));
     }
 }

@@ -41,16 +41,6 @@ fn assert_reopen_and_undo(
 fn backspace_recognizes_nested_list_and_code_bodies_after_arrow_navigation() {
     let mut failures = Vec::new();
     for (format, source, line) in [
-        (
-            Format::Html,
-            "<p>A</p><ul><li>parent<ul><li>BC</li></ul></li><li>D</li></ul>",
-            3,
-        ),
-        (
-            Format::Html,
-            "<p>A</p><blockquote><pre><code>BC\nD</code></pre></blockquote><p>E</p>",
-            2,
-        ),
         (Format::Markdown, "A\n\n- parent\n  - BC\n- D", 3),
         (Format::Markdown, "A\n\n> ```\n> BC\n> D\n> ```\n\nE", 2),
     ] {
@@ -97,8 +87,6 @@ fn backspace_recognizes_nested_list_and_code_bodies_after_arrow_navigation() {
 #[test]
 fn backspace_at_inline_scope_start_deletes_the_preceding_grapheme() {
     for (format, source, expected) in [
-        (Format::Html, "<p>A<b>B</b>C</p>", "BC"),
-        (Format::Html, "<p>e\u{301}<b>B</b>C</p>", "BC"),
         (Format::Rtf, r"{\rtf1 A{\b B}C}", "BC"),
         (Format::Markdown, "A**B**C", "BC"),
     ] {
@@ -115,14 +103,6 @@ fn backspace_at_inline_scope_start_deletes_the_preceding_grapheme() {
 #[test]
 fn forward_delete_merges_nested_blocks_using_the_preceding_paragraph() {
     for (format, source) in [
-        (
-            Format::Html,
-            "<p>A</p><ul><li>BC<ul><li>D</li></ul></li><li>E</li></ul>",
-        ),
-        (
-            Format::Html,
-            "<p>A</p><blockquote><pre>BC\nD</pre></blockquote><p>E</p>",
-        ),
         (Format::Markdown, "A\n\n- BC\n  - D\n- E"),
         (Format::Markdown, "A\n\n> ```\n> BC\n> D\n> ```\n\nE"),
     ] {
@@ -147,7 +127,6 @@ fn forward_delete_merges_nested_blocks_using_the_preceding_paragraph() {
 #[test]
 fn deletion_at_document_outer_boundaries_is_a_byte_exact_noop() {
     for (format, source) in [
-        (Format::Html, "<p><b>A</b></p><!--keep--><p></p>"),
         (Format::Markdown, "**A**\n\n"),
         (Format::Rtf, r"{\rtf1{\b A}\par}"),
     ] {

@@ -53,6 +53,44 @@ impl ClipboardFragment {
         (!value.is_rich).then_some(value.source_text)
     }
 
+    /// Decode external HTML into the shared passive fragment model. Only its
+    /// normalized text and resolved formatting cross the clipboard boundary;
+    /// HTML never becomes an editable document format.
+    pub fn from_html_utf8(bytes: &[u8]) -> Result<(Self, String), DocumentError> {
+        if bytes.len() > 64 * 1024 * 1024 {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let decoded = super::super::Encoding::Utf8.decode(bytes)?;
+        let input = super::super::line_endings::normalize(&decoded, FileFormat::Unix);
+        let projection =
+            super::super::html::project_fragment(&input, Revision(0), decoded.bom_len, bytes.len());
+        let text = projection.text().to_owned();
+        let range = 0..text.len();
+        let (character_runs, paragraph_runs) = style_runs(&projection, &range)?;
+        let export = Export {
+            schema_version: 1,
+            plain_text: text.clone(),
+            source_plain_text: text.clone(),
+            hard_breaks: projection.hard_breaks_for_region(&range),
+            register_kind: 1,
+            is_rich: true,
+            source_text: text.clone(),
+            source_bytes: text.as_bytes().to_vec(),
+            source_format: 1,
+            encoding: 1,
+            file_format: 1,
+            source_exact: true,
+            inline_source_bytes: Vec::new(),
+            embedded_source_bytes: Vec::new(),
+            character_runs,
+            paragraph_runs,
+            source_segments: Vec::new(),
+        };
+        let json =
+            serde_json::to_string(&export).map_err(|_| DocumentError::UnsupportedFormatting)?;
+        Ok((Self(Arc::from(json)), text))
+    }
+
     pub fn from_json(json: &str, plain_text: &str) -> Result<Self, DocumentError> {
         // A pasteboard is external input, not a trusted in-process register.
         if json.len() > 64 * 1024 * 1024 {
@@ -120,7 +158,7 @@ impl ClipboardFragment {
         Ok(Self(Arc::from(json)))
     }
 
-    /// Whether this value follows the compatible rich-source paste path.
+    /// Whether this value follows a source-preserving or normalized formatted paste path.
     /// Candidate verification can still reject unsupported imported syntax.
     pub fn can_insert_rich_source(&self, format: Format, text: &str) -> bool {
         serde_json::from_str::<Export>(self.json())
@@ -152,7 +190,7 @@ impl ClipboardFragment {
         let (text, edits) = super::input_context::rewrite_quotes(
             document.text(),
             previous,
-            |at, _| document.quote_context(at, BoundaryAffinity::Downstream, true),
+            |at, _| document.quote_context(at, BoundaryAffinity::Downstream),
             &mut quote,
         )?;
         if edits.is_empty() {
@@ -171,8 +209,8 @@ impl ClipboardFragment {
             .collect::<BTreeMap<_, _>>();
         document.apply_edits(edits)?;
         let fragment = document.clipboard_fragment(0..document.text().len())?;
-        let mut transformed: Export =
-            serde_json::from_str(fragment.json()).map_err(|_| DocumentError::UnsupportedFormatting)?;
+        let mut transformed: Export = serde_json::from_str(fragment.json())
+            .map_err(|_| DocumentError::UnsupportedFormatting)?;
         // Configuration-only typography need not occur in copied source.
         // Retain the original resolved runs while rebasing their text extents.
         let remap_runs = |runs: Vec<Value>| -> Result<Vec<Value>, DocumentError> {
@@ -193,7 +231,20 @@ impl ClipboardFragment {
         };
         transformed.character_runs = remap_runs(original.character_runs)?;
         transformed.paragraph_runs = remap_runs(original.paragraph_runs)?;
+        transformed.hard_breaks = original
+            .hard_breaks
+            .iter()
+            .copied()
+            .filter(|&at| at < original.source_plain_text.len())
+            .map(|at| {
+                mapped
+                    .get(&at)
+                    .copied()
+                    .ok_or(DocumentError::UnsupportedFormatting)
+            })
+            .collect::<Result<_, _>>()?;
         transformed.register_kind = original.register_kind;
+        transformed.is_rich = original.is_rich;
         let appended_line_break = original.register_kind == 2
             && original.plain_text == format!("{}\n", original.source_plain_text);
         if original.plain_text == original.source_plain_text || appended_line_break {
@@ -251,7 +302,10 @@ impl ClipboardFragment {
 impl Export {
     fn can_insert_rich_source(&self, format: Format, text: &str) -> bool {
         self.is_rich
-            && self.pipeline().is_ok_and(|(source, _, _)| source == format)
+            && format.is_wysiwyg()
+            && self
+                .pipeline()
+                .is_ok_and(|(source, _, _)| source == format || source == Format::PlainText)
             && text == self.source_plain_text
             && self.source_segments.is_empty()
     }
@@ -260,10 +314,8 @@ impl Export {
         let format = match self.source_format {
             1 => Format::PlainText,
             2 => Format::Markdown,
-            3 => Format::Html,
             4 => Format::Rtf,
             5 => Format::MarkdownSource,
-            6 => Format::HtmlSource,
             7 => Format::Code,
             _ => return Err(DocumentError::UnsupportedFormatting),
         };
@@ -352,10 +404,8 @@ impl Document {
             source_format: match self.format() {
                 Format::PlainText => 1,
                 Format::Markdown => 2,
-                Format::Html => 3,
                 Format::Rtf => 4,
                 Format::MarkdownSource => 5,
-                Format::HtmlSource => 6,
                 Format::Code => 7,
             },
             encoding: match self.encoding() {
@@ -451,8 +501,8 @@ impl Document {
         )))
     }
 
-    /// Prepare source-preserving insertion of a compatible private fragment.
-    /// `None` means that this is an ordinary/plain or different-format paste.
+    /// Preserve compatible source fragments or replay normalized external styles.
+    /// `None` means that this payload uses ordinary text insertion.
     /// A compatible rich payload never turns a failed verification into success.
     pub(crate) fn prepare_clipboard_fragment(
         &self,
@@ -463,24 +513,35 @@ impl Document {
         self.validate_range(&range)?;
         let export: Export = serde_json::from_str(fragment.json())
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
+        if export.is_rich
+            && export.source_format == 1
+            && self.format().is_wysiwyg()
+            && text == export.source_plain_text
+            && export.source_segments.is_empty()
+        {
+            return match self.prepare_normalized_clipboard_fragment(range, &export) {
+                Ok(prepared) => Ok(Some(prepared)),
+                // External CSS can exceed a destination's persisted style
+                // vocabulary. Retain ordinary text paste in that case; private
+                // same-format source fragments still verify strictly below.
+                Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting)) => {
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            };
+        }
         let (_, encoding, _) = export.pipeline()?;
         if !export.can_insert_rich_source(self.format(), text) {
             return Ok(None);
         }
         if range != (0..self.text().len()) {
-            if let Some(prepared) = self.prepare_with_recovered_source(
-                &[TextEdit::new(range.clone(), text)],
-                |scratch| {
-                    scratch.prepare_clipboard_fragment(range.clone(), fragment, text)?
+            if let Some(prepared) =
+                self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
+                    scratch
+                        .prepare_clipboard_fragment(at..at, fragment, text)?
                         .ok_or_else(|| DocumentError::UnsupportedFormatting.into())
-                },
-            )? {
-                return Ok(Some(prepared));
-            }
-            if let Some(prepared) = self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
-                scratch.prepare_clipboard_fragment(at..at, fragment, text)?
-                    .ok_or_else(|| DocumentError::UnsupportedFormatting.into())
-            })? {
+                })?
+            {
                 return Ok(Some(prepared));
             }
         }
@@ -493,26 +554,33 @@ impl Document {
             }
         };
         let source_edit = super::super::source_edit::complete_contributors(
-            self.projection(), &TextEdit::new(range.clone(), text),
+            self.projection(),
+            &TextEdit::new(range.clone(), text),
         )?;
         let whole = range == (0..self.text().len());
-        let plan = if whole { None } else {
+        let plan = if whole {
+            None
+        } else {
             super::super::source_edit::overlapping_text_plan(self, &source_edit.range)?
         };
         let source_runs = if whole {
             vec![0..self.source_byte_len()]
         } else if let Some(plan) = &plan {
             plan.ranges.clone()
-        } else { super::super::rich_text::text_source_runs(self, &source_edit.range)? };
-        let insertion = plan.as_ref().map_or(source_runs[0].start, |plan| plan.insertion);
+        } else {
+            super::super::rich_text::text_source_runs(self, &source_edit.range)?
+        };
+        let insertion = plan
+            .as_ref()
+            .map_or(source_runs[0].start, |plan| plan.insertion);
         let insertion_index = plan.as_ref().map_or(Some(0), |plan| plan.insertion_run());
         let preserved = |range: Range<usize>| -> Result<Vec<u8>, DocumentError> {
-            let text = self.projection().text_tree().slice(range).map_err(DocumentError::FormattedTextStorage)?;
-            let syntax = if self.format() == Format::Html {
-                super::super::rich_text::escape_html_text(&text, self.encoding())
-            } else {
-                super::super::rtf::escape(&text)
-            };
+            let text = self
+                .projection()
+                .text_tree()
+                .slice(range)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let syntax = super::super::rtf::escape(&text);
             self.encoding().encode_fragment(&syntax)
         };
         let prefix = preserved(source_edit.range.start..range.start)?;
@@ -533,11 +601,21 @@ impl Document {
         for candidate in candidates {
             let mut replacement = prefix.clone();
             replacement.extend(bytes(candidate)?);
-            let mut patches = source_runs.iter().enumerate().map(|(index, range)| {
-                let mut value = if insertion_index == Some(index) { replacement.clone() } else { Vec::new() };
-                if index + 1 == source_runs.len() { value.extend_from_slice(&suffix); }
-                SourcePatch::primary(range.clone(), value)
-            }).collect::<Vec<_>>();
+            let mut patches = source_runs
+                .iter()
+                .enumerate()
+                .map(|(index, range)| {
+                    let mut value = if insertion_index == Some(index) {
+                        replacement.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    if index + 1 == source_runs.len() {
+                        value.extend_from_slice(&suffix);
+                    }
+                    SourcePatch::primary(range.clone(), value)
+                })
+                .collect::<Vec<_>>();
             if insertion_index.is_none() {
                 patches.push(SourcePatch::primary(insertion..insertion, replacement));
             }
@@ -551,7 +629,10 @@ impl Document {
                         Ok(prepared)
                     } else {
                         self.isolate_clipboard_character_styles(
-                            prepared, &export, range.clone(), &bytes(candidate)?,
+                            prepared,
+                            &export,
+                            range.clone(),
+                            &bytes(candidate)?,
                         )
                     }
                 })
@@ -564,6 +645,166 @@ impl Document {
             }
         }
         Err(error)
+    }
+
+    /// Replay external HTML's normalized formatting through the destination's
+    /// existing editing adapters. The composed source patches publish as one
+    /// undoable paste; unsupported Markdown properties follow its vocabulary.
+    fn prepare_normalized_clipboard_fragment(
+        &self,
+        replaced: Range<usize>,
+        export: &Export,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+        let publish = |scratch: &mut Document,
+                       prepared: PreparedModelTransaction,
+                       sources: &mut replacement::PatchComposition|
+         -> Result<(), ModelTransactionError> {
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        if self.format().is_rich_text() && self.source_byte_len() == 0 {
+            // RTF font/color tables need a root header even for an empty file.
+            let header = scratch.prepare_source_only_patches(vec![SourcePatch::primary(
+                0..0,
+                self.encoding().encode_fragment("{\\rtf1 }")?,
+            )])?;
+            publish(&mut scratch, header, &mut sources)?;
+        }
+        let payload = super::super::FormattedTextPayload::new(
+            &scratch.hard_line_snapshot(),
+            export.source_plain_text.clone(),
+            export.hard_breaks.clone(),
+        )
+        .map_err(|_| DocumentError::UnsupportedFormatting)?;
+        let inserted = scratch.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(
+            replaced.clone(),
+            payload,
+        )])?;
+        publish(&mut scratch, inserted, &mut sources)?;
+        if self.format().is_rich_text() {
+            for run in &export.paragraph_runs {
+                let start = replaced.start
+                    + run["start"]
+                        .as_u64()
+                        .ok_or(DocumentError::UnsupportedFormatting)?
+                        as usize;
+                let end = replaced.start
+                    + run["end"]
+                        .as_u64()
+                        .ok_or(DocumentError::UnsupportedFormatting)?
+                        as usize;
+                // A partial paragraph inherits the destination paragraph's
+                // geometry; complete pasted paragraphs retain theirs.
+                if !scratch
+                    .projection()
+                    .blocks_for_region(&(start..end))
+                    .iter()
+                    .any(|block| block.range == (start..end))
+                {
+                    continue;
+                }
+                let mut values = run.clone();
+                if values["base_direction"] == "Natural" {
+                    values["base_direction"] = values["resolved_direction"].clone();
+                }
+                let properties: BlockProperties = serde_json::from_value(values)
+                    .map_err(|_| DocumentError::UnsupportedFormatting)?;
+                let target = StyleBlockTarget::Paragraphs(TextRange::new(
+                    scratch.text_point(start)?,
+                    scratch.text_point(end)?,
+                )?);
+                let styled = scratch.prepare_rich_block_properties(
+                    PersistedStyleIntent::SetDirectBlockProperties { target, properties },
+                )?;
+                publish(&mut scratch, styled, &mut sources)?;
+            }
+        }
+        let mut markdown_runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
+        for run in &export.character_runs {
+            let start = replaced.start
+                + run["start"]
+                    .as_u64()
+                    .ok_or(DocumentError::UnsupportedFormatting)? as usize;
+            let end = replaced.start
+                + run["end"]
+                    .as_u64()
+                    .ok_or(DocumentError::UnsupportedFormatting)? as usize;
+            if start == end {
+                continue;
+            }
+            let mut values = run.clone();
+            values["weight"] = values["base_weight"].clone();
+            if values["direction"] == "Natural" {
+                values["direction"] = Value::Null;
+            }
+            if values["foreground_is_default"] == true {
+                values["foreground"] = Value::Null;
+            }
+            let properties: CharacterProperties =
+                serde_json::from_value(values).map_err(|_| DocumentError::UnsupportedFormatting)?;
+            if self.format().is_rich_text() {
+                let styled = scratch.prepare_rich_character_properties(start..end, properties)?;
+                publish(&mut scratch, styled, &mut sources)?;
+            } else {
+                let semantic = CharacterProperties {
+                    bold: Some(
+                        properties.bold == Some(true)
+                            || properties.weight.is_some_and(|weight| weight >= 600),
+                    ),
+                    slant: Some(
+                        if matches!(
+                            properties.slant,
+                            Some(
+                                super::super::FontSlant::Italic | super::super::FontSlant::Oblique
+                            )
+                        ) {
+                            super::super::FontSlant::Italic
+                        } else {
+                            super::super::FontSlant::Upright
+                        },
+                    ),
+                    ..CharacterProperties::default()
+                };
+                if let Some((range, _)) = markdown_runs
+                    .last_mut()
+                    .filter(|(range, previous)| range.end == start && *previous == semantic)
+                {
+                    range.end = end;
+                } else {
+                    markdown_runs.push((start..end, semantic));
+                }
+            }
+        }
+        for (range, properties) in markdown_runs {
+            if properties.bold != Some(true)
+                && properties.slant != Some(super::super::FontSlant::Italic)
+            {
+                continue;
+            }
+            let syntax = super::super::conversion::markdown_character_fragment(
+                scratch.projection(),
+                range.clone(),
+                &properties,
+            );
+            let source = scratch
+                .projection()
+                .source_range(range.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let styled = scratch.prepare_source_only_patches(vec![SourcePatch::primary(
+                source,
+                self.encoding().encode_fragment(&syntax)?,
+            )])?;
+            publish(&mut scratch, styled, &mut sources)?;
+        }
+        self.prepare_text_edits_with_patches(
+            vec![TextEdit::new(replaced, &export.source_plain_text)],
+            Some(sources.source_patches()),
+        )
     }
 
     /// A balanced inline fragment can inherit different character defaults in
@@ -654,7 +895,6 @@ impl Document {
                 let styled = scratch.prepare_rich_character_properties(
                     replaced.start + start..replaced.start + end,
                     authored,
-                    None,
                 )?;
                 for patch in styled.summary.source_patches.iter().rev() {
                     sources.splice(patch.range(), patch.replacement());
@@ -664,7 +904,7 @@ impl Document {
         }
         self.prepare_text_edits_with_patches(
             vec![TextEdit::new(replaced, &export.source_plain_text)],
-            Some(sources.source_patches(&scratch.state().source)?),
+            Some(sources.source_patches()),
         )
     }
 }
@@ -690,60 +930,9 @@ fn source_hull(document: &Document, range: &Range<usize>) -> Result<Range<usize>
     if cursor != range.end {
         return Err(DocumentError::AmbiguousProjection);
     }
-    if first.is_none() && document.format() == Format::Html {
-        return html_separator_source_hull(document, range, &spans);
-    }
-    if document.format() == Format::Html {
-        // HTML5 can omit NULs between source whitespace contributors. The
-        // reverse-edit helper already accounts for that lossless relation.
-        if let Ok(runs) = super::super::rich_text::text_source_runs(document, range) {
-            if let Some(tail) = runs.iter().map(|run| run.end).max() {
-                end = end.max(tail);
-            }
-        }
-    }
     first
         .map(|start| start..end)
         .ok_or(DocumentError::AmbiguousProjection)
-}
-
-fn html_separator_source_hull(
-    document: &Document,
-    range: &Range<usize>,
-    spans: &[super::super::ProvenanceSpan],
-) -> Result<Range<usize>, DocumentError> {
-    let projection = document.projection();
-    let separators = projection.hard_breaks_for_region(range);
-    if separators != (range.start..range.end).collect::<Vec<_>>() {
-        return Err(DocumentError::AmbiguousProjection);
-    }
-    let start = spans
-        .iter()
-        .find(|span| span.formatted.start == range.start)
-        .filter(|span| span.source.is_empty())
-        .map(|span| span.source.start)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    // A separator's own provenance is a recoverable source boundary. Its
-    // following item supplies the other edge, including an empty paragraph.
-    // Require one exact source location rather than choosing an ambiguous side.
-    let following = projection.provenance_touching(&(range.end..range.end));
-    let mut ends = following
-        .iter()
-        .filter(|span| span.formatted.start == range.end)
-        .map(|span| span.source.start);
-    let end = ends.next().ok_or(DocumentError::AmbiguousProjection)?;
-    if end <= start
-        || ends.any(|other| other != end)
-        || spans.iter().any(|span| {
-            !span.source.is_empty() || span.source.start < start || span.source.end > end
-        })
-        || spans
-            .windows(2)
-            .any(|pair| pair[0].source.start > pair[1].source.start)
-    {
-        return Err(DocumentError::AmbiguousProjection);
-    }
-    Ok(start..end)
 }
 
 fn selected_source(
@@ -759,7 +948,7 @@ fn selected_source(
     if document.format() == Format::Rtf {
         return rtf_fragment(document, source, hull);
     }
-    if !matches!(document.format(), Format::Markdown | Format::Html) {
+    if document.format() != Format::Markdown {
         return Ok(source[hull].to_vec());
     }
     let decoded = document.encoding().decode(&source)?;
@@ -776,102 +965,8 @@ fn selected_source(
             .map(|unit| unit.normalized.start)
     };
     let start = normalized(hull.start).ok_or(DocumentError::AmbiguousProjection)?;
-    let end = normalized(hull.end).ok_or(DocumentError::AmbiguousProjection)?;
     let mut prefixes = Vec::new();
     let mut suffixes = Vec::new();
-    if document.format() == Format::Html {
-        let tokens = super::super::html::tokenize(&input.text);
-        let opens = super::super::html_paragraph::stack_at(&tokens, start);
-        let closes = super::super::html_paragraph::stack_at(&tokens, end);
-        let retain = |token: &&&super::super::html::Token| match &token.kind {
-            super::super::html::TokenKind::Tag(tag) => {
-                blocks || !super::super::html_paragraph::structural(&tag.name)
-            }
-            _ => false,
-        };
-        for token in opens.iter().filter(retain) {
-            prefixes.push(builder.source_range(token.range.clone()));
-        }
-        let mut output = Vec::new();
-        if blocks {
-            for (index, token) in tokens.iter().enumerate() {
-                if matches!(&token.kind, super::super::html::TokenKind::Tag(tag) if !tag.end && tag.name == "style")
-                {
-                    if let Some(close) = tokens[index+1..].iter().find(|next| matches!(&next.kind, super::super::html::TokenKind::Tag(tag) if tag.end && tag.name == "style")) {
-                        let region = builder.source_range(token.range.start..close.range.end);
-                        if region.end <= hull.start || region.start >= hull.end { output.extend_from_slice(&source[region]); }
-                    }
-                }
-            }
-        }
-        for prefix in prefixes {
-            output.extend_from_slice(&source[prefix]);
-        }
-        output.extend_from_slice(&source[hull]);
-        for token in closes.iter().filter(retain).rev() {
-            let super::super::html::TokenKind::Tag(tag) = &token.kind else {
-                unreachable!()
-            };
-            let mut depth = 0;
-            let closing = tokens
-                .iter()
-                .filter(|next| next.range.start >= token.range.end)
-                .find(|next| {
-                    let super::super::html::TokenKind::Tag(next_tag) = &next.kind else {
-                        return false;
-                    };
-                    if next_tag.name != tag.name {
-                        return false;
-                    }
-                    if !next_tag.end {
-                        depth += 1;
-                        false
-                    } else if depth == 0 {
-                        true
-                    } else {
-                        depth -= 1;
-                        false
-                    }
-                });
-            if let Some(closing) = closing {
-                output.extend_from_slice(&source[builder.source_range(closing.range.clone())]);
-            } else {
-                output.extend_from_slice(
-                    &document
-                        .encoding()
-                        .encode_fragment(&format!("</{}>", tag.name))?,
-                );
-            }
-        }
-        if document
-            .projection()
-            .provenance_for_region(range)
-            .iter()
-            .all(|span| span.source.is_empty())
-        {
-            let candidate = Document::from_bytes_with_file_format(
-                output.clone(),
-                document.encoding(),
-                document.format(),
-                document.file_format(),
-            )?;
-            let expected_breaks = document
-                .projection()
-                .hard_breaks_for_region(range)
-                .into_iter()
-                .map(|offset| offset - range.start)
-                .collect::<Vec<_>>();
-            if candidate.text() != &document.text()[range.clone()]
-                || candidate
-                    .projection()
-                    .hard_breaks_for_region(&(0..candidate.text().len()))
-                    != expected_breaks
-            {
-                return Err(DocumentError::AmbiguousProjection);
-            }
-        }
-        return Ok(output);
-    }
     // Markdown semantic spans identify their authored delimiter runs. Copy
     // those runs at a cut edge, retaining underscore/star/backtick spelling.
     for span in document.projection().style_spans_for_region(range) {
@@ -990,8 +1085,8 @@ fn style_runs(
             let mut automatic = CharacterProperties::default();
             let mut link_defaults = CharacterProperties::default();
             let mut named = None;
-            let mut paragraph_style = &block.style;
-            let mut defaults = &block.direct_default_character;
+            let paragraph_style = &block.style;
+            let defaults = &block.direct_default_character;
             for span in spans.iter().filter(|span| span.range.contains(&pair[0])) {
                 match &span.application {
                     StyleApplication::Named(id) => {
@@ -1002,14 +1097,18 @@ fn style_runs(
                     }
                     StyleApplication::Automatic(id) => {
                         if id.0 == "Link" {
-                            let properties = projection.style_sheet().automatic_character_properties(id)
+                            let properties = projection
+                                .style_sheet()
+                                .automatic_character_properties(id)
                                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
                             super::super::rich_text::overlay(&mut link_defaults, &properties);
                         } else {
                             let mut chain = Vec::new();
                             let mut next = Some(id);
                             while let Some(id) = next {
-                                let style = projection.style_sheet().character_style(id)
+                                let style = projection
+                                    .style_sheet()
+                                    .character_style(id)
                                     .ok_or(DocumentError::UnsupportedFormatting)?;
                                 chain.push(&style.properties);
                                 next = style.based_on.as_ref();
@@ -1021,13 +1120,6 @@ fn style_runs(
                     }
                     StyleApplication::Direct(properties) => {
                         super::super::rich_text::overlay(&mut direct, properties)
-                    }
-                    StyleApplication::SourceParagraph {
-                        style,
-                        defaults: values,
-                    } => {
-                        paragraph_style = style;
-                        defaults = values;
                     }
                     StyleApplication::Semantic(SemanticInlineStyle::Strong) => {
                         semantic.bold = Some(true)
@@ -1134,7 +1226,9 @@ fn verify_styles(
         }
         let (old_character, old_paragraph) = style_runs(before, &old_range)?;
         let (new_character, new_paragraph) = style_runs(&state.projection, &new_range)?;
-        if !styles_match(&old_character, &new_character) || !styles_match(&old_paragraph, &new_paragraph) {
+        if !styles_match(&old_character, &new_character)
+            || !styles_match(&old_paragraph, &new_paragraph)
+        {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
     }
@@ -1260,10 +1354,6 @@ mod tests {
                 b"# Title\n\n__bold__ and `code`\n".as_slice(),
             ),
             (
-                Format::Html,
-                b"<!DOCTYPE html><!--original--><P class='x'><B>A&amp;B</B><br>tail</P>".as_slice(),
-            ),
-            (
                 Format::Rtf,
                 br"{\rtf1\ansi {\b Bold} and \i italic\i0\par tail}".as_slice(),
             ),
@@ -1297,32 +1387,6 @@ mod tests {
     }
 
     #[test]
-    fn partial_html_keeps_entity_spelling_tag_case_and_attributes() {
-        let original = open(
-            b"<P>before <B title='authored' style='color: #ff0000'>A&#38;B</B> after</P>",
-            Format::Html,
-        );
-        let (fragment, value) = export(&original, "&B");
-        assert_eq!(
-            value.source_text,
-            "<P><B title='authored' style='color: #ff0000'>&#38;B</B></P>"
-        );
-        let pasted = paste_empty(&fragment, &value, Format::Html);
-        assert_eq!(pasted.text(), "&B");
-        assert_eq!(pasted.source_bytes(), value.source_bytes);
-        let mut existing = open(b"<p>left right</p>", Format::Html);
-        let prepared = existing
-            .prepare_clipboard_fragment(5..5, &fragment, "&B")
-            .unwrap()
-            .unwrap();
-        existing.commit_model_transaction(prepared).unwrap();
-        assert_eq!(
-            existing.source_bytes(),
-            b"<p>left <B title='authored' style='color: #ff0000'>&#38;B</B>right</p>"
-        );
-    }
-
-    #[test]
     fn partial_rtf_carries_group_controls_and_font_table() {
         let original = open(
             br"{\rtf1\ansi{\fonttbl{\f0 Helvetica;}}\f0 before {\b Bold text} after}",
@@ -1338,95 +1402,13 @@ mod tests {
     }
 
     #[test]
-    fn partial_html_carries_source_owned_named_style_definitions() {
-        let mut sheet = StyleSheet::for_format(Format::Html);
-        let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
-        paragraph.character.foreground = Some(super::super::super::Color {
-            red: 1.0,
-            green: 0.0,
-            blue: 0.0,
-            alpha: 1.0,
-        });
-        let metadata = sheet
-            .block_style_metadata(&sheet.base_paragraph)
-            .unwrap()
-            .clone();
-        sheet
-            .install_source_definitions(&[StyleDefinitionEdit::InsertBlock {
-                style: paragraph,
-                metadata,
-            }])
-            .unwrap();
-        let rule =
-            super::super::super::html_styles::write_rule(&sheet, &sheet.base_paragraph, false)
-                .unwrap();
-        let source = format!("<style id=\"viem-styles\" data-viem-version=\"2\">\n{rule}</style><p>before <b>Bold</b> after</p>");
-        let original = open(source.as_bytes(), Format::Html);
-        let (fragment, value) = export(&original, "Bold");
-        assert!(value.source_text.starts_with("<style"));
-        assert!(value.source_exact);
-        assert_eq!(value.character_runs[0]["foreground"]["red"], 1.0);
-        let pasted = paste_empty(&fragment, &value, Format::Html);
-        assert_eq!(pasted.source_bytes(), value.source_bytes);
-        let existing = open(b"<p>untouched</p>", Format::Html);
-        assert!(existing
-            .prepare_clipboard_fragment(3..3, &fragment, "Bold")
-            .is_err());
-        assert_eq!(existing.source_bytes(), b"<p>untouched</p>");
-    }
-
-    #[test]
-    fn natural_paragraph_direction_uses_context_outside_the_copied_word() {
-        let original = open(
-            "<p style='text-align:end'>العربية Latin</p>".as_bytes(),
-            Format::Html,
-        );
-        let (_, value) = export(&original, "Latin");
-        assert_eq!(value.paragraph_runs[0]["base_direction"], "Natural");
-        assert_eq!(value.paragraph_runs[0]["resolved_direction"], "RightToLeft");
-        assert_eq!(value.paragraph_runs[0]["alignment"], "End");
-    }
-
-    #[test]
-    fn html_separator_clipboard_retains_authored_boundary_source() {
-        let multiple = "<P title='left'>A</P><!-- edge-1 --><p title='middle'></p><!-- edge-2 --><P title='right'>B</P>";
-        for (source, range, expected) in [
-            ("<p>A</p><p>B</p>", 1..2, "<p></p><p></p>"),
-            ("<P title='left'>A</P><!-- keep --><p title='right'>B</p>", 1..2, "<P title='left'></P><!-- keep --><p title='right'></p>"),
-            (multiple, 1..2, "<P title='left'></P><!-- edge-1 --><p title='middle'></p>"),
-            (multiple, 2..3, "<p title='middle'></p><!-- edge-2 --><P title='right'></P>"),
-            (multiple, 1..3, "<P title='left'></P><!-- edge-1 --><p title='middle'></p><!-- edge-2 --><P title='right'></P>"),
-        ] {
-            let original = open(source.as_bytes(), Format::Html);
-            let fragment = original.clipboard_fragment(range.clone()).unwrap();
-            let value: Export = serde_json::from_str(fragment.json()).unwrap();
-            assert!(value.source_exact, "{source:?} {}", value.source_text);
-            assert_eq!(value.source_bytes, expected.as_bytes());
-            let reopened = open(&value.source_bytes, Format::Html);
-            assert_eq!(reopened.text(), &original.text()[range.clone()]);
-            assert_eq!(reopened.projection().hard_breaks_for_region(&(0..reopened.text().len())), (0..range.len()).collect::<Vec<_>>());
-            let mut pasted = paste_empty(&fragment, &value, Format::Html);
-            assert_eq!(pasted.source_bytes(), expected.as_bytes());
-            assert!(pasted.undo());
-            assert!(pasted.source_bytes().is_empty());
-            assert!(pasted.redo());
-            assert_eq!(pasted.source_bytes(), expected.as_bytes());
-            assert_eq!(original.source_bytes(), source.as_bytes());
-        }
-    }
-
-    #[test]
     fn rectangular_clipboard_owns_only_selected_source_segments_and_resolved_styles() {
-        let empty = open(b"<p></p><!--outside-empty-->", Format::Html);
+        let empty = open(b"", Format::Markdown);
         let empty_fragment = empty.clipboard_fragment_rows(&[vec![0..0]]).unwrap();
         let empty_value: Export = serde_json::from_str(empty_fragment.json()).unwrap();
         assert!(empty_value.source_text.is_empty());
         assert!(empty_value.source_segments.is_empty());
         for (format, source) in [
-            (
-                Format::Html,
-                "<p><b>ab</b> outside-one<br><b>cd</b> outside-two</p><!--outside-whole-->",
-            ),
             (Format::Markdown, "__ab__ outside-one\n\n__cd__ outside-two"),
             (
                 Format::Rtf,
@@ -1462,7 +1444,7 @@ mod tests {
 
     #[test]
     fn source_mode_exports_unformatted_original_source_spelling() {
-        for format in [Format::MarkdownSource, Format::HtmlSource] {
+        for format in [Format::MarkdownSource] {
             let source = b"**one**\r\n\r\n<p>two</p>";
             let original = Document::from_bytes_with_file_format(
                 source.to_vec(),
@@ -1480,6 +1462,115 @@ mod tests {
             assert_eq!(value.source_bytes, source);
             assert!(value.character_runs.is_empty());
         }
+    }
+
+    #[test]
+    fn passive_html_import_retains_inline_styles_without_html_document_mode() {
+        let (fragment, text) = ClipboardFragment::from_html_utf8(
+            b"<style>p{color:green}</style><script>bad()</script><p><b>A&amp;B</b> <span style='color:#ff0000'>red</span></p>",
+        ).unwrap();
+        assert_eq!(text, "A&B red");
+        let value: Export = serde_json::from_str(fragment.json()).unwrap();
+        assert!(value.is_rich);
+        assert_eq!(value.source_format, 1);
+        assert_eq!(value.source_bytes, text.as_bytes());
+        assert_eq!(value.character_runs[0]["bold"], true);
+        assert!(value
+            .character_runs
+            .iter()
+            .any(|run| run["foreground"]["red"] == 1.0 && run["foreground"]["green"] == 0.0));
+        assert!(ClipboardFragment::from_json(fragment.json(), &text).is_ok());
+        assert!(fragment.can_insert_rich_source(Format::Markdown, &text));
+        assert!(!fragment.can_insert_rich_source(Format::PlainText, &text));
+    }
+
+    #[test]
+    fn normalized_html_unrepresentable_style_returns_no_rich_transaction() {
+        let (fragment, text) = ClipboardFragment::from_html_utf8(
+            b"<p><span style='font-family:Arial,sans-serif'>fallback</span></p>",
+        )
+        .unwrap();
+        let initial = br"{\rtf1 }";
+        let document = open(initial, Format::Rtf);
+        assert!(document
+            .prepare_clipboard_fragment(0..0, &fragment, &text)
+            .unwrap()
+            .is_none());
+        assert_eq!(document.source_bytes(), initial);
+    }
+
+    #[test]
+    fn normalized_html_markdown_reuses_inline_writer_and_retains_breaks() {
+        let (fragment, plain) = ClipboardFragment::from_html_utf8(
+            b"<p><b><i>A * B &amp; C</i></b><br>next</p><p>last</p>",
+        )
+        .unwrap();
+        assert_eq!(plain, "A * B & C\nnext\nlast");
+        let mut document = open(b"", Format::Markdown);
+        let prepared = document
+            .prepare_clipboard_fragment(0..0, &fragment, &plain)
+            .unwrap()
+            .unwrap();
+        document.commit_model_transaction(prepared).unwrap();
+        let saved = document.source_bytes();
+        assert!(std::str::from_utf8(&saved)
+            .unwrap()
+            .contains(r"***A \* B & C***"));
+        let reopened = open(&saved, Format::Markdown);
+        for document in [&document, &reopened] {
+            assert_eq!(document.text(), plain);
+            assert_eq!(
+                document
+                    .projection()
+                    .hard_breaks_for_region(&(0..plain.len())),
+                vec![9, 14]
+            );
+            let style = crate::layout::DocumentLayoutStyles::semantic_character_at(
+                document.projection(),
+                0,
+                false,
+            )
+            .unwrap();
+            assert!(style.bold);
+            assert_eq!(style.slant, super::super::super::FontSlant::Italic);
+        }
+    }
+
+    #[test]
+    fn normalized_html_quote_transform_retains_break_offsets_and_styles() {
+        let (fragment, _) =
+            ClipboardFragment::from_html_utf8(b"<p><b>\"bold\"</b><br>next</p><p>last</p>")
+                .unwrap();
+        let (text, transformed) = fragment
+            .transform_quotes(
+                None,
+                |character, _| {
+                    if character == '\"' {
+                        '“'
+                    } else {
+                        character
+                    }
+                },
+            )
+            .unwrap();
+        let value: Export = serde_json::from_str(transformed.json()).unwrap();
+        assert!(value.is_rich);
+        assert_eq!(text, "“bold“\nnext\nlast");
+        assert_eq!(value.hard_breaks, vec![10, 15]);
+        assert_eq!(value.character_runs[0]["bold"], true);
+        assert_eq!(value.character_runs[0]["end"], 10);
+    }
+
+    #[test]
+    fn passive_html_import_resolves_natural_paragraph_direction() {
+        let (fragment, _) = ClipboardFragment::from_html_utf8(
+            "<p style='text-align:end'>العربية Latin</p>".as_bytes(),
+        )
+        .unwrap();
+        let value: Export = serde_json::from_str(fragment.json()).unwrap();
+        assert_eq!(value.paragraph_runs[0]["base_direction"], "Natural");
+        assert_eq!(value.paragraph_runs[0]["resolved_direction"], "RightToLeft");
+        assert_eq!(value.paragraph_runs[0]["alignment"], "End");
     }
 
     #[test]

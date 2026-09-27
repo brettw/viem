@@ -151,11 +151,10 @@ Implemented: `` w W s p ( ) b [ ] < > { } B " ' ` ``, with real care taken over
 escaping, decimal points inside sentences, East Asian terminators, and never
 splitting a grapheme.
 
-Missing: **`it` and `at`**, the tag-block objects. This is the one gap that
-argues with the product itself. Viem treats HTML as a first-class source format
-with a full html5ever tree, HTML source views, quote handling, and auto-closing
-tags, and `cit` is the single most useful text object anyone editing HTML has.
-The tree is already in the document model; the object just isn't wired to a key.
+Missing: **`it` and `at`**, the tag-block objects. HTML files now use literal
+Code mode, so these would require a source-oriented tag-object implementation.
+The passive HTML parser used by Markdown and clipboard import is not an editing
+model for Code files.
 
 ## 4. Search
 

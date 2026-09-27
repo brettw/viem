@@ -575,9 +575,9 @@ mod tests {
     #[test]
     fn unicode_words_cross_rope_and_style_boundaries() {
         let document = Document::from_bytes(
-            b"<p>caf<b>&#233;</b>teria cafe&#769;ine</p><p>caf</p>".to_vec(),
+            b"caf<b>&#233;</b>teria cafe&#769;ine\n\ncaf".to_vec(),
             Encoding::Utf8,
-            Format::Html,
+            Format::Markdown,
         )
         .unwrap();
         let at = document.projection().text_tree().byte_len();

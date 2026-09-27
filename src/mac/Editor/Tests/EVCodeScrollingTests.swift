@@ -105,8 +105,14 @@ final class EVCodeScrollingTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-code-scroll-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        // SwiftPM's runner has no bundled fallback syntax resources. Use the
+        // same runtime as the packaged app when Tree-sitter yields a time slice.
+        var checkout = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { checkout.deleteLastPathComponent() }
+        let resources = checkout.appendingPathComponent(".build/Viem.app/Contents/Resources")
+        _ = try Data(contentsOf: resources.appendingPathComponent("vim/runtime/syntax/rust.vim"))
         let backend = EVCoreDocumentBackend(configuration:
-            EVConfigurationStore(directory: directory, legacyDefaults: nil))
+            EVConfigurationStore(directory: directory, legacyDefaults: nil, bundleResourceURL: resources))
         let source = Data((0..<4_096).map { index in
             if index >= 128 && index % 11 == 0 {
                 // These glyphs first appear outside initial layout coverage and

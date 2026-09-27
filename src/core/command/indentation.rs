@@ -144,8 +144,7 @@ impl CommandInterpreter {
         }
         self.cursor = delete_with_cursor(document, range)?;
         if let Some(session) = self.insert_session.as_mut() {
-            remove_typing_inserted_suffix(
-                document.format(),
+            remove_inserted_suffix(
                 &mut session.last_inserted,
                 &generated.text,
             );
@@ -379,7 +378,7 @@ impl CommandInterpreter {
         self.finish_typing_caret(document)?;
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
-            session.record_deleted(document.format(), removed, EditSessionStep::Backspace);
+            session.record_deleted(removed, EditSessionStep::Backspace);
         }
         Ok(Some(CommandOutput {
             document_changed: true,

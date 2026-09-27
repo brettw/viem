@@ -337,14 +337,6 @@ fn disjoint_deletions_that_empty_one_code_span_commit_atomically() {
 #[test]
 fn rich_text_deletions_cover_inline_scopes_entities_objects_and_paragraphs() {
     for (format, source) in [
-        (
-            Format::Html,
-            "<p>a <code>b</code> c</p><p>d <b>e</b></p><!--keep-->",
-        ),
-        (
-            Format::Html,
-            "<p>a &amp; <b>&NotEqualTilde;</b><img src='image.png'>z</p>",
-        ),
         (Format::Rtf, "{\\rtf1\\ansi a {\\b b} c\\par d {\\i e}}"),
     ] {
         let document =

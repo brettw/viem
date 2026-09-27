@@ -97,8 +97,7 @@ impl Document {
             sources.splice(patch.range(), patch.replacement());
         }
         scratch.commit_model_transaction(styled)?;
-        let prepared =
-            self.prepare_source_only_patches(sources.source_patches(&scratch.state().source)?)?;
+        let prepared = self.prepare_source_only_patches(sources.source_patches())?;
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };

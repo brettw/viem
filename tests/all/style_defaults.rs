@@ -164,7 +164,6 @@ fn saved_character_percentage_inheritance_keeps_each_valid_declaration() {
 #[test]
 fn native_defaults_do_not_replace_authored_font_requests() {
     for (format, source) in [
-        (Format::Html, "<p style=\"font-family: 'SF Pro'\">Text</p>"),
         (
             Format::Rtf,
             r"{\rtf1\ansi\deff0{\fonttbl{\f0 SF Pro;}}\f0 Text}",
@@ -185,7 +184,6 @@ fn native_defaults_do_not_replace_authored_font_requests() {
 #[test]
 fn rich_default_list_paragraph_styles_are_assignable_source_backed_and_undoable() {
     for (format, source) in [
-        (Format::Html, "<p data-keep='x'>Words</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1 Words{\*\unknown keep}}"),
     ] {
         for level in 1..=3 {
@@ -230,65 +228,6 @@ fn rich_default_list_paragraph_styles_are_assignable_source_backed_and_undoable(
 }
 
 #[test]
-fn deleting_html_list_defaults_does_not_regenerate_them_on_reopen_or_edit() {
-    for level in [1, 3, 4] {
-        let source = format!(
-            "{}Words{}<!--keep-->",
-            "<ul><li>".repeat(level),
-            "</li></ul>".repeat(level)
-        );
-        let mut document = open(&source, Format::Html);
-        document
-            .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
-                document: document.id(),
-                revision: document.revision(),
-                enabled: true,
-            })
-            .unwrap();
-        let definitions_enabled = document.source_bytes();
-        let id = StyleId(format!("BulletedList{level}"));
-        document
-            .apply_style_request(StyleModelRequest::new(
-                document.id(),
-                document.revision(),
-                StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                    origin: StyleDefinitionOrigin::SourceBacked,
-                    edit: StyleDefinitionEdit::DeleteBlock(id.clone()),
-                }),
-            ))
-            .unwrap();
-        let saved = String::from_utf8(document.source_bytes()).unwrap();
-        assert!(saved.ends_with("<!--keep-->"));
-        assert!(
-            saved.contains("<li class=\"viem-p-506172616772617068\">Words"),
-            "{saved}"
-        );
-        let reopened = open(&saved, Format::Html);
-        assert!(reopened
-            .projection()
-            .style_sheet()
-            .block_style(&id)
-            .is_none());
-        assert_eq!(
-            reopened.projection().blocks().last().unwrap().style,
-            StyleId::from("Paragraph")
-        );
-        let at = document.text().find("Words").unwrap() + 1;
-        document.replace(at..at + 1, "O").unwrap();
-        assert!(document
-            .projection()
-            .style_sheet()
-            .block_style(&id)
-            .is_none());
-        assert!(document.undo());
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), definitions_enabled);
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
 fn defaults_define_two_four_level_families_independent_of_used_depth() {
     let expected = [
         "BulletedList1",
@@ -304,7 +243,6 @@ fn defaults_define_two_four_level_families_independent_of_used_depth() {
         Format::PlainText,
         Format::Markdown,
         Format::MarkdownSource,
-        Format::Html,
         Format::Rtf,
     ] {
         assert_eq!(lists(&open("", format)), expected, "{format:?}");
@@ -313,8 +251,7 @@ fn defaults_define_two_four_level_families_independent_of_used_depth() {
         .map(|depth| format!("{}- Text", "  ".repeat(depth)))
         .collect::<Vec<_>>()
         .join("\n");
-    let html = format!("{}Deep{}", "<ul><li>".repeat(20), "</li></ul>".repeat(20));
-    for (format, source) in [(Format::Markdown, markdown), (Format::Html, html)] {
+    for (format, source) in [(Format::Markdown, markdown),] {
         let document = open(&source, format);
         assert_eq!(lists(&document), expected);
         assert_eq!(document.source_bytes(), source.as_bytes());
@@ -412,8 +349,6 @@ fn loading_defaults_keeps_all_builtin_declarations_visible() {
     for format in [
         Format::PlainText,
         Format::Markdown,
-        Format::Html,
-        Format::HtmlSource,
         Format::Rtf,
     ] {
         let mut document = open("", format);
@@ -476,53 +411,5 @@ fn clearing_all_builtin_deltas_inherits_base_and_survives_settings_reopen() {
         let mut reopened = open("# Title\n\nText", Format::Markdown);
         reopened.initialize_style_defaults(&settings).unwrap();
         assert_inherits_base(&reopened, &id, character);
-    }
-}
-
-#[test]
-fn cleared_html_builtin_definitions_remain_inherited_after_save_reopen() {
-    let source = "<h1>Title</h1><p>Text <code>code</code><a href='/x'>link</a></p><!--keep-->";
-    let original = open(source, Format::Html);
-    let defaults = original.export_style_defaults().unwrap();
-    let sheet = original.projection().style_sheet();
-    let ids = sheet
-        .block_styles()
-        .filter(|style| style.id != sheet.base_paragraph)
-        .map(|style| (style.id.clone(), false))
-        // Link is an application appearance overlay; Code is the built-in
-        // character definition carried by native HTML style export.
-        .chain(
-            sheet
-                .character_styles()
-                .filter(|style| style.id.0 == "Code")
-                .map(|style| (style.id.clone(), true)),
-        )
-        .collect::<Vec<_>>();
-    for (id, character) in ids {
-        let mut document = open(source, Format::Html);
-        document.initialize_style_defaults(&defaults).unwrap();
-        document
-            .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
-                document: document.id(),
-                revision: document.revision(),
-                enabled: true,
-            })
-            .unwrap();
-        let before = document.source_bytes();
-        clear_definition(&mut document, &id, character);
-        assert_inherits_base(&document, &id, character);
-        let saved = document.source_bytes();
-        let changed = saved != before;
-        assert!(String::from_utf8_lossy(&saved).contains("<!--keep-->"));
-        let mut reopened = Document::from_bytes(saved, Encoding::Utf8, Format::Html).unwrap();
-        reopened.initialize_style_defaults(&defaults).unwrap();
-        assert_inherits_base(&reopened, &id, character);
-        document.insert(document.text().len(), " appended").unwrap();
-        assert_inherits_base(&document, &id, character);
-        assert!(document.undo());
-        if changed { assert!(document.undo()); }
-        assert_eq!(document.source_bytes(), before);
-        if changed { assert!(document.redo()); }
-        assert_inherits_base(&document, &id, character);
     }
 }

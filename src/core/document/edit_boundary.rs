@@ -1,6 +1,6 @@
 //! Logical paragraph ownership shared by keyboard actions and source edits.
 //! Inline markup and caret affinity do not create additional block boundaries.
-use super::{Block, Document, DocumentError, Format};
+use super::{Block, Document, DocumentError};
 use std::ops::Range;
 
 pub(super) fn paragraph_at(document: &Document, at: usize) -> Result<Option<Block>, DocumentError> {
@@ -21,7 +21,7 @@ pub(super) fn is_code_paragraph(document: &Document, block: &Block) -> Result<bo
     }
     match document.format() {
         format if format.is_markdown() => super::markdown_quotes::is_fenced_block(document, block),
-        Format::Html => super::html_quotes::in_native_pre(document, block.range.start),
+
         _ => Ok(false),
     }
 }

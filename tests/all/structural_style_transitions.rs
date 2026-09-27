@@ -12,7 +12,6 @@ fn open(source: &str, format: Format) -> Document {
 #[test]
 fn list_and_quote_styles_compose_and_leave_typing_usable() {
     for (format, source) in [
-        (Format::Html, "<!--keep--><ul data-x='list'><li>before</li><li><b>é العربية</b></li><li>after</li></ul><!--end-->"),
         (Format::Markdown, "- before\n- **é العربية**\n- after"),
     ] {
         let mut core = Core::new(open(source, format));
@@ -63,7 +62,6 @@ fn list_and_quote_styles_compose_and_leave_typing_usable() {
 #[test]
 fn selecting_middle_list_items_changes_only_their_structural_syntax() {
     for (format, source) in [
-        (Format::Html, "<!--start--><ul id='keep'><li data-x='a'>before</li><li><b>middle</b></li><li><em>second</em></li><li data-x='z'>after</li></ul><!--end-->"),
         (Format::Markdown, "- before\n- **middle**\n- *second*\n- after"),
     ] {
         let mut doc = open(source, format);
@@ -89,49 +87,8 @@ fn selecting_middle_list_items_changes_only_their_structural_syntax() {
 }
 
 #[test]
-fn edge_list_items_do_not_leave_empty_list_containers() {
-    for (source, needle) in [
-        (
-            "<ul data-keep='list'><li data-keep='item'>one <b>two</b></li><li>other</li></ul>",
-            "one",
-        ),
-        (
-            "<ol start='3'><li>other</li><li data-keep='item'>one <b>two</b></li></ol>",
-            "one",
-        ),
-        ("<ul><li></li><li>other</li></ul>", ""),
-    ] {
-        let mut doc = open(source, Format::Html);
-        let before = doc.text().to_owned();
-        let at = before.find(needle).unwrap();
-        doc.set_paragraph_style(at..at, "Block quote".into())
-            .unwrap();
-        assert_eq!(doc.text(), before);
-        let saved = doc.source_bytes();
-        let source_after = std::str::from_utf8(&saved).unwrap();
-        assert!(!source_after.contains("<ul data-keep='list'></ul>"));
-        assert!(!source_after.contains("<ol start='3'></ol>"));
-        assert_eq!(open(source_after, Format::Html).text(), before);
-        assert!(doc.undo());
-        assert_eq!(doc.source_bytes(), source.as_bytes());
-        assert!(doc.redo());
-        assert_eq!(doc.source_bytes(), saved);
-    }
-}
-
-#[test]
 fn heading_and_code_to_quote_to_heading_preserve_text_and_allow_typing() {
     for (format, source, needle) in [
-        (
-            Format::Html,
-            "<h2 data-keep='heading'>one <b>two</b></h2><p>tail</p>",
-            "one",
-        ),
-        (
-            Format::Html,
-            "<pre data-keep='code'>one\n # two</pre><p>tail</p>",
-            "one",
-        ),
         (Format::Markdown, "# one **two**\n\ntail", "one"),
         (
             Format::Markdown,
@@ -207,10 +164,6 @@ fn heading_and_code_to_quote_to_heading_preserve_text_and_allow_typing() {
 #[test]
 fn explicitly_reassigning_imported_nested_quote_retains_inner_styles() {
     for (format, source) in [
-        (
-            Format::Html,
-            "<ul><li><blockquote><h2>one</h2></blockquote></li><li>tail</li></ul>",
-        ),
         (Format::Markdown, "> - one\n\ntail"),
     ] {
         let mut doc = open(source, format);
@@ -241,27 +194,4 @@ fn explicitly_reassigning_imported_nested_quote_retains_inner_styles() {
             assert_eq!(doc.source_bytes(), after);
         }
     }
-}
-
-#[test]
-fn mixed_selection_preserves_existing_quote_attributes() {
-    let source = "<blockquote cite='keep' class='custom'><p>quoted</p></blockquote><ul><li>item</li><li>tail</li></ul>";
-    let mut doc = open(source, Format::Html);
-    let before = doc.text().to_owned();
-    let end = before.find("tail").unwrap() - 1;
-    doc.set_paragraph_style(0..end, "Block quote".into())
-        .unwrap();
-    assert_eq!(doc.text(), before);
-    let after = doc.source_bytes();
-    assert!(after.starts_with(b"<blockquote cite='keep' class='custom'><p>quoted</p></blockquote>"));
-    assert_eq!(
-        Document::from_bytes(after.clone(), Encoding::Utf8, Format::Html)
-            .unwrap()
-            .text(),
-        before
-    );
-    assert!(doc.undo());
-    assert_eq!(doc.source_bytes(), source.as_bytes());
-    assert!(doc.redo());
-    assert_eq!(doc.source_bytes(), after);
 }

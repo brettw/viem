@@ -5,6 +5,8 @@
 //! verified before a source transaction is committed.
 
 mod conversion;
+mod html_export;
+pub use html_export::{HtmlExport, HtmlExportError};
 mod code_presentation;
 mod completion;
 pub use completion::{WordCompletionBatch, WordCompletionDirection, WordCompletionPrefix, WordCompletionSearch, MAX_COMPLETION_WORD_BYTES};
@@ -24,18 +26,9 @@ mod history_memory;
 mod large_file_tests;
 mod html;
 mod html5_tree;
-mod html_direct;
-mod html_inline_cleanup;
-mod html_paragraph;
-mod html_paragraph_typing;
-mod html_merge;
-mod html_quotes;
-mod html_scope_index;
-mod html_source;
 mod html_styles;
-mod html_typing;
-pub(crate) use html_typing::ReplacementTypingContext;
-mod html_whitespace;
+mod replacement_context;
+pub(crate) use replacement_context::ReplacementTypingContext;
 mod lists;
 mod containers;
 pub use containers::{ContainerIdentity, ContainerKind, ContainerAttributes, ContainerMembership, ContainerNode, ContainerStructure};
@@ -63,7 +56,7 @@ mod range_index;
 mod selected_styles;
 mod source;
 pub(crate) mod work_statistics;
-pub use work_statistics::{measure_document_work, DocumentWorkFallback, DocumentWorkStatistics};
+pub use work_statistics::{measure_document_work, DocumentWorkStatistics};
 mod source_edit;
 mod source_line_index;
 mod source_lines;
@@ -306,10 +299,6 @@ impl TextPoint {
 pub struct TextEdit {
     pub range: Range<usize>,
     pub replacement: String,
-    // Only spaces synthesized by formatted editing receive the compactable
-    // &nbsp; spelling. An explicitly inserted NBSP remains nonbreaking.
-    html_protective_spaces: Vec<usize>,
-    html_normalized: bool,
 }
 
 impl TextEdit {
@@ -317,8 +306,6 @@ impl TextEdit {
         Self {
             range,
             replacement: replacement.into(),
-            html_protective_spaces: Vec::new(),
-            html_normalized: false,
         }
     }
 }
@@ -330,11 +317,6 @@ pub struct FormattedPayloadEdit {
     range: Range<usize>,
     payload: FormattedTextPayload,
     boundary_affinity: Option<BoundaryAffinity>,
-    html_protective_spaces: Vec<usize>,
-    typing_normalized: bool,
-    /// Bytes at the payload's start which only normalize existing HTML
-    /// whitespace; typing style applies to the authored suffix separately.
-    html_preserved_prefix_len: usize,
 }
 
 impl FormattedPayloadEdit {
@@ -343,9 +325,6 @@ impl FormattedPayloadEdit {
             range,
             payload,
             boundary_affinity: None,
-            html_protective_spaces: Vec::new(),
-            typing_normalized: false,
-            html_preserved_prefix_len: 0,
         }
     }
 
@@ -368,8 +347,6 @@ impl FormattedPayloadEdit {
         TextEdit {
             range: self.range.clone(),
             replacement: self.payload.text().to_owned(),
-            html_protective_spaces: self.html_protective_spaces.clone(),
-            html_normalized: self.typing_normalized,
         }
     }
 }
@@ -416,7 +393,7 @@ pub enum DocumentError {
         character: char,
     },
     /// The encoding accepts this scalar but the configured format pipeline
-    /// cannot retain it as requested text (for example NUL in HTML, or a
+    /// cannot retain it as requested text (for example a
     /// literal CR in a plain-text pipeline interpreting CR as line endings).
     UnrepresentableFormattedCharacter {
         format: Format,
@@ -621,7 +598,6 @@ impl std::error::Error for HardLineSourceRangeError {}
 #[derive(Clone)]
 struct DocumentState {
     revision: Revision,
-    include_style_definitions_in_file: bool,
     source: SourceSnapshot,
     projection: FormattedDocument,
     /// Exact primary-source extents for the projection's hard lines. The
@@ -771,10 +747,7 @@ impl Document {
             .checked_add(1)
             .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
         sheet.set_configuration_revision(StyleSheetRevision(generation));
-        let mut state = if self.format().is_html() {
-            self.reproject_html_configuration(&sheet)
-                .map_err(|error| StyleDefaultsError::Json(error.to_string()))?
-        } else {
+        let mut state = {
             self.state().clone()
         };
         let assignment = state.projection.document_style().clone();
@@ -786,36 +759,6 @@ impl Document {
         // transaction still advances both style and projection identities.
         self.next_revision = self.next_revision.max(generation);
         Ok(diagnostics)
-    }
-
-    /// Relative source declarations must resolve after buffer defaults and
-    /// native definitions have been installed in the parser's style sheet.
-    fn reproject_html_configuration(
-        &self,
-        sheet: &StyleSheet,
-    ) -> Result<DocumentState, DocumentError> {
-        let before = self.state();
-        let decoded = self.encoding().decode(&before.source.bytes())?;
-        let mut state = build_state_from_decoded_with_configuration(
-            before.source.clone(),
-            decoded,
-            before.format,
-            before.file_format,
-            before.file_format_origin,
-            before.line_ending_evidence,
-            before.revision,
-            Some(sheet),
-        )?;
-        state
-            .projection
-            .install_unchanged_text_storage(&before.projection)
-            .map_err(DocumentError::FormattedTextStorage)?;
-        state
-            .projection
-            .install_source_block_ids(&before.projection)
-            .map_err(block_identity_document_error)?;
-        state.include_style_definitions_in_file = before.include_style_definitions_in_file;
-        Ok(state)
     }
 
     pub fn export_style_defaults(&self) -> Result<Vec<u8>, StyleDefaultsError> {
@@ -855,7 +798,6 @@ impl Document {
         let projection = projection::layout_test_plain_projection(text);
         let state = DocumentState {
             revision: Revision(0),
-            include_style_definitions_in_file: false,
             source,
             projection,
             source_hard_lines: SourceHardLineIndex::new(
@@ -1080,11 +1022,6 @@ impl Document {
 
     pub fn revision(&self) -> Revision {
         self.state().revision
-    }
-
-    /// Whether HTML native style definitions are included in this buffer's source.
-    pub fn include_style_definitions_in_file(&self) -> bool {
-        self.state().include_style_definitions_in_file
     }
 
     /// Work performed to construct the initial immutable projection.
@@ -1701,7 +1638,7 @@ impl Document {
                 return Ok(None);
             }
             let BlockKind::ListItem { item_start, .. } = block.kind else {
-                if matches!(self.format(), Format::Html | Format::Markdown)
+                if matches!(self.format(), Format::Markdown)
                     || (self.format() == Format::Rtf
                         && at == block.range.end
                         && self
@@ -2497,28 +2434,6 @@ fn build_state_from_decoded(
     line_ending_evidence: LineEndingEvidence,
     revision: Revision,
 ) -> Result<DocumentState, DocumentError> {
-    build_state_from_decoded_with_configuration(
-        source,
-        decoded,
-        format,
-        file_format,
-        file_format_origin,
-        line_ending_evidence,
-        revision,
-        None,
-    )
-}
-
-fn build_state_from_decoded_with_configuration(
-    source: SourceSnapshot,
-    decoded: DecodedText,
-    format: Format,
-    file_format: FileFormat,
-    file_format_origin: FileFormatOrigin,
-    line_ending_evidence: LineEndingEvidence,
-    revision: Revision,
-    configuration: Option<&StyleSheet>,
-) -> Result<DocumentState, DocumentError> {
     let normalized = if format.is_literal() {
         normalize_literal(&decoded, file_format)
     } else {
@@ -2535,34 +2450,9 @@ fn build_state_from_decoded_with_configuration(
         source_line_start = ending.source.end;
     }
     source_hard_lines.push(source_line_start..source_content_end);
-    let projection = match format {
-        Format::Html => html::project_tokens_with_configuration(
-            &normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-            html5_tree::tokens(&normalized.text),
-            configuration,
-        ),
-        Format::HtmlSource => html_source::project_with_configuration(
-            &normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-            configuration,
-        ),
-        _ => project(
-            &normalized,
-            format,
-            revision,
-            source_content_start,
-            source_content_end,
-        ),
-    };
+    let projection = project(&normalized, format, revision, source_content_start, source_content_end);
     Ok(DocumentState {
         revision,
-        include_style_definitions_in_file: format.is_html()
-            && projection.style_sheet().has_html_native_definitions(),
         source,
         projection,
         source_hard_lines: SourceHardLineIndex::new(source_hard_lines)
@@ -2613,8 +2503,7 @@ mod tests {
             (super::Format::Code, "Text"),
             (super::Format::Markdown, "Text"),
             (super::Format::MarkdownSource, "Text"),
-            (super::Format::Html, "<p style='font-size:20pt'>Text</p><!--keep-->"),
-            (super::Format::HtmlSource, "<p>Text</p><!--keep-->"),
+
             (super::Format::Rtf, r"{\rtf1\fs40 Text}"),
         ] {
             let mut document = super::Document::from_bytes(

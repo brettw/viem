@@ -14,51 +14,94 @@ pub(super) fn joining_patches(
     }
     let projection = document.projection();
     let blocks = projection.blocks_for_region(range);
-    let Some(first) = blocks.iter().find(|block| {
-        block.range.start <= range.start && range.start <= block.range.end
-    }) else { return Ok(None); };
-    let Some(last) = blocks.iter().rev().find(|block| {
-        block.range.start <= range.end && range.end <= block.range.end
-    }) else { return Ok(None); };
-    if first.id == last.id || range.end <= first.range.end { return Ok(None); }
+    let Some(first) = blocks
+        .iter()
+        .find(|block| block.range.start <= range.start && range.start <= block.range.end)
+    else {
+        return Ok(None);
+    };
+    let Some(last) = blocks
+        .iter()
+        .rev()
+        .find(|block| block.range.start <= range.end && range.end <= block.range.end)
+    else {
+        return Ok(None);
+    };
+    if first.id == last.id || range.end <= first.range.end {
+        return Ok(None);
+    }
     for block in [first, last] {
-        if block.style.0 == "Code Block" || super::super::markdown_quotes::is_fenced_block(document, block)? {
+        if block.style.0 == "Code Block"
+            || super::super::markdown_quotes::is_fenced_block(document, block)?
+        {
             // The code adapter relocates fences and translates literal content.
             return Ok(None);
         }
     }
-    let at = projection.source_insertion_point(last.range.start, true)
+    let at = projection
+        .source_insertion_point(last.range.start, true)
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let line = document.state().source_hard_lines.line_at_offset(at)
+    let line = document
+        .state()
+        .source_hard_lines
+        .line_at_offset(at)
         .and_then(|index| document.state().source_hard_lines.get(index))
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let bytes = document.state().source.bytes_in(line.start..line.end.min(line.start + 512))
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(line.start..line.end.min(line.start + 512))
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
     let quote = super::super::markdown_quotes::prefix(&decoded.text);
     let body = &decoded.text[quote..];
-    let mut prefix = quote + super::super::markdown_blocks::marker_prefix_length(body)
-        .unwrap_or_else(|| super::super::projection::markdown_block_prefix(body, 0, body.len()).0);
-    if matches!(last.kind, super::super::BlockKind::ListItem { item_start: false, .. }) {
-        prefix += decoded.text[prefix..].len() - decoded.text[prefix..].trim_start_matches([' ', '\t']).len();
+    let mut prefix = quote
+        + super::super::markdown_blocks::marker_prefix_length(body).unwrap_or_else(|| {
+            super::super::projection::markdown_block_prefix(body, 0, body.len()).0
+        });
+    if matches!(
+        last.kind,
+        super::super::BlockKind::ListItem {
+            item_start: false,
+            ..
+        }
+    ) {
+        prefix += decoded.text[prefix..].len()
+            - decoded.text[prefix..].trim_start_matches([' ', '\t']).len();
     }
-    let start = projection.source_range(first.range.end..first.range.end + 1)
-        .ok_or(DocumentError::AmbiguousProjection)?.start;
-    let end = line.start + document.encoding().encode_fragment(&decoded.text[..prefix])?.len();
+    let start = projection
+        .source_range(first.range.end..first.range.end + 1)
+        .ok_or(DocumentError::AmbiguousProjection)?
+        .start;
+    let end = line.start
+        + document
+            .encoding()
+            .encode_fragment(&decoded.text[..prefix])?
+            .len();
     let mut sources = vec![start..end];
     for selected in [range.start..first.range.end, last.range.start..range.end] {
         if !selected.is_empty() {
-            sources.extend(super::super::source_edit::visible_runs(projection, &selected)?
-                .into_iter().map(|run| run.source));
+            sources.extend(
+                super::super::source_edit::visible_runs(projection, &selected)?
+                    .into_iter()
+                    .map(|run| run.source),
+            );
         }
     }
-    sources.extend(super::super::markdown_code::selected_inline_delimiters(document, range)?);
+    sources.extend(super::super::markdown_code::selected_inline_delimiters(
+        document, range,
+    )?);
     sources.sort_by_key(|source| (source.start, source.end));
     let mut merged: Vec<Range<usize>> = Vec::new();
     for source in sources {
-        if let Some(previous) = merged.last_mut().filter(|previous| source.start <= previous.end) {
+        if let Some(previous) = merged
+            .last_mut()
+            .filter(|previous| source.start <= previous.end)
+        {
             previous.end = previous.end.max(source.end);
-        } else { merged.push(source); }
+        } else {
+            merged.push(source);
+        }
     }
     let mut syntax = if projection.markdown_replacement_begins_in_code(range) {
         replacement.to_owned()
@@ -66,30 +109,67 @@ pub(super) fn joining_patches(
         document.escape_markdown_source_text(merged[0].start, replacement)?
     };
     if first.range.is_empty() && matches!(first.kind, super::super::BlockKind::ListItem { .. }) {
-        let line = document.state().source_hard_lines.line_at_offset(start)
+        let line = document
+            .state()
+            .source_hard_lines
+            .line_at_offset(start)
             .and_then(|index| document.state().source_hard_lines.get(index))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let bytes = document.state().source.bytes_in(line.start..start)
+        let bytes = document
+            .state()
+            .source
+            .bytes_in(line.start..start)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let prefix = document.encoding().decode_region(&bytes, line.start)?.text;
-        if !prefix.ends_with([' ', '\t']) { syntax.insert(0, ' '); }
+        if !prefix.ends_with([' ', '\t']) {
+            syntax.insert(0, ' ');
+        }
     }
     let replacement = document.encoding().encode_fragment(&syntax)?;
-    let mut patches = merged.into_iter().enumerate().map(|(index, source)| {
-        SourcePatch::primary(source, if index == 0 { replacement.clone() } else { Vec::new() })
-    }).collect::<Vec<_>>();
-    if first.style.0 != "Block quote" && first.quote_depth == 0 && (last.style.0 == "Block quote" || last.quote_depth > 0) {
+    let mut patches = merged
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| {
+            SourcePatch::primary(
+                source,
+                if index == 0 {
+                    replacement.clone()
+                } else {
+                    Vec::new()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    if first.style.0 != "Block quote"
+        && first.quote_depth == 0
+        && (last.style.0 == "Block quote" || last.quote_depth > 0)
+    {
         let lines = &document.state().source_hard_lines;
-        let first_line = lines.line_at_offset(at).ok_or(DocumentError::AmbiguousProjection)?;
-        let end = projection.source_range(last.range.clone()).ok_or(DocumentError::AmbiguousProjection)?.end;
-        let last_line = lines.line_at_offset(end.saturating_sub(1)).ok_or(DocumentError::AmbiguousProjection)?;
+        let first_line = lines
+            .line_at_offset(at)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let end = projection
+            .source_range(last.range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .end;
+        let last_line = lines
+            .line_at_offset(end.saturating_sub(1))
+            .ok_or(DocumentError::AmbiguousProjection)?;
         for index in first_line + 1..=last_line {
             let row = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
-            let bytes = document.state().source.bytes_in(row.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document
+                .state()
+                .source
+                .bytes_in(row.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
             let text = document.encoding().decode_region(&bytes, row.start)?.text;
             let prefix = super::super::markdown_quotes::prefix(&text);
             if prefix > 0 {
-                patches.push(SourcePatch::primary(row.start..row.start + document.encoding().encode_fragment(&text[..prefix])?.len(), Vec::new()));
+                patches.push(SourcePatch::primary(
+                    row.start
+                        ..row.start + document.encoding().encode_fragment(&text[..prefix])?.len(),
+                    Vec::new(),
+                ));
             }
         }
     }
@@ -126,19 +206,30 @@ pub(super) fn deletion_patches(
         return Ok(None);
     };
     if whole_line && range.end > last.range.end {
-        let next = projection.blocks_for_region(&(range.end..range.end))
-            .into_iter().find(|block| block.range.start == range.end);
-        if next.is_some_and(|block| matches!(block.kind,
-            super::super::BlockKind::ListItem { item_start: false, .. }))
-        {
+        let next = projection
+            .blocks_for_region(&(range.end..range.end))
+            .into_iter()
+            .find(|block| block.range.start == range.end);
+        if next.is_some_and(|block| {
+            matches!(
+                block.kind,
+                super::super::BlockKind::ListItem {
+                    item_start: false,
+                    ..
+                }
+            )
+        }) {
             // The selected paragraph is only the beginning of an item. Keep
             // its marker and promote the surviving continuation body into it.
             // Removing the physical marker line would expose that body's
             // indentation as literal text and abandon its list ownership.
             if let Some(mut patches) = joining_patches(document, range, "")? {
                 super::markdown_split::remove_empty_emphasis(
-                    document, &[TextEdit::new(range.clone(), "")], &mut patches,
-                ).map_err(super::compat_document_error)?;
+                    document,
+                    &[TextEdit::new(range.clone(), "")],
+                    &mut patches,
+                )
+                .map_err(super::compat_document_error)?;
                 return Ok(Some(patches));
             }
             return Ok(None);
@@ -210,7 +301,11 @@ pub(super) fn empty_insertion_patches(
     range: &Range<usize>,
     text: &str,
 ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
-    if document.format() != Format::Markdown || !range.is_empty() || text.is_empty() || text.contains('\n') {
+    if document.format() != Format::Markdown
+        || !range.is_empty()
+        || text.is_empty()
+        || text.contains('\n')
+    {
         return Ok(None);
     }
     if !document
@@ -218,7 +313,8 @@ pub(super) fn empty_insertion_patches(
         .blocks_for_region(range)
         .iter()
         .any(|block| {
-            block.range == *range && block.style.0 != "Code Block"
+            block.range == *range
+                && block.style.0 != "Code Block"
                 && matches!(block.kind, super::super::BlockKind::ListItem { .. })
         })
     {
@@ -277,11 +373,20 @@ pub(super) fn insertion_patches(
     else {
         return Ok(None);
     };
-    let owner = document.projection().list_structure().lists.iter()
+    let owner = document
+        .projection()
+        .list_structure()
+        .lists
+        .iter()
         .flat_map(|list| &list.items)
         .find(|item| item.paragraph_ids.contains(&block.id))
-        .map(|item| item.paragraph_id).ok_or(DocumentError::AmbiguousProjection)?;
-    let owner = document.projection().blocks().iter().find(|candidate| candidate.id == owner)
+        .map(|item| item.paragraph_id)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let owner = document
+        .projection()
+        .blocks()
+        .iter()
+        .find(|candidate| candidate.id == owner)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let body_at = document
         .projection()
@@ -301,7 +406,8 @@ pub(super) fn insertion_patches(
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
     let quote = super::super::markdown_quotes::prefix(&decoded.text);
     let quote_prefix = &decoded.text[..quote];
-    let Some(prefix_len) = super::super::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
+    let Some(prefix_len) =
+        super::super::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
     else {
         return Ok(None);
     };
@@ -332,7 +438,8 @@ pub(super) fn insertion_patches(
     let mut number = ordinal;
     for &boundary in edit.payload.break_offsets() {
         syntax.push_str(&escape_markdown_insert_in_encoding(
-            &edit.payload.text()[start..boundary], document.encoding(),
+            &edit.payload.text()[start..boundary],
+            document.encoding(),
         ));
         syntax.push_str(document.file_format().spelling());
         if !(insert_before_label && boundary + 1 == edit.payload.text().len()) {
@@ -347,7 +454,10 @@ pub(super) fn insertion_patches(
         }
         start = boundary + 1;
     }
-    syntax.push_str(&escape_markdown_insert_in_encoding(&edit.payload.text()[start..], document.encoding()));
+    syntax.push_str(&escape_markdown_insert_in_encoding(
+        &edit.payload.text()[start..],
+        document.encoding(),
+    ));
     let source_at = if insert_before_label {
         line.start
     } else {

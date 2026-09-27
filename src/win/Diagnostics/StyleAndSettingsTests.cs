@@ -227,7 +227,7 @@ internal static class StyleAndSettingsTests
             && FontCatalog.StorageFamily("Segoe UI") == null, "only the picker's own two labels reverse to a portable token");
         foreach (string family in FontCatalog.Families.Where(f => f.Contains("Flightline", StringComparison.OrdinalIgnoreCase)))
             Check(FontCatalog.Faces(family).Length > 1, $"installed {family} exposes its font variants");
-        using var doc = new CoreDocument("<p>A sample for font selection.</p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
+        using var doc = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 A sample for font selection.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         string id = view.CreateStyle(2, "Font test");
         var style = view.Styles().Styles.Single(s => s.Id == id);

@@ -59,11 +59,9 @@ fn start(
     .unwrap();
     (core, view)
 }
-fn fixtures() -> [(Format, &'static str, usize); 5] {
+fn fixtures() -> [(Format, &'static str, usize); 3] {
     [
-        (Format::Html, "<p>word</p><!--keep-->", 0),
         (Format::Rtf, r"{\rtf1 word}{\*\unknown keep}", 0),
-        (Format::HtmlSource, "<p>word</p><!--keep-->", 3),
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
     ]
@@ -78,7 +76,6 @@ fn styled_replace_backspace_restores_each_original_grapheme_and_exact_source() {
         let first_cursor = core.command_state(view).unwrap().cursor();
         key(&mut core, view, Key::Char('b'));
         let wysiwyg_format = match format {
-            Format::HtmlSource => Format::Html,
             Format::MarkdownSource => Format::Markdown,
             other => other,
         };
@@ -147,7 +144,6 @@ fn styled_replace_batch_is_atomic_but_backspace_restores_one_grapheme() {
         assert_eq!(core.document().revision().0, before.0 + 1, "{format:?}");
         key(&mut core, view, Key::Backspace);
         let wysiwyg_format = match format {
-            Format::HtmlSource => Format::Html,
             Format::MarkdownSource => Format::Markdown,
             other => other,
         };
@@ -214,8 +210,8 @@ fn exact_replace_restoration_preserves_encoded_bytes_and_source_trivia() {
 }
 #[test]
 fn pointer_and_external_edits_invalidate_recorded_replace_frontiers() {
-    let source = "<p>word</p>";
-    let (mut core, view) = start(Format::Html, source.as_bytes().to_vec(), Encoding::Utf8, 0);
+    let source = "word";
+    let (mut core, view) = start(Format::Markdown, source.as_bytes().to_vec(), Encoding::Utf8, 0);
     style(&mut core, view, SemanticInlineStyle::Emphasis, true);
     key(&mut core, view, Key::Char('a'));
     let other = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
@@ -241,12 +237,12 @@ fn pointer_and_external_edits_invalidate_recorded_replace_frontiers() {
 }
 #[test]
 fn inherited_styled_replace_restoration_keeps_large_document_layout_local() {
-    let mut source = "<p>line</p>".repeat(10_000);
-    source.push_str("<p><i>word</i></p><!--keep-->");
+    let mut source = r"{\rtf1 ".to_owned() + &r"line\par ".repeat(10_000);
+    source.push_str(r"{\i word}}");
     let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     let at = document.projection().text_tree().byte_len() - 4;
-    let (mut core, view) = start(Format::Html, source.as_bytes().to_vec(), Encoding::Utf8, at);
+    let (mut core, view) = start(Format::Rtf, source.as_bytes().to_vec(), Encoding::Utf8, at);
     let first_id = core.document().projection().hard_line_id(0);
     style(&mut core, view, SemanticInlineStyle::Emphasis, true);
     key(&mut core, view, Key::Char('a'));
@@ -286,7 +282,6 @@ fn styled_replace_counts_backspace_and_dot_keep_one_undo_unit() {
         key(&mut core, view, Key::Backspace);
         key(&mut core, view, Key::Escape);
         let wysiwyg_format = match format {
-            Format::HtmlSource => Format::Html,
             Format::MarkdownSource => Format::Markdown,
             other => other,
         };

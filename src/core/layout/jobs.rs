@@ -2718,8 +2718,8 @@ mod tests {
     #[test]
     fn exact_line_spacing_preserves_final_row_extent_in_every_layout_path() {
         let document = Document::from_bytes(
-            b"<p style=\"font-size:20pt;line-height:8pt;margin-block-start:0pt;margin-block-end:0pt\">first<br>second<br>last</p>".to_vec(),
-            crate::document::Encoding::Utf8, crate::document::Format::Html,
+            br"{\rtf1\ansi\fs40\sl-160\slmult0\sb0\sa0 first\line second\line last}".to_vec(),
+            crate::document::Encoding::Utf8, crate::document::Format::Rtf,
         ).unwrap();
         assert_eq!(document.line_count(), 3);
         for regional in [false, true] {

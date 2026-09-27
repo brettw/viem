@@ -28,31 +28,6 @@ fn markdown_quotes_own_multiple_independent_paragraphs_and_nested_blocks() {
 }
 
 #[test]
-fn html_quote_siblings_have_distinct_owners_and_nested_css_is_not_inherited_as_boxes() {
-    let source = "<blockquote style=\"margin:12px;padding:4px;border-left:2px solid red;background-color:#eeeeee\"><p>A</p><blockquote style=\"padding:7px;border-right:3px solid blue\"><p>B</p><p>C</p></blockquote><p>D</p></blockquote><blockquote><p>E</p></blockquote>";
-    let doc = open(source, Format::Html);
-    assert_eq!(doc.text(), "A\nB\nC\nD\nE");
-    let structure = doc.projection().container_structure();
-    assert_eq!(structure.containers.len(), 3);
-    assert_ne!(structure.containers[0].attributes.id, structure.containers[2].attributes.id);
-    assert_eq!(structure.containers[1].parent, Some(structure.containers[0].attributes.id));
-    let outer = structure.containers[0].attributes.direct_formatting.as_ref().unwrap();
-    let inner = structure.containers[1].attributes.direct_formatting.as_ref().unwrap();
-    assert_eq!(outer.direct_paragraph.margin_top, Some(9.0));
-    assert_eq!(outer.direct_paragraph.padding_left, Some(3.0));
-    assert_eq!(inner.direct_paragraph.padding_left, Some(5.25));
-    assert_eq!(inner.direct_paragraph.margin_top, None);
-    assert_eq!(inner.direct_paragraph.border_left_width, None);
-    assert!(outer.direct_default_character.background.is_none());
-    for block in doc.projection().blocks() {
-        assert!(block.direct_paragraph.margin_top.is_none());
-        assert!(block.direct_paragraph.padding_left.is_none());
-        assert!(block.direct_paragraph.background.is_none());
-    }
-    assert_eq!(doc.source_bytes(), source.as_bytes());
-}
-
-#[test]
 fn literal_code_and_list_item_are_distinct_nested_owners() {
     let doc = open("> - first\n>\n>   second\n>\n>   ```rust\n>   a\n>\n>   b\n>   ```", Format::Markdown);
     let owners = doc.projection().container_structure();
@@ -68,7 +43,6 @@ fn literal_code_and_list_item_are_distinct_nested_owners() {
 fn container_identity_survives_typing_deleting_first_paragraph_and_history() {
     for (format, source) in [
         (Format::Markdown, "> first\n>\n> second\n>\n> > inner"),
-        (Format::Html, "<blockquote><p>first</p><p>second</p><blockquote><p>inner</p></blockquote></blockquote>"),
     ] {
         let mut doc = open(source, format);
         let initial = doc.projection().container_structure();
@@ -87,7 +61,7 @@ fn container_identity_survives_typing_deleting_first_paragraph_and_history() {
 
 #[test]
 fn quote_wrap_and_heading_assignment_keep_inner_and_outer_structure() {
-    for format in [Format::Markdown, Format::Html] {
+    for format in [Format::Markdown,] {
         let source = if format == Format::Markdown { "## Heading" } else { "<h2>Heading</h2>" };
         let mut doc = open(source, format);
         doc.set_paragraph_style(0..0, "Block quote".into()).unwrap();
@@ -108,8 +82,6 @@ fn empty_owners_keep_a_real_editable_leaf() {
     for (format, source, expected) in [
         (Format::Markdown, "> ", ContainerKind::Quote),
         (Format::Markdown, "```\n```", ContainerKind::CodeBlock),
-        (Format::Html, "<blockquote></blockquote>", ContainerKind::Quote),
-        (Format::Html, "<pre></pre>", ContainerKind::CodeBlock),
     ] {
         let mut doc = open(source, format);
         assert_eq!(doc.text(), "");
@@ -185,9 +157,6 @@ fn plain_style_clears_the_active_leaf_or_one_quote_level() {
         (Format::Markdown, "> > ## Heading"),
         (Format::Markdown, "> > ```\n> > literal\n> > ```"),
         (Format::Markdown, "> > - item"),
-        (Format::Html, "<blockquote><blockquote><h2>Heading</h2></blockquote></blockquote>"),
-        (Format::Html, "<blockquote><blockquote><pre>literal</pre></blockquote></blockquote>"),
-        (Format::Html, "<blockquote><blockquote><ul><li>item</li></ul></blockquote></blockquote>"),
     ] {
         let mut doc = open(source, format);
         let text = doc.text().to_owned();
@@ -215,46 +184,9 @@ fn source_code_unwrap_keeps_literal_quote_characters_inside_outer_quotes() {
 }
 
 #[test]
-fn custom_container_assignment_selects_owner_and_survives_empty_bodies() {
-    use viem_core::document::*;
-    use viem_core::Core;
-    use viem_core::layout::MockTextMeasurementProvider;
-    for (source, parent) in [("<pre>code</pre>", "Code Block"), ("<pre></pre>", "Code Block"), ("<blockquote></blockquote>", "Block quote")] {
-        let mut doc = open(source, Format::Html);
-        let mut style = doc.projection().style_sheet().block_style(&parent.into()).unwrap().clone();
-        style.id = "Custom container".into(); style.based_on = Some(parent.into());
-        doc.apply_style_request(StyleModelRequest::new(doc.id(), doc.revision(),
-            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                origin: StyleDefinitionOrigin::SourceBacked,
-                edit: StyleDefinitionEdit::InsertBlock {
-                    style, metadata: StyleDefinitionMetadata { display_name: "Custom container".into(), origin: StyleDefinitionOrigin::SourceBacked },
-                },
-            }))).unwrap();
-        doc.set_paragraph_style(0..0, "Custom container".into()).unwrap_or_else(|error| panic!("{source}: {error:?}"));
-        let reopened = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
-        assert_eq!(reopened.projection().blocks()[0].containers[0].container.style.0, "Custom container", "{source}");
-        if source.contains("code") {
-            use viem_core::CoreEvent;
-            let source_doc = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::HtmlSource).unwrap();
-            let at = source_doc.text().find(">code<").unwrap() + 1;
-            let mut source_core = Core::new(source_doc);
-            let source_view = source_core.add_view(MockTextMeasurementProvider::new(), 500., 300.);
-            source_core.handle(source_view, CoreEvent::PlaceCursor {
-                document_revision: source_core.document().revision(), text_offset: at,
-                affinity: BoundaryAffinity::Downstream, extend_selection: false,
-            }).unwrap();
-            assert_eq!(source_core.selected_named_styles(source_view).unwrap().paragraph, Some("Custom container".into()));
-        }
-        let mut core = Core::new(doc);
-        let view = core.add_view(MockTextMeasurementProvider::new(), 500., 300.);
-        assert_eq!(core.selected_named_styles(view).unwrap().paragraph, Some("Custom container".into()), "{source}");
-    }
-}
-
-#[test]
 fn adjacent_empty_quote_owners_remain_distinct_when_edited() {
-    let source = "<blockquote></blockquote><blockquote></blockquote>";
-    let mut doc = open(source, Format::Html);
+    let source = ">\n\n>";
+    let mut doc = open(source, Format::Markdown);
     assert_eq!(doc.text(), "\n");
     let before = doc.projection().container_structure();
     assert_eq!(before.containers.len(), 2);

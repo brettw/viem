@@ -77,15 +77,6 @@ fn ime(core: &mut Editor, view: ViewId, range: Range<usize>) {
 #[test]
 fn replacement_preserves_the_first_paragraph_and_skips_leading_separators_for_characters() {
     for (format, source) in [
-        (Format::Html, "<h1>A</h1><h2>BC</h2><p>D</p>"),
-        (
-            Format::Html,
-            "<p style='font-size:20pt;text-align:right;padding:5pt'>A</p><p>BC</p><p>D</p>",
-        ),
-        (
-            Format::Html,
-            "<p style='text-align:right'><b>A</b></p><p style='text-align:center'>BC</p><p>D</p>",
-        ),
         (Format::Markdown, "# A\n\n## BC\n\nD"),
         (Format::Markdown, "**A**\n\nBC\n\nD"),
         (Format::Rtf, r"{\rtf1 \qr {\b A}\par \qc BC\par \ql D}"),
@@ -168,32 +159,11 @@ fn replacement_preserves_the_first_paragraph_and_skips_leading_separators_for_ch
 fn separators_alone_do_not_extend_links_and_empty_paragraphs_supply_their_own_defaults() {
     for (format, source, range, sample, expected_link) in [
         (
-            Format::Html,
-            "<p><a href='https://example.test/'><b>A</b></a></p><p>BC</p>",
-            1..2,
-            1,
-            None,
-        ),
-        (
             Format::Markdown,
             "[**A**](https://example.test/)\n\nBC",
             1..2,
             1,
             None,
-        ),
-        (
-            Format::Html,
-            "<h2 style='text-align:center'></h2><p>BC</p>",
-            0..1,
-            0,
-            None,
-        ),
-        (
-            Format::Html,
-            "<h2></h2><p></p><p><a href='https://example.test/'>BC</a></p>",
-            0..3,
-            2,
-            Some("https://example.test/"),
         ),
     ] {
         for reverse in [false, true] {
@@ -233,10 +203,6 @@ fn separators_alone_do_not_extend_links_and_empty_paragraphs_supply_their_own_de
 #[test]
 fn vim_whole_final_paragraph_change_preserves_its_style() {
     for (format, source) in [
-        (
-            Format::Html,
-            "<p>A</p><h2 style='text-align:center'>BC</h2>",
-        ),
         (Format::Markdown, "A\n\n## BC"),
         (Format::Rtf, r"{\rtf1 A\par \qc\sb120 BC}"),
     ] {
@@ -289,16 +255,8 @@ fn vim_whole_final_paragraph_change_preserves_its_style() {
 #[test]
 fn whole_document_replacement_keeps_structural_paragraph_styles() {
     for (format, source) in [
-        (Format::Html, "<blockquote><p>A</p></blockquote>"),
         (Format::Markdown, "> A"),
-        (Format::Html, "<ul><li>A</li></ul>"),
-        (Format::Html, "<ul><li><ul><li>A</li></ul></li></ul>"),
-        (
-            Format::Html,
-            "<ol start='5'><li><ol start='3'><li>A</li></ol></li></ol>",
-        ),
         (Format::Markdown, "- A"),
-        (Format::Html, "<pre>A</pre>"),
         (Format::Markdown, "```\nA\n```"),
     ] {
         let (mut core, view) = fixture(source, format);
@@ -321,10 +279,10 @@ fn whole_document_replacement_keeps_structural_paragraph_styles() {
 #[test]
 fn changing_an_empty_styled_paragraph_keeps_its_assignment() {
     for source in [
-        "<h2></h2>",
-        "<p style='text-align:center;font-size:20pt'></p>",
+        r"{\rtf1{\stylesheet{\s1\fs40 Heading2;}}\s1 }",
+        r"{\rtf1\qc\fs40 }",
     ] {
-        let (mut core, view) = fixture(source, Format::Html);
+        let (mut core, view) = fixture(source, Format::Rtf);
         let expected = owner(core.document(), 0);
         key(&mut core, view, Key::Escape);
         key(&mut core, view, Key::Char('V'));
@@ -344,12 +302,12 @@ fn changing_an_empty_styled_paragraph_keeps_its_assignment() {
 #[test]
 fn replacing_from_an_empty_first_paragraph_retains_its_defaults_separately_from_character_traits() {
     for source in [
-        "<p style='font-size:30pt;text-align:center'></p><p style='font-size:10pt'>B</p>",
-        "<div style='font-size:30pt;text-align:center'><p></p></div><p style='font-size:10pt'>B</p>",
+        r"{\rtf1{\stylesheet{\s1\qc\fs60 Large;}}\s1\par\pard\fs20 B}",
+
     ] {
         for reverse in [false, true] {
             for composition in [false, true] {
-                let (mut core, view) = fixture(source, Format::Html);
+                let (mut core, view) = fixture(source, Format::Rtf);
                 let expected = owner(core.document(), 0);
                 select(&mut core, view, 0..2, reverse);
                 if composition {
@@ -362,7 +320,7 @@ fn replacing_from_an_empty_first_paragraph_retains_its_defaults_separately_from_
                 let reopened = Document::from_bytes(
                     core.document().source_bytes(),
                     Encoding::Utf8,
-                    Format::Html,
+                    Format::Rtf,
                 )
                 .unwrap();
                 for document in [core.document(), &reopened] {
@@ -404,10 +362,10 @@ fn replacing_from_an_empty_first_paragraph_retains_its_defaults_separately_from_
 #[test]
 fn changing_the_only_word_keeps_its_existing_paragraph_owner() {
     for source in [
-        "<p><b>bold</b></p>",
-        "<h2 style='font-size:30pt'><span style='font-size:10pt'>word</span></h2>",
+        r"{\rtf1{\b bold}}",
+        r"{\rtf1{\stylesheet{\s1\fs60 Heading2;}}\s1{\fs20 word}}",
     ] {
-        let (mut core, view) = fixture(source, Format::Html);
+        let (mut core, view) = fixture(source, Format::Rtf);
         let expected = owner(core.document(), 0);
         let character = character(core.document(), 0, false);
         key(&mut core, view, Key::Escape);
@@ -455,10 +413,10 @@ fn replacing_a_code_block_keeps_new_markdown_syntax_literal() {
 
 #[test]
 fn replacement_clears_character_background_without_changing_paragraph_defaults() {
-    let source = "<p style='background-color:#ff0000'>A</p><p>BC</p>";
+    let source = r"{\rtf1{\colortbl ;\red255\green0\blue0;}\cbpat1 A\par\pard BC}";
     for reverse in [false, true] {
         for composition in [false, true] {
-            let (mut core, view) = fixture(source, Format::Html);
+            let (mut core, view) = fixture(source, Format::Rtf);
             let expected = owner(core.document(), 0);
             select(&mut core, view, 1..4, reverse);
             if composition {
@@ -468,7 +426,7 @@ fn replacement_clears_character_background_without_changing_paragraph_defaults()
             }
             text(&mut core, view, "Y");
             let reopened =
-                Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Html)
+                Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Rtf)
                     .unwrap();
             for document in [core.document(), &reopened] {
                 assert_eq!(document.text(), "AXY");

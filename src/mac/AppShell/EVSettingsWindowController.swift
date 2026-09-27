@@ -713,7 +713,7 @@ private final class EVThemePreview: NSView {
     let status = NSRect(x: 0, y: bounds.height - 26, width: bounds.width, height: 26)
     theme.statusBackground.color.setFill()
     status.fill()
-    ("NORMAL     ◉ Ln 1, Col 1     UTF-8    HTML" as NSString).draw(
+    ("NORMAL     ◉ Ln 1, Col 1     UTF-8    Markdown" as NSString).draw(
       at: NSPoint(x: 12, y: status.minY + 6),
       withAttributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
   }

@@ -46,12 +46,8 @@ final class EVSmartQuoteIngressTests: XCTestCase {
     func testCodeSpansAndParagraphsKeepLiteralQuotesAcrossNativeIngress() throws {
         for (source, type) in [
             ("X", EVDocument.codeType),
-            ("<p><code>X</code></p>", EVDocument.htmlType),
-            ("<pre>X</pre>", EVDocument.htmlType),
             ("`X`", EVDocument.markdownType),
             ("```\nX\n```", EVDocument.markdownType),
-            ("<p><code>X</code></p>", EVDocument.htmlSourceType),
-            ("<pre>X</pre>", EVDocument.htmlSourceType),
             ("`X`", EVDocument.markdownSourceType),
             ("```\nX\n```", EVDocument.markdownSourceType),
         ] {
@@ -72,8 +68,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         for (source, type, expected) in [
             ("X", EVDocument.plainTextType, "“"),
             ("X", EVDocument.codeType, "\""),
-            ("<p><code>X</code></p>", EVDocument.htmlType, "\""),
-            ("<pre>X</pre>", EVDocument.htmlType, "\""),
             ("`X`", EVDocument.markdownType, "\""),
             ("```\nX\n```", EVDocument.markdownType, "\""),
         ] {
@@ -98,9 +92,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         for (source, type, replacement) in [
             ("X", EVDocument.plainTextType, "“word”"),
             ("X", EVDocument.codeType, "\"word\""),
-            ("<p><code>X</code></p>", EVDocument.htmlType, "\"word\""),
             ("`X`", EVDocument.markdownType, "\"word\""),
-            ("<p><code>X</code></p>", EVDocument.htmlSourceType, "\"word\""),
             ("`X`", EVDocument.markdownSourceType, "\"word\""),
         ] {
             let (backend, surface, session) = try makeSurface(source, type: type)
@@ -119,7 +111,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         for (source, type, expected) in [
             ("XXXXXX", EVDocument.plainTextType, "“word”"),
             ("XXXXXX", EVDocument.codeType, "\"word\""),
-            ("<p><code>XXXXXX</code></p>", EVDocument.htmlType, "\"word\""),
             ("```\nXXXXXX\n```", EVDocument.markdownType, "\"word\""),
         ] {
             let (backend, surface, session) = try makeSurface(source, type: type)
@@ -136,7 +127,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         for (source, type, expected) in [
             ("X", EVDocument.plainTextType, "“word”"),
             ("X", EVDocument.codeType, "\"word\""),
-            ("<pre>X</pre>", EVDocument.htmlType, "\"word\""),
         ] {
             let (backend, surface, _) = try makeSurface(source, type: type)
             XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
@@ -149,12 +139,12 @@ final class EVSmartQuoteIngressTests: XCTestCase {
 
     func testRichPasteCurvesProseQuotesAndPreservesCodeQuotesInTheSameFragment() throws {
         let donor = EVCoreDocumentBackend()
-        try donor.read(source: Data("<p><b>\"prose\"</b> <code>\"code\"</code></p>".utf8), typeName: EVDocument.htmlType)
+        try donor.read(source: Data("**\"prose\"** `\"code\"`".utf8), typeName: EVDocument.markdownType)
         let text = try donor.formattedText()
         let pasteboard = Pasteboard()
         pasteboard.text = text
         pasteboard.fragment = try donor.clipboardFragmentJSON(in: 0..<text.utf8.count, snapshot: donor.formattedSnapshot())
-        let (backend, surface, session) = try makeSurface("<p></p>", type: EVDocument.htmlType)
+        let (backend, surface, session) = try makeSurface("", type: EVDocument.markdownType)
         surface.pasteboard = pasteboard
         surface.performInput { _ = try session.sendText("i") }
         surface.editorView.pasteIntoDocument(nil)
@@ -162,7 +152,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         XCTAssertEqual(pasteboard.text, text, "Pasting must not rewrite the system clipboard")
         surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data("<p></p>".utf8))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("".utf8))
     }
 
     private var missingRange: NSRange { NSRange(location: NSNotFound, length: 0) }

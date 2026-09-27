@@ -143,7 +143,7 @@ internal sealed class FormattingToolbar : UserControl
             bool available = view.HasFormattingSelection;
             if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
             if (tracking == 0) { RefreshSelector(Paragraph, 1); RefreshSelector(Character, 2); }
-            bool rich = view.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
+            bool rich = view.Document.State.format is VIEM_FORMAT_RTF;
             bool direct = rich && available && view.CanFormatCharacter;
             foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
             {

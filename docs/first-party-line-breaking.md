@@ -47,7 +47,7 @@ existing giant-line overflow and memory-budget behavior.
 The final Rust library run passes 1,158 tests, with 3 existing ignored tests.
 Another 94 tests pass across 15 selected integration targets. These cover the
 new continuation/Unicode regressions, layout cache invalidation and bounds,
-direction and list decorations, paragraph flow, Markdown/HTML Source layout,
+direction and list decorations, paragraph flow, Markdown Source layout,
 viewport navigation, input atomicity, and the Vim command matrix. The Unicode
 fixture and exhaustive representative triples run inside those library tests;
 they are not counted as thousands of separate Rust test functions.
@@ -72,7 +72,7 @@ cargo test --offline --no-fail-fast --test all -- \
   first_party_line_breaks:: layout_jobs:: layout_cache_bounds:: \
   layout_direction:: layout_list_decorations:: command_layout_viewport:: \
   view_line_modes:: viewport_horizontal_range:: viewport_end:: \
-  paragraph_flow:: html_source_layout:: markdown_source_layout:: \
+  paragraph_flow:: markdown_source_layout:: \
   prose_block_layout:: input_layout_atomicity:: vim_command_matrix::
 scripts/test-mac.sh
 ```

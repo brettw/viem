@@ -10,7 +10,7 @@ final class EVColorPanelTargetTests: XCTestCase {
         defer { fixture.close() }
         let panel = NSColorPanel.shared
         let styleBefore = try fixture.styleBackend.styleSheetSnapshot()
-        let directBefore = try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType)
+        let directBefore = try fixture.directBackend.serializedSource(typeName: EVDocument.rtfType)
         fixture.well.showColorPanel()
         XCTAssertTrue(fixture.well.isActive)
 
@@ -18,19 +18,19 @@ final class EVColorPanelTargetTests: XCTestCase {
         XCTAssertFalse(fixture.well.isActive,
                        "The direct panel must disconnect the previously active style well before seeding its color")
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot(), styleBefore)
-        XCTAssertEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType), directBefore)
+        XCTAssertEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.rtfType), directBefore)
         panel.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
 
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot(), styleBefore,
                        "A direct text color gesture must not edit a named style in another document")
-        XCTAssertNotEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType), directBefore)
+        XCTAssertNotEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.rtfType), directBefore)
         let direct = try XCTUnwrap(fixture.directSurface.session).selectedTypography()
         let color = try XCTUnwrap(direct.foreground)
-        XCTAssertEqual(color.red, 0.25, accuracy: 0.001)
-        XCTAssertEqual(color.green, 0.5, accuracy: 0.001)
-        XCTAssertEqual(color.blue, 0.75, accuracy: 0.001)
+        XCTAssertEqual(color.red, 0.25, accuracy: 0.003)
+        XCTAssertEqual(color.green, 0.5, accuracy: 0.003)
+        XCTAssertEqual(color.blue, 0.75, accuracy: 0.003)
         _ = try fixture.directSurface.session?.undo()
-        XCTAssertEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.htmlType), directBefore)
+        XCTAssertEqual(try fixture.directBackend.serializedSource(typeName: EVDocument.rtfType), directBefore)
         XCTAssertFalse(fixture.directSurface.canUndo)
     }
 
@@ -56,9 +56,9 @@ final class EVColorPanelTargetTests: XCTestCase {
         let value = try XCTUnwrap(changed.definition(for: .baseParagraph)?
             .properties[.characterForeground]?.declared)
         guard case let .color(color) = value else { return XCTFail("The style color must be declared") }
-        XCTAssertEqual(color.red, 0.25, accuracy: 0.001)
-        XCTAssertEqual(color.green, 0.5, accuracy: 0.001)
-        XCTAssertEqual(color.blue, 0.75, accuracy: 0.001)
+        XCTAssertEqual(color.red, 0.25, accuracy: 0.003)
+        XCTAssertEqual(color.green, 0.5, accuracy: 0.003)
+        XCTAssertEqual(color.blue, 0.75, accuracy: 0.003)
         _ = try fixture.styleSurface.session?.undo()
         XCTAssertEqual(try fixture.styleBackend.styleSheetSnapshot().definition(for: .baseParagraph),
                        styleBefore.definition(for: .baseParagraph))
@@ -110,7 +110,7 @@ final class EVColorPanelTargetTests: XCTestCase {
         XCTAssertTrue(well.isEnabled)
 
         let directBackend = EVCoreDocumentBackend(configuration: configuration)
-        try directBackend.read(source: Data("<p>Selected words</p><!--keep-->".utf8), typeName: EVDocument.htmlType)
+        try directBackend.read(source: Data(#"{\rtf1{\pard Selected words}{\*\comment keep}}"#.utf8), typeName: EVDocument.rtfType)
         let directSurface = try XCTUnwrap(directBackend.makeEditorSurface() as? EVEditorSurfaceController)
         directSurface.loadViewIfNeeded()
         directSurface.perform(menuCommand: .selectAll, sender: nil)

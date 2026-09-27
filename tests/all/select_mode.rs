@@ -389,9 +389,9 @@ fn selected_clean_character_style_survives_replacement_and_replacement_undo() {
     use viem_core::{Core, CoreEvent};
     for choice in ["Code", ""] {
         let source =
-            "<p><span style='color:red;font-size:30pt'><b><sup>word</sup></b></span> tail</p>";
+            "**word** tail";
         let mut core = Core::new(
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap(),
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),
         );
         let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
         core.handle(
@@ -448,7 +448,6 @@ fn select_all_delete_clears_content_and_retains_paragraph_style_for_replacement(
     use viem_core::{Core, CoreEvent};
     for (format, source) in [
         (Format::Markdown, "> quote\n> more"),
-        (Format::Html, "<blockquote><p>quote</p></blockquote>"),
     ] {
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
@@ -567,7 +566,7 @@ fn collapsed_native_selection_accepts_clean_pending_style_then_typing() {
     use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
     use viem_core::{Core, CoreEvent};
     let mut core = Core::new(
-        Document::from_bytes(b"<p><b>word</b></p>".to_vec(), Encoding::Utf8, Format::Html).unwrap(),
+        Document::from_bytes(b"**word**".to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),
     );
     let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
     for k in [NavigationKey::Right, NavigationKey::Left] {

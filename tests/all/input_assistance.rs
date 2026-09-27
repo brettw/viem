@@ -16,33 +16,6 @@ fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
 }
 
 #[test]
-fn coordinator_routes_authored_html_completion_through_one_atomic_insert_group() {
-    let mut core =
-        Core::new(Document::from_bytes(Vec::new(), Encoding::Utf8, Format::HtmlSource).unwrap());
-    let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
-    key(&mut core, view, Key::Char('i'));
-    for (input, expected, cursor) in [("<", "<>", 1), ("b", "<b></b>", 2), ("r", "<br>", 3)] {
-        let result = core
-            .handle(view, CoreEvent::Input(InputEvent::text(input)))
-            .unwrap();
-        assert!(result.document_changed);
-        assert_eq!(core.document().text(), expected);
-        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
-    }
-    key(&mut core, view, Key::Backspace);
-    assert_eq!(core.document().text(), "<b></b>");
-    key(&mut core, view, Key::Char('>'));
-    core.handle(view, CoreEvent::Input(InputEvent::text("hello")))
-        .unwrap();
-    assert_eq!(core.document().text(), "<b>hello</b>");
-    key(&mut core, view, Key::Escape);
-    key(&mut core, view, Key::Char('u'));
-    assert_eq!(core.document().source_bytes(), b"");
-    key(&mut core, view, Key::Ctrl('r'));
-    assert_eq!(core.document().source_bytes(), b"<b>hello</b>");
-}
-
-#[test]
 fn smart_quotes_are_view_input_policy_and_do_not_rewrite_source_on_toggle() {
     let mut core = Core::new(Document::new("word"));
     let first = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
@@ -64,38 +37,6 @@ fn smart_quotes_are_view_input_policy_and_do_not_rewrite_source_on_toggle() {
     core.handle(second, CoreEvent::Input(InputEvent::text("\"")))
         .unwrap();
     assert_eq!(core.document().text(), "\"word");
-}
-
-#[test]
-fn source_completion_preserves_original_encoding_and_mixed_ending_bytes() {
-    for encoding in [
-        Encoding::Utf8,
-        Encoding::Utf16Le,
-        Encoding::Utf16Be,
-        Encoding::Latin1,
-    ] {
-        let text = "<p>first</p>\r\n<p>last</p>\n";
-        let original = match encoding {
-            Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-            Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
-            _ => text.as_bytes().to_vec(),
-        };
-        let mut core = Core::new(
-            Document::from_bytes(original.clone(), encoding, Format::HtmlSource).unwrap(),
-        );
-        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
-        key(&mut core, view, Key::Char('i'));
-        for character in "<b>x".chars() {
-            key(&mut core, view, Key::Char(character));
-        }
-        key(&mut core, view, Key::Escape);
-        let reopened =
-            Document::from_bytes(core.document().source_bytes(), encoding, Format::HtmlSource)
-                .unwrap();
-        assert_eq!(reopened.text(), core.document().text());
-        key(&mut core, view, Key::Char('u'));
-        assert_eq!(core.document().source_bytes(), original);
-    }
 }
 
 fn smart_fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, ViewId) {
@@ -150,13 +91,6 @@ fn every_text_command_preserves_quotes_in_code_spans_and_paragraphs() {
         (Format::MarkdownSource, "before `xxxxxx` after"),
         (Format::Markdown, "```\nxxxxxx\n```"),
         (Format::MarkdownSource, "```\nxxxxxx\n```"),
-        (Format::Html, "<p>before <code>xxxxxx</code> after</p>"),
-        (
-            Format::HtmlSource,
-            "<p>before <code>xxxxxx</code> after</p>",
-        ),
-        (Format::Html, "<pre>xxxxxx</pre>"),
-        (Format::HtmlSource, "<pre>xxxxxx</pre>"),
     ] {
         for command in ['i', 'r', 'R'] {
             let (mut core, view) = smart_fixture(format, source);
@@ -186,11 +120,6 @@ fn every_text_command_preserves_quotes_in_code_spans_and_paragraphs() {
 fn source_batches_protect_their_own_code_and_attribute_syntax() {
     for (format, input, expected) in [
         (
-            Format::HtmlSource,
-            "<p title=\"literal\">\"prose\" <code>\"code\"</code></p><pre>'code'</pre>",
-            "<p title=\"literal\">“prose” <code>\"code\"</code></p><pre>'code'</pre>",
-        ),
-        (
             Format::MarkdownSource,
             "\"prose\" `\"code\"`\n\n```\n'code'\n```\n\n'prose'",
             "“prose” `\"code\"`\n\n```\n'code'\n```\n\n‘prose’",
@@ -216,8 +145,6 @@ fn composition_transforms_only_committed_prose_and_undoes_atomically() {
     use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
     for (format, source, expected) in [
         (Format::PlainText, "xxxxxx", "“a”"),
-        (Format::Html, "<p>xxxxxx</p>", "“a”"),
-        (Format::Html, "<p><code>xxxxxx</code></p>", "\"a\""),
         (Format::Markdown, "`xxxxxx`", "\"a\""),
     ] {
         let (mut core, view) = smart_fixture(format, source);
@@ -250,7 +177,7 @@ fn composition_transforms_only_committed_prose_and_undoes_atomically() {
 #[test]
 fn pending_code_style_suppresses_smart_quotes_before_any_source_span_exists() {
     use viem_core::document::StyleNamespace;
-    for (format, source) in [(Format::Markdown, "word"), (Format::Html, "<p>word</p>")] {
+    for (format, source) in [(Format::Markdown, "word"),] {
         let (mut core, view) = smart_fixture(format, source);
         key(&mut core, view, Key::Char('i'));
         let expected = core.list_selection_identity(view).unwrap();
@@ -273,7 +200,7 @@ fn pending_code_style_suppresses_smart_quotes_before_any_source_span_exists() {
 #[test]
 fn replacement_crossing_code_boundaries_only_curves_prose_quotes() {
     for command in ["3r", "R"] {
-        let (mut core, view) = smart_fixture(Format::Html, "<p>x<code>x</code>x</p>");
+        let (mut core, view) = smart_fixture(Format::Markdown, "x`x`x");
         for ch in command.chars() {
             key(&mut core, view, Key::Char(ch));
         }
@@ -304,16 +231,7 @@ fn smart_quotes_off_and_explicit_curly_quotes_remain_literal_for_batches() {
 #[test]
 fn empty_code_areas_and_code_span_ends_keep_quotes_literal() {
     for (format, source, at, command, expected) in [
-        (Format::Html, "<pre></pre>", 0, 'i', "\"code\""),
-        (Format::Html, "<p><code></code></p>", 0, 'i', "\"code\""),
         (Format::Markdown, "```\n\n```", 0, 'i', "\"code\""),
-        (
-            Format::Html,
-            "<p><code>x</code> after</p>",
-            0,
-            'a',
-            "x\"code\" after",
-        ),
         (Format::Markdown, "`x` after", 0, 'a', "x\"code\" after"),
     ] {
         let (mut core, view) = smart_fixture(format, source);
@@ -331,7 +249,6 @@ fn implicit_quotes_do_not_make_encodable_input_fail() {
         (Format::PlainText, "x"),
         (Format::Markdown, "x"),
         (Format::MarkdownSource, "x"),
-        (Format::HtmlSource, "<p>x</p>"),
     ] {
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Latin1, format).unwrap(),
@@ -350,7 +267,7 @@ fn implicit_quotes_do_not_make_encodable_input_fail() {
 #[test]
 fn pending_code_does_not_change_the_context_of_normal_replace() {
     use viem_core::document::StyleNamespace;
-    let (mut core, view) = smart_fixture(Format::Html, "<p>x</p>");
+    let (mut core, view) = smart_fixture(Format::Markdown, "x");
     let expected = core.list_selection_identity(view).unwrap();
     core.handle(
         view,
@@ -369,7 +286,7 @@ fn pending_code_does_not_change_the_context_of_normal_replace() {
 
 #[test]
 fn replace_mode_extending_past_code_text_keeps_new_quotes_literal() {
-    let (mut core, view) = smart_fixture(Format::Html, "<p>x<code>x</code></p>");
+    let (mut core, view) = smart_fixture(Format::Markdown, "x`x`");
     key(&mut core, view, Key::Char('R'));
     core.handle(view, CoreEvent::Input(InputEvent::text("a\"b\"")))
         .unwrap();

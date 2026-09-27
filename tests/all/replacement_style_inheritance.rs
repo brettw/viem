@@ -8,7 +8,7 @@ use viem_core::{Core, CoreEvent, ViewId};
 type Editor = Core<MockTextMeasurementProvider>;
 
 fn fixture(source: &str) -> (Editor, ViewId) {
-    fixture_format(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html)
+    fixture_format(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
 }
 fn fixture_format(source: Vec<u8>, encoding: Encoding, format: Format) -> (Editor, ViewId) {
     let mut core = Core::new(Document::from_bytes(source, encoding, format).unwrap());
@@ -19,8 +19,8 @@ fn fixture_format(source: Vec<u8>, encoding: Encoding, format: Format) -> (Edito
 #[test]
 fn replacing_all_inline_styled_text_retains_its_style() {
     for source in [
-        "<p><b>bold</b></p>",
-        "<p><a href='https://example.test/'><b>bold</b></a></p>",
+        "**bold**",
+        "[**bold**](https://example.test/)",
     ] {
         let (mut core, view) = fixture(source);
         key(&mut core, view, Key::SelectAll);
@@ -37,14 +37,14 @@ fn replacing_all_inline_styled_text_retains_its_style() {
                 .link_at(core.document().text_point(1).unwrap())
                 .unwrap()
                 .as_deref(),
-            source.contains("href=").then_some("https://example.test/")
+            source.contains("](").then_some("https://example.test/")
         );
     }
 }
 
 #[test]
 fn vim_change_and_dot_resolve_the_style_at_each_new_replacement() {
-    let (mut core, view) = fixture("<p><b>bold</b> regular</p>");
+    let (mut core, view) = fixture("**bold** regular");
     text(&mut core, view, "cw");
     text(&mut core, view, "X");
     key(&mut core, view, Key::Escape);
@@ -66,7 +66,7 @@ fn vim_change_and_dot_resolve_the_style_at_each_new_replacement() {
 #[test]
 fn inherited_context_survives_delete_until_typing_but_not_cursor_motion() {
     for motion in [false, true] {
-        let (mut core, view) = fixture("<p><b>bold</b> regular</p>");
+        let (mut core, view) = fixture("**bold** regular");
         select(&mut core, view, 0..5, false);
         key(&mut core, view, Key::Backspace);
         if motion {
@@ -85,12 +85,12 @@ fn inherited_context_survives_delete_until_typing_but_not_cursor_motion() {
 
 #[test]
 fn utf16_replacement_keeps_non_ascii_link_attributes_and_undo_bytes() {
-    let source = "<p>pré <a href='https://example.test/café' title='猫'><b>bold</b></a> tail</p>";
+    let source = "pré [**bold**](https://example.test/café) tail";
     let bytes = source
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
-    let (mut core, view) = fixture_format(bytes.clone(), Encoding::Utf16Le, Format::Html);
+    let (mut core, view) = fixture_format(bytes.clone(), Encoding::Utf16Le, Format::Markdown);
     select(&mut core, view, 5..12, true);
     text(&mut core, view, "猫");
     text(&mut core, view, "é");
@@ -175,12 +175,12 @@ fn markdown_and_rtf_replace_use_first_character_bold() {
 }
 
 #[test]
-fn every_small_html_selection_replaces_and_undoes_without_losing_caret_boundaries() {
+fn every_small_styled_selection_replaces_and_undoes_without_losing_caret_boundaries() {
     for source in [
-        "<p>A</p><p>B</p>",
-        "<p></p><p>A<br>B</p>",
-        "<p>A<b>B</b>C</p>",
-        "<p>A<b>B</b> C</p>",
+        "A\n\nB",
+        "\n\nA\\\nB",
+        "A**B**C",
+        "A**B** C",
     ] {
         let (core, _) = fixture(source);
         let original = core.document().text().to_owned();
@@ -215,7 +215,7 @@ fn every_small_html_selection_replaces_and_undoes_without_losing_caret_boundarie
 
 #[test]
 fn full_document_replacement_keeps_first_character_effective_traits() {
-    let (mut core, view) = fixture("<h1 style='color:red;font-size:30pt'>heading</h1>");
+    let (mut core, view) = fixture("# heading");
     let expected =
         DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false)
             .unwrap();
@@ -229,30 +229,8 @@ fn full_document_replacement_keeps_first_character_effective_traits() {
 }
 
 #[test]
-fn failed_native_replacement_rolls_back_selection_source_and_nested_checkpoints() {
-    let source = b"<p>plain <b>bold</b> tail</p>";
-    let (mut core, view) = fixture_format(source.to_vec(), Encoding::Latin1, Format::Html);
-    select(&mut core, view, 6..12, false);
-    let revision = core.document().revision();
-    let history = core.document().history_status();
-    assert!(core
-        .handle(view, CoreEvent::Input(InputEvent::text("\0")))
-        .is_err());
-    assert_eq!(core.document().source_bytes(), source);
-    assert_eq!(core.document().revision(), revision);
-    assert_eq!(core.document().history_status(), history);
-    assert_eq!(core.list_selection_identity(view).unwrap().range(), 6..12);
-    text(&mut core, view, "X");
-    assert!(
-        DocumentLayoutStyles::semantic_character_at(core.document().projection(), 6, false)
-            .unwrap()
-            .bold
-    );
-}
-
-#[test]
 fn ime_replacement_and_cancel_follow_the_same_first_character_rule() {
-    let source = "<p>plain <a href='https://example.test/'><b>link</b></a> tail</p>";
+    let source = "plain [**link**](https://example.test/) tail";
     for (range, bold) in [(2..12, false), (6..12, true)] {
         for delete_first in [false, true] {
             let (mut core, view) = fixture(source);
@@ -382,7 +360,7 @@ fn markdown_link_replacement_uses_the_normalized_first_character() {
 #[test]
 fn explicit_pending_style_after_deletion_overrides_inherited_traits() {
     use viem_core::document::{StyleNamespace, StyleProperty, StylePropertyValue};
-    let (mut core, view) = fixture("<p><b>bold</b> regular</p>");
+    let (mut core, view) = fixture_format(br"{\rtf1{\b bold} regular}".to_vec(), Encoding::Utf8, Format::Rtf);
     select(&mut core, view, 0..5, false);
     key(&mut core, view, Key::Backspace);
     core.handle(
@@ -449,7 +427,7 @@ fn key(core: &mut Editor, view: ViewId, key: Key) {
 
 #[test]
 fn native_replacement_inherits_first_character_in_both_selection_directions() {
-    let source = "<p>baseparagraph <b>bold</b> baseparagraph</p><!--keep-->";
+    let source = "baseparagraph **bold** baseparagraph";
     for (range, bold) in [
         (10..23, false),
         (14..23, true),
@@ -502,7 +480,7 @@ fn native_replacement_inherits_first_character_in_both_selection_directions() {
 #[test]
 fn replacement_preserves_only_the_first_characters_link_identity() {
     let source =
-        "<p>plain <a href='https://example.test/path?x=1&amp;y=2'><b>link</b></a> tail</p>";
+        "plain [**link**](https://example.test/path?x=1&amp;y=2) tail";
     for (range, linked) in [
         (2..13, false),
         (6..13, true),

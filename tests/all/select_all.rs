@@ -54,14 +54,6 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
             Format::MarkdownSource,
         ),
         (
-            format!("<h1>first</h1><p>second</p><p>{tail}</p>"),
-            Format::Html,
-        ),
-        (
-            format!("<h1>first</h1>\n<p>second</p>\n<p>{tail}</p>"),
-            Format::HtmlSource,
-        ),
-        (
             format!("{{\\rtf1 first\\par second\\par {tail}}}"),
             Format::Rtf,
         ),
@@ -138,8 +130,6 @@ fn whole_selection_delete_clears_quote_list_and_character_context_with_exact_his
     for (source, format) in [
         ("> **quoted**\n> continuation", Format::Markdown),
         ("> - **item**\n> - second", Format::Markdown),
-        ("<!--keep--><blockquote><p><b>quoted</b></p></blockquote><!--end-->", Format::Html),
-        ("<!doctype html><html><head><title>Keep</title><style>p{color:navy}</style></head><body><blockquote><ul><li>item</li></ul></blockquote></body></html>", Format::Html),
         ("{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown keep}\\li640\\b quoted}", Format::Rtf),
     ] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
@@ -203,8 +193,6 @@ fn select_all_rejects_stale_identity_without_changing_pending_insert_state() {
 fn whole_content_clear_preserves_bom_and_authored_envelopes_without_regeneration() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
         for (source, cleared, format) in [
-            ("<!DoCtYpE html><HTML lang='en'><HEAD><!--head--><title>Keep</title></HEAD><BODY><blockquote><b>word</b></blockquote><!--tail--></BODY></HTML>",
-             "<!DoCtYpE html><HTML lang='en'><HEAD><!--head--><title>Keep</title></HEAD><BODY><p></p><!--tail--></BODY></HTML>", Format::Html),
             ("> - **word**", "", Format::Markdown),
             ("{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown Keep}\\li640\\b word}",
              "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown Keep}}", Format::Rtf),
@@ -234,47 +222,9 @@ fn whole_content_clear_preserves_bom_and_authored_envelopes_without_regeneration
 }
 
 #[test]
-fn html_whole_content_clear_retains_only_unrelated_empty_scopes() {
-    for (source, expected) in [
-        ("<div data-keep='before'></div>\n<p>word<b></b></p>\n<div data-keep='after'><i></i></div>",
-         "<div data-keep='before'></div>\n<p></p>\n<div data-keep='after'><i></i></div>"),
-        ("<div><b>word<i></i></b></div>", "<p></p>"),
-        ("<b></b><p>word</p>", "<b></b><p></p>"),
-    ] {
-        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-        document.clear_document_content().unwrap();
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-        let reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
-        assert_eq!(reopened.text(), "");
-        assert_eq!(reopened.projection().blocks().len(), 1);
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert!(document.redo());
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-    }
-}
-
-#[test]
-fn html_clearing_an_already_empty_normal_paragraph_does_not_rewrite_it() {
-    for source in ["", "<p></p>", "<div></div><p></p>", "<p id='keep'><!--inside--><b></b></p>"] {
-        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-        let revision = document.revision();
-        document.clear_document_content().unwrap();
-        document.delete_lines(0..0).unwrap();
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert_eq!(document.revision(), revision);
-        assert!(!document.history_status().can_undo);
-    }
-}
-
-#[test]
 fn ordinary_last_character_deletion_and_partial_selection_keep_quote_context() {
     for (source, format) in [
         ("> word", Format::Markdown),
-        (
-            "<!--keep--><blockquote>word</blockquote><!--end-->",
-            Format::Html,
-        ),
     ] {
         let (mut core, view) = opened(source, format);
         key(&mut core, view, 'v');

@@ -34,7 +34,6 @@ fn mac_literal_cr_is_a_precise_atomic_policy_in_literal_source_adapters() {
             Format::PlainText,
             Format::Markdown,
             Format::MarkdownSource,
-            Format::HtmlSource,
         ] {
             for replacement in ["\r", "x\ry", "\r\n"] {
                 let mut document = open("AB", encoding, format, FileFormat::Mac);
@@ -66,7 +65,6 @@ fn mac_literal_cr_rejects_an_entire_batch_or_structured_payload_before_commit() 
         Format::PlainText,
         Format::Markdown,
         Format::MarkdownSource,
-        Format::HtmlSource,
     ] {
         let mut document = open("ABCD", Encoding::Utf8, format, FileFormat::Mac);
         let expected = DocumentError::UnrepresentableFormattedCharacter {
@@ -130,32 +128,6 @@ fn rtf_literal_cr_survives_reopen_in_every_line_ending_mode_and_encoding() {
 }
 
 #[test]
-fn html_exact_literal_cr_is_rejected_atomically_in_every_mode_and_encoding() {
-    // HTML preprocessing turns raw CR into LF; CSS treats escaped CR as a
-    // space, even under pre. Neither spelling represents exact U+000D text.
-    for encoding in ENCODINGS {
-        for endings in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
-            for source in ["<p>AB</p>", "<pre>AB</pre>"] {
-                let mut document = open(source, encoding, Format::Html, endings);
-                let original = document.source_bytes();
-                let revision = document.revision();
-                let history = document.history_status();
-                assert_eq!(
-                    document.insert(1, "\r"),
-                    Err(DocumentError::UnrepresentableFormattedCharacter { format: Format::Html, character: '\r' })
-                );
-                assert_eq!(document.source_bytes(), original);
-                assert_eq!(document.text(), "AB");
-                assert_eq!(document.revision(), revision);
-                assert_eq!(document.history_status(), history);
-                document.insert(1, "x").unwrap();
-                assert_eq!(document.text(), "AxB");
-            }
-        }
-    }
-}
-
-#[test]
 fn unix_and_dos_keep_representable_literal_cr_in_literal_source_adapters() {
     for encoding in ENCODINGS {
         for endings in [FileFormat::Unix, FileFormat::Dos] {
@@ -163,7 +135,6 @@ fn unix_and_dos_keep_representable_literal_cr_in_literal_source_adapters() {
                 Format::PlainText,
                 Format::Markdown,
                 Format::MarkdownSource,
-                Format::HtmlSource,
             ] {
                 let mut document = open("AB", encoding, format, endings);
                 document.insert(1, "\r").unwrap();

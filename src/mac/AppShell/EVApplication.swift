@@ -365,8 +365,8 @@ final class EVApplicationDelegate: NSObject,
         switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":
             EVDocument.markdownType
-        case "html", "htm":
-            EVDocument.htmlType
+        case "html", "htm", "xhtml":
+            EVDocument.codeType
         case "rtf":
             EVDocument.rtfType
         default:

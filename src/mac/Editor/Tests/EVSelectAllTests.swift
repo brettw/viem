@@ -33,15 +33,13 @@ import XCTest
             ("first\nsecond\n\(tail)", EVDocument.plainTextType),
             ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownType),
             ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownSourceType),
-            ("<h1>first</h1><p>second</p><p>\(tail)</p>", EVDocument.htmlType),
-            ("<h1>first</h1>\n<p>second</p>\n<p>\(tail)</p>", EVDocument.htmlSourceType),
             ("{\\rtf1 first\\par second\\par \(tail)}", EVDocument.rtfType),
         ] {
             for mode: EVLineMode in [.visual, .physicalSource] {
                 if type == EVDocument.rtfType && mode == .physicalSource { continue }
                 let (backend, view, session, pasteboard) = try surface(source, type: type)
                 try session.setLineMode(mode)
-                if type == EVDocument.markdownSourceType || type == EVDocument.htmlSourceType {
+                if type == EVDocument.markdownSourceType {
                     try session.setParagraphFlow(true)
                 }
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 86)
@@ -53,7 +51,7 @@ import XCTest
                 XCTAssertEqual(view.editorView.accessibilitySelectedText(), text)
                 XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
                 view.perform(menuCommand: .copy, sender: nil)
-                let expectedCopy = (type == EVDocument.markdownSourceType || type == EVDocument.htmlSourceType) ? source : text
+                let expectedCopy = (type == EVDocument.markdownSourceType) ? source : text
                 XCTAssertEqual(pasteboard.text, expectedCopy, "\(type) \(mode)")
                 XCTAssertEqual(try backend.serializedSource(typeName: type), original)
                 view.perform(menuCommand: .selectAll, sender: nil)
@@ -79,8 +77,6 @@ import XCTest
         for (source, type) in [
             ("> **quoted**\n> continuation", EVDocument.markdownType),
             ("> - first\n> - second", EVDocument.markdownType),
-            ("<!--keep--><blockquote><p><b>quoted</b></p></blockquote>", EVDocument.htmlType),
-            ("<blockquote><ul><li>first</li><li>second</li></ul></blockquote>", EVDocument.htmlType),
         ] {
             for mode: EVLineMode in [.visual, .physicalSource] {
                 if type == EVDocument.rtfType && mode == .physicalSource { continue }

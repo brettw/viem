@@ -6,13 +6,13 @@ use serde_json::{json, Value};
 fn main() {
     let path = std::env::args().nth(1).unwrap();
     let value: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let format = match value["format"].as_str().unwrap_or("html") {
+    let format = match value["format"].as_str().unwrap_or("plain") {
         "plain" => Format::PlainText,
         "markdown" => Format::Markdown,
         "markdown_source" => Format::MarkdownSource,
-        "html_source" => Format::HtmlSource,
+        "code" => Format::Code,
         "rtf" => Format::Rtf,
-        _ => Format::Html,
+        other => panic!("unknown format {other}"),
     };
     let document = Document::from_bytes(value["source"].as_str().unwrap().as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
     let mut core = Core::new(document);

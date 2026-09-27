@@ -1,8 +1,12 @@
 # Editable source range audit
 
+Historical audit: standalone HTML editing modes and their named helpers were
+removed in September 2026. HTML-specific examples below describe the former
+implementation; the shared boundary rules continue to apply to Markdown and RTF.
+
 This audit covers the `DocumentError::AmbiguousProjection` producers in the
-portable core and their macOS presentation. Function names below are stable
-references; line numbers in review notes refer to the code at the start of the
+portable core and their macOS presentation. Function names and line numbers in
+review notes refer to the code at the start of the
 September 2026 list/boundary fix. The later rich-editing pass applies the explicit
 paragraph-ownership rules below; formatting and explicit move limitations remain
 separately identified.

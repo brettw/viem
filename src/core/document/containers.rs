@@ -219,23 +219,18 @@ mod tests {
     use crate::document::*;
 
     #[test]
-    fn deleting_a_source_container_style_reassigns_flow_paths_and_picker_context() {
-        let mut doc = Document::from_bytes(b"<blockquote><p>body</p></blockquote>".to_vec(), Encoding::Utf8, Format::HtmlSource).unwrap();
+    fn deleting_a_configured_container_style_reassigns_flow_paths_and_picker_context() {
+        let mut doc = Document::from_bytes(b"> body".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
         let id = StyleId::from("Block quote");
         assert!(doc.projection().has_block_style_assignment(&id));
         doc.apply_style_request(StyleModelRequest::new(doc.id(), doc.revision(),
-            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                origin: StyleDefinitionOrigin::SourceBacked,
-                edit: StyleDefinitionEdit::DeleteBlock(id.clone()),
-            }))).unwrap();
-        for edit in [false, true] {
-            if edit { doc.insert(doc.text().find("body").unwrap() + 2, "X").unwrap(); }
-            let projection = doc.projection();
-            assert!(!projection.has_block_style_assignment(&id));
-            let flow = projection.flow_blocks_for_region(&(0..doc.text().len())).unwrap();
-            assert!(flow.iter().flat_map(|block| block.containers.iter()).all(|member| member.container.style != id));
-            let at = doc.text().find("bo").unwrap();
-            assert_eq!(projection.selected_named_styles(at..at, BoundaryAffinity::Downstream).paragraph, Some("Paragraph".into()));
-        }
+            StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::DeleteBlock(id.clone()))))).unwrap();
+        let projection = doc.projection();
+        assert!(!projection.has_block_style_assignment(&id));
+        let flow = projection.blocks_for_region(&(0..doc.text().len()));
+        assert!(flow.iter().flat_map(|block| block.containers.iter()).all(|member| member.container.style != id));
+        let at = doc.text().find("bo").unwrap();
+        assert_eq!(projection.selected_named_styles(at..at, BoundaryAffinity::Downstream).paragraph, Some("Paragraph".into()));
+        assert_eq!(doc.source_bytes(), b"> body");
     }
 }

@@ -5,7 +5,6 @@ use viem_core::document::*;
 fn base_paragraph_rejects_next_style_edits_without_publishing_changes() {
     for (format, source) in [
         (Format::Markdown, "Text"),
-        (Format::Html, "<p>Text</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1{\stylesheet{\s0 Normal;}}\s0 Text}"),
     ] {
         for next in ["Heading1", "Paragraph"] {

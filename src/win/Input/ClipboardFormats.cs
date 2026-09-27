@@ -47,11 +47,11 @@ internal static class ClipboardFormats
             try
             {
                 string html = HtmlFormatHelper.GetStaticFragment(await data.GetHtmlFormatAsync());
-                return Import(html, VIEM_FORMAT_HTML, text);
+                return Import(html, VIEM_CLIPBOARD_FORMAT_HTML, text);
             }
             catch (Exception error) when (!Transient(error)) { }
         if (data.Contains(StandardDataFormats.Rtf))
-            try { return Import(await data.GetRtfAsync(), VIEM_FORMAT_RTF, text); }
+            try { return Import(await data.GetRtfAsync(), VIEM_CLIPBOARD_FORMAT_RTF, text); }
             catch (Exception error) when (!Transient(error)) { }
         return (text, "");
     }
@@ -83,13 +83,14 @@ internal static class ClipboardFormats
         var bytes = new byte[loaded]; reader.ReadBytes(bytes);
         return Encoding.UTF8.GetString(bytes);
     }
-    private static unsafe (string, string) Import(string source, uint format, string plain)
+    internal static unsafe (string Text, string Fragment) Import(string source, uint format, string plain = "")
     {
-        using var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
-        var info = New<ViemFormattedSnapshotInfoV1>(); Check(viem_core_formatted_snapshot_info(document.Handle, &info), "Read clipboard document");
-        var range = New<ViemFormattedUtf8RangeV1>(); range.identity = info.identity; range.utf8_end = info.utf8_length;
-        string fragment = Encoding.UTF8.GetString(Copy((p, n, r) => { var request = range; return viem_core_copy_clipboard_json(document.Handle, &request, p, n, r); }));
-        return (plain.Length == 0 ? document.FormattedText() : plain, fragment);
+        byte[] bytes = Encoding.UTF8.GetBytes(source);
+        string fragment = Encoding.UTF8.GetString(Copy((p, n, r) => {
+            fixed (byte* input = bytes) return viem_import_clipboard_json(format, input, (ulong)bytes.Length, p, n, r);
+        }));
+        using var parsed = JsonDocument.Parse(fragment);
+        return (plain.Length == 0 ? parsed.RootElement.GetProperty("plain_text").GetString() ?? "" : plain, fragment);
     }
     public static void Write(string text, string fragment)
     {

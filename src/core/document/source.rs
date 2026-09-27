@@ -20,9 +20,13 @@ pub(crate) struct SourceSnapshotIdentity(u64);
 
 impl SourceSnapshotIdentity {
     fn fresh() -> Self {
-        Self(NEXT_SOURCE_SNAPSHOT_ID.fetch_update(
-            AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |id| id.checked_add(1),
-        ).expect("source snapshot identity exhausted"))
+        Self(
+            NEXT_SOURCE_SNAPSHOT_ID
+                .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |id| {
+                    id.checked_add(1)
+                })
+                .expect("source snapshot identity exhausted"),
+        )
     }
 }
 
@@ -72,9 +76,6 @@ struct Piece {
     bytes: Arc<[u8]>,
     start: usize,
     len: usize,
-    /// Bytes emitted by a format adapter's text encoder, rather than loaded
-    /// from an artifact or inserted through a source-editing operation.
-    generated_text: bool,
 }
 
 impl SourceSnapshot {
@@ -91,12 +92,17 @@ impl SourceSnapshot {
                 }
             });
         }
-        if let Some(root) = &self.root { visit(root, visitor); }
+        if let Some(root) = &self.root {
+            visit(root, visitor);
+        }
     }
 
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        let root = tree_from_bytes(&bytes, false);
-        Self { identity: SourceSnapshotIdentity::fresh(), root }
+        let root = tree_from_bytes(&bytes);
+        Self {
+            identity: SourceSnapshotIdentity::fresh(),
+            root,
+        }
     }
 
     pub(crate) fn identity(&self) -> SourceSnapshotIdentity {
@@ -121,7 +127,7 @@ impl SourceSnapshot {
 
     /// Compare persistent artifacts without serializing their unchanged
     /// prefixes/suffixes. Split pieces retain their backing-buffer identity.
-    pub(crate) fn changed_extent(&self,next:&Self)->Option<(Range<usize>,Range<usize>)> {
+    pub(crate) fn changed_extent(&self, next: &Self) -> Option<(Range<usize>, Range<usize>)> {
         self.changed_extent_with_stats(next).0
     }
 
@@ -136,7 +142,10 @@ impl SourceSnapshot {
         }
         let suffix = shared_source_edge(self, next, true, &mut stats)
             .min(self.len().min(next.len()) - prefix);
-        (Some((prefix..self.len() - suffix, prefix..next.len() - suffix)), stats)
+        (
+            Some((prefix..self.len() - suffix, prefix..next.len() - suffix)),
+            stats,
+        )
     }
 
     /// Return disjoint byte changes, keeping unchanged immutable pieces between
@@ -145,13 +154,24 @@ impl SourceSnapshot {
     /// ranges. Crossing/repeated pieces may produce a conservative larger gap.
     /// Only piece metadata inside the changed hull is retained temporarily.
     pub(crate) fn changed_extents(&self, next: &Self) -> Vec<(Range<usize>, Range<usize>)> {
-        let Some((old, new)) = self.changed_extent(next) else { return Vec::new(); };
-        if old.is_empty() || new.is_empty() { return vec![(old, new)]; }
+        let Some((old, new)) = self.changed_extent(next) else {
+            return Vec::new();
+        };
+        if old.is_empty() || new.is_empty() {
+            return vec![(old, new)];
+        }
 
         #[derive(Clone, Copy)]
-        struct PieceRange { buffer: usize, start: usize, end: usize, document: usize }
+        struct PieceRange {
+            buffer: usize,
+            start: usize,
+            end: usize,
+            document: usize,
+        }
         fn collect(node: &Node, at: usize, range: &Range<usize>, into: &mut Vec<PieceRange>) {
-            if at >= range.end || at + node.len() <= range.start { return; }
+            if at >= range.end || at + node.len() <= range.start {
+                return;
+            }
             match node {
                 Node::Leaf(piece) => {
                     let begin = at.max(range.start);
@@ -171,13 +191,25 @@ impl SourceSnapshot {
         }
         let mut previous = Vec::new();
         let mut following = Vec::new();
-        collect(self.root.as_deref().expect("nonempty source"), 0, &old, &mut previous);
-        collect(next.root.as_deref().expect("nonempty source"), 0, &new, &mut following);
+        collect(
+            self.root.as_deref().expect("nonempty source"),
+            0,
+            &old,
+            &mut previous,
+        );
+        collect(
+            next.root.as_deref().expect("nonempty source"),
+            0,
+            &new,
+            &mut following,
+        );
         // A repeated/moved buffer can overlap many pieces. Bound the work and
         // scratch metadata in that unusual case; one exact hull remains valid.
         let match_limit = (previous.len() + following.len()).saturating_mul(4);
         let mut by_buffer = std::collections::HashMap::<usize, Vec<(PieceRange, usize)>>::new();
-        for piece in previous { by_buffer.entry(piece.buffer).or_default().push((piece, 0)); }
+        for piece in previous {
+            by_buffer.entry(piece.buffer).or_default().push((piece, 0));
+        }
         for pieces in by_buffer.values_mut() {
             pieces.sort_unstable_by_key(|(piece, _)| piece.start);
             let mut maximum_end = 0;
@@ -191,24 +223,35 @@ impl SourceSnapshot {
         let mut new_at = new.start;
         let mut visited_matches = 0;
         for piece in following {
-            let Some(candidates) = by_buffer.get(&piece.buffer) else { continue; };
+            let Some(candidates) = by_buffer.get(&piece.buffer) else {
+                continue;
+            };
             let begin = candidates.partition_point(|(_, prefix_end)| *prefix_end <= piece.start);
             let end = candidates.partition_point(|(previous, _)| previous.start < piece.end);
             let mut matches = Vec::new();
             for (previous, _) in &candidates[begin..end] {
                 visited_matches += 1;
-                if visited_matches > match_limit { return vec![(old, new)]; }
+                if visited_matches > match_limit {
+                    return vec![(old, new)];
+                }
                 let start = previous.start.max(piece.start);
                 let end = previous.end.min(piece.end);
                 if start < end {
-                    matches.push((piece.document + start - piece.start,
-                        previous.document + start - previous.start, end - start));
+                    matches.push((
+                        piece.document + start - piece.start,
+                        previous.document + start - previous.start,
+                        end - start,
+                    ));
                 }
             }
             matches.sort_unstable();
             for (new_start, old_start, length) in matches {
-                let skip = old_at.saturating_sub(old_start).max(new_at.saturating_sub(new_start));
-                if skip >= length { continue; }
+                let skip = old_at
+                    .saturating_sub(old_start)
+                    .max(new_at.saturating_sub(new_start));
+                if skip >= length {
+                    continue;
+                }
                 let old_start = old_start + skip;
                 let new_start = new_start + skip;
                 if old_at < old_start || new_at < new_start {
@@ -218,7 +261,9 @@ impl SourceSnapshot {
                 new_at = new_start + length - skip;
             }
         }
-        if old_at < old.end || new_at < new.end { changes.push((old_at..old.end, new_at..new.end)); }
+        if old_at < old.end || new_at < new.end {
+            changes.push((old_at..old.end, new_at..new.end));
+        }
         changes
     }
 
@@ -236,80 +281,10 @@ impl SourceSnapshot {
         let (_, suffix) = split(self.root.clone(), range.start);
         let (selected, _) = split(suffix, range.end - range.start);
         let mut result = Vec::with_capacity(range.end - range.start);
-        if let Some(selected) = selected { selected.append_to(&mut result); }
-        Some(result)
-    }
-
-    /// Whether every byte in a nonempty, valid range was emitted by a format
-    /// adapter's text encoder. Only intersecting tree paths and pieces are
-    /// visited; unrelated source bytes are neither read nor materialized.
-    pub(crate) fn range_is_generated_text(&self, range: Range<usize>) -> bool {
-        if range.start >= range.end || range.end > self.len() {
-            return false;
-        }
-        self.root
-            .as_ref()
-            .is_some_and(|root| root.range_is_generated_text(range))
-    }
-
-    /// Generated portions of a validated range, relative to its start. The
-    /// traversal visits only intersecting pieces and never copies source bytes.
-    pub(crate) fn generated_text_ranges(&self, range: Range<usize>) -> Option<Vec<Range<usize>>> {
-        if range.start > range.end || range.end > self.len() {
-            return None;
-        }
-        let mut result = Vec::new();
-        if !range.is_empty() {
-            self.root.as_ref()?.collect_generated_text_ranges(range.clone(), 0, &mut result);
-        }
-        for item in &mut result {
-            item.start -= range.start;
-            item.end -= range.start;
+        if let Some(selected) = selected {
+            selected.append_to(&mut result);
         }
         Some(result)
-    }
-
-    /// Apply one byte patch while retaining the origin of each replacement
-    /// portion. Composed typing transactions use this to avoid treating copied
-    /// authored entities as newly generated whitespace.
-    pub(crate) fn replace_with_generated_text_ranges(
-        &self,
-        start: usize,
-        end: usize,
-        replacement: Vec<u8>,
-        generated: &[Range<usize>],
-    ) -> Option<Self> {
-        if start > end || end > self.len() {
-            return None;
-        }
-        let mut previous = 0;
-        for range in generated {
-            if range.start < previous || range.start >= range.end || range.end > replacement.len() {
-                return None;
-            }
-            previous = range.end;
-        }
-        if start == end && replacement.is_empty() {
-            return Some(self.clone());
-        }
-        let length = replacement.len();
-
-        let mut inserted = None;
-        let mut at = 0;
-        for range in generated.iter().cloned().chain(std::iter::once(length..length)) {
-            for (range, generated_text) in [(at..range.start, false), (range.clone(), true)] {
-                if !range.is_empty() {
-                    inserted = concat(inserted, tree_from_bytes(&replacement[range], generated_text));
-                }
-            }
-            at = range.end;
-        }
-        let (before, rest) = split(self.root.clone(), start);
-        let (_, after) = split(rest, end - start);
-        Some(Self {
-            identity: SourceSnapshotIdentity::fresh(),
-            root: concat(concat(before, inserted), after),
-        })
     }
 
     pub(crate) fn artifact_digest(&self) -> SourceArtifactDigest {
@@ -334,25 +309,6 @@ impl SourceSnapshot {
     }
 
     pub(crate) fn replace(&self, start: usize, end: usize, replacement: Vec<u8>) -> Option<Self> {
-        self.replace_with_origin(start, end, replacement, false)
-    }
-
-    pub(crate) fn replace_generated_text(
-        &self,
-        start: usize,
-        end: usize,
-        replacement: Vec<u8>,
-    ) -> Option<Self> {
-        self.replace_with_origin(start, end, replacement, true)
-    }
-
-    fn replace_with_origin(
-        &self,
-        start: usize,
-        end: usize,
-        replacement: Vec<u8>,
-        generated_text: bool,
-    ) -> Option<Self> {
         if start > end || end > self.len() {
             return None;
         }
@@ -365,7 +321,7 @@ impl SourceSnapshot {
 
         let (before, rest) = split(self.root.clone(), start);
         let (_, after) = split(rest, end - start);
-        let inserted = tree_from_bytes(&replacement, generated_text);
+        let inserted = tree_from_bytes(&replacement);
         Some(Self {
             identity: SourceSnapshotIdentity::fresh(),
             root: concat(concat(before, inserted), after),
@@ -378,35 +334,80 @@ impl SourceSnapshot {
     }
 }
 
-fn shared_source_edge(a:&SourceSnapshot,b:&SourceSnapshot,reverse:bool,stats:&mut SourceDiffStats)->usize {
-    fn expand<'a>(stack:&mut Vec<(&'a Node,usize)>,reverse:bool)->bool {
-        let Some((Node::Branch{left,right,..},_))=stack.last() else {return false;};
-        let (left,right)=(left.as_ref(),right.as_ref());stack.pop();
-        if reverse {stack.push((left,0));stack.push((right,0));}
-        else {stack.push((right,0));stack.push((left,0));}
+fn shared_source_edge(
+    a: &SourceSnapshot,
+    b: &SourceSnapshot,
+    reverse: bool,
+    stats: &mut SourceDiffStats,
+) -> usize {
+    fn expand<'a>(stack: &mut Vec<(&'a Node, usize)>, reverse: bool) -> bool {
+        let Some((Node::Branch { left, right, .. }, _)) = stack.last() else {
+            return false;
+        };
+        let (left, right) = (left.as_ref(), right.as_ref());
+        stack.pop();
+        if reverse {
+            stack.push((left, 0));
+            stack.push((right, 0));
+        } else {
+            stack.push((right, 0));
+            stack.push((left, 0));
+        }
         true
     }
-    let mut left=a.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
-    let mut right=b.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
-    let mut count=0;
-    while let (Some(&(l,lo)),Some(&(r,ro)))=(left.last(),right.last()) {
+    let mut left = a.root.as_deref().map(|n| vec![(n, 0)]).unwrap_or_default();
+    let mut right = b.root.as_deref().map(|n| vec![(n, 0)]).unwrap_or_default();
+    let mut count = 0;
+    while let (Some(&(l, lo)), Some(&(r, ro))) = (left.last(), right.last()) {
         stats.nodes_visited += 1;
-        if lo==0 && ro==0 && std::ptr::eq(l,r) {count+=l.len();left.pop();right.pop();continue;}
-        match(l,r) {
-            (Node::Branch{..},Node::Branch{..})=>{if l.len()>=r.len() {expand(&mut left,reverse);} else {expand(&mut right,reverse);}continue;}
-            (Node::Branch{..},_)=>{expand(&mut left,reverse);continue;}
-            (_,Node::Branch{..})=>{expand(&mut right,reverse);continue;}
-            (Node::Leaf(l),Node::Leaf(r))=>{
-                let n=(l.len-lo).min(r.len-ro);
-                let (lb,rb)=if reverse {(l.start+l.len-lo,r.start+r.len-ro)} else {(l.start+lo,r.start+ro)};
+        if lo == 0 && ro == 0 && std::ptr::eq(l, r) {
+            count += l.len();
+            left.pop();
+            right.pop();
+            continue;
+        }
+        match (l, r) {
+            (Node::Branch { .. }, Node::Branch { .. }) => {
+                if l.len() >= r.len() {
+                    expand(&mut left, reverse);
+                } else {
+                    expand(&mut right, reverse);
+                }
+                continue;
+            }
+            (Node::Branch { .. }, _) => {
+                expand(&mut left, reverse);
+                continue;
+            }
+            (_, Node::Branch { .. }) => {
+                expand(&mut right, reverse);
+                continue;
+            }
+            (Node::Leaf(l), Node::Leaf(r)) => {
+                let n = (l.len - lo).min(r.len - ro);
+                let (lb, rb) = if reverse {
+                    (l.start + l.len - lo, r.start + r.len - ro)
+                } else {
+                    (l.start + lo, r.start + ro)
+                };
                 // Byte equality across unshared buffers does not establish
                 // continuing identity. Repeated separately allocated pieces
                 // could otherwise turn a local edit into a full suffix scan.
                 // The reported change is deliberately conservative.
-                if !Arc::ptr_eq(&l.bytes,&r.bytes) || lb!=rb {return count;}
-                count+=n;
-                if lo+n==l.len {left.pop();} else {left.last_mut().unwrap().1+=n;}
-                if ro+n==r.len {right.pop();} else {right.last_mut().unwrap().1+=n;}
+                if !Arc::ptr_eq(&l.bytes, &r.bytes) || lb != rb {
+                    return count;
+                }
+                count += n;
+                if lo + n == l.len {
+                    left.pop();
+                } else {
+                    left.last_mut().unwrap().1 += n;
+                }
+                if ro + n == r.len {
+                    right.pop();
+                } else {
+                    right.last_mut().unwrap().1 += n;
+                }
             }
         }
     }
@@ -414,56 +415,6 @@ fn shared_source_edge(a:&SourceSnapshot,b:&SourceSnapshot,reverse:bool,stats:&mu
 }
 
 impl Node {
-    fn collect_generated_text_ranges(
-        &self,
-        range: Range<usize>,
-        base: usize,
-        result: &mut Vec<Range<usize>>,
-    ) {
-        match self {
-            Self::Leaf(piece) if piece.generated_text => {
-                let range = base + range.start..base + range.end;
-                if let Some(previous) = result.last_mut().filter(|previous| previous.end == range.start) {
-                    previous.end = range.end;
-                } else {
-                    result.push(range);
-                }
-            }
-            Self::Leaf(_) => {}
-            Self::Branch { left, right, .. } => {
-                let boundary = left.len();
-                if range.start < boundary {
-                    left.collect_generated_text_ranges(range.start..range.end.min(boundary), base, result);
-                }
-                if range.end > boundary {
-                    right.collect_generated_text_ranges(
-                        range.start.saturating_sub(boundary)..range.end - boundary,
-                        base + boundary,
-                        result,
-                    );
-                }
-            }
-        }
-    }
-
-    fn range_is_generated_text(&self, range: Range<usize>) -> bool {
-        debug_assert!(range.start < range.end && range.end <= self.len());
-        match self {
-            Self::Leaf(piece) => piece.generated_text,
-            Self::Branch { left, right, .. } => {
-                let boundary = left.len();
-                if range.end <= boundary {
-                    left.range_is_generated_text(range)
-                } else if range.start >= boundary {
-                    right.range_is_generated_text(range.start - boundary..range.end - boundary)
-                } else {
-                    left.range_is_generated_text(range.start..boundary)
-                        && right.range_is_generated_text(0..range.end - boundary)
-                }
-            }
-        }
-    }
-
     fn len(&self) -> usize {
         match self {
             Self::Leaf(piece) => piece.len,
@@ -516,22 +467,30 @@ impl Node {
 
 /// Bound backing allocations independently of rope pieces, so keeping a tiny
 /// surviving slice does not pin a whole deleted or replaced artifact.
-fn tree_from_bytes(bytes: &[u8], generated_text: bool) -> Option<Arc<Node>> {
+fn tree_from_bytes(bytes: &[u8]) -> Option<Arc<Node>> {
     fn balanced(nodes: &[Arc<Node>]) -> Option<Arc<Node>> {
         match nodes.len() {
             0 => None,
             1 => Some(nodes[0].clone()),
             length => {
                 let middle = length / 2;
-                Some(branch(balanced(&nodes[..middle]).unwrap(), balanced(&nodes[middle..]).unwrap()))
+                Some(branch(
+                    balanced(&nodes[..middle]).unwrap(),
+                    balanced(&nodes[middle..]).unwrap(),
+                ))
             }
         }
     }
-    let leaves: Vec<_> = bytes.chunks(SOURCE_BUFFER_BYTES).map(|bytes| {
-        Arc::new(Node::Leaf(Piece {
-            bytes: Arc::from(bytes), start: 0, len: bytes.len(), generated_text,
-        }))
-    }).collect();
+    let leaves: Vec<_> = bytes
+        .chunks(SOURCE_BUFFER_BYTES)
+        .map(|bytes| {
+            Arc::new(Node::Leaf(Piece {
+                bytes: Arc::from(bytes),
+                start: 0,
+                len: bytes.len(),
+            }))
+        })
+        .collect();
     balanced(&leaves)
 }
 
@@ -545,17 +504,22 @@ struct Sha256 {
 
 impl Sha256 {
     fn new() -> Self {
-    const INITIAL: [u32; 8] = [
-        0x6a09_e667,
-        0xbb67_ae85,
-        0x3c6e_f372,
-        0xa54f_f53a,
-        0x510e_527f,
-        0x9b05_688c,
-        0x1f83_d9ab,
-        0x5be0_cd19,
-    ];
-        Self { state: INITIAL, pending: [0; 64], used: 0, length: 0 }
+        const INITIAL: [u32; 8] = [
+            0x6a09_e667,
+            0xbb67_ae85,
+            0x3c6e_f372,
+            0xa54f_f53a,
+            0x510e_527f,
+            0x9b05_688c,
+            0x1f83_d9ab,
+            0x5be0_cd19,
+        ];
+        Self {
+            state: INITIAL,
+            pending: [0; 64],
+            used: 0,
+            length: 0,
+        }
     }
 
     fn update(&mut self, mut input: &[u8]) {
@@ -597,72 +561,72 @@ impl Sha256 {
     }
 
     fn compress(&mut self, block: &[u8]) {
-    const K: [u32; 64] = [
-        0x428a_2f98,
-        0x7137_4491,
-        0xb5c0_fbcf,
-        0xe9b5_dba5,
-        0x3956_c25b,
-        0x59f1_11f1,
-        0x923f_82a4,
-        0xab1c_5ed5,
-        0xd807_aa98,
-        0x1283_5b01,
-        0x2431_85be,
-        0x550c_7dc3,
-        0x72be_5d74,
-        0x80de_b1fe,
-        0x9bdc_06a7,
-        0xc19b_f174,
-        0xe49b_69c1,
-        0xefbe_4786,
-        0x0fc1_9dc6,
-        0x240c_a1cc,
-        0x2de9_2c6f,
-        0x4a74_84aa,
-        0x5cb0_a9dc,
-        0x76f9_88da,
-        0x983e_5152,
-        0xa831_c66d,
-        0xb003_27c8,
-        0xbf59_7fc7,
-        0xc6e0_0bf3,
-        0xd5a7_9147,
-        0x06ca_6351,
-        0x1429_2967,
-        0x27b7_0a85,
-        0x2e1b_2138,
-        0x4d2c_6dfc,
-        0x5338_0d13,
-        0x650a_7354,
-        0x766a_0abb,
-        0x81c2_c92e,
-        0x9272_2c85,
-        0xa2bf_e8a1,
-        0xa81a_664b,
-        0xc24b_8b70,
-        0xc76c_51a3,
-        0xd192_e819,
-        0xd699_0624,
-        0xf40e_3585,
-        0x106a_a070,
-        0x19a4_c116,
-        0x1e37_6c08,
-        0x2748_774c,
-        0x34b0_bcb5,
-        0x391c_0cb3,
-        0x4ed8_aa4a,
-        0x5b9c_ca4f,
-        0x682e_6ff3,
-        0x748f_82ee,
-        0x78a5_636f,
-        0x84c8_7814,
-        0x8cc7_0208,
-        0x90be_fffa,
-        0xa450_6ceb,
-        0xbef9_a3f7,
-        0xc671_78f2,
-    ];
+        const K: [u32; 64] = [
+            0x428a_2f98,
+            0x7137_4491,
+            0xb5c0_fbcf,
+            0xe9b5_dba5,
+            0x3956_c25b,
+            0x59f1_11f1,
+            0x923f_82a4,
+            0xab1c_5ed5,
+            0xd807_aa98,
+            0x1283_5b01,
+            0x2431_85be,
+            0x550c_7dc3,
+            0x72be_5d74,
+            0x80de_b1fe,
+            0x9bdc_06a7,
+            0xc19b_f174,
+            0xe49b_69c1,
+            0xefbe_4786,
+            0x0fc1_9dc6,
+            0x240c_a1cc,
+            0x2de9_2c6f,
+            0x4a74_84aa,
+            0x5cb0_a9dc,
+            0x76f9_88da,
+            0x983e_5152,
+            0xa831_c66d,
+            0xb003_27c8,
+            0xbf59_7fc7,
+            0xc6e0_0bf3,
+            0xd5a7_9147,
+            0x06ca_6351,
+            0x1429_2967,
+            0x27b7_0a85,
+            0x2e1b_2138,
+            0x4d2c_6dfc,
+            0x5338_0d13,
+            0x650a_7354,
+            0x766a_0abb,
+            0x81c2_c92e,
+            0x9272_2c85,
+            0xa2bf_e8a1,
+            0xa81a_664b,
+            0xc24b_8b70,
+            0xc76c_51a3,
+            0xd192_e819,
+            0xd699_0624,
+            0xf40e_3585,
+            0x106a_a070,
+            0x19a4_c116,
+            0x1e37_6c08,
+            0x2748_774c,
+            0x34b0_bcb5,
+            0x391c_0cb3,
+            0x4ed8_aa4a,
+            0x5b9c_ca4f,
+            0x682e_6ff3,
+            0x748f_82ee,
+            0x78a5_636f,
+            0x84c8_7814,
+            0x8cc7_0208,
+            0x90be_fffa,
+            0xa450_6ceb,
+            0xbef9_a3f7,
+            0xc671_78f2,
+        ];
         let mut words = [0_u32; 64];
         for (index, bytes) in block.chunks_exact(4).enumerate() {
             words[index] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -836,13 +800,11 @@ fn split(root: Option<Arc<Node>>, at: usize) -> (Option<Arc<Node>>, Option<Arc<N
                 bytes: piece.bytes.clone(),
                 start: piece.start,
                 len: at,
-                generated_text: piece.generated_text,
             }));
             let right = Arc::new(Node::Leaf(Piece {
                 bytes: piece.bytes.clone(),
                 start: piece.start + at,
                 len: piece.len - at,
-                generated_text: piece.generated_text,
             }));
             (Some(left), Some(right))
         }
@@ -870,90 +832,6 @@ mod tests {
         let changed = original.replace(2, 4, b"XYZ".to_vec()).unwrap();
         assert_eq!(original.bytes(), b"abcdef");
         assert_eq!(changed.bytes(), b"abXYZef");
-    }
-
-    #[test]
-    fn generated_text_origin_distinguishes_loaded_and_source_edited_bytes() {
-        let original = SourceSnapshot::new(b"abcdef".to_vec());
-        let generated = original.replace_generated_text(2, 4, b"XYZ".to_vec()).unwrap();
-        assert!(!original.range_is_generated_text(0..6));
-        assert!(generated.range_is_generated_text(2..5));
-        assert!(!generated.range_is_generated_text(1..5));
-        assert!(!generated.range_is_generated_text(2..6));
-
-        // Even a byte-identical source edit removes the encoder provenance
-        // from its replacement while retaining it on both surviving slices.
-        let source_edited = generated.replace(3, 4, b"Y".to_vec()).unwrap();
-        assert_eq!(source_edited.bytes(), generated.bytes());
-        assert!(source_edited.range_is_generated_text(2..3));
-        assert!(source_edited.range_is_generated_text(4..5));
-        assert!(!source_edited.range_is_generated_text(3..4));
-        assert!(!source_edited.range_is_generated_text(2..5));
-        assert!(generated.clone().range_is_generated_text(2..5));
-    }
-
-    #[test]
-    fn generated_text_origin_survives_splits_and_crosses_generated_pieces() {
-        let original = SourceSnapshot::new(Vec::new())
-            .replace_generated_text(0, 0, b"abcd".to_vec()).unwrap();
-        let inserted = original.replace_generated_text(2, 2, b"XY".to_vec()).unwrap();
-        assert_eq!(inserted.bytes(), b"abXYcd");
-        assert!(inserted.range_is_generated_text(0..6));
-        assert!(inserted.range_is_generated_text(1..5));
-
-        let deleted = inserted.replace(1, 5, Vec::new()).unwrap();
-        assert_eq!(deleted.bytes(), b"ad");
-        assert!(deleted.range_is_generated_text(0..2));
-        assert!(original.range_is_generated_text(0..4));
-    }
-
-    #[test]
-    fn generated_text_queries_reject_empty_inverted_and_out_of_bounds_ranges() {
-        let empty = SourceSnapshot::new(Vec::new());
-        assert!(!empty.range_is_generated_text(0..0));
-        let source = empty.replace_generated_text(0, 0, b"abc".to_vec()).unwrap();
-        assert!(!source.range_is_generated_text(1..1));
-        assert!(!source.range_is_generated_text(0..4));
-        let end = 1;
-        assert!(!source.range_is_generated_text(2..end));
-        assert!(!source.range_is_generated_text(usize::MAX..usize::MAX));
-
-        let unchanged = source.replace_generated_text(1, 1, Vec::new()).unwrap();
-        assert_eq!(unchanged.identity(), source.identity());
-        assert!(unchanged.range_is_generated_text(0..3));
-    }
-
-    #[test]
-    fn generated_text_queries_select_local_pieces_in_a_large_source() {
-        let mut source = SourceSnapshot::new(vec![b'x'; 2_000_000]);
-        for index in 0..4_096 {
-            let at = 1_000_000 + index;
-            source = source.replace_generated_text(at, at, vec![b'y']).unwrap();
-        }
-        assert!(source.range_is_generated_text(1_000_000..1_004_096));
-        assert!(source.range_is_generated_text(1_002_047..1_002_049));
-        assert!(!source.range_is_generated_text(999_999..1_000_001));
-        assert!(!source.range_is_generated_text(1_004_095..1_004_097));
-        assert!(!source.range_is_generated_text(0..source.len()));
-        assert_eq!(source.generated_text_ranges(999_999..1_004_097), Some(vec![1..4_097]));
-        assert_eq!(source.generated_text_ranges(1_002_047..1_002_049), Some(vec![0..2]));
-        assert!(source.height() < 40);
-    }
-
-    #[test]
-    fn mixed_origin_replacement_preserves_authored_entities_and_clips_queries() {
-        let original = SourceSnapshot::new(b"beforeafter".to_vec());
-        let replacement = b"<b>&nbsp;&nbsp;</b>".to_vec();
-        let mixed = original.replace_with_generated_text_ranges(6, 6, replacement.clone(), &[3..9]).unwrap();
-        assert_eq!(mixed.bytes(), b"before<b>&nbsp;&nbsp;</b>after");
-        assert_eq!(mixed.generated_text_ranges(6..6 + replacement.len()), Some(vec![3..9]));
-        assert!(mixed.range_is_generated_text(9..15));
-        assert!(!mixed.range_is_generated_text(15..21));
-        assert_eq!(mixed.generated_text_ranges(11..17), Some(vec![0..4]));
-        assert_eq!(mixed.generated_text_ranges(3..3), Some(Vec::new()));
-        assert_eq!(original.bytes(), b"beforeafter");
-        assert!(original.replace_with_generated_text_ranges(6, 6, replacement.clone(), &[3..10, 9..12]).is_none());
-        assert!(original.replace_with_generated_text_ranges(6, 6, replacement, &[3..30]).is_none());
     }
 
     #[test]
@@ -1000,7 +878,9 @@ mod tests {
         let survivor = source.replace(1, source.len() - 1, Vec::new()).unwrap();
         drop(source);
         let mut buffers = std::collections::HashMap::new();
-        survivor.visit_retained_buffers(&mut |identity, bytes| { buffers.insert(identity, bytes); });
+        survivor.visit_retained_buffers(&mut |identity, bytes| {
+            buffers.insert(identity, bytes);
+        });
         assert_eq!(survivor.bytes(), b"xx");
         assert_eq!(buffers.values().sum::<usize>(), 2 * SOURCE_BUFFER_BYTES);
     }
@@ -1012,13 +892,20 @@ mod tests {
             let expected = SourceArtifactDigest::from_bytes(&bytes);
             for chunk in [1, 7, 63, 64, 65, 1024] {
                 let mut digest = Sha256::new();
-                for slice in bytes.chunks(chunk) { digest.update(slice); }
+                for slice in bytes.chunks(chunk) {
+                    digest.update(slice);
+                }
                 assert_eq!(SourceArtifactDigest(digest.finish()), expected);
             }
             let source = SourceSnapshot::new(bytes);
             assert_eq!(source.artifact_digest(), expected);
-            let changed = source.replace(length / 2, length / 2, b"inserted".to_vec()).unwrap();
-            assert_eq!(changed.artifact_digest(), SourceArtifactDigest::from_bytes(&changed.bytes()));
+            let changed = source
+                .replace(length / 2, length / 2, b"inserted".to_vec())
+                .unwrap();
+            assert_eq!(
+                changed.artifact_digest(),
+                SourceArtifactDigest::from_bytes(&changed.bytes())
+            );
         }
     }
 
@@ -1155,7 +1042,9 @@ mod tests {
                 retained.insert(identity, length);
             });
             assert_eq!(retained.values().sum::<usize>(), SOURCE_BYTES + 5);
-            assert!(retained.values().all(|length| *length <= SOURCE_BUFFER_BYTES));
+            assert!(retained
+                .values()
+                .all(|length| *length <= SOURCE_BUFFER_BYTES));
             assert_eq!(retained.values().filter(|length| **length == 5).count(), 1);
         }
 
@@ -1227,9 +1116,16 @@ mod tests {
     fn sparse_source_diff_retains_shared_pieces_between_distant_changes() {
         let original = SourceSnapshot::new(b"unchanged source content\n".repeat(100_000));
         let right = original.len() - 23;
-        for (removed, replacement) in [(0, b"insert".as_slice()), (3, b"Z".as_slice()), (7, b"".as_slice())] {
-            let changed = original.replace(right, right + removed, replacement.to_vec()).unwrap()
-                .replace(11, 11 + removed, replacement.to_vec()).unwrap();
+        for (removed, replacement) in [
+            (0, b"insert".as_slice()),
+            (3, b"Z".as_slice()),
+            (7, b"".as_slice()),
+        ] {
+            let changed = original
+                .replace(right, right + removed, replacement.to_vec())
+                .unwrap()
+                .replace(11, 11 + removed, replacement.to_vec())
+                .unwrap();
             for (old, new) in [(&original, &changed), (&changed, &original)] {
                 let changes = old.changed_extents(new);
                 assert_eq!(changes.len(), 2, "{changes:?}");
@@ -1245,9 +1141,14 @@ mod tests {
         let original = SourceSnapshot::new(b"abcdEFGHijklMNOP".to_vec());
         let (first, rest) = split(original.root.clone(), 4);
         let (middle, last) = split(rest, 8);
-        for root in [concat(concat(last.clone(), middle.clone()), first.clone()),
-            concat(concat(first.clone(), middle.clone()), first.clone())] {
-            let changed = SourceSnapshot { identity: SourceSnapshotIdentity::fresh(), root };
+        for root in [
+            concat(concat(last.clone(), middle.clone()), first.clone()),
+            concat(concat(first.clone(), middle.clone()), first.clone()),
+        ] {
+            let changed = SourceSnapshot {
+                identity: SourceSnapshotIdentity::fresh(),
+                root,
+            };
             assert_diff_reconstructs(&original, &changed);
             assert_diff_reconstructs(&changed, &original);
         }
@@ -1259,14 +1160,18 @@ mod tests {
         let mut history = vec![source.clone()];
         let mut random = 0x61e7_c24b_u64;
         for step in 0..1200 {
-            random = random.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
             let at = random as usize % (source.len() + 1);
             let end = (at + step % 19).min(source.len());
             let replacement = if step % 7 == 0 {
                 // Equal bytes in a distinct allocation are a valid no-op.
                 source.bytes_in(at..end).unwrap()
             } else {
-                (0..step % 23).map(|i| random.rotate_right(i as u32) as u8).collect()
+                (0..step % 23)
+                    .map(|i| random.rotate_right(i as u32) as u8)
+                    .collect()
             };
             let next = source.replace(at, end, replacement).unwrap();
             assert_diff_reconstructs(&source, &next);
@@ -1296,30 +1201,51 @@ mod tests {
             let row = b"same repeated line\n";
             let original = SourceSnapshot::new(row.repeat(line_count));
             for at in [0, row.len() * (line_count / 2), original.len() - row.len()] {
-                for (removed, inserted) in [(0, row.as_slice()), (row.len(), &[][..]), (1, b"S".as_slice())] {
-                    let next = original.replace(at, at + removed, inserted.to_vec()).unwrap();
+                for (removed, inserted) in [
+                    (0, row.as_slice()),
+                    (row.len(), &[][..]),
+                    (1, b"S".as_slice()),
+                ] {
+                    let next = original
+                        .replace(at, at + removed, inserted.to_vec())
+                        .unwrap();
                     for (old, new) in [(&original, &next), (&next, &original)] {
                         let (extent, stats) = old.changed_extent_with_stats(new);
-                        let (removed, inserted) = extent.expect("the edit changes artifact length or bytes");
+                        let (removed, inserted) =
+                            extent.expect("the edit changes artifact length or bytes");
                         assert!(removed.len() <= row.len() * 2, "{removed:?}");
                         assert!(inserted.len() <= row.len() * 2, "{inserted:?}");
                         // Bounded backing chunks add a logarithmic tree path at each edge.
                         assert!(stats.nodes_visited < 128, "{line_count}: {stats:?}");
-                        assert!(stats.bytes_compared <= row.len() * 2, "{line_count}: {stats:?}");
-                        assert_eq!(new.bytes_in(inserted.clone()).unwrap().len(), inserted.len());
+                        assert!(
+                            stats.bytes_compared <= row.len() * 2,
+                            "{line_count}: {stats:?}"
+                        );
+                        assert_eq!(
+                            new.bytes_in(inserted.clone()).unwrap().len(),
+                            inserted.len()
+                        );
                     }
                     let mut original_buffers = std::collections::HashMap::new();
-                    original.visit_retained_buffers(&mut |id, len| { original_buffers.insert(id, len); });
+                    original.visit_retained_buffers(&mut |id, len| {
+                        original_buffers.insert(id, len);
+                    });
                     let mut next_buffers = std::collections::HashMap::new();
-                    next.visit_retained_buffers(&mut |id, len| { next_buffers.insert(id, len); });
-                    assert!(original_buffers.iter().all(|(id, len)| next_buffers.get(id) == Some(len)));
+                    next.visit_retained_buffers(&mut |id, len| {
+                        next_buffers.insert(id, len);
+                    });
+                    assert!(original_buffers
+                        .iter()
+                        .all(|(id, len)| next_buffers.get(id) == Some(len)));
                 }
             }
         }
         for piece_count in [1024, 16_384] {
             let mut original = SourceSnapshot::new(Vec::new());
             for _ in 0..piece_count {
-                original = original.replace(original.len(), original.len(), b"same\n".to_vec()).unwrap();
+                original = original
+                    .replace(original.len(), original.len(), b"same\n".to_vec())
+                    .unwrap();
             }
             for at in [0, original.len() / 2, original.len() - 13] {
                 let next = original.replace(at, at + 10, b"same\n".to_vec()).unwrap();
@@ -1332,7 +1258,13 @@ mod tests {
             }
             let (extent, stats) = original.changed_extent_with_stats(&original.clone());
             assert!(extent.is_none());
-            assert_eq!(stats, SourceDiffStats { nodes_visited: 1, bytes_compared: 0 });
+            assert_eq!(
+                stats,
+                SourceDiffStats {
+                    nodes_visited: 1,
+                    bytes_compared: 0
+                }
+            );
         }
     }
 
@@ -1341,8 +1273,11 @@ mod tests {
         use crate::document::{Document, Encoding, Format, HistoryNavigationRequest, ModelRequest};
 
         let mut document = Document::from_bytes(
-            b"same repeated line\n".repeat(10_000), Encoding::Utf8, Format::Code,
-        ).unwrap();
+            b"same repeated line\n".repeat(10_000),
+            Encoding::Utf8,
+            Format::Code,
+        )
+        .unwrap();
         document.replace(0..0, "x").unwrap();
         let baseline = document.state().source.clone();
         let baseline_text = document.projection().clone();
@@ -1357,17 +1292,24 @@ mod tests {
             ] {
                 let before = document.state().source.clone();
                 let before_text = document.projection().clone();
-                let prepared = document.prepare_model_request(ModelRequest::NavigateHistory {
-                    document: document.id(), revision: document.revision(), navigation,
-                }).unwrap();
+                let prepared = document
+                    .prepare_model_request(ModelRequest::NavigateHistory {
+                        document: document.id(),
+                        revision: document.revision(),
+                        navigation,
+                    })
+                    .unwrap();
                 let patches = prepared.summary().source_patches();
                 assert_eq!(patches.len(), 1);
                 assert!(patches[0].range().len() <= 3);
                 assert!(patches[0].replacement().len() <= 3);
-                let reconstructed = before.replace(
-                    patches[0].range().start, patches[0].range().end,
-                    patches[0].replacement().to_vec(),
-                ).unwrap();
+                let reconstructed = before
+                    .replace(
+                        patches[0].range().start,
+                        patches[0].range().end,
+                        patches[0].replacement().to_vec(),
+                    )
+                    .unwrap();
                 assert_eq!(reconstructed.bytes(), target.bytes());
                 let changes = prepared.summary().formatted_splices();
                 assert_eq!(changes.len(), 1);

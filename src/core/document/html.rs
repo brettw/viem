@@ -1,11 +1,12 @@
-//! Passive source-preserving HTML projection. The tokenizer retains source
-//! extents, spelling and duplicate attributes; semantic parsing never executes
-//! code or resolves resources. Edits patch the original source, not a serializer.
+//! Passive HTML fragment interpretation for Markdown and clipboard interchange.
+//! This is not a document format or an editing mode. Tokenization and entity
+//! decoding retain source provenance; interpretation never executes code or
+//! resolves resources. Shared CSS serialization also supports HTML export.
 use super::line_endings::NormalizedText;
 use super::rich_text::Builder;
 use super::{
     BlockKind, BlockProperties, CharacterProperties, Color, FontSlant, FormattedDocument,
-    LineSpacing, ParagraphAlignment, Revision, ScriptPosition, StyleSheet, WritingDirection,
+    LineSpacing, ParagraphAlignment, Revision, ScriptPosition, WritingDirection,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -78,10 +79,6 @@ pub(super) fn paragraph(name: &str) -> bool {
 /// The list container and item elements.
 pub(super) fn list_element(name: &str) -> bool {
     matches!(name, "ul" | "ol" | "li")
-}
-pub(super) fn owns_paragraph(tag: &Tag, sheet: &StyleSheet) -> bool {
-    paragraph(&tag.name) || block(&tag.name) && tag.attribute("class")
-        .and_then(|classes| super::html_styles::select_class(sheet, classes, false)).is_some()
 }
 pub(super) fn block(name: &str) -> bool {
     paragraph(name)
@@ -346,7 +343,6 @@ struct Frame {
     output_start: usize,
     source_inner_start: usize,
     list_container_only: bool,
-    styled_paragraph: bool,
     container: Option<usize>,
 }
 impl Default for Frame {
@@ -367,7 +363,6 @@ impl Default for Frame {
             output_start: 0,
             source_inner_start: 0,
             list_container_only: false,
-            styled_paragraph: false,
             container: None,
         }
     }
@@ -436,7 +431,9 @@ fn emit_block_boundary(builder: &mut Builder<'_>, stack: &[Frame], range: Range<
     }
 }
 
-pub(super) fn project(
+/// Import a clipboard fragment with conventional elements and inline CSS.
+/// Authored stylesheets, scripts, and external resources remain inactive.
+pub(super) fn project_fragment(
     input: &NormalizedText,
     revision: Revision,
     start: usize,
@@ -448,86 +445,29 @@ pub(super) fn project(
         start,
         end,
         super::html5_tree::tokens(&input.text),
-    )
-}
-
-pub(super) fn project_with_configuration(
-    input: &NormalizedText,
-    revision: Revision,
-    start: usize,
-    end: usize,
-    configuration: Option<&StyleSheet>,
-) -> FormattedDocument {
-    project_tokens_with_configuration(
-        input,
-        revision,
-        start,
-        end,
-        super::html5_tree::tokens(&input.text),
-        configuration,
-    )
-}
-
-/// Parse a proven local fragment with the original immutable style sheet as
-/// semantic authority. Its source does not contain the distant definitions;
-/// ordinary full projections must still read those definitions from source.
-pub(super) fn project_with_inherited_sheet(
-    input: &NormalizedText,
-    revision: Revision,
-    start: usize,
-    end: usize,
-    sheet: &StyleSheet,
-) -> FormattedDocument {
-    project_tokens_with_style_context(
-        input,
-        revision,
-        start,
-        end,
-        super::html5_tree::tokens(&input.text),
-        None,
-        Some(sheet),
         false,
     )
 }
 
-pub(super) fn project_tokens(
+pub(super) fn project_markdown_tokens(
     input: &NormalizedText,
     revision: Revision,
     start: usize,
     end: usize,
     tokens: Vec<Token>,
 ) -> FormattedDocument {
-    project_tokens_with_configuration(input, revision, start, end, tokens, None)
+    project_tokens(input, revision, start, end, tokens, true)
 }
 
-pub(super) fn project_tokens_with_configuration(
+fn project_tokens(
     input: &NormalizedText,
     revision: Revision,
     start: usize,
     end: usize,
     tokens: Vec<Token>,
-    configuration: Option<&StyleSheet>,
-) -> FormattedDocument {
-    project_tokens_with_style_context(input, revision, start, end, tokens, configuration, None, false)
-}
-
-pub(super) fn project_markdown_tokens(input: &NormalizedText, revision: Revision, start: usize, end: usize, tokens: Vec<Token>) -> FormattedDocument {
-    project_tokens_with_style_context(input, revision, start, end, tokens, None, None, true)
-}
-
-fn project_tokens_with_style_context(
-    input: &NormalizedText,
-    revision: Revision,
-    start: usize,
-    end: usize,
-    tokens: Vec<Token>,
-    configuration: Option<&StyleSheet>,
-    inherited_sheet: Option<&StyleSheet>,
     markdown_references: bool,
 ) -> FormattedDocument {
     let lexical_tokens = tokenize(&input.text);
-    let scope_index =
-        super::html_scope_index::HtmlScopeIndex::from_tokens(input, revision, &lexical_tokens);
     // Reparenting requires explicit, balanced list delimiters. Recovery may
     // synthesize missing list tags for display, but cannot advertise an edit
     // whose original source has no such boundary.
@@ -536,22 +476,17 @@ fn project_tokens_with_style_context(
     for token in &lexical_tokens {
         if let TokenKind::Tag(tag) = &token.kind {
             if list_element(&tag.name) {
-                if tag.end { list_editable &= list_stack.pop() == Some(tag.name.as_str()); }
-                else { list_stack.push(tag.name.as_str()); }
+                if tag.end {
+                    list_editable &= list_stack.pop() == Some(tag.name.as_str());
+                } else {
+                    list_stack.push(tag.name.as_str());
+                }
             }
         }
     }
     list_editable &= list_stack.is_empty();
     let mut builder = Builder::new(input, revision);
     builder.list_indent_support = Some((list_editable, list_editable));
-    builder.style_sheet = inherited_sheet.cloned().unwrap_or_else(|| {
-        super::html_styles::read_with_tokens(&input.text, &tokens, &lexical_tokens).sheet
-    });
-    if let Some(configuration) = configuration {
-        builder
-            .style_sheet
-            .retain_configuration_deletions(configuration);
-    }
     let mut stack = vec![Frame::default()];
     let mut owners: Vec<super::containers::SourceContainer> = Vec::new();
     let mut pending_break: Option<Range<usize>> = None;
@@ -582,8 +517,11 @@ fn project_tokens_with_style_context(
                 }
                 let value = if value == "\r" { " ".into() } else { value };
                 let hard_break = frame.preserve_newlines && value == "\n";
-                if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space)
-                    && !(markdown_references && input.text[token.range.clone()].starts_with("&#")) {
+                if !frame.preserve_whitespace
+                    && !hard_break
+                    && value.bytes().all(css_space)
+                    && !(markdown_references && input.text[token.range.clone()].starts_with("&#"))
+                {
                     if !builder.line_is_empty() && pending_break.is_none() {
                         if let Some(space) = pending_space
                             .as_mut()
@@ -620,7 +558,7 @@ fn project_tokens_with_style_context(
                 builder.defaults = stack
                     .iter()
                     .rev()
-                    .find(|ancestor| paragraph(&ancestor.name) || ancestor.styled_paragraph)
+                    .find(|ancestor| paragraph(&ancestor.name))
                     .map(|ancestor| ancestor.character.clone())
                     .unwrap_or_default();
                 builder.named_character = frame.named_character.clone();
@@ -642,21 +580,21 @@ fn project_tokens_with_style_context(
                 } else {
                     builder.emit(&value, token.range, &frame.character);
                 }
-                if frame.preserve_whitespace {
-                    retain_whitespace_context(&mut builder, value.len());
-                }
                 paragraph_seen = true;
             }
             TokenKind::Tag(tag) => {
                 if tag.end {
                     if let Some(index) = stack.iter().rposition(|f| f.name == tag.name) {
                         for closed in &stack[index..] {
-                            if let Some(owner) = closed.container { owners[owner].range.end = builder.source_range(token.range.clone()).end; }
+                            if let Some(owner) = closed.container {
+                                owners[owner].range.end =
+                                    builder.source_range(token.range.clone()).end;
+                            }
                         }
                         let was_hidden = stack.last().unwrap().hidden;
                         let was_opaque = stack.last().unwrap().opaque;
                         let closed = &stack[index];
-                        let closed_paragraph = paragraph(&tag.name) || closed.styled_paragraph;
+                        let closed_paragraph = paragraph(&tag.name);
                         if !closed.hidden
                             && !closed.opaque
                             // An empty element beyond a deferred paragraph
@@ -672,23 +610,6 @@ fn project_tokens_with_style_context(
                                 closed.source_inner_start,
                                 &closed.character,
                             );
-                            if closed.preserve_whitespace
-                                && builder.provenance.last().is_some_and(|span| {
-                                    span.formatted == (builder.text.len()..builder.text.len())
-                                        && span.source
-                                            == (closed.source_inner_start..closed.source_inner_start)
-                                })
-                            {
-                                // The selected empty source anchor has no
-                                // visible character on which to retain its
-                                // whitespace context. A point annotation
-                                // preserves it even in arbitrarily long pre
-                                // elements and through closed inline scopes.
-                                builder.spans.push(super::StyleSpan {
-                                    range: builder.text.len()..builder.text.len(),
-                                    application: super::StyleApplication::SourcePreservedWhitespace,
-                                });
-                            }
                         }
                         stack.truncate(index.max(1));
                         if !was_hidden && !was_opaque && block(&tag.name) {
@@ -707,11 +628,16 @@ fn project_tokens_with_style_context(
                 let inherited_paragraph_direction = frame.paragraph.base_direction;
                 frame.name = tag.name.clone();
                 frame.container = None;
-                if block(&tag.name) { frame.paragraph.clear_box(); }
+                if block(&tag.name) {
+                    frame.paragraph.clear_box();
+                }
                 let container_kind = match tag.name.as_str() {
-                    "blockquote" => Some(super::ContainerKind::Quote), "pre" => Some(super::ContainerKind::CodeBlock),
-                    "ul" => Some(super::ContainerKind::List { ordered: false }), "ol" => Some(super::ContainerKind::List { ordered: true }),
-                    "li" => Some(super::ContainerKind::ListItem), _ => None,
+                    "blockquote" => Some(super::ContainerKind::Quote),
+                    "pre" => Some(super::ContainerKind::CodeBlock),
+                    "ul" => Some(super::ContainerKind::List { ordered: false }),
+                    "ol" => Some(super::ContainerKind::List { ordered: true }),
+                    "li" => Some(super::ContainerKind::ListItem),
+                    _ => None,
                 };
                 frame.list_container_only =
                     tag.name == "li" && container_items.contains(&token.range.start);
@@ -731,7 +657,10 @@ fn project_tokens_with_style_context(
                     }
                     builder.emit(
                         "\u{fffc}",
-                        atomic_extents.get(&token.range.start).cloned().unwrap_or(token.range.clone()),
+                        atomic_extents
+                            .get(&token.range.start)
+                            .cloned()
+                            .unwrap_or(token.range.clone()),
                         &stack.last().unwrap().character,
                     );
                     paragraph_seen = true;
@@ -740,29 +669,18 @@ fn project_tokens_with_style_context(
                     pending_space = None;
                     pending_break = None;
                     builder.hard_break(token.range.clone());
-                    if frame.preserve_whitespace {
-                        retain_whitespace_context(&mut builder, 1);
-                    }
                 }
-                let containing_item =
-                    if block(&tag.name) && !list_element(&tag.name) {
-                        stack.iter().rposition(|frame| frame.name == "li")
-                    } else {
-                        None
-                    };
+                let containing_item = if block(&tag.name) && !list_element(&tag.name) {
+                    stack.iter().rposition(|frame| frame.name == "li")
+                } else {
+                    None
+                };
                 let first_item_paragraph = containing_item.is_some_and(|index| {
                     stack[index].output_start == builder.text.len() && pending_break.is_none()
                 });
-                let assigned_paragraph = block(&tag.name).then(|| {
-                    tag.attribute("class").and_then(|classes|
-                        super::html_styles::select_class(&builder.style_sheet, classes, false))
-                }).flatten();
-                frame.styled_paragraph = assigned_paragraph.as_ref().is_some_and(|style| builder.style_sheet.block_style(style).is_some_and(|definition| !definition.role.is_container()));
-                let paragraph_element = (paragraph(&tag.name)
-                    || frame.styled_paragraph
-                    || tag.name == "blockquote"
-                    || containing_item.is_some())
-                    && !frame.list_container_only;
+                let paragraph_element =
+                    (paragraph(&tag.name) || tag.name == "blockquote" || containing_item.is_some())
+                        && !frame.list_container_only;
                 let inside_pre = stack.iter().any(|frame| frame.name == "pre");
                 if block(&tag.name) && !frame.hidden && !frame.opaque {
                     pending_space = None;
@@ -854,39 +772,24 @@ fn project_tokens_with_style_context(
                     }
                     _ => {}
                 }
-                if paragraph_element { frame.paragraph_style = None; }
+                if paragraph_element {
+                    frame.paragraph_style = None;
+                }
                 if tag.name == "pre" {
                     frame.preserve_whitespace = true;
                     frame.preserve_newlines = true;
                     frame.paragraph_style = Some("Code Block".into());
                 } else if tag.name == "code" {
                     frame.named_character = Some("Code".into());
-                } else if containing_item.is_some() && tag.name.len() == 2 && tag.name.starts_with('h') {
-                    frame.paragraph_style = Some(format!("Heading{}", tag.name.as_bytes()[1] - b'0').as_str().into());
-                }
-                if let Some(classes) = tag.attribute("class") {
-                    if paragraph(&tag.name) || frame.styled_paragraph {
-                        if let Some(style) =
-                            super::html_styles::select_class(&builder.style_sheet, classes, false)
-                        {
-                            frame.paragraph_style = Some(style);
-                        }
-                    } else if tag.name != "body" {
-                        if let Some(id) =
-                            super::html_styles::select_class(&builder.style_sheet, classes, true)
-                        {
-                            let named =
-                                super::html_styles::character_chain(&builder.style_sheet, &id);
-                            super::html_styles::remove_named_overrides(
-                                &mut frame.character,
-                                &named,
-                            );
-                            frame.named_character = Some(id);
-                        }
-                    }
-                }
-                if tag.attribute("data-viem-character") == Some("none") {
-                    frame.named_character = None;
+                } else if containing_item.is_some()
+                    && tag.name.len() == 2
+                    && tag.name.starts_with('h')
+                {
+                    frame.paragraph_style = Some(
+                        format!("Heading{}", tag.name.as_bytes()[1] - b'0')
+                            .as_str()
+                            .into(),
+                    );
                 }
                 if frame.paragraph_style.is_none() {
                     if let BlockKind::Heading(level) = frame.kind {
@@ -933,21 +836,25 @@ fn project_tokens_with_style_context(
                     }
                 }
                 if block(&tag.name) && frame.paragraph.background.is_some() {
-                    frame.character.background = stack.last().and_then(|parent| parent.character.background);
+                    frame.character.background =
+                        stack.last().and_then(|parent| parent.character.background);
                 }
                 if let Some(kind) = container_kind.filter(|_| !frame.hidden && !frame.opaque) {
-                    let mut owner = super::containers::SourceContainer::new(builder.source_range(token.range.clone()).start..end, kind);
+                    let mut owner = super::containers::SourceContainer::new(
+                        builder.source_range(token.range.clone()).start..end,
+                        kind,
+                    );
                     owner.owns_empty_end = true;
                     let mut own_character = CharacterProperties::default();
                     let mut own_paragraph = BlockProperties::default();
-                    if let Some(css) = tag.attribute("style") { apply_css(css, &mut own_character, &mut own_paragraph); }
-                    own_character.background = None;
-                    owner.direct_formatting = super::BlockDirectFormatting::shared(own_paragraph, own_character);
-                    if let Some(style) = assigned_paragraph.as_ref().filter(|style| builder.style_sheet.block_style(style).is_some_and(|definition| definition.role == kind.style_role())) {
-                        owner.style = style.clone();
-                        frame.paragraph_style = (kind == super::ContainerKind::CodeBlock).then(|| "Code Block".into());
+                    if let Some(css) = tag.attribute("style") {
+                        apply_css(css, &mut own_character, &mut own_paragraph);
                     }
-                    frame.container = Some(owners.len()); owners.push(owner);
+                    own_character.background = None;
+                    owner.direct_formatting =
+                        super::BlockDirectFormatting::shared(own_paragraph, own_character);
+                    frame.container = Some(owners.len());
+                    owners.push(owner);
                     // Box declarations belong to this owner, not to each of its
                     // paragraph descendants. Inherited text properties remain.
                     frame.paragraph.clear_box();
@@ -1030,8 +937,11 @@ fn project_tokens_with_style_context(
                     at += consumed;
                     let value = if value == "\r" { " ".into() } else { value };
                     let hard_break = frame.preserve_newlines && value == "\n";
-                    if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space)
-                        && !(markdown_references && input.text[range.clone()].starts_with("&#")) {
+                    if !frame.preserve_whitespace
+                        && !hard_break
+                        && value.bytes().all(css_space)
+                        && !(markdown_references && input.text[range.clone()].starts_with("&#"))
+                    {
                         if !builder.line_is_empty() && pending_break.is_none() {
                             if let Some(space) =
                                 pending_space.as_mut().filter(|r| r.end == range.start)
@@ -1064,7 +974,7 @@ fn project_tokens_with_style_context(
                     builder.defaults = stack
                         .iter()
                         .rev()
-                        .find(|ancestor| paragraph(&ancestor.name) || ancestor.styled_paragraph)
+                        .find(|ancestor| paragraph(&ancestor.name))
                         .map(|ancestor| ancestor.character.clone())
                         .unwrap_or_default();
                     builder.named_character = frame.named_character.clone();
@@ -1084,9 +994,6 @@ fn project_tokens_with_style_context(
                     } else {
                         builder.emit(&value, range, &frame.character);
                     }
-                    if frame.preserve_whitespace {
-                        retain_whitespace_context(&mut builder, value.len());
-                    }
                     paragraph_seen = true;
                 }
             }
@@ -1094,666 +1001,8 @@ fn project_tokens_with_style_context(
     }
     let mut result = builder.finish(start, end);
     result.install_source_containers(owners);
-    result.install_html_scope_index(scope_index);
     super::links::style_html_links(&mut result, input, &lexical_tokens);
     result
-}
-
-/// Author list changes by replacing only paragraph delimiters and inserting
-/// the required list containers. Every body byte and unrelated tag survives.
-pub(super) fn list_enter_patch(
-    input: &NormalizedText,
-    source_at: usize,
-    next_ordinal: Option<u64>,
-) -> Result<(Range<usize>, String), super::DocumentError> {
-    let mapper = Builder::new(input, Revision(0));
-    let tokens = tokenize(&input.text);
-    // Use the same implicit paragraph closure rules as paragraph splitting.
-    // A raw push/pop stack retains prior <p> siblings with omitted end tags,
-    // then closes and reopens them all as extra empty paragraphs on Enter.
-    // Stop at the last complete token before the upstream source boundary so
-    // an adjacent paragraph opener still belongs to the following content.
-    let at = tokens
-        .iter()
-        .take_while(|token| mapper.source_range(token.range.clone()).end <= source_at)
-        .last()
-        .map_or(0, |token| token.range.end);
-    let stack = super::html_paragraph::stack_at(&tokens, at)
-        .into_iter()
-        .map(|token| {
-            let TokenKind::Tag(tag) = &token.kind else {
-                unreachable!()
-            };
-            (tag.name.clone(), input.text[token.range.clone()].to_owned())
-        })
-        .collect::<Vec<_>>();
-    let list = stack
-        .iter()
-        .rposition(|(name, _)| name == "li")
-        .ok_or(super::DocumentError::AmbiguousProjection)?;
-    let mut syntax = String::new();
-    for (name, _) in stack[list..].iter().rev() {
-        syntax.push_str(&format!("</{name}>"));
-    }
-    for (name, opening) in &stack[list..] {
-        if name == "li" {
-            if let (
-                Some(ordinal),
-                Some(Token {
-                    kind: TokenKind::Tag(tag),
-                    ..
-                }),
-            ) = (next_ordinal, tokenize(opening).into_iter().next())
-            {
-                syntax.push_str("<li");
-                for (name, value) in tag.attributes {
-                    if name != "value" {
-                        syntax.push_str(&format!(" {name}=\"{}\"", attribute_escape(&value)));
-                    }
-                }
-                syntax.push_str(&format!(" value=\"{ordinal}\">"));
-                continue;
-            }
-        }
-        syntax.push_str(opening);
-    }
-    if stack.len() == list + 1
-        && tokens.iter().any(|token| {
-            mapper.source_range(token.range.clone()).start == source_at
-                && matches!(&token.kind, TokenKind::Tag(tag)
-                    if !tag.end && paragraph(&tag.name) && tag.name != "li")
-        })
-    {
-        // A bare item's body has no paragraph opener to carry into the new
-        // item. An immediately following <p> would become its first paragraph
-        // and absorb the old boundary. Give the new empty body its own explicit
-        // paragraph, leaving that authored following paragraph intact.
-        syntax.push_str("<p");
-        // Paragraph elements reset named block-style inheritance. Retain the
-        // item's authored class assignment on this newly explicit paragraph.
-        if let Some(Token {
-            kind: TokenKind::Tag(tag),
-            ..
-        }) = tokenize(&stack[list].1).into_iter().next()
-        {
-            if let Some(classes) = tag.attribute("class") {
-                syntax.push_str(&format!(" class=\"{}\"", attribute_escape(classes)));
-            }
-        }
-        syntax.push_str("></p>");
-    }
-    Ok((source_at..source_at, syntax))
-}
-
-/// Explicit item values restart numbering and bound the effects of an insertion.
-pub(super) fn list_item_has_explicit_value(input: &NormalizedText, source_at: usize) -> bool {
-    let mapper = Builder::new(input, Revision(0));
-    let mut stack: Vec<Tag> = Vec::new();
-    for token in tokenize(&input.text) {
-        if mapper.source_range(token.range).end > source_at {
-            break;
-        }
-        if let TokenKind::Tag(tag) = token.kind {
-            if tag.end {
-                if let Some(at) = stack.iter().rposition(|open| open.name == tag.name) {
-                    stack.truncate(at);
-                }
-            } else if !void(&tag.name) {
-                stack.push(tag);
-            }
-        }
-    }
-    stack
-        .iter()
-        .rev()
-        .find(|tag| tag.name == "li")
-        .is_some_and(|tag| {
-            tag.attribute("value")
-                .and_then(|value| value.parse::<u64>().ok())
-                .is_some()
-        })
-}
-
-pub(super) fn list_patches(
-    input: &NormalizedText,
-    targets: &[(Range<usize>, Option<super::ListStyle>, u64, Option<u64>)],
-    reuse_paragraph_owners: bool,
-) -> Result<Vec<(Range<usize>, String)>, super::DocumentError> {
-    // Recovered elements identify omitted paragraph/list end tags without
-    // regenerating their untouched body bytes. Synthetic closes are authored
-    // only when the requested structural edit needs a real delimiter.
-    let mut tokens = super::html5_tree::tokens(&input.text);
-    let raw_tokens = tokenize(&input.text);
-    let mut claimed_closes = std::collections::BTreeSet::new();
-    for token in &mut tokens {
-        let TokenKind::Tag(tag) = &token.kind else {
-            continue;
-        };
-        if !tag.end {
-            continue;
-        }
-        if !token.range.is_empty() {
-            claimed_closes.insert(token.range.start);
-            continue;
-        }
-        // Tree construction may close a node implicitly even when its end
-        // tag immediately follows in source. Recover that delimiter through
-        // trivia and already-closed inline wrappers, never across new content.
-        for raw in raw_tokens
-            .iter()
-            .filter(|raw| raw.range.start >= token.range.start)
-        {
-            match &raw.kind {
-                TokenKind::Tag(close) if close.end => {
-                    if close.name == tag.name && claimed_closes.insert(raw.range.start) {
-                        token.range = raw.range.clone();
-                        break;
-                    }
-                }
-                TokenKind::Opaque => {}
-                TokenKind::Text if input.text[raw.range.clone()].trim().is_empty() => {}
-                _ => break,
-            }
-        }
-    }
-    let mapper = Builder::new(input, Revision(0));
-    let mut stack: Vec<usize> = Vec::new();
-    let mut nodes: Vec<(usize, usize, Option<usize>)> = Vec::new();
-    for (index, token) in tokens.iter().enumerate() {
-        let TokenKind::Tag(tag) = &token.kind else {
-            continue;
-        };
-        if tag.end {
-            if let Some(at) = stack.iter().rposition(|open| matches!(&tokens[*open].kind, TokenKind::Tag(open_tag) if open_tag.name == tag.name)) {
-                let open = stack[at];
-                let parent_list = stack[..at].iter().rev().copied().find(|parent| matches!(&tokens[*parent].kind, TokenKind::Tag(t) if matches!(t.name.as_str(), "ul" | "ol")));
-                if !tokens[open].range.is_empty() {
-                    nodes.push((open, index, parent_list));
-                }
-                stack.truncate(at);
-            }
-        } else if !void(&tag.name) {
-            stack.push(index);
-        }
-    }
-    let mut result = Vec::new();
-    let container_items = list_container_items(&tokens);
-    let mut removed_ancestors = std::collections::BTreeSet::new();
-    let owners = targets
-        .iter()
-        .map(|(source, _, _, _)| {
-            nodes
-                .iter()
-                .filter(|(open, close, _)| {
-                    matches!(&tokens[*open].kind,TokenKind::Tag(tag) if tag.name=="li")
-                        && mapper.source_range(tokens[*open].range.clone()).end <= source.start
-                        && source.end <= mapper.source_range(tokens[*close].range.clone()).start
-                })
-                .min_by_key(|(open, close, _)| tokens[*close].range.end - tokens[*open].range.start)
-                .map(|(open, _, _)| *open)
-        })
-        .collect::<Vec<_>>();
-    let mut handled = std::collections::BTreeSet::new();
-    // A whole-list change owns the container delimiters, so retain every item
-    // delimiter and its original attributes rather than splitting the list.
-    for (parent, close, _) in &nodes {
-        let TokenKind::Tag(parent_tag) = &tokens[*parent].kind else {
-            continue;
-        };
-        if !matches!(parent_tag.name.as_str(), "ul" | "ol") {
-            continue;
-        }
-        let children = nodes
-            .iter()
-            .filter(|(open, _, owner)| {
-                *owner == Some(*parent)
-                    && matches!(&tokens[*open].kind,TokenKind::Tag(tag) if tag.name=="li")
-            })
-            .collect::<Vec<_>>();
-        if children.is_empty() {
-            continue;
-        }
-        let selected = children
-            .iter()
-            .filter_map(|(open, _, _)| {
-                targets
-                    .iter()
-                    .enumerate()
-                    .find(|(index, _)| owners[*index] == Some(*open))
-            })
-            .collect::<Vec<_>>();
-        if selected.len() != children.len() {
-            continue;
-        }
-        let Some(style) = selected[0].1 .1 else {
-            if selected.iter().any(|(_, target)| target.1.is_some()) {
-                continue;
-            }
-            result.push((
-                mapper.source_range(tokens[*parent].range.clone()),
-                String::new(),
-            ));
-            result.push((
-                mapper.source_range(tokens[*close].range.clone()),
-                String::new(),
-            ));
-            for (open, close, _) in &children {
-                let source = &selected.iter()
-                    .find(|(index, _)| owners[*index] == Some(*open)).unwrap().1.0;
-                let (opening, closing, needs_paragraph) = list_item_exit_syntax(
-                    &input.text, &tokens, *open, *close, source.is_empty(), reuse_paragraph_owners,
-                );
-                if needs_paragraph {
-                    result.push((source.clone(), "<p></p>".to_owned()));
-                }
-                result.push((mapper.source_range(tokens[*open].range.clone()), opening));
-                result.push((mapper.source_range(tokens[*close].range.clone()), closing));
-            }
-            // Native deeper-level authoring may have introduced ancestors
-            // whose entire body is this one list. Once every descendant item
-            // becomes a paragraph, remove that empty structural chain too.
-            let mut child_list = *parent;
-            loop {
-                let Some((item_open, item_close, Some(outer))) =
-                    nodes.iter().find(|(open, close, _)| {
-                        container_items.contains(&tokens[*open].range.start)
-                            && tokens[*open].range.end <= tokens[child_list].range.start
-                            && tokens[child_list].range.end <= tokens[*close].range.start
-                    })
-                else {
-                    break;
-                };
-                let children = nodes.iter().filter(|(open, _, owner)| *owner == Some(*outer) && matches!(&tokens[*open].kind, TokenKind::Tag(tag) if tag.name == "li")).count();
-                let child_lists = nodes.iter().filter(|(open, close, owner)| *owner == Some(*outer) && tokens[*item_open].range.end <= tokens[*open].range.start && tokens[*close].range.end <= tokens[*item_close].range.start && matches!(&tokens[*open].kind, TokenKind::Tag(tag) if matches!(tag.name.as_str(), "ul" | "ol"))).count();
-                if children != 1 || child_lists != 1 {
-                    break;
-                }
-                let Some((_, outer_close, _)) = nodes.iter().find(|(open, _, _)| *open == *outer)
-                else {
-                    break;
-                };
-                for (open, close) in [(*item_open, *item_close), (*outer, *outer_close)] {
-                    let TokenKind::Tag(tag) = &tokens[open].kind else { unreachable!() };
-                    // These ancestors were structural scaffolding, rather
-                    // than selected items. Retain any authored metadata and
-                    // inherited declarations in a non-list scope.
-                    let retain_scope = !tag.attributes.is_empty();
-                    for (index, end) in [(open, false), (close, true)] {
-                        if removed_ancestors.insert(index) {
-                            let mut replacement = String::new();
-                            if retain_scope {
-                                replacement = input.text[tokens[index].range.clone()].to_owned();
-                                if replacement.is_empty() {
-                                    replacement = "</div>".to_owned();
-                                } else {
-                                    let start = if end { 2 } else { 1 };
-                                    replacement.replace_range(start..start + tag.name.len(), "div");
-                                }
-                            }
-                            result.push((mapper.source_range(tokens[index].range.clone()), replacement));
-                        }
-                    }
-                }
-                child_list = *outer;
-            }
-            handled.extend(selected.into_iter().map(|(index, _)| index));
-            continue;
-        };
-        if selected.iter().any(|(_, target)| target.1 != Some(style)) {
-            continue;
-        }
-        let name = if style == super::ListStyle::Numbered {
-            "ol"
-        } else {
-            "ul"
-        };
-        let mut opening = input.text[tokens[*parent].range.clone()].to_owned();
-        opening.replace_range(1..1 + parent_tag.name.len(), name);
-        if style == super::ListStyle::Numbered
-            && (selected[0].1 .2 != 1 || parent_tag.attribute("start").is_some())
-        {
-            opening.insert_str(1 + name.len(), &format!(" start=\"{}\"", selected[0].1 .2));
-        }
-        let mut closing = input.text[tokens[*close].range.clone()].to_owned();
-        if closing.is_empty() {
-            closing = format!("</{name}>");
-        } else {
-            closing.replace_range(2..2 + parent_tag.name.len(), name);
-        }
-        result.push((mapper.source_range(tokens[*parent].range.clone()), opening));
-        result.push((mapper.source_range(tokens[*close].range.clone()), closing));
-        handled.extend(selected.into_iter().map(|(index, _)| index));
-    }
-    let mut previous_plain: Option<(usize, usize, String)> = None;
-    for (target_index, (source, target, ordinal, original_ordinal)) in targets.iter().enumerate() {
-        if handled.contains(&target_index) {
-            previous_plain = None;
-            continue;
-        }
-        let node = nodes.iter().filter(|(open, close, _)| {
-            matches!(&tokens[*open].kind, TokenKind::Tag(tag) if if original_ordinal.is_some(){tag.name=="li"}else{paragraph(&tag.name)})
-                && mapper.source_range(tokens[*open].range.clone()).end <= source.start
-                && source.end <= mapper.source_range(tokens[*close].range.clone()).start
-        }).min_by_key(|(open, close, _)| tokens[*close].range.end - tokens[*open].range.start);
-        let list_name = match target {
-            Some(super::ListStyle::Bullet) => Some("ul"),
-            Some(super::ListStyle::Numbered) => Some("ol"),
-            None => None,
-        };
-        let mut wrap_open = list_name
-            .map(|name| {
-                if name == "ol" && *ordinal != 1 {
-                    format!("<ol start=\"{ordinal}\">")
-                } else {
-                    format!("<{name}>")
-                }
-            })
-            .unwrap_or_default();
-        let wrap_close = list_name
-            .map(|name| format!("</{name}>"))
-            .unwrap_or_default();
-        if let Some((open, close, parent)) = node {
-            let TokenKind::Tag(tag) = &tokens[*open].kind else {
-                unreachable!()
-            };
-            let contains_paragraph = tokens[*open+1..*close].iter().any(|token| matches!(&token.kind,TokenKind::Tag(tag) if !tag.end && paragraph(&tag.name)));
-            let desired_tag = if target.is_some() {
-                "li"
-            } else if contains_paragraph {
-                "div"
-            } else {
-                "p"
-            };
-            let original_open = &input.text[tokens[*open].range.clone()];
-            let mut opening = original_open.to_owned();
-            opening.replace_range(1..1 + tag.name.len(), desired_tag);
-            let original_close = &input.text[tokens[*close].range.clone()];
-            let mut closing = original_close.to_owned();
-            if closing.is_empty() {
-                closing = format!("</{desired_tag}>");
-            } else {
-                closing.replace_range(2..2 + tag.name.len(), desired_tag);
-            }
-            if target.is_none() && tag.name == "li" {
-                let (item_opening, item_closing, needs_paragraph) = list_item_exit_syntax(
-                    &input.text, &tokens, *open, *close, source.is_empty(), reuse_paragraph_owners,
-                );
-                opening = item_opening;
-                closing = item_closing;
-                if needs_paragraph {
-                    result.push((source.clone(), "<p></p>".to_owned()));
-                }
-            }
-            let (leave_parent, resume_parent) = if tag.name == "li" {
-                let parent = parent.ok_or(super::DocumentError::AmbiguousProjection)?;
-                let TokenKind::Tag(parent_tag) = &tokens[parent].kind else {
-                    unreachable!()
-                };
-                let siblings = nodes.iter().filter(|(index, _, owner)| {
-                    *owner == Some(parent)
-                        && matches!(&tokens[*index].kind, TokenKind::Tag(tag) if tag.name == "li")
-                }).collect::<Vec<_>>();
-                let item = siblings.iter().position(|(index, _, _)| index == open)
-                    .ok_or(super::DocumentError::AmbiguousProjection)?;
-                let selected = |index: usize| owners.iter().enumerate().any(|(target, owner)| {
-                    *owner == Some(index) && !handled.contains(&target)
-                });
-                let leave = if item == 0 {
-                    result.push((mapper.source_range(tokens[parent].range.clone()), String::new()));
-                    String::new()
-                } else if selected(siblings[item - 1].0) {
-                    String::new()
-                } else {
-                    format!("</{}>", parent_tag.name)
-                };
-                if item + 1 == siblings.len() {
-                    let (_, parent_close, _) = nodes.iter().find(|(index, _, _)| *index == parent)
-                        .ok_or(super::DocumentError::AmbiguousProjection)?;
-                    result.push((mapper.source_range(tokens[*parent_close].range.clone()), String::new()));
-                }
-                let mut resume = input.text[tokens[parent].range.clone()].to_owned();
-                if parent_tag.name == "ol" {
-                    resume.insert_str(
-                        3,
-                        &format!(
-                            " start=\"{}\"",
-                            original_ordinal.unwrap_or(*ordinal).saturating_add(1)
-                        ),
-                    );
-                }
-                if item + 1 == siblings.len() || selected(siblings[item + 1].0) {
-                    resume.clear();
-                }
-                (leave, resume)
-            } else {
-                (String::new(), String::new())
-            };
-            if tag.name != "li" {
-                if let (Some(name), Some((previous, end, previous_name))) =
-                    (list_name, &previous_plain)
-                {
-                    let gap = &input.text[*end..tokens[*open].range.start];
-                    let trivia = tokenize(gap).iter().all(|token| match token.kind {
-                        TokenKind::Text => gap[token.range.clone()].trim().is_empty(),
-                        TokenKind::Opaque => gap[token.range.clone()].starts_with("<!--"),
-                        _ => false,
-                    });
-                    if name == previous_name && trivia {
-                        let length = result[*previous].1.len() - wrap_close.len();
-                        result[*previous].1.truncate(length);
-                        wrap_open.clear();
-                    }
-                }
-            }
-            result.push((
-                mapper.source_range(tokens[*open].range.clone()),
-                format!("{leave_parent}{wrap_open}{opening}"),
-            ));
-            result.push((
-                mapper.source_range(tokens[*close].range.clone()),
-                format!("{closing}{wrap_close}{resume_parent}"),
-            ));
-            previous_plain = if tag.name != "li" {
-                list_name.map(|name| (result.len() - 1, tokens[*close].range.end, name.to_owned()))
-            } else {
-                None
-            };
-        } else if target.is_some() {
-            previous_plain = None;
-            result.push((source.start..source.start, format!("{wrap_open}<li>")));
-            result.push((source.end..source.end, format!("</li>{wrap_close}")));
-        }
-    }
-    Ok(result)
-}
-
-fn list_item_exit_syntax(
-    input: &str,
-    tokens: &[Token],
-    open: usize,
-    close: usize,
-    empty: bool,
-    reuse_paragraph_owners: bool,
-) -> (String, String, bool) {
-    let TokenKind::Tag(item) = &tokens[open].kind else { unreachable!() };
-    let body = &tokens[open + 1..close];
-    let has_paragraph = body.iter().any(|token|
-        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && paragraph(&tag.name)));
-    let has_block = has_paragraph || reuse_paragraph_owners && body.iter().any(|token|
-        matches!(&token.kind, TokenKind::Tag(tag) if !tag.end && block(&tag.name)));
-    // A p cannot enclose a div or another flow container: HTML would close it
-    // immediately and manufacture a second empty paragraph at the trailing
-    // end tag. Retain those authored containers and give an empty item exactly
-    // one explicit paragraph at its existing source caret instead.
-    let needs_paragraph = reuse_paragraph_owners && empty && has_block && !has_paragraph;
-    if reuse_paragraph_owners && (item_has_complete_paragraph_body(input, tokens, open, close)
-        || needs_paragraph && item.attributes.is_empty())
-    {
-        return (String::new(), String::new(), needs_paragraph);
-    }
-    let name = if has_block { "div" } else { "p" };
-    let mut opening = input[tokens[open].range.clone()].to_owned();
-    opening.replace_range(1..1 + item.name.len(), name);
-    let mut closing = input[tokens[close].range.clone()].to_owned();
-    if closing.is_empty() {
-        closing = format!("</{name}>");
-    } else {
-        closing.replace_range(2..2 + item.name.len(), name);
-    }
-    (opening, closing, needs_paragraph)
-}
-
-/// A list item whose body already has paragraph owners needs no replacement
-/// owner when list treatment is removed. Keep its child paragraphs (including
-/// empty continuation paragraphs) and nested lists exactly as authored. Item
-/// attributes still need a container so their scope and metadata survive.
-fn item_has_complete_paragraph_body(
-    input: &str,
-    tokens: &[Token],
-    open: usize,
-    close: usize,
-) -> bool {
-    let TokenKind::Tag(item) = &tokens[open].kind else { return false };
-    if item.name != "li" || !item.attributes.is_empty() {
-        return false;
-    }
-    let mut depth = 0usize;
-    let mut has_paragraph = false;
-    for token in &tokens[open + 1..close] {
-        match &token.kind {
-            TokenKind::Tag(tag) if tag.end => depth = depth.saturating_sub(1),
-            TokenKind::Tag(tag) => {
-                if depth == 0 {
-                    if heading_or_paragraph(&tag.name) || tag.name == "pre" {
-                        has_paragraph = true;
-                    } else if !matches!(tag.name.as_str(), "ul" | "ol") {
-                        return false;
-                    }
-                }
-                if !void(&tag.name) {
-                    depth += 1;
-                }
-            }
-            _ if depth > 0 => {}
-            TokenKind::Opaque => {}
-            TokenKind::Text if input[token.range.clone()].bytes().all(css_space) => {}
-            TokenKind::MappedText { text, .. } if text.bytes().all(css_space) => {}
-            _ => return false,
-        }
-    }
-    has_paragraph && depth == 0
-}
-
-/// Canonical text spelling. Semantic edits normalize collapsible spacing to
-/// ordinary or nonbreaking spaces before verification; no whitespace wrapper
-/// is needed. Existing whitespace-preserving elements use the separate encoder.
-pub(super) fn escape(text: &str) -> String {
-    escape_with_context(text, false, false)
-}
-
-pub(super) fn escape_with_context(text: &str, text_before: bool, text_after: bool) -> String {
-    let mut out = String::new();
-    let mut previous_is_content = text_before;
-    let mut characters = text.chars().peekable();
-    while let Some(ch) = characters.next() {
-        match ch {
-            ' ' | '\t' => {
-                let following = characters.peek().map(|ch| {
-                    !super::html_whitespace::collapsible(*ch)
-                }).unwrap_or(text_after);
-                let inside_run = characters.peek().is_some_and(|ch| matches!(ch, ' ' | '\t'));
-                if previous_is_content && (following || inside_run) {
-                    out.push(' ');
-                    previous_is_content = false;
-                } else {
-                    out.push_str("&nbsp;");
-                    previous_is_content = true;
-                }
-                continue;
-            }
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '\n' => out.push_str("<br>"),
-            '\r' => out.push_str("&#13;"),
-            _ => out.push(ch),
-        }
-        previous_is_content = !super::html_whitespace::collapsible(ch);
-    }
-    out
-}
-
-fn retain_whitespace_context(builder: &mut Builder<'_>, length: usize) {
-    let end = builder.text.len();
-    let start = end - length;
-    let application = super::StyleApplication::SourcePreservedWhitespace;
-    // Keep annotations within hard lines, like the other rich style layers.
-    let newline = &builder.text[start..end] == "\n";
-    let follows_newline = start > 0 && builder.text.as_bytes()[start - 1] == b'\n';
-    if let Some(previous) = builder.spans.iter_mut().rev().take(3).find(|span| {
-        !newline && !follows_newline && span.range.end == start && span.application == application
-    }) {
-        previous.range.end = end;
-    } else {
-        builder.spans.push(super::StyleSpan {
-            range: start..end,
-            application,
-        });
-    }
-}
-
-pub(super) fn escape_preserving_whitespace(text: &str) -> String {
-    let mut result = String::new();
-    for ch in text.chars() {
-        match ch {
-            '&' => result.push_str("&amp;"),
-            '<' => result.push_str("&lt;"),
-            '>' => result.push_str("&gt;"),
-            '\n' => result.push_str("<br>"),
-            '\r' => result.push_str("&#13;"),
-            _ => result.push(ch),
-        }
-    }
-    result
-}
-
-/// A bounded gap begins at an existing visible-text source boundary. If it
-/// opens a pre or declares supported whitespace behavior, retain that context
-/// for an otherwise empty insertion anchor. Unmatched closes are conservative.
-pub(super) fn whitespace_after_source_gap(gap: &str, inherited: bool) -> bool {
-    let mut current = inherited;
-    let mut stack = Vec::new();
-    for token in tokenize(gap) {
-        let TokenKind::Tag(tag) = token.kind else {
-            continue;
-        };
-        if tag.end {
-            if let Some(index) = stack.iter().rposition(|(name, _)| name == &tag.name) {
-                current = stack[index].1;
-                stack.truncate(index);
-            } else {
-                current = false;
-            }
-        } else if !void(&tag.name) {
-            stack.push((tag.name.clone(), current));
-            if tag.name == "pre" {
-                current = true;
-            }
-            if let Some(css) = tag.attribute("style") {
-                for (name, value) in cascade_declarations(css) {
-                    if name.eq_ignore_ascii_case("white-space") {
-                        match value.trim().to_ascii_lowercase().as_str() {
-                            "pre" | "pre-wrap" | "break-spaces" => current = true,
-                            "normal" | "nowrap" | "pre-line" | "initial" => current = false,
-                            "inherit" | "unset" => current = stack.last().unwrap().1,
-                            _ => {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-    current
 }
 
 pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)> {
@@ -2207,8 +1456,18 @@ fn font_features(value: &str) -> Option<BTreeMap<String, u32>> {
 fn css_box_sides<T: Clone>(values: &[T]) -> Option<[T; 4]> {
     Some(match values {
         [all] => [all.clone(), all.clone(), all.clone(), all.clone()],
-        [vertical, horizontal] => [vertical.clone(), horizontal.clone(), vertical.clone(), horizontal.clone()],
-        [top, horizontal, bottom] => [top.clone(), horizontal.clone(), bottom.clone(), horizontal.clone()],
+        [vertical, horizontal] => [
+            vertical.clone(),
+            horizontal.clone(),
+            vertical.clone(),
+            horizontal.clone(),
+        ],
+        [top, horizontal, bottom] => [
+            top.clone(),
+            horizontal.clone(),
+            bottom.clone(),
+            horizontal.clone(),
+        ],
         [top, right, bottom, left] => [top.clone(), right.clone(), bottom.clone(), left.clone()],
         _ => return None,
     })
@@ -2217,58 +1476,201 @@ fn css_box_sides<T: Clone>(values: &[T]) -> Option<[T; 4]> {
 /// Apply the physical box subset supported by the native block layout. Unsupported
 /// CSS remains in source but never receives an invented interpretation.
 fn apply_box_css(key: &str, value: &str, block: &mut BlockProperties) -> bool {
-    let words = split_css(value, ' ').into_iter().map(str::trim).filter(|v| !v.is_empty()).collect::<Vec<_>>();
+    let words = split_css(value, ' ')
+        .into_iter()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>();
     let nonnegative = |value: &str| length(value).filter(|v| *v >= 0.0);
-    macro_rules! sides { ($field:ident, $top:ident, $right:ident, $bottom:ident, $left:ident, $parse:expr) => {
-        if let Some(values) = words.iter().map(|value| ($parse)(value)).collect::<Option<Vec<_>>>().and_then(|values| css_box_sides(&values)) {
-            [block.$top, block.$right, block.$bottom, block.$left] = values.map(Some);
-        }
-    }; }
+    macro_rules! sides {
+        ($field:ident, $top:ident, $right:ident, $bottom:ident, $left:ident, $parse:expr) => {
+            if let Some(values) = words
+                .iter()
+                .map(|value| ($parse)(value))
+                .collect::<Option<Vec<_>>>()
+                .and_then(|values| css_box_sides(&values))
+            {
+                [block.$top, block.$right, block.$bottom, block.$left] = values.map(Some);
+            }
+        };
+    }
     match key {
-        "margin" => sides!(margin, margin_top, margin_right, margin_bottom, margin_left, length),
-        "padding" => sides!(padding, padding_top, padding_right, padding_bottom, padding_left, nonnegative),
-        "border-width" => sides!(border, border_top_width, border_right_width, border_bottom_width, border_left_width, nonnegative),
-        "border-color" => sides!(border, border_top_color, border_right_color, border_bottom_color, border_left_color, color),
-        "margin-top" => { if let Some(v) = length(value) { block.margin_top = Some(v); } },
-        "padding-top" => { if let Some(v) = nonnegative(value) { block.padding_top = Some(v); } },
-        "border-top-width" => { if let Some(v) = nonnegative(value) { block.border_top_width = Some(v); } },
-        "border-top-color" => { if value == "currentcolor" { block.border_top_color = None; } else if let Some(v) = color(value) { block.border_top_color = Some(v); } },
-        "border-top-style" if matches!(value, "none" | "hidden") => block.border_top_width = Some(0.0),
-        "margin-right" => { if let Some(v) = length(value) { block.margin_right = Some(v); } },
-        "padding-right" => { if let Some(v) = nonnegative(value) { block.padding_right = Some(v); } },
-        "border-right-width" => { if let Some(v) = nonnegative(value) { block.border_right_width = Some(v); } },
-        "border-right-color" => { if value == "currentcolor" { block.border_right_color = None; } else if let Some(v) = color(value) { block.border_right_color = Some(v); } },
-        "border-right-style" if matches!(value, "none" | "hidden") => block.border_right_width = Some(0.0),
-        "margin-bottom" => { if let Some(v) = length(value) { block.margin_bottom = Some(v); } },
-        "padding-bottom" => { if let Some(v) = nonnegative(value) { block.padding_bottom = Some(v); } },
-        "border-bottom-width" => { if let Some(v) = nonnegative(value) { block.border_bottom_width = Some(v); } },
-        "border-bottom-color" => { if value == "currentcolor" { block.border_bottom_color = None; } else if let Some(v) = color(value) { block.border_bottom_color = Some(v); } },
-        "border-bottom-style" if matches!(value, "none" | "hidden") => block.border_bottom_width = Some(0.0),
-        "margin-left" => { if let Some(v) = length(value) { block.margin_left = Some(v); } },
-        "padding-left" => { if let Some(v) = nonnegative(value) { block.padding_left = Some(v); } },
-        "border-left-width" => { if let Some(v) = nonnegative(value) { block.border_left_width = Some(v); } },
-        "border-left-color" => { if value == "currentcolor" { block.border_left_color = None; } else if let Some(v) = color(value) { block.border_left_color = Some(v); } },
-        "border-left-style" if matches!(value, "none" | "hidden") => block.border_left_width = Some(0.0),
+        "margin" => sides!(
+            margin,
+            margin_top,
+            margin_right,
+            margin_bottom,
+            margin_left,
+            length
+        ),
+        "padding" => sides!(
+            padding,
+            padding_top,
+            padding_right,
+            padding_bottom,
+            padding_left,
+            nonnegative
+        ),
+        "border-width" => sides!(
+            border,
+            border_top_width,
+            border_right_width,
+            border_bottom_width,
+            border_left_width,
+            nonnegative
+        ),
+        "border-color" => sides!(
+            border,
+            border_top_color,
+            border_right_color,
+            border_bottom_color,
+            border_left_color,
+            color
+        ),
+        "margin-top" => {
+            if let Some(v) = length(value) {
+                block.margin_top = Some(v);
+            }
+        }
+        "padding-top" => {
+            if let Some(v) = nonnegative(value) {
+                block.padding_top = Some(v);
+            }
+        }
+        "border-top-width" => {
+            if let Some(v) = nonnegative(value) {
+                block.border_top_width = Some(v);
+            }
+        }
+        "border-top-color" => {
+            if value == "currentcolor" {
+                block.border_top_color = None;
+            } else if let Some(v) = color(value) {
+                block.border_top_color = Some(v);
+            }
+        }
+        "border-top-style" if matches!(value, "none" | "hidden") => {
+            block.border_top_width = Some(0.0)
+        }
+        "margin-right" => {
+            if let Some(v) = length(value) {
+                block.margin_right = Some(v);
+            }
+        }
+        "padding-right" => {
+            if let Some(v) = nonnegative(value) {
+                block.padding_right = Some(v);
+            }
+        }
+        "border-right-width" => {
+            if let Some(v) = nonnegative(value) {
+                block.border_right_width = Some(v);
+            }
+        }
+        "border-right-color" => {
+            if value == "currentcolor" {
+                block.border_right_color = None;
+            } else if let Some(v) = color(value) {
+                block.border_right_color = Some(v);
+            }
+        }
+        "border-right-style" if matches!(value, "none" | "hidden") => {
+            block.border_right_width = Some(0.0)
+        }
+        "margin-bottom" => {
+            if let Some(v) = length(value) {
+                block.margin_bottom = Some(v);
+            }
+        }
+        "padding-bottom" => {
+            if let Some(v) = nonnegative(value) {
+                block.padding_bottom = Some(v);
+            }
+        }
+        "border-bottom-width" => {
+            if let Some(v) = nonnegative(value) {
+                block.border_bottom_width = Some(v);
+            }
+        }
+        "border-bottom-color" => {
+            if value == "currentcolor" {
+                block.border_bottom_color = None;
+            } else if let Some(v) = color(value) {
+                block.border_bottom_color = Some(v);
+            }
+        }
+        "border-bottom-style" if matches!(value, "none" | "hidden") => {
+            block.border_bottom_width = Some(0.0)
+        }
+        "margin-left" => {
+            if let Some(v) = length(value) {
+                block.margin_left = Some(v);
+            }
+        }
+        "padding-left" => {
+            if let Some(v) = nonnegative(value) {
+                block.padding_left = Some(v);
+            }
+        }
+        "border-left-width" => {
+            if let Some(v) = nonnegative(value) {
+                block.border_left_width = Some(v);
+            }
+        }
+        "border-left-color" => {
+            if value == "currentcolor" {
+                block.border_left_color = None;
+            } else if let Some(v) = color(value) {
+                block.border_left_color = Some(v);
+            }
+        }
+        "border-left-style" if matches!(value, "none" | "hidden") => {
+            block.border_left_width = Some(0.0)
+        }
         "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
-            let none = words.iter().any(|value| matches!(*value, "none" | "hidden"));
+            let none = words
+                .iter()
+                .any(|value| matches!(*value, "none" | "hidden"));
             let solid = words.contains(&"solid");
-            if !none && !solid { return true; }
-            let width = if none { Some(0.0) } else { words.iter().find_map(|value| nonnegative(value)) };
+            if !none && !solid {
+                return true;
+            }
+            let width = if none {
+                Some(0.0)
+            } else {
+                words.iter().find_map(|value| nonnegative(value))
+            };
             let color = words.iter().find_map(|value| color(value));
             for side in ["top", "right", "bottom", "left"] {
-                if key != "border" && key != format!("border-{side}") { continue; }
+                if key != "border" && key != format!("border-{side}") {
+                    continue;
+                }
                 match side {
-                    "top" => { block.border_top_width = width; block.border_top_color = color; },
-                    "right" => { block.border_right_width = width; block.border_right_color = color; },
-                    "bottom" => { block.border_bottom_width = width; block.border_bottom_color = color; },
-                    "left" => { block.border_left_width = width; block.border_left_color = color; },
+                    "top" => {
+                        block.border_top_width = width;
+                        block.border_top_color = color;
+                    }
+                    "right" => {
+                        block.border_right_width = width;
+                        block.border_right_color = color;
+                    }
+                    "bottom" => {
+                        block.border_bottom_width = width;
+                        block.border_bottom_color = color;
+                    }
+                    "left" => {
+                        block.border_left_width = width;
+                        block.border_left_color = color;
+                    }
                     _ => unreachable!(),
                 }
             }
         }
         "border-style" if matches!(value, "none" | "hidden") => {
-            block.border_top_width = Some(0.0); block.border_right_width = Some(0.0);
-            block.border_bottom_width = Some(0.0); block.border_left_width = Some(0.0);
+            block.border_top_width = Some(0.0);
+            block.border_right_width = Some(0.0);
+            block.border_bottom_width = Some(0.0);
+            block.border_left_width = Some(0.0);
         }
         _ => return false,
     }
@@ -2283,7 +1685,9 @@ pub(super) fn apply_css(
     for (key, value) in cascade_declarations(css) {
         let value = value.as_str();
         let lower = value.to_ascii_lowercase();
-        if apply_box_css(key.as_str(), &lower, paragraph) { continue; }
+        if apply_box_css(key.as_str(), &lower, paragraph) {
+            continue;
+        }
         match key.as_str() {
             "font-family" => {
                 if let Some(values) = font_families(value) {
@@ -2366,7 +1770,9 @@ pub(super) fn apply_css(
                 }
             }
             "direction" => {
-                if let Some(d) = direction(&lower).filter(|direction| *direction != WritingDirection::Natural) {
+                if let Some(d) =
+                    direction(&lower).filter(|direction| *direction != WritingDirection::Natural)
+                {
                     character.direction = Some(d);
                     paragraph.base_direction = Some(d);
                 }
@@ -2436,17 +1842,43 @@ pub(super) fn apply_css(
 /// are never copied into a newly owned formatting construct.
 pub(super) fn character_css(properties: &CharacterProperties) -> String {
     let mut declarations = Vec::new();
+    let css_string = |value: &str| {
+        value
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\a ")
+            .replace('\r', "\\d ")
+            .replace('\u{c}', "\\c ")
+    };
     if let Some(families) = &properties.font_families {
         declarations.push(format!(
             "font-family: {}",
             families
                 .iter()
-                .map(|name| format!(
-                    "'{}'",
-                    name.replace('\\', "\\\\")
-                        .replace('\'', "\\'")
-                        .replace('\n', "\\a ")
-                ))
+                .map(|name| {
+                    // CSS generic families are keywords. Quoting them would
+                    // request a literal installed face and lose the fallback.
+                    if matches!(
+                        name.to_ascii_lowercase().as_str(),
+                        "serif"
+                            | "sans-serif"
+                            | "monospace"
+                            | "cursive"
+                            | "fantasy"
+                            | "system-ui"
+                            | "ui-serif"
+                            | "ui-sans-serif"
+                            | "ui-monospace"
+                            | "ui-rounded"
+                            | "emoji"
+                            | "math"
+                            | "fangsong"
+                    ) {
+                        name.clone()
+                    } else {
+                        format!("'{}'", css_string(name))
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -2519,7 +1951,10 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
         }
         declarations.push(format!("text-decoration-line: {}", values.join(" ")));
     }
-    if let Some(direction) = properties.direction.filter(|value| *value != WritingDirection::Natural) {
+    if let Some(direction) = properties
+        .direction
+        .filter(|value| *value != WritingDirection::Natural)
+    {
         declarations.push(format!(
             "direction: {}",
             match direction {
@@ -2536,7 +1971,7 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
             } else {
                 features
                     .iter()
-                    .map(|(tag, value)| format!("'{tag}' {value}"))
+                    .map(|(tag, value)| format!("'{}' {value}", css_string(tag)))
                     .collect::<Vec<_>>()
                     .join(", ")
             }
@@ -2557,171 +1992,6 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
     }
     declarations.join("; ")
 }
-fn attribute_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-}
-pub(super) fn character_wrapper(properties: &CharacterProperties) -> (String, String) {
-    let mut rest = properties.clone();
-    let mut tags = Vec::new();
-    if rest.bold == Some(true) {
-        rest.bold = None;
-        tags.push("b");
-    }
-    if rest.slant == Some(FontSlant::Italic) {
-        rest.slant = None;
-        tags.push("i");
-    }
-    if rest.underline == Some(true) && rest.strikethrough.is_none() {
-        rest.underline = None;
-        tags.push("u");
-    }
-    if rest.strikethrough == Some(true) && rest.underline.is_none() {
-        rest.strikethrough = None;
-        tags.push("s");
-    }
-    match rest.script_position {
-        Some(ScriptPosition::Superscript) => {
-            rest.script_position = None;
-            tags.push("sup");
-        }
-        Some(ScriptPosition::Subscript) => {
-            rest.script_position = None;
-            tags.push("sub");
-        }
-        _ => {}
-    }
-    let natural_direction = rest.direction == Some(WritingDirection::Natural);
-    if natural_direction { rest.direction = None; }
-    let css = character_css(&rest);
-    let mut opening = String::new();
-    let mut closing = String::new();
-    // A numeric face weight is authored outside b, so the inner semantic tag
-    // still means emphasis relative to that face instead of CSS overriding it.
-    if !css.is_empty() || properties.language.is_some() || natural_direction || tags.is_empty() {
-        opening.push_str("<span");
-        if natural_direction { opening.push_str(" dir=\"auto\""); }
-        if !css.is_empty() {
-            opening.push_str(&format!(" style=\"{}\"", attribute_escape(&css)));
-        }
-        if let Some(language) = &properties.language {
-            opening.push_str(&format!(" lang=\"{}\"", attribute_escape(language)));
-        }
-        opening.push('>');
-        closing.push_str("</span>");
-    }
-    for tag in tags {
-        opening.push_str(&format!("<{tag}>"));
-        closing = format!("</{tag}>{closing}");
-    }
-    (opening, closing)
-}
-
-/// When exactly one conventional element contributed the toggled property,
-/// its two tags are the declared canonicalization boundary. Descendant text
-/// and all unrelated source constructs remain outside these two patches.
-pub(super) fn indexed_conventional_removal(
-    document: &super::Document, source: &Range<usize>, bold: bool,
-) -> Option<Vec<(Range<usize>, String)>> {
-    let index = document.projection().html_scope_index()?;
-    let scopes = index.scopes_at(source.start);
-    let scope = scopes.last()?;
-    let start = index.adjacent_opening_before(source.start, scope)?;
-    let (name, end) = index.adjacent_closing_at(source.end)?;
-    if name != scope.tag.name { return None; }
-    let bytes = document.state().source.bytes_in(start..end)?;
-    let decoded = document.encoding().decode_region(&bytes, start).ok()?;
-    let normalized = super::line_endings::normalize(&decoded, document.file_format());
-    exact_conventional_removal(&normalized, source, bold)
-}
-
-pub(super) fn exact_conventional_removal(
-    input: &NormalizedText,
-    source: &Range<usize>,
-    bold: bool,
-) -> Option<Vec<(Range<usize>, String)>> {
-    let builder = Builder::new(input, Revision(0));
-    let tokens = tokenize(&input.text);
-    let names = if bold { ["b", "strong"] } else { ["i", "em"] };
-    let opening = tokens.iter().find_map(|token| {
-        let TokenKind::Tag(tag) = &token.kind else {
-            return None;
-        };
-        let range = builder.source_range(token.range.clone());
-        (!tag.end && names.contains(&tag.name.as_str()) && range.end == source.start)
-            .then_some((range, tag))
-    })?;
-    let closing = tokens.iter().find_map(|token| {
-        let TokenKind::Tag(tag) = &token.kind else {
-            return None;
-        };
-        let range = builder.source_range(token.range.clone());
-        (tag.end && tag.name == opening.1.name && range.start == source.end).then_some(range)
-    })?;
-    let mut properties = CharacterProperties::default();
-    let mut paragraph = BlockProperties::default();
-    if let Some(css) = opening.1.attribute("style") {
-        apply_css(css, &mut properties, &mut paragraph);
-    }
-    if let Some(language) = opening.1.attribute("lang") {
-        properties.language = Some(language.to_owned());
-    }
-    if let Some(direction) = opening.1.attribute("dir").and_then(direction) {
-        properties.direction = Some(direction);
-    }
-    // The requested false value is explicit if another inherited layer exists.
-    // The transaction verifier detects that case and falls back to an override.
-    if bold {
-        properties.weight = None;
-    } else {
-        properties.slant = None;
-    }
-    let wrappers = if properties == CharacterProperties::default() {
-        (String::new(), String::new())
-    } else {
-        character_wrapper(&properties)
-    };
-    Some(vec![(opening.0, wrappers.0), (closing, wrappers.1)])
-}
-
-pub(super) fn empty_insertion_point(input: &NormalizedText) -> Option<usize> {
-    let builder = Builder::new(input, Revision(0));
-    let mut stack = Vec::<String>::new();
-    let mut candidate = None;
-    let mut document_close = None;
-    for token in tokenize(&input.text) {
-        let TokenKind::Tag(tag) = token.kind else {
-            continue;
-        };
-        if tag.end {
-            if tag.name == "html" {
-                document_close = Some(builder.source_range(token.range.clone()).start);
-            }
-            if let Some(at) = stack.iter().rposition(|name| name == &tag.name) {
-                stack.truncate(at);
-            }
-            continue;
-        }
-        let visible = !stack.iter().any(|name| hidden(name) || atomic(name));
-        if visible
-            && !hidden(&tag.name)
-            && !atomic(&tag.name)
-            && !void(&tag.name)
-            && tag.name != "html"
-        {
-            candidate = Some(builder.source_range(token.range.clone()).end);
-        }
-        if !void(&tag.name) {
-            stack.push(tag.name);
-        }
-    }
-    candidate
-        .or(document_close)
-        .or_else(|| input.units.last().map(|u| u.source.end))
-        .or(Some(0))
-}
-
 #[cfg(test)]
 mod reference_tests {
     use super::*;

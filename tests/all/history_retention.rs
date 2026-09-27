@@ -176,12 +176,11 @@ fn local_edit_in_large_document_shares_retained_projection_allocations() {
     assert!(document.history_status().retained_memory_bytes < after);
 }
 
-
 #[test]
 fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
     use viem_core::document::*;
-    let source = b"<p>Words</p>";
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
+    let source = b"Words";
+    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let saved = document.history_status().current;
     let prepared = document.prepare_artifact_write(ArtifactWriteIntent::SaveAs {
         destination: ArtifactPath::from("configuration-save"),
@@ -191,10 +190,9 @@ fn async_save_completion_stays_clean_after_pruned_configuration_only_edits() {
         let mut style = document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().clone();
         style.character.size = Some((size).into());
         document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
-            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                origin: StyleDefinitionOrigin::SourceBacked,
-                edit: StyleDefinitionEdit::UpdateBlock(style),
-            }),
+            StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(
+                StyleDefinitionEdit::UpdateBlock(style),
+            )),
         )).unwrap();
     }
     document.set_history_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));

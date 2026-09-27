@@ -98,9 +98,7 @@ impl Document {
             payloads.push(FormattedPayloadEdit::new(edit.range.clone(), payload));
             capture_groups.push((text, capture_start..captures.len()));
         }
-        if self.format() == Format::Html {
-            self.normalize_html_payload_edits(&mut payloads)?;
-        }
+
         for ((text, capture_range), normalized) in capture_groups.into_iter().zip(&payloads) {
             if normalized.payload.text() != text {
                 // HTML normalization preserves scalar order and may prepend a
@@ -366,11 +364,8 @@ impl Document {
                         )?;
                     }
                 }
-                let prepared = scratch.prepare_rich_character_properties(
-                    capture.range.clone(),
-                    authored,
-                    None,
-                )?;
+                let prepared =
+                    scratch.prepare_rich_character_properties(capture.range.clone(), authored)?;
                 publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 if super::super::rich_text::resolved_character_at(
                     scratch.projection(),
@@ -383,8 +378,8 @@ impl Document {
                 }
             }
         }
-        let patches = sources.source_patches(&scratch.state().source)?;
-        let text_edits = formatted.formatted_edits(&scratch)?;
+        let patches = sources.source_patches();
+        let text_edits = formatted.formatted_edits();
         self.prepare_text_edits_with_patches(text_edits, Some(patches))
     }
     fn capture_style_runs(

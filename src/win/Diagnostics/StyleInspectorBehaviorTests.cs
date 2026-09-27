@@ -53,31 +53,19 @@ internal static class StyleInspectorBehaviorTests
         try { if (dismiss != null) dismiss(); else flyout.Hide(); await closed.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
         finally { flyout.Closed -= Complete; }
     }
-    private static unsafe void IncludeStyles(CoreView view)
-    {
-        // Generated HTML defaults are presentation-only until style export is
-        // enabled. Exercise persisted colors and clean/dirty state explicitly.
-        view.Apply(outcome => {
-            var state = view.Document.State;
-            var request = New<ViemSetIncludeStyleDefinitionsV1>();
-            request.enabled = 1; request.document_id = state.document_id; request.document_revision = state.document_revision;
-            return viem_core_view_set_include_style_definitions(view.Document.Handle, view.Id, &request, outcome);
-        });
-        view.Document.MarkSaved(view.Document.State);
-    }
+
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         BlockPreview(pane, preferences);
         await CodeBlockBackground(pane, preferences);
-        await BuiltinDeclarations(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
     }
     private static unsafe void BlockPreview(EditorPane pane, Preferences preferences)
     {
-        byte[] source = System.Text.Encoding.UTF8.GetBytes("<blockquote><p>Preview source stays unchanged.</p></blockquote>");
-        using var document = new CoreDocument(source, format: VIEM_FORMAT_HTML);
+        byte[] source = System.Text.Encoding.UTF8.GetBytes("> Preview source stays unchanged.");
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var quote = view.Styles().Styles.Single(s => s.Id == "Block quote" && s.Namespace == 1);
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(17));
@@ -130,60 +118,7 @@ internal static class StyleInspectorBehaviorTests
         }
         finally { inspector.Close(); }
     }
-    private static async Task BuiltinDeclarations(EditorPane pane, Preferences preferences)
-    {
-        foreach (uint format in new[] { VIEM_FORMAT_HTML, VIEM_FORMAT_HTML_SOURCE })
-        foreach (bool includeDefinitions in new[] { false, true })
-        {
-            byte[] original = "<h1>Title</h1><p>Body</p><!--keep-->"u8.ToArray();
-            using var document = new CoreDocument(original, format: format);
-            using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-            if (includeDefinitions) IncludeStyles(view);
-            var inspector = new StyleWindow(view, preferences, followCaret: false);
-            inspector.Activate(); await Task.Delay(150);
-            try
-            {
-                inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading1");
-                var properties = new[] {
-                    ("Size", VIEM_STYLE_PROPERTY_CHARACTER_SIZE, false),
-                    ("Variant", VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, false),
-                    ("Space before", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, true),
-                    ("Space after", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, true),
-                };
-                Check(Selected(inspector).Properties.Values.Count(p => (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0) == properties.Length,
-                    $"format {format}: Heading 1 exposes its size, weight and both paragraph gaps as declarations");
-                foreach (var (label, property, paragraph) in properties)
-                {
-                    var tab = paragraph ? inspector.ParagraphTab : inspector.CharacterTab;
-                    tab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-                    var checkbox = Children<CheckBox>(inspector.RootControl).Single(c => AutomationProperties.GetName(c) == "Declare " + label);
-                    Check(checkbox.IsChecked == true && checkbox.IsEnabled && Selected(inspector).Declares(property),
-                        $"format {format}: built-in {label} declaration is checked and editable");
-                    checkbox.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-                    Check(inspector.Error.Length == 0 && checkbox.IsChecked == false && !Selected(inspector).Declares(property),
-                        $"format {format}: unchecking built-in {label} removes the declaration");
-                }
-                var sheet = view.Styles();
-                var heading = sheet.Styles.Single(s => s.Id == "Heading1");
-                var paragraphStyle = sheet.Styles.Single(s => s.Id == "Paragraph");
-                Check(properties.All(p => heading.Value(p.Item2).Equals(paragraphStyle.Value(p.Item2))),
-                    $"format {format}: cleared Heading 1 inherits Base Paragraph values");
-                byte[] saved = document.Source(document.State.document_revision);
-                if (includeDefinitions)
-                {
-                    using var reopened = new CoreDocument(saved, format: format);
-                    using var reopenedView = new CoreView(reopened, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-                    var fresh = reopenedView.Styles();
-                    var freshHeading = fresh.Styles.Single(s => s.Id == "Heading1");
-                    var freshBase = fresh.Styles.Single(s => s.Id == "Paragraph");
-                    Check(properties.All(p => !freshHeading.Declares(p.Item2) && freshHeading.Value(p.Item2).Equals(freshBase.Value(p.Item2))),
-                        $"format {format}: cleared built-in declarations stay cleared after save/reopen");
-                }
-                else Check(saved.AsSpan().SequenceEqual(original), "editing generated style declarations preserves source when style export is disabled");
-            }
-            finally { inspector.Close(); }
-        }
-    }
+
     private static async Task Following(EditorPane pane, Preferences preferences)
     {
         using var document = new CoreDocument("# Title `code` tail\n\nBody"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
@@ -329,14 +264,13 @@ internal static class StyleInspectorBehaviorTests
     }
     private static async Task Colors(EditorPane pane, Preferences preferences)
     {
-        using var document = new CoreDocument("<p>Color sample.</p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
+        using var document = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 Color sample.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
         var editor = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(editor); editor.Activate();
         var renderedPane = editor.ActivePane!;
         var view = await renderedPane.Ready;
         var mirrorPane = editor.AddPane(document);
         var mirror = await mirrorPane.Ready;
-        IncludeStyles(view);
         var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
         byte[] Pixels(EditorPane target)
         {
@@ -386,7 +320,7 @@ internal static class StyleInspectorBehaviorTests
                 await ColorDragging(inspector, picker);
             ulong revision = document.State.document_revision;
             for (int i = 0; i < 100; i++) picker.Color = Color.FromArgb(255, (byte)i, 64, 128);
-            var custom = Color.FromArgb(102, 31, 64, 128); picker.Color = custom;
+            var custom = Color.FromArgb(255, 31, 64, 128); picker.Color = custom;
             Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision, "rapid color input queues one coalesced edit");
             await Task.Delay(150);
             Check(inspector.PreviewForeground == custom && SwatchColor(button) == custom
@@ -417,17 +351,16 @@ internal static class StyleInspectorBehaviorTests
             var backgroundPicker = (ColorPicker)backgroundFlyout.Content;
             await Open(backgroundFlyout, backgroundButton);
             Check(backgroundPicker.Color.A == 0, "an absent text background opens as transparent");
-            var background = Color.FromArgb(128, 192, 64, 32); backgroundPicker.Color = background;
+            var background = Color.FromArgb(255, 192, 64, 32); backgroundPicker.Color = background;
             await Task.Delay(100);
             Check(inspector.PreviewBackground == background && document.IsDirty, "background color and alpha update the document and preview live");
             await Close(backgroundFlyout);
             Check(inspector.Error.Length == 0 && backgroundPicker.Color == background, "background picker commits and retains transparency");
             view.Undo();
             Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "background color is a single undoable edit");
-            using var second = new CoreDocument("<p>Second color target.</p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
+            using var second = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 Second color target.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
             using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-            IncludeStyles(other);
-            inspector.Retarget(other);
+                inspector.Retarget(other);
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
             Check(second.IsDirty && !document.IsDirty, "a retargeted inspector edits the new view rather than its constructor's view");

@@ -5,8 +5,8 @@ use viem_core::layout::{
 };
 use viem_core::{Core, CoreEvent, Document};
 
-fn html(source: &str) -> Document {
-    Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap()
+fn markdown(source: &str) -> Document {
+    Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap()
 }
 fn label(row: &viem_core::layout::VisualRow) -> String {
     row.decorations
@@ -29,8 +29,8 @@ fn laid_out_labels(document: &Document) -> Vec<String> {
 
 #[test]
 fn labels_are_furniture_outside_body_selection_and_empty_item_carets() {
-    let source = "<ol start='9'><li>Alpha words wrap into several rows here</li><li></li><li><p>Third</p><p>continuation</p></li></ol>";
-    let document = html(source);
+    let source = "9. Alpha words wrap into several rows here\n10.\n11. Third\n\n    continuation";
+    let document = markdown(source);
     assert_eq!(
         document.text(),
         "Alpha words wrap into several rows here\n\nThird\ncontinuation"
@@ -90,33 +90,33 @@ fn labels_are_furniture_outside_body_selection_and_empty_item_carets() {
 
 #[test]
 fn nested_list_markers_follow_the_four_structural_depth_styles() {
-    let ordered = html(
-        "<ol><li>one<ol><li>two<ol><li>three<ol><li>four<ol><li>five</li></ol></li></ol></li></ol></li></ol></li></ol>",
+    let ordered = markdown(
+        "1. one\n   1. two\n      1. three\n         1. four\n            1. five",
     );
     assert_eq!(laid_out_labels(&ordered), ["1.", "a.", "i.", "1.", "1."]);
 
-    let bullets = html(
-        "<ul><li>one<ul><li>two<ul><li>three<ul><li>four<ul><li>five</li></ul></li></ul></li></ul></li></ul></li></ul>",
+    let bullets = markdown(
+        "- one\n  - two\n    - three\n      - four\n        - five",
     );
     assert_eq!(laid_out_labels(&bullets), ["•", "◦", "▪", "•", "•"]);
 }
 
 #[test]
 fn alphabetic_and_roman_markers_format_ordinals_and_fall_back_safely() {
-    let document = html(
-        "<ol><li>root<ol start='26'><li>z</li><li>aa<ol start='4'><li>iv</li></ol></li></ol></li></ol>",
+    let document = markdown(
+        "1. root\n   26. z\n   27. aa\n       4. iv",
     );
     assert_eq!(laid_out_labels(&document), ["1.", "z.", "aa.", "iv."]);
 
-    let roman_overflow = html(
-        "<ol><li>root<ol><li>alpha<ol start='4000'><li>fallback</li></ol></li></ol></li></ol>",
+    let roman_overflow = markdown(
+        "1. root\n   1. alpha\n      4000. fallback",
     );
     assert_eq!(laid_out_labels(&roman_overflow), ["1.", "a.", "4000."]);
 }
 
 #[test]
 fn marker_shape_cache_tracks_style_spelling_zoom_metrics_and_paint() {
-    let document = html("<ol><li>Body</li></ol>");
+    let document = markdown("1. Body");
     let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let mut view = ViewLayout::new(200., 100.);
@@ -169,7 +169,7 @@ fn marker_shape_cache_tracks_style_spelling_zoom_metrics_and_paint() {
 
 #[test]
 fn rtl_markers_use_right_gutter_and_source_modes_keep_literal_text() {
-    let document = html("<ol start='12'><li dir='rtl'>2026 שלום עולם</li></ol>");
+    let document = markdown("12. 2026 שלום עולם");
     let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
     styles.paragraphs[0].base_direction = WritingDirection::RightToLeft;
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
@@ -188,7 +188,6 @@ fn rtl_markers_use_right_gutter_and_source_modes_keep_literal_text() {
     assert!(row.decorations[0].x > row.paragraph_content_x + row.paragraph_content_width);
     for (format, source) in [
         (Format::MarkdownSource, "1. source"),
-        (Format::HtmlSource, "<ol><li>source</li></ol>"),
         (Format::PlainText, "1. plain"),
     ] {
         let document =
@@ -206,11 +205,8 @@ fn rtl_markers_use_right_gutter_and_source_modes_keep_literal_text() {
 
 #[test]
 fn large_list_regional_marker_layout_is_bounded_and_rebased_with_height_changes() {
-    let source = format!(
-        "<ol>{}</ol>",
-        "<li>Body text with enough words for wrapping and more content</li>".repeat(10_000)
-    );
-    let mut core = Core::new(html(&source));
+    let source = "1. Body text with enough words for wrapping and more content\n".repeat(10_000);
+    let mut core = Core::new(markdown(&source));
     let view = core.add_view(MockTextMeasurementProvider::new(), 240., 100.);
     for (scale, width) in [(1., 240.), (2., 160.), (0.5, 320.)] {
         core.handle(view, CoreEvent::SetScale(scale)).unwrap();

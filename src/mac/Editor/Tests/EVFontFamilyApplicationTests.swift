@@ -63,15 +63,13 @@ final class EVFontFamilyApplicationTests: XCTestCase {
         try assertLocalCurrentLayout(reopened)
     }
 
-    func testNativeFamilyChoiceUpdatesHTMLPreviewGlyphsUndoAndSourcePersistence() async throws {
+    func testNativeFamilyChoiceUpdatesRTFPreviewGlyphsUndoAndSourcePersistence() async throws {
         let configuration = configuration()
-        let source = Data((0..<512).map {
-            "<p>Wide WWW and narrow iii change width \($0)</p>"
-        }.joined().utf8)
-        let fixture = try makeSurface(source: source, type: EVDocument.htmlType,
+        let source = Data(("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 " + (0..<512).map {
+            "Wide WWW and narrow iii change width \($0)"
+        }.joined(separator: "\\par ") + "}").utf8)
+        let fixture = try makeSurface(source: source, type: EVDocument.rtfType,
                                       configuration: configuration)
-        try XCTUnwrap(fixture.surface.session).setIncludeStyleDefinitionsInFile(
-            true, expected: fixture.backend.documentState())
         let editor = EVStyleEditorViewController()
         editor.retarget(document: fixture.surface, styleKey: .baseParagraph)
 
@@ -90,7 +88,7 @@ final class EVFontFamilyApplicationTests: XCTestCase {
         XCTAssertGreaterThan(abs(try firstRowWidth(fixture) - firstWidth), 0.5)
         XCTAssertNotEqual(try firstCluster(fixture).render_run.identifier, firstResource)
         try assertLocalCurrentLayout(fixture)
-        let saved = try fixture.backend.serializedSource(typeName: EVDocument.htmlType)
+        let saved = try fixture.backend.serializedSource(typeName: EVDocument.rtfType)
         let committed = try fixture.backend.styleSheetSnapshot().definition(for: .baseParagraph)?
             .properties[.characterFontFamilies]?.declared
 
@@ -101,9 +99,9 @@ final class EVFontFamilyApplicationTests: XCTestCase {
         XCTAssertEqual(previewWidth(editor), firstPreviewWidth, accuracy: 0.01)
         fixture.surface.perform(menuCommand: .redo, sender: nil)
         try await waitForFamily("Georgia", fixture: fixture)
-        XCTAssertEqual(try fixture.backend.serializedSource(typeName: EVDocument.htmlType), saved)
+        XCTAssertEqual(try fixture.backend.serializedSource(typeName: EVDocument.rtfType), saved)
 
-        let reopened = try makeSurface(source: saved, type: EVDocument.htmlType,
+        let reopened = try makeSurface(source: saved, type: EVDocument.rtfType,
                                        configuration: configuration)
         XCTAssertEqual(try reopened.backend.styleSheetSnapshot().definition(for: .baseParagraph)?
             .properties[.characterFontFamilies]?.declared, committed)

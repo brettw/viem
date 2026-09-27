@@ -172,7 +172,6 @@ impl CommandInterpreter {
         self.insert_normal_once = None;
         self.ctrl_o_just_started = false;
         self.typing_style = Default::default();
-        self.input_assistance.clear_tag();
         output.mode_changed |= self.mode != old_mode;
         output.status = CommandStatus::Cancelled;
         Ok(output)

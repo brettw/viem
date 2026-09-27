@@ -29,10 +29,9 @@ import XCTest
 
   func testRichClipboardPreservesTrackingWithoutDisablingKerning() throws {
     for spacing in [0.0, 2.0, -0.5] {
-      let source =
-        "<p style='font-family:Times New Roman;font-size:24pt;letter-spacing:\(spacing)pt;font-feature-settings:\"kern\" 0'>AV</p>"
+      let source = "{\\rtf1\\ansi{\\fonttbl{\\f0 Times New Roman;}}\\f0\\fs48\\expndtw\(Int(spacing * 20)) AV}"
       let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+      try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
       let fragment = try backend.clipboardFragment(in: 0..<2, snapshot: backend.formattedSnapshot())
       let attributed = try fragment.attributedText()
       let font = try XCTUnwrap(attributed.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
@@ -58,7 +57,7 @@ import XCTest
             .doubleValue,
           spacing, accuracy: 0.001)
       }
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
     }
   }
 }

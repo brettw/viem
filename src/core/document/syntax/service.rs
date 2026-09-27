@@ -366,6 +366,67 @@ impl Default for SyntaxService {
     }
 }
 impl SyntaxService {
+    /// Capture the same provider/configuration for an independent export. The
+    /// clone has no viewport cache, and all provider work still runs on the
+    /// shared syntax workers. It does not disturb the editor's pending request.
+    pub(crate) fn for_export(&self) -> Self {
+        let factory = self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).factory.clone();
+        let mut service = Self::with_factory(factory);
+        service.configuration = self.configuration.clone();
+        service
+    }
+
+    /// Whole-document consumers explicitly visit every bounded region instead
+    /// of using the viewport's incomplete, evictable presentation cache. Call
+    /// only after releasing the coordinator lease; this waits for workers.
+    pub(crate) fn export_runs(mut self, input: SyntaxInputSnapshot) -> Vec<SyntaxRun> {
+        let mut output = Vec::new();
+        let mut start = 0;
+        while start < input.byte_len() {
+            let mut end = (start + MAX_REGION_BYTES).min(input.byte_len());
+            while !input.text_tree().is_char_boundary(end).unwrap_or(false) { end -= 1; }
+            let mut pending = VecDeque::from([start..end]);
+            let mut slices = 0;
+            while let Some(range) = pending.pop_front() {
+                // A provider that reports tiny final subsets cannot turn one
+                // export region into unbounded work. Unavailable coverage keeps
+                // the normal Code appearance, just as it does in the editor.
+                slices += 1;
+                if slices > MAX_CONTINUATION_SLICES { break; }
+                loop {
+                    self.poll(input.identity());
+                    let completed = self.cache.iter().rev().find(|result|
+                        result.input == input.identity()
+                            && result.configuration == self.configuration
+                            && result.range.start >= range.start && result.range.end <= range.end
+                            && (result.range.is_empty() || result.range.start < range.end)
+                            && !result.continuation)
+                        .map(|result| (result.range.clone(), result.coverage));
+                    if let Some((covered, coverage)) = completed {
+                        let accepted = if coverage == Coverage::Missing { range.clone() } else { covered.clone() };
+                        for mut run in self.run_store().runs_in(&accepted) {
+                            run.range = run.range.start.max(accepted.start)..run.range.end.min(accepted.end);
+                            if !run.range.is_empty() { output.push(run); }
+                        }
+                        // Native providers may publish a final strict subset.
+                        // Visit both uncovered sides rather than silently using
+                        // their absent viewport styles for the rest of the file.
+                        if coverage != Coverage::Missing && !covered.is_empty() {
+                            if range.start < covered.start { pending.push_back(range.start..covered.start); }
+                            if covered.end < range.end { pending.push_back(covered.end..range.end); }
+                        }
+                        break;
+                    }
+                    self.request(input.clone(), range.clone());
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+            }
+            start = end;
+        }
+        output.sort_by_key(|run| run.range.start);
+        output
+    }
+
     pub fn with_factory(factory: Factory) -> Self {
         Self {
             mailbox: Arc::new(Mutex::new(Slot {

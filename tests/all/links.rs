@@ -67,45 +67,6 @@ fn markdown_wysiwyg_shows_only_label_with_link_and_inline_styles() {
 }
 
 #[test]
-fn html_source_styles_only_anchor_contents_including_nested_markup() {
-    let source = "<p>before <a href='https://example.test/?x=1&amp;y=2' title='x'><em>café</em> tail</a> after</p>";
-    let document = document(source, Format::HtmlSource);
-    let start = source.find("<em>").unwrap();
-    let end = source.find("</a>").unwrap();
-    assert_eq!(document.text(), source);
-    let ranges = link_ranges(&document);
-    for (at, _) in source.char_indices() {
-        let styled = ranges.iter().any(|range| range.contains(&at));
-        assert_eq!(styled, (start..end).contains(&at), "offset {at}");
-        assert_eq!(
-            destination(&document, at).as_deref(),
-            if styled {
-                Some("https://example.test/?x=1&y=2")
-            } else {
-                None
-            },
-            "offset {at}"
-        );
-    }
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn html_wysiwyg_resolves_visible_label_with_decoded_attributes() {
-    let document = document("<p>before <A HREF='https://example.test/a?x=1&#38;y=2'><b>bold</b> &amp; café</A> after</p>", Format::Html);
-    assert_eq!(document.text(), "before bold & café after");
-    for at in [7, 8, 12, 14, 17] {
-        assert_eq!(
-            destination(&document, at).as_deref(),
-            Some("https://example.test/a?x=1&y=2"),
-            "offset {at}"
-        );
-    }
-    assert_eq!(destination(&document, 6), None);
-    assert_eq!(destination(&document, 19), None);
-}
-
-#[test]
 fn escaped_balanced_and_angle_destinations_are_decoded_without_execution() {
     for (source, expected) in [
         (
@@ -170,18 +131,6 @@ fn code_images_escaped_openers_and_invalid_links_remain_literal() {
 }
 
 #[test]
-fn html_comments_raw_text_and_anchors_without_href_are_not_links() {
-    let source = "<p><!-- <a href='https://comment.test/'>fake</a> --><a name='bookmark'>named</a></p><script>\"<a href='https://script.test/'>fake</a>\"</script>";
-    for format in [Format::Html, Format::HtmlSource] {
-        let document = document(source, format);
-        assert!(link_ranges(&document).is_empty(), "{format:?}");
-        for (at, _) in document.text().char_indices() {
-            assert_eq!(destination(&document, at), None);
-        }
-    }
-}
-
-#[test]
 fn links_validate_snapshot_and_document_identity_before_lookup() {
     let mut document = document("[label](https://example.test/)", Format::MarkdownSource);
     let point = document.text_point(1).unwrap();
@@ -207,8 +156,6 @@ fn link_queries_map_normalized_newlines_and_non_utf8_source_bytes() {
     for format in [
         Format::MarkdownSource,
         Format::Markdown,
-        Format::HtmlSource,
-        Format::Html,
     ] {
         let source = if format.is_markdown() {
             "é prefix\r\n[café](https://example.test/café?x=1&amp;y=2)"
@@ -261,14 +208,6 @@ fn link_style_defaults_are_blue_underlined_and_not_applied_to_neighbors() {
             "before [label](https://example.test/) after",
             Format::Markdown,
         ),
-        (
-            "before <a href='https://example.test/'>label</a> after",
-            Format::HtmlSource,
-        ),
-        (
-            "before <a href='https://example.test/'>label</a> after",
-            Format::Html,
-        ),
     ] {
         let document = document(source, format);
         let at = document.text().find("label").unwrap();
@@ -297,10 +236,6 @@ fn changing_destination_in_source_and_undo_refresh_the_on_demand_result() {
         (
             "before [label](https://old.test/) after",
             Format::MarkdownSource,
-        ),
-        (
-            "before <a href='https://old.test/'>label</a> after",
-            Format::HtmlSource,
         ),
     ] {
         let mut document = document(source, format);
@@ -525,80 +460,6 @@ fn large_link_document_captures_and_shapes_only_requested_viewports() {
 }
 
 #[test]
-fn authored_html_direct_and_named_styles_override_link_defaults() {
-    use viem_core::document::{
-        CharacterProperties, CharacterStyle, Color, ModelRequest, PersistedStyleIntent,
-        StyleDefinitionEdit, StyleDefinitionMetadata, StyleDefinitionOrigin, StyleModelIntent,
-        StyleModelRequest, TextRange,
-    };
-
-    // Author the named style through the supported API so the fixture has the
-    // same sparse property metadata and class spelling as an actual saved file.
-    let mut named = document("<a href='https://example.test/'>label</a>", Format::Html);
-    named
-        .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
-            document: named.id(),
-            revision: named.revision(),
-            enabled: true,
-        })
-        .unwrap();
-    let definition = StyleModelRequest::new(
-        named.id(),
-        named.revision(),
-        StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-            origin: StyleDefinitionOrigin::SourceBacked,
-            edit: StyleDefinitionEdit::InsertCharacter {
-                style: CharacterStyle {
-                    id: "Authored Link".into(),
-                    based_on: None,
-                    properties: CharacterProperties {
-                        foreground: Some(Color {
-                            red: 1.0,
-                            green: 0.0,
-                            blue: 0.0,
-                            alpha: 1.0,
-                        }),
-                        underline: Some(false),
-                        ..Default::default()
-                    },
-                },
-                metadata: StyleDefinitionMetadata {
-                    display_name: "Authored Link".into(),
-                    origin: StyleDefinitionOrigin::SourceBacked,
-                },
-            },
-        }),
-    );
-    named.apply_style_request(definition).unwrap();
-    let range = TextRange::new(named.text_point(0).unwrap(), named.text_point(5).unwrap()).unwrap();
-    let assignment = StyleModelRequest::new(
-        named.id(),
-        named.revision(),
-        StyleModelIntent::Persisted(PersistedStyleIntent::AssignCharacterStyle {
-            range,
-            style: "Authored Link".into(),
-        }),
-    );
-    named.apply_style_request(assignment).unwrap();
-    let named_source = String::from_utf8(named.source_bytes()).unwrap();
-
-    for source in [
-        "<a href='https://example.test/' style='color: red; text-decoration: none'>label</a>",
-        "<a href='https://example.test/'><span style='color: red; text-decoration: none'>label</span></a>",
-        &named_source,
-    ] {
-        for format in [Format::Html, Format::HtmlSource] {
-            let document = document(source, format);
-            let at = document.text().find("label").unwrap();
-            let style = DocumentLayoutStyles::character_at(document.projection(), at, false).unwrap();
-            assert!(!style.underline, "{source:?} {format:?}");
-            assert_eq!((style.foreground.red, style.foreground.green, style.foreground.blue), (1.0, 0.0, 0.0), "{source:?} {format:?}");
-            assert_eq!(destination(&document, at).as_deref(), Some("https://example.test/"));
-        }
-    }
-}
-
-#[test]
 fn deleting_link_style_never_leaves_an_undefined_layout_reference() {
     use viem_core::document::{
         ConfigurationStyleIntent, StyleDefinitionEdit, StyleModelIntent, StyleModelRequest,
@@ -609,14 +470,6 @@ fn deleting_link_style_never_leaves_an_undefined_layout_reference() {
         (
             "[label](https://example.test/) tail",
             Format::MarkdownSource,
-        ),
-        (
-            "<p><a href='https://example.test/'>label</a> tail</p>",
-            Format::Html,
-        ),
-        (
-            "<p><a href='https://example.test/'>label</a> tail</p>",
-            Format::HtmlSource,
         ),
     ] {
         let mut document = document(source, format);
@@ -672,14 +525,6 @@ fn deleted_link_appearance_survives_core_viewport_capture_install_and_edit() {
         (
             "[label](https://example.test/) tail",
             Format::MarkdownSource,
-        ),
-        (
-            "<p><a href='https://example.test/'>label</a> tail</p>",
-            Format::Html,
-        ),
-        (
-            "<p><a href='https://example.test/'>label</a> tail</p>",
-            Format::HtmlSource,
         ),
     ] {
         let mut document = document(source, format);

@@ -67,7 +67,6 @@ fn continuation_backspace_joins_same_item_without_removing_label() {
         (Format::Markdown, "- a\n\n  b\n- c"),
         (Format::Markdown, "9) a\n\n   b\n1) c"),
         (Format::Markdown, "> - a\n> \n>   b\n> - c"),
-        (Format::Html, "<ul><li><p>a</p><p>b</p></li><li>c</li></ul>"),
     ] {
         let (mut core, view) = backspace(source, format, 2);
         assert_eq!(core.document().text(), "ab\nc", "{source}");

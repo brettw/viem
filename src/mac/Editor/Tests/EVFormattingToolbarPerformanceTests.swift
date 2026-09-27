@@ -8,10 +8,9 @@ import XCTest
 final class EVFormattingToolbarPerformanceTests: XCTestCase {
   func testLargeDocumentToolbarRefreshAndFormattingToggles() throws {
     let markdown = "# Heading\n\n- First item\n- Second item\n\n" + String(repeating: "A paragraph with **bold** and `code` text.\n\n", count: 4000)
-    let html = "<h1>Heading</h1><ul><li>First item</li><li>Second item</li></ul>" + String(repeating: "<p>A paragraph with <b>bold</b> and <code>code</code> text.</p>", count: 4000)
     let rtf = "{\\rtf1 First item\\par Second item\\par " + String(repeating: "A paragraph with {\\b bold} text.\\par ", count: 4000) + "}"
     for (format, source) in [(EVDocument.markdownType, markdown), (EVDocument.markdownSourceType, markdown),
-                             (EVDocument.htmlType, html), (EVDocument.htmlSourceType, html), (EVDocument.rtfType, rtf)] {
+                             (EVDocument.rtfType, rtf)] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: format)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -46,9 +45,7 @@ final class EVFormattingToolbarPerformanceTests: XCTestCase {
       toolbar.performCommand(bold)
       let selectedElapsed = CFAbsoluteTimeGetCurrent() - start
       print("TOOLBAR_PROFILE \(format) selected bold action: \(selectedElapsed * 1000)ms")
-      // HTML Source intentionally uses one huge unwrapped physical line here;
-      // its complete line measurement remains separate from toolbar refresh.
-      if format != EVDocument.htmlSourceType { XCTAssertLessThan(selectedElapsed, 0.250) }
+      XCTAssertLessThan(selectedElapsed, 0.250)
       XCTAssertNil(surface.commandOutput)
       XCTAssertEqual(bold.state, .on)
       surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: at, length: 0))

@@ -168,7 +168,10 @@ pub fn detect_with_profile(
                 "conf" => Some("conf"),
                 "ini" => Some("dosini"),
                 "md" | "markdown" | "mkd" => Some("markdown"),
-                "html" | "htm" | "xhtml" => Some("html"),
+                extension
+                    if ["html", "htm", "xhtml"]
+                        .iter()
+                        .any(|html| extension.eq_ignore_ascii_case(html)) => Some("html"),
                 "rtf" => Some("rtf"),
                 _ => None,
             },

@@ -64,7 +64,7 @@ fn puts_assist_at_resolved_destination_without_rewriting_registers() {
         key(&mut commands, &mut document, Key::Char('u'));
         assert_eq!(document.text(), "ab");
     }
-    let (mut document, mut commands) = fixture(Format::Html, "<p>ab</p><pre>cd</pre>");
+    let (mut document, mut commands) = fixture(Format::Markdown, "ab\n\n```\ncd\n```");
     commands
         .registers
         .yank(Some('a'), RegisterValue::characterwise("\"q\""));
@@ -101,7 +101,7 @@ fn ctrl_r_preflights_assisted_text_and_records_raw_repeat_with_actual_insert() {
 #[test]
 fn insert_and_replace_dot_reinterpret_raw_quotes_in_code() {
     for mode in ['i', 'r', 'R'] {
-        let (mut document, mut commands) = fixture(Format::Html, "<p>abcd</p><pre>efgh</pre>");
+        let (mut document, mut commands) = fixture(Format::Markdown, "abcd\n\n```\nefgh\n```");
         key(&mut commands, &mut document, Key::Char(mode));
         key(&mut commands, &mut document, Key::Char('"'));
         key(&mut commands, &mut document, Key::Escape);
@@ -121,7 +121,7 @@ fn insert_and_replace_dot_reinterpret_raw_quotes_in_code() {
 
 #[test]
 fn visual_replacement_and_put_use_selection_start_and_keep_code_literal() {
-    let (mut document, mut commands) = fixture(Format::Html, "<p>ab<code>cd</code>ef</p>");
+    let (mut document, mut commands) = fixture(Format::Markdown, "ab`cd`ef");
     keys(&mut commands, &mut document, "v5lr\"");
     assert_eq!(
         document.text().matches('"').count(),
@@ -145,7 +145,7 @@ fn visual_replacement_and_put_use_selection_start_and_keep_code_literal() {
 #[test]
 fn block_insert_replace_and_put_assist_each_destination_row() {
     for action in ['I', 'r', 'P'] {
-        let (mut document, mut commands) = fixture(Format::Html, "<p>abcd</p><pre>efgh</pre>");
+        let (mut document, mut commands) = fixture(Format::Markdown, "abcd\n\n```\nefgh\n```");
         commands
             .registers
             .yank(Some('a'), RegisterValue::characterwise("\""));
@@ -178,7 +178,7 @@ fn block_insert_replace_and_put_assist_each_destination_row() {
 
 #[test]
 fn normal_block_put_and_physical_source_put_preserve_code_context() {
-    let (mut document, mut commands) = fixture(Format::Html, "<p>abcd</p><pre>efgh</pre>");
+    let (mut document, mut commands) = fixture(Format::Markdown, "abcd\n\n```\nefgh\n```");
     commands
         .registers
         .yank(Some('a'), RegisterValue::blockwise("\"q\"\n\"r\""));
@@ -190,35 +190,35 @@ fn normal_block_put_and_physical_source_put_preserve_code_context() {
     assert_eq!(document.text(), "“q”abcd\n\"r\"efgh");
 
     let (mut document, mut commands) =
-        fixture(Format::HtmlSource, "<p>x</p>\n<pre>code\nline</pre>");
+        fixture(Format::MarkdownSource, "x\n\n```\ncode\nline\n```");
     commands
         .set_line_mode(&document, LineMode::PhysicalSource)
         .unwrap();
     commands.registers.yank(
         Some('a'),
-        RegisterValue::linewise("<b title=\"x\">\"q\"</b>\n"),
+        RegisterValue::linewise("\"q\"\n"),
     );
     keys(&mut commands, &mut document, "\"aP");
-    assert!(document.text().starts_with("<b title=\"x\">“q”</b>\n"));
-    assert!(commands.set_cursor(&document, document.text().find("line</pre>").unwrap()));
+    assert!(document.text().starts_with("“q”\n"));
+    assert!(commands.set_cursor(&document, document.text().find("line\n```").unwrap()));
     keys(&mut commands, &mut document, "\"aP");
     assert!(document
         .text()
-        .contains("<pre>code\n<b title=\"x\">\"q\"</b>\nline</pre>"));
+        .contains("```\ncode\n\"q\"\nline\n```"));
 }
 
 #[test]
 fn rich_register_paste_preserves_bold_and_code_while_transforming_prose() {
     let source = Document::from_bytes(
-        b"<p><b>\"bold\"</b> <code>\"code\"</code></p>".to_vec(),
+        b"**\"bold\"** `\"code\"`".to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Markdown,
     )
     .unwrap();
     let fragment = source.clipboard_fragment(0..source.text().len()).unwrap();
     let raw = RegisterValue::from_clipboard_fragment(fragment).unwrap();
     for mode in ['P', 'i', 'v'] {
-        let (mut document, mut commands) = fixture(Format::Html, "<p>x</p>");
+        let (mut document, mut commands) = fixture(Format::Markdown, "x");
         commands.registers.yank(Some('a'), raw.clone());
         match mode {
             'P' => keys(&mut commands, &mut document, "\"aP"),
@@ -235,30 +235,35 @@ fn rich_register_paste_preserves_bold_and_code_while_transforming_prose() {
             document.text()
         );
         let serialized = String::from_utf8(document.source_bytes()).unwrap();
-        assert!(serialized.contains("<b>“bold”</b>"), "{mode}: {serialized}");
-        assert!(serialized.contains("<code>"), "{mode}: {serialized}");
+        assert!(serialized.contains("**“bold”**"), "{mode}: {serialized}");
+        assert!(serialized.contains("`\"code\"`"), "{mode}: {serialized}");
         assert_eq!(commands.register('a'), Some(&raw));
         key(&mut commands, &mut document, Key::Escape);
         key(&mut commands, &mut document, Key::Char('u'));
-        assert_eq!(document.source_bytes(), b"<p>x</p>");
+        assert_eq!(document.source_bytes(), b"x");
     }
 }
 
 #[test]
-fn replace_backspace_restores_source_after_quote_width_changes() {
+fn replace_backspace_restores_text_and_style_after_quote_width_changes() {
     for (format, source) in [
         (Format::PlainText, "éabcd"),
-        (Format::Html, "<p><b>é</b>abcd</p>"),
+        (Format::Rtf, r"{\rtf1{\b \u233?}abcd}"),
     ] {
         let (mut document, mut commands) = fixture(format, source);
+        let original_styles = [0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap());
         keys(&mut commands, &mut document, "R\"");
         assert!(document.text().starts_with('“'));
         key(&mut commands, &mut document, Key::Backspace);
-        assert_eq!(document.source_bytes(), source.as_bytes(), "{format:?}");
+        assert_eq!(document.text(), "éabcd");
+        assert_eq!([0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap()), original_styles);
+        if !format.is_rich_text() { assert_eq!(document.source_bytes(), source.as_bytes()); }
         assert_eq!(commands.cursor(), 0);
         key(&mut commands, &mut document, Key::Char('\''));
         key(&mut commands, &mut document, Key::Escape);
         assert_eq!(commands.register('.').unwrap().text, "‘");
+        key(&mut commands, &mut document, Key::Char('u'));
+        assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
 

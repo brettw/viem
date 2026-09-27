@@ -18,8 +18,8 @@ internal sealed partial class EditorWindow
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!, boldItem = null!, italicItem = null!;
     private CoreView? View => ActivePane?.View;
-    private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE or VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
-    private bool RichCharacterDocument => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_HTML or VIEM_FORMAT_HTML_SOURCE or VIEM_FORMAT_RTF;
+    private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE or VIEM_FORMAT_RTF;
+    private bool RichCharacterDocument => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_RTF;
     private bool DirectCharacter => View?.CanFormatCharacter == true;
     private MenuFlyoutItem Item(string text, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
     {
@@ -62,9 +62,10 @@ internal sealed partial class EditorWindow
             Item("Close", () => ActivePane == null ? Task.CompletedTask : ClosePane(ActivePane)),
             Item("Save", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane), "Ctrl+S"),
             Item("Save As…", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane, true), "Ctrl+Shift+S"),
+            Item("Export…", () => ActivePane == null ? Task.CompletedTask : Export(ActivePane), enabled: () => View != null),
             Item("Duplicate", () => { if (ActivePane != null) NewWindow(NewDocument(ActivePane.Document.Source(ActivePane.Document.State.document_revision), format: ActivePane.Document.State.format)); return Task.CompletedTask; }),
             Item("Revert to Last Saved…", () => ActivePane == null ? Task.CompletedTask : Reload(ActivePane), enabled: () => ActivePane?.Document.FilePath != null), Separator(),
-            Formats("Convert to", true, [1, 2, 3]), Formats("Reinterpret as", false, [1, 7, 2, 5, 3, 6, 4]),
+            Formats("Convert to", true, [1, 2]), Formats("Reinterpret as", false, [1, 7, 2, 5, 4]),
             Sub("Text Encoding", new[] { "UTF-8", "Latin-1", "UTF-16 LE", "UTF-16 BE" }.Select((s, i) => ActionItem(s, () => View?.SetEncoding((uint)i + 1))).ToArray()),
             Sub("Line Endings", ActionItem("Unix (LF)", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", () => View?.FileFormat(3))),
             Separator(), Item("Settings…", ShowSettings), Separator(), Item("Exit", RequestClose));

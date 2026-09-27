@@ -23,11 +23,9 @@ impl Document {
                 .projection()
                 .flow_blocks_for_region(&(at..at))
                 .unwrap_or_else(|| self.projection().blocks_for_region(&(at..at)));
-            let in_list = source_blocks.iter().any(|block| {
-                matches!(block.kind, super::super::BlockKind::ListItem { .. })
-            }) || self.projection().style_spans_touching(&(at..at)).iter().any(|span| {
-                matches!(&span.application, StyleApplication::SourceParagraph { style, .. } if style.is_internal_list())
-            });
+            let in_list = source_blocks
+                .iter()
+                .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. }));
             if !in_list {
                 return Ok(None);
             }
@@ -38,11 +36,7 @@ impl Document {
             let semantic = Document::from_bytes_with_file_format(
                 self.source_bytes(),
                 self.encoding(),
-                if self.format() == Format::HtmlSource {
-                    Format::Html
-                } else {
-                    Format::Markdown
-                },
+                Format::Markdown,
                 self.file_format(),
             )?;
             let visible_at = semantic.visible_point_for_source(source_at, true)?;
@@ -85,7 +79,9 @@ impl Document {
         let quote = block.style == StyleId::from("Block quote") || block.quote_depth > 0;
         if empty_quote_only {
             // Literal code owns its blank lines even inside a quotation.
-            if super::super::edit_boundary::is_code_paragraph(self, &block)? { return Ok(None); }
+            if super::super::edit_boundary::is_code_paragraph(self, &block)? {
+                return Ok(None);
+            }
             if !quote || !self.text()[block.range.clone()].trim().is_empty() {
                 return Ok(None);
             }
@@ -160,9 +156,7 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?;
             return self.verify_hard_break_paragraph(prepared, &block);
         }
-        if self.format() == Format::Html
-            || self.format() == Format::Markdown && block.style == StyleId::from("Code Block")
-        {
+        if self.format() == Format::Markdown && block.style == StyleId::from("Code Block") {
             // HTML's ordinary text insertion writes <br> with its verified
             // whitespace protections. Verify paragraph ownership as well as
             // the requested text, including at empty and terminal boundaries.

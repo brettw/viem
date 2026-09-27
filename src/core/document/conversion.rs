@@ -1,5 +1,6 @@
 //! Explicit, whole-artifact semantic conversion. Ordinary edits never use this
 //! serializer: conversion is a user-requested change of persistence language.
+//! Clipboard imports share the inline writer for Markdown spelling.
 use super::{
     BlockKind, CharacterProperties, Document, DocumentError, FontSlant, Format, FormattedDocument,
     SemanticInlineStyle, StyleApplication,
@@ -11,7 +12,7 @@ use std::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 #[path = "conversion_containers.rs"]
-mod containers;
+pub(super) mod containers;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ConversionLoss {
@@ -80,7 +81,6 @@ enum MarkdownLinePrefix {
 #[derive(Clone, Copy)]
 enum TextSpelling {
     Literal,
-    Html { hard_breaks: bool },
     Markdown,
 }
 
@@ -151,17 +151,6 @@ impl ConversionWriter {
             let visible = fallback.as_deref().unwrap_or(grapheme);
             match spelling {
                 TextSpelling::Literal => self.push_str(visible),
-                TextSpelling::Html { hard_breaks } => {
-                    for character in visible.chars() {
-                        match character {
-                            '&' => self.push_str("&amp;"),
-                            '<' => self.push_str("&lt;"),
-                            '>' => self.push_str("&gt;"),
-                            '\n' if hard_breaks => self.push_str("<br>"),
-                            _ => self.push(character),
-                        }
-                    }
-                }
                 TextSpelling::Markdown => {
                     for (character_offset, character) in visible.char_indices() {
                         if character == '\n' {
@@ -180,8 +169,11 @@ impl ConversionWriter {
                         if starts_block
                             || matches!(character, '\\' | '*' | '_' | '`' | '#' | '>')
                             || character == '<'
-                                && super::projection::markdown_inline_break_length(remaining).is_some()
-                            || character == '&' && remaining.starts_with("&#")
+                                && super::projection::markdown_inline_break_length(remaining)
+                                    .is_some()
+                            || character == '&'
+                                && (remaining.starts_with("&#")
+                                    || super::html::reference(remaining, false).is_some())
                         {
                             self.push('\\');
                         }
@@ -216,23 +208,13 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
     } else if from == document.format() {
         document.projection().clone()
     } else {
-        let mut projected = if from == Format::Html {
-            super::html::project_with_configuration(
-                &input,
-                document.revision(),
-                decoded.bom_len,
-                source_bytes.len(),
-                Some(document.projection().style_sheet()),
-            )
-        } else {
-            super::projection::project(
-                &input,
-                from,
-                document.revision(),
-                decoded.bom_len,
-                source_bytes.len(),
-            )
-        };
+        let mut projected = super::projection::project(
+            &input,
+            from,
+            document.revision(),
+            decoded.bom_len,
+            source_bytes.len(),
+        );
         projected.install_configuration_styles(
             document.revision(),
             document.projection().style_sheet().clone(),
@@ -240,56 +222,10 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         );
         projected
     };
-    let to_html = target == Format::Html;
     let to_text = target == Format::PlainText;
     let mut losses = BTreeSet::new();
     if decoded.spans.iter().any(|span| span.diagnostic.is_some()) || from == Format::Rtf {
         losses.insert(ConversionLoss::SourceOnlyContent);
-    }
-    if from == Format::Html {
-        for token in super::html::tokenize(&input.text) {
-            match token.kind {
-                super::html::TokenKind::Opaque => {
-                    losses.insert(ConversionLoss::SourceOnlyContent);
-                }
-                super::html::TokenKind::Tag(tag) => {
-                    if !matches!(
-                        tag.name.as_str(),
-                        "html"
-                            | "body"
-                            | "p"
-                            | "div"
-                            | "h1"
-                            | "h2"
-                            | "h3"
-                            | "h4"
-                            | "h5"
-                            | "h6"
-                            | "b"
-                            | "strong"
-                            | "i"
-                            | "em"
-                            | "pre"
-                            | "code"
-                            | "br"
-                            | "ul"
-                            | "ol"
-                            | "li"
-                            | "blockquote"
-                    ) {
-                        losses.insert(ConversionLoss::SourceOnlyContent);
-                    }
-                    if tag
-                        .attributes
-                        .iter()
-                        .any(|(name, _)| !matches!(name.as_str(), "start" | "value"))
-                    {
-                        losses.insert(ConversionLoss::SourceOnlyContent);
-                    }
-                }
-                _ => {}
-            }
-        }
     }
     if from == Format::Markdown
         && input.text.lines().any(|line| {
@@ -319,15 +255,20 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         semantic.blocks()
     };
     let container_conversion = !to_text && blocks.iter().any(|block| !block.containers.is_empty());
-    if container_conversion { containers::write(&semantic, blocks, target, &mut losses, &mut output); }
-    let mut index = if container_conversion { blocks.len() } else { 0 };
+    if container_conversion {
+        containers::write(&semantic, blocks, &mut losses, &mut output);
+    }
+    let mut index = if container_conversion {
+        blocks.len()
+    } else {
+        0
+    };
     while index < blocks.len() {
         let block = &blocks[index];
         if index > 0 {
             output.push('\n');
             if to_text
-                || !to_html
-                    && !matches!(block.kind, BlockKind::ListItem { .. })
+                || !matches!(block.kind, BlockKind::ListItem { .. })
                     && (matches!(blocks[index - 1].kind, BlockKind::ListItem { .. })
                         || block.kind == BlockKind::Paragraph
                             && blocks[index - 1].kind == BlockKind::Paragraph)
@@ -345,11 +286,6 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
             if to_text {
                 output.text(text, start, TextSpelling::Literal);
                 losses.insert(ConversionLoss::Styling);
-            } else if to_html {
-                // HTML5 ignores a literal initial LF immediately after pre.
-                output.push_str("<pre><code>");
-                output.text(text, start, TextSpelling::Html { hard_breaks: false });
-                output.push_str("</code></pre>");
             } else {
                 let fence =
                     "`".repeat(longest_run(&output.visible_text(text, start), '`').max(2) + 1);
@@ -362,32 +298,23 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
             index += 1;
             continue;
         }
-        if to_html && matches!(block.kind, BlockKind::ListItem { .. }) {
-            html_list(&semantic, &blocks, &mut index, &mut losses, &mut output);
-            continue;
-        }
         let body = block.range.clone();
-        if !to_html
-            && (block.direct_paragraph != Default::default()
-                || block.direct_default_character != Default::default())
+        if block.direct_paragraph != Default::default()
+            || block.direct_default_character != Default::default()
         {
             losses.insert(ConversionLoss::Styling);
         }
         let quoted = block.style.0 == "Block quote";
         let (open, close) = match &block.kind {
             _ if to_text => {
-                if block.kind != BlockKind::Paragraph || block.style.0 != "Paragraph" || !block.containers.is_empty() {
+                if block.kind != BlockKind::Paragraph
+                    || block.style.0 != "Paragraph"
+                    || !block.containers.is_empty()
+                {
                     losses.insert(ConversionLoss::Styling);
                 }
                 (String::new(), String::new())
             }
-            BlockKind::Heading(level) if to_html => (
-                format!(
-                    "<h{level}{}>",
-                    whitespace_attribute(&semantic.text()[block.range.clone()])
-                ),
-                format!("</h{level}>"),
-            ),
             BlockKind::Heading(level) => (
                 format!("{} ", "#".repeat(usize::from(*level))),
                 String::new(),
@@ -410,17 +337,10 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
                 }
                 (marker, String::new())
             }
-            _ if to_html => (
-                format!(
-                    "<p{}>",
-                    whitespace_attribute(&semantic.text()[block.range.clone()])
-                ),
-                "</p>".to_owned(),
-            ),
             _ => (String::new(), String::new()),
         };
         if quoted && !to_text {
-            output.push_str(if to_html { "<blockquote>" } else { "> " });
+            output.push_str("> ");
         }
         output.push_str(&open);
         // Container syntax (especially >) does not make its first visible
@@ -428,9 +348,6 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
         output.line_prefix = MarkdownLinePrefix::Empty;
         inline(&semantic, body, target, &mut losses, &mut output);
         output.push_str(&close);
-        if quoted && to_html {
-            output.push_str("</blockquote>");
-        }
         index += 1;
     }
     let warnings = if losses.is_empty() {
@@ -447,69 +364,14 @@ pub(super) fn convert(document: &Document, target: Format) -> Result<Conversion,
     })
 }
 
-/// Reuse passive parsing for an object's available fallback text. Only a
-/// disposable HTML token view loses atomic treatment. Opaque RTF objects have
-/// no projected text fallback; both formats retain a readable placeholder when
-/// needed. Source changes only when the caller commits the conversion.
+/// Opaque RTF objects have no projected text fallback.
 fn object_text(document: &Document, source: &[u8]) -> Result<Option<String>, DocumentError> {
-    use super::html::TokenKind;
     let decoded = document.encoding().decode(source)?;
     let input = super::line_endings::normalize(&decoded, document.file_format());
-    if document.format() == Format::Rtf {
-        let atomic = super::rtf::tokenize(&input).iter().any(|token| {
-            matches!(&token.kind, super::rtf::Kind::Control(name, _) if matches!(name.as_str(), "pict" | "object" | "field" | "shp"))
-        });
-        return Ok(atomic.then(|| "[Object]".to_owned()));
-    }
-    let mut tokens = super::html5_tree::tokens(&input.text);
-    let Some(tag) = tokens.iter().find_map(|token| match &token.kind {
-        TokenKind::Tag(tag) if !tag.end && super::html::atomic(&tag.name) => Some(tag),
-        _ => None,
-    }) else {
-        return Ok(None);
-    };
-    let fallback = tag
-        .attribute("alt")
-        .or_else(|| tag.attribute("title"))
-        .unwrap_or(if tag.name == "img" {
-            "[Image]"
-        } else {
-            "[Object]"
-        })
-        .to_owned();
-    if super::html::void(&tag.name) {
-        return Ok(Some(fallback));
-    }
-    for token in &mut tokens {
-        if let TokenKind::Tag(tag) = &mut token.kind {
-            if !tag.end && super::html::void(&tag.name) && super::html::atomic(&tag.name) {
-                token.kind = TokenKind::MappedText {
-                    text: tag
-                        .attribute("alt")
-                        .or_else(|| tag.attribute("title"))
-                        .unwrap_or("[Image]")
-                        .to_owned(),
-                    mapped: false,
-                };
-            } else if super::html::atomic(&tag.name) {
-                tag.name = "span".into();
-            } else if matches!(tag.name.as_str(), "td" | "th") {
-                tag.name = "p".into();
-            }
-        }
-    }
-    let projected = super::html::project_tokens(
-        &input,
-        document.revision(),
-        decoded.bom_len,
-        source.len(),
-        tokens,
-    );
-    Ok(Some(if projected.text().is_empty() {
-        fallback
-    } else {
-        projected.text().to_owned()
-    }))
+    let atomic = super::rtf::tokenize(&input).iter().any(|token| {
+        matches!(&token.kind, super::rtf::Kind::Control(name, _) if matches!(name.as_str(), "pict" | "object" | "field" | "shp"))
+    });
+    Ok(atomic.then(|| "[Object]".to_owned()))
 }
 
 fn inline(
@@ -537,7 +399,10 @@ fn inline(
                 }
                 StyleApplication::Named(id) if id.0 == "Code" => code = true,
                 StyleApplication::Named(id) => {
-                    let value = super::html_styles::character_chain(document.style_sheet(), id);
+                    let value = document
+                        .style_sheet()
+                        .named_character_declarations(Some(id))
+                        .expect("validated character style");
                     super::rich_text::overlay(&mut properties, &value);
                     losses.insert(ConversionLoss::Styling);
                 }
@@ -560,90 +425,97 @@ fn inline(
                 losses.insert(ConversionLoss::Styling);
             }
             output.text(text, at, TextSpelling::Literal);
-        } else if target == Format::Html {
-            let wrapper = (properties != CharacterProperties::default())
-                .then(|| super::html::character_wrapper(&properties));
-            if let Some((open, _)) = &wrapper {
-                output.push_str(open);
-            }
-            if code {
-                output.push_str("<code>");
-            }
-            output.text(text, at, TextSpelling::Html { hard_breaks: true });
-            if code {
-                output.push_str("</code>");
-            }
-            if let Some((_, close)) = &wrapper {
-                output.push_str(close);
-            }
         } else {
-            let bold = properties.bold == Some(true)
-                || properties.weight.is_some_and(|weight| weight >= 600);
-            let italic = matches!(
-                properties.slant,
-                Some(FontSlant::Italic | FontSlant::Oblique)
-            );
-            let mut supported = CharacterProperties::default();
-            supported.bold = properties.bold;
-            supported.weight = properties.weight;
-            supported.slant = properties.slant;
-            if properties != supported || properties.weight.is_some() {
-                losses.insert(ConversionLoss::Styling);
-            }
-            if code {
-                let visible = output.visible_text(text, at);
-                let marker = "`".repeat(longest_run(&visible, '`') + 1);
-                let pad = if visible.starts_with('`')
-                    || visible.ends_with('`')
-                    || (visible.starts_with(' ')
-                        && visible.ends_with(' ')
-                        && !visible.trim().is_empty())
-                {
-                    " "
-                } else {
-                    ""
-                };
-                output.push_str(&marker);
-                output.push_str(pad);
-                output.text(text, at, TextSpelling::Literal);
-                output.push_str(pad);
-                output.push_str(&marker);
-                if bold || italic {
-                    losses.insert(ConversionLoss::Styling);
-                }
-            } else {
-                let marker = if bold && italic {
-                    "***"
-                } else if bold {
-                    "**"
-                } else if italic {
-                    "*"
-                } else {
-                    ""
-                };
-                output.push_str(marker);
-                output.text(text, at, TextSpelling::Markdown);
-                output.push_str(marker);
-            }
+            markdown_inline_text(text, at, properties, code, losses, output);
         }
     }
 }
+/// Clipboard imports reuse the conversion writer's escaping and supported
+/// inline vocabulary without creating an HTML editing document.
+pub(super) fn markdown_character_fragment(
+    document: &FormattedDocument,
+    range: Range<usize>,
+    properties: &CharacterProperties,
+) -> String {
+    let mut output = ConversionWriter {
+        source: String::new(),
+        source_correspondence: Vec::new(),
+        semantic_sources: BTreeMap::new(),
+        object_fallbacks: BTreeMap::new(),
+        line_prefix: MarkdownLinePrefix::Empty,
+    };
+    markdown_inline_text(
+        &document.text()[range.clone()],
+        range.start,
+        properties.clone(),
+        false,
+        &mut BTreeSet::new(),
+        &mut output,
+    );
+    output.source
+}
+
+fn markdown_inline_text(
+    text: &str,
+    at: usize,
+    properties: CharacterProperties,
+    code: bool,
+    losses: &mut BTreeSet<ConversionLoss>,
+    output: &mut ConversionWriter,
+) {
+    let bold =
+        properties.bold == Some(true) || properties.weight.is_some_and(|weight| weight >= 600);
+    let italic = matches!(
+        properties.slant,
+        Some(FontSlant::Italic | FontSlant::Oblique)
+    );
+    let mut supported = CharacterProperties::default();
+    supported.bold = properties.bold;
+    supported.weight = properties.weight;
+    supported.slant = properties.slant;
+    if properties != supported || properties.weight.is_some() {
+        losses.insert(ConversionLoss::Styling);
+    }
+    if code {
+        let visible = output.visible_text(text, at);
+        let marker = "`".repeat(longest_run(&visible, '`') + 1);
+        let pad = if visible.starts_with('`')
+            || visible.ends_with('`')
+            || (visible.starts_with(' ') && visible.ends_with(' ') && !visible.trim().is_empty())
+        {
+            " "
+        } else {
+            ""
+        };
+        output.push_str(&marker);
+        output.push_str(pad);
+        output.text(text, at, TextSpelling::Literal);
+        output.push_str(pad);
+        output.push_str(&marker);
+        if bold || italic {
+            losses.insert(ConversionLoss::Styling);
+        }
+    } else {
+        let marker = if bold && italic {
+            "***"
+        } else if bold {
+            "**"
+        } else if italic {
+            "*"
+        } else {
+            ""
+        };
+        output.push_str(marker);
+        output.text(text, at, TextSpelling::Markdown);
+        output.push_str(marker);
+    }
+}
+
 fn longest_run(text: &str, delimiter: char) -> usize {
     text.split(|c| c != delimiter)
         .map(str::len)
         .max()
         .unwrap_or(0)
-}
-fn whitespace_attribute(text: &str) -> &'static str {
-    if text.starts_with(char::is_whitespace)
-        || text.ends_with(char::is_whitespace)
-        || text.contains("  ")
-        || text.contains('\t')
-    {
-        " style=\"white-space: pre-wrap\""
-    } else {
-        ""
-    }
 }
 /// Plain source uses blank physical lines to separate paragraphs. Single
 /// line endings remain hard breaks within the paragraph's visible text.
@@ -677,72 +549,6 @@ fn plain_paragraphs(document: &FormattedDocument) -> Vec<super::Block> {
         .collect()
 }
 
-fn html_list(
-    document: &FormattedDocument,
-    blocks: &[super::Block],
-    index: &mut usize,
-    losses: &mut BTreeSet<ConversionLoss>,
-    output: &mut ConversionWriter,
-) {
-    let BlockKind::ListItem {
-        ordered,
-        ordinal,
-        level,
-        ..
-    } = blocks[*index].kind
-    else {
-        unreachable!()
-    };
-    let tag = if ordered { "ol" } else { "ul" };
-    if ordered {
-        output.push_str(&format!("<ol start=\"{ordinal}\">"));
-    } else {
-        output.push_str("<ul>");
-    }
-    while *index < blocks.len() {
-        let block = &blocks[*index];
-        let BlockKind::ListItem {
-            ordered: item_ordered,
-            ordinal,
-            level: item_level,
-            item_start,
-            ..
-        } = block.kind
-        else {
-            break;
-        };
-        if item_level != level || item_ordered != ordered {
-            break;
-        }
-        if !item_start {
-            losses.insert(ConversionLoss::Structure);
-        }
-        let body = block.range.clone();
-        let value = if ordered {
-            format!(" value=\"{ordinal}\"")
-        } else {
-            String::new()
-        };
-        output.push_str(&format!(
-            "<li{value}{}>",
-            whitespace_attribute(&document.text()[body.clone()])
-        ));
-        inline(document, body, Format::Html, losses, output);
-        *index += 1;
-        while *index < blocks.len()
-            && matches!(blocks[*index].kind, BlockKind::ListItem {level: next, ..} if next > level)
-        {
-            if matches!(blocks[*index].kind, BlockKind::ListItem {level: next, ..} if next != level + 1)
-            {
-                losses.insert(ConversionLoss::Structure);
-            }
-            html_list(document, blocks, index, losses, output);
-        }
-        output.push_str("</li>");
-    }
-    output.push_str(&format!("</{tag}>"));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -772,7 +578,7 @@ mod tests {
         for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
             let mut bytes = encoding.bom_bytes().to_vec();
             bytes.extend(encoding.encode_fragment(source).unwrap());
-            for format in [Format::Html, Format::HtmlSource] {
+            for format in [Format::Markdown, Format::MarkdownSource] {
                 let document = Document::from_bytes(bytes.clone(), encoding, format).unwrap();
                 let converted = convert(&document, Format::MarkdownSource).unwrap();
                 assert_eq!(converted.source, expected);
@@ -791,33 +597,11 @@ mod tests {
     }
 
     #[test]
-    fn tracked_html_conversion_keeps_nested_list_and_inline_wrapper_offsets() {
-        let source = "## Head *soft* &\n\n- one\n  - two\n\n```\na < b\n```";
-        let document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let converted = convert(&document, Format::Html).unwrap();
-        assert_eq!(
-            converted.source,
-            "<h2>Head <i>soft</i> &amp;</h2>\n<ul><li>one<ul><li>two</li></ul></li></ul>\n<pre><code>a &lt; b</code></pre>"
-        );
-        assert_spelling(source.as_bytes(), Encoding::Utf8, &converted, "&", "&amp;");
-        assert_spelling(source.as_bytes(), Encoding::Utf8, &converted, "<", "&lt;");
-        let second_item = source.find("two").unwrap();
-        let generated = converted.source.find("two").unwrap();
-        assert!(converted
-            .source_correspondence
-            .contains(&(second_item..second_item + 1, generated..generated + 1)));
-    }
-
-    #[test]
     fn tracked_inline_code_padding_and_hard_break_are_not_confused_with_wrappers() {
         let source = "<p><code>`x`</code> tail</p>";
         let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
         let converted = convert(&document, Format::Markdown).unwrap();
         assert_eq!(converted.source, "`` `x` `` tail");
         assert_spelling(source.as_bytes(), Encoding::Utf8, &converted, "`", "`");
@@ -826,50 +610,10 @@ mod tests {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
                 .unwrap();
-        let converted = convert(&document, Format::Html).unwrap();
-        assert_eq!(converted.source, "<p>a<br>b</p>");
+        let converted = convert(&document, Format::Markdown).unwrap();
+        assert_eq!(converted.source, "a<br>b");
         assert!(converted.source_correspondence.iter().any(|(from, to)| {
             source[from.clone()].contains('\n') && &converted.source[to.clone()] == "<br>"
         }));
     }
-    #[test]
-    fn source_view_conversion_uses_the_configured_html_semantics() {
-        use crate::document::{
-            PersistedStyleIntent, StyleDefinitionEdit, StyleDefinitionOrigin, StyleModelIntent,
-            StyleModelRequest,
-        };
-        let mut outputs = Vec::new();
-        for format in [Format::Html, Format::HtmlSource] {
-            let source = "<p><span style='vertical-align:super'>Word</span></p>";
-            let mut document =
-                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-            let mut paragraph = document
-                .projection()
-                .style_sheet()
-                .block_style(&"Paragraph".into())
-                .unwrap()
-                .clone();
-            paragraph.character.size = Some(30.0.into());
-            document
-                .apply_style_request(StyleModelRequest::new(
-                    document.id(),
-                    document.revision(),
-                    StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                        origin: StyleDefinitionOrigin::SourceBacked,
-                        edit: StyleDefinitionEdit::UpdateBlock(paragraph),
-                    }),
-                ))
-                .unwrap();
-            assert_eq!(document.source_bytes(), source.as_bytes());
-            let converted = convert(&document, Format::Html).unwrap();
-            assert!(
-                converted.source.contains("<sup>Word</sup>"),
-                "{}",
-                converted.source
-            );
-            outputs.push(converted.source);
-        }
-        assert_eq!(outputs[0], outputs[1]);
-    }
-
 }

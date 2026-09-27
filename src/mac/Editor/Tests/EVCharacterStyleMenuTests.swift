@@ -42,8 +42,7 @@ import XCTest
     }
 
     private func customStyle(backend: EVCoreDocumentBackend, session: EVCoreViewSession) throws -> EVStyleKey {
-        _ = try session.setIncludeStyleDefinitionsInFile(true, expected: backend.documentState())
-        let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Accent"))
+        let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC1"))
         _ = try session.createStyle(key, name: "Accent", identity: backend.styleSheetSnapshot().identity)
         _ = try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
             mutation: .setDeclaration(.characterSize, .float(22)))
@@ -60,7 +59,7 @@ import XCTest
     }
 
     func testBuiltinStyleAtCaretSurvivesInsertEntryAndRoundTripsTypedText() throws {
-        for (source, type) in [("base", EVDocument.markdownType), ("<p data-keep='yes'>base</p><!--keep-->", EVDocument.htmlType)] {
+        for (source, type) in [("base", EVDocument.markdownType)] {
             for (before, after, insertion) in [("i", "", 0), ("", "i", 0), ("", "a", 1)] {
                 let (backend, view, session) = try surface(source, type: type)
                 try keys(before, view: view, session: session)
@@ -93,8 +92,8 @@ import XCTest
     }
 
     func testCustomStyleAtInsertCaretPersistsDefinitionAndTypedAssignment() throws {
-        let type = EVDocument.htmlType
-        let (backend, view, session) = try surface("<p>base</p>", type: type)
+        let type = EVDocument.rtfType
+        let (backend, view, session) = try surface(#"{\rtf1{\pard base}}"#, type: type)
         let key = try customStyle(backend: backend, session: session)
         try keys("A", view: view, session: session)
         let before = try backend.serializedSource(typeName: type)
@@ -121,7 +120,7 @@ import XCTest
     }
 
     func testChoosingDefaultParagraphStopsPendingNamedStyle() throws {
-        for type in [EVDocument.markdownType, EVDocument.htmlType] {
+        for type in [EVDocument.markdownType] {
             let (backend, view, session) = try surface("", type: type)
             try keys("i", view: view, session: session)
             try choose("Code", in: view)
@@ -145,7 +144,7 @@ import XCTest
     }
 
     func testCharacterStyleInheritsEachParagraphFontSizeAndClearsToItsParagraph() throws {
-        for (source, type) in [("body\n\n# title", EVDocument.markdownType), ("<p>body</p><h1>title</h1>", EVDocument.htmlType)] {
+        for (source, type) in [("body\n\n# title", EVDocument.markdownType)] {
             let (backend, view, session) = try surface(source, type: type)
             let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
             let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
@@ -184,7 +183,7 @@ import XCTest
     }
 
     func testDefaultParagraphClearsSelectedCharacterStylesAndUndoRestoresThem() throws {
-        for (source, type) in [("one two", EVDocument.markdownType), ("<p data-keep='yes'>one two</p><!--keep-->", EVDocument.htmlType)] {
+        for (source, type) in [("one two", EVDocument.markdownType)] {
             let (backend, view, session) = try surface(source, type: type)
             _ = try selectedStyle(NSRange(location: 0, length: 3), view: view, session: session)
             try choose("Code", in: view)
@@ -205,7 +204,7 @@ import XCTest
     }
 
     func testBuiltinCharacterStyleAppliesToSelectedText() throws {
-        for (source, type) in [("one two", EVDocument.markdownType), ("<p data-keep='x'>one two</p><!--keep-->", EVDocument.htmlType)] {
+        for (source, type) in [("one two", EVDocument.markdownType)] {
             let (backend, view, session) = try surface(source, type: type)
             let range = NSRange(location: 0, length: 3)
             _ = try selectedStyle(range, view: view, session: session)
@@ -226,10 +225,10 @@ import XCTest
     func testCharacterStyleSpansParagraphsAndLeavesOutsideTextUnassigned() throws {
         for (source, type, id) in [
             ("one\n\ntwo\n\nthree", EVDocument.markdownType, "Code"),
-            ("<p data-keep='a'>one</p><!--between--><p data-keep='b'>two</p><p>three</p><!--keep-->", EVDocument.htmlType, "Accent"),
+            (#"{\rtf1{\pard one}{\*\comment between}\par {\pard two}\par {\pard three}{\*\comment keep}}"#, EVDocument.rtfType, "RtfC1"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
-            if id == "Accent" { _ = try customStyle(backend: backend, session: session) }
+            if id == "RtfC1" { _ = try customStyle(backend: backend, session: session) }
             let before = try backend.serializedSource(typeName: type)
             let range = NSRange(location: 1, length: 8)
             _ = try selectedStyle(range, view: view, session: session)
@@ -243,9 +242,9 @@ import XCTest
             _ = try selectedStyle(NSRange(location: 0, length: 13), view: view, session: session)
             XCTAssertTrue(try session.selectedNamedStyles().characterMixed)
             XCTAssertTrue(try XCTUnwrap(view.currentStyleMenuCatalogue()).entries.filter { $0.role == .character }.allSatisfy { $0.presentation.state == .off })
-            if type == EVDocument.htmlType {
-                XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<!--between-->"))
-                XCTAssertTrue(String(decoding: saved, as: UTF8.self).hasSuffix("<!--keep-->"))
+            if type == EVDocument.rtfType {
+                XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("between"))
+                XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("keep"))
             }
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.perform(menuCommand: .undo, sender: nil)

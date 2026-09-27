@@ -101,52 +101,6 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeScalarChangeKeepsTheEntireHTMLRunStyle() throws {
-        let source = "<p>Bold <b foo='keep'>words</b> and &#x26; text.</p><!--keep-->"
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let client: NSTextInputClient = surface.editorView
-        let implicit = NSRange(location: NSNotFound, length: 0)
-        for character in "wvecORDS" {
-            client.insertText(String(character), replacementRange: implicit)
-            XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
-        }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-        XCTAssertEqual(surface.formattedText, "Bold ORDS and & text.")
-        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<b foo='keep'>ORDS</b>"))
-        XCTAssertEqual(surface.statusBarState.message, "")
-        client.insertText("u", replacementRange: implicit)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
-    }
-
-    @MainActor
-    func testNativeHTMLHeadingEnterUsesFollowingParagraphStyle() throws {
-        let source = "<h2>Heading</h2><p>Tail</p>"
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let client: NSTextInputClient = surface.editorView
-        let implicit = NSRange(location: NSNotFound, length: 0)
-        client.insertText("A", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-        for character in "Body" {
-            client.insertText(String(character), replacementRange: implicit)
-            XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
-        }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-        XCTAssertEqual(surface.formattedText, "Heading\nBody\nTail")
-        XCTAssertEqual(surface.statusBarState.message, "")
-        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("</h2><p>Body</p>"))
-        client.insertText("u", replacementRange: implicit)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
-    }
-
-    @MainActor
     func testNativeRTFListEnterRenumbersFollowingItems() throws {
         let source = #"{\rtf1{\*\listtable{\list\listid42{\listlevel\levelnfc0\levelstartat3{\leveltext\'02\'00.;}}}}{\*\listoverridetable{\listoverride\listid42\listoverridecount0\ls1}}\pard\ls1\ilvl0 First\par\pard\ls1\ilvl0 Second\par\pard Tail}"#
         let backend = EVCoreDocumentBackend()
@@ -172,7 +126,6 @@ final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
     func testNativeRichFormattingMenusUseEffectiveStateAndPreserveSourceOnUndo() throws {
         for (type, source) in [
-            (EVDocument.htmlType, "<p><b data-keep='yes'>Words</b></p><!--keep-->"),
             (EVDocument.rtfType, #"{\rtf1{\b Words}{\*\opaque keep}}"#),
         ] {
             let backend = EVCoreDocumentBackend()
@@ -213,7 +166,6 @@ final class EVEditingReliabilityTests: XCTestCase {
             (EVDocument.plainTextType, "first line\nsecond line"),
             (EVDocument.markdownType, "**first** line\nsecond line"),
             (EVDocument.markdownSourceType, "**first** line\nsecond line"),
-            (EVDocument.htmlType, "<p><b>first</b> line</p><p>second line</p>"),
             (EVDocument.rtfType, #"{\rtf1{\fonttbl{\f0 Helvetica;}}\f0 {\b first} line\par second line}"#),
         ] {
             let backend = EVCoreDocumentBackend()
@@ -243,7 +195,6 @@ final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
     func testNativeRichListEnterBeforeFollowingStyledParagraph() throws {
         for (type, source) in [
-            (EVDocument.htmlType, "<p>First</p><p><b>Following</b> text</p>"),
             (EVDocument.rtfType, #"{\rtf1 First\par {\b Following} text}"#),
         ] {
             let backend = EVCoreDocumentBackend()
@@ -393,7 +344,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         }
         let topOccurrence = try firstVisibleOccurrence()
         XCTAssertGreaterThan(topOccurrence, 70)
-        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown, .htmlSource, .html] {
+        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
             surface.perform(statusOption: .format(format))
             let text = try backend.formattedText()
             let offsets = occurrenceOffsets(text)

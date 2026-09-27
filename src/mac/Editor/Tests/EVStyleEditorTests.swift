@@ -9,7 +9,7 @@ final class EVStyleEditorTests: XCTestCase {
     @MainActor
     func testNativeNamedStyleLifecyclePersistsAndUndoesInRichFormats() throws {
         for (type, source) in [
-            (EVDocument.htmlType, "<p data-keep='yes'>Words</p><!--keep-->"),
+            (EVDocument.rtfType, #"{\rtf1{\pard Words}{\*\comment keep}}"#),
             (EVDocument.rtfType, #"{\rtf1{\info{\title Keep}}Words}"#),
         ] {
             for kind in [EVStyleKind.paragraph, .character] {

@@ -27,7 +27,7 @@ fn heading(block: &Block) -> Option<u8> {
             .filter(|n| (1..=6).contains(n))
     }
 }
-fn numbering(blocks: &[Block]) -> BTreeMap<ContainerIdentity, (bool, u64)> {
+pub(in crate::document) fn numbering(blocks: &[Block]) -> BTreeMap<ContainerIdentity, (bool, u64)> {
     let mut numbers = BTreeMap::new();
     let mut next = BTreeMap::new();
     for block in blocks {
@@ -67,113 +67,11 @@ fn numbering(blocks: &[Block]) -> BTreeMap<ContainerIdentity, (bool, u64)> {
 pub(super) fn write(
     document: &FormattedDocument,
     blocks: &[Block],
-    target: Format,
     losses: &mut BTreeSet<ConversionLoss>,
     output: &mut ConversionWriter,
 ) {
     let numbers = numbering(blocks);
-    if target == Format::Html {
-        html(document, blocks, &numbers, losses, output);
-    } else {
-        markdown(document, blocks, &numbers, losses, output);
-    }
-}
-
-fn html(
-    document: &FormattedDocument,
-    blocks: &[Block],
-    numbers: &BTreeMap<ContainerIdentity, (bool, u64)>,
-    losses: &mut BTreeSet<ConversionLoss>,
-    output: &mut ConversionWriter,
-) {
-    let mut paragraphs = BTreeMap::<_, usize>::new();
-    for block in blocks {
-        if let Some(owner) = item(&block.containers) {
-            *paragraphs.entry(owner).or_default() += 1;
-        }
-    }
-    let close = |path: &[ContainerMembership], output: &mut ConversionWriter| {
-        for member in path.iter().rev() {
-            output.push_str(match member.container.kind {
-                ContainerKind::Quote => "</blockquote>",
-                ContainerKind::CodeBlock => "</code></pre>",
-                ContainerKind::List { ordered: true } => "</ol>",
-                ContainerKind::List { ordered: false } => "</ul>",
-                ContainerKind::ListItem => "</li>",
-            });
-        }
-    };
-    let mut previous: &[ContainerMembership] = &[];
-    for (index, block) in blocks.iter().enumerate() {
-        let path = block.containers.as_ref();
-        let common = same_prefix(previous, path);
-        close(&previous[common..], output);
-        if index > 0 && common == 0 {
-            output.push('\n');
-        }
-        for (depth, member) in path.iter().enumerate().skip(common) {
-            match member.container.kind {
-                ContainerKind::Quote => output.push_str("<blockquote>"),
-                ContainerKind::CodeBlock => output.push_str("<pre><code>"),
-                ContainerKind::List { ordered } => {
-                    if ordered {
-                        let ordinal = path[depth + 1..]
-                            .iter()
-                            .find_map(|m| numbers.get(&m.container.id).map(|n| n.1))
-                            .unwrap_or(1);
-                        output.push_str(&format!("<ol start=\"{ordinal}\">"));
-                    } else {
-                        output.push_str("<ul>");
-                    }
-                }
-                ContainerKind::ListItem => {
-                    let (ordered, ordinal) = numbers
-                        .get(&member.container.id)
-                        .copied()
-                        .unwrap_or((false, 1));
-                    let value = if ordered {
-                        format!(" value=\"{ordinal}\"")
-                    } else {
-                        String::new()
-                    };
-                    output.push_str(&format!(
-                        "<li{value}{}>",
-                        whitespace_attribute(&document.text()[block.range.clone()])
-                    ));
-                }
-            }
-        }
-        let code = path
-            .iter()
-            .any(|m| m.container.kind == ContainerKind::CodeBlock);
-        if code {
-            output.text(
-                &document.text()[block.range.clone()],
-                block.range.start,
-                TextSpelling::Html { hard_breaks: false },
-            );
-        } else {
-            let direct_item = path
-                .last()
-                .is_some_and(|m| m.container.kind == ContainerKind::ListItem)
-                && item(path).is_some_and(|id| paragraphs.get(&id) == Some(&1));
-            let tag = heading(block)
-                .map(|n| format!("h{n}"))
-                .or_else(|| (!direct_item).then(|| "p".to_owned()));
-            if let Some(tag) = &tag {
-                output.push_str(&format!(
-                    "<{tag}{}>",
-                    whitespace_attribute(&document.text()[block.range.clone()])
-                ));
-            }
-            inline(document, block.range.clone(), Format::Html, losses, output);
-            if let Some(tag) = &tag {
-                output.push_str(&format!("</{tag}>"));
-            }
-        }
-        previous = path;
-    }
-    close(previous, output);
+    markdown(document, blocks, &numbers, losses, output);
 }
 
 fn prefix(

@@ -49,9 +49,10 @@
 			<array>
 				<string>html</string>
 				<string>htm</string>
+				<string>xhtml</string>
 			</array>
 			<key>CFBundleTypeName</key>
-			<string>HTML</string>
+			<string>HTML Code</string>
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSItemContentTypes</key>

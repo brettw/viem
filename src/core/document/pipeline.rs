@@ -687,8 +687,7 @@ impl Document {
                         Format::Code => "builtin.code",
                         Format::Markdown => "builtin.markdown",
                         Format::MarkdownSource => "builtin.markdown-source",
-                        Format::HtmlSource => "builtin.html-source",
-                        Format::Html => "builtin.html",
+
                         Format::Rtf => "builtin.rtf",
                     },
                     version: 1,

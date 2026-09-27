@@ -8,7 +8,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     func testBaseParagraphNextStyleIsFixedAcrossGeneratedAndNativeStyles() throws {
         for (type, source, headingID) in [
             ("public.markdown", "Text", "Heading1"),
-            (EVDocument.htmlType, "<p>Text</p><!--keep-->", "Heading1"),
             (EVDocument.rtfType, #"{\rtf1{\stylesheet{\s0\snext5 Normal;}{\s5\sbasedon0 Heading;}}\s0 Text}"#, "RtfP5"),
         ] {
             let configuration = isolatedConfiguration()

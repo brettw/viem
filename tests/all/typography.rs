@@ -22,7 +22,6 @@ fn configured(source: &str, format: Format, weight: u16) -> Document {
 fn semantic_bold_adds_three_hundred_to_base_weight_in_all_rich_adapters() {
     for (format, source) in [
         (Format::Markdown, "word"),
-        (Format::Html, "<p>word</p>"),
         (Format::Rtf, r"{\rtf1 word}"),
     ] {
         let mut document = configured(source, format, 200);
@@ -51,57 +50,8 @@ fn semantic_bold_adds_three_hundred_to_base_weight_in_all_rich_adapters() {
 }
 
 #[test]
-fn relative_html_bold_preserves_base_weight_source_and_partial_toggle() {
-    let source = "<p style='font-weight:200;font-family:AvenirNext-UltraLight'><b data-keep='yes'>word</b> tail</p><!--keep-->";
-    let mut document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let style = DocumentLayoutStyles::character_at(document.projection(), 1, false).unwrap();
-    assert_eq!(
-        (style.base_weight, style.weight, style.bold),
-        (200, 500, true)
-    );
-    document
-        .set_semantic_style(1..3, SemanticInlineStyle::Strong, false)
-        .unwrap();
-    let style = DocumentLayoutStyles::character_at(document.projection(), 1, false).unwrap();
-    assert_eq!(
-        (style.base_weight, style.weight, style.bold),
-        (200, 200, false)
-    );
-    let saved = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(saved.contains("font-weight: 200; --viem-base-weight: 200; --viem-bold: false"));
-    assert!(saved.contains("data-keep='yes'"));
-    assert!(saved.ends_with("<!--keep-->"));
-    let reopened =
-        Document::from_bytes(saved.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(
-        DocumentLayoutStyles::character_at(reopened.projection(), 1, false).unwrap(),
-        style
-    );
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn absolute_weight_is_distinct_from_bold_and_empty_paragraph_queries_keep_current_style() {
-    let source = "<p style='font-weight:200'><b>one</b><span style='font-weight:700'>two</span></p><p style='font-size:36pt'></p>";
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let absolute = DocumentLayoutStyles::character_at(document.projection(), 3, false).unwrap();
-    assert_eq!(
-        (absolute.base_weight, absolute.weight, absolute.bold),
-        (700, 700, false)
-    );
-    let empty =
-        DocumentLayoutStyles::character_at(document.projection(), document.text().len(), true)
-            .unwrap();
-    assert_eq!(empty.size, 36.0);
-}
-
-#[test]
 fn changing_font_face_preserves_independent_mixed_bold_and_is_one_source_transaction() {
     for (format, source) in [
-        (Format::Html, "<p><b>A</b>B</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1{\b A}B{\*\unknown keep}}"),
     ] {
         let mut document =
