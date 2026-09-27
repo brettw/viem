@@ -24,6 +24,17 @@ Code is an additional literal-text format with pluggable syntax highlighting,
 bundled Tree-sitter languages, and Vim syntax fallback. Its source remains
 fully visible and editable while optional highlighting is computed separately.
 
+**Markdown interpretation MUST target GitHub Flavored Markdown (GFM).** The
+reference is GitHub's rendering of repository Markdown files, using the
+[GFM specification](https://github.github.com/gfm/) for syntax and semantics
+and GitHub's documentation for additional rendering features. This goal applies
+to the shared interpretation behind Markdown Source and WYSIWYG. Source view
+still exposes markup; native typography, editor controls, and source-preserving
+editing remain Viem's responsibility. Missing constructs and differences from
+GitHub are compatibility gaps, not alternative Markdown rules; track and
+prioritize them in [MARKDOWN_GAPS.md](MARKDOWN_GAPS.md). Existing documented
+editing behavior remains in force until its corresponding gap is implemented.
+
 The goal is not source compatibility with Vim, a Vimscript runtime, or a
 pixel-for-pixel gVim clone. "Vim compatible" in this project means that every
 command explicitly listed in this file follows Vim's command grammar and
@@ -7192,6 +7203,17 @@ status popup can select the WYSIWYG view. New bold uses `**`, italic uses `*`,
 and headings use one through six `#` characters followed by one space.
 Untouched alternative delimiters and physical line endings remain exact.
 
+In both Markdown views, removing list, heading, quote, or fenced-code treatment
+MUST retain the resulting paragraph's boundaries. Add only the missing source
+blank-line separators so adjacent prose or list items cannot absorb it as a
+continuation. Existing separators and internal paragraph breaks remain intact.
+Code Block assignment wraps each selected paragraph in a backtick fence long
+enough to contain its body literally. Clearing it removes both fence lines
+(including a language annotation), retaining the body as an ordinary paragraph;
+supporting escapes and explicit breaks preserve literal code text. Fence edits
+and boundary repairs share one verified, undoable transaction. Toolbar Code
+Block is available in both Markdown views and uses this same assignment path.
+
 Switching Markdown Source and WYSIWYG must preserve source bytes and anchors
 without quadratic work in document length and formatting-change count.
 Reprojection maps use ordered batch traversal of provenance and changes;
@@ -7202,7 +7224,7 @@ directions, rather than relying only on a warmed projection cache.
 The rich-format Code character style and Code Block paragraph style are
 independent of the Code format and its global stylesheet. These rich styles
 use the system monospace family and dark green (`#006400`). HTML `<code>` and
-`<pre>` and Markdown inline/fenced backticks project to these roles; code whitespace remains
+`<pre>` and Markdown inline, fenced, and indented code project to these roles; code whitespace remains
 editable and preserved. New simple HTML bold and italic formatting uses `<b>`
 and `<i>` where those tags express the requested change. More complex or
 interacting properties use sparse CSS declarations as needed. Existing untouched
@@ -7215,13 +7237,22 @@ Markdown Code Block also has a 32pt logical start indent. User defaults and
 explicit source style declarations can override these defaults without
 materializing them in untouched source.
 
-Each fenced Markdown block or HTML `<pre>` is one paragraph, including in
+Each fenced or indented Markdown block or HTML `<pre>` is one paragraph, including in
 source-visible views. Its internal source endings produce explicit line breaks
 within that paragraph, so spacing is applied only around the block. These
 breaks preserve code indentation and blank rows and are distinct from automatic
 word wrapping. HTML entities are decoded in WYSIWYG code; source-visible code
 retains the literal source. Enter inside HTML preformatted content inserts a
 `<br>` when needed to preserve the requested line on reprojection.
+Indented Markdown code follows GFM's four-column rule, including tab stops,
+paragraph interruption restrictions, and indentation relative to list and quote
+containers. WYSIWYG hides the code indentation and preserves the literal body;
+Source retains its spelling. Opening and saving without edits MUST retain the
+original source. Ordinary body edits preserve indentation syntax where possible.
+An edit that needs an empty body or leading/trailing blank code lines MAY convert
+the affected block to a fence as an explicit supporting patch in the same verified
+undo transaction. Clearing Code Block removes code indentation just as it removes
+fences, preserving the text and surrounding paragraph boundaries.
 In WYSIWYG, Shift-Enter inserts an explicit line break within the current paragraph:
 HTML uses `<br>`, Markdown uses a backslash followed by a source line ending,
 and RTF uses `\line`. Markdown uses inline `<br>` where a physical source
@@ -7399,6 +7430,22 @@ table has a compatible target level; legacy flat RTF lists and unavailable
 target levels leave Indent and Unindent disabled.
 Remove List remains available among the Format paragraph controls. Enter
 continues an item; Enter on an empty item exits the list.
+Markdown Source uses parsed item ownership for Enter and `o`/`O`, including
+continuation lines, nested items, tab-separated markers, and bare empty markers
+such as `1.`. Opening a line creates a sibling item and places the caret after
+its generated marker; Enter on an empty marker removes list treatment and
+leaves an ordinary paragraph. Counts, dot repeat, and undo retain these intentions.
+Source-visible prefixes themselves remain editable: Enter inside a quote/list
+prefix splits the source syntax rather than duplicating that prefix. Quote-only
+separator rows retain the parsed owner of a following list continuation.
+Source commands MUST derive their effective text change from their authored
+syntax when parsing folds separators or changes nearby block ownership. Regional
+reparses must include dependent quote/list/fence context or use a complete parse;
+they must not preserve stale block metadata across a structural edit.
+WYSIWYG splits, opens, and joins MUST retain unselected whitespace and hard
+breaks, including around empty items, quoted continuations, and code fences.
+Supporting prefixes, character references, and separator endings belong to the
+same verified transaction and undo unit as the requested edit.
 At any caret position inside a list-item paragraph in Insert mode, Tab and
 Shift-Tab invoke the same verified Indent and Unindent actions for the complete
 item when the format can express them. This includes a continuation paragraph
@@ -7416,6 +7463,16 @@ Removing a Markdown item label also removes the item's hidden continuation
 indentation without consuming its visible paragraph boundaries or following items.
 Numbered continuation and repeat calculate the next ordinal from current
 structure. One list action and its supporting source patches form one undo unit.
+In both Markdown views, continuing items with Enter or `o`/`O`, deleting whole items,
+list toggling, and nesting changes MUST rewrite the affected ordered runs'
+decimal source markers to their resulting sequential numbers. A normal paragraph
+splitting a run starts the lower run at one; rejoining runs continues the first run's numbering.
+The first surviving run retains its authored starting ordinal. Preserve marker
+delimiters, spacing, source encoding, and unrelated lists. When the number's
+width changes, adjust owned continuation/child indentation as needed to retain
+their structure. These supporting patches share the initiating transaction,
+position map, and undo unit. Opening/saving and ordinary literal source typing
+do not renumber lists.
 Indenting an ordered item creates a nested numbering run beginning at one, so
 its first generated label is `a.`. Generated ordered marker styles by zero-based
 depth are decimal, lower-alpha, lower-roman, and decimal; generated bullet
@@ -7425,8 +7482,8 @@ structural inset. Alphabetic numbering continues bijectively after `z` (`aa`,
 `ab`, and so on), and Roman numbering falls back to decimal outside its
 supported positive range. Marker spelling in source-visible modes remains
 literal and editable rather than being replaced by this generated furniture.
-For a structural indent, Markdown canonicalizes only the moved ordered root
-markers to `1.`, `2.`, and so on; untouched marker bytes remain unchanged.
+For a structural indent, Markdown starts a new ordered run at one and updates
+the affected source and destination runs; unrelated marker bytes remain unchanged.
 HTML gives a newly created nested container the matching `type` value and no
 inherited `start`, so saved HTML has the same marker family and restart.
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
@@ -7442,7 +7499,8 @@ visual rows retains the containing item. For HTML/RTF, surviving items retain th
 displayed ordinals. The transaction may add explicit HTML `li value` attributes
 or scoped RTF numbering overrides to preserve those ordinals; source tables and
 unrelated opaque content remain untouched. Markdown numbering follows the
-container's starting ordinal while preserving untouched source label spellings.
+container's starting ordinal and semantic item deletion updates the affected
+source labels in the same transaction.
 Deleting a hard line within an HTML list paragraph retains its item and any
 unselected continuation paragraphs or nested lists. Only completely selected
 item structure is removed; surviving descendants are not implicitly selected.

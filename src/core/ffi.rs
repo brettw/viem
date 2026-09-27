@@ -5770,7 +5770,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             } else {
                 0
             } | if format.is_markdown()
-                && style.id.0 == "Block quote"
+                && matches!(style.id.0.as_str(), "Block quote" | "Code Block")
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {

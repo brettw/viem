@@ -34,6 +34,7 @@ pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
 fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize> {
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
+    let indented = super::markdown_indented_code::classify(input);
     let mut prose = Vec::with_capacity(lines.len());
     let mut fence = None;
     for line in &lines {
@@ -45,15 +46,16 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
                 fence = None;
             }
         } else {
-            fence = markdown_fence(text);
+            fence = markdown_fence(text).or_else(|| {
+                super::markdown_blocks::marker_prefix_length(text)
+                    .and_then(|prefix| markdown_fence(&text[prefix..]))
+            });
         }
         let (_, kind) = markdown_block_prefix(&input.text, line.start, line.end);
         prose.push(
             !was_fenced
                 && fence.is_none()
                 && !text.trim().is_empty()
-                && !text.starts_with("    ")
-                && !text.starts_with('\t')
                 && kind == BlockKind::Paragraph,
         );
     }
@@ -63,7 +65,8 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
         .enumerate()
         .filter_map(|(i, ending)| {
             let previous = &input.text[lines[i].clone()];
-            ((prose[i]
+            let literal = super::markdown_indented_code::containing(&indented, ending.source.start).is_some();
+            (!literal && ((prose[i]
                 && prose.get(i + 1) == Some(&true)
                 && lists[i].is_none()
                 && lists.get(i + 1).is_some_and(Option::is_none)
@@ -72,7 +75,7 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
                     .zip(lists.get(i + 1).and_then(Option::as_ref))
                     .is_some_and(|(a, b)| a.paragraph == b.paragraph && !a.code && !b.code))
                 && !previous.ends_with("  ")
-                && !previous.ends_with('\\'))
+                && !previous.ends_with('\\')))
             .then_some(ending.normalized.start)
         })
         .collect()
@@ -129,6 +132,7 @@ fn markdown_projection_with_soft_breaks(
 ) -> (NormalizedText, BTreeSet<usize>) {
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
+    let indented = super::markdown_indented_code::classify(input);
     let quotes = super::markdown_quotes::classify(input);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
@@ -136,14 +140,16 @@ fn markdown_projection_with_soft_breaks(
     let mut i = 0;
     while i < input.endings.len() {
         let text = &input.text[quotes[i].content_start..lines[i].end];
-        let was_fenced = fence.is_some();
         if let Some((delimiter, length)) = fence {
             let tail = text.trim();
             if tail.len() >= length && tail.bytes().all(|byte| byte == delimiter) {
                 fence = None;
             }
         } else {
-            fence = markdown_fence(text);
+            fence = markdown_fence(text).or_else(|| {
+                super::markdown_blocks::marker_prefix_length(text)
+                    .and_then(|prefix| markdown_fence(&text[prefix..]))
+            });
         }
         let ending = &input.endings[i];
         if fence.is_some()
@@ -153,9 +159,7 @@ fn markdown_projection_with_soft_breaks(
                 .is_some_and(|(line, next)| {
                     line.code && next.code && line.paragraph == next.paragraph
                 })
-            || (!was_fenced
-                && lists[i].is_none()
-                && (text.starts_with("    ") || text.starts_with('\t')))
+            || super::markdown_indented_code::containing(&indented, ending.source.start).is_some_and(|block| ending.source.start < block.source.end)
         {
             // Code-body endings remain literal content; closing-fence
             // separators below still obey ordinary paragraph separation.
@@ -236,7 +240,9 @@ fn markdown_projection_with_soft_breaks(
     for (index, context) in lists.iter().enumerate() {
         if let Some(context) = context
             .as_ref()
-            .filter(|context| !preserve_markers && context.marker.is_none())
+            .filter(|context| !preserve_markers && context.marker.is_none()
+                && !input.units.get(input.units.partition_point(|unit| unit.normalized.start < lines[index].start))
+                    .is_some_and(|unit| super::markdown_indented_code::containing(&indented, unit.source.start).is_some()))
         {
             if context.content_start > lines[index].start
                 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start))

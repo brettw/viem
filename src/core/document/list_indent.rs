@@ -433,6 +433,40 @@ fn markdown_patches(
             ));
         }
     }
+    if unindent && end < lines.len() {
+        let last_root = *target.roots.last().ok_or(DocumentError::AmbiguousProjection)?;
+        let root_line = line_for(&blocks[last_root])?;
+        let root = &input.text[lines[root_line].clone()];
+        let marker = super::super::markdown_blocks::marker_prefix_length(root)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let indentation = root.len() - root.trim_start_matches([' ', '\t']).len();
+        let marker = &root[indentation..marker];
+        let digits = marker.bytes().take_while(u8::is_ascii_digit).count();
+        let marker = canonical_ordinals.get(&root_line)
+            .map_or_else(|| marker.to_owned(), |ordinal| format!("{ordinal}{}", &marker[digits..]));
+        let required = marker.bytes().fold(desired_indent, |column, byte| {
+            column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+        });
+        let next = (end..lines.len()).find(|&index| !input.text[lines[index].clone()].trim().is_empty());
+        let next_indent = next.map_or(required, |index| columns(&input.text[lines[index].clone()]));
+        let new_level = level(&blocks[target.first]).unwrap() - 1;
+        if next.and_then(|index| contexts[index].as_ref()).is_some_and(|context|
+            matches!(context.kind, BlockKind::ListItem { level, .. } if level > new_level))
+            && next_indent < required
+        {
+            // Following siblings retain their depth beneath the newly lifted
+            // item. Its marker can be wider than their former parent's label.
+            let extra = required - next_indent;
+            for (index, row) in lines.iter().enumerate().skip(end) {
+                let text = &input.text[row.clone()];
+                if text.trim().is_empty() { continue; }
+                if !contexts[index].as_ref().is_some_and(|context| matches!(context.kind, BlockKind::ListItem { level, .. } if level > new_level)) { break; }
+                let prefix = text.len() - text.trim_start_matches([' ', '\t']).len();
+                patches.push(SourcePatch::primary(converter.source_range(row.start..row.start + prefix),
+                    document.encoding().encode_fragment(&" ".repeat(columns(text) + extra))?));
+            }
+        }
+    }
     Ok(patches)
 }
 

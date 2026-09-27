@@ -98,13 +98,13 @@ fn every_visible_rich_caret_boundary_accepts_typing_with_either_affinity() {
 }
 
 #[test]
-fn upstream_markdown_list_start_inserts_after_the_hidden_marker() {
+fn upstream_markdown_list_code_start_inserts_inside_the_fence() {
     use viem_core::document::{
         FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
     };
 
     let source = "- ```\n  A\n  ```";
-    for (input, encoded) in [("X", "X"), (" ", "&#32;"), ("é", "é")] {
+    for (input, encoded) in [("X", "X"), (" ", " "), ("é", "é")] {
         let mut doc = document(Format::Markdown, source);
         let before = doc.text().to_owned();
         let payload = FormattedTextPayload::new(&doc.hard_line_snapshot(), input, vec![]).unwrap();
@@ -118,13 +118,13 @@ fn upstream_markdown_list_start_inserts_after_the_hidden_marker() {
             .unwrap();
         let patches = prepared.summary().source_patches();
         assert_eq!(patches.len(), 1);
-        assert_eq!(patches[0].range(), 2..2);
+        assert_eq!(patches[0].range(), 8..8);
         assert_eq!(patches[0].replacement(), encoded.as_bytes());
         doc.commit_model_transaction(prepared).unwrap();
         assert_eq!(doc.text(), format!("{input}{before}"));
         assert_eq!(
             doc.source_bytes(),
-            format!("- {encoded}```\n  A\n  ```").as_bytes()
+            format!("- ```\n  {encoded}A\n  ```").as_bytes()
         );
         assert!(doc.undo());
         assert_eq!(doc.source_bytes(), source.as_bytes());

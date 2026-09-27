@@ -60,15 +60,40 @@ pub(super) fn joining_patches(
             previous.end = previous.end.max(source.end);
         } else { merged.push(source); }
     }
-    let syntax = if projection.markdown_replacement_begins_in_code(range) {
+    let mut syntax = if projection.markdown_replacement_begins_in_code(range) {
         replacement.to_owned()
     } else {
         document.escape_markdown_source_text(merged[0].start, replacement)?
     };
+    if first.range.is_empty() && matches!(first.kind, super::super::BlockKind::ListItem { .. }) {
+        let line = document.state().source_hard_lines.line_at_offset(start)
+            .and_then(|index| document.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = document.state().source.bytes_in(line.start..start)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix = document.encoding().decode_region(&bytes, line.start)?.text;
+        if !prefix.ends_with([' ', '\t']) { syntax.insert(0, ' '); }
+    }
     let replacement = document.encoding().encode_fragment(&syntax)?;
-    Ok(Some(merged.into_iter().enumerate().map(|(index, source)| {
+    let mut patches = merged.into_iter().enumerate().map(|(index, source)| {
         SourcePatch::primary(source, if index == 0 { replacement.clone() } else { Vec::new() })
-    }).collect()))
+    }).collect::<Vec<_>>();
+    if first.style.0 != "Block quote" && last.style.0 == "Block quote" {
+        let lines = &document.state().source_hard_lines;
+        let first_line = lines.line_at_offset(at).ok_or(DocumentError::AmbiguousProjection)?;
+        let end = projection.source_range(last.range.clone()).ok_or(DocumentError::AmbiguousProjection)?.end;
+        let last_line = lines.line_at_offset(end.saturating_sub(1)).ok_or(DocumentError::AmbiguousProjection)?;
+        for index in first_line + 1..=last_line {
+            let row = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document.state().source.bytes_in(row.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let text = document.encoding().decode_region(&bytes, row.start)?.text;
+            let prefix = super::super::markdown_quotes::prefix(&text);
+            if prefix > 0 {
+                patches.push(SourcePatch::primary(row.start..row.start + document.encoding().encode_fragment(&text[..prefix])?.len(), Vec::new()));
+            }
+        }
+    }
+    Ok(Some(patches))
 }
 
 pub(super) fn deletion_patches(
@@ -185,7 +210,7 @@ pub(super) fn empty_insertion_patches(
     range: &Range<usize>,
     text: &str,
 ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
-    if document.format() != Format::Markdown || !range.is_empty() || text.is_empty() {
+    if document.format() != Format::Markdown || !range.is_empty() || text.is_empty() || text.contains('\n') {
         return Ok(None);
     }
     if !document
@@ -252,9 +277,15 @@ pub(super) fn insertion_patches(
     else {
         return Ok(None);
     };
+    let owner = document.projection().list_structure().lists.iter()
+        .flat_map(|list| &list.items)
+        .find(|item| item.paragraph_ids.contains(&block.id))
+        .map(|item| item.paragraph_id).ok_or(DocumentError::AmbiguousProjection)?;
+    let owner = document.projection().blocks().iter().find(|candidate| candidate.id == owner)
+        .ok_or(DocumentError::AmbiguousProjection)?;
     let body_at = document
         .projection()
-        .source_insertion_point(block.range.start, true)
+        .source_insertion_point(owner.range.start, true)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let line = document
         .state()
@@ -268,18 +299,20 @@ pub(super) fn insertion_patches(
         .bytes_in(line.clone())
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
-    let Some(prefix_len) = super::super::markdown_blocks::marker_prefix_length(&decoded.text)
+    let quote = super::super::markdown_quotes::prefix(&decoded.text);
+    let quote_prefix = &decoded.text[..quote];
+    let Some(prefix_len) = super::super::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
     else {
         return Ok(None);
     };
-    let prefix = &decoded.text[..prefix_len];
+    let prefix = &decoded.text[quote..quote + prefix_len];
     let indent_len = prefix.len() - prefix.trim_start_matches([' ', '\t']).len();
     let indent = &prefix[..indent_len];
     let delimiter = prefix[indent_len..]
         .chars()
         .find(|ch| !ch.is_ascii_digit())
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let insert_before_label = at == block.range.start
+    let insert_before_label = at == owner.range.start
         && edit
             .payload
             .break_offsets()
@@ -287,6 +320,7 @@ pub(super) fn insertion_patches(
             .is_some_and(|last| *last + 1 == edit.payload.text().len());
     let mut syntax = String::new();
     if insert_before_label {
+        syntax.push_str(quote_prefix);
         syntax.push_str(indent);
         if ordered {
             syntax.push_str(&ordinal.to_string());
@@ -302,6 +336,7 @@ pub(super) fn insertion_patches(
         ));
         syntax.push_str(document.file_format().spelling());
         if !(insert_before_label && boundary + 1 == edit.payload.text().len()) {
+            syntax.push_str(quote_prefix);
             syntax.push_str(indent);
             number = number.saturating_add(1);
             if ordered {
@@ -324,6 +359,9 @@ pub(super) fn insertion_patches(
             )
             .ok_or(DocumentError::AmbiguousProjection)?
     };
+    if !insert_before_label && block.range.is_empty() && !prefix.ends_with([' ', '\t']) {
+        syntax.insert(0, ' ');
+    }
     Ok(Some(vec![SourcePatch::primary(
         source_at..source_at,
         document.encoding().encode_fragment(&syntax)?,

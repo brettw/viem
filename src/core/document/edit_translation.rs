@@ -84,6 +84,9 @@ impl Document {
             return Ok(Some(patches));
         }
         if payload.is_none() || breaks.len() == edit.replacement.matches('\n').count() {
+            if let Some(patches) = self.markdown_quote_insertion_patches(edit)? {
+                return Ok(Some(patches));
+            }
             if let Some(patches) = markdown_split::patches(self, &edit.range, &edit.replacement)? {
                 return Ok(Some(patches));
             }

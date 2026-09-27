@@ -11138,9 +11138,11 @@ impl CommandInterpreter {
             let mut output = CommandOutput::complete();
             for iteration in 0..iterations {
                 if opens_lines && (open_line_before_first || iteration > 0) {
-                    let prefix = self.continuation_indent(document, self.cursor, true, false);
+                    let mut prefix = self.continuation_indent(document, self.cursor, true, false);
                     self.cleanup_generated_indent(document)?;
-                    if self.line_mode == LineMode::PhysicalSource {
+                    if self.line_mode == LineMode::PhysicalSource
+                        && document.markdown_source_list_edit(self.cursor, self.cursor, Some(true))?.is_none()
+                    {
                         let lines = document.hard_line_snapshot();
                         let payload = FormattedTextPayload::new(&lines, "\n", vec![0])
                             .expect("a repeated open-line separator is a semantic hard break");
@@ -11153,6 +11155,9 @@ impl CommandInterpreter {
                             .commit_model_transaction(prepared)
                             .map_err(command_document_error)?;
                         self.cursor = cursor;
+                    }
+                    if line_start(&document.hard_line_snapshot(), self.cursor) != self.cursor {
+                        prefix.clear();
                     }
                     if !prefix.is_empty() {
                         document.insert(self.cursor, &prefix)?;
@@ -11319,7 +11324,9 @@ impl CommandInterpreter {
         let origin_end = line_end(&document.hard_line_snapshot(), self.cursor);
         let mut prefix = self.continuation_indent(document, origin_end, true, above);
         document.begin_edit_group();
-        if self.line_mode == LineMode::PhysicalSource {
+        if self.line_mode == LineMode::PhysicalSource
+            && document.markdown_source_list_edit(position, self.cursor, Some(!above))?.is_none()
+        {
             self.open_physical_line(document, above)?;
         } else {
             let (prepared, cursor) = prepare_open_line_with_cursor(document, position, self.cursor, !above)?;
@@ -14007,6 +14014,14 @@ impl CommandPlan {
         prepared: &PreparedModelTransaction,
     ) -> Result<(), DocumentError> {
         if document.format() == crate::document::Format::MarkdownSource {
+            if let Some(CommandModelRequest::Model(ModelRequest::ContinueList { at, .. })) = self.model.as_ref() {
+                let edit = document.list_enter_edit(*at)?.ok_or(DocumentError::VerificationFailed)?;
+                self.success_controller.cursor = if edit.range.is_empty() {
+                    prepared_cursor(document, prepared, edit.range.end, Association::AfterInsertion)?
+                } else {
+                    document.prepared_text_point(prepared, edit.range.start + edit.replacement.len())?.offset()
+                };
+            }
             if let Some(CommandModelRequest::FormattedPayload(request)) = self.model.as_ref() {
                 if let [edit] = request.edits() {
                     self.success_controller.cursor = prepared_payload_caret(document, prepared, edit)?;
@@ -15109,6 +15124,11 @@ fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize
         .map_err(command_document_error)?;
     let cursor = if document.format() == crate::document::Format::Html {
         prepared_break_cursor(document, &prepared, at)?
+    } else if document.format() == crate::document::Format::MarkdownSource
+        && document.list_enter_edit(at)?.is_some_and(|edit| !edit.range.is_empty())
+    {
+        let edit = document.list_enter_edit(at)?.unwrap();
+        document.prepared_text_point(&prepared, edit.range.start + edit.replacement.len())?.offset()
     } else {
         prepared_cursor(document, &prepared, at, Association::AfterInsertion)?
     };
@@ -15137,7 +15157,9 @@ fn prepare_open_line_with_cursor(
     // the caret before committing, including the UTF-8 growth of those spaces.
     // Cross only the inserted break for o; a following supporting replacement
     // must not advance the caret past the newly opened row.
-    let cursor = if document.format() == crate::document::Format::Html {
+    let cursor = if let Some(cursor) = document.prepared_markdown_source_open_cursor(&prepared, at, origin, after)? {
+        cursor
+    } else if document.format() == crate::document::Format::Html {
         if after {
             prepared_break_cursor(document, &prepared, at)?
         } else {
@@ -17411,7 +17433,9 @@ mod tests {
                 assert_eq!(document.text(), "a\n    b\nc");
                 assert_eq!(
                     document.source_bytes(),
-                    forced_mac_source("a\r    b\nc", format)
+                    forced_mac_source(if format == Format::Markdown {
+                        "a\r&#32;&#32;&#32;&#32;b\nc"
+                    } else { "a\r    b\nc" }, format)
                 );
             }
         }

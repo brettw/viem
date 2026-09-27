@@ -39,6 +39,7 @@ mod html_whitespace;
 mod lists;
 mod markdown_blocks;
 mod markdown_code;
+mod markdown_indented_code;
 mod markdown_quotes;
 mod markdown_source_edit;
 mod paragraph_flow;
@@ -1667,6 +1668,9 @@ impl Document {
     /// Continue the current list; a second Enter on an empty item ends it.
     pub(crate) fn list_enter_edit(&self, at: usize) -> Result<Option<TextEdit>, DocumentError> {
         self.validate_range(&(at..at))?;
+        if let Some(edit) = self.markdown_source_list_edit(at, at, None)? {
+            return Ok(Some(edit));
+        }
         if let Some(edit) = self.markdown_quote_enter_edit(at)? {
             return Ok(Some(edit));
         }
@@ -1752,7 +1756,12 @@ impl Document {
             let next = ordinal
                 .checked_add(1)
                 .ok_or(DocumentError::VerificationFailed)?;
-            format!("{}{next}. ", " ".repeat(indent))
+            if self.format().is_markdown() {
+                let digits = text[indent..].bytes().take_while(u8::is_ascii_digit).count();
+                format!("{}{next}{}", &text[..indent], &text[indent + digits..prefix_len])
+            } else {
+                format!("{}{next}. ", " ".repeat(indent))
+            }
         } else {
             text[..prefix_len].to_owned()
         };

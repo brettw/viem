@@ -8,6 +8,26 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 impl Document {
+    pub(super) fn markdown_quote_insertion_patches(
+        &self,
+        edit: &TextEdit,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if self.format() != Format::Markdown || !edit.range.is_empty() || !edit.replacement.contains('\n') {
+            return Ok(None);
+        }
+        let Some((_, range, separator)) = self.markdown_quote_enter_syntax(edit.range.start)? else { return Ok(None); };
+        let Some(block) = crate::document::edit_boundary::paragraph_at(self, edit.range.start)? else { return Ok(None); };
+        if crate::document::markdown_quotes::is_fenced_block(self, &block)? { return Ok(None); }
+        if let Some(patches) = super::markdown_split::patches_with_separator(self, &edit.range, &edit.replacement,
+            &separator.replace(self.file_format().spelling(), "\n"), Some(range.start))? {
+            return Ok(Some(patches));
+        }
+        let syntax = edit.replacement.split('\n')
+            .map(|part| self.escape_markdown_source_text(range.start, part))
+            .collect::<Result<Vec<_>, _>>()?.join(&separator);
+        Ok(Some(vec![SourcePatch::primary(range, self.encoding().encode_fragment(&syntax)?)]))
+    }
+
     pub(crate) fn markdown_quote_enter_edit(
         &self,
         at: usize,
@@ -34,6 +54,31 @@ impl Document {
         else {
             return Ok(None);
         };
+        // Quoted lists share item ownership and split repairs with all other
+        // Markdown lists; the physical quote prefix alone is not that owner.
+        if self.format() == Format::Markdown && matches!(block.kind, BlockKind::ListItem { .. })
+            && !crate::document::markdown_quotes::is_fenced_block(self, &block)?
+        {
+            return Ok(None);
+        }
+        if self.format() == Format::MarkdownSource {
+            let row = self.projection().hard_line_at_offset(at)
+                .and_then(|index| self.projection().hard_line_range(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let text = self.projection().text_tree().slice(row.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let prefix = crate::document::markdown_quotes::prefix(&text);
+            let marker = crate::document::markdown_blocks::marker_prefix_length(&text[prefix..])
+                .unwrap_or(0);
+            let marker = if matches!(block.kind, BlockKind::ListItem { item_start: false, .. }) {
+                marker.max(text[prefix..].len() - text[prefix..].trim_start_matches([' ', '\t']).len())
+            } else { marker };
+            // Visible source syntax can itself be split. Continuing its
+            // container before that prefix would duplicate the original label.
+            if at < row.start + prefix + marker {
+                return Ok(None);
+            }
+        }
         let source_start = self
             .projection()
             .provenance_touching(&(block.range.start..block.range.start))
@@ -167,10 +212,11 @@ impl Document {
                 "\n".into()
             },
         );
-        let source_at = self
-            .projection()
-            .source_insertion_point(at, at == block.range.start)
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let source_at = if self.format() == Format::Markdown {
+            crate::document::source_edit::insertion_point(self.projection(), at, None)
+        } else {
+            self.projection().source_insertion_point(at, at == block.range.start)
+        }.ok_or(DocumentError::AmbiguousProjection)?;
         let syntax = logical.replace('\n', self.file_format().spelling());
         Ok(Some((edit, source_at..source_at, syntax)))
     }
@@ -182,13 +228,16 @@ impl Document {
         let Some((edit, source_range, syntax)) = self.markdown_quote_enter_syntax(at)? else {
             return Ok(None);
         };
-        Ok(Some(self.prepare_text_edits_with_patches(
-            vec![edit],
-            Some(vec![SourcePatch::primary(
+        let mut patches = vec![SourcePatch::primary(
                 source_range,
                 self.encoding().encode_fragment(&syntax)?,
-            )]),
-        )?))
+            )];
+        Ok(Some(if self.format() == Format::MarkdownSource {
+            self.prepare_markdown_source_syntax_edit(edit, patches)?
+        } else {
+            self.preserve_markdown_edit_boundaries(std::slice::from_ref(&edit), std::iter::once(&edit.range), &mut patches)?;
+            self.prepare_text_edits_with_patches(vec![edit], Some(patches))?
+        }))
     }
 
     pub(super) fn prepare_markdown_quote_style(
@@ -346,6 +395,11 @@ impl Document {
                 Ok(TextEdit::new(start..end, replacement))
             })
             .collect::<Result<Vec<_>, DocumentError>>()?;
+        if !quote {
+            patches.extend(super::markdown_block_styles::support_patches(
+                self, &range, false, true,
+            )?);
+        }
         self.prepare_text_edits_with_patches(edits, Some(patches))
     }
 }

@@ -11,6 +11,30 @@ pub(super) fn patches(
     if document.format() != Format::Markdown {
         return Ok(None);
     }
+    for block in document.projection().blocks_for_region(range) {
+        if block.range.start <= range.start && range.end <= block.range.end {
+            if let Some(code) = super::markdown_indented_code::source_block(document, &block)? {
+                let source = if range.is_empty() {
+                    let at = super::source_edit::insertion_point(document.projection(), range.start, None)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    at..at
+                } else {
+                    let start = super::source_edit::insertion_point(document.projection(), range.start, None)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let end = super::source_edit::insertion_point(document.projection(), range.end, None)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    start..end
+                };
+                let bytes = document.state().source.bytes_in(code.source.start..code.lines[0].content_start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let prefix = document.encoding().decode_region(&bytes, code.source.start)?.text;
+                let quote = super::markdown_quotes::prefix(&prefix);
+                let marker = super::markdown_blocks::marker_prefix_length(&prefix[quote..]).unwrap_or(0);
+                let prefix = if marker > 0 { format!("{}{}{}", &prefix[..quote], " ".repeat(marker), &prefix[quote + marker..]) } else { prefix };
+                return Ok(Some(vec![(source, replacement.replace('\n', &format!("{}{prefix}", document.file_format().spelling())))]));
+            }
+        }
+    }
     if let Some(patches) = super::markdown_quotes::empty_insertion_patches(document, range, replacement)? {
         return Ok(Some(patches));
     }
@@ -87,6 +111,17 @@ pub(super) fn patches(
         return Ok(None);
     }
     if !replacement.contains(['`', '~']) {
+        // EOF has no following inline context. Its insertion point is inside
+        // the last span's closing delimiter, so text typed there stays literal.
+        // Paragraph breaks still go through structural split translation.
+        if range.is_empty() && range.start == document.projection().text_tree().byte_len() && !replacement.contains('\n')
+            && document.projection().style_spans_for_region(&(range.start.saturating_sub(1)..range.end)).iter().any(|span|
+                span.range.end == range.start && span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+        {
+            let at = super::source_edit::insertion_point(document.projection(), range.start, None)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            return Ok(Some(vec![(at..at, replacement.to_owned())]));
+        }
         return Ok(None);
     }
     let content = if code_block {

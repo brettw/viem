@@ -86,12 +86,15 @@ impl Document {
             matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Block quote");
         let wants_plain = matches!(&assignment, Assignment::Paragraph(style)
             if style == &self.projection().style_sheet().base_paragraph);
+        let wants_code = matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
                 structural_body(block)
             } else {
-                block.style.0 == "Block quote" || wants_plain && structural_body(block)
+                block.style.0 == "Block quote"
+                    || (wants_plain || wants_code && block.style.0 != "Code Block")
+                        && structural_body(block)
             }
         });
         if !needs_normalization {
@@ -107,7 +110,8 @@ impl Document {
         loop {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
-                structural_body(block) || !wants_quote && block.style.0 == "Block quote"
+                structural_body(block) && !(wants_code && block.style.0 == "Code Block")
+                    || !wants_quote && block.style.0 == "Block quote"
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
                 break;
@@ -214,77 +218,16 @@ impl Document {
         &self,
         range: &Range<usize>,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if self.format() != Format::Markdown {
-            return Ok(None);
-        }
-        let mut patches = Vec::new();
-        let lines = &self.state().source_hard_lines;
-        for block in selected_blocks(self, range)
-            .into_iter()
-            .filter(|block| block.style.0 == "Code Block")
+        if !self.format().is_markdown()
+            || !selected_blocks(self, range).iter().any(|block| block.style.0 == "Code Block")
         {
-            let source = super::super::rich_text::text_source_range(self, &block.range)?;
-            let first = lines
-                .line_at_offset(source.start)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let last = lines
-                .line_at_offset(source.end.saturating_sub(1).max(source.start))
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let read = |index| -> Result<(Range<usize>, String), ModelTransactionError> {
-                let line = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
-                let bytes = self
-                    .state()
-                    .source
-                    .bytes_in(line.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                Ok((
-                    line.clone(),
-                    self.encoding().decode_region(&bytes, line.start)?.text,
-                ))
-            };
-            let (opening, opening_text) = read(first.saturating_sub(1))?;
-            let Some((delimiter, length)) = super::super::projection::markdown_fence(
-                opening_text.trim_end_matches(['\r', '\n']),
-            ) else {
-                return Err(DocumentError::UnsupportedFormatting.into());
-            };
-            let (closing, closing_text) = read(last + 1)?;
-            let closing_body = closing_text.trim_end_matches(['\r', '\n']);
-            if closing_body.trim().len() < length
-                || !closing_body.trim().bytes().all(|byte| byte == delimiter)
-            {
-                return Err(DocumentError::UnsupportedFormatting.into());
-            }
-            let mut prose = String::new();
-            for (index, line) in self.text()[block.range.clone()].split('\n').enumerate() {
-                if index > 0 {
-                    prose.push_str("  ");
-                    prose.push_str(self.file_format().spelling());
-                }
-                for character in line.chars() {
-                    if character.is_ascii_punctuation() {
-                        prose.push('\\');
-                    }
-                    prose.push(character);
-                }
-            }
-            let end = closing.start + self.encoding().encode_fragment(closing_body)?.len();
-            patches.push(SourcePatch::primary(
-                opening.start..end,
-                self.encoding().encode_fragment(&prose)?,
-            ));
-        }
-        if patches.is_empty() {
             return Ok(None);
         }
-        Ok(Some(self.prepare_text_edits_with_patches(
-            Vec::new(),
-            Some(patches),
-        )?))
+        Ok(Some(self.prepare_markdown_code_style(range, false)?))
     }
 }
 
-fn selected_blocks(document: &Document, range: &Range<usize>) -> Vec<super::super::Block> {
+pub(super) fn selected_blocks(document: &Document, range: &Range<usize>) -> Vec<super::super::Block> {
     document
         .projection()
         .blocks_for_region(range)

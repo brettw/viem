@@ -104,8 +104,9 @@ fn list_continuation_body_whitespace_matches_reopened_projection() {
     let source = "- ```\n  A\n  ```";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-    document.insert(4, " ").unwrap();
-    assert_eq!(document.text(), "```  A\n");
+    assert_eq!(document.text(), "A");
+    document.insert(0, " ").unwrap();
+    assert_eq!(document.text(), " A");
     let reopened =
         Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
     assert_eq!(reopened.text(), document.text());

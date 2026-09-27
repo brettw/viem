@@ -12,6 +12,7 @@ pub(super) struct ListLine {
     pub marker: Option<Range<usize>>,
     pub paragraph: usize,
     pub code: bool,
+    pub content_indent: usize,
 }
 
 pub(super) fn source_context(input: &NormalizedText) -> Vec<(Range<usize>, ListLine)> {
@@ -138,7 +139,9 @@ fn marker(text: &str, origin: usize) -> Option<Marker> {
 }
 
 pub(super) fn marker_prefix_length(text: &str) -> Option<usize> {
-    marker(text, 0).map(|marker| marker.content_start)
+    // Physical source-line slices may retain their ending. A bare marker such
+    // as `1.` is still an empty item when followed by that line ending.
+    marker(text.trim_end_matches(['\r', '\n']), 0).map(|marker| marker.content_start)
 }
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
@@ -175,6 +178,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                     marker: None,
                     paragraph: item.paragraph,
                     code: true,
+                    content_indent: item.content_indent,
                 });
             }
             let tail = text.trim();
@@ -191,7 +195,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
         let (indent_bytes, indent_columns) = indentation(text);
         let list_fence = stack
             .last()
-            .filter(|item| indent_columns >= item.content_indent)
+            .filter(|item| indent_columns >= item.content_indent && indent_columns < item.content_indent + 4)
             .and_then(|item| {
                 markdown_fence(&text[indent_bytes..]).map(|open| (item.clone(), open))
             });
@@ -211,6 +215,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 marker: None,
                 paragraph,
                 code: true,
+                content_indent: item.content_indent,
             });
             fenced_item = Some(item);
             fence = Some(open);
@@ -230,7 +235,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
             continue;
         }
         let marker = marker(text, line.start).filter(|marker| {
-            (marker.indent <= 3 || !stack.is_empty())
+            (marker.indent <= stack.last().map_or(3, |item| item.content_indent + 3))
                 && (!ordinary_prose || !marker.ordered || marker.ordinal == 1 || !stack.is_empty())
         });
         if let Some(marker) = marker {
@@ -250,6 +255,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 marker.ordinal
             };
             let level = u8::try_from(stack.len()).unwrap_or(u8::MAX);
+            let item_fence = markdown_fence(&input.text[marker.content_start..line.end]);
             paragraph += 1;
             result[index] = Some(ListLine {
                 kind: BlockKind::ListItem {
@@ -263,7 +269,8 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 content_start: marker.content_start,
                 marker: Some(marker.marker_start..marker.content_start),
                 paragraph,
-                code: false,
+                code: item_fence.is_some(),
+                content_indent: marker.content_indent,
             });
             stack.push(Item {
                 indent: marker.indent,
@@ -275,6 +282,10 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 paragraph,
                 after_blank: false,
             });
+            if let Some(open) = item_fence {
+                fence = Some(open);
+                fenced_item = stack.last().cloned();
+            }
             ordinary_prose = false;
             continue;
         }
@@ -312,6 +323,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 marker: None,
                 paragraph: item.paragraph,
                 code: false,
+                content_indent: item.content_indent,
             });
             ordinary_prose = false;
         } else {

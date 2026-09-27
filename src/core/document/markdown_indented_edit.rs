@@ -1,0 +1,181 @@
+//! Supporting fence conversion for edits an indented block cannot represent,
+//! such as an empty body or an authored blank first/last code line.
+use super::replacement::PatchComposition;
+use super::*;
+
+impl Document {
+    pub(super) fn prepare_with_fenced_indented_code(
+        &self,
+        blocks: &[super::super::Block],
+        operation: impl FnOnce(&Document) -> Result<PreparedModelTransaction, ModelTransactionError>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let mut patches = Vec::new();
+        for block in blocks {
+            let Some(code) = super::super::markdown_indented_code::source_block(self, block)?
+            else {
+                continue;
+            };
+            let body = self
+                .projection()
+                .text_tree()
+                .slice(block.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let bytes = self
+                .state()
+                .source
+                .bytes_in(code.source.start..code.lines[0].content_start)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let prefix = self
+                .encoding()
+                .decode_region(&bytes, code.source.start)?
+                .text;
+            let quote = super::super::markdown_quotes::prefix(&prefix);
+            let marker =
+                super::super::markdown_blocks::marker_prefix_length(&prefix[quote..]).unwrap_or(0);
+            // Keep list/quote ownership while replacing only code indentation.
+            let rest = format!("{}{}", &prefix[..quote], " ".repeat(code.container_indent));
+            let first = if marker > 0 {
+                prefix[..quote + marker].to_owned()
+            } else {
+                rest.clone()
+            };
+            let fence = "`".repeat(
+                body.split(|c| c != '`')
+                    .map(str::len)
+                    .max()
+                    .unwrap_or(0)
+                    .max(2)
+                    + 1,
+            );
+            let ending = self.file_format().spelling();
+            let syntax = format!(
+                "{first}{fence}{ending}{rest}{}{ending}{rest}{fence}",
+                body.replace('\n', &format!("{ending}{rest}"))
+            );
+            patches.push(SourcePatch::primary(
+                code.source,
+                self.encoding().encode_fragment(&syntax)?,
+            ));
+        }
+        let mut scratch = self.scratch_document();
+        let mut composition = PatchComposition::new(self.source_byte_len());
+        let conversion = scratch.prepare_text_edits_with_patches(Vec::new(), Some(patches))?;
+        for patch in conversion.summary.source_patches.iter().rev() {
+            composition.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(conversion)?;
+        if scratch.text() != self.text() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        let prepared = operation(&scratch)?;
+        let edits = prepared
+            .summary
+            .formatted_splices()
+            .iter()
+            .map(|splice| {
+                let range = splice.old_range();
+                let new = prepared
+                    .text_position_map()
+                    .map_text_point(
+                        scratch.text_point(range.start)?,
+                        Association::BeforeInsertion,
+                        BoundaryAffinity::Downstream,
+                        DeletionRecovery::PreferFollowingThenPreceding,
+                    )?
+                    .value()
+                    .ok_or(DocumentError::AmbiguousProjection)?
+                    .offset();
+                let PreparedPublication::State(candidate) = &prepared.publication else {
+                    return Err(DocumentError::VerificationFailed.into());
+                };
+                Ok(TextEdit::new(
+                    range,
+                    candidate
+                        .projection
+                        .text_tree()
+                        .slice(new..new + splice.inserted_len())
+                        .map_err(DocumentError::FormattedTextStorage)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, ModelTransactionError>>()?;
+        for patch in prepared.summary.source_patches.iter().rev() {
+            composition.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(prepared)?;
+        self.prepare_text_edits_with_patches(
+            edits,
+            Some(composition.source_patches(&scratch.state().source)?),
+        )
+    }
+
+    pub(super) fn prepare_indented_code_text_edits(
+        &self,
+        edits: &[TextEdit],
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        let blocks = self.indented_code_requiring_fences(edits)?;
+        if blocks.is_empty() {
+            return Ok(None);
+        }
+        self.prepare_with_fenced_indented_code(&blocks, |doc| {
+            doc.prepare_text_edits(edits.to_vec())
+        })
+        .map(Some)
+    }
+
+    pub(super) fn indented_code_requiring_fences(
+        &self,
+        edits: &[TextEdit],
+    ) -> Result<Vec<super::super::Block>, ModelTransactionError> {
+        if self.format() != Format::Markdown {
+            return Ok(Vec::new());
+        }
+        let mut blocks = Vec::new();
+        for edit in edits {
+            for block in self.projection().blocks_for_region(&edit.range) {
+                if block.style.0 != "Code Block"
+                    || blocks
+                        .iter()
+                        .any(|old: &super::super::Block| old.id == block.id)
+                {
+                    continue;
+                }
+                let contained =
+                    block.range.start <= edit.range.start && edit.range.end <= block.range.end;
+                let body = self
+                    .projection()
+                    .text_tree()
+                    .slice(block.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                let mut after = body.clone();
+                if contained {
+                    after.replace_range(
+                        edit.range.start - block.range.start..edit.range.end - block.range.start,
+                        &edit.replacement,
+                    );
+                }
+                let needs_fence = !contained
+                    || after.is_empty()
+                    || after
+                        .split('\n')
+                        .next()
+                        .unwrap()
+                        .trim_matches([' ', '\t'])
+                        .is_empty()
+                    || after
+                        .split('\n')
+                        .next_back()
+                        .unwrap()
+                        .trim_matches([' ', '\t'])
+                        .is_empty();
+                if let Some(code) =
+                    super::super::markdown_indented_code::source_block(self, &block)?
+                {
+                    if needs_fence || code.lines.iter().any(|line| line.padding > 0) {
+                        blocks.push(block);
+                    }
+                }
+            }
+        }
+        Ok(blocks)
+    }
+}

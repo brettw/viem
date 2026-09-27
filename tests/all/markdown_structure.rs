@@ -525,9 +525,9 @@ fn decorated_markdown_list_delete_and_put_keep_body_registers_and_source_ownersh
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
     for (keys, expected, expected_source) in [
-        ("dd", "Second\nThird", "01) Second\n01) Third"),
-        ("2dd", "Third", "01) Third"),
-        ("Gdd", "First\nSecond", "03) First\n01) Second"),
+        ("dd", "Second\nThird", "3) Second\n4) Third"),
+        ("2dd", "Third", "3) Third"),
+        ("Gdd", "First\nSecond", "3) First\n4) Second"),
         (
             "yyp",
             "First\nFirst\nSecond\nThird",
@@ -644,7 +644,7 @@ fn repeated_line_delete_and_end_change_keep_distinct_list_intentions() {
         core.handle(view, CoreEvent::Input(InputEvent::key(ch)))
             .unwrap();
     }
-    assert_eq!(core.document().source_bytes(), b"1. Third");
+    assert_eq!(core.document().source_bytes(), b"3. Third");
     assert_eq!(
         core.command_state(view)
             .unwrap()
@@ -655,7 +655,7 @@ fn repeated_line_delete_and_end_change_keep_distinct_list_intentions() {
     );
     core.handle(view, CoreEvent::Input(InputEvent::key('u')))
         .unwrap();
-    assert_eq!(core.document().source_bytes(), b"1. Second\n1. Third");
+    assert_eq!(core.document().source_bytes(), b"3. Second\n4. Third");
     core.handle(view, CoreEvent::Input(InputEvent::key('u')))
         .unwrap();
     assert_eq!(core.document().source_bytes(), source.as_bytes());

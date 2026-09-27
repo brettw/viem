@@ -20,6 +20,10 @@ mod named_character;
 mod markdown_block_styles;
 #[path = "structural_style.rs"]
 mod structural_style;
+#[path = "markdown_code_style.rs"]
+mod markdown_code_style;
+#[path = "markdown_indented_edit.rs"]
+mod markdown_indented_edit;
 #[path = "style_contributors.rs"]
 mod style_contributors;
 #[path = "paragraph_insertion.rs"]
@@ -30,6 +34,8 @@ mod markdown_quote_edit;
 mod list_indent;
 #[path = "markdown_list_edit.rs"]
 mod markdown_list_edit;
+#[path = "markdown_numbering.rs"]
+mod markdown_numbering;
 #[path = "markdown_list_structure.rs"]
 mod markdown_list_structure;
 #[path = "markdown_split.rs"]
@@ -291,7 +297,8 @@ pub enum ModelRequest {
         affinity: BoundaryAffinity,
     },
     /// Open a paragraph at a line boundary, using the originating paragraph's
-    /// following style. Source views retain literal line insertion.
+    /// following style. Markdown Source continues parsed list items; other
+    /// source-view line insertion remains literal.
     OpenLine {
         document: DocumentId,
         revision: Revision,
@@ -1129,7 +1136,9 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         super::work_statistics::record(|stats| stats.model_requests += 1);
         self.validate_request_target(&request)?;
-        match request {
+        let numbering = self.format().is_markdown()
+            .then(|| markdown_numbering::scope(&request)).flatten();
+        let prepared = match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
             ModelRequest::EditDirectProperties { range, values, .. } => self.prepare_direct_properties(range, values),
             ModelRequest::SetDirectCharacterProperties { range, values, .. } => {
@@ -1277,6 +1286,11 @@ impl Document {
             ModelRequest::NavigateHistory { navigation, .. } => {
                 self.prepare_history_navigation(navigation)
             }
+        }?;
+        if let Some(range) = numbering {
+            self.prepare_markdown_numbering(prepared, range)
+        } else {
+            Ok(prepared)
         }
     }
 
@@ -3132,6 +3146,9 @@ impl Document {
         }
 
         if explicit_source_patches.is_none() {
+            if let Some(prepared) = self.prepare_indented_code_text_edits(&edits)? {
+                return Ok(prepared);
+            }
             if let Some(prepared) = self.prepare_recovered_source_edit(&edits)? {
                 return Ok(prepared);
             }
@@ -3450,20 +3467,25 @@ impl Document {
             // harmless even when the inaccessible prefix was ordinary prose.
             String::new()
         };
-        let list_padding = super::markdown_blocks::marker_prefix_length(&prefix) == Some(prefix.len())
-            || (prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+        let body_prefix = &prefix[super::markdown_quotes::prefix(&prefix)..];
+        let list_padding = super::markdown_blocks::marker_prefix_length(body_prefix) == Some(body_prefix.len())
+            || (body_prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
                 && self.projection().map_source_boundary(
                     self.revision(), source_at, BoundaryAffinity::Downstream,
                 ).ok().is_some_and(|point| {
                     super::edit_boundary::paragraph_at(self, point.formatted_offset)
                         .ok().flatten().is_some_and(|block| matches!(block.kind, super::BlockKind::ListItem { .. }))
                 }));
-        if list_padding {
-            // List indentation and marker padding are hidden syntax; ordinary
-            // paragraph-leading whitespace is already literal source content.
+        let leading = escaped.len() - escaped.trim_start_matches([' ', '\t']).len();
+        let begins_indented_code = body_prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            && body_prefix.bytes().chain(escaped[..leading].bytes()).fold(0usize, |column, byte| {
+                column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+            }) >= 4;
+        if list_padding || begins_indented_code {
+            // Indentation must not reinterpret authored prose as code. List
+            // indentation and marker padding are also hidden source syntax.
             // Authored body-leading whitespace must be content instead of
             // extending that padding; references preserve exact characters.
-            let leading = escaped.len() - escaped.trim_start_matches([' ', '\t']).len();
             if leading > 0 {
                 let mut body = String::new();
                 for whitespace in escaped[..leading].bytes() {
@@ -3471,6 +3493,18 @@ impl Document {
                 }
                 body.push_str(&escaped[leading..]);
                 escaped = body;
+            }
+        }
+        if escaped.ends_with([' ', '\t']) && physical.end - source_at <= 128 {
+            let bytes = self.state().source.bytes_in(source_at..physical.end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let tail = self.encoding().decode_region(&bytes, source_at)?.text;
+            let tail = tail.trim_end_matches(['\r', '\n']);
+            if tail == "\\" || tail.len() >= 2 && tail.bytes().all(|b| b == b' ') {
+                let end = escaped.trim_end_matches([' ', '\t']).len();
+                let spaces = escaped[end..].bytes().map(|b| if b == b' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+                escaped.truncate(end);
+                escaped.push_str(&spaces);
             }
         }
         let prefix = prefix.trim_start_matches([' ', '\t']);
@@ -3574,6 +3608,19 @@ impl Document {
         }
 
         let logical_edits = edits.iter().map(FormattedPayloadEdit::text_edit).collect::<Vec<_>>();
+        let indented = self.indented_code_requiring_fences(&logical_edits)?;
+        if !indented.is_empty() {
+            return self.prepare_with_fenced_indented_code(&indented, |scratch| {
+                let mut rebound = edits.clone();
+                for edit in &mut rebound {
+                    edit.payload = super::FormattedTextPayload::new(&scratch.hard_line_snapshot(),
+                        edit.payload.text(), edit.payload.break_offsets().to_vec())
+                        .expect("rebinding preserves validated payload boundaries");
+                }
+                scratch.prepare_formatted_payload_edits(rebound)
+            });
+        }
+
         if let Some(prepared) = self.prepare_with_recovered_source(&logical_edits, |scratch| {
             let mut rebound = edits.clone();
             for edit in &mut rebound {
@@ -4342,6 +4389,9 @@ impl Document {
         if !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
+        if style.0 == "Code Block" {
+            return self.prepare_markdown_code_style(&range, true);
+        }
         if self.format() == Format::Markdown {
             let selected = self.projection().blocks_for_region(&range).into_iter()
                 .filter(|block| if range.is_empty() {
@@ -4384,8 +4434,10 @@ impl Document {
             format!("{} ", "#".repeat(usize::from(level)))
         };
         let mut edits = Vec::new();
-        let mut patches = if self.format() == Format::Markdown {
-            markdown_block_styles::support_patches(self, &range, level > 0, level == 0)?
+        let mut patches = if self.format().is_markdown() {
+            markdown_block_styles::support_patches(
+                self, &range, self.format() == Format::Markdown && level > 0, level == 0,
+            )?
         } else {
             Vec::new()
         };
@@ -4480,8 +4532,10 @@ impl Document {
             .hard_line_at_offset(range.start)
             .ok_or(DocumentError::VerificationFailed)?;
         let mut edits = Vec::new();
-        let mut patches = if self.format() == Format::Markdown {
-            markdown_block_styles::support_patches(self, &range, style.is_some(), style.is_none())?
+        let mut patches = if self.format().is_markdown() {
+            markdown_block_styles::support_patches(
+                self, &range, self.format() == Format::Markdown && style.is_some(), style.is_none(),
+            )?
         } else {
             Vec::new()
         };
@@ -4754,11 +4808,11 @@ impl Document {
         at: usize,
         exit_empty: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if let Some(prepared) = self.prepare_markdown_quote_enter(at)? {
-            return Ok(prepared);
-        }
         if self.format() == Format::MarkdownSource {
             return self.prepare_markdown_source_list_enter(at);
+        }
+        if let Some(prepared) = self.prepare_markdown_quote_enter(at)? {
+            return Ok(prepared);
         }
         if self.format() == Format::Markdown {
             return self.prepare_markdown_list_enter(at);
@@ -8367,7 +8421,11 @@ impl Document {
             let empty = |line| {
                 self.projection()
                     .hard_line_range(line)
-                    .is_some_and(|range| range.is_empty())
+                    .is_some_and(|range| {
+                        self.projection().text_tree().slice(range).is_ok_and(|text| {
+                            text[super::markdown_quotes::prefix(&text)..].trim().is_empty()
+                        })
+                    })
             };
             // A neighboring list parses independently only from its first
             // item, so an edit outside a list takes in the whole adjacent list
@@ -8385,6 +8443,22 @@ impl Document {
                 last_line += 1;
                 if !extends(last_line) || last_line - first_line > MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
                     break;
+                }
+            }
+            // A fence inside a list inherits the preceding item's ownership.
+            // Cutting there is safe for body typing, but a structural edit may
+            // release the fenced block or change its nesting and later items.
+            if !self.can_inherit_markdown_source_list_context(edits) {
+                for line in [first_line.checked_sub(1),
+                    (last_line + 1 < self.projection().hard_line_count()).then_some(last_line + 1)]
+                    .into_iter().flatten().filter(|&line| neighbor_is_code(line))
+                {
+                    let row = self.projection().hard_line_range(line).unwrap();
+                    let text = self.projection().text_tree().slice(row)
+                        .map_err(DocumentError::FormattedTextStorage)?;
+                    if text.starts_with([' ', '\t', '>']) {
+                        return Ok(None);
+                    }
                 }
             }
             // Parser state carries through a paragraph, so a region starts

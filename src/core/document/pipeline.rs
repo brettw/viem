@@ -599,7 +599,7 @@ impl TransformationPipelineSnapshot {
             }
             PipelineEditIntent::AssignBlockStyle { style }
                 if self.configuration.format.is_markdown()
-                    && (matches!(style.0.as_str(), "Paragraph" | "Block quote")
+                    && (matches!(style.0.as_str(), "Paragraph" | "Block quote" | "Code Block")
                     || style
                         .0
                         .strip_prefix("Heading")
