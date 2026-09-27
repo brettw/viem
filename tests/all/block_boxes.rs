@@ -82,14 +82,14 @@ fn nested_quotes_and_paragraphs_have_independent_css_boxes() {
     near(b.y - a.y - a.line_advance, 12.); // 3 edge + max(3,6) margins + 3 edge
     let backgrounds = a.decorations.iter().filter(|d| d.kind == DecorationKind::BlockBackground).collect::<Vec<_>>();
     assert_eq!(backgrounds.len(), 3);
-    for (d, x, y) in [(backgrounds[0],13.,10.),(backgrounds[1],26.,20.),(backgrounds[2],43.,34.)] {
+    for (d, x, y) in [(backgrounds[0],15.,12.),(backgrounds[1],30.,24.),(backgrounds[2],44.,35.)] {
         near(d.typographic_bounds.x - snapshot.content_insets.left, x);
         near(d.typographic_bounds.y - snapshot.content_insets.top, y);
     }
     let lower = b.decorations.iter().filter(|d| d.kind == DecorationKind::BlockBackground).collect::<Vec<_>>();
     near(backgrounds[0].typographic_bounds.y + backgrounds[0].typographic_bounds.height, lower[0].typographic_bounds.y);
     near(backgrounds[1].typographic_bounds.y + backgrounds[1].typographic_bounds.height, lower[1].typographic_bounds.y);
-    near(lower[0].typographic_bounds.y + lower[0].typographic_bounds.height - b.y - b.line_advance, 31.);
+    near(lower[0].typographic_bounds.y + lower[0].typographic_bounds.height - b.y - b.line_advance, 29.);
     near(snapshot.total_height - b.y - b.line_advance - snapshot.content_insets.bottom,43.);
     assert!(a.decorations.iter().any(|d| d.paint.foreground.red == 1. && d.kind == DecorationKind::BlockQuoteBorder));
     assert!(a.decorations.iter().any(|d| d.paint.foreground.blue == 1. && d.kind == DecorationKind::BlockQuoteBorder));
@@ -114,7 +114,7 @@ fn sibling_and_parent_child_margins_collapse_until_border_or_padding_separates_t
 
 #[test]
 fn nested_boxes_reflow_after_resize_and_remain_bounded_in_large_documents() {
-    let mut source = String::from("<blockquote style='margin:9pt;padding:5pt;border:2pt solid red'><blockquote style='margin:4pt;padding:3pt;border:1pt solid blue'>");
+    let mut source = String::from("<blockquote style='margin:9pt;padding:5pt;border:2pt solid red;background:rgba(255,0,0,.5)'><blockquote style='margin:4pt;padding:3pt;border:1pt solid blue;background:rgba(0,0,255,.5)'>");
     for _ in 0..10_000 { source.push_str("<p>Words within nested boxes wrap onto several visual rows.</p>"); }
     source.push_str("</blockquote></blockquote>");
     let mut core = core(&source);
@@ -126,6 +126,17 @@ fn nested_boxes_reflow_after_resize_and_remain_bounded_in_large_documents() {
     assert!(!snapshot.coverage.is_full_document());
     assert!(snapshot.coverage.hard_lines().len() < 100);
     assert!(snapshot.rows.iter().all(|row| row.decorations.iter().filter(|d| d.kind == DecorationKind::BlockQuoteBorder).count() == 2));
+    for top in [5_000., 0.] {
+        core.handle(view, CoreEvent::SetViewportOrigin {left:0.,top:Some(top)}).unwrap();
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert!(snapshot.coverage.hard_lines().len() < 100);
+        for row in snapshot.rows.iter() {
+            let fills = row.decorations.iter().filter(|d| d.kind == DecorationKind::BlockBackground).collect::<Vec<_>>();
+            assert_eq!(fills.len(), 2);
+            assert!(fills.iter().all(|fill| fill.paint.foreground.alpha == 0.5));
+            assert!(fills[0].typographic_bounds.x < fills[1].typographic_bounds.x);
+        }
+    }
 }
 
 #[test]
@@ -134,7 +145,7 @@ fn container_background_and_border_edits_invalidate_visible_boxes_and_geometry()
     let mut core = core("<blockquote><p>A</p><blockquote><p>B</p></blockquote></blockquote>");
     let view = core.add_view(MockTextMeasurementProvider::new(),400.,400.);
     let before = core.layout(view).unwrap().snapshot().unwrap().rows[1].paragraph_content_x;
-    let color = Color {red:0.8,green:0.4,blue:0.2,alpha:1.};
+    let color = Color {red:0.8,green:0.4,blue:0.2,alpha:0.5};
     for (property,value) in [
         (StyleProperty::BlockBackground,StylePropertyValue::Color(color)),
         (StyleProperty::BlockBorderLeftWidth,StylePropertyValue::Float(6.)),
@@ -163,6 +174,36 @@ fn container_background_and_border_edits_invalidate_visible_boxes_and_geometry()
             decoration.owner = None; decoration
         }).collect::<Vec<_>>();
         assert_eq!(geometry(a),geometry(b));
+    }
+}
+
+#[test]
+fn code_background_changes_refresh_cached_boxes_in_both_markdown_views() {
+    use viem_core::document::{Color, StyleNamespace, StyleDefinitionFieldEdit, StyleProperty, StylePropertyValue};
+    let source = "Before\n\n```\nfirst line\n\nlast line\n```\n\nAfter";
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for flow in [false, true] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 500., 500.);
+            if format.is_source_view() { core.handle(view, CoreEvent::SetParagraphFlow(flow)).unwrap(); }
+            assert!(core.layout(view).unwrap().snapshot().is_some());
+            for alpha in [1., 0.5, 0.] {
+                let color = Color { red: 1., green: 0., blue: 0., alpha };
+                let document = core.document();
+                core.handle(view, CoreEvent::EditGeneratedStyle { document: document.id(), revision: document.revision(),
+                    style_sheet_revision: document.projection().style_sheet().revision, namespace: StyleNamespace::Block,
+                    style: "Code Block".into(), edit: StyleDefinitionFieldEdit::SetDeclaration {
+                        property: StyleProperty::BlockBackground, value: StylePropertyValue::Color(color),
+                    }}).unwrap();
+                let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+                let fills = snapshot.rows.iter().flat_map(|row| &row.decorations)
+                    .filter(|item| item.kind == DecorationKind::BlockBackground).collect::<Vec<_>>();
+                assert!(!fills.is_empty(), "{format:?} flow={flow}");
+                assert!(fills.iter().all(|fill| fill.paint.foreground == color));
+            }
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
     }
 }
 
@@ -212,6 +253,52 @@ fn overlapping_children_paint_after_the_entire_parent_box_in_document_order() {
     assert_eq!(backgrounds[2].green,1.);
     assert_eq!(backgrounds[3].blue,1.);
     assert_eq!((backgrounds[4].red,backgrounds[4].green),(1.,1.)); // following sibling last
+}
+
+#[test]
+fn translucent_boxes_fill_inside_borders_without_repainting_their_own_slices() {
+    use viem_core::layout::{LayoutEngine, ViewLayout};
+    let source = "<blockquote style='margin:7pt;padding:8pt;border:4pt solid rgba(0,0,0,.5);background:rgba(255,0,0,.5)'><p style='margin:0'>First<br>line</p><blockquote style='margin:6pt;padding:8pt;border:3pt solid rgba(0,0,0,.5);background:rgba(0,0,255,.5)'><p style='margin:0;padding:5pt;background:rgba(0,255,0,.5)'>Inner<br>paragraph</p></blockquote><p style='margin:0'>Last</p></blockquote>";
+    for scale in [1., 1.25, 2.] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let mut full = ViewLayout::new(500., 700.);
+        full.set_scale(scale).unwrap();
+        engine.relayout(&document, &mut full).unwrap();
+        let mut core = Core::new(document);
+        let view = core.try_add_view(MockTextMeasurementProvider::new(), 500., 700.).unwrap();
+        core.handle(view, CoreEvent::SetScale(scale)).unwrap();
+        for snapshot in [full.snapshot().unwrap(), core.layout(view).unwrap().snapshot().unwrap()] {
+            let decorations = snapshot.decorations_in_paint_order().into_iter()
+                .map(|(_, decoration)| decoration).filter(|d| d.owner.is_some()).collect::<Vec<_>>();
+            let mut fills = std::collections::BTreeMap::new();
+            for (index, a) in decorations.iter().enumerate() {
+                near(a.paint.foreground.alpha, 0.5);
+                assert!(!a.paint.foreground_is_default);
+                for b in &decorations[index + 1..] {
+                    if a.owner != b.owner { continue; }
+                    let a = a.typographic_bounds;
+                    let b = b.typographic_bounds;
+                    let overlap_x = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+                    let overlap_y = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+                    assert!(overlap_x < 0.001 || overlap_y < 0.001, "same owner painted twice: {a:?} {b:?}");
+                }
+                if a.kind == DecorationKind::BlockBackground {
+                    fills.entry(a.owner.unwrap()).or_insert_with(Vec::new).push(a.typographic_bounds);
+                }
+            }
+            assert_eq!(fills.len(), 3);
+            for slices in fills.values() {
+                for pair in slices.windows(2) {
+                    near(pair[0].y + pair[0].height, pair[1].y);
+                }
+            }
+            let outer = decorations.iter().find(|d| d.kind == DecorationKind::BlockBackground).unwrap();
+            near(outer.typographic_bounds.x - snapshot.content_insets.left, 11. * scale);
+            near(outer.typographic_bounds.y - snapshot.content_insets.top, 11. * scale);
+            near(outer.typographic_bounds.width, snapshot.usable_width - 22. * scale);
+        }
+    }
 }
 
 #[test]

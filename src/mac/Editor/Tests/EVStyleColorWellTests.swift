@@ -167,6 +167,39 @@ final class EVStyleColorWellTests: XCTestCase {
         XCTAssertEqual(try backend.styleSheetSnapshot(), afterReadOnly)
     }
 
+    func testNewCodeBlockBackgroundStartsOpaqueAndPreservesChosenAlpha() throws {
+        let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType,
+            source: "```\nCode block\n```")
+        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
+        editor.selectStyle(key)
+        editor.selectTab(.block)
+        editor.view.layoutSubtreeIfNeeded()
+        let well = try colorWell("Block background", in: editor.view)
+        let toggle = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "Override block background" })
+        XCTAssertEqual(toggle.state, .off)
+        toggle.performClick(nil)
+        try openColorPanel(well)
+        XCTAssertTrue(NSColorPanel.shared.showsAlpha)
+        XCTAssertEqual(NSColorPanel.shared.color.alphaComponent, 1,
+            "Choosing RGB for a new background must not silently retain zero opacity")
+        // Color-wheel gestures can change RGB without changing opacity.
+        NSColorPanel.shared.color = NSColor(srgbRed: 1, green: 0, blue: 0,
+            alpha: NSColorPanel.shared.color.alphaComponent)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: key)?.properties[.blockBackground]?.declared,
+            .color(EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1)))
+        for alpha: Float in [0.5, 0] {
+            let chosen = EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: alpha)
+            NSColorPanel.shared.color = chosen.appKitColor
+            well.dismissColorControls()
+            try openColorPanel(well)
+            try assertColor(NSColorPanel.shared.color, equals: chosen)
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: key)?.properties[.blockBackground]?.declared,
+                .color(chosen))
+        }
+    }
+
     private func makeEditor(typeName requestedTypeName: String? = nil, source: String = "<p>Text</p>") throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, NSWindow) {
         closeColorPanel()

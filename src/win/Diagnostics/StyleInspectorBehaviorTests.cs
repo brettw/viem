@@ -68,6 +68,7 @@ internal static class StyleInspectorBehaviorTests
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         BlockPreview(pane, preferences);
+        await CodeBlockBackground(pane, preferences);
         await BuiltinDeclarations(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
@@ -94,6 +95,40 @@ internal static class StyleInspectorBehaviorTests
             "Block preview copies committed background opacity");
         Check(document.Source(document.State.document_revision).SequenceEqual(source),
             "Block preview leaves the inspected document source unchanged");
+    }
+    private static async Task CodeBlockBackground(EditorPane pane, Preferences preferences)
+    {
+        byte[] source = "```\nCode block\n```"u8.ToArray();
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences, followCaret: false);
+        inspector.Activate(); await Task.Delay(150);
+        try
+        {
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Code Block");
+            var tab = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => b.Content as string == "Block");
+            tab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+            var checkbox = Children<CheckBox>(inspector.RootControl).Single(c => AutomationProperties.GetName(c) == "Declare Background color");
+            checkbox.Focus(FocusState.Programmatic); await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+            var button = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Background color");
+            var flyout = (Flyout)button.Flyout; var picker = (ColorPicker)flyout.Content;
+            await Open(flyout, button);
+            Check(picker.IsAlphaEnabled && picker.Color.A == 255, "A new Code Block background starts opaque in the picker");
+            foreach (byte alpha in new byte[] { 255, 128, 0 })
+            {
+                var chosen = Color.FromArgb(alpha, 255, 0, 0);
+                picker.Color = chosen; await Task.Delay(100);
+                await Close(flyout);
+                var fills = view.Layout().Decorations.Where(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0).ToArray();
+                Check(inspector.Error.Length == 0 && fills.Length > 0 && fills.All(d => Math.Abs(d.paint.foreground.alpha - alpha / 255f) < .001f),
+                    $"Code Block background commits and exports opacity {alpha}");
+                await Open(flyout, button);
+                Check(picker.Color == chosen, "Reopening the Block background picker preserves explicit transparency");
+            }
+            await Close(flyout);
+            Check(document.Source(document.State.document_revision).SequenceEqual(source), "Block color edits preserve Markdown source");
+        }
+        finally { inspector.Close(); }
     }
     private static async Task BuiltinDeclarations(EditorPane pane, Preferences preferences)
     {

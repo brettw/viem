@@ -958,9 +958,9 @@ Block Box properties apply to paragraph and container styles, never character
 styles. They include background color, signed physical margins on all four
 sides, nonnegative physical padding on all four sides, and each side's solid
 border weight and color. Border weight defaults to zero; an unspecified border
-color uses the element's text color. Background covers the padding and border
-box, never its margin. These properties are not inherited through document
-nesting. Named style inheritance still applies within the appropriate role.
+color uses the element's text color. Background covers the content and padding
+inside the border, never the border or margin. These properties are not inherited
+through document nesting. Named style inheritance still applies within the appropriate role.
 Margin top and bottom replace space before and space after; no migration of old
 style-definition spacing fields is required.
 
@@ -2791,7 +2791,11 @@ Paragraph layout follows the resolved paragraph style:
   all its children and intervening space, with top/bottom edges only at the
   actual container boundaries. Boxes paint in document-tree order: all parent
   background/border slices precede their children, including overlapping children.
-  Zoom scales each distance exactly once.
+  Backgrounds fill the content and padding area inside the border, excluding
+  margins and the border itself. Colors retain their alpha and composite with
+  source-over blending in that nesting order. A transparent child exposes its
+  parent; a translucent child blends with it. Slices and border corners MUST
+  NOT apply the same owner's color twice. Zoom scales each distance exactly once.
 - Negative block margins retain their exact CSS effect while visual-row starts
   remain in increasing document order. Reverse-flow overlaps are outside this
   editable normal-flow subset: if a boundary would put the following hard line
@@ -5235,8 +5239,10 @@ From top to bottom, the content is:
 The Block tab is enabled for paragraph and container styles and disabled for
 character styles. It contains a Background color picker using the same native
 control as character highlight, four margin inputs (Top/Right/Bottom/Left),
-four padding inputs, and each side's Border weight and color. Margin Top/Bottom
-replace Space Before/After in the Paragraph tab. All use the existing sparse
+four padding inputs, and each side's Border weight and color. A new Block
+background with no inherited color starts with the opaque canvas color in the
+picker; explicit colors retain their alpha, including fully transparent colors.
+Margin Top/Bottom replace Space Before/After in the Paragraph tab. All use the existing sparse
 override controls; zero border weight means no border. Paragraph controls remain
 available on container styles to set descendant text defaults. Logical start/end indents on a container inset that owner using the resolved
 text direction; physical margins remain independent. Container styles

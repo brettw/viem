@@ -81,8 +81,12 @@ internal sealed unsafe class BlockStylePreview : IDisposable
         }
         Color Foreground(ViemTextPaintV1 paint) => (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? fallback : ConvertColor(paint.foreground);
         const uint boxFlags = VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER;
-        foreach (var box in snapshot.Decorations.Where(d => (d.flags & boxFlags) != 0))
-            drawing.FillRectangle(Rect(box.typographic_bounds), Foreground(box.paint));
+        var antialiasing = drawing.Antialiasing;
+        drawing.Antialiasing = Microsoft.Graphics.Canvas.CanvasAntialiasing.Aliased;
+        try {
+            foreach (var box in snapshot.Decorations.Where(d => (d.flags & boxFlags) != 0))
+                drawing.FillRectangle(Rect(box.typographic_bounds), Foreground(box.paint));
+        } finally { drawing.Antialiasing = antialiasing; }
         foreach (var cluster in snapshot.Clusters) {
             var paint = Paint(cluster.text_start);
             if ((paint.flags & VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0) drawing.FillRectangle(Rect(cluster.typographic_bounds), ConvertColor(paint.background));

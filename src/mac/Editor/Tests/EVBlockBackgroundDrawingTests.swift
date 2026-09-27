@@ -1,0 +1,188 @@
+import AppKit
+import CViemCore
+import ViemAppShell
+import XCTest
+@testable import ViemEditor
+
+@MainActor
+final class EVBlockBackgroundDrawingTests: XCTestCase {
+    func testNestedBackgroundsAndBordersCompositeOnceOverTheirParents() throws {
+        let prior = EVThemeStore.shared.theme
+        EVThemeStore.shared.update(.paper)
+        defer { EVThemeStore.shared.update(prior) }
+        for alpha in [1.0, 0.5, 0.0] {
+            let html = """
+            <blockquote style='margin:0;padding:16pt;border:4pt solid rgba(0,0,0,\(alpha));background:rgba(255,0,0,\(alpha))'>
+            <p style='margin:0;padding:12pt;background:rgba(0,255,0,\(alpha))'>Outer paragraph</p>
+            <blockquote style='margin:10pt 0;padding:16pt;border:4pt solid rgba(0,0,0,\(alpha));background:rgba(0,0,255,\(alpha))'>
+            <p style='margin:0;padding:12pt;background:rgba(0,255,0,\(alpha))'>Inner paragraph</p>
+            </blockquote><p style='margin:0;padding:12pt'>Last paragraph</p></blockquote>
+            """
+            let surface = try makeSurface(html)
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            let backgrounds = snapshot.decorations.filter { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0 }
+            let green = try XCTUnwrap(backgrounds.last { $0.paint.foreground.green == 1 })
+            let topBorders = snapshot.decorations.filter {
+                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BORDER) != 0
+                    && $0.typographic_bounds.height == 4 && $0.typographic_bounds.width > 20
+            }.sorted { $0.typographic_bounds.y < $1.typographic_bounds.y }
+            let outer = surface.editorView.viewRect(try XCTUnwrap(topBorders.first).typographic_bounds)
+            let inner = surface.editorView.viewRect(try XCTUnwrap(topBorders.dropFirst().first).typographic_bounds)
+            let image = try bitmap(surface.editorView)
+            let red = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: alpha)
+            let blue = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: alpha)
+            let greenColor = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: alpha)
+            let black = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: alpha)
+            assertPixel(image, at: CGPoint(x: outer.minX + 6, y: outer.minY + 6), equals: try composite([red]))
+            assertPixel(image, at: CGPoint(x: inner.minX + 6, y: inner.minY + 6), equals: try composite([red, blue]))
+            let paragraph = surface.editorView.viewRect(green.typographic_bounds)
+            assertPixel(image, at: CGPoint(x: paragraph.minX + 3, y: paragraph.minY + 3),
+                        equals: try composite([red, blue, greenColor]))
+            // Corners and straight edges receive one border layer; background
+            // ends at the inside edge of the border.
+            for x in [outer.minX + 2, outer.midX] {
+                assertPixel(image, at: CGPoint(x: x, y: outer.minY + 2), equals: try composite([black]))
+            }
+            assertPixel(image, at: CGPoint(x: inner.minX + 2, y: inner.minY + 2), equals: try composite([red, black]))
+            XCTAssertEqual(backgrounds.first { $0.paint.foreground.blue == 1 }?.paint.foreground.alpha, Float(alpha))
+            XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), Data(html.utf8))
+        }
+    }
+
+    func testCodeContainerBackgroundUpdatesInDocumentAndStylePreview() throws {
+        let prior = EVThemeStore.shared.theme
+        EVThemeStore.shared.update(.paper)
+        defer { EVThemeStore.shared.update(prior) }
+        let source = "Before\n\n```\nfirst line\n\nlast line\n```\n\nAfter"
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let surface = try makeSurface(source, typeName: type)
+            let editor = EVStyleEditorViewController()
+            let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
+            editor.retarget(document: surface, styleKey: key)
+            XCTAssertEqual(editor.inspection.selectedKind, .codeBlock)
+            // Change only paint first, after the initial layout is already cached.
+            for alpha: Float in [1, 0.5, 0] {
+                let background = EVStyleColor(red: 1, green: 0, blue: 0, alpha: alpha)
+                XCTAssertTrue(editor.setPropertyForTesting(.blockBackground, value: .color(background)))
+                let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+                let fills = snapshot.decorations.filter { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0 }
+                XCTAssertFalse(fills.isEmpty, type)
+                let fill = try XCTUnwrap(fills.first)
+                XCTAssertEqual(fill.paint.foreground.alpha, alpha)
+                let rect = surface.editorView.viewRect(fill.typographic_bounds)
+                assertPixel(try bitmap(surface.editorView), at: CGPoint(x: rect.maxX - 4, y: rect.midY),
+                    equals: try composite([NSColor(srgbRed: 1, green: 0, blue: 0, alpha: CGFloat(alpha))]))
+                let preview = editor.previewInspectionForTesting(layoutSize: CGSize(width: 560, height: 400))
+                XCTAssertNil(preview.blockPreviewError)
+                XCTAssertFalse(preview.boxes.filter(\.isBackground).isEmpty)
+                XCTAssertTrue(preview.boxes.filter(\.isBackground).allSatisfy { $0.color == background })
+                let previewView = try XCTUnwrap(findPreview(in: editor.view))
+                previewView.frame = NSRect(x: 0, y: 0, width: 560, height: 400)
+                let previewRect = try XCTUnwrap(preview.boxes.first { $0.isBackground }).rect
+                assertPixel(try bitmap(previewView), at: CGPoint(x: previewRect.maxX - 4, y: previewRect.midY),
+                    equals: try composite([NSColor(srgbRed: 1, green: 0, blue: 0, alpha: CGFloat(alpha))]))
+            }
+            XCTAssertTrue(editor.setPropertyForTesting(.blockBackground,
+                value: .color(EVStyleColor(red: 1, green: 0, blue: 0, alpha: 0.5))))
+            _ = try XCTUnwrap(surface.session).setScale(1.25)
+            surface.refreshPresentation()
+            let fills = try XCTUnwrap(surface.layoutSnapshot).decorations.filter {
+                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0
+            }.map { surface.editorView.viewRect($0.typographic_bounds) }
+            let extent = fills.reduce(CGRect.null) { $0.union($1) }
+            let expected = try composite([NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 0.5)])
+            // Adjacent slices of one code owner must not leave seams or blend
+            // twice, including blank lines and fractional zoom coordinates.
+            for backingScale: CGFloat in [1, 2] {
+                let zoomedImage = try bitmap(surface.editorView, backingScale: backingScale)
+                for y in Int(ceil(extent.minY * backingScale))..<Int(floor(extent.maxY * backingScale)) {
+                    assertPixel(zoomedImage, at: CGPoint(x: (extent.maxX - 4) * backingScale, y: CGFloat(y)), equals: expected)
+                }
+            }
+            XCTAssertEqual(try surface.backend.serializedSource(typeName: type), Data(source.utf8))
+        }
+    }
+
+    func testPartialRepaintOfTranslucentBackgroundMatchesFullRepaint() throws {
+        let surface = try makeSurface("<blockquote style='margin:0;padding:20pt;background:rgba(255,0,0,.5)'><blockquote style='margin:0;padding:20pt;background:rgba(0,0,255,.5)'><p>Text</p></blockquote></blockquote>")
+        let context = try context(surface.editorView)
+        draw(surface.editorView, into: context, dirty: surface.editorView.bounds)
+        let before = try XCTUnwrap(context.makeImage().flatMap { $0.dataProvider?.data }) as Data
+        draw(surface.editorView, into: context, dirty: NSRect(x: 12, y: 12, width: 170, height: 90))
+        let after = try XCTUnwrap(context.makeImage().flatMap { $0.dataProvider?.data }) as Data
+        XCTAssertEqual(before, after)
+    }
+
+    private func makeSurface(_ source: String, typeName requestedType: String? = nil) throws -> EVEditorSurfaceController {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-background-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
+        try backend.read(source: Data(source.utf8), typeName: requestedType ?? EVDocument.htmlType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 500, height: 400)
+        surface.viewDidLayout()
+        return surface
+    }
+
+    private func findPreview(in view: NSView) -> EVCoreTextStylePreviewView? {
+        if let preview = view as? EVCoreTextStylePreviewView { return preview }
+        return view.subviews.lazy.compactMap { self.findPreview(in: $0) }.first
+    }
+
+    private func context(_ view: NSView, backingScale: CGFloat = 1) throws -> CGContext {
+        let context = try XCTUnwrap(CGContext(data: nil, width: Int(view.bounds.width * backingScale), height: Int(view.bounds.height * backingScale),
+            bitsPerComponent: 8, bytesPerRow: Int(view.bounds.width * backingScale) * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.scaleBy(x: backingScale, y: backingScale)
+        return context
+    }
+
+    private func draw(_ view: NSView, into context: CGContext, dirty: NSRect) {
+        context.saveGState()
+        context.translateBy(x: 0, y: view.bounds.height)
+        context.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        // Container compositing must not depend on the caller's drawing mode.
+        NSGraphicsContext.current?.compositingOperation = .copy
+        view.draw(dirty)
+        NSGraphicsContext.restoreGraphicsState()
+        context.restoreGState()
+    }
+
+    private func bitmap(_ view: NSView, backingScale: CGFloat = 1) throws -> NSBitmapImageRep {
+        let context = try context(view, backingScale: backingScale)
+        draw(view, into: context, dirty: view.bounds)
+        return NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+    }
+
+    // Render the reference through the same color-managed bitmap path. Comparing
+    // raw sRGB component arithmetic would incorrectly assume a device color space.
+    private func composite(_ layers: [NSColor]) throws -> NSColor {
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 2, height: 2))
+        let context = try context(view)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1).setFill()
+        view.bounds.fill(using: .copy)
+        for color in layers {
+            color.setFill()
+            view.bounds.fill(using: .sourceOver)
+        }
+        let image = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+        return try XCTUnwrap(image.colorAt(x: 0, y: 0)?.usingColorSpace(.sRGB))
+    }
+
+    private func assertPixel(_ image: NSBitmapImageRep, at point: CGPoint, equals expected: NSColor,
+                             file: StaticString = #filePath, line: UInt = #line) {
+        guard let color = image.colorAt(x: Int(point.x), y: Int(point.y))?.usingColorSpace(.sRGB) else {
+            XCTFail("Missing pixel at \(point)", file: file, line: line); return
+        }
+        XCTAssertEqual(color.redComponent, expected.redComponent, accuracy: 0.01, "at \(point)", file: file, line: line)
+        XCTAssertEqual(color.greenComponent, expected.greenComponent, accuracy: 0.01, "at \(point)", file: file, line: line)
+        XCTAssertEqual(color.blueComponent, expected.blueComponent, accuracy: 0.01, "at \(point)", file: file, line: line)
+        XCTAssertEqual(color.alphaComponent, 1, accuracy: 0.01, "at \(point)", file: file, line: line)
+    }
+}
