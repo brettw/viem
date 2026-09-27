@@ -233,7 +233,8 @@ fn percentage_size_configuration_round_trip_preserves_sparse_units_and_legacy_po
         blocks.iter().find(|s| s["id"] == "Heading1").unwrap()["character"]["size"]["percentage"],
         200
     );
-    let reopened = StyleSheet::default().with_default_json(&bytes).unwrap();
+    let (reopened, diagnostics) = StyleSheet::default().with_default_json(&bytes).unwrap();
+    assert!(diagnostics.is_empty());
     assert_eq!(
         resolved(&reopened, "Heading1", Some("Code")).character.size,
         21.6
@@ -254,9 +255,11 @@ fn percentage_size_configuration_round_trip_preserves_sparse_units_and_legacy_po
             .iter_mut()
             .find(|s| s["id"] == "Code")
             .unwrap()["properties"]["size"]["percentage"] = invalid.into();
-        assert!(StyleSheet::default()
+        let (reopened, diagnostics) = StyleSheet::default()
             .with_default_json(&serde_json::to_vec(&invalid_json).unwrap())
-            .is_err());
+            .unwrap();
+        assert!(diagnostics.iter().any(|message| message.contains("Code") && message.contains("properties.size")));
+        assert_eq!(reopened.character_style(&"Code".into()).unwrap().properties.size, None);
     }
 }
 

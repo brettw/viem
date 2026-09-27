@@ -1115,7 +1115,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub fn initialize_style_defaults(
         &mut self,
         json: &[u8],
-    ) -> Result<(), crate::document::StyleDefaultsError> {
+    ) -> Result<Vec<String>, crate::document::StyleDefaultsError> {
         if !self.views.is_empty() {
             return Err(crate::document::StyleDefaultsError::NotPristine);
         }
@@ -2588,9 +2588,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             } else if let Some(previous) = previous_visible {
                 previous
             } else {
-                let start = view.layout.hard_line_at_y(f64::from(requested_top))
+                let start = view.layout.first_line_reaching_y(f64::from(requested_top))
                     .map_err(LayoutError::from)?
-                    .map_or(hard_line_count - 1, |hit| hit.hard_line());
+                    .unwrap_or(hard_line_count - 1);
                 let bottom = requested_top + viewport_height.max(f32::EPSILON);
                 let end = view.layout.hard_line_at_y(f64::from(bottom))
                     .map_err(LayoutError::from)?
@@ -3011,13 +3011,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Keep the content location resolved from the caller's geometry even
         // if a retry retires exact heights and replaces them with estimates.
         // None is the explicit end-of-document refinement intent.
-        let target_hit = self
-            .views
-            .get(&view_id)
-            .ok_or(CoreError::UnknownView(view_id))?
-            .layout
-            .hard_line_at_y(f64::from(requested_top.max(0.0)))
-            .map_err(LayoutError::from)?;
+        let layout = &self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?.layout;
+        let y = f64::from(requested_top.max(0.0));
+        let mut target_hit = layout.hard_line_at_y(y).map_err(LayoutError::from)?;
+        if target_hit.is_none() {
+            if let Some(line) = layout.first_line_reaching_y(y).map_err(LayoutError::from)? {
+                let top = layout.hard_line_prefix_height(line).map_err(LayoutError::from)?.height();
+                target_hit = layout.hard_line_at_y(top).map_err(LayoutError::from)?;
+            }
+        }
         // Resolving newly exposed text can register a fallback font and retire
         // metrics while the disposable viewport is being shaped. Rebuild only
         // that staged viewport; the scroll has not been published, so neither
@@ -3128,7 +3130,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .hard_line_at_y(estimated_visible_bottom)
                 .map_err(LayoutError::from)?
                 .map_or(hard_line_count, |hit| hit.hard_line().saturating_add(1));
-            let visible_start = target_line;
+            let visible_start = staged_layout.first_line_reaching_y(f64::from(estimated_target_top))
+                .map_err(LayoutError::from)?.unwrap_or(target_line).min(target_line);
             let visible_end = visible_end.max(target_line.saturating_add(1));
             let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
             let mut start = visible_start.saturating_sub(overscan);

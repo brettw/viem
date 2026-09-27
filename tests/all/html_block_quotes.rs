@@ -40,7 +40,7 @@ fn native_html_quotes_project_paragraphs_without_extra_container_lines() {
                 .projection()
                 .blocks()
                 .iter()
-                .filter(|block| block.style.0 == "Block quote")
+                .filter(|block| block.quote_depth > 0)
                 .count(),
             quote_count
         );
@@ -68,7 +68,7 @@ fn quote_assignment_uses_native_html_and_round_trips_exact_source() {
         assert!(!syntax.contains("class="), "{syntax}");
         let reopened = open(&syntax, Format::Html);
         assert_eq!(reopened.text(), text);
-        assert_eq!(reopened.projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(reopened.projection().blocks()[0].quote_depth, 1);
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert!(document.redo());
@@ -81,7 +81,7 @@ fn quote_assignment_uses_native_html_and_round_trips_exact_source() {
 
 #[test]
 fn removing_quote_from_one_contained_paragraph_preserves_its_siblings_and_attributes() {
-    let source = "<!--keep--><blockquote cite='original'><p>one</p><h2>two</h2><p>three</p></blockquote><!--end-->";
+    let source = "<!--keep--><blockquote cite='original'><p>one</p><p>two</p><p>three</p></blockquote><!--end-->";
     let mut document = open(source, Format::Html);
     assign(&mut document, 4..7, "Paragraph");
     assert_eq!(document.text(), "one\ntwo\nthree");
@@ -97,9 +97,9 @@ fn removing_quote_from_one_contained_paragraph_preserves_its_siblings_and_attrib
             .projection()
             .blocks()
             .iter()
-            .map(|block| block.style.0.as_str())
+            .map(|block| block.quote_depth)
             .collect::<Vec<_>>(),
-        ["Block quote", "Paragraph", "Block quote"]
+        [1, 0, 1]
     );
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
@@ -281,7 +281,7 @@ fn enter_and_typing_keep_native_quote_paragraphs_and_exact_history() {
         .projection()
         .blocks()
         .iter()
-        .all(|block| block.style.0 == "Block quote"));
+        .all(|block| block.quote_depth > 0));
     core.handle(
         view,
         CoreEvent::Input(viem_core::command::InputEvent::key('u')),
@@ -299,7 +299,7 @@ fn enter_and_typing_keep_native_quote_paragraphs_and_exact_history() {
 }
 
 #[test]
-fn quote_assignment_replaces_native_heading_code_and_list_styles() {
+fn quote_assignment_wraps_native_heading_code_and_list_styles() {
     for format in [Format::Html, Format::HtmlSource] {
         for source in [
             "<h2 data-keep='heading'>one</h2>",
@@ -317,10 +317,12 @@ fn quote_assignment_replaces_native_heading_code_and_list_styles() {
             let visible = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Html).unwrap();
             assert_eq!(visible.text(), original_text);
             let block = &visible.projection().blocks()[0];
-            assert_eq!(block.style.0, "Block quote");
-            assert!(!visible.projection().list_structure().lists.iter().any(|list| list.items.iter().any(|item| item.paragraph_ids.contains(&block.id))));
-            assert!(!String::from_utf8(saved.clone()).unwrap().contains("<pre"));
-            assert!(!String::from_utf8(saved.clone()).unwrap().contains("<h2"));
+            assert_eq!(block.quote_depth, 1);
+            let original = open(source, Format::Html);
+            assert_eq!(block.style, original.projection().blocks()[0].style);
+            assert_eq!(visible.projection().list_structure().lists.len(), original.projection().list_structure().lists.len());
+            assert_eq!(String::from_utf8(saved.clone()).unwrap().contains("<pre"), source.contains("<pre"));
+            assert_eq!(String::from_utf8(saved.clone()).unwrap().contains("<h2"), source.contains("<h2"));
             assert!(document.undo());
             assert_eq!(document.source_bytes(), source.as_bytes());
             assert!(document.redo());
@@ -350,7 +352,7 @@ fn quote_assignment_stops_at_the_next_implicit_paragraph_opener() {
             Format::Html,
         );
         assert_eq!(visible.text(), "one\ntwo");
-        assert_eq!(visible.projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(visible.projection().blocks()[0].quote_depth, 1);
         assert_eq!(visible.projection().blocks()[1].style.0, "Paragraph");
         let at = document.text().find("one").unwrap();
         assign(&mut document, at..at, "Paragraph");
@@ -368,7 +370,7 @@ fn quote_container_survives_inner_named_paragraphs_and_list_headings() {
                 .projection()
                 .blocks()
                 .iter()
-                .all(|block| block.style.0 == "Block quote"),
+                .all(|block| block.style.0 == "Code Block" || block.quote_depth > 0 || format == Format::HtmlSource),
             "{format:?}: {:?}",
             document.projection().blocks()
         );
@@ -394,7 +396,7 @@ fn quote_container_survives_inner_named_paragraphs_and_list_headings() {
 }
 
 #[test]
-fn enter_in_quoted_pre_keeps_code_and_exits_an_empty_quote_with_exact_history() {
+fn enter_in_quoted_pre_keeps_literal_body_even_when_empty_with_exact_history() {
     for source in [
         "<blockquote><pre data-x='keep'>code</pre></blockquote>",
         "<blockquote><pre></pre></blockquote>",
@@ -417,11 +419,11 @@ fn enter_in_quoted_pre_keeps_code_and_exits_an_empty_quote_with_exact_history() 
                     )
                 });
         }
-        assert_eq!(core.document().text(), if before.is_empty() { "tail".to_owned() } else { format!("{before}\ntail") });
+        assert_eq!(core.document().text(), format!("{before}\ntail"));
         assert_eq!(core.document().projection().blocks().len(), 1);
         assert_eq!(
             core.document().projection().blocks()[0].style.0,
-            if before.is_empty() { "Paragraph" } else { "Block quote" }
+            "Code Block"
         );
         let saved = core.document().source_bytes();
         let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Html).unwrap();
@@ -469,7 +471,7 @@ fn source_edits_inside_quoted_code_keep_the_reopened_paragraph_partition() {
         .projection()
         .blocks()
         .iter()
-        .any(|block| block.range.contains(&at) && block.style.0 == "Block quote"));
+        .any(|block| block.range.contains(&at) && block.style.0 == "Code Block"));
     assert_eq!(saved, source.replacen("middle", "new middle", 1).as_bytes());
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());

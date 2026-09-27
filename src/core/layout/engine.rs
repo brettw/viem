@@ -1,4 +1,5 @@
 use super::direction::paragraph_is_right_to_left;
+use super::block_box;
 use super::height_index::{
     HardLineHeightHit, HeightMeasurement, ViewHeightIndex, ViewHeightIndexError,
     ViewHeightIndexStatistics,
@@ -376,12 +377,21 @@ pub enum DecorationKind {
     Text,
     BlockQuoteBorder,
     ThematicBreak,
+    BlockBackground,
+    BlockBorder,
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum DecorationOwner {
+    Container(crate::document::ContainerIdentity),
+    Paragraph(u64),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionedDecoration {
     pub kind: DecorationKind,
+    pub owner: Option<DecorationOwner>,
     pub text: String,
     pub x: f32,
     pub advance: f32,
@@ -492,11 +502,17 @@ impl VisualRow {
 fn document_end_extent(
     advance_end: f32,
     final_row: Option<&VisualRow>,
-    spacing_after: f32,
+    margin_bottom: f32,
     padding_bottom: f32,
 ) -> f32 {
-    final_row.map_or(advance_end, |row| advance_end.max(row.reveal_bounds().end))
-        + spacing_after + padding_bottom
+    let Some(row) = final_row else { return advance_end + margin_bottom + padding_bottom; };
+    let text_bottom = row.clusters.iter().map(|cluster| cluster.ink_bounds.y + cluster.ink_bounds.height)
+        .chain(row.decorations.iter().filter(|d| d.kind == DecorationKind::Text)
+            .map(|d| d.ink_bounds.y + d.ink_bounds.height))
+        .fold(row.y + row.natural_height(), f32::max);
+    // Box decorations already include border/padding at the owner's end.
+    // Count those distances once while retaining any overflowing glyph ink.
+    (advance_end.max(text_bottom) + margin_bottom).max(row.reveal_bounds().end) + padding_bottom
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -534,6 +550,7 @@ pub struct LayoutSnapshot {
     /// Per-row horizontal extents, computed once with immutable geometry.
     /// Scroll queries only inspect the rows intersecting their viewport.
     row_content_widths: Vec<f32>,
+    row_intervals: super::row_intervals::RowIntervalIndex,
     pub total_height: f32,
     pub total_height_is_exact: bool,
     pub diagnostics: Vec<ShapingDiagnostic>,
@@ -622,7 +639,7 @@ pub(super) fn line_layout_inputs(
         paragraph_len,
         marker_offset,
         is_first_hard_line: paragraph.is_first_hard_line,
-        next: next.map(|next| (starts_new_paragraph(paragraph, next), next.style.spacing_before)),
+        next: next.map(|next| (starts_new_paragraph(paragraph, next), block_box::between(&paragraph.style, &next.style))),
         runs,
     }
 }
@@ -1353,6 +1370,26 @@ struct PreparedRegionalInstall {
 }
 
 impl LayoutSnapshot {
+    /// CSS normal-flow painting is preorder by owner, not row order: every
+    /// slice of a parent's background/border is behind all of its children.
+    /// This remains true when negative adjoining margins make children overlap.
+    pub fn decorations_in_paint_order(&self) -> Vec<(usize, &PositionedDecoration)> {
+        let mut owners = BTreeMap::new();
+        let mut next_owner = 0usize;
+        let mut ordered = Vec::new();
+        for (row_index, row) in self.rows.iter().enumerate() {
+            for decoration in &row.decorations {
+                let rank = if let Some(owner) = decoration.owner {
+                    *owners.entry(owner).or_insert_with(|| { let rank = next_owner; next_owner += 1; rank })
+                } else { let rank = next_owner; next_owner += 1; rank };
+                let layer = usize::from(decoration.kind != DecorationKind::BlockBackground);
+                ordered.push((rank, layer, row_index, decoration));
+            }
+        }
+        ordered.sort_by_key(|(rank, layer, _, _)| (*rank, *layer));
+        ordered.into_iter().map(|(_, _, row, decoration)| (row, decoration)).collect()
+    }
+
     /// Whether a row has exact geometry at this horizontal location. A sparse
     /// unwrapped row must request refinement instead of snapping across a gap.
     pub fn horizontal_geometry_is_materialized(&self, row_index: usize, x: f32) -> bool {
@@ -1397,8 +1434,8 @@ impl LayoutSnapshot {
                 return Err(LayoutError::OutsideMaterializedCoverage);
             }
         }
-        let row = self.closest_row(point.y).ok_or(LayoutError::NoRows)?;
-        let row_index = self.rows.iter().position(|candidate| std::ptr::eq(candidate, row)).unwrap();
+        let row_index = self.row_intervals.closest(point.y).ok_or(LayoutError::NoRows)?;
+        let row = &self.rows[row_index];
         if !self.horizontal_geometry_is_materialized(row_index, point.x) {
             return Err(LayoutError::OutsideMaterializedCoverage);
         }
@@ -1611,28 +1648,6 @@ impl LayoutSnapshot {
             affinity,
         };
         self.caret_geometry(point).map(|_| point)
-    }
-
-    fn closest_row(&self, y: f32) -> Option<&VisualRow> {
-        if self.rows.is_empty() {
-            return None;
-        }
-        let insertion = self.rows.partition_point(|row| row.y + row.height() <= y);
-        if insertion == self.rows.len() {
-            return self.rows.last();
-        }
-        if insertion == 0 || y >= self.rows[insertion].y {
-            return self.rows.get(insertion);
-        }
-        let before = &self.rows[insertion - 1];
-        let after = &self.rows[insertion];
-        let before_distance = (y - (before.y + before.height())).abs();
-        let after_distance = (after.y - y).abs();
-        if before_distance <= after_distance {
-            Some(before)
-        } else {
-            Some(after)
-        }
     }
 
     fn validate_caret_point(&self, point: CaretPoint) -> Result<(), LayoutError> {
@@ -2214,14 +2229,8 @@ impl ViewLayout {
         }
         let top = self.viewport_top;
         let bottom = top + self.height;
-        let start = snapshot
-            .rows
-            .partition_point(|row| row.y + row.height() <= top);
-        let end = snapshot.rows.partition_point(|row| row.y < bottom);
-        let width = snapshot.row_content_widths[start.min(end)..end]
-            .iter()
-            .copied()
-            .fold(self.width, f32::max);
+        let mut width = self.width;
+        snapshot.row_intervals.intersecting(top, bottom, |index| width = width.max(snapshot.row_content_widths[index]));
         let exact = snapshot.missing_viewport_edges(top, self.height) == (false, false);
         Some((width, exact))
     }
@@ -2292,7 +2301,7 @@ impl ViewLayout {
     /// Certainty is false whenever any hard line still needs layout for this
     /// view configuration.
     pub fn content_height(&self) -> HeightMeasurement {
-        self.height_index.total_height()
+        self.height_index.total_extent()
     }
 
     /// Height of hard lines `[0, hard_line_end)` in the current view.
@@ -2317,6 +2326,10 @@ impl ViewLayout {
         y: f64,
     ) -> Result<Option<HardLineHeightHit>, ViewHeightIndexError> {
         self.height_index.hard_line_at_y(y)
+    }
+
+    pub(crate) fn first_line_reaching_y(&self, y: f64) -> Result<Option<usize>, ViewHeightIndexError> {
+        self.height_index.first_line_reaching_y(y)
     }
 
     /// Constant-time structural diagnostics, primarily useful for schedulers
@@ -2717,7 +2730,9 @@ impl ViewLayout {
         }
         for line in &region.lines {
             if line.height_is_exact {
-                next_index.set_exact_heights(line.hard_line_index, &[line.height])?;
+                let extent = line.rows.iter().fold(line.height, |end, row|
+                    end.max(f64::from(row.reveal_bounds().end + region.content_insets.bottom)));
+                next_index.set_exact_heights_with_extents(line.hard_line_index, &[(line.height, extent)])?;
             }
             if line.text_coverage == line.hard_line_range && region.horizontal_materialization.is_none() {
                 next_cache.insert(line.clone());
@@ -2735,9 +2750,28 @@ impl ViewLayout {
 
     fn bump_configuration(&mut self, invalidates_heights: bool) {
         self.configuration_generation.0 = self.configuration_generation.0.wrapping_add(1).max(1);
-        self.regional_cache = RegionalLayoutCache::default();
         if invalidates_heights {
+            self.regional_cache = RegionalLayoutCache::default();
             self.invalidate_all_heights();
+        } else {
+            // The new configuration retires cached rows, but a height-only
+            // resize or paint change leaves measured flow and painted extents
+            // valid. Keep their identity current so the next regional install
+            // does not mistake those measurements for another configuration.
+            let identity = self.regional_cache.identity.or_else(|| {
+                self.snapshot.as_ref().map(|snapshot| RegionalCacheIdentity {
+                    document_id: snapshot.document_id,
+                    document_revision: snapshot.document_revision,
+                    configuration_generation: snapshot.configuration_generation,
+                    measurement_environment_id: snapshot.measurement_environment_id,
+                    metrics_generation: snapshot.metrics_generation,
+                    document_hard_line_count: snapshot_hard_line_count(snapshot),
+                })
+            });
+            self.regional_cache = identity.map_or_else(RegionalLayoutCache::default, |mut identity| {
+                identity.configuration_generation = self.configuration_generation;
+                RegionalLayoutCache::with_identity(identity)
+            });
         }
     }
 
@@ -2755,7 +2789,16 @@ impl ViewLayout {
         let heights = snapshot_hard_line_heights(snapshot)?;
         let mut next = self.height_index.clone();
         reconcile_height_index_count(&mut next, heights.len())?;
-        next.set_exact_heights(0, &heights)?;
+        let mut measurements = heights.iter().map(|height| (*height, *height)).collect::<Vec<_>>();
+        let mut starts = Vec::with_capacity(heights.len());
+        let mut top = 0.;
+        for height in &heights { starts.push(top); top += height; }
+        for row in snapshot.rows.iter() {
+            if let Some((_, extent)) = measurements.get_mut(row.hard_line_index) {
+                *extent = extent.max(f64::from(row.reveal_bounds().end + snapshot.content_insets.bottom) - starts[row.hard_line_index]);
+            }
+        }
+        next.set_exact_heights_with_extents(0, &measurements)?;
         Ok(next)
     }
 
@@ -2812,7 +2855,7 @@ fn partial_snapshot_from_region(
         .lines
         .iter()
         .all(|line| line.height_is_exact && line.text_coverage == line.hard_line_range);
-    let vertical_range = if fully_materialized {
+    let mut vertical_range = if fully_materialized {
         let materialized_height = height_index.range_height(region.hard_lines.clone())?;
         let vertical_end = prefix.height() + materialized_height.height();
         if !vertical_end.is_finite() {
@@ -2844,6 +2887,11 @@ fn partial_snapshot_from_region(
         start..end
     };
 
+    if region.hard_lines.end == region.document_hard_line_count {
+        vertical_range.end = rows.iter().map(|row| row.reveal_bounds().end)
+            .fold(vertical_range.end, f32::max);
+    }
+
     let row_content_widths = rows
         .iter()
         .map(|row| content_width_from_row(row, region.viewport_width))
@@ -2855,7 +2903,7 @@ fn partial_snapshot_from_region(
     let content_width_is_exact = fully_materialized
         && region.hard_lines.start == 0
         && region.hard_lines.end == region.document_hard_line_count;
-    let total = height_index.total_height();
+    let total = height_index.total_extent();
     Ok(LayoutSnapshot {
         whitespace_unit: region.whitespace_unit,
         revision: region.revision,
@@ -2885,6 +2933,7 @@ fn partial_snapshot_from_region(
             vertical_range,
             prefix_is_exact: prefix.is_exact(),
         },
+        row_intervals: super::row_intervals::RowIntervalIndex::new(rows.iter().map(|row| (row.y, row.y + row.height()))),
         rows: Arc::new(rows),
         content_width,
         content_width_is_exact,
@@ -2957,6 +3006,7 @@ fn refresh_partial_snapshot_after_height_change(
     for row in Arc::make_mut(&mut refreshed.rows) {
         translate_row_vertically(row, delta)?;
     }
+    refreshed.row_intervals.translate(delta);
     let LayoutCoverage::PartialHardLines {
         vertical_range,
         prefix_is_exact,
@@ -2967,7 +3017,7 @@ fn refresh_partial_snapshot_after_height_change(
     };
     *vertical_range = new_start..new_end;
     *prefix_is_exact = prefix.is_exact();
-    let total = height_index.total_height();
+    let total = height_index.total_extent();
     refreshed.total_height = height_as_layout_unit(total.height())?;
     refreshed.total_height_is_exact = total.is_exact();
     refreshed.rebind_revision(revision);
@@ -3957,6 +4007,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 usable_width,
                 &paragraph.style,
                 right_to_left,
+                view.scale,
             );
             let first_row_box = if line_slice.checkpoint.is_none() && paragraph.is_first_hard_line {
                 list_first_row_box(
@@ -4071,14 +4122,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .checkpoint
                 .as_ref()
                 .map_or(0, |checkpoint| checkpoint.completed_visual_rows);
+            let (hard_line_origin, limited_origin) = block_box::editable_flow_position(None,
+                if hard_line_index == 0 { content_insets.top + block_box::before(&paragraph.style) * view.scale } else { 0. }, view.scale);
+            if limited_origin && line_slice.checkpoint.is_none() {
+                diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() });
+            }
             let mut y = line_slice.checkpoint.as_ref().map_or_else(
-                || {
-                    if hard_line_index == 0 {
-                        content_insets.top + paragraph.style.spacing_before
-                    } else {
-                        0.0
-                    }
-                },
+                || hard_line_origin,
                 |checkpoint| checkpoint.completed_height,
             );
 
@@ -4202,19 +4252,27 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
             }
 
+            let next_paragraph = line_paragraphs
+                .get(line_offset + 1)
+                .or(following_paragraph.as_ref());
+            let mut resolved_gap = 0.;
             if !extends_past_work {
-                let next_paragraph = line_paragraphs
-                    .get(line_offset + 1)
-                    .or(following_paragraph.as_ref());
                 if let Some(next) = next_paragraph {
                     if starts_new_paragraph(paragraph, next) {
-                        y += paragraph.style.spacing_after + next.style.spacing_before;
+                        let (position, limited) = block_box::editable_flow_position(rows.last().map(|row| row.y),
+                            y + block_box::between(&paragraph.style, &next.style) * view.scale, view.scale);
+                        resolved_gap = position - y;
+                        y = position;
+                        if limited { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
                     }
-                } else {
-                    y = document_end_extent(
-                        y, rows.last(), paragraph.style.spacing_after, content_insets.bottom,
-                    );
                 }
+            }
+            for row in &mut rows {
+                decorate_block_row(row, &paragraph.style, resolved_gap,
+                    content_insets.left, usable_width, view.scale, right_to_left);
+            }
+            if !extends_past_work && next_paragraph.is_none() {
+                y = document_end_extent(y, rows.last(), block_box::after(&paragraph.style) * view.scale, content_insets.bottom);
             }
             let height = f64::from(y);
             if !height.is_finite() || height <= 0.0 {
@@ -4268,8 +4326,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             lines.push(RegionalHardLineLayout {
                 render_run_policy,
                 diagnostics: diagnostics.iter().filter(|diagnostic| {
-                    diagnostic.text_range.start < text_coverage_end
-                        && line_range.start < diagnostic.text_range.end
+                    (diagnostic.text_range.start < text_coverage_end
+                        && line_range.start < diagnostic.text_range.end)
+                        || (diagnostic.text_range.is_empty() && line_range.start <= diagnostic.text_range.start
+                            && diagnostic.text_range.start <= text_coverage_end)
                 }).cloned().collect(),
                 layout_revision,
                 hard_line_index,
@@ -4317,6 +4377,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         diagnostics.retain(|diagnostic| {
             coverage_ranges.iter().any(|range| {
                 diagnostic.text_range.start < range.end && range.start < diagnostic.text_range.end
+                    || (diagnostic.text_range.is_empty() && range.start <= diagnostic.text_range.start
+                        && diagnostic.text_range.start <= range.end)
             })
         });
         let result = RegionalLayoutSnapshot {
@@ -4532,7 +4594,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     .max(snapshot.revision.0.wrapping_add(1).max(1))
             },
         ));
-        let diagnostics = shaped
+        let mut diagnostics: Vec<_> = shaped
             .iter()
             .flat_map(|fragment| fragment.diagnostics.iter().cloned())
             .collect();
@@ -4543,7 +4605,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut rows = Vec::new();
         let mut y = content_insets.top;
         let mut previous_paragraph_index = None;
-        let mut previous_spacing_after = 0.0;
+        let mut previous_style: Option<&ParagraphLayoutStyle> = None;
+        let mut previous_row_start = None;
+        let mut resolved_gaps = vec![0.; hard_lines.len()];
+        let mut line_directions = Vec::with_capacity(hard_lines.len());
         let mut has_previous_paragraph = false;
 
         for (hard_line_index, line_range) in hard_lines.iter().enumerate() {
@@ -4553,13 +4618,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 || paragraph.paragraph_index.is_none()
                 || paragraph.paragraph_index != previous_paragraph_index;
             if begins_paragraph {
-                if has_previous_paragraph {
-                    y += previous_spacing_after;
-                }
-                y += paragraph.style.spacing_before;
+                let (position, limited) = block_box::editable_flow_position(previous_row_start,
+                    y + previous_style.map_or_else(|| block_box::before(&paragraph.style), |previous| block_box::between(previous, &paragraph.style)) * view.scale, view.scale);
+                if hard_line_index > 0 { resolved_gaps[hard_line_index - 1] = position - y; }
+                y = position;
+                if limited { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
             }
             previous_paragraph_index = paragraph.paragraph_index;
-            previous_spacing_after = paragraph.style.spacing_after;
+            previous_style = Some(&paragraph.style);
             has_previous_paragraph = true;
 
             let count = fragment_ranges[hard_line_index].len();
@@ -4580,11 +4646,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 &text[line_range.clone()],
                 line_range.start,
             );
+            line_directions.push(right_to_left);
             let (paragraph_first_box, continuation_box) = paragraph_row_boxes(
                 content_insets.left,
                 usable_width,
                 &paragraph.style,
                 right_to_left,
+                view.scale,
             );
             let first_row_box = if paragraph.is_first_hard_line {
                 list_first_row_box(
@@ -4694,6 +4762,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
                 decorate_quote_row(rows.last_mut().unwrap(), &paragraph.style, view.scale);
                 y += rows.last().unwrap().height();
+                previous_row_start = rows.last().map(|row| row.y);
                 continue;
             }
 
@@ -4743,6 +4812,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 y += row.height();
                 rows.push(row);
             }
+            previous_row_start = rows.last().map(|row| row.y);
         }
 
         if self.provider.measurement_environment_id() != measurement_environment_id {
@@ -4751,10 +4821,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if self.provider.metrics_generation() != metrics_generation {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
+        for row in &mut rows {
+            let paragraph = &line_paragraphs[row.hard_line_index];
+            decorate_block_row(row, &paragraph.style, resolved_gaps[row.hard_line_index],
+                content_insets.left, usable_width, view.scale, line_directions[row.hard_line_index]);
+        }
         y = document_end_extent(
             y,
             rows.last(),
-            if has_previous_paragraph { previous_spacing_after } else { 0.0 },
+            previous_style.map_or(0., block_box::after) * view.scale,
             content_insets.bottom,
         );
         let row_content_widths = rows
@@ -4771,6 +4846,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             rows.iter().flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
             document_styles.as_ref().and_then(|styles| styles.search_paint_overlay.as_ref()),
         );
+        y = rows.iter().map(|row| row.reveal_bounds().end + content_insets.bottom)
+            .fold(y, f32::max);
         let snapshot = LayoutSnapshot {
             whitespace_unit,
             revision: layout_revision,
@@ -4792,6 +4869,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             coverage: LayoutCoverage::FullDocument {
                 hard_line_count: hard_lines.len(),
             },
+            row_intervals: super::row_intervals::RowIntervalIndex::new(rows.iter().map(|row| (row.y, row.y + row.height()))),
             rows: Arc::new(rows),
             content_width,
             content_width_is_exact: true,
@@ -4925,6 +5003,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let cluster = &shaped.clusters[index];
             if cluster.text_range.start < marker.len() {
                 row.decorations.push(PositionedDecoration {
+                    owner: None,
                     kind: DecorationKind::Text,
                     text: text[cluster.text_range.clone()].into(),
                     x,
@@ -5780,8 +5859,10 @@ fn resolve_line_paragraph(
             quote_depth: 0,
             thematic_break: false,
             marker_paint: ResolvedTextPaint::default(),
-            spacing_before: 0.0,
-            spacing_after: 0.0,
+            block_box: super::BlockBoxStyle::default(),
+            containers: Arc::from([]),
+            margin_top: 0.0,
+            margin_bottom: 0.0,
             line_spacing: LineSpacing::Normal,
             first_line_indent: 0.0,
             leading_indent: 0.0,
@@ -5803,7 +5884,8 @@ fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, sca
     paint.foreground = crate::document::Color { red: 0.6, green: 0.6, blue: 0.6, alpha: 1.0 };
     paint.foreground_is_default = false;
     let mut rectangles = Vec::new();
-    for depth in 0..paragraph.quote_depth.max(usize::from(paragraph.quote_border)) {
+    let quote_depth = if paragraph.containers.is_empty() { paragraph.quote_depth.max(usize::from(paragraph.quote_border)) } else { 0 };
+    for depth in 0..quote_depth {
         rectangles.push((DecorationKind::BlockQuoteBorder, LayoutRect {
             x: row.paragraph_content_x - (16.0 + 32.0 * depth as f32) * scale,
             y: row.y, width: 2.0 * scale, height: row.height(),
@@ -5817,11 +5899,67 @@ fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, sca
     }
     for (kind, rect) in rectangles {
         row.decorations.push(PositionedDecoration {
+            owner: None,
             kind, text: String::new(), x: rect.x, advance: rect.width,
             typographic_bounds: rect, ink_bounds: rect, render_run: None,
             paint: paint.clone(), font_size: 0.0,
         });
     }
+}
+
+/// Paint row-sized slices of each enclosing normal-flow box. Owner edge flags
+/// let a bounded viewport draw its portion without laying out distant children.
+fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
+    resolved_gap: f32, canvas_left: f32, canvas_width: f32, scale: f32, right_to_left: bool) {
+    let first = row.text_range.start == paragraph.text_range.start && row.fragment_index == 0;
+    let last = !row.wraps_to_next && row.text_range.end >= paragraph.text_range.end;
+    let (top, bottom) = block_box::vertical_extents(paragraph);
+    let gap = if last { resolved_gap } else { 0. };
+    let mut left = canvas_left;
+    let mut right = canvas_left + canvas_width;
+    for index in 0..=paragraph.containers.len() {
+        let (style, starts, ends, quote) = if let Some(container) = paragraph.containers.get(index) {
+            (&container.style, container.starts_here, container.ends_here,
+                matches!(container.kind, crate::document::ContainerKind::Quote))
+        } else { (&paragraph.block_box, true, true, false) };
+        left += (style.margin.left + if right_to_left { style.inline_end } else { style.inline_start }) * scale;
+        right -= (style.margin.right + if right_to_left { style.inline_start } else { style.inline_end }) * scale;
+        let is_top = first && starts;
+        let is_bottom = last && ends;
+        let y = row.y - if is_top { top[index] * scale } else { 0. };
+        let end = row.y + row.height() + if is_bottom { bottom[index] * scale } else { gap };
+        let rect = LayoutRect { x: left, y, width: (right - left).max(0.), height: (end - y).max(0.) };
+        let owner = paragraph.containers.get(index).map_or(DecorationOwner::Paragraph(paragraph.block_id),
+            |container| DecorationOwner::Container(container.id));
+        let mut paint = ResolvedTextPaint::default();
+        if let Some(color) = style.background {
+            paint.foreground = color;
+            paint.foreground_is_default = false;
+            push_box_rectangle(row, owner, DecorationKind::BlockBackground, rect, paint.clone());
+        }
+        let borders = [
+            (is_top, style.border.top, LayoutRect { height: style.border.top * scale, ..rect }),
+            (true, style.border.right, LayoutRect { x: right - style.border.right * scale, width: style.border.right * scale, ..rect }),
+            (is_bottom, style.border.bottom, LayoutRect { y: end - style.border.bottom * scale, height: style.border.bottom * scale, ..rect }),
+            (true, style.border.left, LayoutRect { width: style.border.left * scale, ..rect }),
+        ];
+        for (side, (visible, weight, bounds)) in borders.into_iter().enumerate() {
+            if !visible || weight <= 0. { continue; }
+            paint.foreground = style.border_colors[side].unwrap_or(style.foreground);
+            paint.foreground_is_default = style.border_colors[side].is_none() && style.foreground_is_default;
+            let kind = if quote && side == 3 { DecorationKind::BlockQuoteBorder } else { DecorationKind::BlockBorder };
+            push_box_rectangle(row, owner, kind, bounds, paint.clone());
+        }
+        left += (style.border.left + style.padding.left) * scale;
+        right -= (style.border.right + style.padding.right) * scale;
+    }
+}
+
+fn push_box_rectangle(row: &mut VisualRow, owner: DecorationOwner, kind: DecorationKind, rect: LayoutRect, paint: ResolvedTextPaint) {
+    if rect.width <= 0. || rect.height <= 0. { return; }
+    row.decorations.push(PositionedDecoration { kind, owner: Some(owner), text: String::new(), x: rect.x,
+        advance: rect.width, typographic_bounds: rect, ink_bounds: rect, render_run: None,
+        paint, font_size: 0. });
 }
 
 fn starts_new_paragraph(current: &LineParagraphLayout, next: &LineParagraphLayout) -> bool {
@@ -5841,8 +5979,11 @@ fn paragraph_row_boxes(
     canvas_width: f32,
     paragraph: &ParagraphLayoutStyle,
     right_to_left: bool,
+    scale: f32,
 ) -> (ParagraphRowBox, ParagraphRowBox) {
-    let canvas_right = canvas_left + canvas_width;
+    let (left, right) = block_box::horizontal_insets(paragraph, right_to_left);
+    let canvas_right = canvas_left + canvas_width - right * scale;
+    let canvas_left = canvas_left + left * scale;
     let (continuation_left, continuation_right, first_left, first_right) = if right_to_left {
         let left = canvas_left + paragraph.trailing_indent;
         let right = canvas_right - paragraph.leading_indent;
@@ -6915,8 +7056,8 @@ mod tests {
             &mut sheet,
             "Doubled",
             BlockProperties {
-                spacing_before: Some(3.0),
-                spacing_after: Some(4.0),
+                margin_top: Some(3.0),
+                margin_bottom: Some(4.0),
                 line_spacing: Some(LineSpacing::Multiplier(2.0)),
                 ..BlockProperties::default()
             },
@@ -6926,8 +7067,8 @@ mod tests {
             &mut sheet,
             "Minimum",
             BlockProperties {
-                spacing_before: Some(5.0),
-                spacing_after: Some(6.0),
+                margin_top: Some(5.0),
+                margin_bottom: Some(6.0),
                 line_spacing: Some(LineSpacing::AtLeast(40.0)),
                 ..BlockProperties::default()
             },
@@ -6937,8 +7078,8 @@ mod tests {
             &mut sheet,
             "EmptyExact",
             BlockProperties {
-                spacing_before: Some(7.0),
-                spacing_after: Some(8.0),
+                margin_top: Some(7.0),
+                margin_bottom: Some(8.0),
                 line_spacing: Some(LineSpacing::Exact(9.0)),
                 first_line_indent: Some(11.0),
                 ..BlockProperties::default()
@@ -6966,9 +7107,9 @@ mod tests {
         let natural_14 = 14.0 * 1.12;
         assert!((rows[0].y - 3.0).abs() < 0.001);
         assert!((rows[0].line_advance - natural_14 * 2.0).abs() < 0.001);
-        assert!((rows[1].y - (3.0 + natural_14 * 2.0 + 4.0 + 5.0)).abs() < 0.001);
+        assert!((rows[1].y - (3.0 + natural_14 * 2.0 + 5.0)).abs() < 0.001);
         assert_eq!(rows[1].line_advance, 40.0);
-        assert!((rows[2].y - (rows[1].y + 40.0 + 6.0 + 7.0)).abs() < 0.001);
+        assert!((rows[2].y - (rows[1].y + 40.0 + 7.0)).abs() < 0.001);
         assert_eq!(rows[2].line_advance, 9.0);
         assert!((rows[2].ascent - 20.0 * 0.78).abs() < 0.001);
         assert_eq!(rows[2].paragraph_content_x, 11.0);
@@ -7270,6 +7411,20 @@ mod tests {
         assert_eq!(view.content_height(), exact_height);
         engine.relayout(&document, &mut view).unwrap();
         assert_eq!(engine.provider().request_calls(), calls);
+    }
+
+    #[test]
+    fn height_only_resize_keeps_full_snapshot_measurements_during_regional_install() {
+        let (document, mut engine, mut view) = lay_out("one\ntwo\nthree", 200.0);
+        let measured_height = view.content_height();
+        assert!(measured_height.is_exact());
+        assert!(view.regional_cache.identity.is_none());
+
+        view.resize(200.0, 20.0);
+        let region = lay_out_regional_line(&mut engine, &document, &view, 0);
+        let prepared = view.prepare_layout_job_region(region).unwrap();
+        assert_eq!(prepared.height_index.total_extent(), measured_height);
+        assert!(prepared.height_index.prefix_height(3).unwrap().is_exact());
     }
 
     #[test]

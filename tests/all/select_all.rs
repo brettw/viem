@@ -297,7 +297,7 @@ fn ordinary_last_character_deletion_and_partial_selection_keep_quote_context() {
             Document::from_bytes(modified.into_bytes(), Encoding::Utf8, format).unwrap();
         document.delete(0..len).unwrap();
         assert_eq!(document.text(), "");
-        assert_eq!(document.projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(document.projection().blocks()[0].quote_depth, 1);
     }
 }
 

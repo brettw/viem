@@ -305,11 +305,14 @@ pub(super) fn paragraph_controls(properties: &BlockProperties) -> Result<String,
         ("li", properties.leading_indent),
         ("ri", properties.trailing_indent),
         ("fi", properties.first_line_indent),
-        ("sb", properties.spacing_before),
-        ("sa", properties.spacing_after),
     ] {
         if let Some(value) = value {
             result.push_str(&format!("\\{control}{}", twips(value)?));
+        }
+    }
+    for (control, value) in [("sb", properties.margin_top), ("sa", properties.margin_bottom)] {
+        if let Some(value) = value {
+            result.push_str(&format!("\\{control}{}", (value * 20.0).round() as i32));
         }
     }
     if let Some(alignment) = properties.alignment {
@@ -337,15 +340,109 @@ pub(super) fn paragraph_controls(properties: &BlockProperties) -> Result<String,
             _ => return Err(DocumentError::UnsupportedFormatting),
         });
     }
-    if properties.padding_top.is_some()
-        || properties.padding_right.is_some()
-        || properties.padding_bottom.is_some()
-        || properties.padding_left.is_some()
-        || properties.background.is_some()
-    {
-        return Err(DocumentError::UnsupportedFormatting);
-    }
+    result.push_str(&box_controls(properties));
     Ok(result)
+}
+
+// RTF has no exact analogue for every box declaration (including alpha and
+// independent margins). Private controls preserve the sparse declaration using
+// the same signed-bit spelling as Viem's OpenType feature extension.
+fn box_controls(properties: &BlockProperties) -> String {
+    let mut result = String::new();
+    for (side, width, padding) in [
+        ("t", properties.border_top_width, properties.padding_top),
+        ("r", properties.border_right_width, properties.padding_right),
+        ("b", properties.border_bottom_width, properties.padding_bottom),
+        ("l", properties.border_left_width, properties.padding_left),
+    ] {
+        if let Some(width) = width {
+            result.push_str(&format!("\\brdr{side}\\brdrs\\brdrw{}", (width * 20.0).round() as i32));
+            if let Some(padding) = padding { result.push_str(&format!("\\brsp{}", (padding * 20.0).round() as i32)); }
+        }
+    }
+    if let Some(value) = properties.margin_top { result.push_str(&format!("\\viemboxmargintop{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.margin_bottom { result.push_str(&format!("\\viemboxmarginbottom{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.margin_right { result.push_str(&format!("\\viemboxmarginright{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.margin_left { result.push_str(&format!("\\viemboxmarginleft{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.padding_top { result.push_str(&format!("\\viemboxpaddingtop{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.padding_right { result.push_str(&format!("\\viemboxpaddingright{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.padding_bottom { result.push_str(&format!("\\viemboxpaddingbottom{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.padding_left { result.push_str(&format!("\\viemboxpaddingleft{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.border_top_width { result.push_str(&format!("\\viemboxbordertopwidth{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.border_right_width { result.push_str(&format!("\\viemboxborderrightwidth{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.border_bottom_width { result.push_str(&format!("\\viemboxborderbottomwidth{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.border_left_width { result.push_str(&format!("\\viemboxborderleftwidth{}", value.to_bits() as i32)); }
+    if let Some(value) = properties.border_top_color {
+        result.push_str(&format!("\\viemboxbordertopcolorred{}", value.red.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbordertopcolorgreen{}", value.green.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbordertopcolorblue{}", value.blue.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbordertopcoloralpha{}", value.alpha.to_bits() as i32));
+    }
+    if let Some(value) = properties.border_right_color {
+        result.push_str(&format!("\\viemboxborderrightcolorred{}", value.red.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderrightcolorgreen{}", value.green.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderrightcolorblue{}", value.blue.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderrightcoloralpha{}", value.alpha.to_bits() as i32));
+    }
+    if let Some(value) = properties.border_bottom_color {
+        result.push_str(&format!("\\viemboxborderbottomcolorred{}", value.red.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderbottomcolorgreen{}", value.green.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderbottomcolorblue{}", value.blue.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderbottomcoloralpha{}", value.alpha.to_bits() as i32));
+    }
+    if let Some(value) = properties.border_left_color {
+        result.push_str(&format!("\\viemboxborderleftcolorred{}", value.red.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderleftcolorgreen{}", value.green.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderleftcolorblue{}", value.blue.to_bits() as i32));
+        result.push_str(&format!("\\viemboxborderleftcoloralpha{}", value.alpha.to_bits() as i32));
+    }
+    if let Some(value) = properties.background {
+        result.push_str(&format!("\\viemboxbackgroundred{}", value.red.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbackgroundgreen{}", value.green.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbackgroundblue{}", value.blue.to_bits() as i32));
+        result.push_str(&format!("\\viemboxbackgroundalpha{}", value.alpha.to_bits() as i32));
+    }
+    result
+}
+
+pub(super) fn apply_box_control(properties: &mut BlockProperties, name: &str, number: Option<i32>) -> bool {
+    let Some(value) = number.map(|n| f32::from_bits(n as u32)).filter(|value| value.is_finite()) else { return false; };
+    match name {
+        "viemboxmargintop" => properties.margin_top = Some(value),
+        "viemboxmarginbottom" => properties.margin_bottom = Some(value),
+        "viemboxmarginright" => properties.margin_right = Some(value),
+        "viemboxmarginleft" => properties.margin_left = Some(value),
+        "viemboxpaddingtop" if value >= 0.0 => properties.padding_top = Some(value),
+        "viemboxpaddingright" if value >= 0.0 => properties.padding_right = Some(value),
+        "viemboxpaddingbottom" if value >= 0.0 => properties.padding_bottom = Some(value),
+        "viemboxpaddingleft" if value >= 0.0 => properties.padding_left = Some(value),
+        "viemboxbordertopwidth" if value >= 0.0 => properties.border_top_width = Some(value),
+        "viemboxborderrightwidth" if value >= 0.0 => properties.border_right_width = Some(value),
+        "viemboxborderbottomwidth" if value >= 0.0 => properties.border_bottom_width = Some(value),
+        "viemboxborderleftwidth" if value >= 0.0 => properties.border_left_width = Some(value),
+        "viemboxbordertopcolorred" if (0.0..=1.0).contains(&value) => properties.border_top_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).red = value,
+        "viemboxbordertopcolorgreen" if (0.0..=1.0).contains(&value) => properties.border_top_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).green = value,
+        "viemboxbordertopcolorblue" if (0.0..=1.0).contains(&value) => properties.border_top_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).blue = value,
+        "viemboxbordertopcoloralpha" if (0.0..=1.0).contains(&value) => properties.border_top_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).alpha = value,
+        "viemboxborderrightcolorred" if (0.0..=1.0).contains(&value) => properties.border_right_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).red = value,
+        "viemboxborderrightcolorgreen" if (0.0..=1.0).contains(&value) => properties.border_right_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).green = value,
+        "viemboxborderrightcolorblue" if (0.0..=1.0).contains(&value) => properties.border_right_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).blue = value,
+        "viemboxborderrightcoloralpha" if (0.0..=1.0).contains(&value) => properties.border_right_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).alpha = value,
+        "viemboxborderbottomcolorred" if (0.0..=1.0).contains(&value) => properties.border_bottom_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).red = value,
+        "viemboxborderbottomcolorgreen" if (0.0..=1.0).contains(&value) => properties.border_bottom_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).green = value,
+        "viemboxborderbottomcolorblue" if (0.0..=1.0).contains(&value) => properties.border_bottom_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).blue = value,
+        "viemboxborderbottomcoloralpha" if (0.0..=1.0).contains(&value) => properties.border_bottom_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).alpha = value,
+        "viemboxborderleftcolorred" if (0.0..=1.0).contains(&value) => properties.border_left_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).red = value,
+        "viemboxborderleftcolorgreen" if (0.0..=1.0).contains(&value) => properties.border_left_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).green = value,
+        "viemboxborderleftcolorblue" if (0.0..=1.0).contains(&value) => properties.border_left_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).blue = value,
+        "viemboxborderleftcoloralpha" if (0.0..=1.0).contains(&value) => properties.border_left_color.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).alpha = value,
+        "viemboxbackgroundred" if (0.0..=1.0).contains(&value) => properties.background.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).red = value,
+        "viemboxbackgroundgreen" if (0.0..=1.0).contains(&value) => properties.background.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).green = value,
+        "viemboxbackgroundblue" if (0.0..=1.0).contains(&value) => properties.background.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).blue = value,
+        "viemboxbackgroundalpha" if (0.0..=1.0).contains(&value) => properties.background.get_or_insert(Color { red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0 }).alpha = value,
+        _ => return false,
+    }
+    true
 }
 
 pub(super) fn definition_patches(
@@ -475,6 +572,16 @@ pub(super) fn definition_patches(
         controls.push_str(prefix.trim_start_matches('{').trim_end());
         if let Some(paragraph) = paragraph {
             controls.push_str(&paragraph_controls(paragraph)?);
+            let tables = rtf::tables(&rtf::tokenize(input));
+            for (side, color) in [("t", paragraph.border_top_color), ("r", paragraph.border_right_color),
+                ("b", paragraph.border_bottom_color), ("l", paragraph.border_left_color)] {
+                if let Some(index) = color.and_then(|color| tables.colors.iter().position(|entry| *entry == Some(color))) {
+                    controls.push_str(&format!("\\brdr{side}\\brdrcf{index}"));
+                }
+            }
+            if let Some(index) = paragraph.background.and_then(|color| tables.colors.iter().position(|entry| *entry == Some(color))) {
+                controls.push_str(&format!("\\cbpat{index}"));
+            }
         }
         patches.extend(property_patches);
         let name = rtf::escape(&metadata.display_name).replace(';', "\\u59?");
@@ -745,4 +852,50 @@ pub(super) fn remove_assignment_patches(
             _ => None,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod block_box_tests {
+    use super::*;
+
+    #[test]
+    fn rtf_named_paragraph_box_round_trips_exactly_and_undo_restores_source() {
+        let source = r"{\rtf1{\stylesheet{\s0 Base;}{\s1\sbasedon0 Box;}}\s1 Text{\*\opaque keep}}";
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+        let mut style = document.projection().style_sheet().block_style(&"RtfP1".into()).unwrap().clone();
+        let color = Color { red: 0.2, green: 0.3, blue: 0.4, alpha: 0.5 };
+        style.block = BlockProperties {
+            margin_top: Some(2.125), margin_right: Some(-3.125), margin_bottom: Some(4.125), margin_left: Some(5.125),
+            padding_top: Some(1.125), padding_right: Some(2.125), padding_bottom: Some(3.125), padding_left: Some(4.125),
+            border_top_width: Some(0.625), border_top_color: Some(color), border_right_width: Some(1.625), border_right_color: Some(color),
+            border_bottom_width: Some(2.625), border_bottom_color: Some(color), border_left_width: Some(3.625), border_left_color: Some(color),
+            background: Some(color), ..Default::default()
+        };
+        document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
+            StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
+                origin: StyleDefinitionOrigin::SourceBacked, edit: StyleDefinitionEdit::UpdateBlock(style.clone()),
+            }))).unwrap();
+        let saved = document.source_bytes();
+        assert!(String::from_utf8_lossy(&saved).contains("\\brdrt\\brdrs\\brdrw"));
+        assert!(String::from_utf8_lossy(&saved).contains(r"{\*\opaque keep}"));
+        let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Rtf).unwrap();
+        assert_eq!(reopened.text(), "Text");
+        assert_eq!(reopened.projection().style_sheet().block_style(&style.id), Some(&style));
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), saved);
+    }
+
+    #[test]
+    fn native_rtf_border_and_shading_controls_project_into_the_box_model() {
+        let source = r"{\rtf1{\colortbl;\red255\green0\blue0;}\brdrt\brdrs\brdrw40\brsp60\brdrcf1\cbpat1 Text}";
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+        let paragraph = &document.projection().blocks()[0].direct_paragraph;
+        assert_eq!(paragraph.border_top_width, Some(2.0));
+        assert_eq!(paragraph.padding_top, Some(3.0));
+        assert_eq!(paragraph.border_top_color.unwrap().red, 1.0);
+        assert_eq!(paragraph.background.unwrap().red, 1.0);
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
 }

@@ -24,8 +24,18 @@ pub(super) fn replacement_insertion(
         return Ok(Some(super::super::html_typing::Insertion {
             source: source..source,
             source_caret: source + prefix.len() + body.len(),
-            syntax: format!("{prefix}{body}{newline}{fence}"),
+            syntax: format!("{prefix}{body}{newline}{fence}").split(newline)
+                .map(|line| format!("{}{line}", "> ".repeat(inherited.paragraph.quote_depth)))
+                .collect::<Vec<_>>().join(newline),
         }));
+    }
+    if inherited.paragraph.quote_depth > 0 && document.projection().text_tree().byte_len() == 0 {
+        let source = document.source_byte_len();
+        let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
+        let prefix = "> ".repeat(inherited.paragraph.quote_depth);
+        let syntax = escaped.split('\n').map(|line| format!("{prefix}{line}"))
+            .collect::<Vec<_>>().join(document.file_format().spelling());
+        return Ok(Some(super::super::html_typing::Insertion { source: source..source, source_caret: source + syntax.len(), syntax }));
     }
     let Some(destination) = &inherited.link else { return Ok(None) };
     let source = document.projection().source_insertion_point(

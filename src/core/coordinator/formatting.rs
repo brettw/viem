@@ -126,7 +126,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         if values.is_empty()
             || values.len() > 32
             || values.iter().any(|(property, _)| {
-                *property < StyleProperty::ParagraphSpacingBefore || !seen.insert(*property)
+                *property < StyleProperty::BlockMarginTop || !seen.insert(*property)
             })
         {
             return Err(CoreError::Document(DocumentError::UnsupportedFormatting));

@@ -126,7 +126,7 @@ final class EVStylePropertyLayoutTests: XCTestCase {
         window.setContentSize(NSSize(width: 700, height: 620))
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            for tab in [EVStyleEditorTab.character, .paragraph] {
+            for tab in [EVStyleEditorTab.character, .paragraph, .block] {
                 editor.selectTab(tab)
                 editor.view.layoutSubtreeIfNeeded()
                 let labels = descendants(of: editor.view).compactMap { $0 as? EVStyleControlLabel }

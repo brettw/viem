@@ -5,6 +5,7 @@ import ViemAppShell
 enum EVStyleEditorTab: Int {
     case character
     case paragraph
+    case block
 }
 
 struct EVStyleEditorInspection: Equatable {
@@ -15,6 +16,7 @@ struct EVStyleEditorInspection: Equatable {
     let selectedStyleKey: EVStyleKey?
     let selectedKind: EVStyleKind?
     let selectedTab: EVStyleEditorTab
+    let blockTabEnabled: Bool
     let paragraphTabEnabled: Bool
     let hasDocument: Bool
     let mutationsEnabled: Bool
@@ -24,6 +26,7 @@ struct EVStyleEditorInspection: Equatable {
     let styleCount: Int
     let characterPropertyCount: Int
     let paragraphPropertyCount: Int
+    let blockPropertyCount: Int
     let declaredProperties: Set<EVStyleProperty>
     let hasInvalidDraft: Bool
     let diagnostic: String
@@ -341,13 +344,14 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let editNextStyleButton = NSButton()
     private let availabilityLabel = NSTextField(wrappingLabelWithString: "")
     private let tabs = NSSegmentedControl(
-        labels: ["Character", "Paragraph"],
+        labels: ["Character", "Paragraph", "Block"],
         trackingMode: .selectOne,
         target: nil,
         action: nil
     )
     private let characterControls = NSView()
     private let paragraphControls = NSView()
+    private let blockControls = NSView()
     private let preview = EVCoreTextStylePreviewView()
     private let compactControls = EVCompactStyleControls()
     private let nextStyleRow = EVFollowingStyleRow()
@@ -357,9 +361,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     var inspection: EVStyleEditorInspection {
-        let selectedTab: EVStyleEditorTab = tabs.selectedSegment == EVStyleEditorTab.paragraph.rawValue
-            ? .paragraph
-            : .character
+        let selectedTab = EVStyleEditorTab(rawValue: tabs.selectedSegment) ?? .character
         let definition = selectedDefinition
         return EVStyleEditorInspection(
             targetDocumentIdentity: document.map { ObjectIdentifier($0.backend) },
@@ -369,6 +371,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             selectedStyleKey: hasTarget ? definition?.key : nil,
             selectedKind: definition?.kind,
             selectedTab: selectedTab,
+            blockTabEnabled: tabs.isEnabled(forSegment: EVStyleEditorTab.block.rawValue),
             paragraphTabEnabled: tabs.isEnabled(forSegment: EVStyleEditorTab.paragraph.rawValue),
             hasDocument: document != nil,
             mutationsEnabled: definition?.capabilities.contains(.declarations) == true,
@@ -378,6 +381,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             styleCount: snapshot?.definitions.count ?? 0,
             characterPropertyCount: EVStyleProperty.characterProperties.filter { definition?.properties[$0] != nil }.count,
             paragraphPropertyCount: EVStyleProperty.paragraphProperties.filter { definition?.properties[$0] != nil }.count,
+            blockPropertyCount: EVStyleProperty.blockProperties.filter { definition?.properties[$0] != nil }.count,
             declaredProperties: Set(definition?.properties.values.compactMap {
                 $0.isDeclared ? $0.property : nil
             } ?? []),
@@ -407,7 +411,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         stylePopup.setAccessibilityLabel("Style")
         stylePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        newStylePopup.addItems(withTitles: ["New", "New Paragraph Style", "New Character Style"])
+        newStylePopup.addItems(withTitles: ["New", "New Paragraph Style", "New Character Style", "New Container Style"])
         newStylePopup.target = self
         newStylePopup.action = #selector(newStylePressed(_:))
         newStylePopup.setAccessibilityLabel("Create style")
@@ -461,8 +465,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let controlsContainer = NSView()
         controlsContainer.addSubview(characterControls)
         controlsContainer.addSubview(paragraphControls)
+        controlsContainer.addSubview(blockControls)
         characterControls.translatesAutoresizingMaskIntoConstraints = false
         paragraphControls.translatesAutoresizingMaskIntoConstraints = false
+        blockControls.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             characterControls.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor),
             characterControls.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor),
@@ -472,6 +478,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             paragraphControls.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor),
             paragraphControls.topAnchor.constraint(equalTo: controlsContainer.topAnchor),
             paragraphControls.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor),
+            blockControls.leadingAnchor.constraint(equalTo: controlsContainer.leadingAnchor),
+            blockControls.trailingAnchor.constraint(equalTo: controlsContainer.trailingAnchor),
+            blockControls.topAnchor.constraint(equalTo: controlsContainer.topAnchor),
+            blockControls.bottomAnchor.constraint(equalTo: controlsContainer.bottomAnchor),
         ])
 
         let formattingBox = EVStyleEditorSectionView()
@@ -506,7 +516,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         bottom.orientation = .horizontal
         bottom.alignment = .centerY
 
-        let tabsContainer = centeredContainer(tabs, maximumWidth: 260, horizontalInset: 0)
+        let tabsContainer = centeredContainer(tabs, maximumWidth: 320, horizontalInset: 0)
 
         let stack = NSStackView(views: [
             propertiesContainer, availabilityLabel,
@@ -653,7 +663,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 while handles.contains(handle) { handle += 1 }
                 id = "\(prefix)\(handle)"
             } else { id = UUID().uuidString.lowercased() }
-            let key = EVStyleKey(namespace: kind == .paragraph ? .block : .character,
+            let key = EVStyleKey(namespace: kind == .character ? .character : .block,
                                  id: EVStyleID(rawValue: id))
             let baseName = "New \(kind.displayName) Style"
             var name = baseName
@@ -662,7 +672,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 name = "\(baseName) \(suffix)"
                 suffix += 1
             }
-            _ = try session.createStyle(key, name: name, identity: latest.identity)
+            let parent = kind.isContainer
+                ? (latest.definition(for: self.selectedStyleKey)?.kind == kind
+                    ? self.selectedStyleKey.id : latest.definitions.first { $0.kind == kind }?.key.id)
+                : nil
+            guard !kind.isContainer || parent != nil else { return }
+            _ = try session.createStyle(key, name: name, parent: parent, identity: latest.identity)
             self.selectedStyleKey = key
         }
     }
@@ -794,7 +809,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             guard let self else { return }
             _ = self.commit(key.map { .setNextStyle($0.id) } ?? .clearNextStyle)
         }
-        for (child, container) in [(compactControls.characterView, characterControls), (compactControls.paragraphView, paragraphControls)] {
+        for (child, container) in [(compactControls.characterView, characterControls), (compactControls.paragraphView, paragraphControls), (compactControls.blockView, blockControls)] {
             child.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(child)
             NSLayoutConstraint.activate([
@@ -837,6 +852,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         selectPopupItem(for: definition.key)
         newStylePopup.isEnabled = codeSession != nil || (document.map { [.html, .htmlSource, .rtf].contains($0.backend.sourceFormat) } ?? false)
         newStylePopup.item(at: 1)?.isHidden = codeSession != nil
+        newStylePopup.item(at: 3)?.isHidden = codeSession != nil || document?.backend.sourceFormat == .rtf
+        newStylePopup.item(at: 3)?.isEnabled = snapshot.definitions.contains { $0.kind.isContainer }
         deleteStyleButton.isEnabled = definition.capabilities.contains(.delete)
         nameField.stringValue = definition.name
         nameDraftIsInvalid = false
@@ -863,7 +880,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
         availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
 
-        let sizeBasisKey = definition.kind == .paragraph ? definition.parentKey : .baseParagraph
+        let sizeBasisKey = definition.kind != .character ? definition.parentKey : .baseParagraph
         let sizeBasis: Float? = {
             guard let sizeBasisKey,
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
@@ -879,13 +896,18 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         )
         configureNavigationTargets(snapshot: snapshot, definition: definition)
 
-        let paragraphEnabled = definition.kind == .paragraph
+        let paragraphEnabled = definition.kind != .character
         tabs.setEnabled(true, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(paragraphEnabled, forSegment: EVStyleEditorTab.paragraph.rawValue)
-        if !paragraphEnabled, tabs.selectedSegment == EVStyleEditorTab.paragraph.rawValue {
-            if let firstResponder = view.window?.firstResponder as? NSView,
-               firstResponder === paragraphControls || firstResponder.isDescendant(of: paragraphControls)
-            {
+        tabs.setEnabled(definition.kind != .character, forSegment: EVStyleEditorTab.block.rawValue)
+        if !tabs.isEnabled(forSegment: tabs.selectedSegment) {
+            let responder = view.window?.firstResponder as? NSView
+            let editingControl = (responder as? NSTextView).flatMap {
+                $0.isFieldEditor ? $0.delegate as? NSView : nil
+            } ?? responder
+            if let editingControl, [paragraphControls, blockControls].contains(where: {
+                editingControl === $0 || editingControl.isDescendant(of: $0)
+            }) {
                 view.window?.makeFirstResponder(tabs)
             }
             tabs.selectedSegment = EVStyleEditorTab.character.rawValue
@@ -899,11 +921,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         let definitions = snapshot.definitions.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
-        let sections = EVStyleKind.allCases.map { kind in
-            (kind.displayName, definitions.filter {
-                $0.kind == kind && !$0.flags.contains(.internalSyntax)
-            })
-        } + [("Internal", definitions.filter { $0.flags.contains(.internalSyntax) })]
+        let sections = [
+            ("Paragraph", definitions.filter { $0.kind == .paragraph && !$0.flags.contains(.internalSyntax) }),
+            ("Character", definitions.filter { $0.kind == .character && !$0.flags.contains(.internalSyntax) }),
+            ("Container", definitions.filter { $0.kind.isContainer && !$0.flags.contains(.internalSyntax) }),
+            ("Internal", definitions.filter { $0.flags.contains(.internalSyntax) }),
+        ]
         for (title, styles) in sections {
             menu.addItem(.sectionHeader(title: title))
             for definition in styles {
@@ -1141,10 +1164,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
+        tabs.setEnabled(false, forSegment: EVStyleEditorTab.block.rawValue)
         compactControls.configure(nil, theme: themeStore.theme)
         nextStyleRow.configure(selected: nil, choices: [], editable: false)
         characterControls.isHidden = false
         paragraphControls.isHidden = true
+        blockControls.isHidden = true
         preview.showUnavailable()
     }
 
@@ -1161,6 +1186,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         editNextStyleButton.isEnabled = false
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
+        tabs.setEnabled(false, forSegment: EVStyleEditorTab.block.rawValue)
         availabilityLabel.stringValue = diagnosticMessage.isEmpty ? "Styles are temporarily unavailable." : diagnosticMessage
         availabilityLabel.isHidden = false
         availabilityLabel.textColor = .systemRed
@@ -1287,7 +1313,9 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func newStylePressed(_ sender: NSPopUpButton) {
-        let kind: EVStyleKind = sender.indexOfSelectedItem == 2 ? .character : .paragraph
+        let kind: EVStyleKind = sender.indexOfSelectedItem == 3
+            ? (selectedDefinition?.kind.isContainer == true ? selectedDefinition!.kind : .quote)
+            : sender.indexOfSelectedItem == 2 ? .character : .paragraph
         if createStyle(kind: kind) { view.window?.makeFirstResponder(nameField) }
     }
 
@@ -1317,8 +1345,11 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     @objc private func tabChanged(_ sender: NSSegmentedControl) {
         let showParagraph = sender.selectedSegment == EVStyleEditorTab.paragraph.rawValue
             && sender.isEnabled(forSegment: EVStyleEditorTab.paragraph.rawValue)
-        characterControls.isHidden = showParagraph
+        let showBlock = sender.selectedSegment == EVStyleEditorTab.block.rawValue
+            && sender.isEnabled(forSegment: EVStyleEditorTab.block.rawValue)
+        characterControls.isHidden = showParagraph || showBlock
         paragraphControls.isHidden = !showParagraph
+        blockControls.isHidden = !showBlock
     }
 
     @objc private func closePressed(_ sender: Any?) { onClose?() }

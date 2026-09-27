@@ -105,7 +105,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     private func assertOverridesLockedAndValuesEditable(in editor: EVStyleEditorViewController) throws {
         let overrides = descendants(of: editor.view).compactMap { $0 as? NSButton }
             .filter { $0.toolTip == "Override inherited" }
-        let expectedProperties = Set((EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties)
+        let expectedProperties = Set((EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties + EVStyleProperty.blockProperties)
             .filter { $0 != .characterLanguage }.map { Int($0.rawValue) })
         XCTAssertEqual(Set(overrides.map(\.tag)), expectedProperties,
                        "Every character and paragraph override must be covered")
@@ -123,9 +123,11 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
                 "Italic", "Underline", "Strikethrough", "Text color", "Background color", "Tracking",
                 "Superscript", "Subscript", "Character direction", "Adjust size", "Adjust tracking"]),
             (EVStyleEditorTab.paragraph, ["Paragraph alignment", "Paragraph direction", "Start indent",
-                "End indent", "First line", "Space before", "Space after", "Line spacing kind",
-                "Adjust start indent", "Adjust end indent", "Adjust first line", "Adjust space before",
-                "Adjust space after"]),
+                "End indent", "First line", "Line spacing kind",
+                "Adjust start indent", "Adjust end indent", "Adjust first line"]),
+            (EVStyleEditorTab.block, ["Margin top", "Margin right", "Margin bottom", "Margin left",
+                "Padding top", "Padding right", "Padding bottom", "Padding left", "Block background",
+                "Border top weight", "Border right weight", "Border bottom weight", "Border left weight"]),
         ] {
             editor.selectTab(tab)
             for label in labels {

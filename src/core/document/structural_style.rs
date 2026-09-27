@@ -1,5 +1,5 @@
-//! Paragraph style commands replace the current structural treatment. Imported
-//! nested containers remain readable; only selected paragraphs are normalized.
+//! Leaf style changes preserve enclosing containers. Container commands wrap
+//! or unwrap selected leaves without replacing their inner paragraph styles.
 use super::replacement::PatchComposition;
 use super::*;
 
@@ -84,15 +84,18 @@ impl Document {
         self.validate_range(&range)?;
         let wants_quote =
             matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Block quote");
+        if wants_quote { return Ok(None); }
         let wants_plain = matches!(&assignment, Assignment::Paragraph(style)
             if style == &self.projection().style_sheet().base_paragraph);
+        if wants_plain { return self.prepare_contextual_base_style(range).map(Some); }
         let wants_code = matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
                 structural_body(block)
             } else {
-                (block.style.0 == "Block quote" || block.quote_depth > 0)
+                wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
+                    || self.format().is_markdown() && !wants_code && block.style.0 == "Code Block"
                     || (wants_plain || wants_code && block.style.0 != "Code Block")
                         && structural_body(block)
             }
@@ -110,8 +113,9 @@ impl Document {
         loop {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
-                structural_body(block) && !(wants_code && block.style.0 == "Code Block")
-                    || !wants_quote && (block.style.0 == "Block quote" || block.quote_depth > 0)
+                (wants_plain || wants_code || block.style.0 == "Code Block")
+                    && structural_body(block) && !(wants_code && block.style.0 == "Code Block")
+                    || wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
                 break;
@@ -186,6 +190,39 @@ impl Document {
         }
         prepared.summary.kind = ModelChangeKind::SemanticStyle;
         Ok(Some(prepared))
+    }
+
+    /// The picker exposes one active treatment. Reset that treatment once per
+    /// leaf, preserving enclosing owners instead of repeatedly flattening them.
+    fn prepare_contextual_base_style(&self, range: Range<usize>) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let selected = selected_blocks(self, &range);
+        if !selected.is_empty() && selected.iter().all(|block| block.quote_depth > 0
+            && matches!(block.kind, super::super::BlockKind::Paragraph)
+            && (block.style == self.projection().style_sheet().base_paragraph || block.style.0 == "Block quote")) {
+            return self.prepare_structural_assignment_raw(range, Assignment::Paragraph(self.projection().style_sheet().base_paragraph.clone()));
+        }
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let mut formatted = PatchComposition::new(self.text().len());
+        for block in selected.into_iter().rev() {
+            let mut target = block.range;
+            let style = scratch.projection().style_sheet().base_paragraph.clone();
+            let prepared = scratch.prepare_structural_assignment_raw(target.clone(), Assignment::Paragraph(style))?;
+            publish(&mut scratch, prepared, &mut target, &mut sources, &mut formatted)?;
+        }
+        let patches = sources.source_patches(&scratch.state().source)?;
+        if patches.is_empty() { return Ok(self.no_op_prepared()); }
+        let mut prepared = self.prepare_reprojected_source_patches(patches)?;
+        let PreparedPublication::State(candidate) = &prepared.publication else { return Err(DocumentError::VerificationFailed.into()); };
+        if candidate.projection.text() != scratch.text()
+            || !candidate.projection.has_same_hard_line_structure(scratch.projection())
+            || candidate.projection.style_spans() != scratch.projection().style_spans()
+            || candidate.projection.blocks().iter().map(|block| (&block.range, &block.attributes))
+                .ne(scratch.projection().blocks().iter().map(|block| (&block.range, &block.attributes))) {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        prepared.summary.kind = ModelChangeKind::SemanticStyle;
+        Ok(prepared)
     }
 
     fn prepare_structural_assignment_raw(

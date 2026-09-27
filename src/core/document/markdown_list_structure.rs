@@ -78,7 +78,7 @@ pub(super) fn joining_patches(
     let mut patches = merged.into_iter().enumerate().map(|(index, source)| {
         SourcePatch::primary(source, if index == 0 { replacement.clone() } else { Vec::new() })
     }).collect::<Vec<_>>();
-    if first.style.0 != "Block quote" && last.style.0 == "Block quote" {
+    if first.style.0 != "Block quote" && first.quote_depth == 0 && (last.style.0 == "Block quote" || last.quote_depth > 0) {
         let lines = &document.state().source_hard_lines;
         let first_line = lines.line_at_offset(at).ok_or(DocumentError::AmbiguousProjection)?;
         let end = projection.source_range(last.range.clone()).ok_or(DocumentError::AmbiguousProjection)?.end;

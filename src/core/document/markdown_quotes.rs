@@ -18,7 +18,7 @@ pub(super) fn empty_insertion_patches(
         .into_iter()
         .find(|block| {
             block.range == *range
-                && block.style.0 == "Block quote"
+                && (block.style.0 == "Block quote" || block.quote_depth > 0)
                 && matches!(block.kind, BlockKind::Paragraph)
         })
     else {

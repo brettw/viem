@@ -32,7 +32,7 @@ pub unsafe extern "C" fn viem_core_view_edit_direct_properties(
             }
             validate_logical_selection_identity(request.expected_selection, expected_selection)?;
             let property = parse_style_property(request.property)?;
-            if property < StyleProperty::ParagraphSpacingBefore || !seen.insert(property) {
+            if property < StyleProperty::BlockMarginTop || !seen.insert(property) {
                 return Err(ViemStatus::InvalidArgument);
             }
             let value = match request.operation {
@@ -166,7 +166,7 @@ pub unsafe extern "C" fn viem_core_view_copy_formatting(
             let mut items = Vec::new();
             let mut strings = Vec::new();
             for id in
-                VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE..=VIEM_STYLE_PROPERTY_CHARACTER_BOLD
+                VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP..=VIEM_STYLE_PROPERTY_CHARACTER_BOLD
             {
                 let property = parse_style_property(id)?;
                 let value = if crate::document::is_character_property(property) {

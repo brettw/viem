@@ -84,6 +84,8 @@ impl Document {
         };
         let quote = block.style == StyleId::from("Block quote") || block.quote_depth > 0;
         if empty_quote_only {
+            // Literal code owns its blank lines even inside a quotation.
+            if super::super::edit_boundary::is_code_paragraph(self, &block)? { return Ok(None); }
             if !quote || !self.text()[block.range.clone()].trim().is_empty() {
                 return Ok(None);
             }

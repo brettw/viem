@@ -16,7 +16,7 @@ fn configure(document: &Document, intent: ConfigurationStyleIntent) -> StyleMode
     request(document, StyleModelIntent::Configuration(intent))
 }
 
-fn update_heading(document: &Document, size: f32, spacing_after: f32) -> StyleModelRequest {
+fn update_heading(document: &Document, size: f32, margin_bottom: f32) -> StyleModelRequest {
     let mut heading = document
         .projection()
         .style_sheet()
@@ -24,7 +24,7 @@ fn update_heading(document: &Document, size: f32, spacing_after: f32) -> StyleMo
         .unwrap()
         .clone();
     heading.character.size = Some((size).into());
-    heading.block.spacing_after = Some(spacing_after);
+    heading.block.margin_bottom = Some(margin_bottom);
     configure(
         document,
         ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateBlock(heading)),
@@ -72,7 +72,7 @@ fn configuration_definition_edit_is_atomic_source_unchanged_and_branching() {
     assert_eq!(
         style_change.changed_properties(),
         &BTreeSet::from([
-            StyleProperty::ParagraphSpacingAfter,
+            StyleProperty::BlockMarginBottom,
             StyleProperty::CharacterSize,
         ])
     );
@@ -655,7 +655,7 @@ fn future_persisted_block_and_direct_intentions_are_typed_even_when_rejected() {
         PersistedStyleIntent::SetDirectBlockProperties {
             target: StyleBlockTarget::Paragraphs(range),
             properties: BlockProperties {
-                spacing_after: Some(4.0),
+                margin_bottom: Some(4.0),
                 ..BlockProperties::default()
             },
         },

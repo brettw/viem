@@ -20,7 +20,7 @@ impl Document {
         let mut clear_paragraphs = BTreeSet::new();
         let mut seen = BTreeSet::new();
         for (property, value) in values {
-            if !seen.insert(property) || property < StyleProperty::ParagraphSpacingBefore {
+            if !seen.insert(property) || super::super::style::CANVAS_STYLE_PROPERTIES.contains(&property) {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
             let character = super::super::style::is_character_property(property);

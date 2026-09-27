@@ -1,6 +1,7 @@
 //! Width-independent shaping and per-view unpaginated layout.
 
 mod composition;
+mod block_box;
 mod direction;
 mod engine;
 mod height_index;
@@ -13,6 +14,7 @@ mod measurement;
 mod mock;
 mod search_overlay;
 mod scroll;
+mod row_intervals;
 mod style;
 mod zoom;
 mod whitespace;
@@ -32,7 +34,7 @@ pub use engine::{
     CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutPoint, LayoutRect, LayoutRevision,
     LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret,
-    DecorationKind, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
+    DecorationKind, DecorationOwner, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
     RegionalLayoutCacheStatistics, RegionalLayoutSnapshot, SelectionRectangle,
     ShapingCacheStatistics,
     ViewConfigurationGeneration, ViewLayout, ViewLayoutState, VisualRow,
@@ -61,3 +63,4 @@ pub use style::{
     DocumentLayoutStyles, DocumentStyleError, DocumentStyleInput, PaintStyleRun,
     ParagraphLayoutStyle, ResolvedTextPaint,
 };
+pub use block_box::{BlockBoxStyle, ContainerLayoutStyle};

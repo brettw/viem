@@ -4423,14 +4423,17 @@ impl Document {
                 range = first.range.start..last.range.end;
             }
         }
-        if style == self.projection().style_sheet().base_paragraph {
+        if style == self.projection().style_sheet().base_paragraph && !structural_style::selected_blocks(self, &range).iter().any(|block| block.style.0.starts_with("Heading")) {
             if let Some(prepared) = self.prepare_markdown_list_as_prose(&range)? {
                 return Ok(prepared);
+            }
+            if structural_style::selected_blocks(self, &range).iter().any(|block| matches!(block.kind, super::BlockKind::ListItem { .. })) {
+                return self.prepare_list_style_raw(range, None);
             }
         }
         if style.0 == "Block quote"
             || style.0 == "Paragraph" && self.projection().blocks_for_region(&range)
-                .iter().any(|block| block.style.0 == "Block quote" || block.quote_depth > 0)
+                .iter().any(|block| (block.style.0 == "Block quote" || block.quote_depth > 0) && matches!(block.kind, super::BlockKind::Paragraph) && block.style.0 != "Code Block")
         {
             return self.prepare_markdown_quote_style(range, style.0 == "Block quote");
         }
@@ -4470,20 +4473,17 @@ impl Document {
                 break;
             }
             let (source_line, decoded) = self.decoded_source_hard_line(&line, index)?;
-            let (old_prefix, _) =
-                super::projection::markdown_block_prefix(&decoded.text, 0, decoded.text.len());
-            let old_prefix =
-                super::markdown_blocks::marker_prefix_length(&decoded.text).unwrap_or(old_prefix);
-            if decoded.text[..old_prefix] == prefix {
-                continue;
-            }
-            let removed_bytes = self
-                .state()
-                .encoding
-                .encode_fragment(&decoded.text[..old_prefix])?
-                .len();
+            let mut container_prefix = super::markdown_quotes::prefix(&decoded.text);
+            let in_list = self.projection().blocks_for_region(&line).iter().any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }));
+            if in_list { container_prefix += super::markdown_blocks::marker_prefix_length(&decoded.text[container_prefix..]).unwrap_or(0); }
+            let body = &decoded.text[container_prefix..];
+            let (old_prefix, _) = super::projection::markdown_block_prefix(body, 0, body.len());
+            let old_prefix = super::markdown_blocks::marker_prefix_length(body).unwrap_or(old_prefix);
+            if body[..old_prefix] == prefix { continue; }
+            let source_start = source_line.start + self.encoding().encode_fragment(&decoded.text[..container_prefix])?.len();
+            let removed_bytes = self.encoding().encode_fragment(&body[..old_prefix])?.len();
             patches.push(SourcePatch::primary(
-                source_line.start..source_line.start + removed_bytes,
+                source_start..source_start + removed_bytes,
                 self.state().encoding.encode_fragment(&prefix)?,
             ));
             let visible = self
@@ -4491,19 +4491,17 @@ impl Document {
                 .text_tree()
                 .slice(line.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            let (visible_prefix, _) =
-                super::projection::markdown_block_prefix(&visible, 0, visible.len());
-            let remove = if self.format() == Format::MarkdownSource {
-                visible_prefix
-            } else {
-                0
-            };
+            let mut visible_container = if self.format() == Format::MarkdownSource { super::markdown_quotes::prefix(&visible) } else { 0 };
+            if self.format() == Format::MarkdownSource && in_list { visible_container += super::markdown_blocks::marker_prefix_length(&visible[visible_container..]).unwrap_or(0); }
+            let visible_body = &visible[visible_container..];
+            let (visible_prefix, _) = super::projection::markdown_block_prefix(visible_body, 0, visible_body.len());
+            let remove = if self.format() == Format::MarkdownSource { visible_prefix } else { 0 };
             let replacement = if self.format() == Format::MarkdownSource {
                 prefix.clone()
             } else {
                 String::new()
             };
-            edits.push(TextEdit::new(line.start..line.start + remove, replacement));
+            edits.push(TextEdit::new(line.start + visible_container..line.start + visible_container + remove, replacement));
         }
         if self.format() == Format::Markdown && level > 0 {
             self.prepare_markdown_heading_patches(patches, &range, &style)
@@ -4573,9 +4571,11 @@ impl Document {
                 .text_tree()
                 .slice(line.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
+            let visible_container = if self.format() == Format::MarkdownSource { super::markdown_quotes::prefix(&visible) } else { 0 };
+            let visible_body = &visible[visible_container..];
             let (visible_prefix, visible_kind) =
-                super::projection::markdown_block_prefix(&visible, 0, visible.len());
-            let indent = visible.bytes().take_while(|byte| *byte == b' ').count();
+                super::projection::markdown_block_prefix(visible_body, 0, visible_body.len());
+            let indent = visible_body.bytes().take_while(|byte| *byte == b' ').count();
             let already_list = self
                 .projection()
                 .blocks_for_region(&line)
@@ -4615,13 +4615,15 @@ impl Document {
                 }
             };
             ordinal += 1;
-            if self.format() != Format::Markdown && visible[..remove_visible] == prefix {
+            if self.format() != Format::Markdown && visible_body[..remove_visible] == prefix {
                 continue;
             }
             let (source_line, decoded) = self.decoded_source_hard_line(&line, index)?;
+            let source_container = if self.format().is_markdown() { super::markdown_quotes::prefix(&decoded.text) } else { 0 };
+            let source_body = &decoded.text[source_container..];
             let (source_prefix, source_kind) =
-                super::projection::markdown_block_prefix(&decoded.text, 0, decoded.text.len());
-            let complete_marker = super::markdown_blocks::marker_prefix_length(&decoded.text);
+                super::projection::markdown_block_prefix(source_body, 0, source_body.len());
+            let complete_marker = super::markdown_blocks::marker_prefix_length(source_body);
             let remove_source = if let Some(prefix) = complete_marker {
                 prefix
             } else if matches!(source_kind, super::BlockKind::ListItem { .. })
@@ -4631,8 +4633,7 @@ impl Document {
             {
                 source_prefix
             } else if style.is_some() {
-                decoded
-                    .text
+                source_body
                     .bytes()
                     .take_while(|byte| *byte == b' ')
                     .count()
@@ -4642,11 +4643,10 @@ impl Document {
             let removed_bytes = self
                 .state()
                 .encoding
-                .encode_fragment(&decoded.text[..remove_source])?
+                .encode_fragment(&source_body[..remove_source])?
                 .len();
             let source_prefix = if self.format() == Format::Markdown {
-                let indent = decoded
-                    .text
+                let indent = source_body
                     .bytes()
                     .take_while(|byte| *byte == b' ')
                     .count();
@@ -4660,15 +4660,16 @@ impl Document {
             } else {
                 prefix.clone()
             };
-            if decoded.text[..remove_source] == source_prefix {
+            if source_body[..remove_source] == source_prefix {
                 continue;
             }
+            let source_start = source_line.start + self.encoding().encode_fragment(&decoded.text[..source_container])?.len();
             patches.push(SourcePatch::primary(
-                source_line.start..source_line.start + removed_bytes,
+                source_start..source_start + removed_bytes,
                 self.state().encoding.encode_fragment(&source_prefix)?,
             ));
             edits.push(TextEdit::new(
-                line.start..line.start + remove_visible,
+                line.start + visible_container..line.start + visible_container + remove_visible,
                 prefix,
             ));
         }
@@ -9046,7 +9047,7 @@ fn effective_block_definition_changes(
                 )?;
                 changed.extend(before.changed_properties(&after));
             }
-            super::BlockRole::Paragraph => {
+            super::BlockRole::Paragraph | super::BlockRole::Quote | super::BlockRole::CodeBlock | super::BlockRole::List | super::BlockRole::ListItem => {
                 let before = before_sheet.resolve_assigned_paragraph_style(
                     before_assignment,
                     id,
@@ -9219,6 +9220,15 @@ struct MarkdownSourceRegionSignature {
     styles: Vec<(Range<usize>, super::StyleApplication)>,
 }
 
+fn markdown_regional_attributes(block: &super::Block) -> std::sync::Arc<super::projection::BlockAttributes> {
+    if block.containers.is_empty() { return block.attributes.clone(); }
+    let mut attributes = (*block.attributes).clone();
+    attributes.containers = attributes.containers.iter().map(|member| {
+        let mut member = member.clone(); member.starts_here = false; member.ends_here = false; member
+    }).collect::<Vec<_>>().into();
+    std::sync::Arc::new(attributes)
+}
+
 fn markdown_source_region_signature(
     projection: &FormattedDocument,
     range: &Range<usize>,
@@ -9230,7 +9240,7 @@ fn markdown_source_region_signature(
         blocks: projection
             .blocks_for_region(range)
             .into_iter()
-            .map(|block| (clip(&block.range), block.attributes.clone()))
+            .map(|block| (clip(&block.range), markdown_regional_attributes(&block)))
             .collect(),
         flows: projection
             .flow_ranges_for_region(range)
@@ -9249,7 +9259,7 @@ fn markdown_source_row_signature(
     projection: &FormattedDocument,
     row: &Range<usize>,
 ) -> (Option<std::sync::Arc<super::projection::BlockAttributes>>, Vec<(Range<usize>, super::StyleApplication)>) {
-    let owner = markdown_source_row_owner(projection, row).map(|block| block.attributes.clone());
+    let owner = markdown_source_row_owner(projection, row).map(|block| markdown_regional_attributes(&block));
     let styles = projection
         .style_spans_for_region(row)
         .into_iter()

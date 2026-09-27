@@ -58,22 +58,17 @@ pub(super) fn native_style_selector(
         Some("p".into())
     } else if id.0 == "Block quote" {
         Some("blockquote".into())
+    } else if id.0 == "Bulleted List" {
+        Some("ul".into())
+    } else if id.0 == "Numbered List" {
+        Some("ol".into())
+    } else if id.0 == "List item" {
+        Some("li".into())
     } else if let Some(level) = builtin_heading(id) {
         Some(format!("h{level}"))
     } else if let Some((ordered, level)) = id.list_family_level() {
         let ancestors = "li ".repeat(usize::from(level - 1));
         Some(format!("{ancestors}{} > li", if ordered { "ol" } else { "ul" }))
-    } else if let Some(level) =
-        id.0.strip_prefix("List")
-            .and_then(|s| s.parse::<u16>().ok())
-            .filter(|level| (1..=256).contains(level) && id.0 == format!("List{level}"))
-    {
-        Some(
-            std::iter::repeat("li")
-                .take(usize::from(level))
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
     } else {
         (id.0 == "Code Block").then(|| "pre".into())
     }
@@ -96,6 +91,9 @@ fn native_definition(selector: &str) -> Option<(StyleSheet, StyleId, bool)> {
         "p" => sheet.base_paragraph.clone(),
         "pre" => StyleId::from("Code Block"),
         "blockquote" => StyleId::from("Block quote"),
+        "ul" => StyleId::from("Bulleted List"),
+        "ol" => StyleId::from("Numbered List"),
+        "li" => StyleId::from("List item"),
         "code" => StyleId::from("Code"),
         _ if selector.starts_with('h') && selector.len() == 2 => {
             let id = StyleId(format!("Heading{}", &selector[1..]));
@@ -353,11 +351,11 @@ fn properties(
         }.to_owned()
     );
     item!(
-        "paragraph-spacing-before",
-        block.spacing_before,
+        "block-margin-top",
+        block.margin_top,
         |v: &f32| v.to_string()
     );
-    item!("paragraph-spacing-after", block.spacing_after, |v: &f32| v
+    item!("block-margin-bottom", block.margin_bottom, |v: &f32| v
         .to_string());
     item!(
         "paragraph-line-spacing",
@@ -399,16 +397,26 @@ fn properties(
         block.base_direction,
         |v: &WritingDirection| direction(*v).to_owned()
     );
-    item!("canvas-background", block.background, |v: &Color| {
+    item!("block-margin-right", block.margin_right, |v: &f32| v.to_string());
+    item!("block-margin-left", block.margin_left, |v: &f32| v.to_string());
+    item!("block-border-top-width", block.border_top_width, |v: &f32| v.to_string());
+    item!("block-border-top-color", block.border_top_color, |v: &Color| color_value(*v));
+    item!("block-border-right-width", block.border_right_width, |v: &f32| v.to_string());
+    item!("block-border-right-color", block.border_right_color, |v: &Color| color_value(*v));
+    item!("block-border-bottom-width", block.border_bottom_width, |v: &f32| v.to_string());
+    item!("block-border-bottom-color", block.border_bottom_color, |v: &Color| color_value(*v));
+    item!("block-border-left-width", block.border_left_width, |v: &f32| v.to_string());
+    item!("block-border-left-color", block.border_left_color, |v: &Color| color_value(*v));
+    item!("block-background", block.background, |v: &Color| {
         color_value(*v)
     });
-    item!("canvas-padding-top", block.padding_top, |v: &f32| v
+    item!("block-padding-top", block.padding_top, |v: &f32| v
         .to_string());
-    item!("canvas-padding-right", block.padding_right, |v: &f32| v
+    item!("block-padding-right", block.padding_right, |v: &f32| v
         .to_string());
-    item!("canvas-padding-bottom", block.padding_bottom, |v: &f32| v
+    item!("block-padding-bottom", block.padding_bottom, |v: &f32| v
         .to_string());
-    item!("canvas-padding-left", block.padding_left, |v: &f32| v
+    item!("block-padding-left", block.padding_left, |v: &f32| v
         .to_string());
     out
 }
@@ -458,8 +466,8 @@ fn parse_property(
             "subscript" => ScriptPosition::Subscript,
             _ => return None,
         }),
-        "paragraph-spacing-before" => b.spacing_before = Some(float()?),
-        "paragraph-spacing-after" => b.spacing_after = Some(float()?),
+        "block-margin-top" => b.margin_top = Some(float()?),
+        "block-margin-bottom" => b.margin_bottom = Some(float()?),
         "paragraph-line-spacing" => {
             b.line_spacing = Some(if value == "normal" {
                 LineSpacing::Normal
@@ -486,11 +494,21 @@ fn parse_property(
             })
         }
         "paragraph-base-direction" => b.base_direction = Some(parse_direction(value)?),
-        "canvas-background" => b.background = Some(parse_color(value)?),
-        "canvas-padding-top" => b.padding_top = Some(float()?),
-        "canvas-padding-right" => b.padding_right = Some(float()?),
-        "canvas-padding-bottom" => b.padding_bottom = Some(float()?),
-        "canvas-padding-left" => b.padding_left = Some(float()?),
+        "block-margin-right" => b.margin_right = Some(float()?),
+        "block-margin-left" => b.margin_left = Some(float()?),
+        "block-border-top-width" => b.border_top_width = Some(float()?),
+        "block-border-top-color" => b.border_top_color = Some(parse_color(value)?),
+        "block-border-right-width" => b.border_right_width = Some(float()?),
+        "block-border-right-color" => b.border_right_color = Some(parse_color(value)?),
+        "block-border-bottom-width" => b.border_bottom_width = Some(float()?),
+        "block-border-bottom-color" => b.border_bottom_color = Some(parse_color(value)?),
+        "block-border-left-width" => b.border_left_width = Some(float()?),
+        "block-border-left-color" => b.border_left_color = Some(parse_color(value)?),
+        "block-background" => b.background = Some(parse_color(value)?),
+        "block-padding-top" => b.padding_top = Some(float()?),
+        "block-padding-right" => b.padding_right = Some(float()?),
+        "block-padding-bottom" => b.padding_bottom = Some(float()?),
+        "block-padding-left" => b.padding_left = Some(float()?),
         _ => return None,
     }
     Some(())
@@ -553,16 +571,12 @@ fn parse_rule(text: &str) -> Option<StyleDefinitionEdit> {
                 metadata,
             })
         }
-        "document" | "paragraph" => Some(StyleDefinitionEdit::InsertBlock {
+        "document" | "paragraph" | "quote" | "code-block" | "list" | "list-item" => Some(StyleDefinitionEdit::InsertBlock {
             style: BlockStyle {
                 id,
                 based_on: parent,
                 next_paragraph_style: next,
-                role: if role == "document" {
-                    BlockRole::Document
-                } else {
-                    BlockRole::Paragraph
-                },
+                role: parse_block_role(&role)?,
                 character,
                 block,
             },
@@ -809,7 +823,7 @@ pub(super) fn select_class(sheet: &StyleSheet, classes: &str, character: bool) -
         } else {
             sheet
                 .block_styles()
-                .find(|s| s.role == BlockRole::Paragraph && class_name(&s.id, false) == token)
+                .find(|s| s.role != BlockRole::Document && class_name(&s.id, false) == token)
                 .map(|s| s.id.clone())
         };
         if id.is_some() {
@@ -875,8 +889,10 @@ pub(super) fn block_css(properties: &BlockProperties) -> String {
             }
         };
     }
-    length!("margin-block-start", spacing_before);
-    length!("margin-block-end", spacing_after);
+    length!("margin-left", margin_left);
+    length!("margin-right", margin_right);
+    length!("margin-block-start", margin_top);
+    length!("margin-block-end", margin_bottom);
     length!("margin-inline-start", leading_indent);
     length!("margin-inline-end", trailing_indent);
     length!("text-indent", first_line_indent);
@@ -884,6 +900,34 @@ pub(super) fn block_css(properties: &BlockProperties) -> String {
     length!("padding-right", padding_right);
     length!("padding-bottom", padding_bottom);
     length!("padding-left", padding_left);
+    if let Some(v) = properties.border_top_width {
+        out.push_str(&format!("border-top-width: {v}pt; border-top-style: solid; "));
+    }
+    if let Some(color) = properties.border_top_color {
+        let css = html::character_css(&CharacterProperties { foreground: Some(color), ..Default::default() });
+        out.push_str(&css.replacen("color:", "border-top-color:", 1)); out.push_str("; ");
+    }
+    if let Some(v) = properties.border_right_width {
+        out.push_str(&format!("border-right-width: {v}pt; border-right-style: solid; "));
+    }
+    if let Some(color) = properties.border_right_color {
+        let css = html::character_css(&CharacterProperties { foreground: Some(color), ..Default::default() });
+        out.push_str(&css.replacen("color:", "border-right-color:", 1)); out.push_str("; ");
+    }
+    if let Some(v) = properties.border_bottom_width {
+        out.push_str(&format!("border-bottom-width: {v}pt; border-bottom-style: solid; "));
+    }
+    if let Some(color) = properties.border_bottom_color {
+        let css = html::character_css(&CharacterProperties { foreground: Some(color), ..Default::default() });
+        out.push_str(&css.replacen("color:", "border-bottom-color:", 1)); out.push_str("; ");
+    }
+    if let Some(v) = properties.border_left_width {
+        out.push_str(&format!("border-left-width: {v}pt; border-left-style: solid; "));
+    }
+    if let Some(color) = properties.border_left_color {
+        let css = html::character_css(&CharacterProperties { foreground: Some(color), ..Default::default() });
+        out.push_str(&css.replacen("color:", "border-left-color:", 1)); out.push_str("; ");
+    }
     if let Some(v) = properties.alignment {
         out.push_str(&format!(
             "text-align: {}; ",
@@ -953,11 +997,7 @@ fn canonical_v1_spelling(sheet: &StyleSheet, id: &StyleId, character: bool) -> O
             sheet.block_style_metadata(id)?,
             style.based_on.as_ref(),
             style.next_paragraph_style.as_ref(),
-            if style.role == BlockRole::Document {
-                "document"
-            } else {
-                "paragraph"
-            },
+            block_role_name(style.role),
             style.character.clone(),
             style.block.clone(),
         )
@@ -1026,6 +1066,15 @@ fn v2_css_properties(css: &str, character: &mut CharacterProperties, block: &mut
     }
 }
 
+fn block_role_name(role: BlockRole) -> &'static str {
+    match role { BlockRole::Document => "document", BlockRole::Paragraph => "paragraph",
+        BlockRole::Quote => "quote", BlockRole::CodeBlock => "code-block", BlockRole::List => "list", BlockRole::ListItem => "list-item" }
+}
+fn parse_block_role(value: &str) -> Option<BlockRole> {
+    Some(match value { "document" => BlockRole::Document, "paragraph" => BlockRole::Paragraph,
+        "quote" => BlockRole::Quote, "code-block" => BlockRole::CodeBlock, "list" => BlockRole::List, "list-item" => BlockRole::ListItem, _ => return None })
+}
+
 fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
     let (selector, body) = text.split_once(" {\n")?;
     let body = body.strip_suffix("}\n")?;
@@ -1036,7 +1085,8 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         }
     }
     let native = native_definition(selector);
-    let native_selector = native.is_some();
+    let declared_role = values.get("--viem-style-role").and_then(|role| parse_block_role(role));
+    let native_role = native.as_ref().and_then(|(sheet,id,character)| (!character).then(|| sheet.block_style(id).map(|s| s.role)).flatten());
     let (id, character, mut parent, mut next, mut name, mut c, mut b) =
         if let Some((sheet, id, character)) = native {
             if character {
@@ -1065,7 +1115,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         } else {
             let id = StyleId(values.remove("--viem-style-id")?);
             let character = match values.remove("--viem-style-role")?.as_str() {
-                "paragraph" => false,
+                "paragraph" | "quote" | "code-block" | "list" | "list-item" => false,
                 "character" => true,
                 _ => return None,
             };
@@ -1102,16 +1152,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
         next = (!value.is_empty()).then_some(StyleId(value));
     }
     v2_css_properties(body, &mut c, &mut b);
-    if let Some(level) = native_selector.then(|| list_style_level(&id)).flatten() {
-        if html::declarations(body)
-            .iter()
-            .any(|(key, _)| *key == "margin-inline-start")
-        {
-            if let Some(indent) = &mut b.leading_indent {
-                *indent += 32.0 * f32::from(level);
-            }
-        }
-    }
+    if character { b.background = None; } else if b.background.is_some() { c.background = None; }
     let mut props = properties(&c, &b).into_iter().collect::<BTreeMap<_, _>>();
     if let Some(clear) = values.remove("--viem-inherit") {
         for key in clear.split(' ') {
@@ -1145,7 +1186,7 @@ fn parse_rule_v2(text: &str) -> Option<StyleDefinitionEdit> {
                 metadata,
             })
     } else {
-        let role = BlockRole::Paragraph;
+        let role = declared_role.or(native_role).unwrap_or(BlockRole::Paragraph);
         Some(StyleDefinitionEdit::InsertBlock {
             style: BlockStyle {
                 id,
@@ -1171,11 +1212,12 @@ fn block_chain(sheet: &StyleSheet, id: &StyleId) -> Option<(CharacterProperties,
     let mut c = CharacterProperties::default();
     let mut b = BlockProperties::default();
     let mut size = super::style::DEFAULT_FONT_SIZE;
+    let container = sheet.block_style(id)?.role.is_container();
     for style in chain.into_iter().rev() {
         if let Some(declared) = style.character.size { size = declared.resolve(size); }
         overlay_character(&mut c, &style.character);
         if c.size.is_some() { c.size = Some(FontSize::Points(size)); }
-        overlay_block(&mut b, &style.block);
+        if !(container && style.id == sheet.base_paragraph) { overlay_block(&mut b, &style.block); }
     }
     Some((c, b))
 }
@@ -1185,16 +1227,11 @@ fn effective_style_properties(
     id: &StyleId,
     character: bool,
 ) -> Option<(CharacterProperties, BlockProperties)> {
-    let (c, mut b) = if character {
+    let (c, b) = if character {
         (character_chain(sheet, id), BlockProperties::default())
     } else {
         block_chain(sheet, id)?
     };
-    b.background = None;
-    b.padding_top = None;
-    b.padding_right = None;
-    b.padding_bottom = None;
-    b.padding_left = None;
     Some((c, b))
 }
 
@@ -1270,7 +1307,7 @@ fn minimal_style_css(
     if c.bold.is_some() && c.weight.is_none() {
         c.weight = inherited.weight;
     }
-    if let Some(level) = list_level {
+    if let Some(level) = list_level.filter(|_| id.legacy_list_level().is_some()) {
         // Container indentation is already supplied by ul/ol; this declaration
         // represents only a user's additional item indentation.
         if let Some(indent) = &mut b.leading_indent {
@@ -1279,8 +1316,10 @@ fn minimal_style_css(
     }
     let previous_css_block = previous_list
         .map(|(_, mut block)| {
-            if let Some(indent) = &mut block.leading_indent {
-                *indent -= 32.0 * f32::from(list_level.unwrap() - 1);
+            if id.legacy_list_level().is_some() {
+                if let Some(indent) = &mut block.leading_indent {
+                    *indent -= 32.0 * f32::from(list_level.unwrap() - 1);
+                }
             }
             block
         })
@@ -1299,7 +1338,7 @@ fn minimal_style_css(
         padding_left
     );
     if list_level.is_some() {
-        zero!(spacing_before, spacing_after);
+        zero!(margin_top, margin_bottom);
     }
     if b.line_spacing == Some(LineSpacing::Normal)
         && previous_css_block
@@ -1434,7 +1473,7 @@ fn write_rule_for_selector(
             ("style-name", name.as_str()),
             (
                 "style-role",
-                if character { "character" } else { "paragraph" },
+                if character { "character" } else { block_role_name(sheet.block_style(id)?.role) },
             ),
         ] {
             metadata.push_str(&format!("  --viem-{key}: {};\n", quote(value)));
@@ -1960,7 +1999,8 @@ mod tests {
             assert!(css(&format!(".{code_class}")).contains(&format!("font-size: {size}pt;")));
             assert!(css("pre").contains(&format!("font-size: {size}pt;")));
             assert!(css(&format!(".{inline_class}")).contains("font-family: monospace;"));
-            assert!(css(&format!(".{quote_class}")).contains("margin-inline-start: 32pt;"));
+            assert!(css(&format!(".{quote_class}")).contains("margin-left: 14pt;"));
+            assert!(css(&format!(".{quote_class}")).contains("padding-left: 16pt;"));
             assert!(css(&format!(".{list_class}")).contains("margin-inline-start: 32pt;"));
             let reopened =
                 Document::from_bytes(saved.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
@@ -2013,8 +2053,8 @@ mod tests {
         let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
         paragraph.character.size = Some(20.0.into());
         paragraph.character.letter_spacing = Some(0.0);
-        paragraph.block.spacing_before = Some(12.0);
-        paragraph.block.spacing_after = Some(8.0);
+        paragraph.block.margin_top = Some(12.0);
+        paragraph.block.margin_bottom = Some(8.0);
         for edit in [
             StyleDefinitionEdit::UpdateBlock(body),
             StyleDefinitionEdit::UpdateBlock(paragraph.clone()),
@@ -2182,8 +2222,7 @@ mod tests {
 
     #[test]
     fn version_two_native_rules_have_simple_css_and_round_trip_exact_definitions() {
-        let mut sheet = StyleSheet::for_format(Format::Html);
-        sheet.ensure_list_level(3);
+        let sheet = StyleSheet::for_format(Format::Html);
         let family = crate::document::DEFAULT_FONT_FAMILY;
         let css_family = if family == "system-ui" { family.to_owned() } else { format!("'{family}'") };
         assert_eq!(
@@ -2191,7 +2230,7 @@ mod tests {
             format!("p {{\n  font-family: {css_family};\n  font-size: 14pt;\n  margin-block-start: 7pt;\n  margin-block-end: 7pt;\n}}\n")
         );
         assert_eq!(
-            write_rule(&sheet, &"List1".into(), false).unwrap(),
+            write_rule(&sheet, &"List item".into(), false).unwrap(),
             format!("li {{\n  --viem-inherit: \"character-font-families character-size\";\n  font-family: {css_family};\n  font-size: 14pt;\n}}\n")
         );
         let rules = sheet
@@ -2269,15 +2308,15 @@ mod tests {
             }])
             .unwrap();
         let rule = write_rule(&sheet, &style.id, false).unwrap();
-        assert!(rule.contains("margin-inline-start: 16pt;"), "{rule}");
+        assert!(rule.contains("margin-inline-start: 48pt;"), "{rule}");
         assert!(rule.contains("font-size: 18pt;"), "{rule}");
         assert!(rule.contains("letter-spacing: 1.25pt;"), "{rule}");
-        assert!(!rule.contains("--viem-prop-"), "{rule}");
+        assert!(!rule.contains("--viem-prop-character-size"), "{rule}");
         let parsed = read(&format!("{OPEN_V2}\n{rule}</style>"));
         assert_eq!(parsed.sheet.block_style(&style.id), Some(&style));
 
         let mut paragraph = sheet.block_style(&sheet.base_paragraph).unwrap().clone();
-        paragraph.block.spacing_before = None;
+        paragraph.block.margin_top = None;
         paragraph.character.bold = Some(true);
         paragraph.block.line_spacing = Some(LineSpacing::AtLeast(19.0));
         sheet
@@ -2305,7 +2344,7 @@ mod tests {
     }
 
     #[test]
-    fn deeper_list_css_resets_only_properties_changed_by_the_shallower_selector() {
+    fn legacy_list_classes_own_their_independent_indentation() {
         let mut sheet = StyleSheet::for_format(Format::Html);
         sheet.ensure_list_level(3);
         let mut first = sheet.block_style(&"List1".into()).unwrap().clone();
@@ -2324,11 +2363,11 @@ mod tests {
         let first = write_rule(&sheet, &"List1".into(), false).unwrap();
         let second = write_rule(&sheet, &"List2".into(), false).unwrap();
         assert!(second.contains("font-size: 14pt;"), "{second}");
-        assert!(second.contains("margin-inline-start: 0pt;"), "{second}");
-        assert!(second.contains("text-indent: 0pt;"), "{second}");
+        assert!(second.contains("margin-inline-start: 64pt;"), "{second}");
+        assert!(!second.contains("text-indent: 3pt;"), "{second}");
         assert!(!second.contains("letter-spacing:"), "{second}");
         let third = write_rule(&sheet, &"List3".into(), false).unwrap();
-        assert_eq!(third, "li li li {\n}\n");
+        assert!(third.contains("margin-inline-start: 96pt;"), "{third}");
         let parsed = read(&format!("{OPEN_V2}\n{first}{second}{third}</style>"));
         assert_eq!(parsed.rules.len(), 3);
         assert_eq!(
@@ -2587,18 +2626,63 @@ fn list_assignment_patches(
     Ok(patches)
 }
 
+fn container_assignment_patches(input: &super::line_endings::NormalizedText,
+    ranges: &[Range<usize>], sheet: &StyleSheet, id: &StyleId, role: BlockRole)
+    -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    let tokens = html::tokenize(&input.text);
+    let converter = super::rich_text::Builder::new(input, Revision(0));
+    let mut selected = BTreeSet::new();
+    let mut patches = Vec::new();
+    for source in ranges {
+        let at = input.units.get(input.units.partition_point(|unit| unit.source.end <= source.start))
+            .map_or(input.text.len(), |unit| unit.normalized.start);
+        let open = super::html_paragraph::stack_at(&tokens, at);
+        let token = open.iter().rev().find(|token| matches!(&token.kind, TokenKind::Tag(tag) if match role {
+            BlockRole::Quote => tag.name == "blockquote", BlockRole::CodeBlock => tag.name == "pre",
+            BlockRole::List => matches!(tag.name.as_str(), "ul" | "ol"), BlockRole::ListItem => tag.name == "li",
+            _ => false,
+        })).ok_or(DocumentError::UnsupportedFormatting)?;
+        if !selected.insert(token.range.start) { continue; }
+        let TokenKind::Tag(tag) = &token.kind else { unreachable!() };
+        let mut classes = tag.attribute("class").unwrap_or("").split_ascii_whitespace()
+            .filter(|token| !select_class(sheet, token, false).and_then(|id| sheet.block_style(&id)).is_some_and(|s| s.role.is_container()))
+            .map(str::to_owned).collect::<Vec<_>>();
+        classes.push(class_name(id, false));
+        let (range, replacement) = class_patch(&input.text, token.range.clone(), &classes.join(" "));
+        patches.push((converter.source_range(range), replacement));
+    }
+    Ok(patches)
+}
+
 pub(super) fn paragraph_assignment_patches(
     input: &super::line_endings::NormalizedText,
     ranges: &[Range<usize>],
     sheet: &StyleSheet,
     id: &StyleId,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    if let Some(style) = sheet.block_style(id).filter(|style| style.role.is_container()
+        && !matches!(id.0.as_str(), "Block quote" | "Code Block")) {
+        return container_assignment_patches(input, ranges, sheet, id, style.role);
+    }
     if id.0 == "Block quote" {
         return super::html_quotes::wrap_patches(input, ranges);
     }
     if id == &sheet.base_paragraph {
-        if let Some(patches) = super::html_quotes::remove_patches(input, ranges)? {
-            return Ok(patches);
+        let tokens = html::tokenize(&input.text);
+        let converter = super::rich_text::Builder::new(input, Revision(0));
+        let ordinary = ranges.iter().all(|source| {
+            let at = tokens.iter().find(|token| converter.source_range(token.range.clone()).end > source.start)
+                .map_or(input.text.len(), |token| token.range.start);
+            !super::html_paragraph::stack_at(&tokens, at).iter().any(|token| {
+                let TokenKind::Tag(tag) = &token.kind else { return false; };
+                matches!(tag.name.as_str(), "pre" | "li" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
+                    || tag.name != "blockquote" && tag.attribute("class")
+                        .and_then(|classes| select_class(sheet, classes, false))
+                        .is_some_and(|style| &style != id)
+            })
+        });
+        if ordinary {
+            if let Some(patches) = super::html_quotes::remove_patches(input, ranges)? { return Ok(patches); }
         }
     }
     let tokens = html::tokenize(&input.text);
@@ -2942,4 +3026,49 @@ pub(super) fn remove_assignment_patches(
             Some((converter.source_range(range), replacement))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod block_box_tests {
+    use super::*;
+
+    #[test]
+    fn physical_box_css_imports_each_side_and_preserves_negative_margins() {
+        let mut block = BlockProperties::default();
+        let mut character = CharacterProperties::default();
+        html::apply_css("margin: -2pt 3pt 4pt 5pt; padding: 6pt 7pt; border: 2pt solid #123456; border-right-width: 0; border-left-color: #ff0000; background: #abcdef; padding-bottom: -1pt", &mut character, &mut block);
+        assert_eq!([block.margin_top, block.margin_right, block.margin_bottom, block.margin_left], [-2.0, 3.0, 4.0, 5.0].map(Some));
+        assert_eq!([block.padding_top, block.padding_right, block.padding_bottom, block.padding_left], [6.0, 7.0, 6.0, 7.0].map(Some));
+        assert_eq!([block.border_top_width, block.border_right_width, block.border_bottom_width, block.border_left_width], [2.0, 0.0, 2.0, 2.0].map(Some));
+        assert_eq!(block.border_left_color.unwrap().red, 1.0);
+        assert!(block.background.is_some());
+        block.clear_box();
+        assert_eq!(block, BlockProperties::default());
+    }
+
+    #[test]
+    fn paragraph_and_container_box_style_definitions_round_trip_as_css() {
+        let mut sheet = StyleSheet::for_format(Format::Html);
+        let color = Color { red: 0.25, green: 0.5, blue: 0.75, alpha: 0.5 };
+        for (id, parent, role) in [("Box paragraph", "Paragraph", BlockRole::Paragraph),
+            ("Pull quote", "Block quote", BlockRole::Quote), ("Code panel", "Code Block", BlockRole::CodeBlock),
+            ("Outline", "Numbered List", BlockRole::List), ("Outline item", "List item", BlockRole::ListItem)] {
+            let style = BlockStyle {
+                id: id.into(), based_on: Some(parent.into()), next_paragraph_style: None, role,
+                character: CharacterProperties::default(), block: BlockProperties {
+                    margin_top: Some(-4.0), margin_right: Some(5.0), margin_bottom: Some(6.0), margin_left: Some(7.0),
+                    padding_top: Some(8.0), padding_right: Some(9.0), padding_bottom: Some(10.0), padding_left: Some(11.0),
+                    border_top_width: Some(1.0), border_top_color: Some(color), border_right_width: Some(2.0), border_right_color: Some(color),
+                    border_bottom_width: Some(3.0), border_bottom_color: Some(color), border_left_width: Some(4.0), border_left_color: Some(color),
+                    background: Some(color), ..Default::default()
+                },
+            };
+            sheet.insert_block_style(style.clone(), StyleDefinitionMetadata::generated(id)).unwrap();
+            let rule = write_rule(&sheet, &style.id, false).unwrap();
+            assert!(rule.contains("padding-left: 11pt"), "{rule}");
+            assert!(rule.contains("border-left-width: 4pt"), "{rule}");
+            let StyleDefinitionEdit::InsertBlock { style: reopened, .. } = parse_rule_v2(&rule).unwrap() else { panic!("not a block style") };
+            assert_eq!(reopened, style, "{rule}");
+        }
+    }
 }

@@ -87,8 +87,10 @@ fn verify_reopened(doc: &Document) -> Result<(), String> {
                 .break_offsets()
     {
         return Err(format!(
-            "reopen mismatch: {:?}",
-            String::from_utf8_lossy(&doc.source_bytes())
+            "reopen mismatch: {:?}; actual {:?}; fresh {:?}",
+            String::from_utf8_lossy(&doc.source_bytes()),
+            doc.projection().blocks().iter().map(|b| (&b.range, b.quote_depth, b.containers.iter().map(|m| (m.container.kind,m.starts_here,m.ends_here)).collect::<Vec<_>>())).collect::<Vec<_>>(),
+            fresh.projection().blocks().iter().map(|b| (&b.range, b.quote_depth, b.containers.iter().map(|m| (m.container.kind,m.starts_here,m.ends_here)).collect::<Vec<_>>())).collect::<Vec<_>>()
         ));
     }
     Ok(())

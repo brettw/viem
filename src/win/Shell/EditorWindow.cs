@@ -30,6 +30,7 @@ internal sealed partial class EditorWindow : Window
     private bool closing, closed, updatingPreferences;
     private EditorPane? lastPane;
     private readonly Dictionary<CoreDocument, byte[]> savedSources = [];
+    private static readonly Dictionary<CoreDocument, string> styleDefaultsWarnings = [];
     private static readonly Dictionary<CoreDocument, DocumentRecovery> recoveries = [];
     private Task effectQueue = Task.CompletedTask;
     private int pollTicks;
@@ -134,21 +135,38 @@ internal sealed partial class EditorWindow : Window
         {
             doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
             string defaults = Path.Combine(preferences.DirectoryPath, CoreDocument.FormatName(doc.State.format).Replace(" Source", "").ToLowerInvariant() + "_style.json");
-            if (File.Exists(defaults) && doc.State.format != VIEM_FORMAT_CODE) doc.InitializeStyleDefaults(File.ReadAllBytes(defaults));
+            if (File.Exists(defaults) && doc.State.format != VIEM_FORMAT_CODE)
+            {
+                try
+                {
+                    string[] diagnostics = doc.InitializeStyleDefaults(File.ReadAllBytes(defaults));
+                    if (diagnostics.Length > 0)
+                        styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics.Select(message => defaults + ": " + message));
+                }
+                catch (Exception error)
+                {
+                    // Initialization validates before publication, so a failed
+                    // file leaves the new document's built-in styles intact.
+                    styleDefaultsWarnings[doc] = defaults + ": " + error.Message + Environment.NewLine + "Using built-in styles.";
+                }
+            }
             if (preferences.StartupCommands.Length > 0) doc.InitializeStartup(preferences.StartupCommands);
             GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
             if (path != null) { savedSources[doc] = SHA256.HashData(source ?? []); if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true); }
             if (path != null) recoveries[doc] = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => ActivePane?.Report(e));
-            doc.Disposed += () => recoveries.Remove(doc);
+            doc.Disposed += () => { recoveries.Remove(doc); styleDefaultsWarnings.Remove(doc); };
             return doc;
         }
-        catch { doc.Dispose(); throw; }
+        catch { styleDefaultsWarnings.Remove(doc); doc.Dispose(); throw; }
     }
     internal void PaneReady(EditorPane pane)
     {
         if (pane == ActivePane) pane.FocusEditor();
         UpdateTitle(); RefreshStyleMenus();
-        if (pane.Document.StartupDiagnostics.Length > 0) pane.SetMessage(Path.Combine(preferences.DirectoryPath, pane.Document.StartupDiagnostics));
+        var diagnostics = new List<string>();
+        if (styleDefaultsWarnings.Remove(pane.Document, out string? warning)) diagnostics.Add(warning);
+        if (pane.Document.StartupDiagnostics.Length > 0) diagnostics.Add(Path.Combine(preferences.DirectoryPath, pane.Document.StartupDiagnostics));
+        if (diagnostics.Count > 0) pane.SetMessage(string.Join(Environment.NewLine, diagnostics));
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);

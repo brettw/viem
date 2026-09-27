@@ -210,3 +210,6 @@ mod window_commands;
 mod wysiwyg_edit_error_audit;
 mod wysiwyg_list_editing;
 mod zoom_policy;
+
+mod containers;
+mod block_boxes;

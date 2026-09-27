@@ -129,7 +129,7 @@ extension EVEditorSurfaceController {
     guard canEditParagraphFormatting, let session else { return }
     performInput {
       _ = try session.editDirectProperties([
-        (.paragraphSpacingBefore, .float(before)), (.paragraphSpacingAfter, .float(after))
+        (.blockMarginTop, .float(before)), (.blockMarginBottom, .float(after))
       ], expected: expected)
     }
   }
@@ -179,8 +179,8 @@ extension EVEditorSurfaceController {
       multiplier = field("Value", value: spacing.value > 0 ? spacing.value : 1)
       kind = popup; before = nil; after = nil
     } else {
-      before = field("Before (pt)", value: number(.paragraphSpacingBefore))
-      after = field("After (pt)", value: number(.paragraphSpacingAfter))
+      before = field("Before (pt)", value: number(.blockMarginTop))
+      after = field("After (pt)", value: number(.blockMarginBottom))
       multiplier = nil; kind = nil
     }
     alert.accessoryView = content

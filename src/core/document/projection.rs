@@ -135,6 +135,8 @@ pub struct BlockAttributes {
     pub kind: BlockKind,
     /// Independent Markdown containers; a heading/code style does not erase them.
     pub quote_depth: usize,
+    /// Structural ancestry, ordered outermost first. Paragraphs remain leaves.
+    pub containers: Arc<[super::ContainerMembership]>,
     pub list_loose: bool,
     pub thematic_break: bool,
     pub markdown_html: bool,
@@ -161,13 +163,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, list_loose: false, thematic_break: false, markdown_html: false }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, list_loose: false, thematic_break: false, markdown_html: false,
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -227,7 +229,12 @@ impl PartialEq for Block {
 
 impl PartialEq for BlockAttributes {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+        self.kind == other.kind && self.containers.len() == other.containers.len()
+            && self.containers.iter().zip(other.containers.iter()).all(|(a, b)| {
+                a.starts_here == b.starts_here && a.ends_here == b.ends_here
+                    && a.container.kind == b.container.kind && a.container.style == b.container.style
+                    && a.container.direct_formatting == b.container.direct_formatting
+            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -245,6 +252,18 @@ impl RangedItem for Block {
     fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         visitor.arc_once(&self.attributes, |visitor| {
             visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + 16);
+            if !self.containers.is_empty() {
+                visitor.arc(&self.containers, |visitor| {
+                    for member in self.containers.iter() {
+                        visitor.arc(&member.container, |visitor| {
+                            visitor.owned(Arc::as_ptr(&member.container) as usize, 0, member.container.style.0.capacity() + 16);
+                            if let Some(properties) = &member.container.direct_formatting {
+                                visitor.arc(properties, |visitor| visitor.owned(Arc::as_ptr(properties) as usize, 0, properties.direct_default_character.owned_heap_bytes()));
+                            }
+                        });
+                    }
+                });
+            }
             if let Some(properties) = &self.direct_formatting {
                 visitor.arc(properties, |visitor| {
                     visitor.owned(Arc::as_ptr(properties) as usize, 0,
@@ -1624,7 +1643,8 @@ impl FormattedDocument {
         ));
     }
 
-    pub(crate) fn install_flow_blocks(&mut self, blocks: Vec<Block>) {
+    pub(crate) fn install_flow_blocks(&mut self, mut blocks: Vec<Block>) {
+        super::containers::mark_edges(&mut blocks);
         self.flow_blocks = Some(OrderedRangeStore::new(blocks));
     }
 
@@ -2150,6 +2170,7 @@ impl FormattedDocument {
         let mut blocks = self.blocks.to_vec();
         validate_block_partition(self.text(), &blocks)?;
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        super::containers::reconcile(&mut blocks, &[], false);
         self.blocks = OrderedRangeStore::new(blocks);
         let next_id = self.assign_initial_hard_line_ids(next_id)?;
         let next_id = self.reconcile_flow_block_ids(None, &[], next_id)?;
@@ -2192,6 +2213,7 @@ impl FormattedDocument {
             }
         }
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        super::containers::reconcile(&mut blocks, previous.and_then(|previous| previous.flow_blocks.as_ref()).map_or(&[], |blocks| blocks.as_slice()), false);
         self.flow_blocks = Some(OrderedRangeStore::new(blocks));
         if let Some(old) = previous.and_then(|previous| previous.flow_blocks.as_ref()) {
             self.flow_blocks.as_mut().unwrap().reuse_equal_chunks(old);
@@ -2230,6 +2252,7 @@ impl FormattedDocument {
         }
         self.style_sheet = previous.style_sheet.clone();
         self.document_style = previous.document_style.clone();
+        super::containers::reconcile(&mut blocks, &previous_blocks, false);
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.install_unchanged_hard_line_ids(previous)?;
@@ -2240,6 +2263,7 @@ impl FormattedDocument {
                 return Err(BlockIdentityError::InvalidProjection);
             }
             for (block, old) in blocks.iter_mut().zip(old.as_slice()) { block.id = old.id; }
+            super::containers::reconcile(&mut blocks, old.as_slice(), false);
             *flow = OrderedRangeStore::new(blocks);
             flow.reuse_equal_chunks(old);
         }
@@ -2376,6 +2400,7 @@ impl FormattedDocument {
             }
         }
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
+        super::containers::reconcile(&mut blocks, &previous_blocks, false);
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
@@ -2774,6 +2799,63 @@ impl FormattedDocument {
             && source_start <= source_offset
             && source_offset <= self.source_content_end)
             .then_some((source_start..self.source_content_end, upstream, None))
+    }
+
+    /// Attach parser-owned scopes before publishing stable paragraph identities.
+    /// Source positions select membership only during projection; retained paths
+    /// contain identities and declarations, never mutable document offsets.
+    pub(super) fn install_source_containers(&mut self, mut scopes: Vec<super::containers::SourceContainer>) {
+        if scopes.is_empty() { return; }
+        scopes.sort_by(|a, b| a.range.start.cmp(&b.range.start).then_with(|| b.range.end.cmp(&a.range.end)));
+        let owners: Vec<_> = scopes.iter().map(|scope| {
+            let style = if self.style_sheet.block_style(&scope.style).is_some() && !self.style_sheet.configuration_deleted(&scope.style, true) {
+                scope.style.clone()
+            } else { self.style_sheet.base_paragraph.clone() };
+            Arc::new(super::ContainerAttributes { id: super::containers::provisional_identity(), kind: scope.kind,
+                style, direct_formatting: scope.direct_formatting.clone() })
+        }).collect();
+        let mut blocks = self.blocks.to_vec();
+        let mut active: Vec<usize> = Vec::new();
+        let mut next = 0;
+        for block in &mut blocks {
+            let at = self.provenance_touching(&(block.range.start..block.range.start)).into_iter()
+                .find(|span| span.formatted.start <= block.range.start &&
+                    (block.range.start < span.formatted.end || span.formatted.is_empty()))
+                .map(|span| span.source.start)
+                .or_else(|| self.source_insertion_point(block.range.start, true));
+            let Some(at) = at else { continue; };
+            // Source-visible paragraphs include their outer marker bytes. A
+            // nested owner's opener may occur after that first source point;
+            // its scope still owns this same paragraph's visible body.
+            let source_end = self.source_insertion_point(block.range.end, false).unwrap_or(at).max(at);
+            let owns = |index: usize| {
+                let scope = &scopes[index];
+                at < scope.range.end || block.range.is_empty() && at == scope.range.end && (scope.owns_empty_end || match scope.kind {
+                    super::ContainerKind::Quote => block.quote_depth > 0,
+                    super::ContainerKind::CodeBlock => block.style.0 == "Code Block",
+                    super::ContainerKind::List { .. } | super::ContainerKind::ListItem => matches!(block.kind, BlockKind::ListItem { .. }),
+                })
+            };
+            active.retain(|index| owns(*index));
+            while next < scopes.len() && scopes[next].range.start <= source_end {
+                if owns(next) { active.push(next); }
+                next += 1;
+            }
+            if active.is_empty() { continue; }
+            let path = active.iter().map(|index| super::ContainerMembership {
+                container: owners[*index].clone(), starts_here: false, ends_here: false,
+            }).chain(block.containers.iter().cloned()).collect::<Vec<_>>();
+            block.containers = path.into();
+            block.quote_depth = block.containers.iter().filter(|member| member.container.kind == super::ContainerKind::Quote).count();
+        }
+        super::containers::mark_edges(&mut blocks);
+        self.blocks = OrderedRangeStore::new(blocks);
+    }
+
+    pub(super) fn install_implicit_list_containers(&mut self) {
+        let mut blocks = self.blocks.to_vec();
+        super::containers::install_list_paths(&mut blocks);
+        self.blocks = OrderedRangeStore::new(blocks);
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -3238,20 +3320,35 @@ impl FormattedDocument {
     /// candidate to the new document revision before atomic publication.
     pub(crate) fn reassign_deleted_style(&mut self, id: &StyleId, block: bool) {
         if block {
-            let mut blocks = self.blocks.to_vec();
-            for block in &mut blocks {
-                if &block.style == id {
-                    block.style = self.style_sheet.base_paragraph.clone();
+            let reassign = |block: &mut Block| {
+                if &block.style == id { block.style = self.style_sheet.base_paragraph.clone(); }
+                if block.containers.iter().any(|member| &member.container.style == id) {
+                    block.containers = block.containers.iter().map(|member| {
+                        let mut member = member.clone();
+                        if &member.container.style == id {
+                            let container = Arc::make_mut(&mut member.container);
+                            let default = container.kind.default_style();
+                            container.style = if &default != id && self.style_sheet.block_style(&default).is_some() { default } else { self.style_sheet.base_paragraph.clone() };
+                        }
+                        member
+                    }).collect::<Vec<_>>().into();
                 }
-            }
+            };
+            let mut blocks = self.blocks.to_vec();
+            for block in &mut blocks { reassign(block); }
             self.blocks = OrderedRangeStore::new(blocks);
             if let Some(flow) = &mut self.flow_blocks {
                 let mut blocks = flow.to_vec();
-                for block in &mut blocks {
-                    if &block.style == id { block.style = self.style_sheet.base_paragraph.clone(); }
-                }
+                for block in &mut blocks { reassign(block); }
                 *flow = OrderedRangeStore::new(blocks);
             }
+            let mut spans = self.styles.to_vec();
+            for span in &mut spans {
+                if let StyleApplication::SourceParagraph { style, .. } = &mut span.application {
+                    if style == id { *style = self.style_sheet.base_paragraph.clone(); }
+                }
+            }
+            self.styles = IntervalRangeStore::new(spans);
             if &self.document_style.style == id {
                 self.document_style.style = self.style_sheet.base_paragraph.clone();
             }
@@ -3391,7 +3488,9 @@ impl FormattedDocument {
     }
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
-        self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style)
+        self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
+            || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
+            || self.styles.iter().any(|span| matches!(&span.application, StyleApplication::SourceParagraph { style: id, .. } if id == style))
     }
 
     pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
@@ -3416,11 +3515,11 @@ impl FormattedDocument {
         ranges.extend(
             self.blocks
                 .iter()
-                .filter(|block| block_styles.contains(&block.style))
+                .filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
                 .map(|block| block.range.clone()),
         );
         if let Some(blocks) = &self.flow_blocks {
-            ranges.extend(blocks.iter().filter(|block| block_styles.contains(&block.style))
+            ranges.extend(blocks.iter().filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
                 .map(|block| block.range.clone()));
         }
         ranges.extend(
@@ -4392,6 +4491,7 @@ pub(crate) fn splice_line_local_projection(
         }
     }
 
+    super::containers::reconcile(&mut regional_blocks, &previous_region_blocks, true);
     let mut range_stats = RangeSpliceStats::default();
     let blocks = previous
         .blocks
@@ -4609,6 +4709,7 @@ pub(crate) fn splice_line_local_projection(
         }
         *next_projected_block_id =
             allocate_unassigned_block_ids(&mut next, *next_projected_block_id)?;
+        super::containers::reconcile(&mut next, &old, true);
         Some(
             old_flow
                 .splice(
@@ -5382,6 +5483,7 @@ fn project_markdown(
         }
         projected.install_paragraph_partition(paragraphs);
         projected.install_flow_ranges(flows);
+        projected.install_source_containers(syntax.owners.clone());
         return projected;
     }
     let (cooked, explicit) = super::paragraph_flow::markdown(normalized);
@@ -5434,6 +5536,7 @@ fn project_markdown(
         }
         projected.install_paragraph_partition(paragraphs);
     }
+    projected.install_source_containers(syntax.owners.clone());
     projected
 }
 
@@ -5498,7 +5601,8 @@ fn project_markdown_lines(
         let quote = source_at.and_then(|at| quote_context
             .get(quote_context.partition_point(|line| line.range.start <= at).saturating_sub(1))
             .filter(|line| line.range.start <= at && at <= line.range.end));
-        let quoted = quote_depth > 0 || quote.is_some_and(|line| line.depth > 0);
+        let quote_depth = quote_depth.max(quote.map_or(0, |line| line.depth));
+        let quoted = quote_depth > 0;
         let semantic_start = quote.filter(|_| preserve_markers).map_or(line.start, |quote| {
             builder.units.get(builder.units.partition_point(|unit| unit.source.start < quote.content_start))
                 .map_or(line.end, |unit| unit.normalized.start).min(line.end)
@@ -5760,7 +5864,7 @@ fn project_markdown_lines(
                 source: at..at,
             });
         }
-        let style = if let Some(level) = heading { StyleId(format!("Heading{level}")) } else if quoted { "Block quote".into() } else { match kind {
+        let style = if let Some(level) = heading { StyleId(format!("Heading{level}")) } else if quoted && preserve_markers { "Block quote".into() } else { match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
             BlockKind::ListItem { ordered, level, .. } => {
@@ -6458,7 +6562,7 @@ mod tests {
         document.document_style.direct_canvas.padding_left = Some(17.0);
         document.document_style.direct_default_character.size = Some(16.0.into());
         let mut blocks = document.blocks.to_vec();
-        blocks[0].direct_paragraph.spacing_after = Some(9.0);
+        blocks[0].direct_paragraph.margin_bottom = Some(9.0);
         blocks[0].direct_default_character.font_families = Some(vec!["Assigned Serif".to_owned()]);
         document.blocks = OrderedRangeStore::new(blocks);
     }
@@ -6472,7 +6576,7 @@ mod tests {
         let next_id = before.assign_initial_block_ids(1).unwrap();
         let mut blocks = before.blocks().to_vec();
         for block in &mut blocks {
-            block.direct_paragraph.spacing_after = Some(9.0);
+            block.direct_paragraph.margin_bottom = Some(9.0);
         }
         before.install_paragraph_partition(blocks);
         let mut after = plain(new_text.clone(), Revision(2));
@@ -6500,7 +6604,7 @@ mod tests {
         assert!(after
             .blocks()
             .iter()
-            .all(|block| block.direct_paragraph.spacing_after == Some(9.0)));
+            .all(|block| block.direct_paragraph.margin_bottom == Some(9.0)));
     }
 
     #[test]

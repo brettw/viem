@@ -121,8 +121,10 @@ pub struct ParagraphLayoutStyle {
     pub quote_depth: usize,
     pub thematic_break: bool,
     pub marker_paint: ResolvedTextPaint,
-    pub spacing_before: f32,
-    pub spacing_after: f32,
+    pub block_box: super::BlockBoxStyle,
+    pub containers: std::sync::Arc<[super::ContainerLayoutStyle]>,
+    pub margin_top: f32,
+    pub margin_bottom: f32,
     pub line_spacing: LineSpacing,
     pub first_line_indent: f32,
     pub leading_indent: f32,
@@ -227,6 +229,9 @@ impl DocumentLayoutStyles {
     pub(crate) fn apply_source_quote_policy(&mut self, format: crate::document::Format, flow: bool) {
         if format == crate::document::Format::MarkdownSource && !flow {
             for paragraph in &mut self.paragraphs {
+                paragraph.containers = paragraph.containers.iter().filter(|c|
+                    !matches!(c.kind, crate::document::ContainerKind::Quote)).cloned().collect();
+                paragraph.quote_depth = 0;
                 if paragraph.quote_border {
                     paragraph.quote_border = false;
                     paragraph.quote_depth = 0;
@@ -455,6 +460,33 @@ impl DocumentLayoutStyles {
             }
         }
         for block in input.blocks {
+            let mut container_character = CharacterProperties::default();
+            let mut container_font_size = resolved_document.character.size;
+            let mut container_paragraph = crate::document::BlockProperties::default();
+            let mut containers = Vec::with_capacity(block.containers.len());
+            for membership in block.containers.iter() {
+                let container = &membership.container;
+                let direct = container.direct_formatting.as_deref().cloned().unwrap_or_default();
+                let mut resolved = sheet.resolve_assigned_container_style(input.document_style,
+                    &container.style, &direct.direct_paragraph, &direct.direct_default_character)?;
+                merge_container_character_properties(&mut container_character, &mut container_font_size,
+                    sheet.container_character_declarations(&container.style, &direct.direct_default_character)?);
+                if let Some(color) = container_character.foreground {
+                    resolved.character.foreground = color;
+                    resolved.character.foreground_is_default = false;
+                }
+                let defaults = sheet.container_paragraph_declarations(&container.style, &direct.direct_paragraph)?;
+                if defaults.line_spacing.is_some() { container_paragraph.line_spacing = defaults.line_spacing; }
+                if defaults.alignment.is_some() { container_paragraph.alignment = defaults.alignment; }
+                if defaults.base_direction.is_some() { container_paragraph.base_direction = defaults.base_direction; }
+                if defaults.first_line_indent.is_some() { container_paragraph.first_line_indent = defaults.first_line_indent; }
+                let mut container_box = super::BlockBoxStyle::from_resolved(&resolved);
+                container_box.inline_start = resolved.leading_indent;
+                container_box.inline_end = resolved.trailing_indent;
+                containers.push(super::ContainerLayoutStyle { id: container.id, kind: container.kind,
+                    style: container_box,
+                    starts_here: membership.starts_here, ends_here: membership.ends_here });
+            }
             let mut assigned = Some(&block.style);
             let mut quote_border = block.quote_depth > 0;
             while let Some(id) = assigned {
@@ -472,23 +504,31 @@ impl DocumentLayoutStyles {
                 .get(source_quotes.partition_point(|range| range.end <= block.range.start))
                 .is_some_and(|range| range.start < block.range.end);
             quote_border |= source_quote;
+            quote_border &= block.containers.is_empty();
             let quote_id = StyleId::from("Block quote");
-            let paragraph = sheet.resolve_assigned_paragraph_style(
+            let container_body = block.containers.iter().any(|membership| membership.container.style == block.style)
+                && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
+            let mut paragraph = sheet.resolve_assigned_paragraph_style_in_container(
                 input.document_style,
                 if source_quote {
                     &quote_id
+                } else if container_body {
+                    &sheet.base_paragraph
                 } else {
                     &block.style
                 },
                 &block.direct_paragraph,
+                &container_character,
                 &block.direct_default_character,
                 None,
                 &CharacterProperties::default(),
             )?;
+            sheet.apply_container_paragraph_defaults(if container_body { &sheet.base_paragraph } else { &block.style },
+                &block.direct_paragraph, &container_paragraph, &mut paragraph)?;
             // A heading or code paragraph inside an item keeps its own style
             // plus the containing list's inset. List-role paragraphs already
             // declare that inset themselves.
-            let list_inset = if let crate::document::BlockKind::ListItem { ordered, level, .. } =
+            let list_inset = if block.containers.iter().any(|membership| matches!(membership.container.kind, crate::document::ContainerKind::List { .. })) { 0.0 } else if let crate::document::BlockKind::ListItem { ordered, level, .. } =
                 block.kind
             {
                 let id = sheet.list_style_id(ordered, level);
@@ -562,8 +602,10 @@ impl DocumentLayoutStyles {
                     _ => None,
                 },
                 marker_paint: paint_style(&paragraph.character),
-                spacing_before: if block.list_loose { paragraph.spacing_before.max(7.0) } else { paragraph.spacing_before },
-                spacing_after: if block.list_loose { paragraph.spacing_after.max(7.0) } else { paragraph.spacing_after },
+                block_box: if container_body { super::BlockBoxStyle::default() } else { super::BlockBoxStyle::from_resolved(&paragraph) },
+                containers: containers.into(),
+                margin_top: if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top },
+                margin_bottom: if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom },
                 line_spacing: paragraph.line_spacing,
                 first_line_indent: if matches!(
                     block.kind,
@@ -577,8 +619,8 @@ impl DocumentLayoutStyles {
                 } else {
                     paragraph.first_line_indent
                 },
-                leading_indent: paragraph.leading_indent + list_inset + 32.0 * block.quote_depth.saturating_sub(usize::from(block.style.0 == "Block quote")) as f32,
-                trailing_indent: paragraph.trailing_indent + 32.0 * block.quote_depth.saturating_sub(usize::from(block.style.0 == "Block quote")) as f32,
+                leading_indent: paragraph.leading_indent + list_inset,
+                trailing_indent: paragraph.trailing_indent,
                 alignment: paragraph.alignment,
                 base_direction: paragraph.base_direction,
                 default_shaping_style: shaping_style(&paragraph.character)?,
@@ -832,17 +874,38 @@ fn resolve_character_spans_at<'a>(
         merge_character_properties(&mut source_block.direct_default_character, &link_defaults);
     }
 
+    let mut container_character = CharacterProperties::default();
+    let mut container_font_size = sheet.resolve_document_assignment(input.document_style)?.character.size;
+    for member in source_block.containers.iter() {
+        let character = member.container.direct_formatting.as_deref().map(|direct| &direct.direct_default_character).cloned().unwrap_or_default();
+        merge_container_character_properties(&mut container_character, &mut container_font_size,
+            sheet.container_character_declarations(&member.container.style, &character)?);
+    }
+    let container_body = source_block.containers.iter().any(|member| member.container.style == source_block.style)
+        && sheet.block_style(&source_block.style).is_some_and(|style| style.role.is_container());
     sheet
-        .resolve_assigned_paragraph_style(
+        .resolve_assigned_paragraph_style_in_container(
             input.document_style,
-            &source_block.style,
+            if container_body { &sheet.base_paragraph } else { &source_block.style },
             &source_block.direct_paragraph,
+            &container_character,
             &source_block.direct_default_character,
             named,
             &semantic,
         )
         .map(|paragraph| paragraph.character)
         .map_err(Into::into)
+}
+
+fn merge_container_character_properties(target: &mut CharacterProperties, inherited_size: &mut f32,
+    mut declarations: CharacterProperties) {
+    // CSS percentages resolve at each document ancestor, not once after the
+    // sparse declarations from every level have been combined.
+    if let Some(size) = declarations.size {
+        *inherited_size = size.resolve(*inherited_size);
+        declarations.size = Some((*inherited_size).into());
+    }
+    merge_character_properties(target, &declarations);
 }
 
 fn semantic_properties(style: SemanticInlineStyle) -> CharacterProperties {
@@ -1106,8 +1169,8 @@ mod tests {
         root.direct_default_character.size = Some(12.0.into());
         let mut blocks = projection.blocks().to_vec();
         blocks[0].direct_paragraph = BlockProperties {
-            spacing_before: Some(7.0),
-            spacing_after: Some(5.0),
+            margin_top: Some(7.0),
+            margin_bottom: Some(5.0),
             first_line_indent: Some(11.0),
             leading_indent: Some(3.0),
             trailing_indent: Some(4.0),
@@ -1122,8 +1185,8 @@ mod tests {
         let styles =
             resolve_custom(projection, &sheet, &root, &blocks, projection.style_spans()).unwrap();
         let first = &styles.paragraphs[0];
-        assert_eq!(first.spacing_before, 7.0);
-        assert_eq!(first.spacing_after, 5.0);
+        assert_eq!(first.margin_top, 7.0);
+        assert_eq!(first.margin_bottom, 5.0);
         assert_eq!(first.first_line_indent, 11.0);
         assert_eq!(first.leading_indent, 3.0);
         assert_eq!(first.trailing_indent, 4.0);
@@ -1223,7 +1286,7 @@ mod tests {
         ));
 
         root = projection.document_style().clone();
-        root.direct_canvas.spacing_before = Some(2.0);
+        root.direct_canvas.margin_top = Some(2.0);
         assert!(matches!(
             resolve_custom(projection, &sheet, &root, &blocks, &[]),
             Err(DocumentStyleError::Cascade(

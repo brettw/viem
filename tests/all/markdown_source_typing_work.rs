@@ -67,7 +67,15 @@ fn projection_summary(document: &Document) -> String {
     let blocks = projection
         .blocks()
         .iter()
-        .map(|block| format!("{:?} {:?}", block.range, block.attributes))
+        .map(|block| {
+            let mut block = block.clone();
+            block.containers = block.containers.iter().enumerate().map(|(slot, member)| {
+                let mut member = member.clone();
+                std::sync::Arc::make_mut(&mut member.container).id = viem_core::document::ContainerIdentity { anchor: 0, slot: slot as u32 };
+                member
+            }).collect::<Vec<_>>().into();
+            format!("{:?} {:?}", block.range, block.attributes)
+        })
         .collect::<Vec<_>>();
     let hard_lines = (0..projection.hard_line_count())
         .map(|line| projection.hard_line_range(line))

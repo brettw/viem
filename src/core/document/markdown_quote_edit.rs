@@ -352,8 +352,12 @@ impl Document {
                     self.encoding().encode_fragment("> ")?,
                 ));
             } else if !quote && prefix > 0 && (lines.contains(&index) || separator) {
+                // Remove one quote level; outer containers remain intact.
+                let quote_text = &decoded.text[..crate::document::markdown_quotes::prefix(&decoded.text)];
+                let marker = quote_text.rfind('>').ok_or(DocumentError::VerificationFailed)?;
+                let remove_start = self.encoding().encode_fragment(&quote_text[..marker])?.len();
                 patches.push(SourcePatch::primary(
-                    line.start..line.start + prefix,
+                    line.start + remove_start..line.start + prefix,
                     Vec::new(),
                 ));
             }

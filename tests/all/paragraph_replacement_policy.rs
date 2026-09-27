@@ -476,7 +476,8 @@ fn replacement_clears_character_background_without_changing_paragraph_defaults()
                     owner(document, 0).direct_default_character,
                     expected.direct_default_character
                 );
-                assert_eq!(character(document, 0, false).background.unwrap().alpha, 1.);
+                assert_eq!(owner(document, 0).direct_paragraph.background.unwrap().alpha, 1.);
+                assert!(character(document, 0, false).background.is_none());
                 for at in 1..3 {
                     assert_eq!(
                         character(document, at, false)

@@ -355,7 +355,7 @@ fn continuation_paragraphs_align_with_list_body_and_preserve_local_layout_querie
         .iter()
         .find(|paragraph| paragraph.text_range == continuation)
         .unwrap();
-    assert_eq!(paragraph.leading_indent, 32.0);
+    assert_eq!(paragraph.leading_indent + paragraph.containers.iter().map(|c| c.style.left()).sum::<f32>(), 32.0);
     assert_eq!(paragraph.first_line_indent, 0.0);
     let first_id = document.projection().blocks()[0].id;
     document

@@ -118,6 +118,22 @@ internal sealed partial class StyleWindow
         character.Children.Add(Separator());
         row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2"); ScriptPosition(row);
     }
+    private void BuildBlock()
+    {
+        ColorControl(Row(block), "Background color", VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND);
+        foreach (var side in new[] {
+            ("Top", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP, VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR),
+            ("Right", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT, VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR),
+            ("Bottom", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR),
+            ("Left", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR) }) {
+            var row = Row(block);
+            Number(row, side.Item1 + " margin", side.Item2, width: 70, groupWidth: 138);
+            Number(row, side.Item1 + " padding", side.Item3, min: 0, width: 70, groupWidth: 138);
+            Number(row, side.Item1 + " border weight", side.Item4, min: 0, width: 70, groupWidth: 138);
+            ColorControl(row, side.Item1 + " border color", side.Item5);
+        }
+    }
+
     private void BuildParagraph()
     {
         var top = new Grid(); top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -135,8 +151,6 @@ internal sealed partial class StyleWindow
         var row = Row(paragraph);
         Number(row, "Start indent", VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, icon: "\uE8A0"); Number(row, "End indent", VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, icon: "\uE89F"); Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
         row = Row(paragraph);
-        Number(row, "Space before", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE, min: 0, icon: "\uE74A", width: 84, groupWidth: 168);
-        Number(row, "Space after", VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER, min: 0, icon: "\uE74B", width: 84, groupWidth: 168);
         var spacing = new ComboBox { ItemsSource = new[] { "Normal", "Multiple", "At least", "Exact" }, Width = 112, MinWidth = 0 };
         var amount = new NumberBox { Minimum = .01, Maximum = 1000, Width = 60, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
         var amountUnit = Unit("");

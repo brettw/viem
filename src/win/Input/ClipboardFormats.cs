@@ -140,7 +140,7 @@ internal static class ClipboardFormats
             if (start > cursor && !(start == cursor + 1 && utf8[cursor] == 10)) Inline(cursor, start);
             var css = new StringBuilder("margin:0;");
             string Number(string key) => paragraph.GetProperty(key).GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture);
-            css.Append("margin-block-start:").Append(Number("spacing_before")).Append("pt;margin-block-end:").Append(Number("spacing_after")).Append("pt;text-indent:").Append(Number("first_line_indent")).Append("pt;");
+            css.Append("margin-block-start:").Append(Number("margin_top")).Append("pt;margin-block-end:").Append(Number("margin_bottom")).Append("pt;text-indent:").Append(Number("first_line_indent")).Append("pt;");
             bool rtl = paragraph.GetProperty("resolved_direction").GetString() == "RightToLeft";
             css.Append("direction:").Append(rtl ? "rtl" : "ltr").Append(";text-align:").Append(paragraph.GetProperty("alignment").GetString() switch { "Center" => "center", "End" => "end", _ => "start" }).Append(';');
             css.Append("margin-inline-start:").Append(Number("leading_indent")).Append("pt;margin-inline-end:").Append(Number("trailing_indent")).Append("pt;");

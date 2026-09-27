@@ -851,9 +851,9 @@ source CSS or RTF control state.
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
 
-- A **block style** applies to a typed paragraph block node. It contains
-  paragraph layout declarations and character declarations that provide the
-  paragraph's default text appearance. A heading paragraph style can therefore set spacing and
+- A **block style** applies to a typed paragraph or container node. It contains
+  box and paragraph layout declarations and character declarations that provide
+  default text appearance. A heading paragraph style can therefore set spacing and
   indentation as well as font family, size, weight, or color.
 - A **character style** applies to a formatted text range and contains only
   character declarations. It does not change paragraph geometry.
@@ -915,7 +915,7 @@ expressions may be projected as resolved read-only values with a capability
 diagnostic rather than being approximated on reverse edit.
 
 Every property belongs to a schema-defined domain with an applicability and
-inheritance rule. The initial domains are Document Canvas, Paragraph Layout,
+inheritance rule. The domains are Document Canvas, Block Box, Paragraph Layout,
 and Character. A style definition may declare only properties allowed by its
 role: for example, a Paragraph-role style cannot change the document canvas
 padding. Document Canvas declarations belong to source-root context rather
@@ -954,16 +954,24 @@ Portable color and font requests are value types and contain no native handles.
 The resolved character style retains whether foreground/canvas colors are
 unspecified, allowing the frontend to resolve theme defaults at paint time.
 
-Initial paragraph properties include:
+Block Box properties apply to paragraph and container styles, never character
+styles. They include background color, signed physical margins on all four
+sides, nonnegative physical padding on all four sides, and each side's solid
+border weight and color. Border weight defaults to zero; an unspecified border
+color uses the element's text color. Background covers the padding and border
+box, never its margin. These properties are not inherited through document
+nesting. Named style inheritance still applies within the appropriate role.
+Margin top and bottom replace space before and space after; no migration of old
+style-definition spacing fields is required.
 
-- space before and space after;
+Initial paragraph properties include:
 - logical start and end indents and a first-line indent, with signed values so
   hanging indents are representable;
 - line spacing as `normal`, a font-metric multiplier, `at-least`, or `exact`;
 - logical alignment: start, end, or center; and
 - base writing direction.
 
-Justified alignment, custom tab-stop collections, borders, backgrounds,
+Justified alignment, custom tab-stop collections,
 keep-with-next, and pagination properties are reserved extensions rather than
 silently accepted initial features. Property records are versioned and
 extensible; an unknown property is retained with provenance by the adapter but
@@ -1180,26 +1188,32 @@ definitions remain readable. Supported source list properties can override
 defaults; list commands create or change the actual bullet/number structure.
 Generated markers have explicit synthetic provenance and caret/edit rules.
 
-Future List-role styles will use the same block-style record and inheritance
-mechanism, with list-only marker and numbering declarations rejected for
-Document and Paragraph roles. They may contribute indentation and spacing at
-the reserved structural cascade layer and reference a Character style for the
-generated marker.
+Quote, CodeBlock, List, and ListItem are explicit container roles in the block
+style namespace. A container has stable identity, a named style, direct
+formatting, and ordered paragraph/container descendants. CodeBlock contains
+literal hard lines in one code body rather than independently styled prose
+paragraphs. Quote and list containers may nest; paragraphs retain their own
+Paragraph or Heading styles inside them. List and ListItem owners retain the
+existing list editing and numbering semantics. Tables and new container types
+remain outside this scope.
 
-HTML and Markdown expose the Paragraph style `Block quote`, mapped to native
-`blockquote` containers and Markdown `>` prefixes. WYSIWYG quotes use the same
-indentation and noneditable left border in both formats. Source HTML retains
-its tags and applies quote presentation to their source paragraph. Markdown
-Source retains every `>`; quote indentation and border apply when Flow Source
-Paragraphs is enabled and are suppressed when it is disabled. Assigning or
-removing quotation treatment uses local source patches and preserves inline
-formatting, text, hard-line structure, and exact history bytes. Paragraph-style
-commands assign one structural treatment at a time: changing a list item,
-heading, or code paragraph to Block quote replaces that treatment, and changing
-a quote to a list removes its quotation treatment. Only selected paragraphs
-change; neighboring items and containers retain their source bytes. Imported
-nested containers remain lossless and editable until an explicit style change
-normalizes the affected paragraph.
+The generated container styles are Block quote, Code Block, Bulleted List,
+Numbered List, and List item. Container styles may derive from the same role or
+Base Paragraph; Base Paragraph supplies character defaults, not another copy
+of its paragraph box. Container character defaults and inherited paragraph text
+properties (alignment, line spacing, direction, and first-line indent) cascade
+outermost to innermost before a child's explicit declarations. A container's
+margin, padding, border, and background never become declarations on its child.
+
+HTML and Markdown expose Block quote as a Quote container style mapped to
+native `blockquote` containers and Markdown `>` prefixes. The default quote
+has a left border and inset. Source HTML retains its tags; Markdown Source
+retains every `>`. Markdown Source quote-container geometry is applied when Flow
+Source Paragraphs is enabled and suppressed when disabled; existing code and
+list presentation remains available in both source layouts. Quote wrapping
+preserves the contained heading, list, and code treatment. Removing a quote
+unwraps the selected content without removing its inner treatment. All such
+operations use verified local source patches and exact undo/redo.
 
 In WYSIWYG, choosing Block quote without a selection at the end of a nonempty
 ordinary paragraph creates a blank quote after the existing prose and places
@@ -1209,7 +1223,7 @@ insertion and style assignment are one atomic, undoable transaction.
 Enter continues a nonempty quotation in a new paragraph; the generated quote
 style therefore uses itself as its next-paragraph style. Enter in an empty quote
 removes its quotation treatment. Backspace at the beginning of a quote joins it
-into the preceding paragraph; list and code treatment follow the reset rule above.
+into the preceding paragraph using the adapter's structural join policy.
 Deleting the entire selected document also removes content-level paragraph
 wrappers, leaving an empty ordinary paragraph ready for typing; untouched
 document metadata and source encoding are retained.
@@ -1531,7 +1545,7 @@ The CSS property is `font-family`; `font-face` is not a supported declaration
 (`@font-face` is a stylesheet rule) and is preserved but ignored. The initial
 supported Paragraph-property mappings are:
 
-- `margin-block-start` and `margin-block-end` -> space before and after;
+- `margin-block-start` and `margin-block-end` -> margin top and bottom; physical margin/padding and solid border widths/colors map to Block Box declarations;
 - `margin-inline-start` and `margin-inline-end` -> logical start and end
   indents;
 - `text-indent` -> first-line indent;
@@ -2145,6 +2159,13 @@ Explicit assignment of a custom default style materializes only declarations
 needed to represent that assignment in a source-backed format. Source and
 WYSIWYG variants share their format's defaults. Loading defaults is presentation
 configuration and never changes source bytes, dirty state, or undo history.
+Saved style defaults MUST be validated before installation, including the
+format-defined semantic roles of built-in block styles. Ignore the smallest
+independently invalid declaration or definition, retaining valid settings and
+showing diagnostics for what was ignored. Invalid JSON or an unsupported file
+version leaves the existing defaults intact and shows a warning. The document
+remains usable. Loading MUST NOT migrate obsolete definitions or rewrite the
+saved file, and the installed style sheet MUST remain valid.
 
 The Style menu contains Edit Styles and Save as default <format> style.
 HTML also exposes Include style definitions in file, as specified above.
@@ -2756,11 +2777,30 @@ Paragraph layout follows the resolved paragraph style:
   direction. The first-line indent is relative to the resolved start indent;
   negative values provide hanging indents.
 - The available width for a paragraph is the canvas usable width minus its
-  resolved start and end indents. Structural block contributions may further
-  reduce or offset that box in the future.
-- Space between adjacent paragraphs is the sum of the first paragraph's space
-  after and the second paragraph's space before. Spacing does not collapse.
-  Document top and bottom padding are separate from paragraph spacing.
+  resolved start and end indents and every enclosing physical margin, border,
+  and padding. Each nested box resolves against its parent's content box.
+- Normal-flow block boxes follow HTML/CSS adjoining vertical margin rules:
+  adjoining margins collapse to the largest positive plus the most negative
+  value. Parent/first-child and parent/last-child margins collapse through an
+  edge with no border or padding. A border or padding separates those margin
+  groups. Horizontal margins never collapse. Editable empty paragraphs still
+  have a caret-bearing line box. Source-root padding remains separate.
+- The supported box subset is automatic-width normal flow with solid borders.
+  Floats, positioning, explicit width/height constraints, border radii, and CSS
+  formatting contexts are unsupported. Each box's background and borders span
+  all its children and intervening space, with top/bottom edges only at the
+  actual container boundaries. Boxes paint in document-tree order: all parent
+  background/border slices precede their children, including overlapping children.
+  Zoom scales each distance exactly once.
+- Negative block margins retain their exact CSS effect while visual-row starts
+  remain in increasing document order. Reverse-flow overlaps are outside this
+  editable normal-flow subset: if a boundary would put the following hard line
+  at or above the preceding visual row's start, layout uses a one-layout-unit
+  forward advance (scaled by zoom) and retains a range-associated layout
+  diagnostic. A negative first boundary is limited to the canvas origin with
+  the same diagnostic. Source declarations remain unchanged. This fallback
+  MUST keep insertion, undo, and bounded regional layout available; ordinary
+  positive margins and advancing negative margins MUST remain exact.
 - `normal` line spacing uses the maximum shaped ascent, descent, and leading on
   each visual row. A multiplier scales that natural row height. `at-least`
   takes the greater of the natural and requested heights. `exact` uses the
@@ -5075,7 +5115,7 @@ catalogue identities and assignment actions as Style menus. Formatting buttons
 reflect current on/off/mixed state. List toggles use structural membership,
 independent of list depth or named paragraph assignment; activating an already
 uniformly selected list kind removes it. Code toggles assign/clear the existing
-Code character or Code Block paragraph style. Native color wells behave like
+Code character or Code Block container style. Native color wells behave like
 the style editor's controls but edit the current selection or pending typing
 style through the existing direct-formatting transaction. No toolbar action
 owns separate document, selection, or undo state.
@@ -5177,20 +5217,34 @@ From top to bottom, the content is:
 
 1. a properties section containing:
    - **Style**, a pop-up that selects a style in the target document and groups
-     Paragraph, Character, and Internal styles, in that order. Internal styles,
+     Paragraph, Container, Character, and Internal styles, in that order. Internal styles,
      including Incremental match, appear only in the final Internal group even
      when their underlying style type is Character;
    - **Name**, an editable text field;
-   - **Style type**, a read-only value showing Paragraph or Character; and
+   - **Style type**, a read-only value showing Paragraph, Container, or Character; and
    - **Based on**, a pop-up for the style's parent with a trailing **↗** button;
    - **Next paragraph**, a pop-up for paragraph styles with a trailing **↗**
      button;
 2. a native macOS tab row immediately below the name/base-style section, with
-   **Character** and **Paragraph** tabs;
+   **Character**, **Paragraph**, and **Block** tabs;
 3. the controls for the selected tab;
 4. a bordered, live preview using the real core style resolver and Core Text
    shaping path;
 5. a bottom action row containing the **Close** button.
+
+The Block tab is enabled for paragraph and container styles and disabled for
+character styles. It contains a Background color picker using the same native
+control as character highlight, four margin inputs (Top/Right/Bottom/Left),
+four padding inputs, and each side's Border weight and color. Margin Top/Bottom
+replace Space Before/After in the Paragraph tab. All use the existing sparse
+override controls; zero border weight means no border. Paragraph controls remain
+available on container styles to set descendant text defaults. Logical start/end indents on a container inset that owner using the resolved
+text direction; physical margins remain independent. Container styles
+appear as another category in the existing style picker; no document hierarchy,
+breadcrumbs, or extra target selector is added. Caret following retains the
+existing rules, selecting the innermost quote/code style at an ordinary body
+paragraph and an explicit heading/character style when applicable. The preview
+uses actual nested boxes through the core layout path.
 
 Style type is immutable after style creation. The Based on picker contains only
 parents allowed by the selected style's namespace and role and excludes the
@@ -5312,13 +5366,12 @@ opening a direct-formatting panel transfers ownership from the inspector.
 
 #### Paragraph tab
 
-The Paragraph tab is enabled only for Paragraph-role styles. It is visibly
+The Paragraph tab is enabled for Paragraph and Container styles. It is visibly
 disabled for Character styles and cannot retain keyboard focus
 when disabled.
 
 Expose controls for all initial Paragraph Layout properties:
 
-- space before and space after;
 - logical start indent and end indent;
 - signed first-line indent, including hanging indents;
 - line-spacing kind (`normal`, multiplier, `at-least`, or `exact`) and the
@@ -5416,7 +5469,7 @@ An editor targeting the global Code sheet remains valid when a document closes.
 
 Required macOS integration tests cover single-window reuse and retargeting,
 continued document editing while the window is open, live application and undo
-grouping, Character/Paragraph tab enablement, inherited versus explicit values,
+grouping, Character/Paragraph/Block tab enablement, inherited versus explicit values,
 base-style parent restrictions, external undo/redo refresh, deletion fallback
 to Base Paragraph, stale callback rejection, and target-document closure. Also
 cover role-specific initial selection, following a non-default character style
@@ -6247,7 +6300,7 @@ metrics, keyed by layout snapshot and metrics generation.
 ### macOS style inspector
 
 The style inspector presents its metadata fields without a redundant
-"Properties" heading. Keep the field labels and Character/Paragraph tabs.
+"Properties" heading. Keep the field labels and Character/Paragraph/Block tabs.
 
 ### macOS pointer selection performance
 
@@ -6391,7 +6444,7 @@ Windows-specific settings stay in `windows`.
 Unmodified `F8` opens or raises the modeless style inspector outside literal-next
 input. Menu and keyboard entry must leave focus in the inspector, without an
 always-on-top flag. The inspector is not resizable or maximizable. Its compact,
-centered Character/Paragraph tabs share one fixed-height formatting area; the
+centered Character/Paragraph/Block tabs share one fixed-height formatting area; the
 window fits the form, preview, and bottom buttons without spare bottom space.
 Complete the populated inspector's measure/arrange layout while hidden before
 fitting its native window. Opening must not expose intermediate sizes, retain
@@ -6422,7 +6475,7 @@ Next paragraph have accessible ↗ buttons that navigate by stable style ID
 without changing the relationship. Parent choices exclude inheritance cycles.
 Inherited entry fields are empty; enabling an override starts with its resolved
 value. Base Paragraph's override boxes stay checked and disabled. Character
-styles disable the Paragraph tab. The paragraph pane uses alignment icon buttons
+styles disable the Paragraph and Block tabs. The paragraph pane uses alignment icon buttons
 and aligned columns for indents and spacing. The font ellipsis edits the ordered
 fallback family list. Code Styles includes Restore Defaults, which replaces and
 persists the shared defaults; a write failure restores the previous global
@@ -7247,7 +7300,7 @@ the frontend refreshes each affected view once and exports only its viewport
 text. Large-document regressions must cover the first switch in both
 directions, rather than relying only on a warmed projection cache.
 
-The rich-format Code character style and Code Block paragraph style are
+The rich-format Code character style and Code Block container style are
 independent of the Code format and its global stylesheet. These rich styles
 use the system monospace family and dark green (`#006400`). HTML `<code>` and
 `<pre>` and Markdown inline, fenced, and indented code project to these roles; code whitespace remains
@@ -7256,15 +7309,15 @@ and `<i>` where those tags express the requested change. More complex or
 interacting properties use sparse CSS declarations as needed. Existing untouched
 HTML spelling remains exact.
 
-Markdown and HTML Paragraph defaults have 7pt space before and 7pt space after
-at the default 14pt font size. Their additive spacing yields the common one-em
-gap between adjacent paragraphs. Code Block inherits this outer spacing;
-Markdown Code Block also has a 32pt logical start indent. User defaults and
+Markdown and HTML Paragraph defaults have 7pt top and bottom margins
+at the default 14pt font size. Adjoining margins collapse, giving a 7pt gap
+between ordinary paragraphs. Code Block owns its container box, with no duplicate
+paragraph box on its literal body; Markdown Code Block has a 32pt left margin. User defaults and
 explicit source style declarations can override these defaults without
 materializing them in untouched source.
 
-Each fenced or indented Markdown block or HTML `<pre>` is one paragraph, including in
-source-visible views. Its internal source endings produce explicit line breaks
+Each fenced or indented Markdown block or HTML `<pre>` is one CodeBlock container
+with one literal paragraph body, including in source-visible views. Its internal source endings produce explicit line breaks
 within that paragraph, so spacing is applied only around the block. These
 breaks preserve code indentation and blank rows and are distinct from automatic
 word wrapping. HTML entities are decoded in WYSIWYG code; source-visible code

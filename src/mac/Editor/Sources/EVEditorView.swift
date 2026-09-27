@@ -409,6 +409,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             context.saveGState()
             context.clip(to: textViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
+            drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             drawSelection(snapshot, dirtyRect: dirtyRect, in: context)
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
@@ -3074,18 +3075,23 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     }
 
+    private func drawBlockBackgrounds(_ snapshot: EVLayoutExport, dirtyRect: NSRect) {
+        for item in snapshot.decorations where item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
+            let rect = viewRect(item.typographic_bounds)
+            guard rect.intersects(dirtyRect) else { continue }
+            nativeForeground(item.paint).setFill()
+            rect.fill()
+        }
+    }
+
     /// Paragraph furniture is drawn from its own exact-layout export. It never
     /// participates in text slicing, caret, selection, search or accessibility text.
     private func drawParagraphDecorations(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
         guard let session = surface?.session else { return }
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
+            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 { continue }
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
             let foreground = nativeForeground(item.paint)
-            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
-                foreground.setFill()
-                viewRect(item.ink_bounds).fill()
-                continue
-            }
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
                 nativeColor(item.paint.background).setFill()
                 viewRect(item.typographic_bounds).fill()

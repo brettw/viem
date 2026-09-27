@@ -1231,7 +1231,7 @@ internal unsafe struct ViemCommandLineSelectionV1
 
 internal static unsafe partial class Native
 {
-    public const uint VIEM_CORE_ABI_VERSION = 6u;
+    public const uint VIEM_CORE_ABI_VERSION = 7u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 = 3u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
     public const uint VIEM_STATUS_OK = 0u;
@@ -1536,6 +1536,10 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_ROLE_NONE = 0u;
     public const uint VIEM_STYLE_ROLE_DOCUMENT = 1u;
     public const uint VIEM_STYLE_ROLE_PARAGRAPH = 2u;
+    public const uint VIEM_STYLE_ROLE_QUOTE = 3u;
+    public const uint VIEM_STYLE_ROLE_CODE_BLOCK = 4u;
+    public const uint VIEM_STYLE_ROLE_LIST = 5u;
+    public const uint VIEM_STYLE_ROLE_LIST_ITEM = 6u;
     public const uint VIEM_STYLE_ORIGIN_SOURCE_BACKED = 1u;
     public const uint VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION = 2u;
     public const uint VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY = 3u;
@@ -1556,8 +1560,8 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT = 3u;
     public const uint VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM = 4u;
     public const uint VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT = 5u;
-    public const uint VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_BEFORE = 6u;
-    public const uint VIEM_STYLE_PROPERTY_PARAGRAPH_SPACING_AFTER = 7u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP = 6u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM = 7u;
     public const uint VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING = 8u;
     public const uint VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT = 9u;
     public const uint VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT = 10u;
@@ -1578,6 +1582,21 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING = 25u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION = 26u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_BOLD = 27u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT = 28u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT = 29u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP = 30u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT = 31u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM = 32u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT = 33u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH = 34u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR = 35u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH = 36u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR = 37u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH = 38u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR = 39u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH = 40u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR = 41u;
+    public const uint VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND = 42u;
     public const uint VIEM_STYLE_VALUE_NONE = 0u;
     public const uint VIEM_STYLE_VALUE_FLOAT = 1u;
     public const uint VIEM_STYLE_VALUE_UNSIGNED = 2u;
@@ -1654,6 +1673,8 @@ internal static unsafe partial class Native
     public const uint VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN = (1u << 0);
     public static readonly uint VIEM_POSITIONED_CLUSTER_V1_SIZE = ((uint)sizeof(ViemPositionedClusterV1));
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER = (1u << 1);
+    public const uint VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND = (1u << 2);
+    public const uint VIEM_LAYOUT_DECORATION_BLOCK_BORDER = (1u << 3);
     public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
@@ -1988,7 +2009,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_selected_styles_export(ulong @core, ulong @view, ulong @expected_revision, ViemSelectedStylesInfoV1* @out_info, byte* @out_utf8, ulong @capacity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_initialize_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length);
+    public static extern uint viem_core_initialize_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length, nint @diagnostic, void* @context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_export_style_defaults(ulong @core, ulong @expected_revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

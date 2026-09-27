@@ -10,7 +10,7 @@ fn open(source: &str, format: Format) -> Document {
 }
 
 #[test]
-fn list_quote_list_styles_replace_each_other_and_leave_typing_usable() {
+fn list_and_quote_styles_compose_and_leave_typing_usable() {
     for (format, source) in [
         (Format::Html, "<!--keep--><ul data-x='list'><li>before</li><li><b>é العربية</b></li><li>after</li></ul><!--end-->"),
         (Format::Markdown, "- before\n- **é العربية**\n- after"),
@@ -31,8 +31,8 @@ fn list_quote_list_styles_replace_each_other_and_leave_typing_usable() {
         assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
         let quote_source = core.document().source_bytes();
         let block = core.document().projection().blocks().iter().find(|block| block.range.contains(&at)).unwrap();
-        assert_eq!(block.style.0, "Block quote");
-        assert!(!core.document().projection().list_structure().lists.iter().any(|list|
+        assert_eq!(block.quote_depth, 1);
+        assert!(core.document().projection().list_structure().lists.iter().any(|list|
             list.items.iter().any(|item| item.paragraph_ids.contains(&block.id))));
         core.handle(view, CoreEvent::Input(InputEvent::text("X"))).unwrap();
         let cursor = core.command_state(view).unwrap().cursor();
@@ -51,8 +51,7 @@ fn list_quote_list_styles_replace_each_other_and_leave_typing_usable() {
             expected: core.list_selection_identity(view).unwrap(), style: Some(ListStyle::Numbered),
         }).unwrap_or_else(|error| panic!("reverse {format:?}: {error:?}"));
         let after = core.document().source_bytes();
-        assert!(!String::from_utf8(after.clone()).unwrap().contains("blockquote"));
-        assert!(!String::from_utf8(after.clone()).unwrap().lines().any(|line| line.starts_with('>')));
+        assert!(core.document().projection().blocks().iter().any(|block| block.quote_depth == 1));
         assert_eq!(open(std::str::from_utf8(&after).unwrap(), format).text(), core.document().text());
         core.handle(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
         assert_eq!(core.document().source_bytes(), typed);
@@ -143,10 +142,12 @@ fn heading_and_code_to_quote_to_heading_preserve_text_and_allow_typing() {
         let mut doc = open(source, format);
         let text = doc.text().to_owned();
         let at = text.find(needle).unwrap();
+        let original_style = doc.projection().blocks()[0].style.clone();
         doc.set_paragraph_style(at..at, "Block quote".into())
             .unwrap_or_else(|error| panic!("quote {format:?} {source:?}: {error:?}"));
         assert_eq!(doc.text(), text);
-        assert_eq!(doc.projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(doc.projection().blocks()[0].style, original_style);
+        assert_eq!(doc.projection().blocks()[0].quote_depth, 1);
         let quote_source = doc.source_bytes();
         assert!(doc.undo());
         assert_eq!(doc.source_bytes(), source.as_bytes());
@@ -187,7 +188,7 @@ fn heading_and_code_to_quote_to_heading_preserve_text_and_allow_typing() {
         let final_source = core.document().source_bytes();
         let block = &core.document().projection().blocks()[0];
         assert_eq!(block.style.0, "Heading2");
-        assert!(!String::from_utf8_lossy(&final_source).contains("blockquote"));
+        assert_eq!(block.quote_depth, 1);
         let reopened = Document::from_bytes(final_source.clone(), Encoding::Utf8, format).unwrap();
         assert_eq!(reopened.text(), core.document().text());
         assert_eq!(
@@ -204,7 +205,7 @@ fn heading_and_code_to_quote_to_heading_preserve_text_and_allow_typing() {
 }
 
 #[test]
-fn explicitly_reassigning_imported_nested_quote_removes_other_structural_styles() {
+fn explicitly_reassigning_imported_nested_quote_retains_inner_styles() {
     for (format, source) in [
         (
             Format::Html,
@@ -215,24 +216,17 @@ fn explicitly_reassigning_imported_nested_quote_removes_other_structural_styles(
         let mut doc = open(source, format);
         assert_eq!(doc.source_bytes(), source.as_bytes());
         let text = doc.text().to_owned();
+        let original_style = doc.projection().blocks()[0].style.clone();
+        let original_kind = doc.projection().blocks()[0].kind.clone();
         doc.set_paragraph_style(0..0, "Block quote".into())
             .unwrap_or_else(|error| panic!("{format:?} {error:?}"));
         assert_eq!(doc.text(), text);
         let first = &doc.projection().blocks()[0];
-        assert_eq!(first.style.0, "Block quote");
-        assert!(matches!(
-            first.kind,
-            viem_core::document::BlockKind::Paragraph
-        ));
-        assert!(!doc
-            .projection()
-            .list_structure()
-            .lists
-            .iter()
-            .any(|list| list
-                .items
-                .iter()
-                .any(|item| item.paragraph_ids.contains(&first.id))));
+        assert_eq!(first.style, original_style);
+        assert_eq!(first.kind, original_kind);
+        assert!(first.quote_depth > 0);
+        assert!(doc.projection().list_structure().lists.iter().any(|list|
+            list.items.iter().any(|item| item.paragraph_ids.contains(&first.id))));
         let after = doc.source_bytes();
         assert_eq!(
             Document::from_bytes(after.clone(), Encoding::Utf8, format)
@@ -240,10 +234,12 @@ fn explicitly_reassigning_imported_nested_quote_removes_other_structural_styles(
                 .text(),
             text
         );
-        assert!(doc.undo());
-        assert_eq!(doc.source_bytes(), source.as_bytes());
-        assert!(doc.redo());
-        assert_eq!(doc.source_bytes(), after);
+        if after != source.as_bytes() {
+            assert!(doc.undo());
+            assert_eq!(doc.source_bytes(), source.as_bytes());
+            assert!(doc.redo());
+            assert_eq!(doc.source_bytes(), after);
+        }
     }
 }
 

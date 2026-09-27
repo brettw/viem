@@ -114,7 +114,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         do {
             try attachToCore()
-            if let warning = backend.configurationWarning { lastErrorMessage = warning }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -202,7 +201,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         attachedSession.commandTurnHost = self
         session = attachedSession
         appliedMargins = viewPreferences.margins
+        lastErrorMessage = backend.configurationWarning ?? ""
         if isViewLoaded { refreshPresentation() }
+        if isViewLoaded, let warning = backend.configurationWarning { publishHostMessage(warning) }
     }
 
     func detachFromCore() {

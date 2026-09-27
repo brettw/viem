@@ -49,7 +49,7 @@ fn character_and_paragraph_batch_applies_and_undoes_atomically() {
                     )),
                 ),
                 (
-                    StyleProperty::ParagraphSpacingAfter,
+                    StyleProperty::BlockMarginBottom,
                     Some(StylePropertyValue::Float(9.)),
                 ),
             ],
@@ -65,7 +65,7 @@ fn character_and_paragraph_batch_applies_and_undoes_atomically() {
             Some(ParagraphAlignment::Center)
         );
         assert_eq!(
-            doc.projection().blocks()[0].direct_paragraph.spacing_after,
+            doc.projection().blocks()[0].direct_paragraph.margin_bottom,
             Some(9.)
         );
         assert_eq!(
@@ -93,7 +93,7 @@ fn failed_or_duplicate_batches_publish_no_partial_character_or_paragraph_changes
                 Some(StylePropertyValue::Boolean(true)),
             ),
             (
-                StyleProperty::ParagraphSpacingAfter,
+                StyleProperty::BlockMarginBottom,
                 Some(StylePropertyValue::Float(f32::NAN)),
             ),
         ],
@@ -184,7 +184,7 @@ fn paragraph_readback_uses_semantic_source_blocks_and_caret_location() {
             .unwrap();
             let paragraph = core.selected_paragraph_style(view).unwrap();
             assert_eq!(paragraph.alignment, alignment, "{format:?}");
-            assert_eq!(paragraph.spacing_after, after, "{format:?}");
+            assert_eq!(paragraph.margin_bottom, after, "{format:?}");
         }
     }
 }
@@ -209,7 +209,7 @@ fn pending_batch_preserves_validation_atomicity_and_source_cleanliness() {
                         ))
                     ),
                     (
-                        StyleProperty::ParagraphSpacingAfter,
+                        StyleProperty::BlockMarginBottom,
                         Some(StylePropertyValue::Float(f32::NAN))
                     ),
                 ]
@@ -503,8 +503,8 @@ fn full_effective_values(
     use StyleProperty as P;
     use StylePropertyValue as V;
     vec![
-        (P::ParagraphSpacingBefore, Some(V::Float(p.spacing_before))),
-        (P::ParagraphSpacingAfter, Some(V::Float(p.spacing_after))),
+        (P::BlockMarginTop, Some(V::Float(p.margin_top))),
+        (P::BlockMarginBottom, Some(V::Float(p.margin_bottom))),
         (
             P::ParagraphLineSpacing,
             Some(V::LineSpacing(p.line_spacing)),

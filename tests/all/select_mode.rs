@@ -466,11 +466,11 @@ fn select_all_delete_clears_content_and_retains_paragraph_style_for_replacement(
             .unwrap();
         assert_eq!(core.document().text(), "");
         assert_eq!(core.command_state(v).unwrap().mode(), Mode::Insert);
-        assert!(core.document().projection().blocks().iter().all(|block| block.style.0 != "Block quote"));
+        assert!(core.document().projection().blocks().iter().all(|block| block.quote_depth == 0));
         core.handle(v, CoreEvent::Input(InputEvent::Text("replacement".into())))
             .unwrap();
         assert_eq!(core.document().text(), "replacement");
-        assert_eq!(core.document().projection().blocks()[0].style.0, "Block quote");
+        assert_eq!(core.document().projection().blocks()[0].quote_depth, 1);
     }
 }
 #[test]

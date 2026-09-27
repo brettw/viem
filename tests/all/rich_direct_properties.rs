@@ -70,6 +70,31 @@ fn html_clear_direct_property_splits_only_affected_inline_context() {
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
+
+#[test]
+fn clearing_inline_highlight_retains_the_paragraph_background() {
+    let source = "<p style='background-color:#336699'><span style='background-color:yellow'>abcdef</span></p>";
+    let mut document = open(source, Format::Html);
+    let background = document.projection().blocks()[0].direct_paragraph.background;
+    assert!(background.is_some());
+    let selected = range(&document, 2, 4);
+    apply(&mut document, PersistedStyleIntent::ClearDirectCharacterProperties {
+        range: selected,
+        properties: BTreeSet::from([StyleProperty::CharacterBackground]),
+    });
+    assert_eq!(document.projection().blocks()[0].direct_paragraph.background, background);
+    assert!(direct(&document, 0).background.is_some());
+    assert_eq!(direct(&document, 2).background, None);
+    assert!(direct(&document, 4).background.is_some());
+    let changed = document.source_bytes();
+    let reopened = open(std::str::from_utf8(&changed).unwrap(), Format::Html);
+    assert_eq!(reopened.projection().blocks()[0].direct_paragraph.background, background);
+    assert_eq!(direct(&reopened, 2).background, None);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), changed);
+}
 #[test]
 fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() {
     let source="<p id='keep' style='text-align:center;unknown:opaque;font-weight:700'>one<br>two</p><p>tail</p>";
@@ -80,7 +105,7 @@ fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() 
         PersistedStyleIntent::SetDirectBlockProperties {
             target: StyleBlockTarget::Paragraphs(selected),
             properties: BlockProperties {
-                spacing_after: Some(18.0),
+                margin_bottom: Some(18.0),
                 first_line_indent: Some(12.0),
                 ..Default::default()
             },
@@ -90,13 +115,13 @@ fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() 
     assert_eq!(
         document.projection().blocks()[0]
             .direct_paragraph
-            .spacing_after,
+            .margin_bottom,
         Some(18.0)
     );
     assert_eq!(
         document.projection().blocks()[1]
             .direct_paragraph
-            .spacing_after,
+            .margin_bottom,
         None
     );
     assert!(direct(&document, 0).weight == Some(700) || direct(&document, 0).bold == Some(true));
@@ -107,7 +132,7 @@ fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() 
             target: StyleBlockTarget::Paragraphs(selected),
             properties: BTreeSet::from([
                 StyleProperty::ParagraphAlignment,
-                StyleProperty::ParagraphSpacingAfter,
+                StyleProperty::BlockMarginBottom,
             ]),
         },
     );
@@ -118,7 +143,7 @@ fn html_paragraph_properties_apply_to_all_hard_lines_and_clear_to_inheritance() 
     assert_eq!(
         document.projection().blocks()[0]
             .direct_paragraph
-            .spacing_after,
+            .margin_bottom,
         None
     );
     assert_eq!(
@@ -147,7 +172,7 @@ fn rtf_paragraph_property_deltas_preserve_inline_groups_and_other_paragraphs() {
             PersistedStyleIntent::SetDirectBlockProperties {
                 target: StyleBlockTarget::Paragraphs(selected),
                 properties: BlockProperties {
-                    spacing_after: Some(18.0),
+                    margin_bottom: Some(18.0),
                     first_line_indent: Some(12.0),
                     ..Default::default()
                 },
@@ -156,7 +181,7 @@ fn rtf_paragraph_property_deltas_preserve_inline_groups_and_other_paragraphs() {
         assert_eq!(
             document.projection().blocks()[0]
                 .direct_paragraph
-                .spacing_after,
+                .margin_bottom,
             Some(18.0)
         );
         let selected = range(&document, 0, 1);
@@ -166,7 +191,7 @@ fn rtf_paragraph_property_deltas_preserve_inline_groups_and_other_paragraphs() {
                 target: StyleBlockTarget::Paragraphs(selected),
                 properties: BTreeSet::from([
                     StyleProperty::ParagraphAlignment,
-                    StyleProperty::ParagraphSpacingAfter,
+                    StyleProperty::BlockMarginBottom,
                 ]),
             },
         );
@@ -177,7 +202,7 @@ fn rtf_paragraph_property_deltas_preserve_inline_groups_and_other_paragraphs() {
         assert_eq!(
             document.projection().blocks()[0]
                 .direct_paragraph
-                .spacing_after,
+                .margin_bottom,
             None
         );
         assert_eq!(
@@ -305,7 +330,7 @@ fn rich_paragraph_layout_indents_first_hard_line_and_invalidates_spacing_only() 
         assert_eq!(rows[1].y - rows[0].y, rows[0].line_advance);
         assert_eq!(
             rows[2].y - rows[1].y,
-            rows[1].line_advance + 18.0 + if format == Format::Html { 7.0 } else { 0.0 }
+            rows[1].line_advance + 18.0
         );
         let shaped = engine.provider().request_calls();
         let old_y = rows[2].y;
@@ -315,7 +340,7 @@ fn rich_paragraph_layout_indents_first_hard_line_and_invalidates_spacing_only() 
             PersistedStyleIntent::SetDirectBlockProperties {
                 target: StyleBlockTarget::Paragraphs(selected),
                 properties: BlockProperties {
-                    spacing_after: Some(30.0),
+                    margin_bottom: Some(30.0),
                     ..Default::default()
                 },
             },
@@ -353,7 +378,7 @@ fn clearing_final_named_rtf_paragraph_keeps_named_and_inline_character_styles() 
     assert_eq!(
         document.projection().blocks()[0]
             .direct_paragraph
-            .spacing_after,
+            .margin_bottom,
         Some(9.0)
     );
     assert_eq!(document.projection().style_spans(), spans);

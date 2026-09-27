@@ -33,11 +33,18 @@ struct EVStyleKey: Hashable, CustomStringConvertible {
 enum EVStyleKind: Int, CaseIterable {
     case paragraph
     case character
+    case quote
+    case codeBlock
+    case list
+    case listItem
+
+    var isContainer: Bool { self != .paragraph && self != .character }
 
     var displayName: String {
         switch self {
         case .paragraph: "Paragraph"
         case .character: "Character"
+        case .quote, .codeBlock, .list, .listItem: "Container"
         }
     }
 
@@ -125,8 +132,8 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     case canvasPaddingRight = 3
     case canvasPaddingBottom = 4
     case canvasPaddingLeft = 5
-    case paragraphSpacingBefore = 6
-    case paragraphSpacingAfter = 7
+    case blockMarginTop = 6
+    case blockMarginBottom = 7
     case paragraphLineSpacing = 8
     case paragraphFirstLineIndent = 9
     case paragraphLeadingIndent = 10
@@ -147,6 +154,21 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     case characterLetterSpacing = 25
     case characterScriptPosition = 26
     case characterBold = 27
+    case blockMarginRight = 28
+    case blockMarginLeft = 29
+    case blockPaddingTop = 30
+    case blockPaddingRight = 31
+    case blockPaddingBottom = 32
+    case blockPaddingLeft = 33
+    case blockBorderTopWidth = 34
+    case blockBorderTopColor = 35
+    case blockBorderRightWidth = 36
+    case blockBorderRightColor = 37
+    case blockBorderBottomWidth = 38
+    case blockBorderBottomColor = 39
+    case blockBorderLeftWidth = 40
+    case blockBorderLeftColor = 41
+    case blockBackground = 42
 
     static let characterProperties: [Self] = [
         .characterFontFamilies, .characterSize, .characterWeight, .characterSlant, .characterBold,
@@ -156,9 +178,23 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     ]
 
     static let paragraphProperties: [Self] = [
-        .paragraphSpacingBefore, .paragraphSpacingAfter, .paragraphFirstLineIndent,
+        .paragraphFirstLineIndent,
         .paragraphLeadingIndent, .paragraphTrailingIndent, .paragraphLineSpacing,
         .paragraphAlignment, .paragraphBaseDirection,
+    ]
+
+    static let blockProperties: [Self] = [
+        .blockBackground, .blockMarginTop, .blockMarginRight, .blockMarginBottom, .blockMarginLeft,
+        .blockPaddingTop, .blockPaddingRight, .blockPaddingBottom, .blockPaddingLeft,
+        .blockBorderTopWidth, .blockBorderTopColor, .blockBorderRightWidth, .blockBorderRightColor,
+        .blockBorderBottomWidth, .blockBorderBottomColor, .blockBorderLeftWidth, .blockBorderLeftColor,
+    ]
+    static let nonnegativeBlockProperties: Set<Self> = [
+        .blockPaddingTop, .blockPaddingRight, .blockPaddingBottom, .blockPaddingLeft,
+        .blockBorderTopWidth, .blockBorderRightWidth, .blockBorderBottomWidth, .blockBorderLeftWidth,
+    ]
+    static let blockBorderColors: Set<Self> = [
+        .blockBorderTopColor, .blockBorderRightColor, .blockBorderBottomColor, .blockBorderLeftColor,
     ]
 
     var displayName: String {
@@ -168,8 +204,8 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         case .canvasPaddingRight: "Canvas padding right"
         case .canvasPaddingBottom: "Canvas padding bottom"
         case .canvasPaddingLeft: "Canvas padding left"
-        case .paragraphSpacingBefore: "Space before"
-        case .paragraphSpacingAfter: "Space after"
+        case .blockMarginTop: "Margin top"
+        case .blockMarginBottom: "Margin bottom"
         case .paragraphLineSpacing: "Line spacing"
         case .paragraphFirstLineIndent: "First-line indent"
         case .paragraphLeadingIndent: "Start indent"
@@ -190,6 +226,21 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         case .characterOpenTypeFeatures: "OpenType features"
         case .characterLetterSpacing: "Letter spacing"
         case .characterScriptPosition: "Script position"
+        case .blockMarginRight: "Margin right"
+        case .blockMarginLeft: "Margin left"
+        case .blockPaddingTop: "Padding top"
+        case .blockPaddingRight: "Padding right"
+        case .blockPaddingBottom: "Padding bottom"
+        case .blockPaddingLeft: "Padding left"
+        case .blockBorderTopWidth: "Border top weight"
+        case .blockBorderTopColor: "Border top color"
+        case .blockBorderRightWidth: "Border right weight"
+        case .blockBorderRightColor: "Border right color"
+        case .blockBorderBottomWidth: "Border bottom weight"
+        case .blockBorderBottomColor: "Border bottom color"
+        case .blockBorderLeftWidth: "Border left weight"
+        case .blockBorderLeftColor: "Border left color"
+        case .blockBackground: "Block background"
         }
     }
 }
@@ -292,7 +343,8 @@ struct EVStyleSheetSnapshot: Equatable {
         return definitions.filter { candidate in
             guard candidate.key.namespace == selected.key.namespace,
                   candidate.key != selected.key,
-                  rolesCanInherit(child: selected.kind, parent: candidate.kind),
+                  (rolesCanInherit(child: selected.kind, parent: candidate.kind)
+                    || (selected.kind.isContainer && candidate.flags.contains(.baseParagraph))),
                   !isDescendant(candidate.key, of: selected.key)
             else { return false }
             return true
@@ -305,10 +357,7 @@ struct EVStyleSheetSnapshot: Equatable {
     }
 
     private func rolesCanInherit(child: EVStyleKind, parent: EVStyleKind) -> Bool {
-        switch (child, parent) {
-        case (.paragraph, .paragraph), (.character, .character): true
-        default: false
-        }
+        child == parent
     }
 
     private func isDescendant(_ possibleDescendant: EVStyleKey, of ancestor: EVStyleKey) -> Bool {
@@ -768,7 +817,13 @@ enum EVCoreStyleBridge {
             } else if raw.role == UInt32(VIEM_STYLE_ROLE_PARAGRAPH) {
                 kind = .paragraph
             } else {
-                throw EVStyleBridgeError.malformedSnapshot("unknown block role \(raw.role)")
+                switch raw.role {
+                case UInt32(VIEM_STYLE_ROLE_QUOTE): kind = .quote
+                case UInt32(VIEM_STYLE_ROLE_CODE_BLOCK): kind = .codeBlock
+                case UInt32(VIEM_STYLE_ROLE_LIST): kind = .list
+                case UInt32(VIEM_STYLE_ROLE_LIST_ITEM): kind = .listItem
+                default: throw EVStyleBridgeError.malformedSnapshot("unknown block role \(raw.role)")
+                }
             }
             guard let origin = EVStyleOrigin(rawValue: raw.origin) else {
                 throw EVStyleBridgeError.malformedSnapshot("unknown style origin \(raw.origin)")

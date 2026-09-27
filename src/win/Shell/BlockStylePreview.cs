@@ -1,0 +1,115 @@
+using System.Text;
+using Microsoft.Graphics.Canvas;
+using Microsoft.UI.Dispatching;
+using Viem.Windows.Core;
+using Viem.Windows.Interop;
+using Windows.UI;
+using static Viem.Windows.Interop.Native;
+using static Viem.Windows.Interop.Abi;
+
+namespace Viem.Windows.Shell;
+
+/// <summary>An isolated specimen using the editor's portable cascade and box layout.</summary>
+internal sealed unsafe class BlockStylePreview : IDisposable
+{
+    public uint Role { get; }
+    private readonly CoreDocument document;
+    private readonly CoreView view;
+    private readonly StyleDefinition target;
+    private StyleSheet? appliedSheet;
+    private StyleDefinition? appliedStyle;
+    private Color appliedForeground;
+    private (float Width, float Height) size;
+
+    public BlockStylePreview(uint role, CanvasDevice device, DispatcherQueue dispatcher)
+    {
+        Role = role;
+        (string id, string html) = role switch {
+            VIEM_STYLE_ROLE_QUOTE => ("Block quote", "<blockquote><p>A quotation contains a paragraph.</p><p>Another paragraph shares its border.</p><blockquote><p>A nested quotation has its own box.</p></blockquote></blockquote>"),
+            VIEM_STYLE_ROLE_CODE_BLOCK => ("Code Block", "<pre>A literal code block\n\nkeeps its lines and spaces.</pre>"),
+            VIEM_STYLE_ROLE_LIST => ("Bulleted List", "<ul><li><p>A list item contains a paragraph.</p><p>And a second paragraph.</p></li><li><p>Another item.</p></li></ul>"),
+            VIEM_STYLE_ROLE_LIST_ITEM => ("List item", "<ul><li><p>A list item contains a paragraph.</p><p>And a second paragraph.</p></li><li><p>Another item.</p></li></ul>"),
+            _ => ("Heading1", "<p>Previous paragraph gives the style context.</p><h1>A calm writing surface shaped with the selected style,<br>with line spacing and alignment visible.</h1><p>Following paragraph shows spacing and inheritance.</p>")
+        };
+        document = new(Encoding.UTF8.GetBytes(html), format: VIEM_FORMAT_HTML);
+        CoreView? created = null;
+        try {
+            view = created = new(document, device, dispatcher, 560, 200);
+            target = view.Styles().Styles.Single(s => s.Id == id && s.Namespace == 1);
+        } catch { created?.Dispose(); document.Dispose(); throw; }
+    }
+
+    public void Update(StyleSheet sheet, StyleDefinition style, Color foreground)
+    {
+        if (ReferenceEquals(appliedSheet, sheet) && ReferenceEquals(appliedStyle, style) && appliedForeground == foreground) return;
+        var baseStyle = view.Styles().Styles.Single(s => s.Id == "Paragraph" && s.Namespace == 1);
+        var context = New<ViemStyleEditValueV1>(); context.kind = VIEM_STYLE_VALUE_COLOR;
+        context.color = new() { red = foreground.R / 255f, green = foreground.G / 255f, blue = foreground.B / 255f, alpha = foreground.A / 255f };
+        view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, context);
+        foreach (uint property in target.Properties.Keys) {
+            var effective = style.Value(property);
+            if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && style.UsesThemeForeground) {
+                view.EditStyle(target, VIEM_STYLE_EDIT_SET_DECLARATION, property, context);
+                continue;
+            }
+            using var arena = new NativeArena();
+            var value = New<ViemStyleEditValueV1>();
+            value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
+            if (effective.kind == VIEM_STYLE_VALUE_STRING) value.text = arena.Utf8(sheet.String(effective));
+            if (effective.item_count > 0) {
+                var items = sheet.Items.Skip(checked((int)effective.first_item)).Take(checked((int)effective.item_count)).Select(item => {
+                    var copy = New<ViemStyleEditValueItemV1>(); copy.kind = item.kind;
+                    copy.text = arena.Utf8(Text(sheet.Strings, item.@string)); copy.unsigned_value = item.unsigned_value; return copy;
+                }).ToArray();
+                value.items = arena.Copy<ViemStyleEditValueItemV1>(items); value.item_count = (ulong)items.Length;
+            }
+            view.EditStyle(target, effective.kind == VIEM_STYLE_VALUE_NONE ? VIEM_STYLE_EDIT_CLEAR_DECLARATION : VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
+        }
+        appliedSheet = sheet; appliedStyle = style; appliedForeground = foreground;
+    }
+
+    internal LayoutSnapshot Layout(float width, float height) {
+        if (size != (width, height)) { view.Resize(Math.Max(1, width), Math.Max(1, height)); size = (width, height); }
+        return view.Layout();
+    }
+    public void Draw(CanvasDrawingSession drawing, float width, float height, Color fallback)
+    {
+        var snapshot = Layout(width, height);
+        ViemTextPaintV1 Paint(ulong at) {
+            var paint = snapshot.PaintRuns.FirstOrDefault(run => run.text_start <= at && at < run.text_end).paint;
+            return paint.struct_size != 0 ? paint : snapshot.Paint.default_paint;
+        }
+        Color Foreground(ViemTextPaintV1 paint) => (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? fallback : ConvertColor(paint.foreground);
+        const uint boxFlags = VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER;
+        foreach (var box in snapshot.Decorations.Where(d => (d.flags & boxFlags) != 0))
+            drawing.FillRectangle(Rect(box.typographic_bounds), Foreground(box.paint));
+        foreach (var cluster in snapshot.Clusters) {
+            var paint = Paint(cluster.text_start);
+            if ((paint.flags & VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0) drawing.FillRectangle(Rect(cluster.typographic_bounds), ConvertColor(paint.background));
+        }
+        using var glyphs = view.Provider.BeginDrawing(drawing);
+        foreach (var row in snapshot.Rows) {
+            for (ulong i = row.first_cluster; i < row.first_cluster + row.cluster_count; i++) {
+                var cluster = snapshot.Clusters[checked((int)i)]; var paint = Paint(cluster.text_start); var color = Foreground(paint);
+                glyphs.Draw(cluster.render_run, new(cluster.x, row.baseline), color);
+                if ((paint.flags & (VIEM_TEXT_PAINT_UNDERLINE | VIEM_TEXT_PAINT_STRIKETHROUGH)) != 0) glyphs.Flush();
+                var bounds = cluster.typographic_bounds;
+                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine(bounds.x, row.baseline + 2, bounds.x + bounds.width, row.baseline + 2, color);
+                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine(bounds.x, row.baseline - row.ascent * .3f, bounds.x + bounds.width, row.baseline - row.ascent * .3f, color);
+            }
+        }
+        glyphs.Flush();
+        foreach (var decoration in snapshot.Decorations) {
+            if ((decoration.flags & boxFlags) != 0) continue;
+            var row = snapshot.Rows.FirstOrDefault(r => r.row_index == decoration.row_index);
+            glyphs.Draw(decoration.render_run, new(decoration.x, row.baseline), Foreground(decoration.paint));
+        }
+    }
+
+    private static global::Windows.Foundation.Rect Rect(ViemLayoutRectV1 value) => new(value.x, value.y, value.width, value.height);
+    private static Color ConvertColor(ViemRgbaV1 value) {
+        static byte Channel(float value) => (byte)Math.Round(Math.Clamp(value, 0, 1) * 255);
+        return Color.FromArgb(Channel(value.alpha), Channel(value.red), Channel(value.green), Channel(value.blue));
+    }
+    public void Dispose() { view.Dispose(); document.Dispose(); }
+}

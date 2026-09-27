@@ -74,7 +74,8 @@ extension EVEditorSurfaceController {
     func current(_ kind: EVStyleKind, id: EVStyleID?, mixed: Bool) -> EVStyleKey? {
       guard !mixed, let id else { return nil }
       let key = EVStyleKey(namespace: kind == .character ? .character : .block, id: id)
-      return snapshot.definition(for: key)?.kind == kind ? key : nil
+      guard let definition = snapshot.definition(for: key) else { return nil }
+      return definition.kind == kind || (kind == .paragraph && definition.kind.isContainer) ? key : nil
     }
     let character = current(.character, id: selected.character, mixed: selected.characterMixed)
     let paragraph = current(.paragraph, id: selected.paragraph, mixed: selected.paragraphMixed)

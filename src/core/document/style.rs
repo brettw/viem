@@ -132,13 +132,22 @@ pub enum WritingDirection {
     RightToLeft,
 }
 
-/// The schema domain a block style may declare. Future structural roles (for
-/// example List and ListItem) can extend this enum without creating another
-/// style namespace.
+/// Structural kinds share the block namespace; compatible parents retain
+/// the same kind while Base Paragraph supplies common text defaults.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BlockRole {
     Document,
     Paragraph,
+    Quote,
+    CodeBlock,
+    List,
+    ListItem,
+}
+
+impl BlockRole {
+    pub const fn is_container(self) -> bool {
+        matches!(self, Self::Quote | Self::CodeBlock | Self::List | Self::ListItem)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -287,12 +296,22 @@ impl CharacterProperties {
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct BlockProperties {
-    pub spacing_before: Option<f32>,
-    pub spacing_after: Option<f32>,
+    pub margin_top: Option<f32>,
+    pub margin_right: Option<f32>,
+    pub margin_left: Option<f32>,
+    pub margin_bottom: Option<f32>,
     pub line_spacing: Option<LineSpacing>,
     pub first_line_indent: Option<f32>,
     pub leading_indent: Option<f32>,
     pub trailing_indent: Option<f32>,
+    pub border_top_width: Option<f32>,
+    pub border_top_color: Option<Color>,
+    pub border_right_width: Option<f32>,
+    pub border_right_color: Option<Color>,
+    pub border_bottom_width: Option<f32>,
+    pub border_bottom_color: Option<Color>,
+    pub border_left_width: Option<f32>,
+    pub border_left_color: Option<Color>,
     pub padding_top: Option<f32>,
     pub padding_right: Option<f32>,
     pub padding_bottom: Option<f32>,
@@ -300,6 +319,29 @@ pub struct BlockProperties {
     pub background: Option<Color>,
     pub alignment: Option<ParagraphAlignment>,
     pub base_direction: Option<WritingDirection>,
+}
+
+impl BlockProperties {
+    /// CSS boxes belong to their own element; these values do not inherit down the document tree.
+    pub fn clear_box(&mut self) {
+        self.margin_top = None;
+        self.margin_right = None;
+        self.margin_bottom = None;
+        self.margin_left = None;
+        self.padding_top = None;
+        self.padding_right = None;
+        self.padding_bottom = None;
+        self.padding_left = None;
+        self.border_top_width = None;
+        self.border_top_color = None;
+        self.border_right_width = None;
+        self.border_right_color = None;
+        self.border_bottom_width = None;
+        self.border_bottom_color = None;
+        self.border_left_width = None;
+        self.border_left_color = None;
+        self.background = None;
+    }
 }
 
 /// Normalized style assignment for the formatted document root.
@@ -531,8 +573,8 @@ impl Default for StyleSheet {
                     ..CharacterProperties::default()
                 },
                 block: BlockProperties {
-                    spacing_before: Some(0.0),
-                    spacing_after: Some(0.0),
+                    margin_top: Some(0.0),
+                    margin_bottom: Some(0.0),
                     line_spacing: Some(LineSpacing::Normal),
                     first_line_indent: Some(0.0),
                     leading_indent: Some(0.0),
@@ -558,8 +600,8 @@ impl Default for StyleSheet {
                         ..CharacterProperties::default()
                     },
                     block: BlockProperties {
-                        spacing_before: Some(10.0),
-                        spacing_after: Some(5.0),
+                        margin_top: Some(10.0),
+                        margin_bottom: Some(5.0),
                         ..BlockProperties::default()
                     },
                 },
@@ -584,10 +626,10 @@ impl Default for StyleSheet {
                         role: BlockRole::Paragraph,
                         character: CharacterProperties::default(),
                         block: BlockProperties {
-                            leading_indent: Some(32.0 * level as f32),
+                            leading_indent: Some(0.0),
                             first_line_indent: Some(0.0),
-                            spacing_before: Some(0.0),
-                            spacing_after: Some(0.0),
+                            margin_top: Some(0.0),
+                            margin_bottom: Some(0.0),
                             ..Default::default()
                         },
                     },
@@ -599,16 +641,27 @@ impl Default for StyleSheet {
             BlockStyle {
                 id: "Block quote".into(),
                 based_on: Some(paragraph.clone()),
-                next_paragraph_style: Some("Block quote".into()),
-                role: BlockRole::Paragraph,
+                next_paragraph_style: None,
+                role: BlockRole::Quote,
                 character: CharacterProperties::default(),
                 block: BlockProperties {
-                    leading_indent: Some(32.0),
-                    trailing_indent: Some(32.0),
+                    margin_left: Some(14.0),
+                    margin_right: Some(32.0),
+                    padding_left: Some(16.0),
+                    border_left_width: Some(2.0),
+                    border_left_color: Some(Color { red: 0.72, green: 0.72, blue: 0.72, alpha: 1.0 }),
                     ..Default::default()
                 },
             },
         );
+        for (name, role) in [("Bulleted List", BlockRole::List), ("Numbered List", BlockRole::List), ("List item", BlockRole::ListItem)] {
+            block_styles.insert(name.into(), BlockStyle {
+                id: name.into(), based_on: Some(paragraph.clone()), next_paragraph_style: None,
+                role, character: CharacterProperties::default(), block: BlockProperties {
+                    padding_left: (role == BlockRole::List).then_some(32.0), ..Default::default()
+                },
+            });
+        }
         let mut character_styles = BTreeMap::new();
         let code_properties = CharacterProperties {
             font_families: Some(vec!["monospace".to_owned()]),
@@ -625,8 +678,8 @@ impl Default for StyleSheet {
             BlockStyle {
                 id: "Code Block".into(),
                 based_on: Some(paragraph.clone()),
-                next_paragraph_style: Some(paragraph.clone()),
-                role: BlockRole::Paragraph,
+                next_paragraph_style: None,
+                role: BlockRole::CodeBlock,
                 character: code_properties.clone(),
                 block: BlockProperties::default(),
             },
@@ -663,6 +716,9 @@ impl Default for StyleSheet {
             "Block quote".into(),
             StyleDefinitionMetadata::generated("Block quote"),
         );
+        for name in ["Bulleted List", "Numbered List", "List item"] {
+            block_metadata.insert(name.into(), StyleDefinitionMetadata::generated(name));
+        }
         let mut character_metadata = BTreeMap::new();
         block_metadata.insert(
             "Code Block".into(),
@@ -877,8 +933,23 @@ impl ResolvedDocumentStyle {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedParagraphStyle {
-    pub spacing_before: f32,
-    pub spacing_after: f32,
+    pub margin_right: f32,
+    pub margin_left: f32,
+    pub padding_top: f32,
+    pub padding_right: f32,
+    pub padding_bottom: f32,
+    pub padding_left: f32,
+    pub border_top_width: f32,
+    pub border_top_color: Option<Color>,
+    pub border_right_width: f32,
+    pub border_right_color: Option<Color>,
+    pub border_bottom_width: f32,
+    pub border_bottom_color: Option<Color>,
+    pub border_left_width: f32,
+    pub border_left_color: Option<Color>,
+    pub background: Option<Color>,
+    pub margin_top: f32,
+    pub margin_bottom: f32,
     pub line_spacing: LineSpacing,
     pub first_line_indent: f32,
     pub leading_indent: f32,
@@ -898,8 +969,23 @@ pub enum StyleProperty {
     CanvasPaddingRight,
     CanvasPaddingBottom,
     CanvasPaddingLeft,
-    ParagraphSpacingBefore,
-    ParagraphSpacingAfter,
+    BlockMarginRight,
+    BlockMarginLeft,
+    BlockPaddingTop,
+    BlockPaddingRight,
+    BlockPaddingBottom,
+    BlockPaddingLeft,
+    BlockBorderTopWidth,
+    BlockBorderTopColor,
+    BlockBorderRightWidth,
+    BlockBorderRightColor,
+    BlockBorderBottomWidth,
+    BlockBorderBottomColor,
+    BlockBorderLeftWidth,
+    BlockBorderLeftColor,
+    BlockBackground,
+    BlockMarginTop,
+    BlockMarginBottom,
     ParagraphLineSpacing,
     ParagraphFirstLineIndent,
     ParagraphLeadingIndent,
@@ -976,6 +1062,11 @@ impl StyleProperty {
     pub fn invalidation_effect(self) -> StyleInvalidationEffect {
         match self {
             Self::CanvasBackground
+            | Self::BlockBorderTopColor
+            | Self::BlockBorderRightColor
+            | Self::BlockBorderBottomColor
+            | Self::BlockBorderLeftColor
+            | Self::BlockBackground
             | Self::CharacterForeground
             | Self::CharacterBackground
             | Self::CharacterUnderline
@@ -986,8 +1077,18 @@ impl StyleProperty {
             Self::CanvasPaddingTop | Self::CanvasPaddingBottom => {
                 StyleInvalidationEffect::DocumentLayout
             }
-            Self::ParagraphSpacingBefore
-            | Self::ParagraphSpacingAfter
+            Self::BlockMarginRight
+            | Self::BlockMarginLeft
+            | Self::BlockPaddingTop
+            | Self::BlockPaddingRight
+            | Self::BlockPaddingBottom
+            | Self::BlockPaddingLeft
+            | Self::BlockBorderTopWidth
+            | Self::BlockBorderRightWidth
+            | Self::BlockBorderBottomWidth
+            | Self::BlockBorderLeftWidth
+            | Self::BlockMarginTop
+            | Self::BlockMarginBottom
             | Self::ParagraphLineSpacing
             | Self::ParagraphFirstLineIndent
             | Self::ParagraphLeadingIndent
@@ -1019,9 +1120,25 @@ pub(crate) const CANVAS_STYLE_PROPERTIES: [StyleProperty; 5] = [
     StyleProperty::CanvasPaddingLeft,
 ];
 
-pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 8] = [
-    StyleProperty::ParagraphSpacingBefore,
-    StyleProperty::ParagraphSpacingAfter,
+pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 23] = [
+    StyleProperty::BlockMarginRight,
+    StyleProperty::BlockMarginLeft,
+    StyleProperty::BlockPaddingTop,
+    StyleProperty::BlockPaddingRight,
+    StyleProperty::BlockPaddingBottom,
+    StyleProperty::BlockPaddingLeft,
+    StyleProperty::BlockBorderTopWidth,
+    StyleProperty::BlockBorderTopColor,
+    StyleProperty::BlockBorderRightWidth,
+    StyleProperty::BlockBorderRightColor,
+    StyleProperty::BlockBorderBottomWidth,
+    StyleProperty::BlockBorderBottomColor,
+    StyleProperty::BlockBorderLeftWidth,
+    StyleProperty::BlockBorderLeftColor,
+    StyleProperty::BlockBackground,
+
+    StyleProperty::BlockMarginTop,
+    StyleProperty::BlockMarginBottom,
     StyleProperty::ParagraphLineSpacing,
     StyleProperty::ParagraphFirstLineIndent,
     StyleProperty::ParagraphLeadingIndent,
@@ -1132,8 +1249,24 @@ impl StyleDependencyIndex {
 impl Default for ResolvedParagraphStyle {
     fn default() -> Self {
         Self {
-            spacing_before: 0.0,
-            spacing_after: 0.0,
+            margin_right: 0.0,
+            margin_left: 0.0,
+            padding_top: 0.0,
+            padding_right: 0.0,
+            padding_bottom: 0.0,
+            padding_left: 0.0,
+            border_top_width: 0.0,
+            border_top_color: None,
+            border_right_width: 0.0,
+            border_right_color: None,
+            border_bottom_width: 0.0,
+            border_bottom_color: None,
+            border_left_width: 0.0,
+            border_left_color: None,
+            background: None,
+
+            margin_top: 0.0,
+            margin_bottom: 0.0,
             line_spacing: LineSpacing::Normal,
             first_line_indent: 0.0,
             leading_indent: 0.0,
@@ -1155,8 +1288,23 @@ impl ResolvedParagraphStyle {
                 }
             };
         }
-        compare!(spacing_before, StyleProperty::ParagraphSpacingBefore);
-        compare!(spacing_after, StyleProperty::ParagraphSpacingAfter);
+        compare!(margin_right, StyleProperty::BlockMarginRight);
+        compare!(margin_left, StyleProperty::BlockMarginLeft);
+        compare!(padding_top, StyleProperty::BlockPaddingTop);
+        compare!(padding_right, StyleProperty::BlockPaddingRight);
+        compare!(padding_bottom, StyleProperty::BlockPaddingBottom);
+        compare!(padding_left, StyleProperty::BlockPaddingLeft);
+        compare!(border_top_width, StyleProperty::BlockBorderTopWidth);
+        compare!(border_top_color, StyleProperty::BlockBorderTopColor);
+        compare!(border_right_width, StyleProperty::BlockBorderRightWidth);
+        compare!(border_right_color, StyleProperty::BlockBorderRightColor);
+        compare!(border_bottom_width, StyleProperty::BlockBorderBottomWidth);
+        compare!(border_bottom_color, StyleProperty::BlockBorderBottomColor);
+        compare!(border_left_width, StyleProperty::BlockBorderLeftWidth);
+        compare!(border_left_color, StyleProperty::BlockBorderLeftColor);
+        compare!(background, StyleProperty::BlockBackground);
+        compare!(margin_top, StyleProperty::BlockMarginTop);
+        compare!(margin_bottom, StyleProperty::BlockMarginBottom);
         compare!(line_spacing, StyleProperty::ParagraphLineSpacing);
         compare!(first_line_indent, StyleProperty::ParagraphFirstLineIndent);
         compare!(leading_indent, StyleProperty::ParagraphLeadingIndent);
@@ -1311,8 +1459,7 @@ impl StyleSheet {
         Ok(result)
     }
 
-    /// Prose defaults approximate the common one-em collapsed HTML
-    /// paragraph gap using two half-em sides in Viem's additive spacing model.
+    /// Prose paragraphs use half-em block margins, collapsed by the block layout.
     /// Plain text and RTF retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
         let mut sheet = Self::default();
@@ -1326,8 +1473,8 @@ impl StyleSheet {
             });
             sheet.character_metadata.insert("Link".into(), StyleDefinitionMetadata::generated("Link"));
             let paragraph = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
-            paragraph.block.spacing_before = Some(7.0);
-            paragraph.block.spacing_after = Some(7.0);
+            paragraph.block.margin_top = Some(7.0);
+            paragraph.block.margin_bottom = Some(7.0);
             if format.is_markdown() {
                 for (name, properties) in [
                     ("Markdown reference", CharacterProperties { foreground: Some(Color { red: 0.65, green: 0.45, blue: 0.82, alpha: 1.0 }), ..Default::default() }),
@@ -1342,7 +1489,7 @@ impl StyleSheet {
                     .get_mut(&StyleId("Code Block".into()))
                     .unwrap()
                     .block
-                    .leading_indent = Some(32.0);
+                    .margin_left = Some(32.0);
             }
         }
         sheet
@@ -1378,7 +1525,7 @@ impl StyleSheet {
             .or_else(|| self.block_styles.get(&StyleId::from("BulletedList1")))
             .map(|style| style.block.clone())
             .unwrap_or_default();
-        let step = first.leading_indent.unwrap_or(32.0);
+        let step = first.leading_indent.filter(|value| *value != 0.0).unwrap_or(32.0);
         for level in 1..=level {
             let id = StyleId(format!("List{level}"));
             if self.block_styles.contains_key(&id)
@@ -1398,8 +1545,8 @@ impl StyleSheet {
                     block: BlockProperties {
                         leading_indent: Some(step * f32::from(level)),
                         first_line_indent: Some(first.first_line_indent.unwrap_or(0.0)),
-                        spacing_before: first.spacing_before,
-                        spacing_after: first.spacing_after,
+                        margin_top: first.margin_top,
+                        margin_bottom: first.margin_bottom,
                         ..Default::default()
                     },
                 },
@@ -1832,7 +1979,7 @@ impl StyleSheet {
 
     pub(crate) fn builtin_block(id: &StyleId) -> bool {
         id.is_internal_list()
-            || id.0 == "Block quote"
+            || matches!(id.0.as_str(), "Block quote" | "Code Block" | "Bulleted List" | "Numbered List" | "List item")
             || ["Heading", "List"].into_iter().any(|prefix| {
                 id.0.strip_prefix(prefix)
                     .and_then(|value| value.parse::<u16>().ok())
@@ -2182,6 +2329,7 @@ impl StyleSheet {
             .block_styles
             .get(current)
             .ok_or_else(|| StyleError::UnknownStyle(current.clone()))?;
+        if style.role == BlockRole::CodeBlock { return Ok(&self.base_paragraph); }
         if style.role != BlockRole::Paragraph {
             return Err(StyleError::IncompatibleBlockRole {
                 style: style.id.clone(),
@@ -2230,11 +2378,22 @@ impl StyleSheet {
     /// declarations are inline direct formatting, after an optional named
     /// character style.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_assigned_paragraph_style(
+        &self, document: &DocumentStyleAssignment, paragraph_style: &StyleId,
+        direct_paragraph: &BlockProperties, paragraph_default_character: &CharacterProperties,
+        character_style: Option<&StyleId>, direct_character: &CharacterProperties,
+    ) -> Result<ResolvedParagraphStyle, StyleError> {
+        self.resolve_assigned_paragraph_style_in_container(document, paragraph_style, direct_paragraph,
+            &CharacterProperties::default(), paragraph_default_character, character_style, direct_character)
+    }
+
+    pub fn resolve_assigned_paragraph_style_in_container(
         &self,
         document: &DocumentStyleAssignment,
         paragraph_style: &StyleId,
         direct_paragraph: &BlockProperties,
+        container_character: &CharacterProperties,
         paragraph_default_character: &CharacterProperties,
         character_style: Option<&StyleId>,
         direct_character: &CharacterProperties,
@@ -2253,14 +2412,10 @@ impl StyleSheet {
             direct_character,
         )?;
         validate_block_property_values(paragraph_style, direct_paragraph)?;
-        if declares_canvas_properties(direct_paragraph) {
-            return Err(StyleError::InapplicableBlockProperties {
-                style: paragraph_style.clone(),
-                role: BlockRole::Paragraph,
-            });
-        }
         let document_chain = self.document_chain(&document.style)?;
-        let paragraph_chain = self.block_chain(paragraph_style, BlockRole::Paragraph)?;
+        let role = self.block_style(paragraph_style).ok_or_else(|| StyleError::UnknownStyle(paragraph_style.clone()))?.role;
+        if role == BlockRole::Document { return Err(StyleError::IncompatibleBlockRole { style: paragraph_style.clone(), role, parent_role: BlockRole::Paragraph }); }
+        let paragraph_chain = self.block_chain(paragraph_style, role)?;
         let mut resolved = ResolvedParagraphStyle::default();
         apply_character_properties(&mut resolved.character, &self.intrinsic_character_defaults);
 
@@ -2268,13 +2423,14 @@ impl StyleSheet {
             apply_character_properties(&mut resolved.character, &style.character);
         }
         apply_character_properties(&mut resolved.character, &document.direct_default_character);
+        apply_character_properties(&mut resolved.character, container_character);
         let mut parent_font_size = self.intrinsic_character_defaults.size
             .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
         for style in paragraph_chain {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
             }
-            if style.role == BlockRole::Document {
+            if style.role == BlockRole::Document || (role.is_container() && style.id == self.base_paragraph) {
                 continue;
             }
             apply_paragraph_properties(&mut resolved, &style.block);
@@ -2305,11 +2461,22 @@ impl StyleSheet {
     /// metadata. This is the dependency-aware counterpart of
     /// [`Self::resolve_assigned_paragraph_style`].
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_assigned_paragraph_style_with_contributions(
+        &self, document: &DocumentStyleAssignment, paragraph_style: &StyleId,
+        direct_paragraph: &BlockProperties, paragraph_default_character: &CharacterProperties,
+        character_style: Option<&StyleId>, direct_character: &CharacterProperties,
+    ) -> Result<ResolvedStyle<ResolvedParagraphStyle>, StyleError> {
+        self.resolve_assigned_paragraph_style_in_container_with_contributions(document, paragraph_style, direct_paragraph,
+            &CharacterProperties::default(), paragraph_default_character, character_style, direct_character)
+    }
+
+    pub fn resolve_assigned_paragraph_style_in_container_with_contributions(
         &self,
         document: &DocumentStyleAssignment,
         paragraph_style: &StyleId,
         direct_paragraph: &BlockProperties,
+        container_character: &CharacterProperties,
         paragraph_default_character: &CharacterProperties,
         character_style: Option<&StyleId>,
         direct_character: &CharacterProperties,
@@ -2328,15 +2495,11 @@ impl StyleSheet {
             direct_character,
         )?;
         validate_block_property_values(paragraph_style, direct_paragraph)?;
-        if declares_canvas_properties(direct_paragraph) {
-            return Err(StyleError::InapplicableBlockProperties {
-                style: paragraph_style.clone(),
-                role: BlockRole::Paragraph,
-            });
-        }
 
         let document_chain = self.document_chain(&document.style)?;
-        let paragraph_chain = self.block_chain(paragraph_style, BlockRole::Paragraph)?;
+        let role = self.block_style(paragraph_style).ok_or_else(|| StyleError::UnknownStyle(paragraph_style.clone()))?.role;
+        if role == BlockRole::Document { return Err(StyleError::IncompatibleBlockRole { style: paragraph_style.clone(), role, parent_role: BlockRole::Paragraph }); }
+        let paragraph_chain = self.block_chain(paragraph_style, role)?;
         let mut value = ResolvedParagraphStyle::default();
         apply_character_properties(&mut value.character, &self.intrinsic_character_defaults);
         let mut contributions = emergency_contributions(
@@ -2364,13 +2527,15 @@ impl StyleSheet {
             &document.direct_default_character,
             StyleContributionOrigin::DirectDocumentCharacter,
         );
+        apply_character_properties(&mut value.character, container_character);
+        record_character_winners(&mut contributions, container_character, StyleContributionOrigin::DirectParagraphCharacter);
         let mut parent_font_size = self.intrinsic_character_defaults.size
             .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
         for style in paragraph_chain {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
             }
-            if style.role == BlockRole::Document {
+            if style.role == BlockRole::Document || (role.is_container() && style.id == self.base_paragraph) {
                 continue;
             }
             add_dependency(
@@ -2440,6 +2605,63 @@ impl StyleSheet {
         })
     }
 
+    pub fn resolve_container_style(&self, id: &StyleId) -> Result<ResolvedParagraphStyle, StyleError> {
+        self.resolve_assigned_container_style(&DocumentStyleAssignment::new(self.base_paragraph.clone()),
+            id, &BlockProperties::default(), &CharacterProperties::default())
+    }
+
+    pub fn resolve_assigned_container_style(&self, document: &DocumentStyleAssignment, id: &StyleId,
+        direct: &BlockProperties, character: &CharacterProperties) -> Result<ResolvedParagraphStyle, StyleError> {
+        let role = self.block_style(id).ok_or_else(|| StyleError::UnknownStyle(id.clone()))?.role;
+        if !role.is_container() { return Err(StyleError::IncompatibleBlockRole { style: id.clone(), role, parent_role: BlockRole::Quote }); }
+        self.resolve_assigned_paragraph_style(document, id, direct, character, None, &CharacterProperties::default())
+    }
+
+    /// Container text defaults compose down the document tree; box declarations do not.
+    /// Base Paragraph is omitted because it already supplies the document's text defaults.
+    pub fn container_character_declarations(&self, id: &StyleId, direct: &CharacterProperties)
+        -> Result<CharacterProperties, StyleError> {
+        let role = self.block_style(id).ok_or_else(|| StyleError::UnknownStyle(id.clone()))?.role;
+        if !role.is_container() { return Err(StyleError::IncompatibleBlockRole { style: id.clone(), role, parent_role: BlockRole::Quote }); }
+        let mut result = CharacterProperties::default();
+        for style in self.block_chain(id, role)? {
+            if style.id != self.base_paragraph { result.overlay(&style.character); }
+        }
+        result.overlay(direct);
+        Ok(result)
+    }
+
+    /// CSS-inherited paragraph text defaults provided by one container style.
+    /// Box geometry never participates in document-parent inheritance.
+    pub fn container_paragraph_declarations(&self, id: &StyleId, direct: &BlockProperties)
+        -> Result<BlockProperties, StyleError> {
+        let role = self.block_style(id).ok_or_else(|| StyleError::UnknownStyle(id.clone()))?.role;
+        if !role.is_container() { return Err(StyleError::IncompatibleBlockRole { style: id.clone(), role, parent_role: BlockRole::Quote }); }
+        let mut result = BlockProperties::default();
+        for style in self.block_chain(id, role)? {
+            if style.id != self.base_paragraph { result.merge_declarations(&style.block); }
+        }
+        result.merge_declarations(direct);
+        result.clear_box();
+        result.leading_indent = None;
+        result.trailing_indent = None;
+        Ok(result)
+    }
+
+    pub fn apply_container_paragraph_defaults(&self, paragraph_style: &StyleId,
+        direct: &BlockProperties, inherited: &BlockProperties, resolved: &mut ResolvedParagraphStyle)
+        -> Result<(), StyleError> {
+        let role = self.block_style(paragraph_style).ok_or_else(|| StyleError::UnknownStyle(paragraph_style.clone()))?.role;
+        let chain = self.block_chain(paragraph_style, role)?;
+        macro_rules! inherit { ($($field:ident),*) => {$(
+            if direct.$field.is_none() && !chain.iter().any(|style| style.id != self.base_paragraph && style.block.$field.is_some()) {
+                if let Some(value) = inherited.$field { resolved.$field = value; }
+            }
+        )*}; }
+        inherit!(line_spacing, alignment, base_direction, first_line_indent);
+        Ok(())
+    }
+
     fn validate_block_parent(&self, style: &BlockStyle) -> Result<(), StyleError> {
         let parent_id = style
             .based_on
@@ -2453,6 +2675,7 @@ impl StyleSheet {
             (BlockRole::Document, BlockRole::Document) => true,
             (BlockRole::Document, BlockRole::Paragraph) => parent.id == self.base_paragraph,
             (BlockRole::Paragraph, BlockRole::Paragraph) => true,
+            (role, parent_role) if role.is_container() => role == parent_role || parent.id == self.base_paragraph,
             _ => false,
         };
         if compatible {
@@ -2641,6 +2864,20 @@ impl StyleSheet {
     }
 }
 
+fn definition_block_property(role: BlockRole, property: StyleProperty) -> Result<StyleProperty, ()> {
+    let canvas = matches!(property, StyleProperty::CanvasBackground | StyleProperty::CanvasPaddingTop
+        | StyleProperty::CanvasPaddingRight | StyleProperty::CanvasPaddingBottom | StyleProperty::CanvasPaddingLeft);
+    if canvas != (role == BlockRole::Document) { return Err(()); }
+    Ok(match property {
+        StyleProperty::CanvasBackground => StyleProperty::BlockBackground,
+        StyleProperty::CanvasPaddingTop => StyleProperty::BlockPaddingTop,
+        StyleProperty::CanvasPaddingRight => StyleProperty::BlockPaddingRight,
+        StyleProperty::CanvasPaddingBottom => StyleProperty::BlockPaddingBottom,
+        StyleProperty::CanvasPaddingLeft => StyleProperty::BlockPaddingLeft,
+        property => property,
+    })
+}
+
 fn apply_block_field_edit(
     style: &mut BlockStyle,
     edit: &StyleDefinitionFieldEdit,
@@ -2650,14 +2887,16 @@ fn apply_block_field_edit(
             if is_character_property(*property) {
                 set_character_property(&style.id, &mut style.character, *property, value)
             } else {
-                set_block_property(&style.id, &mut style.block, *property, value)
+                set_block_property(&style.id, &mut style.block, definition_block_property(style.role, *property)
+                    .map_err(|_| inapplicable_style_property(&style.id, *property))?, value)
             }
         }
         StyleDefinitionFieldEdit::ClearDeclaration(property) => {
             if is_character_property(*property) {
                 clear_character_property(&style.id, &mut style.character, *property)
             } else {
-                clear_block_property(&style.id, &mut style.block, *property)
+                clear_block_property(&style.id, &mut style.block, definition_block_property(style.role, *property)
+                    .map_err(|_| inapplicable_style_property(&style.id, *property))?)
             }
         }
         StyleDefinitionFieldEdit::SetParent(parent) => {
@@ -2824,17 +3063,27 @@ pub(super) fn set_character_property(
 
 sparse_property_operations! {
     BlockProperties, set_block_property, clear_block_property;
-    spacing_before => ParagraphSpacingBefore(Float),
-    spacing_after => ParagraphSpacingAfter(Float),
+    margin_right => BlockMarginRight(Float),
+    margin_left => BlockMarginLeft(Float),
+    border_top_width => BlockBorderTopWidth(Float),
+    border_top_color => BlockBorderTopColor(Color),
+    border_right_width => BlockBorderRightWidth(Float),
+    border_right_color => BlockBorderRightColor(Color),
+    border_bottom_width => BlockBorderBottomWidth(Float),
+    border_bottom_color => BlockBorderBottomColor(Color),
+    border_left_width => BlockBorderLeftWidth(Float),
+    border_left_color => BlockBorderLeftColor(Color),
+    margin_top => BlockMarginTop(Float),
+    margin_bottom => BlockMarginBottom(Float),
     line_spacing => ParagraphLineSpacing(LineSpacing),
     first_line_indent => ParagraphFirstLineIndent(Float),
     leading_indent => ParagraphLeadingIndent(Float),
     trailing_indent => ParagraphTrailingIndent(Float),
-    padding_top => CanvasPaddingTop(Float),
-    padding_right => CanvasPaddingRight(Float),
-    padding_bottom => CanvasPaddingBottom(Float),
-    padding_left => CanvasPaddingLeft(Float),
-    background => CanvasBackground(Color),
+    padding_top => BlockPaddingTop(Float),
+    padding_right => BlockPaddingRight(Float),
+    padding_bottom => BlockPaddingBottom(Float),
+    padding_left => BlockPaddingLeft(Float),
+    background => BlockBackground(Color),
     alignment => ParagraphAlignment(ParagraphAlignment),
     base_direction => ParagraphBaseDirection(WritingDirection),
 }
@@ -2912,9 +3161,7 @@ fn validate_definition_metadata(
 fn validate_block_properties(style: &BlockStyle) -> Result<(), StyleError> {
     let block = &style.block;
     let paragraph_declared = declares_paragraph_properties(block);
-    let canvas_declared = declares_canvas_properties(block);
-    if (style.role == BlockRole::Document && paragraph_declared)
-        || (style.role == BlockRole::Paragraph && canvas_declared)
+    if style.role == BlockRole::Document && paragraph_declared
     {
         return Err(StyleError::InapplicableBlockProperties {
             style: style.id.clone(),
@@ -2929,8 +3176,10 @@ pub(super) fn validate_block_property_values(
     block: &BlockProperties,
 ) -> Result<(), StyleError> {
     let finite = [
-        block.spacing_before,
-        block.spacing_after,
+        block.margin_right,
+        block.margin_left,
+        block.margin_top,
+        block.margin_bottom,
         block.first_line_indent,
         block.leading_indent,
         block.trailing_indent,
@@ -2950,7 +3199,9 @@ pub(super) fn validate_block_property_values(
             value.is_finite() && value >= 0.0
         }
     });
-    if finite && spacing_valid {
+    let box_valid = [block.padding_top,block.padding_right,block.padding_bottom,block.padding_left,block.border_top_width,block.border_right_width,block.border_bottom_width,block.border_left_width].into_iter().flatten().all(|v| v.is_finite() && v >= 0.0)
+        && [block.border_top_color,block.border_right_color,block.border_bottom_color,block.border_left_color].into_iter().flatten().all(valid_color);
+    if finite && spacing_valid && box_valid {
         Ok(())
     } else {
         Err(StyleError::InvalidBlockProperties(id.clone()))
@@ -2964,8 +3215,18 @@ fn valid_color(color: Color) -> bool {
 }
 
 fn declares_paragraph_properties(block: &BlockProperties) -> bool {
-    block.spacing_before.is_some()
-        || block.spacing_after.is_some()
+    block.margin_right.is_some()
+        || block.margin_left.is_some()
+        || block.border_top_width.is_some()
+        || block.border_top_color.is_some()
+        || block.border_right_width.is_some()
+        || block.border_right_color.is_some()
+        || block.border_bottom_width.is_some()
+        || block.border_bottom_color.is_some()
+        || block.border_left_width.is_some()
+        || block.border_left_color.is_some()
+        || block.margin_top.is_some()
+        || block.margin_bottom.is_some()
         || block.line_spacing.is_some()
         || block.first_line_indent.is_some()
         || block.leading_indent.is_some()
@@ -2974,13 +3235,6 @@ fn declares_paragraph_properties(block: &BlockProperties) -> bool {
         || block.base_direction.is_some()
 }
 
-fn declares_canvas_properties(block: &BlockProperties) -> bool {
-    block.padding_top.is_some()
-        || block.padding_right.is_some()
-        || block.padding_bottom.is_some()
-        || block.padding_left.is_some()
-        || block.background.is_some()
-}
 
 fn emergency_contributions(
     properties: impl IntoIterator<Item = StyleProperty>,
@@ -3120,15 +3374,31 @@ fn record_paragraph_winners(
     properties: &BlockProperties,
     origin: StyleContributionOrigin,
 ) {
-    if properties.spacing_before.is_some() {
+    if properties.margin_right.is_some() { record_winner(contributions, StyleProperty::BlockMarginRight, &origin); }
+    if properties.margin_left.is_some() { record_winner(contributions, StyleProperty::BlockMarginLeft, &origin); }
+    if properties.padding_top.is_some() { record_winner(contributions, StyleProperty::BlockPaddingTop, &origin); }
+    if properties.padding_right.is_some() { record_winner(contributions, StyleProperty::BlockPaddingRight, &origin); }
+    if properties.padding_bottom.is_some() { record_winner(contributions, StyleProperty::BlockPaddingBottom, &origin); }
+    if properties.padding_left.is_some() { record_winner(contributions, StyleProperty::BlockPaddingLeft, &origin); }
+    if properties.border_top_width.is_some() { record_winner(contributions, StyleProperty::BlockBorderTopWidth, &origin); }
+    if properties.border_top_color.is_some() { record_winner(contributions, StyleProperty::BlockBorderTopColor, &origin); }
+    if properties.border_right_width.is_some() { record_winner(contributions, StyleProperty::BlockBorderRightWidth, &origin); }
+    if properties.border_right_color.is_some() { record_winner(contributions, StyleProperty::BlockBorderRightColor, &origin); }
+    if properties.border_bottom_width.is_some() { record_winner(contributions, StyleProperty::BlockBorderBottomWidth, &origin); }
+    if properties.border_bottom_color.is_some() { record_winner(contributions, StyleProperty::BlockBorderBottomColor, &origin); }
+    if properties.border_left_width.is_some() { record_winner(contributions, StyleProperty::BlockBorderLeftWidth, &origin); }
+    if properties.border_left_color.is_some() { record_winner(contributions, StyleProperty::BlockBorderLeftColor, &origin); }
+    if properties.background.is_some() { record_winner(contributions, StyleProperty::BlockBackground, &origin); }
+
+    if properties.margin_top.is_some() {
         record_winner(
             contributions,
-            StyleProperty::ParagraphSpacingBefore,
+            StyleProperty::BlockMarginTop,
             &origin,
         );
     }
-    if properties.spacing_after.is_some() {
-        record_winner(contributions, StyleProperty::ParagraphSpacingAfter, &origin);
+    if properties.margin_bottom.is_some() {
+        record_winner(contributions, StyleProperty::BlockMarginBottom, &origin);
     }
     if properties.line_spacing.is_some() {
         record_winner(contributions, StyleProperty::ParagraphLineSpacing, &origin);
@@ -3246,11 +3516,27 @@ fn apply_document_properties(resolved: &mut ResolvedDocumentStyle, properties: &
 }
 
 fn apply_paragraph_properties(resolved: &mut ResolvedParagraphStyle, properties: &BlockProperties) {
-    if let Some(value) = properties.spacing_before {
-        resolved.spacing_before = value;
+    if let Some(value) = properties.margin_right { resolved.margin_right = value; }
+    if let Some(value) = properties.margin_left { resolved.margin_left = value; }
+    if let Some(value) = properties.padding_top { resolved.padding_top = value; }
+    if let Some(value) = properties.padding_right { resolved.padding_right = value; }
+    if let Some(value) = properties.padding_bottom { resolved.padding_bottom = value; }
+    if let Some(value) = properties.padding_left { resolved.padding_left = value; }
+    if let Some(value) = properties.border_top_width { resolved.border_top_width = value; }
+    if let Some(value) = properties.border_top_color { resolved.border_top_color = Some(value); }
+    if let Some(value) = properties.border_right_width { resolved.border_right_width = value; }
+    if let Some(value) = properties.border_right_color { resolved.border_right_color = Some(value); }
+    if let Some(value) = properties.border_bottom_width { resolved.border_bottom_width = value; }
+    if let Some(value) = properties.border_bottom_color { resolved.border_bottom_color = Some(value); }
+    if let Some(value) = properties.border_left_width { resolved.border_left_width = value; }
+    if let Some(value) = properties.border_left_color { resolved.border_left_color = Some(value); }
+    if let Some(value) = properties.background { resolved.background = Some(value); }
+
+    if let Some(value) = properties.margin_top {
+        resolved.margin_top = value;
     }
-    if let Some(value) = properties.spacing_after {
-        resolved.spacing_after = value;
+    if let Some(value) = properties.margin_bottom {
+        resolved.margin_bottom = value;
     }
     if let Some(value) = properties.line_spacing {
         resolved.line_spacing = value;
@@ -3421,7 +3707,7 @@ mod tests {
                 StyleNamespace::Block,
                 &source_id,
                 &StyleDefinitionFieldEdit::SetDeclaration {
-                    property: StyleProperty::ParagraphSpacingAfter,
+                    property: StyleProperty::BlockMarginBottom,
                     value: StylePropertyValue::Float(8.0),
                 },
             ),
@@ -3501,7 +3787,7 @@ mod tests {
         assert_eq!(resolved.character.direction, WritingDirection::RightToLeft);
         assert_eq!(resolved.character.open_type_features, features);
         assert_eq!(resolved.character.letter_spacing, 0.5);
-        assert_eq!(resolved.spacing_before, 0.0);
+        assert_eq!(resolved.margin_top, 0.0);
         assert_eq!(resolved.line_spacing, LineSpacing::Normal);
     }
 
@@ -3555,7 +3841,7 @@ mod tests {
     fn complete_paragraph_resolution_validates_the_root_assignment() {
         let sheet = StyleSheet::default();
         let mut root = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
-        root.direct_canvas.spacing_before = Some(1.0);
+        root.direct_canvas.margin_top = Some(1.0);
         assert!(matches!(
             sheet.resolve_assigned_paragraph_style(
                 &root,
@@ -3575,16 +3861,16 @@ mod tests {
     #[test]
     fn block_roles_reject_inapplicable_properties_and_broadened_parents() {
         let mut sheet = StyleSheet::default();
-        let invalid_canvas = BlockStyle {
+        let invalid_padding = BlockStyle {
             block: BlockProperties {
-                padding_left: Some(10.0),
+                padding_left: Some(-10.0),
                 ..BlockProperties::default()
             },
             ..paragraph_style("BadParagraph", &sheet.base_paragraph)
         };
         assert!(matches!(
-            sheet.insert_block_style(invalid_canvas, generated()),
-            Err(StyleError::InapplicableBlockProperties { .. })
+            sheet.insert_block_style(invalid_padding, generated()),
+            Err(StyleError::InvalidBlockProperties(_))
         ));
 
         let document_child = BlockStyle {
@@ -3935,7 +4221,7 @@ mod tests {
                         ..CharacterProperties::default()
                     },
                     block: BlockProperties {
-                        spacing_before: Some(9.0),
+                        margin_top: Some(9.0),
                         ..BlockProperties::default()
                     },
                 },
@@ -3991,10 +4277,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(traced.value, ordinary);
-        assert_eq!(traced.contributions().len(), 22);
+        assert_eq!(traced.contributions().len(), PARAGRAPH_STYLE_PROPERTIES.len() + CHARACTER_STYLE_PROPERTIES.len());
         assert_eq!(
             traced
-                .contribution(StyleProperty::ParagraphSpacingBefore)
+                .contribution(StyleProperty::BlockMarginTop)
                 .unwrap()
                 .winner,
             StyleContributionOrigin::BlockStyle(lead_id)
@@ -4189,7 +4475,7 @@ mod tests {
                             ..CharacterProperties::default()
                         },
                         block: BlockProperties {
-                            spacing_before: (bits & 16 != 0).then_some((bits % 12) as f32),
+                            margin_top: (bits & 16 != 0).then_some((bits % 12) as f32),
                             leading_indent: (bits & 32 != 0).then_some((bits % 20) as f32),
                             ..BlockProperties::default()
                         },
@@ -4256,7 +4542,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(traced.value, ordinary);
-            assert_eq!(traced.contributions().len(), 22);
+            assert_eq!(traced.contributions().len(), PARAGRAPH_STYLE_PROPERTIES.len() + CHARACTER_STYLE_PROPERTIES.len());
             assert!(traced
                 .contributions()
                 .all(|(_, contribution)| !contribution.dependencies.is_empty()));
@@ -4297,5 +4583,97 @@ mod tests {
             Err(StyleError::StyleSheetRevisionExhausted)
         );
         assert_eq!(sheet, before_remove);
+    }
+}
+
+#[cfg(test)]
+mod block_box_tests {
+    use super::*;
+
+    #[test]
+    fn container_boxes_have_typed_roles_and_sparse_inherited_sides() {
+        let mut sheet = StyleSheet::default();
+        let color = Color { red: 0.6, green: 0.2, blue: 0.7, alpha: 0.5 };
+        let mut quote = sheet.block_style(&"Block quote".into()).unwrap().clone();
+        quote.block.margin_top = Some(-3.0);
+        quote.block.padding_right = Some(11.0);
+        quote.block.border_top_width = Some(2.5);
+        quote.block.border_top_color = Some(color);
+        quote.block.background = Some(color);
+        sheet.insert_block_style(quote, StyleDefinitionMetadata::generated("Block quote")).unwrap();
+        sheet.insert_block_style(BlockStyle {
+            id: "Pull quote".into(), based_on: Some("Block quote".into()), next_paragraph_style: None,
+            role: BlockRole::Quote, character: CharacterProperties::default(),
+            block: BlockProperties { padding_right: Some(4.0), border_top_width: Some(0.0), ..Default::default() },
+        }, StyleDefinitionMetadata::generated("Pull quote")).unwrap();
+        let resolved = sheet.resolve_container_style(&"Pull quote".into()).unwrap();
+        assert_eq!(resolved.margin_top, -3.0);
+        assert_eq!(resolved.padding_right, 4.0);
+        assert_eq!(resolved.border_top_width, 0.0);
+        assert_eq!(resolved.border_top_color, Some(color));
+        assert_eq!(resolved.background, Some(color));
+        assert_eq!(resolved.margin_left + resolved.border_left_width + resolved.padding_left, 32.0);
+        assert_eq!(sheet.block_style(&"Code Block".into()).unwrap().role, BlockRole::CodeBlock);
+        assert_eq!(sheet.block_style(&"Bulleted List".into()).unwrap().role, BlockRole::List);
+        assert_eq!(sheet.block_style(&"List item".into()).unwrap().role, BlockRole::ListItem);
+        assert!(sheet.insert_block_style(BlockStyle {
+            id: "Bad kind".into(), based_on: Some("Block quote".into()), next_paragraph_style: None,
+            role: BlockRole::CodeBlock, character: CharacterProperties::default(), block: BlockProperties::default(),
+        }, StyleDefinitionMetadata::generated("Bad kind")).is_err());
+    }
+
+    #[test]
+    fn block_declarations_validate_clear_and_track_layout_or_paint() {
+        let mut sheet = StyleSheet::default();
+        let id = StyleId::from("Heading1");
+        for (property, value) in [
+            (StyleProperty::BlockPaddingBottom, StylePropertyValue::Float(9.0)),
+            (StyleProperty::BlockMarginLeft, StylePropertyValue::Float(-5.0)),
+            (StyleProperty::BlockBorderRightWidth, StylePropertyValue::Float(2.0)),
+        ] {
+            let edit = sheet.prepare_generated_field_edit(StyleNamespace::Block, &id,
+                &StyleDefinitionFieldEdit::SetDeclaration { property, value }).unwrap();
+            sheet.apply_configuration_edit(&edit, StyleSheetRevision(sheet.revision.0 + 1), false).unwrap();
+        }
+        let resolved = sheet.resolve_assigned_paragraph_style_with_contributions(
+            &DocumentStyleAssignment::new(sheet.base_paragraph.clone()), &id, &BlockProperties::default(),
+            &CharacterProperties::default(), None, &CharacterProperties::default()).unwrap();
+        assert_eq!(resolved.value.padding_bottom, 9.0);
+        assert_eq!(resolved.contribution(StyleProperty::BlockPaddingBottom).unwrap().winner,
+            StyleContributionOrigin::BlockStyle(id.clone()));
+        let invalid = sheet.prepare_generated_field_edit(StyleNamespace::Block, &id,
+            &StyleDefinitionFieldEdit::SetDeclaration { property: StyleProperty::BlockPaddingBottom, value: StylePropertyValue::Float(-1.0) }).unwrap();
+        assert!(sheet.apply_configuration_edit(&invalid, StyleSheetRevision(sheet.revision.0 + 1), false).is_err());
+        let clear = sheet.prepare_generated_field_edit(StyleNamespace::Block, &id,
+            &StyleDefinitionFieldEdit::ClearDeclaration(StyleProperty::BlockPaddingBottom)).unwrap();
+        sheet.apply_configuration_edit(&clear, StyleSheetRevision(sheet.revision.0 + 1), false).unwrap();
+        assert_eq!(sheet.block_style(&id).unwrap().block.padding_bottom, None);
+        assert!(sheet.prepare_generated_field_edit(StyleNamespace::Character, &"Code".into(),
+            &StyleDefinitionFieldEdit::SetDeclaration { property: StyleProperty::BlockPaddingBottom, value: StylePropertyValue::Float(1.0) }).is_err());
+        assert_eq!(StyleProperty::BlockBorderLeftWidth.invalidation_effect(), StyleInvalidationEffect::ParagraphLayout);
+        assert_eq!(StyleProperty::BlockBorderLeftColor.invalidation_effect(), StyleInvalidationEffect::Paint);
+        assert_eq!(StyleProperty::BlockBackground.invalidation_effect(), StyleInvalidationEffect::Paint);
+    }
+
+    #[test]
+    fn container_text_defaults_compose_without_inheriting_its_box_into_paragraphs() {
+        let mut sheet = StyleSheet::default();
+        let blue = Color { red: 0.0, green: 0.0, blue: 1.0, alpha: 1.0 };
+        let mut quote = sheet.block_style(&"Block quote".into()).unwrap().clone();
+        quote.character.foreground = Some(blue);
+        quote.character.size = Some(18.0.into());
+        quote.block.padding_top = Some(20.0);
+        sheet.insert_block_style(quote, StyleDefinitionMetadata::generated("Block quote")).unwrap();
+        let context = sheet.container_character_declarations(&"Block quote".into(), &CharacterProperties::default()).unwrap();
+        let document = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
+        let paragraph = sheet.resolve_assigned_paragraph_style_in_container(&document, &sheet.base_paragraph,
+            &BlockProperties::default(), &context, &CharacterProperties::default(), None, &CharacterProperties::default()).unwrap();
+        assert_eq!(paragraph.character.foreground, blue);
+        assert_eq!(paragraph.character.size, 18.0);
+        assert_eq!(paragraph.padding_top, 0.0);
+        let heading = sheet.resolve_assigned_paragraph_style_in_container(&document, &"Heading1".into(),
+            &BlockProperties::default(), &context, &CharacterProperties::default(), None, &CharacterProperties::default()).unwrap();
+        assert_eq!(heading.character.foreground, blue);
+        assert_eq!(heading.character.size, 24.0);
     }
 }

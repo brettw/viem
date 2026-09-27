@@ -2644,10 +2644,10 @@ mod tests {
             bottom: 11.0,
             right: 3.0,
         };
-        styles.paragraphs[0].spacing_before = 3.0;
-        styles.paragraphs[0].spacing_after = 5.0;
-        styles.paragraphs[1].spacing_before = 2.0;
-        styles.paragraphs[1].spacing_after = 4.0;
+        styles.paragraphs[0].margin_top = 3.0;
+        styles.paragraphs[0].margin_bottom = 5.0;
+        styles.paragraphs[1].margin_top = 2.0;
+        styles.paragraphs[1].margin_bottom = 4.0;
 
         let mut view = ViewLayout::new(200.0, 100.0);
         view.set_insets(super::super::EdgeInsets {
@@ -2701,7 +2701,7 @@ mod tests {
         );
         assert!((snapshot.rows[0].y - 23.0).abs() < 1.0e-5);
         let first_band = view.hard_line_range_height(0..1).unwrap().height() as f32;
-        assert!((first_band - (snapshot.rows[0].line_advance + 30.0)).abs() < 1.0e-5);
+        assert!((first_band - (snapshot.rows[0].line_advance + 28.0)).abs() < 1.0e-5);
         assert!((snapshot.rows[1].y - first_band).abs() < 1.0e-5);
         assert!(
             (snapshot.total_height - (snapshot.rows[1].y + snapshot.rows[1].line_advance + 34.0))
