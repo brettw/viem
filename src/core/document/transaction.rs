@@ -24,6 +24,8 @@ mod structural_style;
 mod markdown_code_style;
 #[path = "markdown_indented_edit.rs"]
 mod markdown_indented_edit;
+#[path = "markdown_gfm_edit.rs"]
+mod markdown_gfm_edit;
 #[path = "style_contributors.rs"]
 mod style_contributors;
 #[path = "paragraph_insertion.rs"]
@@ -40,6 +42,8 @@ mod markdown_numbering;
 mod markdown_list_structure;
 #[path = "markdown_split.rs"]
 mod markdown_split;
+#[path = "markdown_html_edit.rs"]
+mod markdown_html_edit;
 #[path = "markdown_typing.rs"]
 mod markdown_typing;
 #[path = "replacement.rs"]
@@ -3146,6 +3150,9 @@ impl Document {
         }
 
         if explicit_source_patches.is_none() {
+            let support = self.markdown_structural_support(&edits)?;
+            if !support.is_empty() { return self.prepare_markdown_supporting_patches(support, |doc| doc.prepare_text_edits(edits.clone())); }
+            if let Some(prepared) = self.prepare_markdown_html_text_edits(&edits)? { return Ok(prepared); }
             if let Some(prepared) = self.prepare_indented_code_text_edits(&edits)? {
                 return Ok(prepared);
             }
@@ -3169,6 +3176,12 @@ impl Document {
                     .map(|edit| &edit.range),
                 &mut source_patches,
             )?;
+        }
+        if !translate_source && self.format() == Format::Markdown {
+            markdown_split::remove_empty_emphasis(self, &edits, &mut source_patches)?;
+            markdown_split::repair_flanking(self, &edits, &mut source_patches)?;
+            self.repair_markdown_authored_spaces(&edits, &mut source_patches)?;
+            self.repair_markdown_reference_spaces(&edits, &mut source_patches)?;
         }
         super::html_inline_cleanup::remove_empty_edited_scopes(self, &edits, &mut source_patches)?;
         super::html_paragraph_typing::materialize(self, &edits, &mut source_patches)?;
@@ -3440,7 +3453,7 @@ impl Document {
     /// Its displayed position can be mid-paragraph even though Markdown parses
     /// the underlying source at line start. Inspect only a bounded prefix;
     /// deeper indentation uses a conservative escaped authored punctuation.
-    fn escape_markdown_source_text(
+    pub(super) fn escape_markdown_source_text(
         &self,
         source_at: usize,
         text: &str,
@@ -3481,7 +3494,7 @@ impl Document {
             && body_prefix.bytes().chain(escaped[..leading].bytes()).fold(0usize, |column, byte| {
                 column + if byte == b'\t' { 4 - column % 4 } else { 1 }
             }) >= 4;
-        if list_padding || begins_indented_code {
+        if list_padding || begins_indented_code || body_prefix.trim().is_empty() {
             // Indentation must not reinterpret authored prose as code. List
             // indentation and marker padding are also hidden source syntax.
             // Authored body-leading whitespace must be content instead of
@@ -3500,7 +3513,9 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let tail = self.encoding().decode_region(&bytes, source_at)?.text;
             let tail = tail.trim_end_matches(['\r', '\n']);
-            if tail == "\\" || tail.len() >= 2 && tail.bytes().all(|b| b == b' ') {
+            if tail == "\\" || tail.len() >= 2 && tail.bytes().all(|b| b == b' ')
+                || line + 1 < self.state().source_hard_lines.len() && self.file_format() != FileFormat::Mac && tail.trim().is_empty()
+                || prefix.trim_start().starts_with('#') && tail.trim().is_empty() {
                 let end = escaped.trim_end_matches([' ', '\t']).len();
                 let spaces = escaped[end..].bytes().map(|b| if b == b' ' { "&#32;" } else { "&#9;" }).collect::<String>();
                 escaped.truncate(end);
@@ -3608,6 +3623,11 @@ impl Document {
         }
 
         let logical_edits = edits.iter().map(FormattedPayloadEdit::text_edit).collect::<Vec<_>>();
+        let support = self.markdown_structural_support(&logical_edits)?;
+        if !support.is_empty() { return self.prepare_markdown_supporting_patches(support, |doc| doc.prepare_formatted_payload_edits(edits.clone())); }
+        if edits.iter().all(|edit| edit.payload.break_offsets().iter().copied().eq(edit.payload.text().match_indices('\n').map(|(at, _)| at))) {
+            if let Some(prepared) = self.prepare_markdown_html_text_edits(&logical_edits)? { return Ok(prepared); }
+        }
         let indented = self.indented_code_requiring_fences(&logical_edits)?;
         if !indented.is_empty() {
             return self.prepare_with_fenced_indented_code(&indented, |scratch| {
@@ -4410,7 +4430,7 @@ impl Document {
         }
         if style.0 == "Block quote"
             || style.0 == "Paragraph" && self.projection().blocks_for_region(&range)
-                .iter().any(|block| block.style.0 == "Block quote")
+                .iter().any(|block| block.style.0 == "Block quote" || block.quote_depth > 0)
         {
             return self.prepare_markdown_quote_style(range, style.0 == "Block quote");
         }
@@ -5751,6 +5771,16 @@ impl Document {
             }
         }
 
+        let tags: &[(&str, &str)] = if style == SemanticInlineStyle::Strong { &[("<strong>", "</strong>"), ("<b>", "</b>")] } else { &[("<em>", "</em>"), ("<i>", "</i>")] };
+        for (open, close) in tags {
+            let a = self.encoding().encode_fragment(open)?;
+            let b = self.encoding().encode_fragment(close)?;
+            if let Some(start) = source_range.start.checked_sub(a.len()) {
+                let opening = start..source_range.start;
+                let closing = source_range.end..source_range.end + b.len();
+                if self.state().source.bytes_in(opening.clone()).as_ref() == Some(&a) && self.state().source.bytes_in(closing.clone()).as_ref() == Some(&b) { matches.push((opening, closing)); }
+            }
+        }
         match matches.as_slice() {
             [(opening, closing)] => Ok(vec![
                 SourcePatch::primary(opening.clone(), Vec::new()),
@@ -6810,6 +6840,10 @@ impl Document {
         patches: &[SourcePatch],
         rtf_character_properties: Option<&CharacterProperties>,
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
+        if self.markdown_edit_needs_reference_context(edits) { return Ok(None); }
+        if self.format() == Format::Markdown && edits.iter().any(|edit| edit.replacement.is_empty()
+            && self.projection().blocks_for_region(&edit.range).iter().any(|block| matches!(block.kind, super::BlockKind::ListItem { .. })
+                && !block.range.is_empty() && edit.range.start <= block.range.start && block.range.end <= edit.range.end)) { return Ok(None); }
         let rtf_wrapper = self.format() == Format::Rtf
             && rtf_character_properties.is_some_and(|properties| !super::rtf::character_properties_need_tables(properties))
             && edits.len() == 1 && patches.len() == 2;
@@ -8284,12 +8318,27 @@ impl Document {
             })
     }
 
+    fn markdown_edit_needs_reference_context(&self, edits: &[TextEdit]) -> bool {
+        if !self.format().is_markdown() { return false; }
+        edits.iter().any(|edit| {
+            if self.projection().style_spans_for_region(&edit.range).iter().any(|span| span.application == StyleApplication::Automatic("Markdown reference".into())
+                && self.projection().text_tree().slice(span.range.clone()).is_ok_and(|text| super::markdown_syntax::needs_reference_context(&text))) { return true; }
+            if self.format() != Format::MarkdownSource { return false; }
+            if edit.replacement.contains('[') { return true; }
+            self.projection().hard_line_at_offset(edit.range.start).and_then(|i| self.projection().hard_line_range(i))
+                .is_some_and(|range| self.projection().text_tree().slice(range).is_ok_and(|text| super::markdown_syntax::needs_reference_context(&text)))
+        })
+    }
+
     fn line_local_projection_region(
         &self,
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<Option<LineLocalProjectionRegion>, ModelTransactionError> {
+        if self.markdown_edit_needs_reference_context(edits) { return Ok(None); }
         if self.format() == Format::Markdown {
+            if edits.iter().any(|edit| edit.replacement.is_empty() && self.projection().blocks_for_region(&edit.range).iter()
+                .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }) && !block.range.is_empty() && edit.range.start <= block.range.start && block.range.end <= edit.range.end)) { return Ok(None); }
             for patch in source_patches {
                 let old = self
                     .state()
@@ -8311,7 +8360,7 @@ impl Document {
                         .projection()
                         .blocks_for_region(&edit.range)
                         .iter()
-                        .any(|block| super::edit_boundary::is_code_paragraph(self, block).unwrap_or(true))
+                        .any(|block| block.markdown_html || super::edit_boundary::is_code_paragraph(self, block).unwrap_or(true))
             })
         {
             return Ok(None);
@@ -8409,7 +8458,7 @@ impl Document {
                         self.projection()
                             .blocks_for_region(&range)
                             .iter()
-                            .any(|block| super::edit_boundary::is_code_paragraph(self, block).unwrap_or(true))
+                            .any(|block| block.markdown_html || super::edit_boundary::is_code_paragraph(self, block).unwrap_or(true))
                     })
             };
             // A closing fence cannot be parsed in isolation as the preceding
@@ -9165,7 +9214,7 @@ fn markdown_row_has_hard_break(row: &str) -> bool {
 /// projection through this signature.
 #[derive(Debug, PartialEq)]
 struct MarkdownSourceRegionSignature {
-    blocks: Vec<(Range<usize>, super::BlockKind, super::StyleId)>,
+    blocks: Vec<(Range<usize>, std::sync::Arc<super::projection::BlockAttributes>)>,
     flows: Option<Vec<Range<usize>>>,
     styles: Vec<(Range<usize>, super::StyleApplication)>,
 }
@@ -9181,7 +9230,7 @@ fn markdown_source_region_signature(
         blocks: projection
             .blocks_for_region(range)
             .into_iter()
-            .map(|block| (clip(&block.range), block.kind.clone(), block.style.clone()))
+            .map(|block| (clip(&block.range), block.attributes.clone()))
             .collect(),
         flows: projection
             .flow_ranges_for_region(range)
@@ -9199,8 +9248,8 @@ fn markdown_source_region_signature(
 fn markdown_source_row_signature(
     projection: &FormattedDocument,
     row: &Range<usize>,
-) -> (Option<(super::BlockKind, super::StyleId)>, Vec<(Range<usize>, super::StyleApplication)>) {
-    let owner = markdown_source_row_owner(projection, row).map(|block| (block.kind.clone(), block.style.clone()));
+) -> (Option<std::sync::Arc<super::projection::BlockAttributes>>, Vec<(Range<usize>, super::StyleApplication)>) {
+    let owner = markdown_source_row_owner(projection, row).map(|block| block.attributes.clone());
     let styles = projection
         .style_spans_for_region(row)
         .into_iter()
@@ -9837,7 +9886,8 @@ mod prepared_group_reuse_tests {
             .rebind_prepared_after_group_close(prepared)
             .unwrap();
         document.commit_model_transaction(prepared).unwrap();
-        assert_eq!(document.text(), "Xword");
+        // Intraword underscores are literal in GFM.
+        assert_eq!(document.text(), "X__word__");
         assert!(document.undo());
         assert_eq!(document.text(), "X__word__");
         assert!(document.undo());

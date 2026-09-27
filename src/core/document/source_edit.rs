@@ -70,7 +70,9 @@ pub(super) fn rich_text_patches(
         }
     }
     let source_at = plan.as_ref().map_or(runs[0].start, |plan| plan.insertion);
-    let syntax = if html {
+    let syntax = if document.format() == Format::Markdown {
+        document.escape_markdown_source_text(source_at, &edit.replacement)?
+    } else if html {
         super::rich_text::escape_html_text_edit(document, source_at, &edit)?
     } else if document.source_byte_len() == 0 {
         format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
@@ -129,7 +131,9 @@ pub(super) fn rich_text_patches(
         let value = if Some(index) == insertion_run {
             replacement.clone()
         } else if index == last && !suffix.is_empty() {
-            let syntax = if html {
+            let syntax = if document.format() == Format::Markdown {
+                document.escape_markdown_source_text(range.start, &suffix)?
+            } else if html {
                 super::rich_text::escape_html_source_edit(document, range.start, &suffix)?
             } else {
                 super::rtf::escape_insertion(document, range.start, &suffix)?

@@ -38,6 +38,7 @@ pub(crate) use html_typing::ReplacementTypingContext;
 mod html_whitespace;
 mod lists;
 mod markdown_blocks;
+mod markdown_syntax;
 mod markdown_code;
 mod markdown_indented_code;
 mod markdown_quotes;

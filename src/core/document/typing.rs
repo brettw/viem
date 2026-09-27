@@ -332,6 +332,11 @@ impl Document {
             }
         }
         let mut patches = Vec::new();
+        let (html_open, html_close) = if style == SemanticInlineStyle::Strong { ("<strong>", "</strong>") } else { ("<em>", "</em>") };
+        let mut fallback = if enabled { vec![
+            SourcePatch::primary(source.start..source.start, self.encoding().encode_fragment(html_open)?),
+            SourcePatch::primary(source.end..source.end, self.encoding().encode_fragment(html_close)?),
+        ] } else { Vec::new() };
         if enabled {
             let preceding = self
                 .projection()
@@ -377,7 +382,9 @@ impl Document {
                     return if self.format() == Format::MarkdownSource {
                         self.prepare_html_source_patches(patches)
                     } else {
-                        self.prepare_source_only_patches(patches)
+                        self.prepare_source_only_patches(patches).or_else(|error| {
+                            if matches!(error, ModelTransactionError::Document(DocumentError::VerificationFailed)) { self.prepare_source_only_patches(fallback) } else { Err(error) }
+                        })
                     };
                 }
             }
@@ -421,10 +428,13 @@ impl Document {
                     .into_iter()
                     .find(|m| bytes.starts_with(m) && bytes.ends_with(m))
                     .ok_or(DocumentError::UnsupportedFormatting)?;
+                let paired = self.projection().style_spans_for_region(&span.range).iter().any(|other| other.range == span.range
+                    && other.application == StyleApplication::Semantic(if style == SemanticInlineStyle::Strong { SemanticInlineStyle::Emphasis } else { SemanticInlineStyle::Strong }));
+                let padding = if paired { marker.len() / if style == SemanticInlineStyle::Strong { 2 } else { 1 } * 3 } else { marker.len() };
                 (
-                    full.start + marker.len()..full.end - marker.len(),
-                    full.start..full.start + marker.len(),
-                    full.end - marker.len()..full.end,
+                    full.start + padding..full.end - padding,
+                    full.start + padding - marker.len()..full.start + padding,
+                    full.end - padding..full.end - padding + marker.len(),
                     marker,
                 )
             } else {
@@ -443,6 +453,18 @@ impl Document {
                 (content, opening, closing, marker)
             };
             if source.start == content.start {
+                fallback.push(SourcePatch::primary(opening.clone(), Vec::new()));
+            } else {
+                fallback.push(SourcePatch::primary(opening.clone(), self.encoding().encode_fragment(html_open)?));
+                fallback.push(SourcePatch::primary(source.start..source.start, self.encoding().encode_fragment(html_close)?));
+            }
+            if source.end == content.end {
+                fallback.push(SourcePatch::primary(closing.clone(), Vec::new()));
+            } else {
+                fallback.push(SourcePatch::primary(source.end..source.end, self.encoding().encode_fragment(html_open)?));
+                fallback.push(SourcePatch::primary(closing.clone(), self.encoding().encode_fragment(html_close)?));
+            }
+            if source.start == content.start {
                 patches.push(SourcePatch::primary(opening, Vec::new()));
             } else {
                 patches.push(SourcePatch::primary(
@@ -459,7 +481,9 @@ impl Document {
         if self.format() == Format::MarkdownSource {
             self.prepare_html_source_patches(patches)
         } else {
-            self.prepare_source_only_patches(patches)
+            self.prepare_source_only_patches(patches).or_else(|error| {
+                if matches!(error, ModelTransactionError::Document(DocumentError::VerificationFailed)) { self.prepare_source_only_patches(fallback) } else { Err(error) }
+            })
         }
     }
 
@@ -671,7 +695,7 @@ impl Document {
         };
         let structural = if inherited_insertion.is_some() {
             inherited_insertion
-        } else if edit.range.is_empty() && !context_matches {
+        } else if edit.range.is_empty() && (!context_matches || self.format() == Format::MarkdownSource) {
             super::super::html_typing::insertion(
                 self,
                 at,

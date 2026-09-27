@@ -1,4 +1,7 @@
 use super::encoding::DecodingDiagnostic;
+#[path = "markdown_html.rs"]
+mod markdown_html;
+
 use super::formatted_text::{
     FormattedTextError, FormattedTextTree, LeafBoundarySide, LogicalGraphemeSnapshot,
 };
@@ -130,6 +133,11 @@ pub struct BlockAttributes {
     /// when a source view suppresses generated list labels.
     pub(super) list_editing: ListEditing,
     pub kind: BlockKind,
+    /// Independent Markdown containers; a heading/code style does not erase them.
+    pub quote_depth: usize,
+    pub list_loose: bool,
+    pub thematic_break: bool,
+    pub markdown_html: bool,
     pub style: StyleId,
     /// Absent for the overwhelmingly common inherited paragraph. Nonempty
     /// declarations are immutable and shared by projection/history clones.
@@ -153,13 +161,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, list_loose: false, thematic_break: false, markdown_html: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None,
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, list_loose: false, thematic_break: false, markdown_html: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -219,7 +227,7 @@ impl PartialEq for Block {
 
 impl PartialEq for BlockAttributes {
     fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+        self.kind == other.kind && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -5296,6 +5304,8 @@ fn project_markdown(
     source_content_end: usize,
     preserve_markers: bool,
 ) -> FormattedDocument {
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized)).to_source(normalized);
+    let definitions = super::markdown_syntax::definitions(&normalized.text).0;
     let quotes = super::markdown_quotes::classify(normalized);
     let quote_body = super::markdown_quotes::strip(normalized, &quotes);
     let quote_context = super::markdown_quotes::source_context(normalized);
@@ -5325,6 +5335,8 @@ fn project_markdown(
             &list_context,
             &quote_context,
             &indented,
+            &syntax,
+            &definitions,
         );
         let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
         // Source keeps physical lines, while inline link labels/destinations
@@ -5353,7 +5365,7 @@ fn project_markdown(
                 flow_index += 1;
             }
             let join = paragraphs.last().is_some_and(|previous| {
-                previous.style == block.style && previous.style.0 != "Code Block" && block.style.0 != "Code Block"
+                previous.quote_depth == block.quote_depth && previous.style == block.style && previous.style.0 != "Code Block" && block.style.0 != "Code Block"
                     && (flows[flow_index].start <= previous.range.start && block.range.end <= flows[flow_index].end
                         || (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
                             || matches!((&previous.kind, &block.kind),
@@ -5382,6 +5394,8 @@ fn project_markdown(
         &list_context,
         &quote_context,
         &indented,
+        &syntax,
+        &definitions,
     );
     if let Some(ending) = normalized
         .endings
@@ -5406,7 +5420,7 @@ fn project_markdown(
                         if a == d && b == e && c == f))
                     && previous.style.0 != "Code Block"
                     && block.style.0 != "Code Block"
-                    && previous.style == block.style
+                    && previous.quote_depth == block.quote_depth && previous.style == block.style
                     && projected
                         .provenance_for_region(&(previous.range.end..block.range.start))
                         .iter()
@@ -5443,6 +5457,8 @@ fn project_markdown_lines(
     list_context: &[(Range<usize>, super::markdown_blocks::ListLine)],
     quote_context: &[super::markdown_quotes::QuoteLine],
     indented: &[super::markdown_indented_code::CodeBlock],
+    syntax: &super::markdown_syntax::Blocks,
+    definitions: &str,
 ) -> FormattedDocument {
     let mut builder = MarkdownBuilder::new(
         &normalized.text,
@@ -5451,18 +5467,38 @@ fn project_markdown_lines(
         revision,
     );
     builder.preserve_markers = preserve_markers;
+    builder.reference_definitions = definitions.to_owned();
     let input_lines = normalized_hard_line_ranges(normalized);
     let mut hard_breaks = Vec::new();
 
     let mut line_index = 0;
+    let mut container_index = 0;
+    let mut containers: Vec<&super::markdown_syntax::Container> = Vec::new();
+    let normalized_at = |at| normalized.units.get(normalized.units.partition_point(|unit| unit.source.start < at))
+        .map_or(normalized.text.len(), |unit| unit.normalized.start);
     while line_index < input_lines.len() {
         let line = &input_lines[line_index];
         let output_start = builder.output.len();
         let source_at = Some(builder.unit_at(line.start).map_or(source_content_end, |unit| unit.source.start));
+        let source_end = builder.unit_at(line.end).map_or(source_content_end, |unit| unit.source.start);
+        let at = source_at.unwrap();
+        containers.retain(|container| at < container.range.end);
+        while let Some(container) = syntax.containers.get(container_index).filter(|container| container.range.start <= source_end) {
+            if container.range.end > at { containers.push(container); }
+            container_index += 1;
+        }
+        let quote_depth = containers.iter().map(|container| container.quote_depth).max().unwrap_or(0);
+        let list = containers.iter().rev().find(|container| container.list.is_some()).copied();
+        let block_syntax = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= at))
+            .filter(|block| block.range.start <= source_end)
+            .filter(|block| !matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
+                || !list_context.iter().skip(list_context.partition_point(|(range, _)| range.end < block.content.end))
+                    .take_while(|(range, _)| range.start < block.range.end)
+                    .any(|(_, context)| context.marker.is_some() && context.content_start > block.content.end));
         let quote = source_at.and_then(|at| quote_context
             .get(quote_context.partition_point(|line| line.range.start <= at).saturating_sub(1))
             .filter(|line| line.range.start <= at && at <= line.range.end));
-        let quoted = quote.is_some_and(|line| line.depth > 0);
+        let quoted = quote_depth > 0 || quote.is_some_and(|line| line.depth > 0);
         let semantic_start = quote.filter(|_| preserve_markers).map_or(line.start, |quote| {
             builder.units.get(builder.units.partition_point(|unit| unit.source.start < quote.content_start))
                 .map_or(line.end, |unit| unit.normalized.start).min(line.end)
@@ -5477,6 +5513,47 @@ fn project_markdown_lines(
                 .filter(|(range, _)| range.start <= at && at <= range.end)
                 .map(|(_, context)| context)
         });
+        let presented_kind = |fallback: BlockKind| {
+            let kind = if let Some(context) = context { context.kind.clone() } else if quote_depth > 0 {
+                list.and_then(|container| container.list.clone()).map(|mut kind| {
+                    if let BlockKind::ListItem { item_start, container_start, .. } = &mut kind {
+                        *item_start = at <= list.unwrap().range.start;
+                        *container_start &= *item_start;
+                    }
+                    kind
+                }).unwrap_or(fallback)
+            } else { fallback };
+            markdown_presented_kind(kind, preserve_markers)
+        };
+        if let Some(html) = block_syntax.filter(|block| matches!(block.role, super::markdown_syntax::BlockRole::Html)
+            && markdown_inline_break_length(&normalized.text[normalized_at(block.range.start).min(line.end)..line.end]).is_none()) {
+            let first = line_index;
+            while input_lines.get(line_index + 1).is_some_and(|next| builder.unit_at(next.start).is_some_and(|unit| unit.source.start < html.range.end)) { line_index += 1; }
+            let range = input_lines[first].start..input_lines[line_index].end;
+            if preserve_markers || normalized.text[range.clone()].starts_with("<!--") || normalized.text[range.clone()].to_ascii_lowercase().contains("<table") {
+                builder.emit_range(range.start, range.end);
+                for ending in normalized.endings.iter().filter(|ending| range.contains(&ending.normalized.start)) {
+                    hard_breaks.push(output_start + ending.normalized.start - range.start);
+                }
+                builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
+                if normalized.text[range.clone()].starts_with("<!--") && output_start < builder.output.len() {
+                    builder.styles.push(StyleSpan { range: output_start..builder.output.len(), application: StyleApplication::Automatic("Comment".into()) });
+                }
+            } else {
+                let fragment = markdown_html::block(normalized, range, revision);
+                builder.output.push_str(fragment.text());
+                builder.blocks.extend(fragment.blocks().iter().cloned().map(|mut block| {
+                    block.range = block.range.start + output_start..block.range.end + output_start;
+                    block.kind = presented_kind(block.kind.clone()); block.quote_depth = quote_depth; block.markdown_html = true; block
+                }));
+                builder.styles.extend(fragment.style_spans().iter().cloned().map(|mut span| { span.range = span.range.start + output_start..span.range.end + output_start; span }));
+                builder.provenance.extend(fragment.provenance().iter().cloned().map(|mut span| { span.formatted = span.formatted.start + output_start..span.formatted.end + output_start; span }));
+                for index in 0..fragment.hard_line_count().saturating_sub(1) { hard_breaks.push(output_start + fragment.hard_line_range(index).unwrap().end); }
+            }
+            if let Some(ending) = normalized.endings.get(line_index) { hard_breaks.push(builder.output.len()); builder.emit_unit_at(ending.normalized.start); }
+            line_index += 1;
+            continue;
+        }
         if let Some(code) = source_at.and_then(|at| indented
             .get(indented.partition_point(|block| block.source.start <= at).saturating_sub(1))
             .filter(|block| block.source.start <= at && at <= block.source.end))
@@ -5514,6 +5591,10 @@ fn project_markdown_lines(
             builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
                 context.map_or(BlockKind::Paragraph, |context| context.kind.clone()), preserve_markers),
                 "Code Block".into(), None));
+            if let Some(block) = builder.blocks.last_mut() {
+                block.kind = presented_kind(block.kind.clone());
+                block.quote_depth = quote_depth;
+            }
             if let Some(ending) = normalized.endings.get(line_index - 1) {
                 hard_breaks.push(builder.output.len());
                 builder.emit_unit_at(ending.normalized.start);
@@ -5529,9 +5610,9 @@ fn project_markdown_lines(
             while closing < input_lines.len() {
                 let raw = &normalized.text[input_lines[closing].clone()];
                 let body = if preserve_markers && quoted {
-                    raw[super::markdown_quotes::prefix(raw)..].trim()
-                } else { raw.trim() };
-                if body.len() >= length && body.bytes().all(|c| c == delimiter) {
+                    &raw[super::markdown_quotes::prefix(raw)..]
+                } else { raw };
+                if super::markdown_syntax::fence_close(body, delimiter, length) {
                     break;
                 }
                 closing += 1;
@@ -5546,7 +5627,10 @@ fn project_markdown_lines(
             if body_start < body_end {
                 for index in body_start..body_end {
                     let output_start = builder.output.len();
-                    builder.emit_range(input_lines[index].start, input_lines[index].end);
+                    let row = &input_lines[index];
+                    let indent = normalized.text[fence_start..line.end].bytes().take_while(|byte| *byte == b' ').count();
+                    let trim = if preserve_markers { 0 } else { normalized.text[row.clone()].bytes().take_while(|byte| *byte == b' ').take(indent).count() };
+                    builder.emit_range(row.start + trim, row.end);
                     if input_lines[index].is_empty() {
                         let at = builder
                             .unit_at(input_lines[index].start)
@@ -5568,7 +5652,7 @@ fn project_markdown_lines(
                     builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
                             context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                             preserve_markers,
-                        ), if quoted { "Block quote" } else { "Code Block" }.into(), None));
+                        ), "Code Block".into(), None));
                 }
             } else {
                 let body_at = input_lines
@@ -5584,7 +5668,11 @@ fn project_markdown_lines(
                 builder.blocks.push(Block::new(0, output_start..output_start, markdown_presented_kind(
                         context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
                         preserve_markers,
-                    ), if quoted { "Block quote" } else { "Code Block" }.into(), None));
+                    ), "Code Block".into(), None));
+            }
+            if let Some(block) = builder.blocks.last_mut() {
+                block.kind = presented_kind(block.kind.clone());
+                block.quote_depth = quote_depth;
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -5610,11 +5698,54 @@ fn project_markdown_lines(
             kind = BlockKind::Paragraph;
             content_start = semantic_start;
         }
-        if preserve_markers {
-            builder.emit_range(line.start, content_start);
+        let mut content_end = line.end;
+        let mut heading = match kind { BlockKind::Heading(level) => Some(level), _ => None };
+        let mut thematic_break = false;
+        if let Some(syntax) = block_syntax {
+            match syntax.role {
+                super::markdown_syntax::BlockRole::Heading(level) => {
+                    heading = Some(level);
+                    content_start = normalized_at(syntax.content.start).min(line.end);
+                    content_end = normalized_at(syntax.content.end).min(line.end);
+                    if !matches!(kind, BlockKind::ListItem { .. }) { kind = BlockKind::Heading(level); }
+                }
+                super::markdown_syntax::BlockRole::Rule => {
+                    thematic_break = true;
+                    kind = BlockKind::Paragraph;
+                    if !preserve_markers { content_end = content_start; }
+                }
+                _ => {}
+            }
         }
-        kind = markdown_presented_kind(kind, preserve_markers);
-        builder.parse_inline(content_start, line.end);
+        // Quote markers after a list prefix belong to the container too.
+        if quoted { content_start += super::markdown_quotes::prefix(&normalized.text[content_start..content_end]); }
+        if preserve_markers { builder.emit_range(line.start, content_start); }
+        kind = presented_kind(kind);
+        let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= at)).is_some_and(|range| range.start <= at);
+        if definition {
+            let start = builder.output.len();
+            builder.emit_range(content_start, content_end);
+            if start < builder.output.len() { builder.styles.push(StyleSpan { range: start..builder.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) }); }
+        } else {
+            builder.parse_inline(content_start, content_end);
+        }
+        if preserve_markers { builder.emit_range(content_end, line.end); }
+        // Setext underlines are part of the same heading. Source keeps their
+        // physical hard line; the formatted view hides the whole annotation.
+        if let Some(syntax) = block_syntax.filter(|syntax| matches!(syntax.role, super::markdown_syntax::BlockRole::Heading(_))) {
+            while let Some(next) = input_lines.get(line_index + 1).filter(|next| {
+                builder.unit_at(next.start).is_some_and(|unit| unit.source.start < syntax.range.end)
+            }) {
+                if preserve_markers {
+                    if let Some(ending) = normalized.endings.get(line_index) { hard_breaks.push(builder.output.len()); builder.emit_unit_at(ending.normalized.start); }
+                    builder.emit_range(next.start, next.end);
+                }
+                line_index += 1;
+            }
+        }
+        if thematic_break && !preserve_markers {
+            builder.provenance.push(ProvenanceSpan { formatted: output_start..output_start, source: at..at });
+        }
         let output_end = builder.output.len();
         if output_start == output_end && (matches!(kind, BlockKind::ListItem { .. } | BlockKind::Heading(_)) || quoted) {
             // Structural prefixes are source syntax. Empty blocks retain the
@@ -5629,14 +5760,19 @@ fn project_markdown_lines(
                 source: at..at,
             });
         }
-        let style = if quoted { "Block quote".into() } else { match kind {
+        let style = if let Some(level) = heading { StyleId(format!("Heading{level}")) } else if quoted { "Block quote".into() } else { match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
             BlockKind::ListItem { ordered, level, .. } => {
                 StyleId(format!("{}{}", if ordered { "NumberedList" } else { "BulletedList" }, u16::from(level).min(3) + 1))
             }
         }};
-        builder.blocks.push(Block::new(0, output_start..output_end, kind, style, None));
+        let loose = !preserve_markers && matches!(kind, BlockKind::ListItem { .. }) && list.is_some_and(|container| container.loose);
+        let mut block = Block::new(0, output_start..output_end, kind, style, None);
+        block.list_loose = loose;
+        block.quote_depth = quote_depth;
+        block.thematic_break = thematic_break && !preserve_markers;
+        builder.blocks.push(block);
         if let Some(ending) = normalized.endings.get(line_index) {
             hard_breaks.push(builder.output.len());
             builder.emit_unit_at(ending.normalized.start);
@@ -5732,6 +5868,9 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
 
 struct MarkdownBuilder<'a> {
     preserve_markers: bool,
+    html_stack: Vec<(String, usize, StyleApplication)>,
+    inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
+    reference_definitions: String,
     source_text: &'a str,
     units: &'a [LogicalUnit],
     output: String,
@@ -5753,6 +5892,9 @@ impl<'a> MarkdownBuilder<'a> {
     ) -> Self {
         Self {
             preserve_markers: false,
+            html_stack: Vec::new(),
+            inline_syntax: Default::default(),
+            reference_definitions: String::new(),
             source_text,
             units,
             output: String::new(),
@@ -5767,7 +5909,22 @@ impl<'a> MarkdownBuilder<'a> {
     }
 
     fn parse_inline(&mut self, start: usize, end: usize) {
+        self.inline_syntax = super::markdown_syntax::inlines(self.source_text, start..end, &self.reference_definitions);
+        let first_style = self.styles.len();
         self.parse_inline_depth(start, end, 0);
+        if self.preserve_markers {
+            let combined: Vec<_> = self.styles[first_style..].iter().filter(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)
+                && ["***", "___"].iter().any(|marker| self.output[span.range.clone()].starts_with(marker) && self.output[span.range.clone()].ends_with(marker)))
+                .map(|span| span.range.clone()).collect();
+            for span in &mut self.styles[first_style..] {
+                if span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong) {
+                    if let Some(outer) = combined.iter().find(|outer| outer.start + 1 == span.range.start && span.range.end + 1 == outer.end) { span.range = outer.clone(); }
+                }
+            }
+        }
+        for (_, start, application) in self.html_stack.drain(..) {
+            if start < self.output.len() { self.styles.push(StyleSpan { range: start..self.output.len(), application }); }
+        }
     }
 
     fn parse_inline_depth(&mut self, start: usize, end: usize, depth: usize) {
@@ -5794,12 +5951,57 @@ impl<'a> MarkdownBuilder<'a> {
                 }
             }
 
+            if let Some(inline) = self.inline_syntax.get(&at).filter(|inline| inline.range.end <= end).cloned() {
+                use super::markdown_syntax::InlineKind;
+                let output = self.output.len();
+                match inline.kind {
+                    InlineKind::Reference => {
+                        self.emit_range(at, inline.range.end);
+                        self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) });
+                    }
+                    InlineKind::Autolink => {
+                        let shown = if self.preserve_markers { inline.range.clone() } else { inline.inner.clone() };
+                        self.emit_range(shown.start, shown.end);
+                        self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
+                    }
+                    InlineKind::Emphasis | InlineKind::Strong | InlineKind::Strike => {
+                        if self.preserve_markers { self.emit_range(at, inline.inner.start); }
+                        self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
+                        if self.preserve_markers { self.emit_range(inline.inner.end, inline.range.end); }
+                        match inline.kind {
+                            InlineKind::Emphasis => self.push_semantic_style(output, SemanticInlineStyle::Emphasis),
+                            InlineKind::Strong => self.push_semantic_style(output, SemanticInlineStyle::Strong),
+                            _ => self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Strikethrough".into()) }),
+                        }
+                    }
+                    InlineKind::Html if markdown_inline_break_length(&self.source_text[inline.range.clone()]).is_some() => {
+                        if self.preserve_markers { self.emit_range(at, inline.range.end); } else {
+                            let first = self.unit_at(at).unwrap().source.start;
+                            let last = self.unit_at(inline.range.end - 1).unwrap().source.end;
+                            self.inline_hard_breaks.push(output); self.output.push('\n');
+                            self.provenance.push(ProvenanceSpan { formatted: output..self.output.len(), source: first..last });
+                        }
+                    }
+                    InlineKind::Html => {
+                        // Comments remain editable, visible source by product policy.
+                        if self.source_text[inline.range.clone()].starts_with("<!--") {
+                            self.emit_range(at, inline.range.end);
+                            self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Comment".into()) });
+                        } else {
+                            self.html_tag(inline.range.clone());
+                        }
+                    }
+                }
+                at = inline.range.end;
+                continue;
+            }
+
             if !self.preserve_markers {
                 if let Some((length, character)) = markdown_inline_character_reference(&self.source_text[at..end]) {
                     if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
                         let source = first.source.start..last.source.end;
                         let output_start = self.output.len();
-                        self.output.push(character);
+                        self.output.push_str(&character);
                         self.provenance.push(ProvenanceSpan {
                             formatted: output_start..self.output.len(), source,
                         });
@@ -5889,98 +6091,12 @@ impl<'a> MarkdownBuilder<'a> {
                 continue;
             }
 
-            // Canonical combined emphasis uses a triple delimiter. If its
-            // closing run is split, the first inner closing run determines
-            // whether the outer role is strong or emphasis.
-            let triple = if self.source_text[at..].starts_with("***") {
-                Some("***")
-            } else if self.source_text[at..].starts_with("___") {
-                Some("___")
-            } else {
-                None
-            };
-            let mut triple_outer_single = false;
-            if let Some(marker) = triple {
-                if let Some(close) = self.find_marker(at + 3, end, marker) {
-                    let output_start = self.output.len();
-                    if self.preserve_markers {
-                        self.emit_range(at, at + 3);
-                    }
-                    self.parse_inline_depth(at + 3, close, depth + 1);
-                    if self.preserve_markers {
-                        self.emit_range(close, close + 3);
-                    }
-                    self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
-                    self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
-                    at = close + 3;
-                    continue;
-                }
-                let byte = marker.as_bytes()[0];
-                let mut probe = at + 3;
-                while probe < end {
-                    if self.source_text.as_bytes()[probe] == b'\\' {
-                        probe = self
-                            .next_boundary(probe)
-                            .and_then(|p| self.next_boundary(p))
-                            .unwrap_or(end);
-                        continue;
-                    }
-                    if self.source_text.as_bytes()[probe] == byte {
-                        triple_outer_single =
-                            self.source_text.as_bytes().get(probe + 1) == Some(&byte);
-                        break;
-                    }
-                    probe = self.next_boundary(probe).unwrap_or(end);
-                }
-            }
-            let double = if triple_outer_single {
-                None
-            } else if self.source_text[at..].starts_with("**") {
-                Some("**")
-            } else if self.source_text[at..].starts_with("__") {
-                Some("__")
-            } else {
-                None
-            };
-            if let Some(marker) = double {
-                let inner = at + marker.len();
-                if let Some(close) = self.find_marker(inner, end, marker) {
-                    let output_start = self.output.len();
-                    if self.preserve_markers {
-                        self.emit_range(at, inner);
-                    }
-                    self.parse_inline_depth(inner, close, depth + 1);
-                    if self.preserve_markers {
-                        self.emit_range(close, close + marker.len());
-                    }
-                    self.push_semantic_style(output_start, SemanticInlineStyle::Strong);
-                    at = close + marker.len();
-                    continue;
-                }
-            }
-
-            let marker = if self.source_text[at..].starts_with('*') {
-                Some("*")
-            } else if self.source_text[at..].starts_with('_') {
-                Some("_")
-            } else {
-                None
-            };
-            if let Some(marker) = marker {
-                let inner = at + 1;
-                if let Some(close) = self.find_marker(inner, end, marker) {
-                    let output_start = self.output.len();
-                    if self.preserve_markers {
-                        self.emit_range(at, inner);
-                    }
-                    self.parse_inline_depth(inner, close, depth + 1);
-                    if self.preserve_markers {
-                        self.emit_range(close, close + marker.len());
-                    }
-                    self.push_semantic_style(output_start, SemanticInlineStyle::Emphasis);
-                    at = close + 1;
-                    continue;
-                }
+            if let Some((finish, _)) = super::markdown_syntax::autolink(self.source_text, at, end) {
+                let output = self.output.len();
+                self.emit_range(at, finish);
+                self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
+                at = finish;
+                continue;
             }
 
             self.emit_unit_at(at);
@@ -6084,66 +6200,7 @@ impl<'a> MarkdownBuilder<'a> {
         self.unit_at(normalized).map(|unit| unit.normalized.end)
     }
 
-    fn find_marker(&self, mut at: usize, end: usize, marker: &str) -> Option<usize> {
-        let delimiter = marker.as_bytes()[0];
-        let styled = delimiter == b'*' || delimiter == b'_';
-        let mut nested = false;
-        while at + marker.len() <= end {
-            if self.source_text[at..].starts_with('\\') {
-                at = self.next_boundary(at)?;
-                if at < end {
-                    at = self.next_boundary(at)?;
-                }
-                continue;
-            }
-            if styled && self.source_text.as_bytes()[at] == delimiter {
-                let mut run = 1;
-                while at + run < end && self.source_text.as_bytes()[at + run] == delimiter {
-                    run += 1;
-                }
-                match marker.len() {
-                    3 if run >= 3 => return Some(at),
-                    2 if run >= 2 => return Some(at + usize::from(nested && run >= 3)),
-                    2 if run == 1 => nested = !nested,
-                    1 if run == 1 && !nested => return Some(at),
-                    1 if run >= 3 && nested => return Some(at + 2),
-                    1 if run == 2 => {
-                        if !nested {
-                            let mut probe = at + run;
-                            let mut closes_double = false;
-                            while probe < end {
-                                if self.source_text.as_bytes()[probe] == b'\\' {
-                                    probe = self
-                                        .next_boundary(probe)
-                                        .and_then(|p| self.next_boundary(p))
-                                        .unwrap_or(end);
-                                    continue;
-                                }
-                                if self.source_text.as_bytes()[probe] == delimiter {
-                                    closes_double = self.source_text.as_bytes().get(probe + 1)
-                                        == Some(&delimiter);
-                                    break;
-                                }
-                                probe = self.next_boundary(probe).unwrap_or(end);
-                            }
-                            if !closes_double {
-                                return Some(at);
-                            }
-                        }
-                        nested = !nested;
-                    }
-                    _ => {}
-                }
-                at += run;
-                continue;
-            }
-            if !styled && self.source_text[at..].starts_with(marker) {
-                return Some(at);
-            }
-            at = self.next_boundary(at)?;
-        }
-        None
-    }
+
 }
 
 /// The native inline HTML spelling for a hard break. Escapes and code spans
@@ -6158,33 +6215,25 @@ pub(super) fn markdown_inline_break_length(text: &str) -> Option<usize> {
         at += 1;
         while matches!(bytes.get(at), Some(b' ' | b'\t')) { at += 1; }
     }
-    (bytes.get(at) == Some(&b'>')).then_some(at + 1)
+    if bytes.get(at) == Some(&b'>') { return Some(at + 1); }
+    if !matches!(bytes.get(3), Some(b' ' | b'\t' | b'\n' | b'\r')) { return None; }
+    let tokens = super::html::tokenize(text);
+    tokens.first().and_then(|token| match &token.kind {
+        super::html::TokenKind::Tag(tag) if tag.name == "br" && !tag.end => Some(token.range.end),
+        _ => None,
+    })
 }
 
-/// Numeric character references preserve authored prose in its source encoding.
-/// Controls other than TAB stay literal: a reference is not an implicit hard
-/// break, source NUL replacement, or carriage-return normalization instruction.
-/// Source views and code retain their literal spelling, like inline br syntax.
-fn markdown_inline_character_reference(text: &str) -> Option<(usize, char)> {
-    let body = text.strip_prefix("&#")?;
-    let end = body.find(';').filter(|end| *end <= 8)?;
-    let digits = &body[..end];
-    let value = if let Some(hex) = digits.strip_prefix(['x', 'X']) {
-        if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) { return None; }
-        u32::from_str_radix(hex, 16).ok()?
-    } else {
-        if !digits.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
-        digits.parse::<u32>().ok()?
-    };
-    let character = char::from_u32(value)?;
-    if character.is_control() && character != '\t' { return None; }
-    Some((end + 3, character))
+/// Markdown references require the semicolon (unlike HTML text recovery).
+fn markdown_inline_character_reference(text: &str) -> Option<(usize, String)> {
+    let (value, length) = super::html::reference(text, false)?;
+    text[..length].ends_with(';').then_some((length, value))
 }
 
 pub(crate) fn escape_markdown_insert(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for ch in text.chars() {
-        if matches!(ch, '\\' | '*' | '_' | '`' | '#' | '>') {
+        if matches!(ch, '\\' | '*' | '_' | '`' | '#' | '>' | '~' | '[' | ']' | '<' | '&') {
             escaped.push('\\');
         }
         escaped.push(ch);

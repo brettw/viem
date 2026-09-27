@@ -375,6 +375,7 @@ pub struct PositionedCluster {
 pub enum DecorationKind {
     Text,
     BlockQuoteBorder,
+    ThematicBreak,
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
@@ -5776,6 +5777,8 @@ fn resolve_line_paragraph(
             list_marker_range: None,
             list_marker_decoration: None,
             quote_border: false,
+            quote_depth: 0,
+            thematic_break: false,
             marker_paint: ResolvedTextPaint::default(),
             spacing_before: 0.0,
             spacing_after: 0.0,
@@ -5793,37 +5796,32 @@ fn resolve_line_paragraph(
 /// Quote borders share the row's exact geometry and damage/caching lifecycle.
 /// They are furniture, so no marker text or caret stops are synthesized.
 fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, scale: f32) {
-    if !paragraph.quote_border {
-        return;
-    }
-    let rect = LayoutRect {
-        x: row.paragraph_content_x - 16.0 * scale,
-        y: row.y,
-        width: 2.0 * scale,
-        height: row.height(),
-    };
     let mut paint = paragraph.marker_paint.clone();
     paint.background = None;
     paint.underline = false;
     paint.strikethrough = false;
-    paint.foreground = crate::document::Color {
-        red: 0.6,
-        green: 0.6,
-        blue: 0.6,
-        alpha: 1.0,
-    };
+    paint.foreground = crate::document::Color { red: 0.6, green: 0.6, blue: 0.6, alpha: 1.0 };
     paint.foreground_is_default = false;
-    row.decorations.push(PositionedDecoration {
-        kind: DecorationKind::BlockQuoteBorder,
-        text: String::new(),
-        x: rect.x,
-        advance: rect.width,
-        typographic_bounds: rect,
-        ink_bounds: rect,
-        render_run: None,
-        paint,
-        font_size: 0.0,
-    });
+    let mut rectangles = Vec::new();
+    for depth in 0..paragraph.quote_depth.max(usize::from(paragraph.quote_border)) {
+        rectangles.push((DecorationKind::BlockQuoteBorder, LayoutRect {
+            x: row.paragraph_content_x - (16.0 + 32.0 * depth as f32) * scale,
+            y: row.y, width: 2.0 * scale, height: row.height(),
+        }));
+    }
+    if paragraph.thematic_break && row.fragment_index == 0 {
+        rectangles.push((DecorationKind::ThematicBreak, LayoutRect {
+            x: row.paragraph_content_x, y: row.y + row.height() * 0.5,
+            width: row.paragraph_content_width, height: 2.0 * scale,
+        }));
+    }
+    for (kind, rect) in rectangles {
+        row.decorations.push(PositionedDecoration {
+            kind, text: String::new(), x: rect.x, advance: rect.width,
+            typographic_bounds: rect, ink_bounds: rect, render_run: None,
+            paint: paint.clone(), font_size: 0.0,
+        });
+    }
 }
 
 fn starts_new_paragraph(current: &LineParagraphLayout, next: &LineParagraphLayout) -> bool {

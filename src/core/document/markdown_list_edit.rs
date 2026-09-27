@@ -588,6 +588,8 @@ impl Document {
         after: bool,
         following_override: Option<StyleId>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let support = self.markdown_structural_support(&[TextEdit::new(at..at, "\n")])?;
+        if !support.is_empty() { return self.prepare_markdown_supporting_patches(support, |doc| doc.prepare_open_paragraph_with_following(at, origin, after, following_override)); }
         let origin = edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
         let block = edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
         let next = following_override.unwrap_or_else(|| {

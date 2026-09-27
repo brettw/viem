@@ -82,7 +82,7 @@ impl Document {
         let Some(block) = self.keyboard_paragraph(at)? else {
             return Ok(None);
         };
-        let quote = block.style == StyleId::from("Block quote");
+        let quote = block.style == StyleId::from("Block quote") || block.quote_depth > 0;
         if empty_quote_only {
             if !quote || !self.text()[block.range.clone()].trim().is_empty() {
                 return Ok(None);
@@ -150,7 +150,7 @@ impl Document {
         let block = super::super::edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
         if self.format() == Format::Markdown
-            && block.style == StyleId::from("Block quote")
+            && (block.style == StyleId::from("Block quote") || block.quote_depth > 0)
             && super::super::markdown_quotes::is_fenced_block(self, &block)?
         {
             let prepared = self

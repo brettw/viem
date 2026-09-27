@@ -64,7 +64,7 @@ fn quote_preserves_nested_heading_list_and_fenced_code_syntax() {
         .projection()
         .blocks()
         .iter()
-        .all(|block| block.style.0 == "Block quote"));
+        .all(|block| block.quote_depth == 1));
     assert!(doc
         .projection()
         .style_spans()
@@ -132,7 +132,7 @@ fn quote_removal_preserves_body_structure_and_neighbor_boundaries() {
             .projection()
             .blocks()
             .iter()
-            .find(|block| block.style.0 == "Block quote")
+            .find(|block| block.quote_depth > 0)
             .unwrap()
             .range
             .start;
@@ -171,7 +171,7 @@ fn enter_continues_a_quoted_prose_paragraph_with_exact_history() {
             .projection()
             .blocks()
             .iter()
-            .all(|block| block.style.0 == "Block quote"));
+            .all(|block| block.quote_depth == 1));
         let saved = core.document().source_bytes();
         let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
         assert_eq!(reopened.text(), core.document().text());

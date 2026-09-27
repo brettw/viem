@@ -35,14 +35,14 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
     let indented = super::markdown_indented_code::classify(input);
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input));
     let mut prose = Vec::with_capacity(lines.len());
     let mut fence = None;
     for line in &lines {
         let text = &input.text[line.clone()];
         let was_fenced = fence.is_some();
         if let Some((delimiter, length)) = fence {
-            let tail = text.trim();
-            if tail.len() >= length && tail.bytes().all(|byte| byte == delimiter) {
+            if super::markdown_syntax::fence_close(text, delimiter, length) {
                 fence = None;
             }
         } else {
@@ -66,7 +66,12 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
         .filter_map(|(i, ending)| {
             let previous = &input.text[lines[i].clone()];
             let literal = super::markdown_indented_code::containing(&indented, ending.source.start).is_some();
-            (!literal && ((prose[i]
+            let block_boundary = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.normalized.start)).is_some_and(|block| {
+                let touches = block.range.start <= ending.normalized.end && ending.normalized.start < block.range.end;
+                touches && !(matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
+                    && block.content.start <= ending.normalized.start && ending.normalized.end < block.content.end)
+            }) || syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.normalized.start)).is_some_and(|range| range.start <= ending.normalized.end);
+            (!literal && !block_boundary && ((prose[i]
                 && prose.get(i + 1) == Some(&true)
                 && lists[i].is_none()
                 && lists.get(i + 1).is_some_and(Option::is_none)
@@ -141,8 +146,7 @@ fn markdown_projection_with_soft_breaks(
     while i < input.endings.len() {
         let text = &input.text[quotes[i].content_start..lines[i].end];
         if let Some((delimiter, length)) = fence {
-            let tail = text.trim();
-            if tail.len() >= length && tail.bytes().all(|byte| byte == delimiter) {
+            if super::markdown_syntax::fence_close(text, delimiter, length) {
                 fence = None;
             }
         } else {
@@ -176,7 +180,10 @@ fn markdown_projection_with_soft_breaks(
                 .and_then(Option::as_ref)
                 .filter(|line| line.marker.is_none())
                 .map_or(ending.normalized.end, |line| line.content_start);
-            replacements.push((ending.normalized.start..end, " ", false));
+            let end = input.text[end..].char_indices().take_while(|(_, ch)| matches!(ch, ' ' | '\t'))
+                .last().map_or(end, |(offset, ch)| end + offset + ch.len_utf8());
+            let start = input.text[..ending.normalized.start].trim_end_matches([' ', '\t']).len();
+            replacements.push((start..end, " ", false));
         } else if lines
             .get(i + 1)
             .is_some_and(|line| input.text[line.clone()].trim().is_empty())

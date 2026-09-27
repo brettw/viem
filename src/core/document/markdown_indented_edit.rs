@@ -1,6 +1,5 @@
 //! Supporting fence conversion for edits an indented block cannot represent,
 //! such as an empty body or an authored blank first/last code line.
-use super::replacement::PatchComposition;
 use super::*;
 
 impl Document {
@@ -57,55 +56,7 @@ impl Document {
                 self.encoding().encode_fragment(&syntax)?,
             ));
         }
-        let mut scratch = self.scratch_document();
-        let mut composition = PatchComposition::new(self.source_byte_len());
-        let conversion = scratch.prepare_text_edits_with_patches(Vec::new(), Some(patches))?;
-        for patch in conversion.summary.source_patches.iter().rev() {
-            composition.splice(patch.range(), patch.replacement());
-        }
-        scratch.commit_model_transaction(conversion)?;
-        if scratch.text() != self.text() {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        let prepared = operation(&scratch)?;
-        let edits = prepared
-            .summary
-            .formatted_splices()
-            .iter()
-            .map(|splice| {
-                let range = splice.old_range();
-                let new = prepared
-                    .text_position_map()
-                    .map_text_point(
-                        scratch.text_point(range.start)?,
-                        Association::BeforeInsertion,
-                        BoundaryAffinity::Downstream,
-                        DeletionRecovery::PreferFollowingThenPreceding,
-                    )?
-                    .value()
-                    .ok_or(DocumentError::AmbiguousProjection)?
-                    .offset();
-                let PreparedPublication::State(candidate) = &prepared.publication else {
-                    return Err(DocumentError::VerificationFailed.into());
-                };
-                Ok(TextEdit::new(
-                    range,
-                    candidate
-                        .projection
-                        .text_tree()
-                        .slice(new..new + splice.inserted_len())
-                        .map_err(DocumentError::FormattedTextStorage)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, ModelTransactionError>>()?;
-        for patch in prepared.summary.source_patches.iter().rev() {
-            composition.splice(patch.range(), patch.replacement());
-        }
-        scratch.commit_model_transaction(prepared)?;
-        self.prepare_text_edits_with_patches(
-            edits,
-            Some(composition.source_patches(&scratch.state().source)?),
-        )
+        self.prepare_markdown_supporting_patches(patches, operation)
     }
 
     pub(super) fn prepare_indented_code_text_edits(

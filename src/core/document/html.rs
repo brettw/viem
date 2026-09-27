@@ -484,6 +484,7 @@ pub(super) fn project_with_inherited_sheet(
         super::html5_tree::tokens(&input.text),
         None,
         Some(sheet),
+        false,
     )
 }
 
@@ -505,7 +506,11 @@ pub(super) fn project_tokens_with_configuration(
     tokens: Vec<Token>,
     configuration: Option<&StyleSheet>,
 ) -> FormattedDocument {
-    project_tokens_with_style_context(input, revision, start, end, tokens, configuration, None)
+    project_tokens_with_style_context(input, revision, start, end, tokens, configuration, None, false)
+}
+
+pub(super) fn project_markdown_tokens(input: &NormalizedText, revision: Revision, start: usize, end: usize, tokens: Vec<Token>) -> FormattedDocument {
+    project_tokens_with_style_context(input, revision, start, end, tokens, None, None, true)
 }
 
 fn project_tokens_with_style_context(
@@ -516,6 +521,7 @@ fn project_tokens_with_style_context(
     tokens: Vec<Token>,
     configuration: Option<&StyleSheet>,
     inherited_sheet: Option<&StyleSheet>,
+    markdown_references: bool,
 ) -> FormattedDocument {
     let lexical_tokens = tokenize(&input.text);
     let scope_index =
@@ -573,7 +579,8 @@ fn project_tokens_with_style_context(
                 }
                 let value = if value == "\r" { " ".into() } else { value };
                 let hard_break = frame.preserve_newlines && value == "\n";
-                if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space) {
+                if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space)
+                    && !(markdown_references && input.text[token.range.clone()].starts_with("&#")) {
                     if !builder.line_is_empty() && pending_break.is_none() {
                         if let Some(space) = pending_space
                             .as_mut()
@@ -1009,7 +1016,8 @@ fn project_tokens_with_style_context(
                     at += consumed;
                     let value = if value == "\r" { " ".into() } else { value };
                     let hard_break = frame.preserve_newlines && value == "\n";
-                    if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space) {
+                    if !frame.preserve_whitespace && !hard_break && value.bytes().all(css_space)
+                        && !(markdown_references && input.text[range.clone()].starts_with("&#")) {
                         if !builder.line_is_empty() && pending_break.is_none() {
                             if let Some(space) =
                                 pending_space.as_mut().filter(|r| r.end == range.start)

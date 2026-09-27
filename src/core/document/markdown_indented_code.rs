@@ -84,8 +84,8 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
             prose = false;
         }
         if let Some((delimiter, width)) = fence {
-            let tail = text.trim();
-            if tail.len() >= width && tail.bytes().all(|byte| byte == delimiter) {
+            let prefix = context.map_or(0, |line| line.content_start - lines[index].start);
+            if super::markdown_syntax::fence_close(&text[prefix..], delimiter, width) {
                 fence = None;
             }
             index += 1;

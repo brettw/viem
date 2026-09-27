@@ -187,10 +187,10 @@ fn literal_and_markdown_code_keep_exact_encoding_failures_atomic() {
 fn imported_numeric_references_are_editable_without_rewriting_neighbor_spelling() {
     let source = "a &#x4e2d;&#128578; &amp; &#x65;&#x301; z";
     let mut document = document(source, Format::Markdown);
-    assert_eq!(document.text(), "a 中🙂 &amp; e\u{301} z");
+    assert_eq!(document.text(), "a 中🙂 & e\u{301} z");
     assert_eq!(document.source_bytes(), source.as_bytes());
     document.replace(5..9, "界").unwrap();
-    assert_eq!(document.text(), "a 中界 &amp; e\u{301} z");
+    assert_eq!(document.text(), "a 中界 & e\u{301} z");
     assert_eq!(
         document.source_bytes(),
         b"a &#x4e2d;&#x754C; &amp; &#x65;&#x301; z"
@@ -211,7 +211,7 @@ fn imported_numeric_references_are_editable_without_rewriting_neighbor_spelling(
 }
 
 #[test]
-fn references_do_not_create_controls_or_decode_inside_markdown_code_or_source() {
+fn references_follow_gfm_replacements_without_creating_hard_lines_or_decoding_code() {
     for source in [
         "&#0; &#10; &#13; &#x7F; &#xD800; &#x110000;",
         "`&#x4E2D;`",
@@ -222,7 +222,7 @@ fn references_do_not_create_controls_or_decode_inside_markdown_code_or_source() 
         if source.starts_with('`') {
             assert_eq!(document.text(), "&#x4E2D;");
         } else {
-            assert_eq!(document.text(), source);
+            assert_eq!(document.text(), "� \n \r \u{7f} � �");
         }
         assert_eq!(document.hard_line_snapshot().line_count(), 1);
     }
@@ -235,6 +235,6 @@ fn typed_reference_spelling_stays_literal_beside_generated_unicode_escapes() {
     let mut document = document("before after", Format::Markdown);
     document.replace(7..7, "&#65; 中 ").unwrap();
     assert_eq!(document.text(), "before &#65; 中 after");
-    assert_eq!(document.source_bytes(), b"before &\\#65; &#x4E2D; after");
+    assert_eq!(document.source_bytes(), b"before \\&\\#65; &#x4E2D; after");
     assert_eq!(reopened(&document).text(), document.text());
 }

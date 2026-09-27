@@ -1329,6 +1329,14 @@ impl StyleSheet {
             paragraph.block.spacing_before = Some(7.0);
             paragraph.block.spacing_after = Some(7.0);
             if format.is_markdown() {
+                for (name, properties) in [
+                    ("Markdown reference", CharacterProperties { foreground: Some(Color { red: 0.65, green: 0.45, blue: 0.82, alpha: 1.0 }), ..Default::default() }),
+                    ("Comment", CharacterProperties { foreground: Some(Color { red: 0.45, green: 0.48, blue: 0.51, alpha: 1.0 }), ..Default::default() }),
+                    ("Strikethrough", CharacterProperties { strikethrough: Some(true), ..Default::default() }),
+                ] {
+                    sheet.character_styles.insert(name.into(), CharacterStyle { id: name.into(), based_on: None, properties });
+                    sheet.character_metadata.insert(name.into(), StyleDefinitionMetadata::generated(name));
+                }
                 sheet
                     .block_styles
                     .get_mut(&StyleId("Code Block".into()))
