@@ -96,7 +96,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     colorGroup.spacing = 8
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
-    configure(codeBlock, title: "Code Block", symbol: "chevron.left.slash.chevron.right", toggle: true)
+    configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
     codeBlock.action = #selector(toggleCodeBlock(_:))
     blockGroup.addArrangedSubview(codeBlock)
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
