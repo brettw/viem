@@ -48,7 +48,6 @@ import XCTest
     func testInternalListFamiliesRemainEditableAndOnlyCurrentStyleAppearsInMenu() throws {
         for (type, source) in [
             (EVDocument.markdownType, "- Parent\n  - Child\n\nOutside"),
-            (EVDocument.htmlType, "<ul><li>Parent<ul><li>Child</li></ul></li></ul><p>Outside</p>"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
             let sheet = try backend.styleSheetSnapshot()
@@ -80,7 +79,6 @@ import XCTest
     func testListIndentCommandsFollowCoreCapabilitiesAndRoundTripExactSource() throws {
         for (type, source, family) in [
             (EVDocument.markdownType, "- Alpha\n- Beta", "BulletedList"),
-            (EVDocument.htmlType, "<ul data-keep='yes'><li>Alpha</li><li>Beta</li></ul><!--keep-->", "BulletedList"),
             (EVDocument.rtfType, modernRTFList(ordered: false), "BulletedList"),
             (EVDocument.rtfType, modernRTFList(ordered: true), "NumberedList"),
         ] {
@@ -136,7 +134,6 @@ import XCTest
     func testBlockQuoteMenuAssignmentPersistsAndUndoRedoRestoreExactSource() throws {
         for (type, source) in [
             (EVDocument.markdownType, "Words\n\nOutside"),
-            (EVDocument.htmlType, "<p data-keep='yes'>Words</p><p>Outside</p><!--keep-->"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
             try choose("Block quote", in: view)
@@ -160,8 +157,6 @@ import XCTest
     func testBlockQuoteMenuAtDocumentEndCreatesBlankQuoteReadyForTyping() throws {
         for (type, source, before, quotedText) in [
             (EVDocument.markdownType, "one **two**", "one two", "one two\n"),
-            (EVDocument.htmlType, "<p data-keep='yes'>one <b>two</b></p><!--keep-->", "one two", "one two\n"),
-            (EVDocument.htmlType, "<p>one<br>two<br></p>", "one\ntwo\n", "one\ntwo\n"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
             for scalar in "GA".unicodeScalars {
@@ -196,7 +191,6 @@ import XCTest
         defer { EVThemeStore.shared.update(originalTheme) }
         for (type, source) in [
             (EVDocument.markdownType, "> Words\n\nOutside"),
-            (EVDocument.htmlType, "<blockquote><p>Words</p></blockquote><p>Outside</p>"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
             for scale: CGFloat in [1, 2] {

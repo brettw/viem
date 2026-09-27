@@ -419,15 +419,11 @@ fn committing_marked_text_keeps_the_displayed_composition_baseline() {
 
 #[test]
 fn typing_near_bottom_preserves_visible_rows_in_every_text_format() {
-    for format in [Format::PlainText, Format::Markdown, Format::Html, Format::Rtf] {
+    for format in [Format::PlainText, Format::Markdown, Format::Rtf] {
         // Every format contains many independent paragraphs so edits must
         // invalidate only the active neighborhood of the large document.
         let (mut core, view) = if format.is_rich_text() {
-            let source = if format == Format::Html {
-                "<p>An ordinary paragraph with several words that wrap across the narrow text view.</p>".repeat(20_000)
-            } else {
-                format!(r"{{\rtf1 {}}}", r"An ordinary paragraph with several words that wrap across the narrow text view.\par ".repeat(20_000))
-            };
+            let source = format!(r"{{\rtf1 {}}}", r"An ordinary paragraph with several words that wrap across the narrow text view.\par ".repeat(20_000));
             let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 400., 240.);
@@ -659,9 +655,9 @@ fn document_end_including_an_empty_final_line_can_scroll_above_bottom_margin() {
 
 #[test]
 fn exact_line_spacing_at_document_end_keeps_full_row_above_bottom_margin() {
-    let source = format!("<p style=\"font-size:20pt;line-height:8pt;margin-block-start:0pt;margin-block-end:0pt\">{}last</p>", "line<br>".repeat(20));
+    let source = format!(r"{{\rtf1\ansi\fs40\sl-160\slmult0\sb0\sa0 {}last}}", r"line\line ".repeat(20));
     for wrap in [true, false] {
-        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 400., 60.);
         core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();

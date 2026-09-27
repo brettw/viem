@@ -62,20 +62,20 @@ fn lower_roman(ordinal: u64) -> Option<String> {
 /// Generated list furniture follows the four shipped structural style levels.
 /// Deeper authored lists reuse the fourth style rather than cycling again.
 fn list_marker_decoration(ordered: bool, ordinal: u64, level: u8) -> String {
-    let level = level.min(3);
+    let marker = ParagraphLayoutStyle::list_marker_type(ordered, level);
     if !ordered {
-        return match level {
-            0 | 3 => "•",
-            1 => "◦",
-            2 => "▪",
+        return match marker {
+            "disc" => "•",
+            "circle" => "◦",
+            "square" => "▪",
             _ => unreachable!(),
         }
         .into();
     }
-    let number = match level {
-        1 => lower_alpha(ordinal),
-        2 => lower_roman(ordinal),
-        0 | 3 => None,
+    let number = match marker {
+        "lower-alpha" => lower_alpha(ordinal),
+        "lower-roman" => lower_roman(ordinal),
+        "decimal" => None,
         _ => unreachable!(),
     }
     .unwrap_or_else(|| ordinal.to_string());
@@ -132,6 +132,17 @@ pub struct ParagraphLayoutStyle {
     pub alignment: ParagraphAlignment,
     pub base_direction: WritingDirection,
     pub default_shaping_style: ResolvedTextStyle,
+}
+
+impl ParagraphLayoutStyle {
+    /// Shared native furniture / HTML export marker vocabulary. Deeper lists
+    /// retain the fourth shipped style rather than cycling.
+    pub(crate) fn list_marker_type(ordered: bool, level: u8) -> &'static str {
+        match (ordered, level.min(3)) {
+            (true, 1) => "lower-alpha", (true, 2) => "lower-roman", (true, _) => "decimal",
+            (false, 1) => "circle", (false, 2) => "square", (false, _) => "disc",
+        }
+    }
 }
 
 /// Layout-facing result of resolving one immutable formatted snapshot.
@@ -302,9 +313,6 @@ impl DocumentLayoutStyles {
                 !matches!(
                     span.application,
                     StyleApplication::Automatic(_)
-                        | StyleApplication::SourceSyntax
-                        | StyleApplication::SourceRawText
-                        | StyleApplication::SourcePreservedWhitespace
                 )
             });
         }
@@ -383,16 +391,7 @@ impl DocumentLayoutStyles {
         let structural_flow = flow_blocks.is_some();
         let regional_blocks =
             flow_blocks.unwrap_or_else(|| document.blocks_for_region(&text_range));
-        let mut regional_spans = document.style_spans_for_region(&text_range);
-        if structural_flow {
-            // The structural block now supplies the complete paragraph
-            // cascade, including empty elements and their surrounding tags.
-            // Physical-line character overlays must not reapply a neighbor's
-            // paragraph defaults on top of that assignment.
-            regional_spans.retain(|span| {
-                !matches!(span.application, StyleApplication::SourceParagraph { .. })
-            });
-        }
+        let regional_spans = document.style_spans_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
         let mut styles = Self::resolve_validated(StyleCascadeInput {
@@ -444,21 +443,6 @@ impl DocumentLayoutStyles {
         let mut shaping_runs = Vec::new();
         let mut paint_runs = Vec::new();
         let mut paragraphs = Vec::with_capacity(input.blocks.len());
-        let mut source_quotes: Vec<Range<usize>> = Vec::new();
-        for span in input.style_spans {
-            if matches!(&span.application, StyleApplication::SourceParagraph { style, .. }
-                if style.0 == "Block quote")
-            {
-                if let Some(previous) = source_quotes
-                    .last_mut()
-                    .filter(|previous| span.range.start <= previous.end)
-                {
-                    previous.end = previous.end.max(span.range.end);
-                } else {
-                    source_quotes.push(span.range.clone());
-                }
-            }
-        }
         for block in input.blocks {
             let mut container_character = CharacterProperties::default();
             let mut container_font_size = resolved_document.character.size;
@@ -498,21 +482,12 @@ impl DocumentLayoutStyles {
                     .block_style(id)
                     .and_then(|style| style.based_on.as_ref());
             }
-            // HTML Source retains its physical text, including block tags.
-            // Its semantic context supplies the quote treatment for that line.
-            let source_quote = source_quotes
-                .get(source_quotes.partition_point(|range| range.end <= block.range.start))
-                .is_some_and(|range| range.start < block.range.end);
-            quote_border |= source_quote;
             quote_border &= block.containers.is_empty();
-            let quote_id = StyleId::from("Block quote");
             let container_body = block.containers.iter().any(|membership| membership.container.style == block.style)
                 && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
             let mut paragraph = sheet.resolve_assigned_paragraph_style_in_container(
                 input.document_style,
-                if source_quote {
-                    &quote_id
-                } else if container_body {
+                if container_body {
                     &sheet.base_paragraph
                 } else {
                     &block.style
@@ -677,9 +652,7 @@ fn validate_spans_in_tree(
     style_spans: &[StyleSpan],
 ) -> Result<(), DocumentStyleError> {
     for (index, span) in style_spans.iter().enumerate() {
-        if span.range.start > span.range.end
-            || (span.range.is_empty()
-                && span.application != StyleApplication::SourcePreservedWhitespace)
+        if span.range.start >= span.range.end
             || span.range.end > text.byte_len()
             || !text.is_char_boundary(span.range.start)?
             || !text.is_char_boundary(span.range.end)?
@@ -705,9 +678,7 @@ fn validate_blocks(text: &str, blocks: &[Block]) -> Result<(), DocumentStyleErro
 
 fn validate_spans(text: &str, style_spans: &[StyleSpan]) -> Result<(), DocumentStyleError> {
     for (index, span) in style_spans.iter().enumerate() {
-        if span.range.start > span.range.end
-            || (span.range.is_empty()
-                && span.application != StyleApplication::SourcePreservedWhitespace)
+        if span.range.start >= span.range.end
             || span.range.end > text.len()
             || !text.is_char_boundary(span.range.start)
             || !text.is_char_boundary(span.range.end)
@@ -823,9 +794,6 @@ fn resolve_character_spans_at<'a>(
     let mut source_block = block.clone();
     for span in active {
         match &span.application {
-            StyleApplication::SourceSyntax
-            | StyleApplication::SourceRawText
-            | StyleApplication::SourcePreservedWhitespace => {}
             StyleApplication::Automatic(id) => {
                 if id.0 == "Link" {
                     merge_character_properties(&mut link_defaults, &sheet.automatic_character_properties(id)?);
@@ -842,10 +810,6 @@ fn resolve_character_spans_at<'a>(
                         merge_character_properties(&mut automatic, properties);
                     }
                 }
-            }
-            StyleApplication::SourceParagraph { style, defaults } => {
-                source_block.style = style.clone();
-                source_block.direct_default_character = defaults.clone();
             }
             StyleApplication::Named(id) => {
                 if named.is_some_and(|existing| existing != id) {
@@ -1426,63 +1390,6 @@ mod tests {
         assert!(
             !document.projection().compatibility_text_is_materialized(),
             "regional style resolution must not flatten unrelated text"
-        );
-    }
-
-    #[test]
-    fn empty_source_whitespace_context_is_metadata_with_validated_boundaries() {
-        let text = "é";
-        let tree = FormattedTextTree::try_from_text(text).unwrap();
-        for at in [0, text.len()] {
-            let spans = [StyleSpan {
-                range: at..at,
-                application: StyleApplication::SourcePreservedWhitespace,
-            }];
-            assert!(validate_spans(text, &spans).is_ok());
-            assert!(validate_spans_in_tree(&tree, &spans).is_ok());
-        }
-        for span in [
-            StyleSpan {
-                range: 0..0,
-                application: StyleApplication::Direct(CharacterProperties::default()),
-            },
-            StyleSpan {
-                range: 0..0,
-                application: StyleApplication::Named("Code".into()),
-            },
-            StyleSpan {
-                range: 1..1,
-                application: StyleApplication::SourcePreservedWhitespace,
-            },
-            StyleSpan {
-                range: 3..3,
-                application: StyleApplication::SourcePreservedWhitespace,
-            },
-            StyleSpan {
-                range: 2..0,
-                application: StyleApplication::SourcePreservedWhitespace,
-            },
-        ] {
-            assert!(validate_spans(text, std::slice::from_ref(&span)).is_err());
-            assert!(validate_spans_in_tree(&tree, &[span]).is_err());
-        }
-        let document = Document::new(text);
-        let projection = document.projection();
-        let base = DocumentLayoutStyles::resolve(projection).unwrap();
-        let with_context = resolve_custom(
-            projection,
-            projection.style_sheet(),
-            projection.document_style(),
-            projection.blocks(),
-            &[StyleSpan {
-                range: 0..0,
-                application: StyleApplication::SourcePreservedWhitespace,
-            }],
-        )
-        .unwrap();
-        assert_eq!(
-            with_context, base,
-            "point context has no layout or paint effect"
         );
     }
 

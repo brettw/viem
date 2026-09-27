@@ -42,37 +42,6 @@ fn authored_marker_on_markdown_source_continuation_stays_literal() {
 }
 
 #[test]
-fn malformed_html_source_prefix_edit_recomputes_prose_flow_boundaries() {
-    let source = "e\u{301}A <b>bold</אבx&am<; </p>\r\n<e\u{301}!--keep--&amp;<p>Ta\rl<e\u{301}p**>";
-    let bytes = encode(source, Encoding::Utf16Be);
-    let mut document = Document::from_bytes_with_file_format(
-        bytes.clone(),
-        Encoding::Utf16Be,
-        Format::HtmlSource,
-        FileFormat::Dos,
-    )
-    .unwrap();
-    document.replace_physical_source(24..24, "\\").unwrap();
-    let fresh = Document::from_bytes_with_file_format(
-        document.source_bytes(),
-        Encoding::Utf16Be,
-        Format::HtmlSource,
-        FileFormat::Dos,
-    )
-    .unwrap();
-    assert_eq!(document.text(), fresh.text());
-    let ranges = |document: &Document| {
-        (0..document.projection().presentation_line_count(true))
-            .map(|line| document.projection().presentation_line_range(line, true))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(ranges(&document), ranges(&fresh));
-    assert_eq!(ranges(&document).len(), 2);
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), bytes);
-}
-
-#[test]
 fn counted_open_lines_in_markdown_lists_keep_structural_ownership_and_repeat() {
     use viem_core::command::{CommandInterpreter, InputEvent, Key};
     for source in [
@@ -327,39 +296,6 @@ fn source_multi_return_replacement_preserves_each_requested_visible_row() {
                     document.projection().provenance(),
                     fresh.projection().provenance()
                 );
-                assert!(document.undo());
-                assert_eq!(document.source_bytes(), original);
-            }
-        }
-    }
-}
-
-#[test]
-fn html_join_of_paragraphs_in_one_list_item_retains_list_and_inline_scopes() {
-    for source in [
-        "<ol start='3'><li>One<p>Second</p></li><li><i>Two</i></li></ol><!--keep-->",
-        "<ul><li><p>One</p><p>Second</p></li><li>Two</li></ul>",
-        "<ol><li>One<p><b>Second</b></p></li><li>Two</li></ol>",
-    ] {
-        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
-            for replacement in ["", "אב", "<"] {
-                let original = encode(source, encoding);
-                let mut document =
-                    Document::from_bytes(original.clone(), encoding, Format::Html).unwrap();
-                assert_eq!(document.text(), "One\nSecond\nTwo");
-                document.replace(3..5, replacement).unwrap();
-                assert_eq!(document.text(), format!("One{replacement}econd\nTwo"));
-                let fresh =
-                    Document::from_bytes(document.source_bytes(), encoding, Format::Html).unwrap();
-                assert_eq!(
-                    document.projection().provenance(),
-                    fresh.projection().provenance()
-                );
-                assert_eq!(document.projection().blocks().len(), 2);
-                assert!(document.projection().blocks().iter().all(|block| matches!(
-                    block.kind,
-                    viem_core::document::BlockKind::ListItem { .. }
-                )));
                 assert!(document.undo());
                 assert_eq!(document.source_bytes(), original);
             }

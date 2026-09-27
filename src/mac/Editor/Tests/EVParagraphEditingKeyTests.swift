@@ -41,7 +41,6 @@ import XCTest
 
     func testPhysicalShiftReturnAndLineBreakSelectorKeepOneParagraphWhileReturnCreatesTwo() throws {
         for (source, type, before, after) in [
-            ("<p>αβ👩‍💻xy</p>", EVDocument.htmlType, "αβ👩‍💻xy", "αβ\n👩‍💻xy"),
             ("αβ👩‍💻xy", EVDocument.markdownType, "αβ👩‍💻xy", "αβ\n👩‍💻xy"),
             ("# αβ👩‍💻xy", EVDocument.markdownType, "αβ👩‍💻xy", "αβ\n👩‍💻xy"),
             ("{\\rtf1 abcd}", EVDocument.rtfType, "abcd", "ab\ncd"),
@@ -74,13 +73,9 @@ import XCTest
 
     func testNativeBackspaceResetsListsAndJoinsQuotesWhileEmptyQuoteReturnResetsStyle() throws {
         for (source, type, at, enter, text) in [
-            ("<p>previous</p><blockquote><p>body</p></blockquote><p>next</p>", EVDocument.htmlType, 9, false, "previousbody\nnext"),
-            ("<p>previous</p><ul><li>body</li></ul><p>next</p>", EVDocument.htmlType, 9, false, "previous\nbody\nnext"),
-            ("<p>previous</p><ol><li>body</li></ol><p>next</p>", EVDocument.htmlType, 9, false, "previous\nbody\nnext"),
             ("previous\n\n> body\n\nnext", EVDocument.markdownType, 9, false, "previousbody\nnext"),
             ("previous\n\n- body\n\nnext", EVDocument.markdownType, 9, false, "previous\nbody\nnext"),
             ("previous\n\n1. body\n\nnext", EVDocument.markdownType, 9, false, "previous\nbody\nnext"),
-            ("<p>previous</p><blockquote></blockquote><p>next</p>", EVDocument.htmlType, 9, true, "previous\n\nnext"),
             ("previous\n\n> \n\nnext", EVDocument.markdownType, 9, true, "previous\n\nnext"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
@@ -99,7 +94,6 @@ import XCTest
 
     func testNativeOpenAboveAndBelowUseTheHeadingFollowingStyle() throws {
         for (source, type) in [
-            ("<h1>Title</h1><!--keep-->", EVDocument.htmlType),
             ("# Title", EVDocument.markdownType),
             ("{\\rtf1{\\stylesheet{\\s0 Normal;}{\\s5\\sbasedon0\\snext0 Heading 1;}}\\s5 Title}", EVDocument.rtfType),
         ] {

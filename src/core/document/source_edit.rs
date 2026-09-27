@@ -5,31 +5,6 @@ use super::projection::VisibleSourceRun;
 use super::{BoundaryAffinity, DocumentError, FormattedDocument};
 use std::ops::Range;
 
-/// The source context for escaping/whitespace is the beginning of the minimal
-/// complete contributor. A structural selection needs only this context here;
-/// its complete extent is still translated and verified by its adapter.
-pub(super) fn text_context(
-    document: &super::Document,
-    edit: &super::TextEdit,
-    affinity: Option<BoundaryAffinity>,
-) -> Result<usize, DocumentError> {
-    let edit = complete_contributors(document.projection(), edit)?;
-    if let Some(plan) = overlapping_text_plan(document, &edit.range)? {
-        return Ok(plan.insertion);
-    }
-    if edit.range.is_empty() && document.projection().text_tree().byte_len() != 0 {
-        return insertion_point(document.projection(), edit.range.start, affinity)
-            .ok_or(DocumentError::AmbiguousProjection);
-    }
-    let runs = match super::rich_text::text_source_runs(document, &edit.range) {
-        Err(DocumentError::AmbiguousProjection) if !edit.range.is_empty() => {
-            super::rich_text::text_source_runs(document, &(edit.range.start..edit.range.start))?
-        }
-        result => result?,
-    };
-    Ok(runs[0].start)
-}
-
 /// Text, paste/IME payloads and replay use one rich-source translation path.
 /// Structural intentions are prepared by their adapter before reaching here.
 pub(super) fn rich_text_patches(
@@ -40,7 +15,6 @@ pub(super) fn rich_text_patches(
     use super::{Format, SourcePatch};
     let original = edit;
     let mut edit = complete_contributors(document.projection(), edit)?;
-    let html = document.format() == Format::Html;
     let plan = overlapping_text_plan(document, &edit.range)?;
     let mut runs = match &plan {
         Some(plan) => plan.ranges.clone(),
@@ -72,24 +46,10 @@ pub(super) fn rich_text_patches(
     let source_at = plan.as_ref().map_or(runs[0].start, |plan| plan.insertion);
     let syntax = if document.format() == Format::Markdown {
         document.escape_markdown_source_text(source_at, &edit.replacement)?
-    } else if html {
-        super::rich_text::escape_html_text_edit(document, source_at, &edit)?
     } else if document.source_byte_len() == 0 {
         format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
     } else {
         super::rtf::escape_insertion(document, source_at, &edit.replacement)?
-    };
-    let syntax = if html && runs.len() == 1 && plan.is_none() {
-        if let Some((range, compact)) =
-            super::rich_text::compact_generated_html_space(document, &edit, runs[0].start)?
-        {
-            runs[0] = range;
-            compact
-        } else {
-            syntax
-        }
-    } else {
-        syntax
     };
     let syntax = if edit.range.is_empty() && !edit.replacement.is_empty() {
         let closing = document
@@ -108,7 +68,6 @@ pub(super) fn rich_text_patches(
                         == Some("\u{fffc}")
             })
             .map(|span| match document.format() {
-                Format::Html => super::html_typing::opaque_closing_syntax(document, span.source),
                 Format::Rtf => super::rtf::opaque_closing_syntax(document, span.source),
                 _ => Ok(String::new()),
             })
@@ -120,11 +79,7 @@ pub(super) fn rich_text_patches(
     };
     let replacement = document.encoding().encode_fragment(&syntax)?;
     let mut patches = Vec::new();
-    if html {
-        for range in super::html_whitespace::exposed_whitespace(document, &edit, source_at)? {
-            patches.push(SourcePatch::primary(range, Vec::new()));
-        }
-    }
+
     let last = runs.len() - 1;
     let insertion_run = plan.as_ref().map_or(Some(0), TextSourcePlan::insertion_run);
     for (index, range) in runs.into_iter().enumerate() {
@@ -133,29 +88,17 @@ pub(super) fn rich_text_patches(
         } else if index == last && !suffix.is_empty() {
             let syntax = if document.format() == Format::Markdown {
                 document.escape_markdown_source_text(range.start, &suffix)?
-            } else if html {
-                super::rich_text::escape_html_source_edit(document, range.start, &suffix)?
             } else {
                 super::rtf::escape_insertion(document, range.start, &suffix)?
             };
             document.encoding().encode_fragment(&syntax)?
-        } else if html {
-            document
-                .encoding()
-                .encode_fragment(&super::rich_text::escape_html_source_edit(
-                    document,
-                    range.start,
-                    "",
-                )?)?
         } else {
             Vec::new()
         };
-        patches.push(SourcePatch::primary(range, value).with_generated_text(html));
+        patches.push(SourcePatch::primary(range, value));
     }
     if insertion_run.is_none() && !replacement.is_empty() {
-        patches.push(
-            SourcePatch::primary(source_at..source_at, replacement).with_generated_text(html),
-        );
+        patches.push(SourcePatch::primary(source_at..source_at, replacement));
     }
     Ok(patches)
 }
@@ -223,18 +166,7 @@ pub(super) fn overlapping_text_plan(
     let mut selected: Vec<_> = spans.iter().map(|span| span.source.clone()).collect();
     merge_ranges(&mut selected);
     merge_ranges(&mut retained);
-    if document.format() == super::Format::Html && !retained.is_empty() {
-        let mut syntax = Vec::new();
-        for source in &selected {
-            syntax.extend(super::html_typing::retained_inline_syntax(
-                document,
-                source.clone(),
-                &retained,
-            )?);
-        }
-        retained.extend(syntax);
-        merge_ranges(&mut retained);
-    }
+
     let mut ranges = Vec::new();
     for selected in selected {
         let mut start = selected.start;
@@ -307,9 +239,7 @@ pub(super) fn complete_contributors(
     let mut result = edit.clone();
     result.range = range;
     result.replacement = format!("{prefix}{}{suffix}", edit.replacement);
-    for at in &mut result.html_protective_spaces {
-        *at += prefix.len();
-    }
+
     Ok(result)
 }
 
@@ -320,18 +250,23 @@ pub(super) fn insertion_point(
 ) -> Option<usize> {
     let line = projection.hard_line_range(projection.hard_line_at_offset(at)?)?;
     let spans = projection.provenance_touching(&(at..at));
-    let inside_object = |source| spans.iter().any(|span| {
-        span.source.start < source && source < span.source.end
-            && projection.text_tree().slice(span.formatted.clone()).ok().as_deref() == Some("\u{fffc}")
-    });
+    let inside_object = |source| {
+        spans.iter().any(|span| {
+            span.source.start < source
+                && source < span.source.end
+                && projection
+                    .text_tree()
+                    .slice(span.formatted.clone())
+                    .ok()
+                    .as_deref()
+                    == Some("\u{fffc}")
+        })
+    };
     // A retained empty inline/paragraph context is an editable location, not
     // an alternative range through surrounding opening or closing syntax.
-    if let Some(seed) = spans
-        .iter()
-        .rev()
-        .find(|span| span.formatted == (at..at) && span.source.is_empty()
-            && !inside_object(span.source.start))
-    {
+    if let Some(seed) = spans.iter().rev().find(|span| {
+        span.formatted == (at..at) && span.source.is_empty() && !inside_object(span.source.start)
+    }) {
         return Some(seed.source.start);
     }
     let preceding = spans
@@ -348,7 +283,7 @@ pub(super) fn insertion_point(
         })
         .map(|span| span.source.start);
     // A format parser can move visible children ahead of their physical
-    // container (HTML table foster parenting). The preceding text endpoint
+    // container. The preceding text endpoint
     // remains the insertion location between that text and its outer owner.
     if let (Some(before), Some(after)) = (preceding, following) {
         if after < before {
@@ -518,7 +453,6 @@ pub(super) fn rich_text_batch_patches(
         let start = group[0].0.range.start;
         let end = group.last().unwrap().0.range.end;
         let mut combined = super::TextEdit::new(start..end, "");
-        combined.html_normalized = group.iter().all(|(edit, _)| edit.html_normalized);
         let mut at = start;
         for (edit, _) in &group {
             combined.replacement.push_str(
@@ -526,12 +460,6 @@ pub(super) fn rich_text_batch_patches(
                     .text_tree()
                     .slice(at..edit.range.start)
                     .map_err(DocumentError::FormattedTextStorage)?,
-            );
-            let shift = combined.replacement.len();
-            combined.html_protective_spaces.extend(
-                edit.html_protective_spaces
-                    .iter()
-                    .map(|offset| shift + offset),
             );
             combined.replacement.push_str(&edit.replacement);
             at = edit.range.end;

@@ -13,35 +13,6 @@ fn ordinals(document: &Document) -> Vec<u64> {
 }
 
 #[test]
-fn html_lists_are_visible_editable_and_preserve_body_spelling() {
-    let source = b"<p class='x'>One &amp; <b>two</b></p><!--keep--><p>Three</p>";
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    document
-        .set_list_style(0..document.text().len(), Some(ListStyle::Bullet))
-        .unwrap();
-    assert_eq!(document.text(), "One & two\nThree");
-    assert_eq!(ordinals(&document), vec![1, 2]);
-    assert!(String::from_utf8(document.source_bytes())
-        .unwrap()
-        .contains("class='x'>One &amp; <b>two</b>"));
-    assert!(String::from_utf8(document.source_bytes())
-        .unwrap()
-        .contains("<!--keep-->"));
-    document
-        .set_list_style(0..document.text().len(), Some(ListStyle::Numbered))
-        .unwrap();
-    assert_eq!(document.text(), "One & two\nThree");
-    document
-        .set_list_style(0..document.text().len(), None)
-        .unwrap();
-    assert_eq!(document.text(), "One & two\nThree");
-    for _ in 0..3 {
-        assert!(document.undo());
-    }
-    assert_eq!(document.source_bytes(), source);
-}
-
-#[test]
 fn rtf_lists_use_scoped_numbering_and_undo_exact_source() {
     let source = br"{\rtf1\ansi One\par Two}";
     let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
@@ -91,10 +62,7 @@ fn rtf_list_wrappers_keep_inline_groups_balanced() {
 
 #[test]
 fn rich_list_enter_continues_numbering_and_empty_enter_exits() {
-    for (source, format) in [
-        ("<p>First</p>", Format::Html),
-        (r"{\rtf1 First}", Format::Rtf),
-    ] {
+    for (source, format) in [(r"{\rtf1 First}", Format::Rtf)] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         document
@@ -162,7 +130,6 @@ fn numbered_list_enter_replays_semantically_for_counted_dot() {
         ("First", Format::PlainText),
         ("First", Format::Markdown),
         ("First", Format::MarkdownSource),
-        ("<p>First</p>", Format::Html),
         (r"{\rtf1 First}", Format::Rtf),
     ] {
         let mut document =
@@ -211,23 +178,6 @@ fn numbered_list_enter_replays_semantically_for_counted_dot() {
 }
 
 #[test]
-fn changing_one_html_list_item_preserves_following_numbering() {
-    let source = br#"<ol start="3" class='list'><li>A</li><li>B</li><li>C</li></ol>"#;
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(document.text(), "A\nB\nC");
-    assert_eq!(ordinals(&document), vec![3, 4, 5]);
-    document
-        .set_list_style(2..3, Some(ListStyle::Bullet))
-        .unwrap();
-    assert_eq!(document.text(), "A\nB\nC");
-    assert!(String::from_utf8(document.source_bytes())
-        .unwrap()
-        .contains("class='list'"));
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source);
-}
-
-#[test]
 fn rtf_list_enter_before_styled_following_paragraph_preserves_scopes() {
     let source = br"{\rtf1\ansi\ansicpg1252{\fonttbl{\f0 Helvetica;}}{\colortbl;\red128\green64\blue32;}\f0\fs28 RTF body\par {\b Bold words} and {\i italic}.\par {\cf1\fs40 Large colored text}\par{\*\unknown Opaque preserved}}";
     let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
@@ -273,10 +223,7 @@ fn portable_list_containers_retain_item_identities_and_labels_are_decorations() 
     let after = document.projection().list_structure();
     assert_eq!(before.lists[0].id, after.lists[0].id);
     assert_eq!(before.lists[1].id, after.lists[1].id);
-    for (source, format) in [
-        ("<p>A<br>B</p><p>C</p>", Format::Html),
-        (r"{\rtf1 A\line B\par C}", Format::Rtf),
-    ] {
+    for (source, format) in [(r"{\rtf1 A\line B\par C}", Format::Rtf)] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         document
@@ -296,57 +243,14 @@ fn portable_list_containers_retain_item_identities_and_labels_are_decorations() 
 }
 
 #[test]
-fn independent_html_lists_and_multiparagraph_items_keep_structural_membership() {
-    let source = b"<ul><li><p>A</p><p>B</p></li><li>C</li></ul><ul><li>D</li></ul>";
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(document.text(), "A\nB\nC\nD");
-    let structure = document.projection().list_structure();
-    assert_eq!(structure.lists.len(), 2);
-    assert_eq!(structure.lists[0].items.len(), 2);
-    assert_eq!(structure.lists[0].items[0].paragraph_ids.len(), 2);
-    assert_eq!(structure.lists[1].items.len(), 1);
-    document
-        .set_list_style(2..3, Some(ListStyle::Numbered))
-        .unwrap();
-    assert_eq!(document.text(), "A\nB\nC\nD");
-    document.set_list_style(2..3, None).unwrap();
-    assert_eq!(document.text(), "A\nB\nC\nD");
-    assert!(document.undo());
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source);
-}
-
-#[test]
-fn nested_html_list_children_belong_to_the_containing_multiparagraph_item() {
-    let source = b"<ul><li>A<p>B</p><ul><li>C</li></ul><p>D</p></li><li>E</li></ul>";
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(document.text(), "A\nB\nC\nD\nE");
-    let structure = document.projection().list_structure();
-    assert_eq!(structure.lists.len(), 2);
-    assert_eq!(structure.lists[0].items[0].paragraph_ids.len(), 3);
-    assert_eq!(
-        structure.lists[0].items[0].child_lists,
-        vec![structure.lists[1].id]
-    );
-    let at = document.text().find('D').unwrap();
-    document
-        .set_list_style(at..at + 1, Some(ListStyle::Numbered))
-        .unwrap();
-    assert_eq!(document.text(), "A\nB\nC\nD\nE");
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source);
-}
-
-#[test]
 fn continuation_paragraphs_align_with_list_body_and_preserve_local_layout_queries() {
     use viem_core::layout::DocumentLayoutStyles;
-    let mut source = String::from("<ul>");
+    let mut source = String::new();
     for _ in 0..2000 {
-        source.push_str("<li><p>First</p><p>Continuation</p></li>");
+        source.push_str("- First\n\n  Continuation\n\n");
     }
-    source.push_str("</ul>");
     let mut document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let continuation = document.projection().blocks()[1].range.clone();
     let styles =
         DocumentLayoutStyles::resolve_region(document.projection(), continuation.clone()).unwrap();
@@ -355,7 +259,15 @@ fn continuation_paragraphs_align_with_list_body_and_preserve_local_layout_querie
         .iter()
         .find(|paragraph| paragraph.text_range == continuation)
         .unwrap();
-    assert_eq!(paragraph.leading_indent + paragraph.containers.iter().map(|c| c.style.left()).sum::<f32>(), 32.0);
+    assert_eq!(
+        paragraph.leading_indent
+            + paragraph
+                .containers
+                .iter()
+                .map(|c| c.style.left())
+                .sum::<f32>(),
+        32.0
+    );
     assert_eq!(paragraph.first_line_indent, 0.0);
     let first_id = document.projection().blocks()[0].id;
     document
@@ -377,81 +289,11 @@ fn continuation_paragraphs_align_with_list_body_and_preserve_local_layout_querie
 }
 
 #[test]
-fn html_ordered_enter_renumbers_following_items_until_an_explicit_restart() {
-    for (source, expected, expected_ordinals) in [
-        (
-            "<ol><li><p>A</p><p>B</p></li><li>C</li></ol>",
-            "A\nB\nNext\nC",
-            vec![1, 2, 3],
-        ),
-        (
-            "<ol><li value='5'><p>A</p><p>B</p></li><li>C</li></ol>",
-            "A\nB\nNext\nC",
-            vec![5, 6, 7],
-        ),
-        (
-            "<ol><li><p>A</p><p>B</p></li><li value='2'>C</li><li>D</li></ol>",
-            "A\nB\nNext\nC\nD",
-            vec![1, 2, 2, 3],
-        ),
-    ] {
-        let mut document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-        let mut commands = CommandInterpreter::new();
-        for event in [
-            InputEvent::key('j'),
-            InputEvent::key('A'),
-            InputEvent::Key(Key::Enter),
-            InputEvent::text("Next"),
-            InputEvent::Key(Key::Escape),
-        ] {
-            let event_name = format!("{event:?}");
-            commands
-                .handle(&mut document, event)
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "{error:?}: {source}: {event_name}; {} {:?}",
-                        document.text(),
-                        document.projection().blocks()
-                    )
-                });
-        }
-        assert_eq!(document.text(), expected);
-        assert_eq!(ordinals(&document), expected_ordinals);
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
-fn decorated_html_empty_item_paragraph_has_only_one_empty_body_boundary() {
-    let source = br#"<ol><li><p>A</p><p>B</p></li><li value="2"><p></p></li><li>C</li></ol>"#;
-    let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(
-        document.text(),
-        "A\nB\n\nC",
-        "{:?}",
-        document.projection().blocks()
-    );
-    assert_eq!(ordinals(&document), vec![1, 2, 3]);
-    document
-        .insert(4, "Next")
-        .unwrap_or_else(|e| panic!("{e:?}: {:?}", document.projection().provenance()));
-    assert_eq!(document.text(), "A\nB\nNext\nC");
-}
-
-#[test]
 fn empty_decorated_items_type_inside_the_innermost_formatting_context() {
-    for (format, source) in [
-        (
-            Format::Html,
-            "<ol start='9'><li><p><b></b></p></li></ol><!--keep-->",
-        ),
-        (
-            Format::Rtf,
-            r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart9{\pntxta .}}{\b }{\*\unknown keep}}",
-        ),
-    ] {
+    for (format, source) in [(
+        Format::Rtf,
+        r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart9{\pntxta .}}{\b }{\*\unknown keep}}",
+    )] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         assert_eq!(document.text(), "");
@@ -474,16 +316,10 @@ fn empty_decorated_items_type_inside_the_innermost_formatting_context() {
 
 #[test]
 fn user_authored_label_looking_text_remains_editable_body_through_list_changes() {
-    for (format, source) in [
-        (
-            Format::Html,
-            "<p>12. Actual text</p><p>• Actual bullet</p><!--keep-->",
-        ),
-        (
-            Format::Rtf,
-            r"{\rtf1 12. Actual text\par\bullet Actual bullet{\*\unknown keep}}",
-        ),
-    ] {
+    for (format, source) in [(
+        Format::Rtf,
+        r"{\rtf1 12. Actual text\par\bullet Actual bullet{\*\unknown keep}}",
+    )] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let text = document.text().to_owned();
@@ -500,16 +336,10 @@ fn user_authored_label_looking_text_remains_editable_body_through_list_changes()
 
 #[test]
 fn deleting_or_changing_item_body_keeps_the_list_while_dd_removes_it() {
-    for (format, source) in [
-        (
-            Format::Html,
-            "<ol start='3'><li><b>Word</b></li></ol><!--keep-->",
-        ),
-        (
-            Format::Rtf,
-            r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart3{\pntxta .}}{\b Word}{\*\unknown keep}}",
-        ),
-    ] {
+    for (format, source) in [(
+        Format::Rtf,
+        r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart3{\pntxta .}}{\b Word}{\*\unknown keep}}",
+    )] {
         for action in ["diw", "ciw", "dd"] {
             let mut document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -552,13 +382,10 @@ fn deleting_or_changing_item_body_keeps_the_list_while_dd_removes_it() {
 
 #[test]
 fn whole_line_delete_of_an_empty_decorated_item_changes_only_structure() {
-    for (format, source) in [
-        (Format::Html, "<ul><li><p></p></li></ul><!--keep-->"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart3{\pntxta .}}{\b }{\*\unknown keep}}",
-        ),
-    ] {
+    for (format, source) in [(
+        Format::Rtf,
+        r"{\rtf1{\*\pn\pnlvlbody\pndec\pnstart3{\pntxta .}}{\b }{\*\unknown keep}}",
+    )] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let mut commands = CommandInterpreter::new();

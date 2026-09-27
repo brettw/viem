@@ -30,6 +30,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private var styleSnapshot: EVStyleSheetSnapshot?
   private var paragraphEntries: [String] = []
   private var characterEntries: [String] = []
+  private var applyingColor = false
   private var colorSelection: ViemLogicalSelectionIdentityV1?
   private var trackingMenus = Set<ObjectIdentifier>()
 
@@ -193,6 +194,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     setHidden(!rich, for: colorGroup)
     colorSelection = rich ? selection : nil
     if rich, let style = try? surface.session?.selectedTypography() {
+      let wasApplyingColor = applyingColor
+      applyingColor = true
+      defer { applyingColor = wasApplyingColor }
       let textColor = style.foreground?.appKitColor ?? EVThemeStore.shared.theme.foreground.color
       let fillColor = style.background?.appKitColor ?? .clear
       if foreground.color != textColor { foreground.color = textColor }
@@ -286,12 +290,16 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   }
 
   @objc func changeColor(_ sender: NSColorWell) {
-    guard let surface, surface.canEditTypography, let session = surface.session,
+    guard !applyingColor, let surface, surface.canEditTypography, let session = surface.session,
       let selection = colorSelection, let rgb = sender.color.usingColorSpace(.sRGB),
       let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
     let color = EVStyleColor(red: Float(rgb.redComponent), green: Float(rgb.greenComponent),
       blue: Float(rgb.blueComponent), alpha: Float(rgb.alphaComponent))
       .normalizedForNativePicker(format: surface.backend.sourceFormat)
+    if let current = try? session.selectedFormatting(), !current.mixed.contains(property),
+       current[property] == .color(color) { return }
+    applyingColor = true
+    defer { applyingColor = false }
     surface.performInput {
       _ = try session.editDirectProperty(property, value: .color(color), expected: selection)
     }

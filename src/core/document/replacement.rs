@@ -148,76 +148,21 @@ impl PatchComposition {
         Ok(())
     }
 
-    /// Recover per-byte origin from the verified speculative source. A single
-    /// composed patch may contain both new text and copied authored markup.
-    pub(super) fn source_patches(
-        self,
-        candidate: &crate::document::source::SourceSnapshot,
-    ) -> Result<Vec<SourcePatch>, DocumentError> {
-        let mut delta = 0isize;
+    /// Emit the composed minimal source changes.
+    pub(super) fn source_patches(self) -> Vec<SourcePatch> {
         self.patches()
             .into_iter()
-            .map(|(range, bytes)| {
-                let start = range
-                    .start
-                    .checked_add_signed(delta)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let end = start
-                    .checked_add(bytes.len())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                delta += bytes.len() as isize - range.len() as isize;
-                let generated = candidate
-                    .generated_text_ranges(start..end)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                Ok(SourcePatch::primary(range, bytes).with_generated_text_ranges(generated))
-            })
+            .map(|(range, bytes)| SourcePatch::primary(range, bytes))
             .collect()
     }
 
-    pub(super) fn formatted_edits(
-        self,
-        candidate: &Document,
-    ) -> Result<Vec<TextEdit>, DocumentError> {
-        let mut delta = 0isize;
-        let named = candidate.encoding().encode_fragment("&nbsp;")?;
+    pub(super) fn formatted_edits(self) -> Vec<TextEdit> {
         self.patches()
             .into_iter()
             .map(|(range, bytes)| {
-                let start = range
-                    .start
-                    .checked_add_signed(delta)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                delta += bytes.len() as isize - range.len() as isize;
                 let text = String::from_utf8(bytes)
                     .expect("formatted composition retains valid UTF-8 boundaries");
-                let mut edit = TextEdit::new(range, text);
-                if candidate.format() == Format::Html {
-                    edit.html_normalized = true;
-                    for (at, ch) in edit
-                        .replacement
-                        .char_indices()
-                        .filter(|(_, ch)| *ch == '\u{a0}')
-                    {
-                        let formatted = start + at..start + at + ch.len_utf8();
-                        let spans = candidate.projection().provenance_for_region(&formatted);
-                        if spans.iter().any(|span| {
-                            span.formatted == formatted
-                                && candidate
-                                    .state()
-                                    .source
-                                    .range_is_generated_text(span.source.clone())
-                                && candidate
-                                    .state()
-                                    .source
-                                    .bytes_in(span.source.clone())
-                                    .as_deref()
-                                    == Some(named.as_slice())
-                        }) {
-                            edit.html_protective_spaces.push(at);
-                        }
-                    }
-                }
-                Ok(edit)
+                TextEdit::new(range, text)
             })
             .collect()
     }
@@ -233,14 +178,23 @@ impl Document {
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
     ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
-        self.prepare_recorded_replacement_with_typing_style(cursor, target, input, None, values, affinity)
+        self.prepare_recorded_replacement_with_typing_style(
+            cursor, target, input, None, values, affinity,
+        )
     }
 
     pub(crate) fn prepare_recorded_replacement_with_typing_style(
-        &self, cursor: usize, target: usize, input: &str, named: Option<&StyleId>,
-        values: &[(StyleProperty, StylePropertyValue)], affinity: BoundaryAffinity,
+        &self,
+        cursor: usize,
+        target: usize,
+        input: &str,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        affinity: BoundaryAffinity,
     ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
-        if let Some(style) = named { self.validate_typing_named_style(style)?; }
+        if let Some(style) = named {
+            self.validate_typing_named_style(style)?;
+        }
         self.text_point(cursor)?;
         self.text_point(target)?;
         let mut scratch = self.scratch_document();
@@ -273,9 +227,8 @@ impl Document {
             };
             let payload = FormattedTextPayload::new(&lines, inserted, vec![])
                 .expect("journaled Replace excludes semantic hard breaks");
-            let edit = scratch.normalize_typing_payload(
-                FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity),
-            )?;
+            let edit =
+                FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity);
             let (prepared, after_cursor) = if values.is_empty() && named.is_none() {
                 let prepared = scratch.prepare_formatted_payload_edits(vec![edit])?;
                 let caret = map_after(&scratch, &prepared, target)?;
@@ -286,32 +239,26 @@ impl Document {
             // Source-visible formatting inserts closing delimiters beyond the
             // presentation caret. The next Replace consumes the next original
             // item after those owned delimiters, preserving the generated pair.
-            let next_target =
-                if self.format().is_source_view() {
-                    map_after(&scratch, &prepared, end)?
-                } else {
-                    after_cursor
-                };
+            let next_target = if self.format().is_source_view() {
+                map_after(&scratch, &prepared, end)?
+            } else {
+                after_cursor
+            };
             let mut source_delta = 0isize;
             let mut inverse_source = Vec::new();
             for patch in prepared.summary.source_patches.iter() {
                 let range = patch.range();
                 let start = (range.start as isize + source_delta) as usize;
                 source_delta += patch.replacement().len() as isize - range.len() as isize;
-                let origins = scratch
-                    .state()
-                    .source
-                    .generated_text_ranges(range.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
                 let old = scratch
                     .state()
                     .source
                     .bytes_in(range)
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                inverse_source.push(
-                    SourcePatch::primary(start..start + patch.replacement().len(), old)
-                        .with_generated_text_ranges(origins),
-                );
+                inverse_source.push(SourcePatch::primary(
+                    start..start + patch.replacement().len(),
+                    old,
+                ));
             }
             let mut text_delta = 0isize;
             let mut inverse_text = Vec::new();
@@ -359,8 +306,8 @@ impl Document {
             cursor = after_cursor;
             target = next_target;
         }
-        let source_patches = source.source_patches(&scratch.state().source)?;
-        let text_edits = formatted.formatted_edits(&scratch)?;
+        let source_patches = source.source_patches();
+        let text_edits = formatted.formatted_edits();
         let prepared = self.prepare_text_edits_with_patches(text_edits, Some(source_patches))?;
         if let Some(last) = records.last_mut() {
             last.restoration.expected_revision = prepared.after_revision();
@@ -415,25 +362,11 @@ fn map_after(
 mod tests {
     use super::*;
     use crate::document::{Encoding, FontSlant};
-    #[test]
-    fn composed_patch_preserves_mixed_source_origin_when_authored_bytes_are_copied() {
-        let original = crate::document::source::SourceSnapshot::new(b"&nbsp;".to_vec());
-        let candidate = original
-            .replace_generated_text(0, 0, b"&nbsp;".to_vec())
-            .unwrap();
-        let mut composition = PatchComposition::new(original.len());
-        composition.splice(0..original.len(), &candidate.bytes());
-        let patches = composition.source_patches(&candidate).unwrap();
-        let replayed = apply_source_patches(&original, &patches).unwrap();
-        assert_eq!(replayed.bytes(), b"&nbsp;&nbsp;");
-        assert_eq!(replayed.generated_text_ranges(0..12), Some(vec![0..6]));
-        assert!(!replayed.range_is_generated_text(6..12));
-    }
 
     #[test]
     fn recorded_replacement_rejects_stale_restore_without_touching_source() {
         let mut document =
-            Document::from_bytes(b"<p>word</p>".to_vec(), Encoding::Utf8, Format::Html).unwrap();
+            Document::from_bytes(br"{\rtf1 word}".to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
         let (prepared, records) = document
             .prepare_recorded_replacement(
                 0,
@@ -457,10 +390,10 @@ mod tests {
     }
     #[test]
     fn recorded_replacement_keeps_projection_work_local_in_large_document() {
-        let mut source = "<p>line</p>".repeat(10_000);
-        source.push_str("<p><i>word</i></p>");
+        let mut source = format!("{{\\rtf1 {}", r"line\par ".repeat(10_000));
+        source.push_str(r"{\i word}}");
         let document =
-            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
         let at = document.projection().text_tree().byte_len() - 4;
         let (prepared, _) = document
             .prepare_recorded_replacement(
@@ -488,25 +421,5 @@ mod tests {
                 .full_text_bytes_materialized(),
             0
         );
-    }
-
-    #[test]
-    fn trailing_space_replacement_keeps_protection_and_projection_work_local() {
-        let source = format!("{}<p>AB</p>", "<p>line</p>".repeat(10_000));
-        let document =
-            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
-        let at = document.projection().text_tree().byte_len() - 1;
-        let (prepared, _) = document
-            .prepare_recorded_replacement(at, at, " ", &[], BoundaryAffinity::Downstream)
-            .unwrap();
-        assert_eq!(prepared.summary().source_patches().len(), 1);
-        assert_eq!(
-            prepared.summary().source_patches()[0].replacement(),
-            b"&nbsp;"
-        );
-        let work = prepared.summary().projection_work();
-        assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
-        assert!(work.decoded_source_bytes() < 256, "{work:?}");
-        assert_eq!(work.full_text_bytes_materialized(), 0);
     }
 }

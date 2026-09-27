@@ -89,6 +89,11 @@ fullscreen bounds do not replace the saved normal frame.
   exclusive top-level actions. The style inspector's x²/x₂ buttons share one
   inheritance checkbox; numeric baseline offsets are not supported.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
+- File > Export… writes a styled HTML copy through the shared core exporter.
+  Markdown exports formatted content and Code exports syntax-highlighted text.
+  Export keeps the open document's filename, source, and unsaved state intact.
+  HTML files open in Code; HTML interpretation and conversion modes are no
+  longer offered in the File menu or status selector.
 - Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
   literal-next input. Normal-mode `u` and Ctrl+R remain available.
 - Ctrl+0–5 select Base Paragraph / Headings 1–5. Heading 6 is menu-only to

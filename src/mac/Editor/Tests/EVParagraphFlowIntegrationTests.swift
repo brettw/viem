@@ -10,7 +10,6 @@ final class EVParagraphFlowIntegrationTests: XCTestCase {
     func testSourceFlowMenuIsPerViewAndPreservesExactSelectionAndHistory() throws {
         for (type, source) in [
             (EVDocument.markdownSourceType, "**alpha**\nbeta\n\ngamma"),
-            (EVDocument.htmlSourceType, "<p>alpha\nbeta</p>\n<p>gamma</p>"),
         ] {
             let backend = EVCoreDocumentBackend()
             try backend.read(source: Data(source.utf8), typeName: type)
@@ -86,7 +85,6 @@ final class EVParagraphFlowIntegrationTests: XCTestCase {
     func testWYSIWYGFlowIsEffectiveAndLockedAndInvalidABIArgumentsAreInert() throws {
         for (type, source, expectedFlow) in [
             (EVDocument.markdownType, "alpha\nbeta", true),
-            (EVDocument.htmlType, "<p>alpha\nbeta</p>", true),
             ("public.plain-text", "alpha\nbeta", false),
         ] {
             let backend = EVCoreDocumentBackend()

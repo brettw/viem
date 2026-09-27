@@ -29,7 +29,7 @@ fn scrolled_source(mode: Mode) -> (TestCore, ViewId) {
         source.push_str(&format!("  line {line:04}\n"));
     }
     let document =
-        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::HtmlSource).unwrap();
+        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::MarkdownSource).unwrap();
     let mut core = Core::new(document);
     // Leave room for counted viewport motions with the default paragraph spacing.
     let view = core.add_view(MockTextMeasurementProvider::new(), 180., 160.);

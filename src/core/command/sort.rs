@@ -42,7 +42,7 @@ pub(super) fn ordered_lines(
     // leading empty line. An actual empty paragraph in a rich format is content.
     if matches!(
         document.format(),
-        Format::PlainText | Format::Code | Format::MarkdownSource | Format::HtmlSource
+        Format::PlainText | Format::Code | Format::MarkdownSource
     ) && source_lines.end == snapshot.line_count()
         && source_lines.end > 1
         && snapshot

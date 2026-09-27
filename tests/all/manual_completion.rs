@@ -410,10 +410,6 @@ fn counts_dot_and_macro_replay_use_the_accepted_payload() {
 fn rich_previews_preserve_source_and_acceptance_inherits_destination_style() {
     for (format, source) in [
         (Format::Markdown, "alphabet\n\n*al*"),
-        (
-            Format::Html,
-            "<p data-keep='yes'>alphabet</p><p><i>&#97;l</i></p><!--keep-->",
-        ),
         (Format::Rtf, r"{\rtf1 alphabet\par {\i al}}"),
     ] {
         let document =
@@ -439,11 +435,7 @@ fn rich_previews_preserve_source_and_acceptance_inherits_destination_style() {
                 "{format:?} style at {offset}"
             );
         }
-        if format == Format::Html {
-            let updated = String::from_utf8(core.document().source_bytes()).unwrap();
-            assert!(updated.starts_with("<p data-keep='yes'>alphabet</p><p><i>&#97;l"));
-            assert!(updated.ends_with("</i></p><!--keep-->"));
-        }
+
         key(&mut core, view, Key::Char('u'));
         assert_eq!(
             core.document().source_bytes(),
@@ -459,7 +451,6 @@ fn completion_works_in_literal_formats_and_keeps_original_encoding() {
         Format::PlainText,
         Format::Code,
         Format::MarkdownSource,
-        Format::HtmlSource,
     ] {
         let (mut core, view) =
             fixture(Document::from_bytes(b"alphabet al".to_vec(), Encoding::Utf8, format).unwrap());

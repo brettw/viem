@@ -28,9 +28,7 @@ fn fixture(prefix: &str, encoding: Encoding, format: Format) -> (Document, Vec<u
 #[test]
 fn append_preserves_visible_diagnostic_and_repairs_only_its_source_byte() {
     for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
-        // WYSIWYG HTML also authors the anonymous paragraph's `p` owner, so its
-        // patches are not confined to the repaired byte; HTML Source covers it.
-        for format in [Format::PlainText, Format::Code, Format::Markdown, Format::MarkdownSource, Format::HtmlSource] {
+        for format in [Format::PlainText, Format::Code, Format::Markdown, Format::MarkdownSource,] {
             let (mut document, original) = fixture("a", encoding, format);
             let before = document.text().to_owned();
             assert_eq!(before, "a\u{fffd}");
@@ -69,7 +67,7 @@ fn append_preserves_visible_diagnostic_and_repairs_only_its_source_byte() {
 #[test]
 fn structured_paste_repairs_and_reopens_with_requested_breaks() {
     for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
-        for format in [Format::PlainText, Format::Markdown, Format::Html] {
+        for format in [Format::PlainText, Format::Markdown,] {
             let (mut document, original) = fixture("a", encoding, format);
             let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), "x\ny", vec![1]).unwrap();
             let prepared = document.prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
@@ -120,7 +118,7 @@ fn unrelated_edits_and_failed_batches_never_repair_malformed_bytes() {
 #[test]
 fn native_typing_and_composition_repair_once_and_undo_exact_bytes() {
     for encoding in [Encoding::Utf16Le, Encoding::Utf16Be] {
-        for format in [Format::PlainText, Format::Markdown, Format::Html] {
+        for format in [Format::PlainText, Format::Markdown,] {
         for composition in [false, true] {
             let (document, original) = fixture("a", encoding, format);
             let mut core = Core::new(document);

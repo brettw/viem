@@ -40,10 +40,6 @@ fn delete_keys_remove_native_unicode_selection_and_round_trip_source() {
     for (format, source) in [
         (Format::PlainText, "left 👩‍💻éright"),
         (Format::Markdown, "left **👩‍💻é**right"),
-        (
-            Format::Html,
-            "<p data-keep='yes'>left <b>👩‍💻é</b>right</p><!--keep-->",
-        ),
     ] {
         for delete in [Key::Backspace, Key::Delete] {
             for reverse in [false, true] {

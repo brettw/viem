@@ -443,9 +443,7 @@ second
 fn unsupported_formats_return_a_non_destructive_error() {
     for format in [
         Format::MarkdownSource,
-        Format::HtmlSource,
         Format::Markdown,
-        Format::Html,
     ] {
         let mut d = Document::new("aaa\nbbb\n");
         d.set_format(format, viem_core::document::FormatOperation::Reinterpret)

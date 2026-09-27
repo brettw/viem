@@ -5,6 +5,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case save = 100
     case saveAs
     case duplicateDocument
+    case exportHTML
     case revertLastSaved = 105
     case browseVersions
     case lineEndingUnix = 109
@@ -20,11 +21,9 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
 
     case convertToText = 130
     case convertToMarkdown
-    case convertToHTML
-    case reinterpretAsText
+    case reinterpretAsText = 133
     case reinterpretAsMarkdown
-    case reinterpretAsHTML
-    case reinterpretAsCode
+    case reinterpretAsCode = 136
 
     case undo = 200
     case redo
@@ -93,7 +92,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case bulletedList
     case numberedList
     case removeList
-    case includeStyleDefinitionsInFile
     case reloadStyleSheet
     case heading0 = 370
     case heading1
@@ -115,10 +113,8 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         switch self {
         case .convertToText: (.plainText, .convert)
         case .convertToMarkdown: (.markdown, .convert)
-        case .convertToHTML: (.html, .convert)
         case .reinterpretAsText: (.plainText, .reinterpret)
         case .reinterpretAsMarkdown: (.markdown, .reinterpret)
-        case .reinterpretAsHTML: (.html, .reinterpret)
         case .reinterpretAsCode: (.code, .reinterpret)
         default: nil
         }

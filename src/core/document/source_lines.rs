@@ -185,7 +185,7 @@ mod tests {
             (Format::PlainText, "one\ntwo\n"),
             (Format::MarkdownSource, "# one\nlast"),
             (Format::Markdown, "# one\n**two**"),
-            (Format::Html, "<p>one</p><p>two</p>"),
+
         ] {
             let mut document =
                 Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -202,48 +202,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn source_ordered_lookup_handles_reordered_html_and_local_graphemes() {
-        let source = "<table>before<tr><td>cell</td></tr>after</table>";
-        let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-        for word in ["before", "after"] {
-            assert_eq!(
-                document
-                    .visible_point_for_source(source.find(word).unwrap(), true)
-                    .unwrap(),
-                document.text().find(word).unwrap()
-            );
-        }
-        let base = Document::new("ba");
-        let reordered = projection::FormattedDocument::from_parts(
-            Revision(0),
-            "ba".into(),
-            base.projection().blocks().to_vec(),
-            Vec::new(),
-            vec![
-                projection::ProvenanceSpan {
-                    formatted: 0..1,
-                    source: 2..3,
-                },
-                projection::ProvenanceSpan {
-                    formatted: 1..2,
-                    source: 0..1,
-                },
-            ],
-            Vec::new(),
-            base.projection().style_sheet().clone(),
-            0,
-            3,
-        );
-        assert_eq!(reordered.nearest_text_boundary_for_source(0, true), Some(1));
-        assert_eq!(reordered.nearest_text_boundary_for_source(2, true), Some(0));
-        assert_eq!(
-            reordered.nearest_text_boundary_for_source(1, false),
-            Some(2)
-        );
-        let document = Document::new("e\u{301} tail");
-        assert_eq!(document.visible_point_for_source(1, false).unwrap(), 0);
-        assert_eq!(document.visible_point_for_source(1, true).unwrap(), 3);
-    }
 }

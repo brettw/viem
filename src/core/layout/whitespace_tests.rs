@@ -233,7 +233,7 @@ fn omitted_tab_falls_back_and_wysiwyg_suppresses_markers() {
     let planned = markers(&document, &view);
     assert!(planned.iter().any(|m| m.text == "^I"));
     assert!(planned.iter().any(|m| m.text == "*"));
-    view.set_whitespace_presentation(options, Format::Html, 2)
+    view.set_whitespace_presentation(options, Format::Markdown, 2)
         .unwrap();
     assert!(markers(&document, &view).is_empty());
 }

@@ -46,6 +46,59 @@ fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
     }
 }
 
+#[test]
+fn html_opens_as_literal_code_preserving_encoding_endings_and_explicit_text() {
+    let text = "<!doctype html>\r\n<h1 title=\"literal\">&amp; text</h1>\r\n<script>alert('x')</script>\r\n";
+    for filename in ["page.html", "page.htm", "page.xhtml", "PAGE.HTML", "PAGE.HTM", "PAGE.XHTML"] {
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be, Encoding::Latin1] {
+            let source = encoded(text, encoding);
+            let document = Document::from_bytes_with_file_format(
+                source.clone(), encoding, Format::PlainText, FileFormat::Dos,
+            ).unwrap();
+            let revision = document.revision();
+            let mut core = Core::<MockTextMeasurementProvider>::new(document);
+            core.initialize_code_detection(filename, true).unwrap();
+            assert_eq!(core.document().format(), Format::Code, "{filename}");
+            assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some("html"));
+            assert_eq!(core.document().text(), text.replace("\r\n", "\n"));
+            assert_eq!(core.document().source_bytes(), source);
+            assert_eq!(core.document().revision(), revision);
+            assert_eq!(core.document().file_format(), FileFormat::Dos);
+            assert_eq!(core.document().encoding(), encoding);
+            assert!(!core.document().is_dirty());
+        }
+    }
+    let mut core = Core::<MockTextMeasurementProvider>::new(Document::new(text));
+    core.initialize_code_detection("page.html", false).unwrap();
+    assert_eq!(core.document().format(), Format::PlainText);
+}
+
+#[test]
+fn html_code_typing_inserts_only_the_authored_text() {
+    for batch in [false, true] {
+        let mut core = Core::<MockTextMeasurementProvider>::new(Document::new(""));
+        core.initialize_code_detection("page.html", true).unwrap();
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+        core.handle(view, CoreEvent::SetSmartQuotes(true)).unwrap();
+        key(&mut core, view, Key::Char('i'));
+        if batch {
+            core.handle(view, CoreEvent::Input(InputEvent::text("<div>"))).unwrap();
+        } else {
+            let mut authored = String::new();
+            for character in "<div>".chars() {
+                authored.push(character);
+                key(&mut core, view, Key::Char(character));
+                assert_eq!(core.document().text(), authored);
+            }
+        }
+        assert_eq!(core.document().source_bytes(), b"<div>");
+        assert_eq!(core.command_state(view).unwrap().cursor(), 5);
+        key(&mut core, view, Key::Escape);
+        key(&mut core, view, Key::Char('u'));
+        assert!(core.document().source_bytes().is_empty());
+    }
+}
+
 fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     let output = core
         .handle(view, CoreEvent::Input(InputEvent::Key(key)))
@@ -170,9 +223,9 @@ fn code_composition_commits_supplied_quotes_as_one_undo_unit() {
 #[test]
 fn code_pastes_rich_clipboard_as_literal_plain_text_without_syntax_assignments() {
     let mut donor = Document::from_bytes(
-        b"<p><b>\"word\"</b></p>".to_vec(),
+        b"**\"word\"**".to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Markdown,
     )
     .unwrap();
     let mut commands = CommandInterpreter::new();

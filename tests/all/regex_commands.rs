@@ -215,9 +215,9 @@ fn invalid_and_undeclared_replacements_fail_before_editing() {
 #[test]
 fn captures_across_style_boundaries_keep_rich_formatting_and_one_undo() {
     let mut d = Document::from_bytes(
-        b"<p><b>one</b> <i>two</i></p>".to_vec(),
+        b"**one** *two*".to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Markdown,
     )
     .unwrap();
     let before = d.source_bytes();

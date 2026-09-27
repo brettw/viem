@@ -7,7 +7,6 @@ fn unspecified_colors_remain_theme_defaults_without_rewriting_any_format() {
     for (format, source) in [
         (Format::PlainText, "words"),
         (Format::Markdown, "**words**"),
-        (Format::Html, "<p>words</p>"),
         (Format::Rtf, r"{\rtf1 words}"),
     ] {
         let document =
@@ -28,7 +27,6 @@ fn unspecified_colors_remain_theme_defaults_without_rewriting_any_format() {
 #[test]
 fn explicit_black_is_distinct_from_theme_default() {
     for (format, source) in [
-        (Format::Html, "<p style='color:#000000'>words</p>"),
         (
             Format::Rtf,
             r"{\rtf1{\colortbl;\red0\green0\blue0;}\cf1 words}",

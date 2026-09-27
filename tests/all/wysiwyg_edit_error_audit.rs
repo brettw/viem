@@ -23,23 +23,6 @@ const CASES: &[(Format, &str)] = &[
     (Format::Markdown, "[a]: url\n\n[a] b"),
     (Format::Markdown, "| a | b |\n| - | - |\n| c | d |"),
     (Format::Markdown, "a **é👩‍💻** b"),
-    (Format::Html, "<p>a<!--keep-->b</p>"),
-    (Format::Html, "<p>a<custom foo='b'>c</custom>d</p>"),
-    (Format::Html, "<p>a<script>keep()</script>b</p>"),
-    (Format::Html, "<p>a<style>.x{color:red}</style>b</p>"),
-    (Format::Html, "<p>a<img src='keep'>b</p>"),
-    (Format::Html, "<p>a<iframe src='keep'>b</iframe>c</p>"),
-    (Format::Html, "<p>a<input value='keep'>b</p>"),
-    (Format::Html, "<p>a<svg><text>b</text></svg>c</p>"),
-    (Format::Html, "<table><tr><td>a</td><td>b</td></tr></table>"),
-    (Format::Html, "<p>a<br>b<br>c</p>"),
-    (Format::Html, "<pre>a\n b</pre><p>c</p>"),
-    (
-        Format::Html,
-        "<ul><li>a<ul><li>b</li></ul></li><li>c</li></ul>",
-    ),
-    (Format::Html, "<p>a &NotEqualTilde; <b>é👩‍💻</b></p>"),
-    (Format::Html, "<p>a &fjlig; b</p>"),
     (Format::Rtf, "{\\rtf1 a {\\b b} c}"),
     (Format::Rtf, "{\\rtf1 a\\line b\\par c}"),
     (Format::Rtf, "{\\rtf1 a {\\*\\unknown keep}b}"),
@@ -82,9 +65,7 @@ fn legal_visible_replacement_ranges_preserve_requested_text() {
                             document.commit_model_transaction(prepared).unwrap();
                             // HTML intentionally protects authored edge spaces
                             // with NBSP; their displayed value remains a space.
-                            let visible = |text: &str| if format == Format::Html {
-                                text.replace('\u{a0}', " ")
-                            } else { text.to_owned() };
+                            let visible = |text: &str| { text.to_owned() };
                             if visible(document.text()) != visible(&expected) {
                                 failures.push(format!("visible {format:?} {source:?} {start}..{end} => {replacement:?}: expected {expected:?}, got {:?}", document.text()));
                             }

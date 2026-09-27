@@ -53,37 +53,7 @@ fn visual_row_end_delete_counts_repeat_and_exact_undo() {
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), after);
 }
-#[test]
-fn physical_html_deletes_authoritative_line_and_replays_without_touching_neighbors() {
-    let source = "<p>first</p>\n<!-- keep --><p>second</p>\n<p>third</p>";
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let (mut core, view) = editor(document, 50.0);
-    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    keys(&mut core, view, "\"add");
-    assert_eq!(
-        core.document().source_bytes(),
-        b"<!-- keep --><p>second</p>\n<p>third</p>"
-    );
-    assert_eq!(
-        core.command_state(view)
-            .unwrap()
-            .register('a')
-            .unwrap()
-            .text,
-        "<p>first</p>\n"
-    );
-    keys(&mut core, view, ".");
-    assert_eq!(core.document().source_bytes(), b"<p>third</p>");
-    keys(&mut core, view, "u");
-    assert_eq!(
-        core.document().source_bytes(),
-        b"<!-- keep --><p>second</p>\n<p>third</p>"
-    );
-    keys(&mut core, view, "u");
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
+
 #[test]
 fn mode_is_view_local_and_rtf_rejects_physical() {
     let (mut core, first) = editor(Document::new("abc\ndef"), 50.0);
@@ -113,7 +83,6 @@ fn code_views_default_to_physical_source_lines() {
         (Format::Code, LineMode::PhysicalSource),
         (Format::PlainText, LineMode::Visual),
         (Format::MarkdownSource, LineMode::Visual),
-        (Format::HtmlSource, LineMode::Visual),
     ] {
         let document =
             Document::from_bytes(b"first\nsecond".to_vec(), Encoding::Utf8, format).unwrap();
@@ -148,22 +117,7 @@ fn row_change_and_physical_change_have_one_undo_unit() {
         assert_eq!(core.document().text(), original);
     }
 }
-#[test]
-fn physical_line_register_put_retains_html_source_syntax() {
-    let source = "<p>one</p>\n<p>two</p>";
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let (mut core, view) = editor(document, 70.0);
-    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    keys(&mut core, view, "\"ayyj\"a2p");
-    assert_eq!(
-        core.document().source_bytes(),
-        b"<p>one</p>\n<p>two</p>\n<p>one</p>\n<p>one</p>"
-    );
-    keys(&mut core, view, "u");
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
+
 #[test]
 fn macro_line_delete_relayouts_each_event_and_is_one_undo_unit() {
     let original = "abc def ghi jkl mno pqr stu vwx yzA BCD EFG HIJ KLM NOP QRSTUVWXYZ\nTail";
@@ -217,21 +171,7 @@ fn location_and_width_changes_keep_large_document_layout_local() {
             < 500
     );
 }
-#[test]
-fn physical_navigation_can_address_invisible_comment_lines() {
-    let source = "<p>one</p>\n<!-- invisible -->\n<p>two</p>";
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let (mut core, view) = editor(document, 90.0);
-    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    keys(&mut core, view, "j");
-    assert_eq!(core.line_location(view).unwrap().line, Some(2));
-    keys(&mut core, view, "dd");
-    assert_eq!(core.document().source_bytes(), b"<p>one</p>\n<p>two</p>");
-    keys(&mut core, view, "u");
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
+
 #[test]
 fn physical_columns_indent_and_format_switch_policy() {
     let (mut core, view) = editor(Document::new("abcde\nx\nabcde"), 90.0);
@@ -289,10 +229,6 @@ fn width_change_invalidates_visual_command_rows_but_not_source_lines() {
 fn visual_row_delete_keeps_list_marker_when_item_continues_and_handles_nested_formatting() {
     for (format, source) in [
         (
-            Format::Html,
-            "<ul><li><b>abcdefgh ijklmno</b> pqrst uvwxyz</li></ul><!-- keep -->",
-        ),
-        (
             Format::Rtf,
             r"{\rtf1{\*\unknown keep}{\pn\pnlvlblt}{\b abcdefgh ijklmno} pqrst uvwxyz\par}",
         ),
@@ -333,9 +269,9 @@ fn visual_line_selection_and_insert_placements_follow_row_boundaries() {
 }
 #[test]
 fn narrow_list_row_contains_body_text_and_partial_deletion_retains_decoration() {
-    let source = "<ul><li>abcdefgh ijklmnop qrstuvwxyz</li></ul>";
+    let source = "- abcdefgh ijklmnop qrstuvwxyz";
     let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let (mut core, view) = editor(document, 80.0);
     let row = &core.layout(view).unwrap().snapshot().unwrap().rows[0];
     let end = row.text_range.end;
@@ -356,7 +292,7 @@ fn narrow_list_row_contains_body_text_and_partial_deletion_retains_decoration() 
 }
 
 #[test]
-fn counted_visual_line_and_hidden_source_visual_line_use_the_selected_domain() {
+fn counted_visual_line_uses_the_selected_domain() {
     let original = "abcdefgh ijklmnop qrstuv wxyz\nTail";
     let (mut core, view) = editor(Document::new(original), 90.0);
     let end = core.layout(view).unwrap().snapshot().unwrap().rows[1]
@@ -366,19 +302,11 @@ fn counted_visual_line_and_hidden_source_visual_line_use_the_selected_domain() {
     assert_eq!(core.document().text(), &original[end..]);
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), original);
-    let source = "<p>one</p>\n<!-- invisible -->\n<p>two</p>";
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    let (mut core, view) = editor(document, 90.0);
-    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    keys(&mut core, view, "jVd");
-    assert_eq!(core.document().source_bytes(), b"<p>one</p>\n<p>two</p>");
+
 }
 #[test]
 fn change_complete_rich_line_keeps_following_paragraph_and_one_undo() {
     for (format, source) in [
-        (Format::Html, "<p><b>one</b></p><p>two</p>"),
         (Format::Rtf, r"{\rtf1{\b one}\par two}"),
     ] {
         let document =

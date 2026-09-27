@@ -6,7 +6,6 @@ const CONTEXT_BYTES: usize = 4096;
 #[derive(Clone, Copy)]
 pub(super) enum QuoteContext {
     Prose,
-    SourceProse(Option<char>),
     Code,
     Syntax,
 }
@@ -53,7 +52,9 @@ impl Document {
 
     pub fn is_code_at(&self, at: usize, affinity: BoundaryAffinity) -> Result<bool, DocumentError> {
         self.text_point(at)?;
-        if self.format().is_code() { return Ok(true); }
+        if self.format().is_code() {
+            return Ok(true);
+        }
         let projection = self.projection();
         let line = projection
             .hard_line_at_offset(at)
@@ -67,7 +68,6 @@ impl Document {
             };
         let spans = projection
             .style_spans_for_region(&(sample..(sample + 1).min(projection.text_tree().byte_len())));
-        let mut source_paragraph = None;
         for span in &spans {
             if !(span.range.contains(&sample) || span.range.is_empty() && span.range.start == at) {
                 continue;
@@ -75,18 +75,10 @@ impl Document {
             match &span.application {
                 StyleApplication::Semantic(SemanticInlineStyle::Code) => return Ok(true),
                 StyleApplication::Named(id) if self.character_style_is_code(id) => return Ok(true),
-                StyleApplication::SourceParagraph { style, .. } => {
-                    source_paragraph = Some(self.input_style_is_code(style, false))
-                }
                 _ => {}
             }
         }
-        if let Some(code) = source_paragraph {
-            return Ok(code);
-        }
-        if self.format() == Format::HtmlSource {
-            return self.empty_html_code_context(at);
-        }
+
         if let Some(block) = super::super::edit_boundary::paragraph_at(self, at)? {
             if self.input_style_is_code(&block.style, false) {
                 return Ok(true);
@@ -96,49 +88,12 @@ impl Document {
             {
                 return Ok(true);
             }
-            if self.format() == Format::Html
-                && (block.range.is_empty()
-                    || self
-                        .projection()
-                        .provenance_touching(&(at..at))
-                        .iter()
-                        .any(|span| span.formatted.is_empty() && span.source.is_empty()))
-            {
-                return self.empty_html_code_context(at);
-            }
         }
         Ok(false)
     }
 
-    fn empty_html_code_context(&self, at: usize) -> Result<bool, DocumentError> {
-        let source_at = super::super::rich_text::text_source_range(self, &(at..at))?.start;
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        let offset = input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.source.end <= source_at),
-            )
-            .map_or(input.text.len(), |unit| unit.normalized.start);
-        let tokens = super::super::html::tokenize(&input.text);
-        Ok(super::super::html_paragraph::stack_at(&tokens, offset).iter().any(|token| {
-            matches!(&token.kind, super::super::html::TokenKind::Tag(tag) if matches!(tag.name.as_str(), "pre" | "code"))
-        }))
-    }
-
-    pub fn input_prose_previous(
-        &self,
-        at: usize,
-        _affinity: BoundaryAffinity,
-    ) -> Result<Option<char>, DocumentError> {
+    pub fn input_prose_previous(&self, at: usize) -> Result<Option<char>, DocumentError> {
         self.text_point(at)?;
-        if self.format() == Format::HtmlSource {
-            return Ok(self
-                .html_source_prose_prefix(at, CONTEXT_BYTES)?
-                .and_then(|text| text.chars().next_back()));
-        }
         Ok(self.input_prefix(at)?.chars().next_back())
     }
 
@@ -160,25 +115,7 @@ impl Document {
         &self,
         at: usize,
         affinity: BoundaryAffinity,
-        character: bool,
     ) -> Result<QuoteContext, DocumentError> {
-        if self.format() == Format::HtmlSource {
-            let spans = self
-                .projection()
-                .style_spans_for_region(&(at..(at + 1).min(self.text().len())));
-            if character
-                && spans.iter().any(|span| {
-                    span.range.contains(&at)
-                        && matches!(
-                            span.application,
-                            StyleApplication::SourceSyntax | StyleApplication::SourceRawText
-                        )
-                })
-                || !character && !self.html_source_prose_at(at, affinity)?
-            {
-                return Ok(QuoteContext::Syntax);
-            }
-        }
         if self.is_code_at(at, affinity)? {
             return Ok(QuoteContext::Code);
         }
@@ -187,11 +124,7 @@ impl Document {
         {
             return Ok(QuoteContext::Syntax);
         }
-        Ok(if self.format() == Format::HtmlSource {
-            QuoteContext::SourceProse(self.input_prose_previous(at, affinity)?)
-        } else {
-            QuoteContext::Prose
-        })
+        Ok(QuoteContext::Prose)
     }
 
     /// Transform incoming prose while preserving target code and source syntax.
@@ -232,16 +165,12 @@ impl Document {
                     .as_deref()
                     == Some(text)
             {
-                let previous = self.input_prose_previous(range.start, affinity)?;
+                let previous = self.input_prose_previous(range.start)?;
                 return rewrite_quotes_indexed(
                     text,
                     previous,
                     |offset, _| {
-                        preview.quote_context(
-                            range.start + offset,
-                            BoundaryAffinity::Downstream,
-                            true,
-                        )
+                        preview.quote_context(range.start + offset, BoundaryAffinity::Downstream)
                     },
                     &mut quote,
                 )
@@ -253,7 +182,7 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?;
             return self.transform_source_quote_input(source, text, true, &mut quote);
         }
-        let previous = self.input_prose_previous(range.start, affinity)?;
+        let previous = self.input_prose_previous(range.start)?;
         let old = self
             .projection()
             .text_tree()
@@ -284,7 +213,6 @@ impl Document {
                     } else {
                         BoundaryAffinity::Downstream
                     },
-                    false,
                 )
             },
             &mut quote,
@@ -318,7 +246,6 @@ impl Document {
             return Ok(text.to_owned());
         }
         let source_format = match self.format().wysiwyg() {
-            Format::Html => Format::HtmlSource,
             Format::Markdown => Format::MarkdownSource,
             value => value,
         };
@@ -334,7 +261,7 @@ impl Document {
         )
         .map_err(compat_document_error)?;
         let decoded = self.encoding().decode(&source.bytes())?;
-        let candidate = build_state_from_decoded_with_configuration(
+        let candidate = build_state_from_decoded(
             source,
             decoded,
             source_format,
@@ -342,7 +269,6 @@ impl Document {
             self.state().file_format_origin,
             self.state().line_ending_evidence,
             self.revision(),
-            Some(self.projection().style_sheet()),
         )?;
         let mut preview = self.scratch_document();
         preview.history = super::super::history::History::transient(candidate);
@@ -357,7 +283,7 @@ impl Document {
             .ok()
             .and_then(|at| {
                 preview
-                    .input_prose_previous(at, BoundaryAffinity::Downstream)
+                    .input_prose_previous(at)
                     .ok()
             })
             .flatten();
@@ -401,10 +327,10 @@ impl Document {
                         .get(&source_at)
                         .filter(|(end, _)| *end == source_end)
                         .map_or(Ok(QuoteContext::Syntax), |(_, at)| {
-                            preview.quote_context(*at, BoundaryAffinity::Downstream, true)
+                            preview.quote_context(*at, BoundaryAffinity::Downstream)
                         });
                 }
-                preview.quote_context(formatted(source_at)?, BoundaryAffinity::Downstream, true)
+                preview.quote_context(formatted(source_at)?, BoundaryAffinity::Downstream)
             },
             quote,
         )
@@ -433,7 +359,6 @@ fn rewrite_quotes_indexed(
 ) -> Result<(String, Vec<TextEdit>), DocumentError> {
     let mut output = String::with_capacity(text.len());
     let mut edits = Vec::new();
-    let mut previous_quote = None;
     for (offset, grapheme) in text.grapheme_indices(true) {
         let context = if grapheme.contains(['\'', '"']) {
             context(offset, grapheme)?
@@ -442,27 +367,15 @@ fn rewrite_quotes_indexed(
         };
         let start = output.len();
         for (relative, character) in grapheme.char_indices() {
-            if let QuoteContext::SourceProse(value) = context {
-                if matches!(character, '\'' | '"') {
-                    previous = previous_quote
-                        .filter(|(original, _)| Some(*original) == value)
-                        .map(|(_, replacement)| replacement)
-                        .or(value);
-                }
-            }
-            let replacement = if matches!(character, '\'' | '"')
-                && matches!(context, QuoteContext::Prose | QuoteContext::SourceProse(_))
-            {
-                quote(offset + relative, character, previous)
-            } else {
-                character
-            };
+            let replacement =
+                if matches!(character, '\'' | '"') && matches!(context, QuoteContext::Prose) {
+                    quote(offset + relative, character, previous)
+                } else {
+                    character
+                };
             output.push(replacement);
             if !matches!(context, QuoteContext::Syntax) {
                 previous = Some(replacement);
-                if matches!(character, '\'' | '"') {
-                    previous_quote = (replacement != character).then_some((character, replacement));
-                }
             }
         }
         if output[start..] != *grapheme {

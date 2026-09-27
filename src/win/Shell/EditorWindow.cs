@@ -283,7 +283,11 @@ internal sealed partial class EditorWindow : Window
         if (path == null)
         {
             var picker = new FileSavePicker { SuggestedFileName = doc.Name == "Untitled" ? "Untitled" : Path.GetFileNameWithoutExtension(doc.Name) };
-            string extension = doc.State.format switch { 2 or 5 => ".md", 3 or 6 => ".html", 4 => ".rtf", _ => ".txt" };
+            string extension = doc.State.format switch {
+                2 or 5 => ".md", 4 => ".rtf",
+                VIEM_FORMAT_CODE when Path.GetExtension(doc.FilePath) is { Length: > 0 } codeExtension => codeExtension,
+                _ => ".txt"
+            };
             picker.FileTypeChoices.Add(CoreDocument.FormatName(doc.State.format), new List<string> { extension });
             WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd);
             var file = await picker.PickSaveFileAsync(); if (file == null) return false; path = file.Path;
@@ -352,7 +356,7 @@ internal sealed partial class EditorWindow : Window
         }
         closing = true; Close();
     }
-    private async Task ClosePane(EditorPane pane, bool force = false)
+    internal async Task ClosePane(EditorPane pane, bool force = false)
     {
         if (!force && !await ConfirmDiscard(pane)) return;
         if (Panes.Count == 1) { closing = true; Close(); return; }

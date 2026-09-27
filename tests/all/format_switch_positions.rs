@@ -41,24 +41,15 @@ fn conversion_preserves_insert_carets_in_repeated_unicode_content_and_history() 
     for from in [
         Format::Markdown,
         Format::MarkdownSource,
-        Format::Html,
-        Format::HtmlSource,
     ] {
         for to in [
             Format::Markdown,
             Format::MarkdownSource,
-            Format::Html,
-            Format::HtmlSource,
             Format::PlainText,
         ] {
             for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
                 let markdown = "# Before\n\nA **café & 👩‍💻 العربية** tail.\n\n# Middle\n\nA **café & 👩‍💻 العربية** tail.\n\n# After\n\nA **café & 👩‍💻 العربية** tail.";
-                let html = "<h1>Before</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>\n<h1>Middle</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>\n<h1>After</h1>\n<p>A <b>café &amp; 👩‍💻 العربية</b> tail.</p>";
-                let source = if from.is_html() {
-                    html
-                } else {
-                    markdown
-                };
+                let source = markdown;
                 let source = source.replace('\n', "\r\n");
                 let mut bytes = match encoding {
                     Encoding::Utf8 => source.as_bytes().to_vec(),
@@ -164,8 +155,6 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
     }
     for format in [
         Format::MarkdownSource,
-        Format::HtmlSource,
-        Format::Html,
         Format::Markdown,
         Format::PlainText,
     ] {

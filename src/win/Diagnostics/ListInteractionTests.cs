@@ -22,14 +22,6 @@ internal static class ListInteractionTests
         FrontendSmokeTests.UiChecks.Add(name);
     }
 
-    private static int Occurrences(string text, string value)
-    {
-        int count = 0;
-        for (int at = 0; (at = text.IndexOf(value, at, StringComparison.Ordinal)) >= 0; at += value.Length)
-            count++;
-        return count;
-    }
-
     private static unsafe string[] DecorationLabels(CoreView view)
     {
         var identity = view.LayoutInfo().identity;
@@ -56,8 +48,8 @@ internal static class ListInteractionTests
 
     internal static async Task Run(Preferences preferences)
     {
-        const string original = "<ol><li>First</li><li>Second</li></ol>";
-        var document = new CoreDocument(Encoding.UTF8.GetBytes(original), format: VIEM_FORMAT_HTML);
+        const string original = "1. First\n2. Second";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(original), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window);
         window.Activate();
@@ -93,7 +85,7 @@ internal static class ListInteractionTests
         {
             string source = Source();
             uint capabilities = view.ListCapabilities();
-            bool correct = document.FormattedText() == "First\nSecond" && Occurrences(source, "<ol") == 2
+            bool correct = document.FormattedText() == "First\nSecond" && source != original
                 && (capabilities & VIEM_LIST_CAN_UNINDENT) != 0;
             if (!correct) throw new InvalidOperationException(
                 $"{name} (source={source}, text={document.FormattedText()}, capabilities={capabilities})");
@@ -104,7 +96,7 @@ internal static class ListInteractionTests
             string source = Source();
             uint capabilities = view.ListCapabilities();
             bool correct = document.FormattedText() == "First\nSecond"
-                && Occurrences(source, "<li") == 2 && (capabilities & VIEM_LIST_CAN_INDENT) != 0;
+                && (capabilities & VIEM_LIST_CAN_INDENT) != 0;
             if (!correct) throw new InvalidOperationException(
                 $"{name} (source={source}, text={document.FormattedText()}, capabilities={capabilities})");
             FrontendSmokeTests.UiChecks.Add(name);
@@ -152,7 +144,7 @@ internal static class ListInteractionTests
             CheckTopLevel("native Backspace at a nested item start unindents exactly one level");
             await InputRoutingTests.Key(VirtualKey.Back);
             Check(document.FormattedText() == "First\nSecond" && Source() != original
-                && Occurrences(Source(), "<li") == 1 && view.ListCapabilities() == 0,
+                && view.ListCapabilities() == 0,
                 "native Backspace at a top-level item start removes its list treatment");
 
             Check(KeyPolicy.Route(VirtualKey.Tab, false, false, false).Kind == VIEM_KEY_TAB

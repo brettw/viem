@@ -346,6 +346,3 @@ fn markdown_source_typing_profile() {
         }
     }
 }
-
-
-

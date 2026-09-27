@@ -7,53 +7,87 @@ pub(super) fn replacement_insertion(
     affinity: BoundaryAffinity,
     text: &str,
     inherited: &super::super::ReplacementTypingContext,
-) -> Result<Option<super::super::html_typing::Insertion>, DocumentError> {
+) -> Result<Option<super::super::replacement_context::Insertion>, DocumentError> {
     if document.format() != Format::Markdown || text.is_empty() {
         return Ok(None);
     }
-    if inherited.paragraph.style.0 == "Code Block" && document.projection().text_tree().byte_len() == 0 {
+    if inherited.paragraph.style.0 == "Code Block"
+        && document.projection().text_tree().byte_len() == 0
+    {
         // Whole-document replacement cleared the original fence. Recreate
         // its paragraph role before inserting literal code, including syntax
         // that would otherwise be escaped as ordinary Markdown prose.
-        let width = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0).saturating_add(1).max(3);
+        let width = text
+            .split(|ch| ch != '`')
+            .map(str::len)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+            .max(3);
         let fence = "`".repeat(width);
         let newline = document.file_format().spelling();
         let source = document.source_byte_len();
         let body = text.replace('\n', newline);
         let prefix = format!("{fence}{newline}");
-        return Ok(Some(super::super::html_typing::Insertion {
+        return Ok(Some(super::super::replacement_context::Insertion {
             source: source..source,
             source_caret: source + prefix.len() + body.len(),
-            syntax: format!("{prefix}{body}{newline}{fence}").split(newline)
+            syntax: format!("{prefix}{body}{newline}{fence}")
+                .split(newline)
                 .map(|line| format!("{}{line}", "> ".repeat(inherited.paragraph.quote_depth)))
-                .collect::<Vec<_>>().join(newline),
+                .collect::<Vec<_>>()
+                .join(newline),
         }));
     }
     if inherited.paragraph.quote_depth > 0 && document.projection().text_tree().byte_len() == 0 {
         let source = document.source_byte_len();
         let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
         let prefix = "> ".repeat(inherited.paragraph.quote_depth);
-        let syntax = escaped.split('\n').map(|line| format!("{prefix}{line}"))
-            .collect::<Vec<_>>().join(document.file_format().spelling());
-        return Ok(Some(super::super::html_typing::Insertion { source: source..source, source_caret: source + syntax.len(), syntax }));
+        let syntax = escaped
+            .split('\n')
+            .map(|line| format!("{prefix}{line}"))
+            .collect::<Vec<_>>()
+            .join(document.file_format().spelling());
+        return Ok(Some(super::super::replacement_context::Insertion {
+            source: source..source,
+            source_caret: source + syntax.len(),
+            syntax,
+        }));
     }
-    let Some(destination) = &inherited.link else { return Ok(None) };
-    let source = document.projection().source_insertion_point(
-        at, affinity == BoundaryAffinity::Downstream && at < document.text().len(),
-    ).ok_or(DocumentError::AmbiguousProjection)?;
+    let Some(destination) = &inherited.link else {
+        return Ok(None);
+    };
+    let source = document
+        .projection()
+        .source_insertion_point(
+            at,
+            affinity == BoundaryAffinity::Downstream && at < document.text().len(),
+        )
+        .ok_or(DocumentError::AmbiguousProjection)?;
     let current = if affinity == BoundaryAffinity::Upstream && at > 0 {
-        document.hard_line_snapshot().previous_grapheme_boundary(at).unwrap_or(at)
-    } else { at };
+        document
+            .hard_line_snapshot()
+            .previous_grapheme_boundary(at)
+            .unwrap_or(at)
+    } else {
+        at
+    };
     if current < document.text().len()
         && document.link_at(document.text_point(current)?)?.as_ref() == Some(destination)
     {
         return Ok(None);
     }
-    let destination = destination.replace('&', "&amp;").replace('<', "&lt;")
-        .replace('>', "&gt;").replace('\\', "&#92;").replace('\n', "&#10;").replace('\r', "&#13;");
-    let destination = super::super::projection::markdown_character_references(&destination, document.encoding());
+    let destination = destination
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\\', "&#92;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;");
+    let destination =
+        super::super::projection::markdown_character_references(&destination, document.encoding());
     let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
-    Ok(Some(super::super::html_typing::Insertion {
+    Ok(Some(super::super::replacement_context::Insertion {
         source: source..source,
         source_caret: source + 1 + escaped.len(),
         syntax: format!("[{escaped}](<{destination}>)"),
@@ -130,7 +164,7 @@ pub(super) fn insertion(
     affinity: BoundaryAffinity,
     text: &str,
     desired: &CharacterProperties,
-) -> Result<Option<super::super::html_typing::Insertion>, DocumentError> {
+) -> Result<Option<super::super::replacement_context::Insertion>, DocumentError> {
     if !document.format().is_markdown()
         || text.is_empty()
         || document.projection().text_tree().byte_len() == 0
@@ -139,19 +173,52 @@ pub(super) fn insertion(
     {
         return Ok(None);
     }
-    if document.format() == Format::MarkdownSource && text.chars().next().is_some_and(char::is_alphanumeric) {
-        let span = document.projection().style_spans_for_region(&(at.saturating_sub(1)..at)).into_iter()
-            .filter(|span| span.range.end == at && matches!(span.application, StyleApplication::Semantic(SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)))
+    if document.format() == Format::MarkdownSource
+        && text.chars().next().is_some_and(char::is_alphanumeric)
+    {
+        let span = document
+            .projection()
+            .style_spans_for_region(&(at.saturating_sub(1)..at))
+            .into_iter()
+            .filter(|span| {
+                span.range.end == at
+                    && matches!(
+                        span.application,
+                        StyleApplication::Semantic(
+                            SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis
+                        )
+                    )
+            })
             .min_by_key(|span| span.range.start);
         if let Some(span) = span {
-            let body = document.projection().text_tree().slice(span.range.clone()).map_err(DocumentError::FormattedTextStorage)?;
-            let prefix = body.bytes().take_while(|b| matches!(b, b'*' | b'_')).count();
-            let suffix = body.bytes().rev().take_while(|b| matches!(b, b'*' | b'_')).count();
+            let body = document
+                .projection()
+                .text_tree()
+                .slice(span.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let prefix = body
+                .bytes()
+                .take_while(|b| matches!(b, b'*' | b'_'))
+                .count();
+            let suffix = body
+                .bytes()
+                .rev()
+                .take_while(|b| matches!(b, b'*' | b'_'))
+                .count();
             if prefix > 0 && prefix == suffix && body[..prefix].contains('_') {
-                let source = document.projection().source_range(span.range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                let source = document
+                    .projection()
+                    .source_range(span.range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
                 let marker = "*".repeat(prefix);
-                return Ok(Some(super::super::html_typing::Insertion { source, source_caret: at + text.len(),
-                    syntax: format!("{marker}{}{marker}{text}", &body[prefix..body.len() - suffix]) }));
+                return Ok(Some(super::super::replacement_context::Insertion {
+                    source,
+                    source_caret: at + text.len(),
+                    syntax: format!(
+                        "{marker}{}{marker}{text}",
+                        &body[prefix..body.len() - suffix]
+                    ),
+                }));
             }
         }
     }
@@ -265,7 +332,8 @@ pub(super) fn insertion(
             let rest = characters.as_str();
             let mut body = format!("&#{};", first as u32);
             if let Some((last_at, last)) = rest.char_indices().next_back() {
-                body.push_str(&rest[..last_at]); body.push_str(&format!("&#{};", last as u32));
+                body.push_str(&rest[..last_at]);
+                body.push_str(&format!("&#{};", last as u32));
             }
             escaped = body;
         }
@@ -273,7 +341,7 @@ pub(super) fn insertion(
     let source = projection
         .source_insertion_point(point, true)
         .ok_or(DocumentError::AmbiguousProjection)?;
-    Ok(Some(super::super::html_typing::Insertion {
+    Ok(Some(super::super::replacement_context::Insertion {
         source: source..source,
         source_caret: point + prefix.len() + escaped.len(),
         syntax: format!("{prefix}{escaped}{suffix}"),

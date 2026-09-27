@@ -1632,9 +1632,9 @@ mod tests {
                 format!("> {}", "AV fi word ".repeat(7_000)),
             ),
             (
-                Format::Html,
+                Format::Rtf,
                 format!(
-                    "<p style=\"font-size:20pt;text-align:center;margin-left:12pt\">{}</p>",
+                    r"{{\rtf1\ansi\fs40\qc\li240 {}}}",
                     "AV fi word ".repeat(7_000)
                 ),
             ),

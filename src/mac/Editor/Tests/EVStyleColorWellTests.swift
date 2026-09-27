@@ -12,7 +12,7 @@ final class EVStyleColorWellTests: XCTestCase {
         let custom = EVStyleColor(red: 0.12345679, green: 0.25, blue: 0.5, alpha: 0.4)
         XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(custom)))
         let before = try backend.styleSheetSnapshot()
-        let bytes = try backend.serializedSource(typeName: EVDocument.htmlType)
+        let bytes = try backend.serializedSource(typeName: EVDocument.markdownType)
         let well = try colorWell("Text color", in: editor.view)
         NSColorPanel.shared.color = .yellow
 
@@ -21,7 +21,7 @@ final class EVStyleColorWellTests: XCTestCase {
         try assertColor(well.color, equals: custom)
         try openColorPanel(well)
         XCTAssertEqual(try backend.styleSheetSnapshot(), before)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), bytes)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), bytes)
 
         well.dismissColorControls()
         surface.perform(menuCommand: .undo, sender: nil)
@@ -200,12 +200,12 @@ final class EVStyleColorWellTests: XCTestCase {
         }
     }
 
-    private func makeEditor(typeName requestedTypeName: String? = nil, source: String = "<p>Text</p>") throws
+    private func makeEditor(typeName requestedTypeName: String? = nil, source: String = "Text") throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, NSWindow) {
         closeColorPanel()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-color-panel-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let typeName = requestedTypeName ?? EVDocument.htmlType
+        let typeName = requestedTypeName ?? EVDocument.markdownType
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(source.utf8), typeName: typeName)

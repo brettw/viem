@@ -240,8 +240,8 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         record(&mut scratch, renumbered, &mut sources, &mut formatted)?;
-        let patches = sources.source_patches(&scratch.state().source)?;
-        let edits = formatted.formatted_edits(&scratch)?;
+        let patches = sources.source_patches();
+        let edits = formatted.formatted_edits();
         let mut result = self.prepare_text_edits_with_patches(edits, Some(patches))?;
         let PreparedPublication::State(candidate) = &result.publication else {
             return Err(DocumentError::VerificationFailed.into());

@@ -175,7 +175,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             _ = try prepared.setScale(CGFloat(viewport.scale))
             if replacement.sourceFormat == backend.sourceFormat {
                 try prepared.setLineMode(session.lineMode())
-                if replacement.sourceFormat == .markdownSource || replacement.sourceFormat == .htmlSource {
+                if replacement.sourceFormat == .markdownSource {
                     try prepared.setParagraphFlow(session.paragraphFlow())
                 }
             }
@@ -608,6 +608,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
+    public func htmlExportData() async throws -> Data {
+        guard let session else { throw EVCoreFrontendError.unavailableLayout }
+        return try await session.htmlExportData()
+    }
+
     public func perform(statusOption: EVStatusBarOption) {
         guard acceptCompletionForNativeInput() else { return }
         guard let session else { return }
@@ -615,7 +620,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         performInput {
             switch statusOption {
             case let .lineMode(mode): try session.setLineMode(mode)
-            case let .format(format): _ = try session.setFormat(format, expected: expected)
+            case let .format(format):
+                _ = try session.setFormat(format, expected: expected)
             }
         }
     }
@@ -716,10 +722,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try session.setWrap(!self.wrapEnabled) }
         case .flowParagraphs:
             performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
-        case .includeStyleDefinitionsInFile:
-            let expected = documentState
-            let enabled = expected.flags & UInt32(VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) == 0
-            performInput { _ = try session.setIncludeStyleDefinitionsInFile(enabled, expected: expected) }
         case .lineEndingUnix:
             setFileFormat(UInt32(VIEM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
@@ -784,6 +786,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.save(sender)
         case .saveAs:
             (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.saveAs(sender)
+        case .exportHTML:
+            (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.exportHTML(from: self)
         case .pageSetup:
             NSPageLayout().runModal()
         case .printDocument:
@@ -825,7 +829,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             listStylePresentation(menuCommand)
         case .increaseIndent, .decreaseIndent:
             listIndentPresentation(unindent: menuCommand == .decreaseIndent)
-        case .save, .saveAs, .pageSetup,
+        case .save, .saveAs, .exportHTML, .pageSetup,
              .selectAll, .selectWord, .selectSentence, .selectParagraph,
              .selectHardLine, .selectVisualRow, .find, .findAndReplace,
              .findNext, .findPrevious:
@@ -857,13 +861,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
         case .flowParagraphs:
-            EVMenuItemPresentation(isEnabled: [.markdownSource, .htmlSource].contains(backend.sourceFormat), state: (try? session?.paragraphFlow()) == true ? .on : .off)
-        case .includeStyleDefinitionsInFile:
-            EVMenuItemPresentation(
-                isEnabled: [.html, .htmlSource].contains(backend.sourceFormat)
-                    && documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
-                state: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS) != 0 ? .on : .off
-            )
+            EVMenuItemPresentation(isEnabled: backend.sourceFormat == .markdownSource, state: (try? session?.paragraphFlow()) == true ? .on : .off)
         case .lineEndingUnix:
             fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:

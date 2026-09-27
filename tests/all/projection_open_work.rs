@@ -1,5 +1,5 @@
 use viem_core::document::{
-    Document, Encoding, Format, ModelRequest, ProjectionWorkScope, TextEdit,
+    Document, Encoding, Format, ModelRequest, ProjectionWorkScope,
 };
 
 fn encode_with_bom(text: &str, encoding: Encoding) -> Vec<u8> {
@@ -86,17 +86,16 @@ fn large_open_reports_one_linear_decode_pass() {
 }
 
 #[test]
-fn full_projection_fallback_accounts_for_one_candidate_decode() {
+fn format_reinterpretation_accounts_for_one_candidate_decode() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
-        // Literal newline edits now use regional projection. Use a rich
-        // adapter here to keep exercising the full-candidate decode path.
-        let source = encode_with_bom("<pre>alpha\nbeta</pre>", encoding);
-        let document = Document::from_bytes(source, encoding, Format::Html).unwrap();
+        let source = encode_with_bom("# alpha\n\nbeta", encoding);
+        let document = Document::from_bytes(source, encoding, Format::PlainText).unwrap();
         let prepared = document
-            .prepare_model_request(ModelRequest::ApplyTextEdits {
+            .prepare_model_request(ModelRequest::SetFormat {
                 document: document.id(),
                 revision: document.revision(),
-                edits: vec![TextEdit::new(5..5, "\nnew")],
+                target: Format::Markdown,
+                operation: viem_core::document::FormatOperation::Reinterpret,
             })
             .unwrap();
         let summary = prepared.summary();

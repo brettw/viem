@@ -1,5 +1,9 @@
 # Large-document editing and scrolling latency
 
+Historical validation: HTML editing modes referenced below have since been
+removed. HTML files now open in Code.
+
+
 This report records the interactive-latency work on the portable core for
 large documents with complex formatting and syntax highlighting: what the probe
 measures, what it found, what changed, and the before/after numbers.

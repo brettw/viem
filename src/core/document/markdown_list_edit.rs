@@ -22,7 +22,6 @@ impl Document {
         self.prepare_reprojected_source_patches(patches)
     }
 
-
     /// Source-visible list authoring uses the parsed item's owner, including
     /// continuation paragraphs, rather than recognizing only a literal `1. `.
     /// `open` distinguishes o/O from Enter: opening never exits an empty item.
@@ -36,9 +35,19 @@ impl Document {
             return Ok(None);
         }
         let blocks = self.projection().list_indentation_blocks(true);
-        let Some(index) = blocks.index_touching_point(origin) else { return Ok(None); };
-        let Some(block) = blocks.get(index) else { return Ok(None); };
-        let BlockKind::ListItem { ordered, ordinal, level, .. } = block.kind else {
+        let Some(index) = blocks.index_touching_point(origin) else {
+            return Ok(None);
+        };
+        let Some(block) = blocks.get(index) else {
+            return Ok(None);
+        };
+        let BlockKind::ListItem {
+            ordered,
+            ordinal,
+            level,
+            ..
+        } = block.kind
+        else {
             return Ok(None);
         };
         let key = u16::from(level) + 1;
@@ -46,12 +55,21 @@ impl Document {
         let owner = loop {
             let Some(found) = blocks.find_navigation(0..end, true, |summary| {
                 summary.minimum < key || summary.minimum_start <= key
-            }) else { return Ok(None); };
-            let Some(owner) = blocks.get(found) else { return Ok(None); };
+            }) else {
+                return Ok(None);
+            };
+            let Some(owner) = blocks.get(found) else {
+                return Ok(None);
+            };
             // Quote-only separator rows do not end an item's ownership of
             // the indented continuation paragraph after them.
-            if (owner.style.0 == "Block quote" || owner.quote_depth > 0) && owner.kind == BlockKind::Paragraph {
-                let text = self.projection().text_tree().slice(owner.range.clone())
+            if (owner.style.0 == "Block quote" || owner.quote_depth > 0)
+                && owner.kind == BlockKind::Paragraph
+            {
+                let text = self
+                    .projection()
+                    .text_tree()
+                    .slice(owner.range.clone())
                     .map_err(DocumentError::FormattedTextStorage)?;
                 let quote = super::super::markdown_quotes::prefix(&text);
                 if quote > 0 && text[quote..].trim().is_empty() {
@@ -61,16 +79,23 @@ impl Document {
             }
             break owner;
         };
-        if !matches!(owner.kind, BlockKind::ListItem { level: owner_level, .. } if owner_level == level) {
+        if !matches!(owner.kind, BlockKind::ListItem { level: owner_level, .. } if owner_level == level)
+        {
             return Ok(None);
         }
-        let marker_line = self.projection().hard_line_at_offset(owner.range.start)
+        let marker_line = self
+            .projection()
+            .hard_line_at_offset(owner.range.start)
             .and_then(|index| self.projection().hard_line_range(index))
             .ok_or(DocumentError::VerificationFailed)?;
-        let text = self.projection().text_tree().slice(marker_line.clone())
+        let text = self
+            .projection()
+            .text_tree()
+            .slice(marker_line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
         let quote = super::super::markdown_quotes::prefix(&text);
-        let Some(width) = super::super::markdown_blocks::marker_prefix_length(&text[quote..]) else {
+        let Some(width) = super::super::markdown_blocks::marker_prefix_length(&text[quote..])
+        else {
             return Ok(None);
         };
         let prefix_end = quote + width;
@@ -78,35 +103,58 @@ impl Document {
             return Ok(None);
         }
         if open.is_none() && origin > marker_line.end {
-            let row = self.projection().hard_line_at_offset(origin)
+            let row = self
+                .projection()
+                .hard_line_at_offset(origin)
                 .and_then(|line| self.projection().hard_line_range(line))
                 .ok_or(DocumentError::VerificationFailed)?;
-            let text = self.projection().text_tree().slice(row.clone())
+            let text = self
+                .projection()
+                .text_tree()
+                .slice(row.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
             let quote = super::super::markdown_quotes::prefix(&text);
-            if at < row.start + quote { return Ok(None); }
+            if at < row.start + quote {
+                return Ok(None);
+            }
         }
-        if open.is_none() && at <= marker_line.end && block.range.start == owner.range.start
+        if open.is_none()
+            && at <= marker_line.end
+            && block.range.start == owner.range.start
             && text[prefix_end..].trim().is_empty()
         {
             // The quote adapter owns the supporting quote-only separator rows.
             return Ok((quote == 0).then(|| TextEdit::new(marker_line, "")));
         }
-        let start = quote + text[quote..].len() - text[quote..].trim_start_matches([' ', '\t']).len();
+        let start =
+            quote + text[quote..].len() - text[quote..].trim_start_matches([' ', '\t']).len();
         let digits = text[start..].bytes().take_while(u8::is_ascii_digit).count();
         let after = open.unwrap_or(true);
-        let number = if after { ordinal.saturating_add(1) } else { ordinal };
+        let number = if after {
+            ordinal.saturating_add(1)
+        } else {
+            ordinal
+        };
         let mut marker = if ordered {
-            format!("{}{number}{}", &text[..start], &text[start + digits..prefix_end])
+            format!(
+                "{}{number}{}",
+                &text[..start],
+                &text[start + digits..prefix_end]
+            )
         } else {
             text[..prefix_end].to_owned()
         };
-        if !marker.ends_with([' ', '\t']) { marker.push(' '); }
-        Ok(Some(TextEdit::new(at..at, if after {
-            format!("\n{marker}")
-        } else {
-            format!("{marker}\n")
-        })))
+        if !marker.ends_with([' ', '\t']) {
+            marker.push(' ');
+        }
+        Ok(Some(TextEdit::new(
+            at..at,
+            if after {
+                format!("\n{marker}")
+            } else {
+                format!("{marker}\n")
+            },
+        )))
     }
 
     pub(crate) fn prepared_markdown_source_open_cursor(
@@ -116,29 +164,49 @@ impl Document {
         origin: usize,
         after: bool,
     ) -> Result<Option<usize>, DocumentError> {
-        let list = self.markdown_source_list_edit(at, origin, Some(after))?.is_some();
-        if !list && self.markdown_source_quote_code_open(at, origin, after)?.is_none() {
+        let list = self
+            .markdown_source_list_edit(at, origin, Some(after))?
+            .is_some();
+        if !list
+            && self
+                .markdown_source_quote_code_open(at, origin, after)?
+                .is_none()
+        {
             return Ok(None);
         }
-        let before = prepared.text_position_map().map_text_point(
-            self.text_point(at)?, Association::BeforeInsertion, BoundaryAffinity::Downstream,
-            DeletionRecovery::PreferFollowingThenPreceding,
-        ).map_err(|_| DocumentError::AmbiguousProjection)?
-            .value().ok_or(DocumentError::AmbiguousProjection)?.offset();
+        let before = prepared
+            .text_position_map()
+            .map_text_point(
+                self.text_point(at)?,
+                Association::BeforeInsertion,
+                BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )
+            .map_err(|_| DocumentError::AmbiguousProjection)?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
         let PreparedPublication::State(state) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed);
         };
         let point = before + usize::from(after);
-        let line = state.projection.hard_line_at_offset(point)
+        let line = state
+            .projection
+            .hard_line_at_offset(point)
             .and_then(|index| state.projection.hard_line_range(index))
             .ok_or(DocumentError::VerificationFailed)?;
-        let text = state.projection.text_tree().slice(line.clone())
+        let text = state
+            .projection
+            .text_tree()
+            .slice(line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
         let quote = super::super::markdown_quotes::prefix(&text);
         let width = if list {
             super::super::markdown_blocks::marker_prefix_length(&text[quote..])
                 .ok_or(DocumentError::VerificationFailed)?
-        } else { 0 };
+        } else {
+            0
+        };
         Ok(Some(line.start + quote + width))
     }
 
@@ -148,16 +216,34 @@ impl Document {
         origin: usize,
         after: bool,
     ) -> Result<Option<TextEdit>, DocumentError> {
-        if self.format() != Format::MarkdownSource { return Ok(None); }
-        let Some(block) = edit_boundary::paragraph_at(self, origin)? else { return Ok(None); };
-        if !super::super::markdown_quotes::is_fenced_block(self, &block)? { return Ok(None); }
-        let row = self.projection().hard_line_at_offset(origin)
+        if self.format() != Format::MarkdownSource {
+            return Ok(None);
+        }
+        let Some(block) = edit_boundary::paragraph_at(self, origin)? else {
+            return Ok(None);
+        };
+        if !super::super::markdown_quotes::is_fenced_block(self, &block)? {
+            return Ok(None);
+        }
+        let row = self
+            .projection()
+            .hard_line_at_offset(origin)
             .and_then(|line| self.projection().hard_line_range(line))
             .ok_or(DocumentError::VerificationFailed)?;
-        let text = self.projection().text_tree().slice(row)
+        let text = self
+            .projection()
+            .text_tree()
+            .slice(row)
             .map_err(DocumentError::FormattedTextStorage)?;
         let prefix = &text[..super::super::markdown_quotes::prefix(&text)];
-        Ok(Some(TextEdit::new(at..at, if after { format!("\n{prefix}") } else { format!("{prefix}\n") })))
+        Ok(Some(TextEdit::new(
+            at..at,
+            if after {
+                format!("\n{prefix}")
+            } else {
+                format!("{prefix}\n")
+            },
+        )))
     }
 
     /// Removing an item's label releases its continuation paragraphs too.
@@ -197,13 +283,25 @@ impl Document {
                 })
             })
             .collect::<Vec<_>>();
-        if selected.is_empty() { return Ok(None); }
-        if self.format() == Format::Markdown && !selected.iter().any(|item| {
-            item.paragraph_ids.len() > 1 || !item.child_lists.is_empty()
-                || self.projection().source_range(blocks[block_indices[&item.paragraph_id]].range.clone())
-                    .is_some_and(|source| self.state().source_hard_lines.line_at_offset(source.start)
-                        != self.state().source_hard_lines.line_at_offset(source.end.saturating_sub(1).max(source.start)))
-        }) {
+        if selected.is_empty() {
+            return Ok(None);
+        }
+        if self.format() == Format::Markdown
+            && !selected.iter().any(|item| {
+                item.paragraph_ids.len() > 1
+                    || !item.child_lists.is_empty()
+                    || self
+                        .projection()
+                        .source_range(blocks[block_indices[&item.paragraph_id]].range.clone())
+                        .is_some_and(|source| {
+                            self.state().source_hard_lines.line_at_offset(source.start)
+                                != self
+                                    .state()
+                                    .source_hard_lines
+                                    .line_at_offset(source.end.saturating_sub(1).max(source.start))
+                        })
+            })
+        {
             return Ok(None);
         }
         let mut patches = Vec::new();
@@ -248,7 +346,10 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let mut code_sources = Vec::new();
             for id in &ids {
-                if let Some(code) = crate::document::markdown_indented_code::source_block(self, &blocks[block_indices[id]])? {
+                if let Some(code) = crate::document::markdown_indented_code::source_block(
+                    self,
+                    &blocks[block_indices[id]],
+                )? {
                     code_sources.push(code.source);
                 }
             }
@@ -271,13 +372,22 @@ impl Document {
                         column + if byte == b'\t' { 4 - column % 4 } else { 1 }
                     });
                     prefix
-                } else if code_sources.iter().any(|code| code.start <= line.start && line.start <= code.end)
-                    && body.bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).any(|byte| byte == b'\t') {
+                } else if code_sources
+                    .iter()
+                    .any(|code| code.start <= line.start && line.start <= code.end)
+                    && body
+                        .bytes()
+                        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                        .any(|byte| byte == b'\t')
+                {
                     // Moving a tab to another column changes its width. Rewrite
                     // the indentation as spaces to retain every residual column.
                     let mut columns: usize = 0;
-                    let count = body.bytes().take_while(|byte| matches!(byte, b' ' | b'\t'))
-                        .inspect(|byte| columns += if *byte == b'\t' { 4 - columns % 4 } else { 1 }).count();
+                    let count = body
+                        .bytes()
+                        .take_while(|byte| matches!(byte, b' ' | b'\t'))
+                        .inspect(|byte| columns += if *byte == b'\t' { 4 - columns % 4 } else { 1 })
+                        .count();
                     replacement = " ".repeat(columns.saturating_sub(item_indent));
                     count
                 } else {
@@ -299,7 +409,10 @@ impl Document {
                             .encode_fragment(&decoded.text[..quote])?
                             .len();
                     let count = self.encoding().encode_fragment(&body[..remove])?.len();
-                    patches.push(SourcePatch::primary(start..start + count, self.encoding().encode_fragment(&replacement)?));
+                    patches.push(SourcePatch::primary(
+                        start..start + count,
+                        self.encoding().encode_fragment(&replacement)?,
+                    ));
                 }
             }
             patches.extend(super::markdown_block_styles::support_patches(
@@ -329,24 +442,32 @@ impl Document {
             }
         }
         let edits = if self.format().is_source_view() {
-            combined.iter().filter(|patch| !patch.range.is_empty())
+            combined
+                .iter()
+                .filter(|patch| !patch.range.is_empty())
                 .map(|patch| {
                     let boundary = |at, affinity| {
-                        self.projection().map_source_boundary(self.revision(), at, affinity)
+                        self.projection()
+                            .map_source_boundary(self.revision(), at, affinity)
                             .map(|point| point.formatted_offset)
                             .map_err(|_| DocumentError::AmbiguousProjection)
                     };
                     let start = boundary(patch.range.start, BoundaryAffinity::Downstream)?;
                     let end = boundary(patch.range.end, BoundaryAffinity::Upstream)?;
-                    Ok(TextEdit::new(start..end, self.encoding().decode_region(&patch.replacement, patch.range.start)?.text))
-                }).collect::<Result<Vec<_>, DocumentError>>()?
+                    Ok(TextEdit::new(
+                        start..end,
+                        self.encoding()
+                            .decode_region(&patch.replacement, patch.range.start)?
+                            .text,
+                    ))
+                })
+                .collect::<Result<Vec<_>, DocumentError>>()?
         } else {
             Vec::new()
         };
-        Ok(Some(self.prepare_text_edits_with_patches(
-            edits,
-            Some(combined),
-        )?))
+        Ok(Some(
+            self.prepare_text_edits_with_patches(edits, Some(combined))?,
+        ))
     }
 
     pub(crate) fn markdown_source_empty_enter_edit(
@@ -483,8 +604,8 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let block = edit_boundary::paragraph_at(self, at)?
-            .ok_or(DocumentError::VerificationFailed)?;
+        let block =
+            edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
         if matches!(block.kind, BlockKind::ListItem { .. }) {
             self.prepare_markdown_list_split(at, false)
         } else {
@@ -519,8 +640,14 @@ impl Document {
             return self.prepare_text_edits_with_patches(vec![edit], None);
         }
         if self.format() == crate::document::Format::MarkdownSource
-            && !self.projection().blocks_for_region(&(at..at)).iter()
-                .any(|block| at < block.range.end && edit_boundary::is_code_paragraph(self, block).unwrap_or(false))
+            && !self
+                .projection()
+                .blocks_for_region(&(at..at))
+                .iter()
+                .any(|block| {
+                    at < block.range.end
+                        && edit_boundary::is_code_paragraph(self, block).unwrap_or(false)
+                })
         {
             let mut physical_breaks = 0;
             let mut visible_breaks = 0usize;
@@ -589,9 +716,15 @@ impl Document {
         following_override: Option<StyleId>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let support = self.markdown_structural_support(&[TextEdit::new(at..at, "\n")])?;
-        if !support.is_empty() { return self.prepare_markdown_supporting_patches(support, |doc| doc.prepare_open_paragraph_with_following(at, origin, after, following_override)); }
-        let origin = edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
-        let block = edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
+        if !support.is_empty() {
+            return self.prepare_markdown_supporting_patches(support, |doc| {
+                doc.prepare_open_paragraph_with_following(at, origin, after, following_override)
+            });
+        }
+        let origin =
+            edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
+        let block =
+            edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
         let next = following_override.unwrap_or_else(|| {
             self.projection()
                 .style_sheet()
@@ -609,10 +742,12 @@ impl Document {
             } else {
                 scratch.prepare_rich_list_enter_with_empty_policy(at, false)?
             }
-        } else if self.format() == Format::Html {
-            scratch.prepare_html_paragraph_split(at, &block, &block.style)?
-        } else if self.format() == Format::Markdown && (block.style.0 == "Block quote" || block.quote_depth > 0) {
-            scratch.prepare_markdown_quote_enter(at)?.ok_or(DocumentError::AmbiguousProjection)?
+        } else if self.format() == Format::Markdown
+            && (block.style.0 == "Block quote" || block.quote_depth > 0)
+        {
+            scratch
+                .prepare_markdown_quote_enter(at)?
+                .ok_or(DocumentError::AmbiguousProjection)?
         } else {
             scratch.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], None)?
         };
@@ -660,7 +795,7 @@ impl Document {
                 record_open_paragraph_step(&mut scratch, styled, &mut sources)?;
             }
         }
-        let patches = sources.source_patches(&scratch.state().source)?;
+        let patches = sources.source_patches();
         // Keep the authored break distinct from adjacent support replacements.
         // Coalescing them makes BeforeInsertion cross the break for O when an
         // old collapsed space is replaced by NBSP at that same boundary.
@@ -711,7 +846,8 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if crate::document::markdown_indented_code::source_block(self, block)?.is_some() {
             return self.prepare_with_fenced_indented_code(std::slice::from_ref(block), |doc| {
-                let block = edit_boundary::paragraph_at(doc, at)?.ok_or(DocumentError::AmbiguousProjection)?;
+                let block = edit_boundary::paragraph_at(doc, at)?
+                    .ok_or(DocumentError::AmbiguousProjection)?;
                 doc.prepare_markdown_code_open(at, &block, after)
             });
         }
@@ -734,13 +870,24 @@ impl Document {
         let (range, syntax) = if after && at == block.range.end {
             let syntax = if closed {
                 let count = if at < self.text().len() {
-                    let next = self.projection().source_insertion_point(at + 1, true)
+                    let next = self
+                        .projection()
+                        .source_insertion_point(at + 1, true)
                         .ok_or(DocumentError::AmbiguousProjection)?;
-                    let bytes = self.state().source.bytes_in(closing_end..next)
+                    let bytes = self
+                        .state()
+                        .source
+                        .bytes_in(closing_end..next)
                         .ok_or(DocumentError::AmbiguousProjection)?;
                     let decoded = self.encoding().decode_region(&bytes, closing_end)?;
-                    (4usize).saturating_sub(super::normalize(&decoded, self.file_format()).endings.len()).max(1)
-                } else { 2 };
+                    (4usize)
+                        .saturating_sub(
+                            super::normalize(&decoded, self.file_format()).endings.len(),
+                        )
+                        .max(1)
+                } else {
+                    2
+                };
                 ending.repeat(count)
             } else {
                 format!("{ending}{closing_text}{ending}{ending}")
@@ -748,13 +895,22 @@ impl Document {
             (closing_end..closing_end, syntax)
         } else if !after && at == block.range.start {
             let count = if at > 0 {
-                let previous = self.projection().source_insertion_point(at - 1, false)
+                let previous = self
+                    .projection()
+                    .source_insertion_point(at - 1, false)
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                let bytes = self.state().source.bytes_in(previous..opening.start)
+                let bytes = self
+                    .state()
+                    .source
+                    .bytes_in(previous..opening.start)
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 let decoded = self.encoding().decode_region(&bytes, previous)?;
-                (4usize).saturating_sub(super::normalize(&decoded, self.file_format()).endings.len()).max(1)
-            } else { 2 };
+                (4usize)
+                    .saturating_sub(super::normalize(&decoded, self.file_format()).endings.len())
+                    .max(1)
+            } else {
+                2
+            };
             (opening.start..opening.start, ending.repeat(count))
         } else {
             let source_at = self
@@ -856,8 +1012,9 @@ impl Document {
         let decoded = self.encoding().decode_region(&bytes, source_line.start)?;
         let quote = crate::document::markdown_quotes::prefix(&decoded.text);
         let quote_prefix = &decoded.text[..quote];
-        let prefix_len = crate::document::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix_len =
+            crate::document::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
+                .ok_or(DocumentError::AmbiguousProjection)?;
         let prefix = &decoded.text[quote..quote + prefix_len];
         let indentation_len = prefix.len() - prefix.trim_start_matches([' ', '\t']).len();
         let indentation = &prefix[..indentation_len];
@@ -882,17 +1039,30 @@ impl Document {
         let mut range = source_at..source_at;
         let mut replacement = replacement;
         if at == block.range.start && block.id != first_paragraph.id {
-            let current = self.state().source_hard_lines.line_at_offset(source_at)
+            let current = self
+                .state()
+                .source_hard_lines
+                .line_at_offset(source_at)
                 .and_then(|line| self.state().source_hard_lines.get(line))
                 .ok_or(DocumentError::AmbiguousProjection)?;
             range.start = current.start;
-            let label = if ordered { format!("{ordinal}{delimiter} ") } else { format!("{delimiter} ") };
-            let mut prefix = self.encoding().encode_fragment(&format!("{quote_prefix}{indentation}{label}"))?;
+            let label = if ordered {
+                format!("{ordinal}{delimiter} ")
+            } else {
+                format!("{delimiter} ")
+            };
+            let mut prefix = self
+                .encoding()
+                .encode_fragment(&format!("{quote_prefix}{indentation}{label}"))?;
             prefix.extend(replacement);
             replacement = prefix;
         }
         let mut patches = vec![SourcePatch::primary(range, replacement)];
-        self.preserve_markdown_edit_boundaries(std::slice::from_ref(&edit), std::iter::once(&edit.range), &mut patches)?;
+        self.preserve_markdown_edit_boundaries(
+            std::slice::from_ref(&edit),
+            std::iter::once(&edit.range),
+            &mut patches,
+        )?;
         self.prepare_text_edits_with_patches(vec![edit], Some(patches))
     }
 }

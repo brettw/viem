@@ -6,34 +6,10 @@ use viem_core::{Core, CoreEvent};
 #[test]
 fn quote_menu_at_end_inserts_an_empty_paragraph_and_preserves_existing_prose() {
     for (format, source, before, after) in [
-        (
-            Format::Html,
-            "<p data-keep='yes'>one <b>two</b></p><!--keep-->",
-            "one two",
-            "one two\n",
-        ),
-        (
-            Format::Html,
-            "<p>one<br>two<br></p><!--keep-->",
-            "one\ntwo\n",
-            "one\ntwo\n",
-        ),
-        (
-            Format::Html,
-            "<p style='font-size:22pt;color:red'>one<br>two<br></p>",
-            "one\ntwo\n",
-            "one\ntwo\n",
-        ),
         (Format::Markdown, "one **two**", "one two", "one two\n"),
         (Format::Markdown, "one\\\ntwo", "one\ntwo", "one\ntwo\n"),
         (Format::Markdown, "one<br>two<br>", "one\ntwo\n", "one\ntwo\n"),
         (Format::Markdown, "one\n", "one", "one\n"),
-        (
-            Format::Html,
-            "<!doctype html><html><head><title>keep</title></head><body><p>one</p></body></html>",
-            "one",
-            "one\n",
-        ),
     ] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -96,9 +72,7 @@ fn quote_menu_at_end_inserts_an_empty_paragraph_and_preserves_existing_prose() {
 #[test]
 fn quote_menu_uses_an_existing_empty_paragraph() {
     for (format, source, before) in [
-        (Format::Html, "<p>Words</p><p></p>", "Words\n"),
         (Format::Markdown, "Words\n\n", "Words\n"),
-        (Format::Html, "", ""),
         (Format::Markdown, "", ""),
     ] {
         let mut core = Core::new(

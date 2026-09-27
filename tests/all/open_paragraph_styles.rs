@@ -27,7 +27,6 @@ fn styles(document: &Document) -> Vec<String> {
 #[test]
 fn opening_above_and_below_uses_the_originating_heading_following_style() {
     for (format, source, heading) in [
-        (Format::Html, "<h1>Title</h1><!--keep-->", "Heading1"),
         (Format::Markdown, "# Title", "Heading1"),
         (
             Format::Rtf,
@@ -67,7 +66,6 @@ fn opening_above_and_below_uses_the_originating_heading_following_style() {
 #[test]
 fn code_open_uses_following_prose_and_keeps_existing_code() {
     for (format, source) in [
-        (Format::Html, "<pre data-x='keep'>code</pre><!--tail-->"),
         (Format::Markdown, "```rust\ncode\n```"),
     ] {
         for (key, expected, expected_styles) in [
@@ -90,8 +88,6 @@ fn code_open_uses_following_prose_and_keeps_existing_code() {
 #[test]
 fn list_open_retains_item_style_including_empty_items() {
     for (format, source) in [
-        (Format::Html, "<ul><li>item</li></ul>"),
-        (Format::Html, "<ul><li></li></ul>"),
         (Format::Markdown, "- item"),
         (Format::Markdown, "- "),
         (Format::Rtf, r"{\rtf1{\*\pn\pnlvlblt{\pntxtb\bullet}}item}"),
@@ -125,7 +121,6 @@ fn list_open_retains_item_style_including_empty_items() {
 #[test]
 fn counted_open_and_dot_evaluate_each_new_paragraph_style_and_share_undo() {
     for (format, source, title, following) in [
-        (Format::Html, "<h1>Title</h1>", "Heading1", "Heading2"),
         (Format::Markdown, "# Title", "Heading1", "Heading2"),
         (
             Format::Rtf,
@@ -145,12 +140,7 @@ fn counted_open_and_dot_evaluate_each_new_paragraph_style_and_share_undo() {
                     .clone();
                 style.next_paragraph_style = Some(following.into());
                 let edit = StyleDefinitionEdit::UpdateBlock(style);
-                let intent = if format == Format::Html {
-                    StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-                        origin: StyleDefinitionOrigin::SourceBacked,
-                        edit,
-                    })
-                } else {
+                let intent = {
                     StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(edit))
                 };
                 document
@@ -202,7 +192,6 @@ fn counted_open_and_dot_evaluate_each_new_paragraph_style_and_share_undo() {
 #[test]
 fn open_from_a_middle_code_row_keeps_the_other_side_preformatted() {
     for (format, source) in [
-        (Format::Html, "<pre>one\ntwo</pre>"),
         (Format::Markdown, "```rust\none\ntwo\n```"),
     ] {
         let mut document = open(source, format);

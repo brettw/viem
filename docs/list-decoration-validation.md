@@ -1,5 +1,8 @@
 # WYSIWYG list decoration validation
 
+Historical validation: standalone HTML modes and their dedicated tests were
+subsequently removed. HTML-mode results below describe the earlier implementation.
+
 Validated September 6, 2026.
 
 ## Behavior

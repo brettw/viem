@@ -29,11 +29,6 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
             "Before.\n\n```\n  one\n\n  two\n```\n\nAfter.",
             32.,
         ),
-        (
-            Format::Html,
-            "<p>Before.</p><pre>  one\n\n  two</pre><p>After.</p>",
-            0.,
-        ),
     ] {
         let document = open(source, format);
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
@@ -87,12 +82,6 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
     }
     for (format, source, expected_before) in [
         (Format::Markdown, "Text", 11.),
-        (Format::Html, "<p>Text</p>", 11.),
-        (
-            Format::Html,
-            "<p style='margin-block-start:19pt'>Text</p>",
-            19.,
-        ),
     ] {
         let mut document = open(source, format);
         document
@@ -109,11 +98,14 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
 #[test]
 fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset() {
     for indent in [-10., 0., 10.] {
-        let source = format!("<ul><li style='text-indent:{indent}pt'>First words with enough text to wrap across several rows.</li></ul>");
-        let mut core = Core::new(open(&source, Format::Html));
-        let body = core.document().text().find("First").unwrap();
-        let view = core.add_view(MockTextMeasurementProvider::new(), 175., 800.);
-        let rows = &core.layout(view).unwrap().snapshot().unwrap().rows;
+        let document = open("- First words with enough text to wrap across several rows.", Format::Markdown);
+        let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        styles.paragraphs[0].first_line_indent = indent;
+        let body = document.text().find("First").unwrap();
+        let mut engine = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+        let mut view = viem_core::layout::ViewLayout::new(175., 800.);
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(), styles, &mut view).unwrap();
+        let rows = &view.snapshot().unwrap().rows;
         let body_x = rows[0]
             .clusters
             .iter()
@@ -125,7 +117,7 @@ fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset(
             "{indent}"
         );
     }
-    let document = open("<ul><li>Words</li></ul>", Format::Html);
+    let document = open("- Words", Format::Markdown);
     let projection = document.projection();
     let mut sheet = projection.style_sheet().clone();
     let mut style = sheet.block_style(&"BulletedList1".into()).unwrap().clone();
@@ -157,8 +149,6 @@ fn wrapped_list_labels_hang_and_end_of_row_is_stable_through_edit_and_undo() {
         (Format::Markdown, "1. First words on the source line\n   continuation words with enough text to wrap.\n2. Second item."),
         (Format::Markdown, "99) First words on the source line\n    continuation words with enough text to wrap.\n1) Second item."),
         (Format::Markdown, "- First words on the source line\n  continuation words with enough text to wrap.\n- Second item."),
-        (Format::Html, "<ol start='99'><li>First words on the source line\ncontinuation words with enough text to wrap.</li><li>Second item.</li></ol>"),
-        (Format::Html, "<ul><li>First words on the source line\ncontinuation words with enough text to wrap.</li><li>Second item.</li></ul>"),
     ] {
         let mut core = Core::new(open(source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 175., 800.);

@@ -197,6 +197,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             key: "s",
             modifiers: [.command, .shift]
         ))
+        menu.addItem(coreItem("Export…", command: .exportHTML))
         menu.addItem(documentItem(
             "Duplicate",
             action: #selector(NSDocument.duplicate(_:)),
@@ -220,11 +221,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         for (title, commands) in [
-            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown, .convertToHTML]),
-            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown, .reinterpretAsHTML]),
+            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown]),
+            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown]),
         ] {
             let formats = NSMenu(title: title)
-            let names = title == "Reinterpret as" ? ["Text", "Code", "Markdown", "HTML"] : ["Text", "Markdown", "HTML"]
+            let names = title == "Reinterpret as" ? ["Text", "Code", "Markdown"] : ["Text", "Markdown"]
             for (name, command) in zip(names, commands) {
                 formats.addItem(coreItem(name, command: command))
             }
@@ -471,7 +472,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(coreItem("Edit Styles…", command: .editStyles,
             key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
         menu.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
-        menu.addItem(coreItem("Include style definitions in file", command: .includeStyleDefinitionsInFile))
         menu.addItem(.separator())
         menu.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
         return menu

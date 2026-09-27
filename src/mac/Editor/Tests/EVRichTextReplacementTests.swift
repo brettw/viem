@@ -12,7 +12,7 @@ import XCTest
         let configuration = EVConfigurationStore(directory: FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-replacement-\(UUID().uuidString)"), legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -26,7 +26,7 @@ import XCTest
     }
 
     func testNativeReplacementAndIMEUseFirstSelectedCharacterStyle() throws {
-        let source = "<p data-keep='yes'>baseparagraph <b>bold</b> baseparagraph</p><!--keep-->"
+        let source = #"{\rtf1{\pard baseparagraph {\b bold} baseparagraph}{\*\comment keep}}"#
         let original = "baseparagraph bold baseparagraph"
         for (selected, bold) in [("aph bold base", false), ("bold base", true),
                                  ("bold", true), ("ol", true), ("aph bold", false)] {
@@ -46,7 +46,7 @@ import XCTest
                 surface.refreshPresentation()
                 surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: range.location, length: 2))
                 let formatting = try session.selectedFormatting()
-                let replacedSource = try backend.serializedSource(typeName: EVDocument.htmlType)
+                let replacedSource = try backend.serializedSource(typeName: EVDocument.rtfType)
                 XCTAssertEqual(formatting[.characterBold], .boolean(bold), "\(selected), IME=\(composition)")
                 XCTAssertFalse(formatting.mixed.contains(.characterBold),
                                "\(selected), IME=\(composition): \(String(decoding: replacedSource, as: UTF8.self))")
@@ -59,45 +59,14 @@ import XCTest
                                    (original as NSString).replacingCharacters(in: range, with: "X"))
                     _ = try session.undo()
                 }
-                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8),
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8),
                                "\(selected), IME=\(composition)")
             }
         }
     }
 
-    func testVisualLineDeleteOfFinalWrappedHTMLRowPreservesEarlierTextAndUndo() throws {
-        for body in ["one two three four five six seven eight nine ten eleven twelve",
-                     "one two three <b>four five six seven</b> eight nine ten eleven twelve",
-                     "one two three four five six seven eight nine ten eleven twelve<br>"] {
-            let source = "<p data-keep='yes'>\(body)</p><!--keep-->"
-            let (backend, surface, session, window) = try fixture(source, width: 240)
-            defer { window.close() }
-            let original = try backend.formattedText()
-            let layout = try session.layoutExport()
-            let row = try XCTUnwrap(layout.rows.last { $0.text_end > $0.text_start })
-            XCTAssertGreaterThan(row.text_start, 0)
-            let geometry = try session.caretGeometry(offset: row.text_start,
-                affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: layout.info)
-            _ = try session.placeCursor(geometry.point, extendSelection: false)
-            _ = try session.sendText("V")
-            surface.refreshPresentation()
-            let selection = try XCTUnwrap(surface.selectedUTF8Range())
-            XCTAssertEqual(selection.lowerBound, Int(row.text_start))
-            var expected = Array(original.utf8)
-            expected.removeSubrange(selection)
-            _ = try session.sendText("d")
-            surface.refreshPresentation()
-            // HTML protects a retained space at the new paragraph edge as NBSP.
-            XCTAssertEqual(try backend.formattedText().replacingOccurrences(of: "\u{a0}", with: " "),
-                           String(decoding: expected, as: UTF8.self))
-            XCTAssertNil(surface.commandOutput)
-            _ = try session.undo()
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
-        }
-    }
-
     func testWholeDocumentReplacementRetainsParagraphStyleWithNativeAndIMEInput() throws {
-        let source = "<h2 style='text-align:center'>Heading</h2>"
+        let source = #"{\rtf1{\stylesheet{\s0 Paragraph;}{\s1\sbasedon0\snext0\b\fs44 Heading1;}{\s2\sbasedon0\snext0\b\fs40 Heading2;}{\s3\sbasedon0\snext0\b\fs36 Heading3;}{\s4\sbasedon0\snext0\b\fs32 Heading4;}{\s5\sbasedon0\snext0\b\fs28 Heading5;}{\s6\sbasedon0\snext0\b\fs24 Heading6;}}{\pard \s2 \qc Heading}}"#
         for composition in [false, true] {
             let (backend, surface, session, window) = try fixture(source)
             defer { window.close() }
@@ -112,18 +81,18 @@ import XCTest
             let formatting = try session.selectedFormatting()
             XCTAssertEqual(formatting[.paragraphAlignment],
                            .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
-            let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
-            XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("<h2"))
+            let saved = try backend.serializedSource(typeName: EVDocument.rtfType)
+            XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("\\s2"))
             XCTAssertNil(surface.commandOutput)
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.undo()
             if composition { _ = try session.undo() }
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
         }
     }
 
     func testWhitespaceReplacementPreservesStyleAndUndoWithNativeAndIMEInput() throws {
-        let source = "<p>A <b>B</b> C</p>\r\n<p>D</p>"
+        let source = #"{\rtf1{\pard A {\b B} C}\par {\pard D}}"#
         for composition in [false, true] {
             let (backend, surface, session, window) = try fixture(source)
             defer { window.close() }
@@ -144,7 +113,7 @@ import XCTest
             XCTAssertEqual(try session.selectedFormatting()[.characterBold], .boolean(true))
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.undo()
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
         }
     }
 

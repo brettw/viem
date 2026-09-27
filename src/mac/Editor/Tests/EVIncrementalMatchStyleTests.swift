@@ -19,8 +19,6 @@ final class EVIncrementalMatchStyleTests: XCTestCase {
             (EVDocument.plainTextType, "one two"),
             (EVDocument.markdownType, "one **two**"),
             (EVDocument.markdownSourceType, "one **two**"),
-            (EVDocument.htmlType, "<p>one <b>two</b></p>"),
-            (EVDocument.htmlSourceType, "<p>one <b>two</b></p>"),
             (EVDocument.rtfType, #"{\rtf1 one {\b two}}"#),
             (EVDocument.codeType, "one two"),
         ] {

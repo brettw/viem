@@ -8,7 +8,7 @@ import XCTest
 final class EVTypographyPanelTrackingTests: XCTestCase {
   func testColorsFollowCurrentForegroundAndBackgroundAfterCoalescingWithoutEditingSource() async throws {
     let surface = try makeSurface()
-    let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
     let panel = NSColorPanel.shared
     defer { panel.close() }
     select(0, in: surface)
@@ -22,13 +22,13 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(230))
     XCTAssertEqual(EVTypographyPanels.shared.synchronizationCount, before + 1)
     assertColor(panel.color, red: 0, green: 1, blue: 1)
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
     surface.perform(menuCommand: .textColor, sender: nil)
     assertColor(panel.color, red: 0, green: 0, blue: 1)
     select(0, in: surface)
     try await Task.sleep(for: .milliseconds(230))
     assertColor(panel.color, red: 1, green: 0, blue: 0)
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
   }
 
   func testColorGestureBeforeDelayUsesCurrentExactSelection() throws {
@@ -39,14 +39,14 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
     defer { NSColorPanel.shared.close() }
     select(1, in: surface)
     NSColorPanel.shared.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
-    XCTAssertEqual(try session.selectedTypography().foreground, EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1))
+    XCTAssertEqual(try session.selectedTypography().foreground, EVStyleColor(red: 64 / 255, green: 128 / 255, blue: 191 / 255, alpha: 1))
     select(0, in: surface)
     XCTAssertEqual(try session.selectedTypography().foreground, EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1))
   }
 
   func testFontPanelFollowsFamilyAndSize() async throws {
     let surface = try makeSurface()
-    let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
     select(0, in: surface)
     surface.perform(menuCommand: .showFonts, sender: nil)
     defer { NSFontManager.shared.fontPanel(false)?.close() }
@@ -55,7 +55,7 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
     try await Task.sleep(for: .milliseconds(230))
     XCTAssertEqual(NSFontManager.shared.selectedFont?.pointSize, 24)
     XCTAssertEqual(NSFontManager.shared.selectedFont?.familyName, "Helvetica")
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
   }
 
   func testClosedPanelStopsFollowing() async throws {
@@ -71,7 +71,7 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
 
   func testTransparentHighlightIsAnExplicitOverrideOfInheritedBackground() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("<p style='background-color:yellow'>text</p>".utf8), typeName: EVDocument.htmlType)
+    try backend.read(source: Data(#"{\rtf1{\colortbl;\red255\green255\blue0;}{\stylesheet{\s0\highlight1 Base;}}\s0 text}"#.utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     select(0, in: surface)
@@ -84,7 +84,7 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
 
   func testFontSizeGestureBeforeDelayUsesNewCaretFamilyAndPreservesSemanticBold() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("<p><span style='font-family:Georgia'>A</span><b style='font-family:Helvetica'>B</b></p>".utf8), typeName: EVDocument.htmlType)
+    try backend.read(source: Data(#"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}{\f3 Helvetica;}}{\pard {\f2 A}{\b \f3 B}}}"#.utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -99,7 +99,7 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
     XCTAssertNil(surface.commandOutput)
     let style = try session.selectedTypography()
     XCTAssertTrue(style.fontFamily.hasPrefix("Helvetica"))
-    XCTAssertEqual(style.size, 15)
+    XCTAssertEqual(style.size, 13)
     XCTAssertEqual(style.baseWeight, 400)
     XCTAssertTrue(style.bold)
     XCTAssertEqual(style.weight, 700)
@@ -107,7 +107,7 @@ final class EVTypographyPanelTrackingTests: XCTestCase {
 
   private func makeSurface() throws -> EVEditorSurfaceController {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("<p><span style='color:red;background-color:yellow;font-family:Georgia;font-size:16pt'>A</span><span style='color:blue;background-color:#00ffff;font-family:Helvetica;font-size:24pt'>B</span></p>".utf8), typeName: EVDocument.htmlType)
+    try backend.read(source: Data(#"{\rtf1{\fonttbl{\f0 Georgia;}{\f1 Helvetica;}}{\colortbl;\red255\green0\blue0;\red255\green255\blue0;\red0\green0\blue255;\red0\green255\blue255;}{\f0\cf1\highlight2\fs32 A}{\f1\cf3\highlight4\fs48 B}}"#.utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     return surface

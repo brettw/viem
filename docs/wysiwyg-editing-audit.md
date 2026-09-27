@@ -177,15 +177,8 @@ verification or committing a candidate with the wrong text would hide an editor
 defect and risk data loss. The former message describing this as an inability to
 preserve the format has been removed from both native frontends.
 
-## Performance followup
+## Historical scope
 
-The first replacement character's HTML scope capture currently decodes and
-tokenizes the source to recover exact inline wrappers and link attributes. This
-is confined to replacement boundaries and establishing subsequent typing context;
-normal continued typing does not retain that capture. A persistent source-scope
-index would avoid that document-sized scan for small replacements in very large
-HTML files.
-
-The proposed implementation stages, scope-index design, invalidation rules,
-instrumentation and acceptance tests are in
-[the HTML replacement performance plan](html-replacement-performance-plan.md).
+The HTML editing mode and its replacement scope index have been removed.
+HTML files now use Code; passive Markdown HTML and clipboard import retain
+separate semantic parsing. Earlier HTML editing results above are historical.

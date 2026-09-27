@@ -190,7 +190,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // Let the flyout finish restoring focus to its button first.
             DispatcherQueue.TryEnqueue(() => FocusEditor());
         };
-        foreach (uint f in new uint[] { 1, 7, 2, 5, 3, 6, 4 })
+        foreach (uint f in new uint[] { 1, 7, 2, 5, 4 })
         {
             var item = new MenuFlyoutItem { Text = CoreDocument.FormatName(f) };
             item.Click += (_, _) => { restoreEditorFocus = true; Run(() => View?.Format(f)); };

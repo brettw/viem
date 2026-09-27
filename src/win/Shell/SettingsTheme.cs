@@ -16,7 +16,7 @@ internal sealed partial class SettingsWindow
     private readonly NumberBox statusSize = new() { Minimum = 8, Maximum = 32, Width = 92, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
     private readonly TextBlock previewTitle = new() { Text = "A space for your words.", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
     private readonly TextBlock previewSelection = new() { Text = "Keep your own rhythm.", FontSize = 15, Padding = new(3, 1, 3, 1) };
-    private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     HTML", Padding = new(12, 5, 12, 5) };
+    private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };
     private readonly Border previewBody = new() { Height = 108 }, previewFooter = new(), selectionPaint = new(), caretPaint = new() { Width = 11, Height = 22, Margin = new(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly Button paper = new() { Content = "Paper", MinWidth = 96 }, midnight = new() { Content = "Midnight", MinWidth = 96 }, restore = new() { Content = "Restore Defaults" };
 

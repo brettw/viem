@@ -23,17 +23,6 @@ fn fragments(document: &Document, range: &Range<usize>) -> Vec<(Range<usize>, bo
     result
 }
 
-pub(super) fn html_source_runs(
-    document: &Document,
-    range: &Range<usize>,
-) -> Result<Vec<Range<usize>>, DocumentError> {
-    let mut result = Vec::new();
-    for (text, _) in fragments(document, range) {
-        result.extend(super::super::rich_text::text_source_runs(document, &text)?);
-    }
-    Ok(result)
-}
-
 pub(super) fn verify_assignment(
     before: &FormattedDocument,
     after: &FormattedDocument,
@@ -59,8 +48,11 @@ pub(super) fn verify_assignment(
         let new = after
             .selected_named_styles(at..at + 1, BoundaryAffinity::Downstream)
             .character;
-        let preserved_paragraph = preserve_code_paragraphs && before.blocks_for_region(&(at..at + 1))
-            .iter().any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+        let preserved_paragraph = preserve_code_paragraphs
+            && before
+                .blocks_for_region(&(at..at + 1))
+                .iter()
+                .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
         let expected = if range.contains(&at) && !preserved_paragraph {
             (!style.0.is_empty()).then(|| style.clone())
         } else {
@@ -231,35 +223,38 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
         if self.format().is_rich_text() {
-            if let Some(prepared) = self.prepare_with_materialized_style_boundaries(&range, |scratch| {
-                scratch.prepare_character_style_choice(range.clone(), style.clone())
-            })? {
+            if let Some(prepared) = self
+                .prepare_with_materialized_style_boundaries(&range, |scratch| {
+                    scratch.prepare_character_style_choice(range.clone(), style.clone())
+                })?
+            {
                 return Ok(prepared);
             }
         }
-        if self.format() == Format::HtmlSource {
-            let translated = super::super::html_source::translate_character_style_choice(
-                self,
-                &PersistedStyleIntent::AssignCharacterStyle {
-                    range: TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?,
-                    style,
-                },
-            )?;
-            return self.prepare_html_source_style_translation(translated, false);
-        }
+
         let original_range = range.clone();
         let mut scratch = self.scratch_document();
         let mut sources = super::replacement::PatchComposition::new(self.source_byte_len());
-        let mut formatted = super::replacement::PatchComposition::new(self.projection().text_tree().byte_len());
-        let publish = |scratch: &mut Document, prepared: PreparedModelTransaction,
-                       range: &mut Range<usize>, sources: &mut super::replacement::PatchComposition,
+        let mut formatted =
+            super::replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let publish = |scratch: &mut Document,
+                       prepared: PreparedModelTransaction,
+                       range: &mut Range<usize>,
+                       sources: &mut super::replacement::PatchComposition,
                        formatted: &mut super::replacement::PatchComposition|
          -> Result<(), ModelTransactionError> {
             let mapped = |at, association| -> Result<usize, ModelTransactionError> {
-                Ok(prepared.text_position_map().map_text_point(
-                    scratch.text_point(at)?, association, BoundaryAffinity::Downstream,
-                    DeletionRecovery::PreferFollowingThenPreceding,
-                )?.value().ok_or(DocumentError::AmbiguousProjection)?.offset())
+                Ok(prepared
+                    .text_position_map()
+                    .map_text_point(
+                        scratch.text_point(at)?,
+                        association,
+                        BoundaryAffinity::Downstream,
+                        DeletionRecovery::PreferFollowingThenPreceding,
+                    )?
+                    .value()
+                    .ok_or(DocumentError::AmbiguousProjection)?
+                    .offset())
             };
             *range = mapped(range.start, Association::AfterInsertion)?
                 ..mapped(range.end, Association::BeforeInsertion)?;
@@ -274,19 +269,44 @@ impl Document {
             let mut retained_traits = Vec::new();
             for trait_style in [SemanticInlineStyle::Strong, SemanticInlineStyle::Emphasis] {
                 loop {
-                    let Some(span) = scratch.projection().style_spans_for_region(&range).into_iter()
-                        .find(|span| span.application == StyleApplication::Semantic(trait_style)
-                            && span.range.start < range.end && range.start < span.range.end) else { break; };
+                    let Some(span) = scratch
+                        .projection()
+                        .style_spans_for_region(&range)
+                        .into_iter()
+                        .find(|span| {
+                            span.application == StyleApplication::Semantic(trait_style)
+                                && span.range.start < range.end
+                                && range.start < span.range.end
+                        })
+                    else {
+                        break;
+                    };
                     let selected = range.start.max(span.range.start)..range.end.min(span.range.end);
-                    let clear = if self.format() == Format::Markdown { span.range.clone() } else { selected.clone() };
-                    let prepared = scratch.prepare_typing_markdown_style(clear, trait_style, false)?;
+                    let clear = if self.format() == Format::Markdown {
+                        span.range.clone()
+                    } else {
+                        selected.clone()
+                    };
+                    let prepared =
+                        scratch.prepare_typing_markdown_style(clear, trait_style, false)?;
                     if prepared.summary.source_patches.is_empty() {
                         return Err(DocumentError::UnsupportedFormatting.into());
                     }
-                    publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+                    publish(
+                        &mut scratch,
+                        prepared,
+                        &mut range,
+                        &mut sources,
+                        &mut formatted,
+                    )?;
                     if self.format() == Format::Markdown {
-                        for retained in [span.range.start..selected.start, selected.end..span.range.end] {
-                            if retained.is_empty() { continue; }
+                        for retained in [
+                            span.range.start..selected.start,
+                            selected.end..span.range.end,
+                        ] {
+                            if retained.is_empty() {
+                                continue;
+                            }
                             retained_traits.push((retained, trait_style));
                         }
                     }
@@ -295,63 +315,108 @@ impl Document {
             // Restore retained flanks after removing every overlapping trait;
             // intermediate mixed runs of '*' otherwise have ambiguous nesting.
             for (retained, trait_style) in retained_traits {
-                let prepared = scratch.prepare_typing_markdown_style(retained, trait_style, true)?;
-                publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+                let prepared =
+                    scratch.prepare_typing_markdown_style(retained, trait_style, true)?;
+                publish(
+                    &mut scratch,
+                    prepared,
+                    &mut range,
+                    &mut sources,
+                    &mut formatted,
+                )?;
             }
         } else {
             let decoded = self.encoding().decode(&self.source_bytes())?;
             let input = normalize(&decoded, self.file_format());
-            let clear = super::super::style::CHARACTER_STYLE_PROPERTIES.into_iter().collect();
-            let syntax = if self.format() == Format::Html {
-                super::super::html_direct::clear_inline_character_patches(
-                    &input, self.projection(), range.clone(), &clear,
-                )?
-            } else {
+            let clear = super::super::style::CHARACTER_STYLE_PROPERTIES
+                .into_iter()
+                .collect();
+            let syntax = {
                 super::super::rtf_direct::clear_character_patches(
-                    &input, self.projection(), range.clone(), &clear,
+                    &input,
+                    self.projection(),
+                    range.clone(),
+                    &clear,
                 )?
             };
-            let patches = syntax.into_iter().map(|(range, text)| {
-                self.encoding().encode_fragment(&text).map(|bytes| SourcePatch::primary(range, bytes))
-            }).collect::<Result<Vec<_>, _>>()?;
+            let patches = syntax
+                .into_iter()
+                .map(|(range, text)| {
+                    self.encoding()
+                        .encode_fragment(&text)
+                        .map(|bytes| SourcePatch::primary(range, bytes))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let prepared = scratch.prepare_source_only_patches(patches)?;
-            publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+            publish(
+                &mut scratch,
+                prepared,
+                &mut range,
+                &mut sources,
+                &mut formatted,
+            )?;
         }
-        let target = TextRange::new(scratch.text_point(range.start)?, scratch.text_point(range.end)?)?;
+        let target = TextRange::new(
+            scratch.text_point(range.start)?,
+            scratch.text_point(range.end)?,
+        )?;
         let intent = PersistedStyleIntent::AssignCharacterStyle {
-            range: target, style: style.clone(),
+            range: target,
+            style: style.clone(),
         };
-        let prepared = if self.format() == Format::Html {
-            scratch.prepare_html_named_style_raw(intent, true)?
-        } else { scratch.prepare_persisted_style_intent(intent)? };
-        publish(&mut scratch, prepared, &mut range, &mut sources, &mut formatted)?;
+        let prepared = { scratch.prepare_persisted_style_intent(intent)? };
+        publish(
+            &mut scratch,
+            prepared,
+            &mut range,
+            &mut sources,
+            &mut formatted,
+        )?;
         if self.format().is_wysiwyg() {
             // Check the final combination, including paragraph inheritance and
             // all unselected formatting, before publishing any source patches.
             let mut boundaries = BTreeSet::from([0, original_range.start, original_range.end]);
             for projection in [self.projection(), scratch.projection()] {
-                for span in projection.style_spans() { boundaries.extend([span.range.start, span.range.end]); }
-                for block in projection.blocks() { boundaries.extend([block.range.start, block.range.end]); }
+                for span in projection.style_spans() {
+                    boundaries.extend([span.range.start, span.range.end]);
+                }
+                for block in projection.blocks() {
+                    boundaries.extend([block.range.start, block.range.end]);
+                }
             }
-            for at in boundaries.into_iter().filter(|at| *at < self.text().len() && self.text().as_bytes()[*at] != b'\n') {
+            for at in boundaries
+                .into_iter()
+                .filter(|at| *at < self.text().len() && self.text().as_bytes()[*at] != b'\n')
+            {
                 let code_paragraph = self.format().is_markdown()
-                    && self.projection().blocks_for_region(&(at..at + 1)).iter()
+                    && self
+                        .projection()
+                        .blocks_for_region(&(at..at + 1))
+                        .iter()
                         .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
                 let expected = if original_range.contains(&at) && !code_paragraph {
                     self.clean_named_character_at(at, &style, &CharacterProperties::default())?
                 } else {
-                    crate::layout::DocumentLayoutStyles::semantic_character_at(self.projection(), at, false)
-                        .map_err(|_| DocumentError::VerificationFailed)?
+                    crate::layout::DocumentLayoutStyles::semantic_character_at(
+                        self.projection(),
+                        at,
+                        false,
+                    )
+                    .map_err(|_| DocumentError::VerificationFailed)?
                 };
-                let actual = crate::layout::DocumentLayoutStyles::semantic_character_at(scratch.projection(), at, false)
-                    .map_err(|_| DocumentError::VerificationFailed)?;
+                let actual = crate::layout::DocumentLayoutStyles::semantic_character_at(
+                    scratch.projection(),
+                    at,
+                    false,
+                )
+                .map_err(|_| DocumentError::VerificationFailed)?;
                 if expected != actual {
                     return Err(DocumentError::VerificationFailed.into());
                 }
             }
         }
-        let patches = sources.source_patches(&scratch.state().source)?;
-        let edits = formatted.formatted_edits(&scratch)?;
+        let patches = sources.source_patches();
+        let edits = formatted.formatted_edits();
         self.prepare_text_edits_with_patches(edits, Some(patches))
     }
 
@@ -454,7 +519,14 @@ impl Document {
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
-            verify_assignment(self.projection(), &candidate.projection, &range, style, true, true)?;
+            verify_assignment(
+                self.projection(),
+                &candidate.projection,
+                &range,
+                style,
+                true,
+                true,
+            )?;
         }
         Ok(prepared)
     }

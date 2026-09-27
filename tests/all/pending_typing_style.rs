@@ -86,8 +86,6 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
-        (Format::Html, "<p>word</p><!--keep-->", 0),
-        (Format::HtmlSource, "<p>word</p><!--keep-->", 3),
         (Format::Rtf, "{\\rtf1 word}{\\*\\unknown keep}", 0),
     ] {
         let (mut core, view) = fixture(format, source);
@@ -163,7 +161,6 @@ fn typing_can_disable_existing_style_and_continue_inherited_run() {
     for (format, source, at) in [
         (Format::Markdown, "**word**", 2),
         (Format::MarkdownSource, "**word**", 4),
-        (Format::Html, "<p><b>word</b></p>", 2),
         (Format::Rtf, "{\\rtf1 {\\b word}}", 2),
     ] {
         let (mut core, view) = fixture(format, source);
@@ -212,11 +209,9 @@ fn combined_bold_italic_repeats_and_is_one_insert_undo() {
     for format in [
         Format::Markdown,
         Format::MarkdownSource,
-        Format::Html,
         Format::Rtf,
     ] {
         let source = match format {
-            Format::Html => "<p>x</p>",
             Format::Rtf => "{\\rtf1 x}",
             _ => "x",
         };
@@ -290,37 +285,11 @@ fn unsupported_pending_properties_and_stale_targets_leave_state_unchanged() {
         .is_err());
     assert_eq!(core.document().source_bytes(), b"word");
     assert!(!core.selected_typography(view).unwrap().0.bold);
-    let (mut core, view) = fixture(Format::HtmlSource, "<p title='keep'>word</p>");
-    core.handle(view, key(Key::Char('i'))).unwrap();
-    core.handle(
-        view,
-        CoreEvent::PlaceCursor {
-            document_revision: core.document().revision(),
-            text_offset: 6,
-            affinity: BoundaryAffinity::Downstream,
-            extend_selection: false,
-        },
-    )
-    .unwrap();
-    let expected = core.list_selection_identity(view).unwrap();
-    assert!(core
-        .handle(
-            view,
-            CoreEvent::SetSelectionSemanticStyle {
-                expected,
-                style: SemanticInlineStyle::Emphasis,
-                enabled: true
-            }
-        )
-        .is_err());
-    assert!(!core
-        .selection_semantic_style_presentation(view, SemanticInlineStyle::Emphasis)
-        .unwrap()
-        .can_set());
+
 }
 #[test]
 fn pending_state_is_view_local_and_external_reprojection_cancels_it() {
-    let (mut core, view) = fixture(Format::Html, "<p>word</p>");
+    let (mut core, view) = fixture(Format::Markdown, "word");
     let other = core.add_view(MockTextMeasurementProvider::new(), 300., 100.);
     core.handle(view, key(Key::Char('i'))).unwrap();
     toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
@@ -368,9 +337,9 @@ fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_
     use viem_core::document::{
         FontSlant, FormattedPayloadEdit, FormattedTextPayload, StyleProperty, StylePropertyValue,
     };
-    let mut source = "<p>line</p>".repeat(10_000);
-    source.push_str("<p><i>last</i></p><!--keep-->");
-    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+    let mut source = "line\n\n".repeat(10_000);
+    source.push_str("*last*");
+    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
     let at = document.projection().text_tree().byte_len();
     let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), "b", vec![]).unwrap();
     let (prepared, caret) = document
@@ -396,8 +365,6 @@ fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_
 fn direct_typing_properties_are_atomic_and_visible_in_pending_presentation() {
     use viem_core::document::{Color, StyleProperty as P, StylePropertyValue as V};
     for (format, source) in [
-        (Format::Html, "<p>word</p>"),
-        (Format::HtmlSource, "word"),
         (Format::Rtf, "{\\rtf1 word}"),
     ] {
         let (mut core, view) = fixture(format, source);
@@ -446,7 +413,7 @@ fn direct_typing_properties_are_atomic_and_visible_in_pending_presentation() {
 }
 #[test]
 fn pending_style_insertion_keeps_extended_graphemes_indivisible() {
-    let (mut core, view) = fixture(Format::Html, "<p>a</p>");
+    let (mut core, view) = fixture(Format::Markdown, "a");
     core.handle(view, key(Key::Char('A'))).unwrap();
     toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
     let out = core

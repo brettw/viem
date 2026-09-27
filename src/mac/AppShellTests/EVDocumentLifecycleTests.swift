@@ -228,31 +228,31 @@ final class EVDocumentLifecycleTests: XCTestCase {
     func testChangedSerializationRejectsOriginalAndSaveAsEstablishesNewBaseline() throws {
         let (original, backend, document) = try preservationFixture()
         defer { document.close() }
-        backend.sourceFormat = .html
+        backend.sourceFormat = .markdown
         backend.serializedData = Data("<p>converted bytes</p>".utf8)
         backend.publishPersistence(.init(isDirty: true))
         XCTAssertTrue(document.requiresNewFormatDestination)
         XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8), "Format selection does not write")
         for operation in [NSDocument.SaveOperationType.saveOperation, .saveAsOperation, .saveToOperation] {
             let completion = expectation(description: "format write rejects original")
-            document.save(to: original, ofType: EVDocument.htmlType, for: operation) { error in
+            document.save(to: original, ofType: EVDocument.markdownType, for: operation) { error in
                 XCTAssertEqual(error as? EVDocumentSerializationError, .changedFormatNeedsNewDestination)
                 completion.fulfill()
             }
             wait(for: [completion], timeout: 5)
         }
-        XCTAssertThrowsError(try document.writeSafely(to: original, ofType: EVDocument.htmlType, for: .saveOperation))
-        XCTAssertThrowsError(try document.write(to: original, ofType: EVDocument.htmlType))
+        XCTAssertThrowsError(try document.writeSafely(to: original, ofType: EVDocument.markdownType, for: .saveOperation))
+        XCTAssertThrowsError(try document.write(to: original, ofType: EVDocument.markdownType))
         var hostError: Error?
         document.saveHostRevision(documentID: 41, documentRevision: 73, force: true,
-                                 to: original, ofType: EVDocument.htmlType, for: .saveOperation) { hostError = $0 }
+                                 to: original, ofType: EVDocument.markdownType, for: .saveOperation) { hostError = $0 }
         XCTAssertEqual(hostError as? EVDocumentSerializationError, .changedFormatNeedsNewDestination)
         XCTAssertEqual(document.fileURL, original)
         XCTAssertEqual(try Data(contentsOf: original), Data("original bytes".utf8))
 
-        let destination = original.deletingPathExtension().appendingPathExtension("html")
+        let destination = original.deletingPathExtension().appendingPathExtension("md")
         let completion = expectation(description: "converted Save As")
-        document.save(to: destination, ofType: EVDocument.htmlType, for: .saveAsOperation) { error in
+        document.save(to: destination, ofType: EVDocument.markdownType, for: .saveAsOperation) { error in
             XCTAssertNil(error); completion.fulfill()
         }
         wait(for: [completion], timeout: 5)
@@ -294,7 +294,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
     func testSameSerializationPresentationChangesKeepOrdinarySave() throws {
         let (original, backend, document) = try preservationFixture()
         defer { document.close() }
-        for (from, to) in [(EVSourceFormat.plainText, EVSourceFormat.code), (.markdown, .markdownSource), (.html, .htmlSource)] {
+        for (from, to) in [(EVSourceFormat.plainText, EVSourceFormat.code), (.markdown, .markdownSource)] {
             backend.sourceFormat = from
             document.recordFileBaseline(Data("original bytes".utf8), at: original)
             backend.sourceFormat = to

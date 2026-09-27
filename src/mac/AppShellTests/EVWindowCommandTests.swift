@@ -54,6 +54,10 @@ final class EVWindowCommandTests: XCTestCase {
     document.makeWindowControllers()
     let controller = try XCTUnwrap(document.windowControllers.first as? EVDocumentWindowController)
     controller.showWindow(nil)
+    // Height assertions need the declared fixture size, independent of a
+    // previously tested window's persisted placement.
+    controller.window?.setContentSize(EVDocumentWindowController.initialContentSize)
+    controller.window?.contentView?.layoutSubtreeIfNeeded()
     let state = backend.persistenceState
     for _ in 1 ..< count {
       var result: Result<String?, Error>?

@@ -5,8 +5,6 @@ fn documents() -> Vec<Document> {
         (Format::PlainText, "one two"),
         (Format::Markdown, "one **two**"),
         (Format::MarkdownSource, "one **two**"),
-        (Format::Html, "<p>one <b>two</b></p>"),
-        (Format::HtmlSource, "<p>one <b>two</b></p>"),
         (Format::Rtf, r"{\rtf1 one {\b two}}"),
         (Format::Code, "one two"),
     ]
@@ -90,59 +88,11 @@ fn default_overlay_preserves_the_complete_underlying_character_style() {
 }
 
 #[test]
-fn customized_search_style_never_enters_exported_html_definitions() {
-    let mut document =
-        Document::from_bytes(b"<p>Words</p>".to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    configure(
-        &mut document,
-        CharacterProperties {
-            background: Some(Color {
-                red: 0.2,
-                green: 0.4,
-                blue: 0.7,
-                alpha: 0.9,
-            }),
-            size: Some((19.0).into()),
-            ..Default::default()
-        },
-    );
-    document
-        .apply_model_request(ModelRequest::SetIncludeStyleDefinitionsInFile {
-            document: document.id(),
-            revision: document.revision(),
-            enabled: true,
-        })
-        .unwrap();
-    let source = String::from_utf8(document.source_bytes()).unwrap();
-    assert!(source.contains("data-viem-version=\"2\""));
-    assert!(!source.contains("Incremental match"));
-    let encoded_id = StyleId::incremental_match()
-        .0
-        .bytes()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    assert!(!source.contains(&encoded_id));
-    let reopened =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(reopened.source_bytes(), source.as_bytes());
-    assert_eq!(
-        reopened
-            .projection()
-            .style_sheet()
-            .incremental_match_properties()
-            .unwrap(),
-        StyleSheet::default()
-            .incremental_match_properties()
-            .unwrap()
-    );
-}
-
-#[test]
 fn explicit_overlay_properties_win_over_direct_named_and_paragraph_styles() {
     let mut document = Document::from_bytes(
-        b"<h1><b><span style='font-size:31pt;color:blue'>one</span></b></h1>".to_vec(),
+        br"{\rtf1{\colortbl ;\red0\green0\blue255;}\fs62\cf1\b one}".to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Rtf,
     )
     .unwrap();
     let color = Color {

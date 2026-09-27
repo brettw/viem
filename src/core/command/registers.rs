@@ -220,7 +220,9 @@ impl RegisterValue {
         self.clipboard_fragment.as_ref()
     }
 
-    pub(crate) fn from_clipboard_fragment(fragment: crate::document::ClipboardFragment) -> Result<Self, RegisterValueError> {
+    /// Creates a register from a validated portable clipboard fragment,
+    /// retaining its styles, register shape, and semantic hard breaks.
+    pub fn from_clipboard_fragment(fragment: crate::document::ClipboardFragment) -> Result<Self, RegisterValueError> {
         let (text, kind, breaks) = fragment.register_parts();
         let kind = match kind { 2 => RegisterKind::Linewise, 3 => RegisterKind::Blockwise, _ => RegisterKind::Characterwise };
         let mut result = Self::try_new(text, kind, breaks)?;

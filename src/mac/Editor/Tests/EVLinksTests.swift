@@ -54,7 +54,7 @@ final class EVLinksTests: XCTestCase {
 
     func testPointerMenuOnlyAddsLinkForPaintedAnchorContent() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("<p><a href='https://example.com'>label</a> tail</p>".utf8), typeName: EVDocument.htmlSourceType)
+        try backend.read(source: Data("[label](https://example.com) tail".utf8), typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 300)
@@ -62,7 +62,7 @@ final class EVLinksTests: XCTestCase {
         window.contentView = surface.view
         surface.viewDidLayout()
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        let labelOffset = UInt64("<p><a href='https://example.com'>".utf8.count)
+        let labelOffset = UInt64(1)
         let cluster = try XCTUnwrap(snapshot.clusters.first { $0.text_start <= labelOffset && labelOffset < $0.text_end })
         let row = try XCTUnwrap(snapshot.rows.first { $0.row_index == cluster.row_index })
         let local = surface.editorView.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(cluster.x + cluster.advance / 2), y: CGFloat(row.y + row.line_advance / 2)))

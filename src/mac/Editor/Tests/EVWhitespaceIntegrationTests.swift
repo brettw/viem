@@ -98,10 +98,8 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
     func testWhitespaceMarkersAreSuppressedInWYSIWYGAndShownInSourceViews() throws {
         let fixtures = [
             (EVDocument.markdownType, "A  \n\nB", false),
-            (EVDocument.htmlType, "<p>A </p><p>B</p>", false),
             (EVDocument.rtfType, #"{\rtf1 A \par B}"#, false),
             (EVDocument.markdownSourceType, "A  \n\nB", true),
-            (EVDocument.htmlSourceType, "<p>A</p>  \n", true),
             (EVDocument.codeType, "A  \nB", true),
         ]
         for (type, source, visible) in fixtures {
@@ -210,7 +208,7 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         try ex("set nolist", surface: surface)
         XCTAssertEqual(surface.presentation(for: .showInvisibleCharacters).state, .off)
-        let (_, rich, _) = try fixture("<p>word </p>", type: EVDocument.htmlType)
+        let (_, rich, _) = try fixture("word ", type: EVDocument.markdownType)
         XCTAssertFalse(rich.presentation(for: .showInvisibleCharacters).isEnabled)
         XCTAssertTrue(try XCTUnwrap(rich.layoutSnapshot).whitespace.markers.isEmpty)
     }

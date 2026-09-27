@@ -1200,8 +1200,6 @@ mod tests {
         for format in [
             Format::Markdown,
             Format::MarkdownSource,
-            Format::Html,
-            Format::HtmlSource,
             Format::Rtf,
         ] {
             assert_eq!(

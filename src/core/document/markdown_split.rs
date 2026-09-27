@@ -52,20 +52,30 @@ pub(super) fn patches_with_separator(
         // Its source hull can include an emphasis/link closing delimiter;
         // perform the same scope transition as a split so retained text on
         // either side keeps its original inline context.
-        if !projection.blocks_for_region(range).iter().any(|block| {
-            block.range.start <= range.start && range.end <= block.range.end
-        }) {
+        if !projection
+            .blocks_for_region(range)
+            .iter()
+            .any(|block| block.range.start <= range.start && range.end <= block.range.end)
+        {
             return Ok(None);
         }
-        let Some(last) = projection.hard_line_at_offset(range.end)
-            .and_then(|index| projection.hard_line_range(index)) else { return Ok(None); };
+        let Some(last) = projection
+            .hard_line_at_offset(range.end)
+            .and_then(|index| projection.hard_line_range(index))
+        else {
+            return Ok(None);
+        };
         line.end = last.end;
     } else if range.end > line.end {
         return Ok(None);
     }
-    let Some(mut scopes) = inline_scopes(document, range, &line)? else { return Ok(None); };
+    let Some(mut scopes) = inline_scopes(document, range, &line)? else {
+        return Ok(None);
+    };
     let mut source = if range.is_empty() {
-        let Some(at) = insertion_source.or_else(|| projection.source_insertion_point(range.start, true)) else {
+        let Some(at) =
+            insertion_source.or_else(|| projection.source_insertion_point(range.start, true))
+        else {
             return Ok(None);
         };
         at..at
@@ -213,16 +223,29 @@ fn inline_scopes(
     }
     let mut scopes = link_scopes(document, &line)?;
     for span in projection.style_spans_for_region(line) {
-        if span.application != StyleApplication::Automatic("Strikethrough".into()) { continue; }
-        let Some(body) = projection.source_range(span.range.clone()) else { continue; };
+        if span.application != StyleApplication::Automatic("Strikethrough".into()) {
+            continue;
+        }
+        let Some(body) = projection.source_range(span.range.clone()) else {
+            continue;
+        };
         for marker in ["~~", "~"] {
             let bytes = document.encoding().encode_fragment(marker)?;
-            let Some(start) = body.start.checked_sub(bytes.len()) else { continue; };
+            let Some(start) = body.start.checked_sub(bytes.len()) else {
+                continue;
+            };
             let opening = start..body.start;
             let closing = body.end..body.end + bytes.len();
             if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&bytes)
-                && document.state().source.bytes_in(closing.clone()).as_ref() == Some(&bytes) {
-                scopes.push(Scope { formatted: span.range.clone(), opening, closing, marker: marker.into(), closing_marker: marker.into() });
+                && document.state().source.bytes_in(closing.clone()).as_ref() == Some(&bytes)
+            {
+                scopes.push(Scope {
+                    formatted: span.range.clone(),
+                    opening,
+                    closing,
+                    marker: marker.into(),
+                    closing_marker: marker.into(),
+                });
                 break;
             }
         }
@@ -302,9 +325,12 @@ fn inline_scopes(
                         let opening = start..opening_end;
                         let closing = closing_start..closing_start + b.len();
                         if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&a)
-                            && document.state().source.bytes_in(closing.clone()).as_ref() == Some(&b) {
+                            && document.state().source.bytes_in(closing.clone()).as_ref()
+                                == Some(&b)
+                        {
                             matched = Some((opening, closing, (*open).to_owned()));
-                            html_closing = Some((*close).to_owned()); break;
+                            html_closing = Some((*close).to_owned());
+                            break;
                         }
                     }
                 }
@@ -340,23 +366,38 @@ pub(super) fn remove_empty_emphasis(
 ) -> Result<(), ModelTransactionError> {
     for edit in edits.iter().filter(|edit| !edit.range.is_empty()) {
         let projection = document.projection();
-        let first = projection.hard_line_at_offset(edit.range.start)
+        let first = projection
+            .hard_line_at_offset(edit.range.start)
             .and_then(|index| projection.hard_line_range(index))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let last = projection.hard_line_at_offset(edit.range.end)
+        let last = projection
+            .hard_line_at_offset(edit.range.end)
             .and_then(|index| projection.hard_line_range(index))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let Some(mut scopes) = inline_scopes(document, &edit.range, &(first.start..last.end))? else {
+        let Some(mut scopes) = inline_scopes(document, &edit.range, &(first.start..last.end))?
+        else {
             continue;
         };
         scopes.sort_by_key(|scope| std::cmp::Reverse(scope.opening.start));
         for scope in scopes {
-            if !scope.marker.starts_with(['*', '_', '~', '<']) { continue; }
+            if !scope.marker.starts_with(['*', '_', '~', '<']) {
+                continue;
+            }
             let body = scope.opening.end..scope.closing.start;
-            if super::super::markdown_code::edited_source_fragment(document, &body, patches)?.is_empty() {
+            if super::super::markdown_code::edited_source_fragment(document, &body, patches)?
+                .is_empty()
+            {
                 let mut support = Vec::new();
-                super::super::source_edit::append_uncovered_deletions(&scope.opening, patches, &mut support);
-                super::super::source_edit::append_uncovered_deletions(&scope.closing, patches, &mut support);
+                super::super::source_edit::append_uncovered_deletions(
+                    &scope.opening,
+                    patches,
+                    &mut support,
+                );
+                super::super::source_edit::append_uncovered_deletions(
+                    &scope.closing,
+                    patches,
+                    &mut support,
+                );
                 patches.extend(support);
             }
         }
@@ -369,17 +410,30 @@ pub(super) fn remove_empty_emphasis(
 /// on both surviving labels and dropping wrappers around an empty label.
 fn link_scopes(document: &Document, line: &Range<usize>) -> Result<Vec<Scope>, DocumentError> {
     let projection = document.projection();
-    let spans = projection.style_spans_for_region(line).into_iter()
+    let spans = projection
+        .style_spans_for_region(line)
+        .into_iter()
         .filter(|span| span.application == StyleApplication::Automatic("Link".into()))
         .collect::<Vec<_>>();
-    if spans.is_empty() { return Ok(Vec::new()); }
-    let source = projection.source_range(line.clone()).ok_or(DocumentError::AmbiguousProjection)?;
-    let physical = &document.state().source_hard_lines;
-    let first = physical.line_at_offset(source.start).and_then(|at| physical.get(at))
+    if spans.is_empty() {
+        return Ok(Vec::new());
+    }
+    let source = projection
+        .source_range(line.clone())
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let last = physical.line_at_offset(source.end.saturating_sub(1).max(source.start))
-        .and_then(|at| physical.get(at)).ok_or(DocumentError::AmbiguousProjection)?;
-    let bytes = document.state().source.bytes_in(first.start..last.end)
+    let physical = &document.state().source_hard_lines;
+    let first = physical
+        .line_at_offset(source.start)
+        .and_then(|at| physical.get(at))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let last = physical
+        .line_at_offset(source.end.saturating_sub(1).max(source.start))
+        .and_then(|at| physical.get(at))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(first.start..last.end)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, first.start)?;
     let normalized = normalize(&decoded, document.file_format());
@@ -387,8 +441,13 @@ fn link_scopes(document: &Document, line: &Range<usize>) -> Result<Vec<Scope>, D
     let mut scopes = Vec::new();
     for link in super::super::links::markdown_links_in(&normalized.text, 0..normalized.text.len()) {
         let label = mapper.source_range(link.label.clone());
-        let Some(span) = spans.iter().find(|span| projection.source_range(span.range.clone())
-            .is_some_and(|source| label.start <= source.start && source.end <= label.end)) else { continue; };
+        let Some(span) = spans.iter().find(|span| {
+            projection
+                .source_range(span.range.clone())
+                .is_some_and(|source| label.start <= source.start && source.end <= label.end)
+        }) else {
+            continue;
+        };
         let opening = link.range.start..link.label.start;
         let closing = link.label.end..link.range.end;
         scopes.push(Scope {
@@ -449,65 +508,159 @@ fn transition(scopes: &[Scope], current: &mut Vec<usize>, next: &[usize], syntax
 /// Keep affected emphasis semantic when an edit invalidates GFM flanking.
 /// Use passive HTML pairs when Markdown markers can no longer express it, and
 /// compose those local repairs with the original patches in one transaction.
-pub(super) fn repair_flanking(document: &Document, edits: &[TextEdit], patches: &mut Vec<SourcePatch>) -> Result<(), ModelTransactionError> {
+pub(super) fn repair_flanking(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), ModelTransactionError> {
     let mut scopes = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for edit in edits {
         let projection = document.projection();
-        let Some(first) = projection.hard_line_at_offset(edit.range.start).and_then(|index| projection.hard_line_range(index)) else { continue; };
-        let Some(last) = projection.hard_line_at_offset(edit.range.end).and_then(|index| projection.hard_line_range(index)) else { continue; };
+        let Some(first) = projection
+            .hard_line_at_offset(edit.range.start)
+            .and_then(|index| projection.hard_line_range(index))
+        else {
+            continue;
+        };
+        let Some(last) = projection
+            .hard_line_at_offset(edit.range.end)
+            .and_then(|index| projection.hard_line_range(index))
+        else {
+            continue;
+        };
         if let Some(found) = inline_scopes(document, &edit.range, &(first.start..last.end))? {
-            scopes.extend(found.into_iter().filter(|scope| scope.marker.starts_with(['*', '_', '~']) && seen.insert((scope.opening.start, scope.closing.end))));
+            scopes.extend(found.into_iter().filter(|scope| {
+                scope.marker.starts_with(['*', '_', '~'])
+                    && seen.insert((scope.opening.start, scope.closing.end))
+            }));
         }
     }
-    if scopes.is_empty() { return Ok(()); }
+    if scopes.is_empty() {
+        return Ok(());
+    }
     let mut ordered = patches.clone();
     validate_source_patches(&mut ordered)?;
     let candidate = apply_source_patches(&document.state().source, &ordered)?;
     let map = |at, association| rebase_source_boundary(at, &ordered, association);
     let mut support = Vec::new();
     for scope in scopes {
-        if ordered.iter().any(|patch| [&scope.opening, &scope.closing].iter().any(|marker| patch.range.start < marker.end && marker.start < patch.range.end)) { continue; }
-        let opening = map(scope.opening.start, Association::AfterInsertion)?..map(scope.opening.end, Association::BeforeInsertion)?;
-        let closing = map(scope.closing.start, Association::AfterInsertion)?..map(scope.closing.end, Association::BeforeInsertion)?;
-        if opening.start > opening.end || closing.start > closing.end || opening.end > closing.start { continue; }
+        if ordered.iter().any(|patch| {
+            [&scope.opening, &scope.closing]
+                .iter()
+                .any(|marker| patch.range.start < marker.end && marker.start < patch.range.end)
+        }) {
+            continue;
+        }
+        let opening = map(scope.opening.start, Association::AfterInsertion)?
+            ..map(scope.opening.end, Association::BeforeInsertion)?;
+        let closing = map(scope.closing.start, Association::AfterInsertion)?
+            ..map(scope.closing.end, Association::BeforeInsertion)?;
+        if opening.start > opening.end || closing.start > closing.end || opening.end > closing.start
+        {
+            continue;
+        }
         let marker = document.encoding().encode_fragment(&scope.marker)?;
-        if candidate.bytes_in(opening.clone()).as_ref() != Some(&marker) || candidate.bytes_in(closing.clone()).as_ref() != Some(&marker) { continue; }
-        let body = candidate.bytes_in(opening.end..closing.start).ok_or(DocumentError::AmbiguousProjection)?;
+        if candidate.bytes_in(opening.clone()).as_ref() != Some(&marker)
+            || candidate.bytes_in(closing.clone()).as_ref() != Some(&marker)
+        {
+            continue;
+        }
+        let body = candidate
+            .bytes_in(opening.end..closing.start)
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let body = document.encoding().decode_region(&body, opening.end)?.text;
-        if body.is_empty() || body.contains(&document.file_format().spelling().repeat(2)) { continue; }
+        if body.is_empty() || body.contains(&document.file_format().spelling().repeat(2)) {
+            continue;
+        }
         // Recognize this exact scope in its edited physical context. Entities
         // and nested closing markers count as punctuation in GFM flanking;
         // whitespace escaping alone cannot keep every such scope representable.
-        let first = document.state().source_hard_lines.line_at_offset(scope.opening.start).unwrap();
-        let last = document.state().source_hard_lines.line_at_offset(scope.closing.end).unwrap();
+        let first = document
+            .state()
+            .source_hard_lines
+            .line_at_offset(scope.opening.start)
+            .unwrap();
+        let last = document
+            .state()
+            .source_hard_lines
+            .line_at_offset(scope.closing.end)
+            .unwrap();
         let context_boundary = |at, after| {
-            let boundary = ordered.iter().find(|patch| patch.range.start < at && at < patch.range.end)
-                .map_or(at, |patch| if after { patch.range.end } else { patch.range.start });
-            map(boundary, if after { Association::AfterInsertion } else { Association::BeforeInsertion })
+            let boundary = ordered
+                .iter()
+                .find(|patch| patch.range.start < at && at < patch.range.end)
+                .map_or(at, |patch| {
+                    if after {
+                        patch.range.end
+                    } else {
+                        patch.range.start
+                    }
+                });
+            map(
+                boundary,
+                if after {
+                    Association::AfterInsertion
+                } else {
+                    Association::BeforeInsertion
+                },
+            )
         };
-        let start = context_boundary(document.state().source_hard_lines.get(first).unwrap().start, false)?.min(opening.start);
-        let end = context_boundary(document.state().source_hard_lines.get(last).unwrap().end, true)?.max(closing.end).min(candidate.len());
-        let bytes = candidate.bytes_in(start..end).ok_or(DocumentError::AmbiguousProjection)?;
+        let start = context_boundary(
+            document.state().source_hard_lines.get(first).unwrap().start,
+            false,
+        )?
+        .min(opening.start);
+        let end = context_boundary(
+            document.state().source_hard_lines.get(last).unwrap().end,
+            true,
+        )?
+        .max(closing.end)
+        .min(candidate.len());
+        let bytes = candidate
+            .bytes_in(start..end)
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let decoded = document.encoding().decode_region(&bytes, start)?;
         let input = normalize(&decoded, document.file_format());
-        let normalized_at = |at| input.units.get(input.units.partition_point(|unit| unit.source.start < at)).map_or(input.text.len(), |unit| unit.normalized.start);
-        let extent = normalized_at(opening.start)..normalized_at(closing.end);
-        let recognized = super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "");
-        let hidden = |range: Range<usize>| {
-            (range.start..range.end).all(|at| recognized.values().any(|inline| {
-                matches!(inline.kind, super::super::markdown_syntax::InlineKind::Emphasis | super::super::markdown_syntax::InlineKind::Strong | super::super::markdown_syntax::InlineKind::Strike)
-                    && (inline.range.start <= at && at < inline.inner.start || inline.inner.end <= at && at < inline.range.end)
-            }))
+        let normalized_at = |at| {
+            input
+                .units
+                .get(input.units.partition_point(|unit| unit.source.start < at))
+                .map_or(input.text.len(), |unit| unit.normalized.start)
         };
-        if hidden(extent.start..normalized_at(opening.end)) && hidden(normalized_at(closing.start)..extent.end) { continue; }
+        let extent = normalized_at(opening.start)..normalized_at(closing.end);
+        let recognized =
+            super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "");
+        let hidden = |range: Range<usize>| {
+            (range.start..range.end).all(|at| {
+                recognized.values().any(|inline| {
+                    matches!(
+                        inline.kind,
+                        super::super::markdown_syntax::InlineKind::Emphasis
+                            | super::super::markdown_syntax::InlineKind::Strong
+                            | super::super::markdown_syntax::InlineKind::Strike
+                    ) && (inline.range.start <= at && at < inline.inner.start
+                        || inline.inner.end <= at && at < inline.range.end)
+                })
+            })
+        };
+        if hidden(extent.start..normalized_at(opening.end))
+            && hidden(normalized_at(closing.start)..extent.end)
+        {
+            continue;
+        }
         if let Some(newline) = body.find(document.file_format().spelling()) {
             let tail = &body[newline + document.file_format().spelling().len()..];
             let quote = super::super::markdown_quotes::prefix(tail);
-            let marker = super::super::markdown_blocks::marker_prefix_length(&tail[quote..]).unwrap_or(0);
-            if marker > 0 && tail[quote + marker..].trim().is_empty() && !body[..newline].is_empty() {
+            let marker =
+                super::super::markdown_blocks::marker_prefix_length(&tail[quote..]).unwrap_or(0);
+            if marker > 0 && tail[quote + marker..].trim().is_empty() && !body[..newline].is_empty()
+            {
                 let at = opening.end + document.encoding().encode_fragment(&body[..newline])?.len();
-                support.push((at..at, document.encoding().encode_fragment(&scope.closing_marker)?));
+                support.push((
+                    at..at,
+                    document.encoding().encode_fragment(&scope.closing_marker)?,
+                ));
                 support.push((closing, Vec::new()));
                 continue;
             }
@@ -520,12 +673,22 @@ pub(super) fn repair_flanking(document: &Document, edits: &[TextEdit], patches: 
         support.push((opening, document.encoding().encode_fragment(open)?));
         support.push((closing, document.encoding().encode_fragment(close)?));
     }
-    if support.is_empty() { return Ok(()); }
+    if support.is_empty() {
+        return Ok(());
+    }
     support.sort_by_key(|(range, _)| (range.start, range.end));
     support.dedup_by(|a, b| a.0 == b.0);
     let mut composition = replacement::PatchComposition::new(document.source_byte_len());
-    for patch in ordered.iter().rev() { composition.splice(patch.range.clone(), &patch.replacement); }
-    for (range, bytes) in support.into_iter().rev() { composition.splice(range, &bytes); }
-    *patches = composition.patches().into_iter().map(|(range, bytes)| SourcePatch::primary(range, bytes)).collect();
+    for patch in ordered.iter().rev() {
+        composition.splice(patch.range.clone(), &patch.replacement);
+    }
+    for (range, bytes) in support.into_iter().rev() {
+        composition.splice(range, &bytes);
+    }
+    *patches = composition
+        .patches()
+        .into_iter()
+        .map(|(range, bytes)| SourcePatch::primary(range, bytes))
+        .collect();
     Ok(())
 }

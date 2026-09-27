@@ -353,7 +353,7 @@ impl Document {
             });
         }
         self.text_point(point.offset())?;
-        if !(self.format().is_markdown() || self.format().is_html()) {
+        if !self.format().is_markdown() {
             return Ok(None);
         }
         let link_styles: Vec<_> = self
@@ -367,30 +367,6 @@ impl Document {
             .collect();
         if link_styles.is_empty() {
             return Ok(None);
-        }
-        if self.format() == Format::Html {
-            // A link query names the visible glyph, not an insertion context.
-            // Recovered empty inline bodies can share its formatted boundary
-            // while belonging to a different source anchor.
-            let Some(raw) = self
-                .projection()
-                .provenance_for_region(&(point.offset()..point.offset().saturating_add(1)))
-                .into_iter()
-                .find(|span| {
-                    span.formatted.contains(&point.offset()) && !span.source.is_empty()
-                })
-                .map(|span| span.source.start)
-            else {
-                return Ok(None);
-            };
-            // The source index retains anchor ownership independently of the
-            // lexical formatting stack (nested/unclosed anchors have their
-            // own recovery rules). The projected Link span remains the gate.
-            let index = self
-                .projection()
-                .html_scope_index()
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            return Ok(index.link_at_source(raw));
         }
         let Some(raw) = self
             .projection()
@@ -407,12 +383,6 @@ impl Document {
             return Ok(None);
         };
         let at = unit.normalized.start;
-        if self.format().is_html() {
-            return Ok(html_links(&input.text)
-                .into_iter()
-                .find(|link| link.range.contains(&at))
-                .map(|link| link.destination));
-        }
         let mut found: Option<InlineLink> = None;
         for (start, _) in input.text.match_indices('[') {
             if start > at {
@@ -468,23 +438,43 @@ impl Document {
                 found = Some(link);
             }
         }
-        if let Some(link) = found { return Ok(Some(link.destination)); }
-        if let Some(link) = html_links(&input.text).into_iter().find(|link| link.range.contains(&at)) {
+        if let Some(link) = found {
+            return Ok(Some(link.destination));
+        }
+        if let Some(link) = html_links(&input.text)
+            .into_iter()
+            .find(|link| link.range.contains(&at))
+        {
             return Ok(Some(link.destination));
         }
         for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
             if range.contains(&at) {
                 if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
-                    link_type, dest_url, ..
-                }) = event {
-                    if link_type == pulldown_cmark::LinkType::Email { return Ok(Some(format!("mailto:{dest_url}"))); }
-                    if link_type == pulldown_cmark::LinkType::Autolink { return Ok(Some(dest_url.into_string())); }
+                    link_type,
+                    dest_url,
+                    ..
+                }) = event
+                {
+                    if link_type == pulldown_cmark::LinkType::Email {
+                        return Ok(Some(format!("mailto:{dest_url}")));
+                    }
+                    if link_type == pulldown_cmark::LinkType::Autolink {
+                        return Ok(Some(dest_url.into_string()));
+                    }
                 }
             }
         }
-        for (start, _) in input.text.char_indices().take_while(|(start, _)| *start <= at) {
-            if let Some((end, destination)) = super::markdown_syntax::autolink(&input.text, start, input.text.len()) {
-                if start <= at && at < end { return Ok(Some(destination)); }
+        for (start, _) in input
+            .text
+            .char_indices()
+            .take_while(|(start, _)| *start <= at)
+        {
+            if let Some((end, destination)) =
+                super::markdown_syntax::autolink(&input.text, start, input.text.len())
+            {
+                if start <= at && at < end {
+                    return Ok(Some(destination));
+                }
             }
         }
         Ok(None)

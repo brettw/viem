@@ -6,8 +6,8 @@ import XCTest
 
 @MainActor
 final class EVFormatMenuActionsTests: XCTestCase {
-  func testScriptsAreExclusiveToggleOffAndUndoInHTMLAndRTF() throws {
-    for (type, text) in [(EVDocument.htmlType, "<p>text</p><!--keep-->"),
+  func testScriptsAreExclusiveToggleOffAndUndoInRTF() throws {
+    for (type, text) in [(EVDocument.rtfType, #"{\rtf1{\pard text}{\*\comment keep}}"#),
                          (EVDocument.rtfType, #"{\rtf1 text{\*\opaque keep}}"#)] {
       let surface = try makeSurface(text, type: type)
       let session = try XCTUnwrap(surface.session)
@@ -30,13 +30,13 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testScriptStateIgnoresOtherMixedPropertiesAndDetectsMixedScript() throws {
-    let same = try makeSurface("<p><sup>A</sup><sup style='color:red'>B</sup></p>")
+    let same = try makeSurface(#"{\rtf1{\pard {\super A}{\super\b B}}}"#)
     same.perform(menuCommand: .selectAll, sender: nil)
     XCTAssertTrue(try XCTUnwrap(same.session).selectedTypography().mixed)
     XCTAssertEqual(same.presentation(for: .superscript).state, .on)
     same.perform(menuCommand: .superscript, sender: nil)
     XCTAssertEqual(try XCTUnwrap(same.session).selectedTypography().scriptPosition, 0)
-    let mixed = try makeSurface("<p><sup>A</sup><sub>B</sub></p>")
+    let mixed = try makeSurface(#"{\rtf1{\pard {\super A}{\sub B}}}"#)
     mixed.perform(menuCommand: .selectAll, sender: nil)
     XCTAssertEqual(mixed.presentation(for: .superscript).state, .mixed)
     mixed.perform(menuCommand: .superscript, sender: nil)
@@ -45,10 +45,12 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testLigatureCommandsRetainUnrelatedFeaturesAndRestoreFontDefaults() throws {
-    let surface = try makeSurface("<p style='font-feature-settings: \"smcp\" 1'>Text</p><!--keep-->")
+    let surface = try makeSurface(#"{\rtf1{\pard Text}{\*\comment keep}}"#)
     let session = try XCTUnwrap(surface.session)
+    try session.editStyle(key: .baseParagraph, expected: surface.backend.styleSheetSnapshot().identity,
+      mutation: .setDeclaration(.characterOpenTypeFeatures, .openTypeFeatures([.init(tag: "smcp", setting: 1)])))
     surface.perform(menuCommand: .selectAll, sender: nil)
-    let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
     XCTAssertEqual(surface.presentation(for: .defaultLigatures).state, .on)
     for command in [EVMenuCommand.noLigatures, .allLigatures, .defaultLigatures] {
       surface.perform(menuCommand: command, sender: nil)
@@ -61,11 +63,11 @@ final class EVFormatMenuActionsTests: XCTestCase {
       XCTAssertEqual(surface.presentation(for: command).state, .on)
     }
     for _ in 0..<3 { surface.perform(menuCommand: .undo, sender: nil) }
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
   }
 
   func testOpenTypeFontDefaultsOverrideInheritedFeatureDeclarations() throws {
-    let surface = try makeSurface("<p style='font-family:AvenirNext-Regular'>Text</p>")
+    let surface = try makeSurface(#"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 AvenirNext-Regular;}}{\pard \f2 Text}}"#)
     let session = try XCTUnwrap(surface.session)
     let snapshot = try surface.backend.styleSheetSnapshot()
     _ = try session.editStyle(key: .baseParagraph, expected: snapshot.identity,
@@ -73,7 +75,7 @@ final class EVFormatMenuActionsTests: XCTestCase {
         .openTypeFeatures([.init(tag: "liga", setting: 0)])))
     surface.perform(menuCommand: .selectAll, sender: nil)
     XCTAssertEqual(try session.selectedTypography().features, [.init(tag: "liga", setting: 0)])
-    let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
     let menu = NSMenu()
     surface.populateOpenTypeFeatureMenu(menu)
     let defaults = try XCTUnwrap(menu.item(withTitle: "Use Font Defaults"))
@@ -84,46 +86,36 @@ final class EVFormatMenuActionsTests: XCTestCase {
     XCTAssertEqual(try surface.backend.styleSheetSnapshot().definition(for: .baseParagraph)?
       .properties[.characterOpenTypeFeatures]?.declared, .openTypeFeatures([.init(tag: "liga", setting: 0)]))
     surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
   }
 
   func testParagraphMenuActionsAndSpacingAreCheckedAndUndoable() throws {
-    let surface = try makeSurface("<p>Text</p><!--keep-->")
+    let surface = try makeSurface(#"{\rtf1{\pard Text}{\*\comment keep}}"#)
     let session = try XCTUnwrap(surface.session)
     for command in [EVMenuCommand.alignCenter, .alignEnd, .alignStart, .directionRightToLeft,
-                    .directionLeftToRight, .directionAutomatic, .lineSpacingSingle,
+                    .directionLeftToRight, .lineSpacingSingle,
                     .lineSpacingOneAndHalf, .lineSpacingDouble, .lineSpacingNormal] {
-      let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+      let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
       XCTAssertTrue(surface.presentation(for: command).isEnabled)
       surface.perform(menuCommand: command, sender: nil)
       XCTAssertEqual(surface.presentation(for: command).state, .on, "\(command): \(surface.statusBarState.message)")
       surface.perform(menuCommand: .undo, sender: nil)
-      XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original)
+      XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original)
     }
-    let original = try surface.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try surface.backend.serializedSource(typeName: EVDocument.rtfType)
     surface.applyParagraphSpacing(before: 7, after: 13, expected: try session.listSelection())
     let formatted = try session.selectedFormatting()
     XCTAssertEqual(formatted[.blockMarginTop], .float(7))
     XCTAssertEqual(formatted[.blockMarginBottom], .float(13))
     surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), original,
+    XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.rtfType), original,
                    "Both spacing fields form one undo unit")
   }
 
-  func testAutomaticParagraphDirectionOverridesInheritedHTMLDirectionAndIsUnavailableInRTF() throws {
-    let surface = try makeSurface("<div dir='rtl'><p>Text</p></div>")
-    surface.perform(menuCommand: .directionAutomatic, sender: nil)
-    XCTAssertNil(surface.commandOutput)
-    XCTAssertEqual(try XCTUnwrap(surface.session).selectedFormatting()[.paragraphBaseDirection], .writingDirection(0))
-    XCTAssertEqual(surface.presentation(for: .directionAutomatic).state, .on)
-    let rtf = try makeSurface(#"{\rtf1\rtlpar Text}"#, type: EVDocument.rtfType)
-    XCTAssertFalse(rtf.presentation(for: .directionAutomatic).isEnabled)
-  }
-
   func testPastedNoBackgroundOverridesAnInheritedBackground() throws {
-    let source = try makeSurface("<p>source</p>")
+    let source = try makeSurface(#"{\rtf1{\pard source}}"#)
     source.perform(menuCommand: .copyStyle, sender: nil)
-    let target = try makeSurface("<p style='background-color:yellow'>target</p>")
+    let target = try makeSurface(#"{\rtf1{\pard target}}"#)
     target.perform(menuCommand: .selectAll, sender: nil)
     target.perform(menuCommand: .pasteStyle, sender: nil)
     XCTAssertNil(target.commandOutput)
@@ -131,7 +123,7 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testMixedFormattingCheckmarksAreSpecificToEachProperty() throws {
-    let surface = try makeSurface("<p style='text-align:center'><span style='color:red'>A</span><span style='color:blue'>B</span></p><p style='text-align:right'>C</p>")
+    let surface = try makeSurface(#"{\rtf1\pard\qc AB\par\pard\qr C}"#)
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 2))
     XCTAssertEqual(surface.presentation(for: .alignCenter).state, .on)
     XCTAssertEqual(surface.presentation(for: .defaultLigatures).state, .on)
@@ -142,7 +134,7 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testCustomSpacingSheetUsesExactAndMultipleABIValues() async throws {
-    let surface = try makeSurface("<p>Text</p>")
+    let surface = try makeSurface(#"{\rtf1{\pard Text}}"#)
     let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 640, height: 400),
       styleMask: [.titled, .closable], backing: .buffered, defer: false)
     window.contentViewController = surface
@@ -166,12 +158,12 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testCopyPasteStyleAndClearFormattingUseSingleAtomicUndo() throws {
-    let source = try makeSurface("<p style='font-family:Georgia;font-size:19pt;color:#336699;text-align:center;margin-bottom:9pt'><sup>source</sup></p>")
+    let source = try makeSurface(#"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}}{\colortbl;\red51\green102\blue153;}{\pard \f2 \fs38 \cf1 \qc \sa180 {\super source}}}"#)
     source.perform(menuCommand: .copyStyle, sender: nil)
-    let target = try makeSurface("<p>target</p><!--untouched-->")
+    let target = try makeSurface(#"{\rtf1{\pard target}{\*\comment untouched}}"#)
     target.perform(menuCommand: .selectAll, sender: nil)
     let session = try XCTUnwrap(target.session)
-    let original = try target.backend.serializedSource(typeName: EVDocument.htmlType)
+    let original = try target.backend.serializedSource(typeName: EVDocument.rtfType)
     XCTAssertTrue(target.presentation(for: .pasteStyle).isEnabled)
     target.perform(menuCommand: .pasteStyle, sender: nil)
     XCTAssertNil(target.commandOutput)
@@ -181,20 +173,20 @@ final class EVFormatMenuActionsTests: XCTestCase {
     XCTAssertEqual(style[.characterScriptPosition], .scriptPosition(1))
     XCTAssertEqual(style[.paragraphAlignment], .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
     target.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try target.backend.serializedSource(typeName: EVDocument.htmlType), original)
+    XCTAssertEqual(try target.backend.serializedSource(typeName: EVDocument.rtfType), original)
     target.perform(menuCommand: .selectAll, sender: nil)
     target.perform(menuCommand: .pasteStyle, sender: nil)
-    let pasted = try target.backend.serializedSource(typeName: EVDocument.htmlType)
+    let pasted = try target.backend.serializedSource(typeName: EVDocument.rtfType)
     XCTAssertTrue(target.presentation(for: .clearAllDirectFormatting).isEnabled)
     target.perform(menuCommand: .clearAllDirectFormatting, sender: nil)
     XCTAssertNil(target.commandOutput)
     XCTAssertEqual(try session.selectedTypography().scriptPosition, 0)
     target.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try target.backend.serializedSource(typeName: EVDocument.htmlType), pasted)
+    XCTAssertEqual(try target.backend.serializedSource(typeName: EVDocument.rtfType), pasted)
   }
 
   func testPasteStyleIntoRTFUsesPortableFormattingAndRejectsUnavailableAutomaticOverride() throws {
-    let source = try makeSurface("<p style='font-family:Georgia;font-size:19pt;color:#336699;text-align:center'><sup>source</sup></p>")
+    let source = try makeSurface(#"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}}{\colortbl;\red51\green102\blue153;}{\pard \f2 \fs38 \cf1 \qc {\super source}}}"#)
     source.perform(menuCommand: .copyStyle, sender: nil)
     let target = try makeSurface(#"{\rtf1 target{\*\opaque keep}}"#, type: EVDocument.rtfType)
     target.perform(menuCommand: .selectAll, sender: nil)
@@ -214,7 +206,7 @@ final class EVFormatMenuActionsTests: XCTestCase {
   }
 
   func testPanelInspectionIsAvailableAtNormalCaretAndUnsupportedFormattingStaysDisabled() throws {
-    let rich = try makeSurface("<p>text</p>")
+    let rich = try makeSurface(#"{\rtf1{\pard text}}"#)
     for command in [EVMenuCommand.showFonts, .showColors, .textColor, .highlightColor] {
       XCTAssertTrue(rich.presentation(for: command).isEnabled)
     }
@@ -231,7 +223,7 @@ final class EVFormatMenuActionsTests: XCTestCase {
 
   private func makeSurface(_ text: String, type: String? = nil) throws -> EVEditorSurfaceController {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(text.utf8), typeName: type ?? EVDocument.htmlType)
+    try backend.read(source: Data(text.utf8), typeName: type ?? EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 600, height: 300)

@@ -1,5 +1,9 @@
 # TODO3 and GAPS validation
 
+Historical validation: HTML editing modes referenced below have since been
+removed. HTML files now open in Code.
+
+
 Validation used the isolated `com.viem.todo-validation` application bundle,
 `VIEM_CONFIG_DIR=/private/tmp/viem-todo3-config`, and temporary source fixtures.
 The user's running editor and personal configuration were left intact.

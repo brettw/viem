@@ -1337,11 +1337,7 @@ fn core_create_detects_encoding_losslessly_and_explicit_values_remain_forced() {
 #[test]
 fn native_named_style_create_delete_are_sparse_revision_bound_and_undoable() {
     for (format, original, prefix) in [
-        (
-            VIEM_FORMAT_HTML,
-            b"<p data-x='keep'>Text</p>".as_slice(),
-            "Custom",
-        ),
+
         (VIEM_FORMAT_RTF, br"{\rtf1 Text}".as_slice(), "Rtf"),
     ] {
         let core = create_core(
@@ -1445,9 +1441,9 @@ fn native_named_style_create_delete_are_sparse_revision_bound_and_undoable() {
 fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() {
     use viem_core::document::*;
     let mut source = Document::from_bytes(
-        b"<p data-x='keep'>Alpha</p><p>Beta</p>".to_vec(),
+        br"{\rtf1{\stylesheet{\s0 Base;}{\s1\sbasedon0 Heading;}}Alpha\par Beta}{\*\unknown keep}".to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Rtf,
     )
     .unwrap();
     source
@@ -1458,7 +1454,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
                 origin: StyleDefinitionOrigin::SourceBacked,
                 edit: StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
-                        id: "Accent".into(),
+                        id: "RtfC1".into(),
                         based_on: None,
                         properties: CharacterProperties {
                             underline: Some(true),
@@ -1466,7 +1462,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
                         },
                     },
                     metadata: StyleDefinitionMetadata {
-                        display_name: "Accent".into(),
+                        display_name: "RtfC1".into(),
                         origin: StyleDefinitionOrigin::SourceBacked,
                     },
                 },
@@ -1477,7 +1473,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
     let core = create_core(
         &original,
         ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
+            format: VIEM_FORMAT_RTF,
             ..Default::default()
         },
     );
@@ -1497,7 +1493,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
         (sheet.identity, selection)
     };
     let (identity, expected_selection) = query();
-    let heading = b"Heading2";
+    let heading = b"RtfP1";
     let request = ViemAssignStyleV1 {
         struct_size: VIEM_ASSIGN_STYLE_V1_SIZE,
         namespace: VIEM_STYLE_NAMESPACE_BLOCK,
@@ -1520,9 +1516,9 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
     );
     let state = document_state(&core);
     let rewritten = copy_core_bytes(viem_core_copy_source_bytes, &core, state.document_revision);
-    assert!(String::from_utf8(rewritten.clone())
-        .unwrap()
-        .contains("<h2 data-x='keep'>Alpha</h2><p>Beta</p>"));
+    let projected = Document::from_bytes(rewritten.clone(), Encoding::Utf8, Format::Rtf).unwrap();
+    assert_eq!(projected.projection().blocks()[0].style.0, "RtfP1");
+    assert_eq!(projected.text(), "Alpha\nBeta");
     assert_eq!(
         unsafe { viem_core_view_assign_style(core.handle, view, &request, &mut outcome) },
         ViemStatus::StaleRevision
@@ -1554,7 +1550,7 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
         );
     }
     let (identity, expected_selection) = query();
-    let accent = b"Accent";
+    let accent = b"RtfC1";
     let request = ViemAssignStyleV1 {
         namespace: VIEM_STYLE_NAMESPACE_CHARACTER,
         identity,
@@ -1589,9 +1585,9 @@ fn native_named_style_assignment_checks_selection_sheet_and_preserves_history() 
         &core,
         document_state(&core).document_revision,
     );
-    assert!(String::from_utf8(rewritten)
-        .unwrap()
-        .contains("<span class=\"viem-c-416363656e74\">Alp</span>ha"));
+    let projected = Document::from_bytes(rewritten, Encoding::Utf8, Format::Rtf).unwrap();
+    assert!(projected.projection().style_spans().iter().any(|span|
+        span.range == (0..3) && span.application == StyleApplication::Named("RtfC1".into())));
     assert_eq!(
         unsafe { viem_core_view_undo(core.handle, view, &mut outcome) },
         ViemStatus::Ok
@@ -1947,7 +1943,7 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
 
 #[test]
 fn format_operations_validate_policy_and_keep_reinterpretation_byte_exact() {
-    let original = b"<p>First</p><p>Second</p>";
+    let original = b"**First**\n\nSecond";
     for operation in [
         VIEM_FORMAT_OPERATION_REINTERPRET,
         VIEM_FORMAT_OPERATION_CONVERT,
@@ -1955,7 +1951,7 @@ fn format_operations_validate_policy_and_keep_reinterpretation_byte_exact() {
         let core = create_core(
             original,
             ViemDocumentOptions {
-                format: VIEM_FORMAT_HTML_SOURCE,
+                format: VIEM_FORMAT_MARKDOWN_SOURCE,
                 ..ViemDocumentOptions::default()
             },
         );
@@ -2240,150 +2236,6 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
 
     assert_eq!(viem_core_view_remove(core.handle, first), ViemStatus::Ok);
     assert_eq!(viem_core_view_remove(core.handle, second), ViemStatus::Ok);
-}
-
-#[test]
-fn html_style_definition_policy_is_revision_bound_shared_and_undoable() {
-    for format in [VIEM_FORMAT_HTML, VIEM_FORMAT_HTML_SOURCE] {
-        let source = b"<p>Text</p><!--preserve-->";
-        let core = create_core(
-            source,
-            ViemDocumentOptions {
-                format,
-                ..ViemDocumentOptions::default()
-            },
-        );
-        let mut context = Box::new(FakeProviderContext::new(core.handle));
-        let (view, mut outcome) = add_test_view(&core, &mut *context);
-        let before = document_state(&core);
-        assert_eq!(
-            before.flags & VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
-            0
-        );
-        let valid = ViemSetIncludeStyleDefinitionsV1 {
-            enabled: 1,
-            document_id: before.document_id,
-            document_revision: before.document_revision,
-            ..ViemSetIncludeStyleDefinitionsV1::default()
-        };
-        for (request, expected) in [
-            (
-                ViemSetIncludeStyleDefinitionsV1 {
-                    enabled: 2,
-                    ..valid
-                },
-                ViemStatus::InvalidArgument,
-            ),
-            (
-                ViemSetIncludeStyleDefinitionsV1 {
-                    struct_size: 0,
-                    ..valid
-                },
-                ViemStatus::InvalidArgument,
-            ),
-            (
-                ViemSetIncludeStyleDefinitionsV1 {
-                    document_id: before.document_id + 1,
-                    ..valid
-                },
-                ViemStatus::InvalidArgument,
-            ),
-            (
-                ViemSetIncludeStyleDefinitionsV1 {
-                    document_revision: before.document_revision + 1,
-                    ..valid
-                },
-                ViemStatus::StaleRevision,
-            ),
-        ] {
-            assert_eq!(
-                unsafe {
-                    viem_core_view_set_include_style_definitions(
-                        core.handle,
-                        view,
-                        &request,
-                        &mut outcome,
-                    )
-                },
-                expected
-            );
-            assert_eq!(document_state(&core), before);
-        }
-        assert_eq!(
-            unsafe {
-                viem_core_view_set_include_style_definitions(
-                    core.handle,
-                    view,
-                    &valid,
-                    &mut outcome,
-                )
-            },
-            ViemStatus::Ok
-        );
-        let enabled = document_state(&core);
-        assert_ne!(
-            enabled.flags & VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
-            0
-        );
-        assert_ne!(enabled.flags & VIEM_DOCUMENT_STATE_CAN_UNDO, 0);
-        let enabled_source = copy_core_bytes(
-            viem_core_copy_source_bytes,
-            &core,
-            enabled.document_revision,
-        );
-        assert!(enabled_source
-            .windows(b"<!--preserve-->".len())
-            .any(|bytes| bytes == b"<!--preserve-->"));
-        assert_eq!(
-            unsafe { viem_core_view_undo(core.handle, view, &mut outcome) },
-            ViemStatus::Ok
-        );
-        let undone = document_state(&core);
-        assert_eq!(
-            undone.flags & VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
-            0
-        );
-        assert_eq!(
-            copy_core_bytes(viem_core_copy_source_bytes, &core, undone.document_revision),
-            source
-        );
-        assert_eq!(
-            unsafe { viem_core_view_redo(core.handle, view, &mut outcome) },
-            ViemStatus::Ok
-        );
-        let redone = document_state(&core);
-        assert_ne!(
-            redone.flags & VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS,
-            0
-        );
-        assert_eq!(
-            copy_core_bytes(viem_core_copy_source_bytes, &core, redone.document_revision),
-            enabled_source
-        );
-    }
-    let core = create_core(
-        b"Text",
-        ViemDocumentOptions {
-            format: VIEM_FORMAT_PLAIN_TEXT,
-            ..ViemDocumentOptions::default()
-        },
-    );
-    let mut context = Box::new(FakeProviderContext::new(core.handle));
-    let (view, mut outcome) = add_test_view(&core, &mut *context);
-    let before = document_state(&core);
-    let request = ViemSetIncludeStyleDefinitionsV1 {
-        enabled: 1,
-        document_id: before.document_id,
-        document_revision: before.document_revision,
-        ..ViemSetIncludeStyleDefinitionsV1::default()
-    };
-    assert_eq!(
-        unsafe {
-            viem_core_view_set_include_style_definitions(core.handle, view, &request, &mut outcome)
-        },
-        ViemStatus::UnsupportedOperation
-    );
-    assert_eq!(document_state(&core), before);
 }
 
 #[test]
@@ -4758,11 +4610,6 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
 fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable() {
     use viem_core::document::{Document, Encoding, Format, ParagraphAlignment};
     for (format, source, adapter) in [
-        (
-            VIEM_FORMAT_HTML,
-            "<p data-x='keep'>Alpha</p><p>Beta</p>",
-            Format::Html,
-        ),
         (VIEM_FORMAT_RTF, r"{\rtf1 Alpha\par Beta}", Format::Rtf),
     ] {
         let core = create_core(
@@ -5022,7 +4869,7 @@ fn native_direct_properties_and_decoration_queries_are_typed_exact_and_undoable(
 #[test]
 fn rich_bold_and_italic_toggle_states_include_default_gaps() {
     for (format, source) in [
-        (VIEM_FORMAT_HTML, "<p><b><i>A</i></b>B</p>"),
+
         (VIEM_FORMAT_RTF, r"{\rtf1{\b\i A}B}"),
     ] {
         let core = create_core(
@@ -5069,71 +4916,9 @@ fn rich_bold_and_italic_toggle_states_include_default_gaps() {
 }
 
 #[test]
-fn native_select_all_nested_html_decoration_round_trips_query_state() {
-    let source = "<p><b data-keep='yes'>Words</b></p><!--keep-->";
-    let core = create_core(
-        source.as_bytes(),
-        ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
-            ..Default::default()
-        },
-    );
-    let mut provider = Box::new(FakeProviderContext::new(core.handle));
-    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
-    for character in ['g', 'g', 'V', 'G'] {
-        assert_eq!(
-            unsafe {
-                test_send_key(
-                    core.handle,
-                    view,
-                    &key(VIEM_KEY_CHARACTER, character as u32),
-                    &mut outcome,
-                )
-            },
-            ViemStatus::Ok
-        );
-    }
-    for property in [
-        VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
-        VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
-    ] {
-        let mut selection = ViemLogicalSelectionIdentityV1::default();
-        assert_eq!(
-            unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) },
-            ViemStatus::Ok
-        );
-        let request = ViemDirectStyleEditV1 {
-            struct_size: VIEM_DIRECT_STYLE_EDIT_V1_SIZE,
-            operation: VIEM_STYLE_EDIT_SET_DECLARATION,
-            property,
-            expected_selection: selection,
-            value: ViemStyleEditValueV1 {
-                kind: VIEM_STYLE_VALUE_BOOLEAN,
-                enum_value: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert_eq!(
-            unsafe { viem_core_view_edit_direct_style(core.handle, view, &request, &mut outcome) },
-            ViemStatus::Ok
-        );
-        let mut state = u32::MAX;
-        assert_eq!(
-            unsafe { viem_core_view_decoration_state(core.handle, view, property, &mut state) },
-            ViemStatus::Ok
-        );
-        assert_eq!(state, VIEM_SEMANTIC_STYLE_STATE_ON);
-    }
-}
-
-#[test]
 fn rich_decoration_state_remains_on_after_select_all_linewise_toggle() {
     for (format, source) in [
-        (
-            VIEM_FORMAT_HTML,
-            "<p><b data-keep='yes'>Words</b></p><!--keep-->",
-        ),
+
         (VIEM_FORMAT_RTF, r"{\rtf1{\b Words}{\*\opaque keep}}"),
     ] {
         let core = create_core(
@@ -5188,130 +4973,6 @@ fn rich_decoration_state_remains_on_after_select_all_linewise_toggle() {
         );
         assert_eq!(state, VIEM_SEMANTIC_STYLE_STATE_ON, "format {format}");
     }
-}
-
-#[test]
-fn native_scalar_visual_change_keeps_the_entire_html_inline_style() {
-    let source = "<p>Bold <b foo='keep'>words</b> and &#x26; text.</p><!--keep-->";
-    let core = create_core(
-        source.as_bytes(),
-        ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
-            ..Default::default()
-        },
-    );
-    let mut provider = Box::new(FakeProviderContext::new(core.handle));
-    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
-    for character in "wvecORDS".chars() {
-        let text = character.to_string();
-        assert_eq!(
-            unsafe {
-                test_send_text(
-                    core.handle,
-                    view,
-                    text.as_ptr(),
-                    text.len() as u64,
-                    &mut outcome,
-                )
-            },
-            ViemStatus::Ok
-        );
-    }
-    assert_eq!(
-        unsafe {
-            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
-        },
-        ViemStatus::Ok
-    );
-    let bytes = copy_core_bytes(
-        viem_core_copy_source_bytes,
-        &core,
-        document_state(&core).document_revision,
-    );
-    assert!(
-        String::from_utf8_lossy(&bytes).contains("<b foo='keep'>ORDS</b>"),
-        "{}",
-        String::from_utf8_lossy(&bytes)
-    );
-    assert_eq!(
-        unsafe { viem_core_view_undo(core.handle, view, &mut outcome) },
-        ViemStatus::Ok
-    );
-    assert_eq!(
-        copy_core_bytes(
-            viem_core_copy_source_bytes,
-            &core,
-            document_state(&core).document_revision
-        ),
-        source.as_bytes()
-    );
-}
-
-#[test]
-fn native_scalar_typing_after_html_heading_enter_uses_the_new_paragraph() {
-    let source = "<h2>Heading</h2><p>Tail</p>";
-    let core = create_core(
-        source.as_bytes(),
-        ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
-            ..Default::default()
-        },
-    );
-    let mut provider = Box::new(FakeProviderContext::new(core.handle));
-    let (view, mut outcome) = add_test_view(&core, provider.as_mut());
-    assert_eq!(
-        unsafe { test_send_text(core.handle, view, b"A".as_ptr(), 1, &mut outcome) },
-        ViemStatus::Ok
-    );
-    assert_eq!(
-        unsafe {
-            test_send_key(core.handle, view, &key(VIEM_KEY_ENTER, 0), &mut outcome)
-        },
-        ViemStatus::Ok
-    );
-    for character in "Body".chars() {
-        let text = character.to_string();
-        assert_eq!(
-            unsafe {
-                test_send_text(
-                    core.handle,
-                    view,
-                    text.as_ptr(),
-                    text.len() as u64,
-                    &mut outcome,
-                )
-            },
-            ViemStatus::Ok
-        );
-    }
-    assert_eq!(
-        unsafe {
-            test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome)
-        },
-        ViemStatus::Ok
-    );
-    let bytes = copy_core_bytes(
-        viem_core_copy_source_bytes,
-        &core,
-        document_state(&core).document_revision,
-    );
-    assert!(
-        String::from_utf8_lossy(&bytes).contains("</h2><p>Body</p>"),
-        "{}",
-        String::from_utf8_lossy(&bytes)
-    );
-    assert_eq!(
-        unsafe { viem_core_view_undo(core.handle, view, &mut outcome) },
-        ViemStatus::Ok
-    );
-    assert_eq!(
-        copy_core_bytes(
-            viem_core_copy_source_bytes,
-            &core,
-            document_state(&core).document_revision
-        ),
-        source.as_bytes()
-    );
 }
 
 #[test]
@@ -5382,9 +5043,9 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
 #[test]
 fn typography_export_is_exact_batched_stale_checked_and_includes_mixed_default_gaps() {
     let core = create_core(
-        b"<p style='font-family:Arial;font-size:20pt'><b>A</b>B</p>",
+        br"{\rtf1{\fonttbl{\f0 Arial;}}\f0\fs40{\b A}B}",
         ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
+            format: VIEM_FORMAT_RTF,
             ..Default::default()
         },
     );
@@ -5477,11 +5138,11 @@ fn typography_export_is_exact_batched_stale_checked_and_includes_mixed_default_g
 
 #[test]
 fn direct_character_batch_is_atomic_and_rejects_duplicate_stale_or_overlapping_requests() {
-    let original = b"<p>Text</p><!--keep-->";
+    let original = br"{\rtf1 Text}{\*\unknown keep}";
     let core = create_core(
         original,
         ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
+            format: VIEM_FORMAT_RTF,
             ..Default::default()
         },
     );
@@ -5852,9 +5513,9 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
 #[test]
 fn native_format_setter_returns_owned_loss_warning_and_stale_retry_is_inert() {
     let core = create_core(
-        b"<p>Body</p><!-- preserved until conversion -->",
+        br"{\rtf1 Body}{\*\unknown preserved until conversion}",
         ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
+            format: VIEM_FORMAT_RTF,
             ..ViemDocumentOptions::default()
         },
     );
@@ -6169,8 +5830,8 @@ fn link_destination_ffi_checks_snapshot_boundaries_and_output_aliases() {
 
 #[test]
 fn script_position_abi_uses_an_enum_and_typography_exports_current_colors() {
-    let source = b"<p><span style='background-color:#123456'><sup>A</sup></span>B</p>";
-    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_HTML, ..Default::default() });
+    let source = br"{\rtf1{\colortbl;\red18\green52\blue86;}{\highlight1\super A}B}";
+    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_RTF, ..Default::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, provider.as_mut());
     let mut info = ViemTypographyInfoV1::default();
@@ -6206,8 +5867,8 @@ fn script_position_abi_uses_an_enum_and_typography_exports_current_colors() {
 
 #[test]
 fn formatting_batch_and_snapshot_check_sizes_nested_aliases_and_exact_two_pass_identity() {
-    let source = b"<p>A</p>";
-    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_HTML, ..Default::default() });
+    let source = br"{\rtf1 A}";
+    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_RTF, ..Default::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, provider.as_mut());
     assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, 'v' as u32), &mut outcome) }, ViemStatus::Ok);
@@ -6265,15 +5926,15 @@ fn formatting_batch_and_snapshot_check_sizes_nested_aliases_and_exact_two_pass_i
 fn formatting_snapshot_handles_inline_style_boundary_inside_selected_grapheme() {
     use viem_core::document::{Document, Encoding, Format};
 
-    let source = b"<p style='text-align:center'><b>A</b>&#x301;B</p>";
-    let projected = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Html).unwrap();
+    let source = br"{\rtf1\qc {\b A}\u769?B}";
+    let projected = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
     assert!(projected.projection().style_spans().iter().any(|span| {
         span.range.start == 1 || span.range.end == 1
     }));
     let core = create_core(
         source,
         ViemDocumentOptions {
-            format: VIEM_FORMAT_HTML,
+            format: VIEM_FORMAT_RTF,
             ..Default::default()
         },
     );

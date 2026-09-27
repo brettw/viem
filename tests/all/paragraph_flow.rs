@@ -58,11 +58,6 @@ fn source_flow_is_view_local_reversible_and_retains_pre_code_rows() {
             "One\ntwo.\n\n```\ncode\nlines\n```\nLast.",
             6,
         ),
-        (
-            Format::HtmlSource,
-            "<p>One\ntwo.</p>\n<pre>code\nlines</pre>\n<p>Last.</p>",
-            4,
-        ),
     ] {
         let mut core = Core::new(open(source, format));
         let first = core.add_view(MockTextMeasurementProvider::new(), 2000.0, 800.0);

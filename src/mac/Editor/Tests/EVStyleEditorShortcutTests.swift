@@ -30,7 +30,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         }
         for (command, enabled) in [
             (EVMenuCommand.reinterpretAsText, false), (.reinterpretAsCode, false),
-            (.reinterpretAsMarkdown, true), (.reinterpretAsHTML, true),
+            (.reinterpretAsMarkdown, true),
             (.reinterpretAsText, false), (.reinterpretAsMarkdown, true),
         ] {
             surface.perform(menuCommand: command, sender: nil)

@@ -208,13 +208,13 @@ fn main() {
     let (bytes, format, filename) = match scenario {
         "markdown" => (markdown_fixture(size), Format::Markdown, "probe.md"),
         "markdown_source" => (markdown_fixture(size), Format::MarkdownSource, "probe.md"),
-        "html" => (html_fixture(size), Format::Html, "probe.html"),
+        "html" => (html_fixture(size), Format::Code, "probe.html"),
         "code" => (code_fixture(size), Format::Code, "probe.rs"),
         "text" => (text_fixture(size / 37), Format::PlainText, "probe.txt"),
         other => panic!("unknown scenario {other}"),
     };
     let source_bytes = bytes.len();
-    let syntax = scenario == "code";
+    let syntax = format.is_code();
     let mut report = serde_json::Map::new();
     let started = Instant::now();
 

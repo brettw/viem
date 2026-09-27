@@ -411,10 +411,6 @@ _Static_assert(sizeof(ViemSetFileFormatV1) == {set_file_format},
     "set file format");
 _Static_assert(VIEM_SET_FILE_FORMAT_V1_SIZE == sizeof(ViemSetFileFormatV1),
     "set file format size macro");
-_Static_assert(sizeof(ViemSetIncludeStyleDefinitionsV1) == {set_include_style_definitions},
-    "set include style definitions");
-_Static_assert(VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE == sizeof(ViemSetIncludeStyleDefinitionsV1),
-    "set include style definitions size macro");
 _Static_assert(sizeof(ViemMarkSavedV1) == {mark_saved}, "mark saved");
 _Static_assert(VIEM_MARK_SAVED_V1_SIZE == sizeof(ViemMarkSavedV1),
     "mark saved size macro");
@@ -461,6 +457,14 @@ static void typecheck(void) {{
       ViemFormattedPointInfoV1 *) = viem_core_formatted_point_info;
   ViemStatus (*mark_saved)(ViemCoreHandle, const ViemMarkSavedV1 *) =
       viem_core_mark_saved;
+  ViemStatus (*prepare_html_export)(ViemCoreHandle, ViemViewId, uint64_t,
+      ViemHtmlExportHandle *) = viem_core_prepare_html_export;
+  ViemStatus (*render_html_export)(ViemHtmlExportHandle) = viem_html_export_render;
+  ViemStatus (*copy_html_export)(ViemHtmlExportHandle, uint8_t *, uint64_t,
+      uint64_t *) = viem_html_export_copy_utf8;
+  ViemStatus (*release_html_export)(ViemHtmlExportHandle) = viem_html_export_release;
+  ViemStatus (*import_clipboard)(uint32_t, const uint8_t *, uint64_t,
+      uint8_t *, uint64_t, uint64_t *) = viem_import_clipboard_json;
   ViemStatus (*style_sheet_info)(ViemCoreHandle, ViemStyleSheetInfoV1 *) =
       viem_core_style_sheet_info;
   ViemStatus (*copy_style_sheet)(ViemCoreHandle,
@@ -531,9 +535,6 @@ static void typecheck(void) {{
   ViemStatus (*set_file_format)(ViemCoreHandle, ViemViewId,
       const ViemSetFileFormatV1 *, ViemCoreOutcomeV1 *) =
       viem_core_view_set_file_format;
-  ViemStatus (*set_include_style_definitions)(ViemCoreHandle, ViemViewId,
-      const ViemSetIncludeStyleDefinitionsV1 *, ViemCoreOutcomeV1 *) =
-      viem_core_view_set_include_style_definitions;
   ViemStatus (*edit_style)(ViemCoreHandle, ViemViewId,
       const ViemStyleEditV1 *, ViemCoreOutcomeV1 *) =
       viem_core_view_edit_style;
@@ -615,7 +616,8 @@ static void typecheck(void) {{
   (void)use_selection_for_find; (void)reveal_selection;
   (void)set_viewport_origin; (void)set_scale;
   (void)set_linebreak; (void)set_file_format;
-  (void)set_include_style_definitions;
+  (void)prepare_html_export; (void)render_html_export; (void)copy_html_export;
+  (void)release_html_export; (void)import_clipboard;
   (void)edit_style; (void)begin_style_group; (void)edit_style_in_group;
   (void)assign_style;
   (void)create_style; (void)delete_style;
@@ -736,7 +738,6 @@ static void typecheck(void) {{
         create_style = std::mem::size_of::<ViemCreateStyleV1>(),
         delete_style = std::mem::size_of::<ViemDeleteStyleV1>(),
         set_file_format = std::mem::size_of::<ViemSetFileFormatV1>(),
-        set_include_style_definitions = std::mem::size_of::<ViemSetIncludeStyleDefinitionsV1>(),
         mark_saved = std::mem::size_of::<ViemMarkSavedV1>(),
         key = std::mem::size_of::<ViemKeyInputV1>(),
         composition_begin = std::mem::size_of::<ViemCompositionBeginV1>(),

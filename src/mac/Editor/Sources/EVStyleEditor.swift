@@ -411,7 +411,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         stylePopup.setAccessibilityLabel("Style")
         stylePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        newStylePopup.addItems(withTitles: ["New", "New Paragraph Style", "New Character Style", "New Container Style"])
+        newStylePopup.addItems(withTitles: ["New", "New Paragraph Style", "New Character Style"])
         newStylePopup.target = self
         newStylePopup.action = #selector(newStylePressed(_:))
         newStylePopup.setAccessibilityLabel("Create style")
@@ -648,21 +648,19 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             }
         }
         guard let document, let session = document.session,
-              [.html, .htmlSource, .rtf].contains(document.backend.sourceFormat) else { return false }
+              document.backend.sourceFormat == .rtf,
+              kind == .paragraph || kind == .character else { return false }
         return changeStyleCatalogue {
             let latest = try document.backend.styleSheetSnapshot()
             let prefix = kind == .paragraph ? "RtfP" : "RtfC"
-            let id: String
-            if document.backend.sourceFormat == .rtf {
-                let handles = Set(latest.definitions.compactMap { definition -> UInt32? in
-                    let id = definition.key.id.rawValue
-                    guard id.hasPrefix("RtfP") || id.hasPrefix("RtfC") else { return nil }
-                    return UInt32(id.dropFirst(4))
-                })
-                var handle: UInt32 = 1
-                while handles.contains(handle) { handle += 1 }
-                id = "\(prefix)\(handle)"
-            } else { id = UUID().uuidString.lowercased() }
+            let handles = Set(latest.definitions.compactMap { definition -> UInt32? in
+                let id = definition.key.id.rawValue
+                guard id.hasPrefix("RtfP") || id.hasPrefix("RtfC") else { return nil }
+                return UInt32(id.dropFirst(4))
+            })
+            var handle: UInt32 = 1
+            while handles.contains(handle) { handle += 1 }
+            let id = "\(prefix)\(handle)"
             let key = EVStyleKey(namespace: kind == .character ? .character : .block,
                                  id: EVStyleID(rawValue: id))
             let baseName = "New \(kind.displayName) Style"
@@ -672,12 +670,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                 name = "\(baseName) \(suffix)"
                 suffix += 1
             }
-            let parent = kind.isContainer
-                ? (latest.definition(for: self.selectedStyleKey)?.kind == kind
-                    ? self.selectedStyleKey.id : latest.definitions.first { $0.kind == kind }?.key.id)
-                : nil
-            guard !kind.isContainer || parent != nil else { return }
-            _ = try session.createStyle(key, name: name, parent: parent, identity: latest.identity)
+            _ = try session.createStyle(key, name: name, identity: latest.identity)
             self.selectedStyleKey = key
         }
     }
@@ -850,10 +843,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
-        newStylePopup.isEnabled = codeSession != nil || (document.map { [.html, .htmlSource, .rtf].contains($0.backend.sourceFormat) } ?? false)
+        newStylePopup.isEnabled = codeSession != nil || (document.map { $0.backend.sourceFormat == .rtf } ?? false)
         newStylePopup.item(at: 1)?.isHidden = codeSession != nil
-        newStylePopup.item(at: 3)?.isHidden = codeSession != nil || document?.backend.sourceFormat == .rtf
-        newStylePopup.item(at: 3)?.isEnabled = snapshot.definitions.contains { $0.kind.isContainer }
         deleteStyleButton.isEnabled = definition.capabilities.contains(.delete)
         nameField.stringValue = definition.name
         nameDraftIsInvalid = false
@@ -1313,9 +1304,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func newStylePressed(_ sender: NSPopUpButton) {
-        let kind: EVStyleKind = sender.indexOfSelectedItem == 3
-            ? (selectedDefinition?.kind.isContainer == true ? selectedDefinition!.kind : .quote)
-            : sender.indexOfSelectedItem == 2 ? .character : .paragraph
+        let kind: EVStyleKind = sender.indexOfSelectedItem == 2 ? .character : .paragraph
         if createStyle(kind: kind) { view.window?.makeFirstResponder(nameField) }
     }
 

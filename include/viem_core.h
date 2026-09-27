@@ -16,6 +16,8 @@ extern "C" {
 typedef uint64_t ViemCoreHandle;
 /* Owned immutable command-turn effects; zero means no effects. */
 typedef uint64_t ViemEffectBatchHandle;
+/* Owned immutable standalone HTML export; release after copying its bytes. */
+typedef uint64_t ViemHtmlExportHandle;
 typedef uint64_t ViemViewId;
 typedef uint32_t ViemStatus;
 
@@ -73,10 +75,8 @@ typedef uint32_t ViemStatus;
 
 #define VIEM_FORMAT_PLAIN_TEXT 1u
 #define VIEM_FORMAT_MARKDOWN 2u
-#define VIEM_FORMAT_HTML 3u
 #define VIEM_FORMAT_RTF 4u
 #define VIEM_FORMAT_MARKDOWN_SOURCE 5u
-#define VIEM_FORMAT_HTML_SOURCE 6u
 #define VIEM_FORMAT_CODE 7u
 
 #define VIEM_FILE_FORMAT_DETECT 0u
@@ -102,7 +102,6 @@ typedef uint32_t ViemStatus;
 #define VIEM_DOCUMENT_STATE_IS_DIRTY (1u << 3)
 #define VIEM_DOCUMENT_STATE_READ_ONLY (1u << 4)
 #define VIEM_DOCUMENT_STATE_RECOVERED (1u << 5)
-#define VIEM_DOCUMENT_STATE_INCLUDE_STYLE_DEFINITIONS (1u << 6)
 
 typedef struct ViemDocumentOptions {
   uint32_t struct_size;
@@ -1750,17 +1749,6 @@ typedef struct ViemSetFileFormatV1 {
 #define VIEM_SET_FILE_FORMAT_V1_SIZE \
   ((uint32_t)sizeof(ViemSetFileFormatV1))
 
-/* Shared HTML style-serialization policy bound to one exact snapshot. */
-typedef struct ViemSetIncludeStyleDefinitionsV1 {
-  uint32_t struct_size;
-  uint32_t enabled;
-  uint64_t document_id;
-  uint64_t document_revision;
-} ViemSetIncludeStyleDefinitionsV1;
-
-#define VIEM_SET_INCLUDE_STYLE_DEFINITIONS_V1_SIZE \
-  ((uint32_t)sizeof(ViemSetIncludeStyleDefinitionsV1))
-
 #define VIEM_FORMAT_OPERATION_REINTERPRET 0u
 #define VIEM_FORMAT_OPERATION_CONVERT 1u
 
@@ -2415,8 +2403,8 @@ ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, 
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
 /* View-local command policy; physical source lines are unsupported for RTF. */
-/* WYS Markdown/HTML flow structurally; source modes default off per view.
-   Setter is supported for Markdown Source and HTML Source only. */
+/* Markdown flows structurally; Markdown Source defaults off per view.
+   Setter is supported for Markdown Source only. */
 ViemStatus viem_core_view_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t enabled, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t *out_mode);
@@ -2433,11 +2421,6 @@ ViemStatus viem_core_view_set_linebreak(ViemCoreHandle core, ViemViewId view,
 ViemStatus viem_core_view_set_file_format(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetFileFormatV1 *request, ViemCoreOutcomeV1 *out_outcome);
-/* HTML and HTML Source only. Enabled must be 0 or 1. Undoable and shared. */
-ViemStatus viem_core_view_set_include_style_definitions(
-    ViemCoreHandle core, ViemViewId view,
-    const ViemSetIncludeStyleDefinitionsV1 *request,
-    ViemCoreOutcomeV1 *out_outcome);
 
 ViemStatus viem_core_view_list_selection(
     ViemCoreHandle core, ViemViewId view,
@@ -2554,6 +2537,28 @@ ViemStatus viem_core_copy_source_bytes(ViemCoreHandle core,
                                        uint8_t *output,
                                        uint64_t output_capacity,
                                        uint64_t *out_required);
+/* Capture a standalone UTF-8 HTML export without changing the editing session.
+ * Call with the frontend's other serialized core operations. No providers run
+ * during capture. The handle owns an immutable snapshot that survives editing,
+ * view closure, and core destruction. On failure out_export is zero (provided
+ * its storage is valid). Release the handle after rendering/copying or failure. */
+ViemStatus viem_core_prepare_html_export(ViemCoreHandle core,
+                                         ViemViewId view,
+                                         uint64_t expected_revision,
+                                         ViemHtmlExportHandle *out_export);
+/* Render a prepared handle once, then copy its bytes. This may wait for syntax
+ * workers and should run on a background thread. It never accesses the live core
+ * or invokes its measurement provider. Markdown Source exports semantics; Code
+ * analyzes the complete captured snapshot, including offscreen text.
+ * Rendering twice, or copying before render succeeds, returns INVALID_ARGUMENT. */
+ViemStatus viem_html_export_render(ViemHtmlExportHandle export_handle);
+/* Two-pass copy from one owned result. BUFFER_TOO_SMALL reports the exact size
+ * without writing output. Output and out_required must be disjoint. */
+ViemStatus viem_html_export_copy_utf8(ViemHtmlExportHandle export_handle,
+                                     uint8_t *output,
+                                     uint64_t output_capacity,
+                                     uint64_t *out_required);
+ViemStatus viem_html_export_release(ViemHtmlExportHandle export_handle);
 ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
                                          uint64_t expected_revision,
                                          uint8_t *output,
@@ -2616,6 +2621,13 @@ ViemStatus viem_core_copy_hard_line_source_bytes(ViemCoreHandle core, uint64_t d
  * Ranges are exact formatted snapshots. Effects remain valid after mutations.
  * source_text is the decoded authored source fragment; source_bytes retains its
  * encoding. Only is_rich payloads should be published as private/rich types. */
+/* Passive rich clipboard import, independent of document source formats. */
+#define VIEM_CLIPBOARD_FORMAT_HTML 1u
+#define VIEM_CLIPBOARD_FORMAT_RTF 2u
+ViemStatus viem_import_clipboard_json(uint32_t format, const uint8_t *source,
+    uint64_t source_length, uint8_t *output, uint64_t output_capacity,
+    uint64_t *out_required);
+
 ViemStatus viem_core_copy_clipboard_json(
     ViemCoreHandle handle, const ViemFormattedUtf8RangeV1 *request,
     uint8_t *output, uint64_t output_capacity, uint64_t *out_required);

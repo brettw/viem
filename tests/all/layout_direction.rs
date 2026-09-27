@@ -6,11 +6,9 @@ use viem_core::layout::{
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
 
-fn html(body: &str) -> Document {
-    let source = format!(
-        "<ol><li style='margin-inline-start:40pt;margin-inline-end:8pt;text-indent:0pt'>{body}</li></ol>"
-    );
-    Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap()
+fn ordered_list(body: &str) -> Document {
+    let source = format!("1. {body}");
+    Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap()
 }
 
 fn leading_x(document: &Document, rtl: bool) -> f32 {
@@ -33,7 +31,7 @@ fn numeric_and_isolated_prefixes_choose_the_correct_list_gutter() {
         ("\u{2066}English\u{2069} 2026 שלום", true),
         ("\u{2067}שלום\u{2069} 2026 English", false),
     ] {
-        let document = html(&format!("{prefix} {}", "word שלום ".repeat(12)));
+        let document = ordered_list(&format!("{prefix} {}", "word שלום ".repeat(12)));
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(200., 200.);
         engine.relayout(&document, &mut view).unwrap();
@@ -58,11 +56,9 @@ fn numeric_and_isolated_prefixes_choose_the_correct_list_gutter() {
 
 #[test]
 fn first_strong_edit_changes_the_gutter_and_reuses_unchanged_line_shaping() {
-    let source = "<ol>".to_owned()
-        + &"<li style='margin-inline-start:40pt;margin-inline-end:8pt;text-indent:0pt'>2026 שלום עולם word word word word</li>".repeat(1_000)
-        + "</ol>";
+    let source = "1. 2026 שלום עולם word word word word\n".repeat(1_000).trim_end().to_owned();
     let mut document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     engine.set_cache_capacity(1_100);
     // Isolate edit invalidation with both prose and all 1,000 distinct list
@@ -101,7 +97,7 @@ fn first_strong_edit_changes_the_gutter_and_reuses_unchanged_line_shaping() {
 
 #[test]
 fn long_line_checkpoints_keep_the_initial_rtl_direction_without_recapturing_the_prefix() {
-    let document = html(&format!("2026 שלום {}", "English words ".repeat(20_000)));
+    let document = ordered_list(&format!("2026 שלום {}", "English words ".repeat(20_000)));
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let requirements = inspect_layout_provider(&engine);
     let mut view = ViewLayout::new(200., 100.);

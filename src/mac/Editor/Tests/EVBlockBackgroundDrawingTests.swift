@@ -6,46 +6,36 @@ import XCTest
 
 @MainActor
 final class EVBlockBackgroundDrawingTests: XCTestCase {
-    func testNestedBackgroundsAndBordersCompositeOnceOverTheirParents() throws {
+
+    func testNestedQuoteBackgroundsCompositeOnceOverTheirParents() throws {
         let prior = EVThemeStore.shared.theme
         EVThemeStore.shared.update(.paper)
         defer { EVThemeStore.shared.update(prior) }
-        for alpha in [1.0, 0.5, 0.0] {
-            let html = """
-            <blockquote style='margin:0;padding:16pt;border:4pt solid rgba(0,0,0,\(alpha));background:rgba(255,0,0,\(alpha))'>
-            <p style='margin:0;padding:12pt;background:rgba(0,255,0,\(alpha))'>Outer paragraph</p>
-            <blockquote style='margin:10pt 0;padding:16pt;border:4pt solid rgba(0,0,0,\(alpha));background:rgba(0,0,255,\(alpha))'>
-            <p style='margin:0;padding:12pt;background:rgba(0,255,0,\(alpha))'>Inner paragraph</p>
-            </blockquote><p style='margin:0;padding:12pt'>Last paragraph</p></blockquote>
-            """
-            let surface = try makeSurface(html)
-            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-            let backgrounds = snapshot.decorations.filter { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0 }
-            let green = try XCTUnwrap(backgrounds.last { $0.paint.foreground.green == 1 })
-            let topBorders = snapshot.decorations.filter {
-                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BORDER) != 0
-                    && $0.typographic_bounds.height == 4 && $0.typographic_bounds.width > 20
-            }.sorted { $0.typographic_bounds.y < $1.typographic_bounds.y }
-            let outer = surface.editorView.viewRect(try XCTUnwrap(topBorders.first).typographic_bounds)
-            let inner = surface.editorView.viewRect(try XCTUnwrap(topBorders.dropFirst().first).typographic_bounds)
-            let image = try bitmap(surface.editorView)
-            let red = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: alpha)
-            let blue = NSColor(srgbRed: 0, green: 0, blue: 1, alpha: alpha)
-            let greenColor = NSColor(srgbRed: 0, green: 1, blue: 0, alpha: alpha)
-            let black = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: alpha)
-            assertPixel(image, at: CGPoint(x: outer.minX + 6, y: outer.minY + 6), equals: try composite([red]))
-            assertPixel(image, at: CGPoint(x: inner.minX + 6, y: inner.minY + 6), equals: try composite([red, blue]))
-            let paragraph = surface.editorView.viewRect(green.typographic_bounds)
-            assertPixel(image, at: CGPoint(x: paragraph.minX + 3, y: paragraph.minY + 3),
-                        equals: try composite([red, blue, greenColor]))
-            // Corners and straight edges receive one border layer; background
-            // ends at the inside edge of the border.
-            for x in [outer.minX + 2, outer.midX] {
-                assertPixel(image, at: CGPoint(x: x, y: outer.minY + 2), equals: try composite([black]))
+        let source = "> Outer paragraph\n>\n>> Inner paragraph"
+        for alpha: Float in [1, 0.5, 0] {
+            let surface = try makeSurface(source)
+            let session = try XCTUnwrap(surface.session)
+            let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Block quote"))
+            for (property, value) in [
+                (EVStyleProperty.blockBackground, EVStyleValue.color(.init(red: 1, green: 0, blue: 0, alpha: alpha))),
+                (.blockPaddingLeft, .float(16)), (.blockPaddingTop, .float(16)),
+                (.blockPaddingBottom, .float(16)), (.blockPaddingRight, .float(16)),
+            ] {
+                try session.editStyle(key: key, expected: surface.backend.styleSheetSnapshot().identity,
+                    mutation: .setDeclaration(property, value))
             }
-            assertPixel(image, at: CGPoint(x: inner.minX + 2, y: inner.minY + 2), equals: try composite([red, black]))
-            XCTAssertEqual(backgrounds.first { $0.paint.foreground.blue == 1 }?.paint.foreground.alpha, Float(alpha))
-            XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.htmlType), Data(html.utf8))
+            surface.refreshPresentation()
+            let fills = try XCTUnwrap(surface.layoutSnapshot).decorations.filter {
+                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0
+            }.map { surface.editorView.viewRect($0.typographic_bounds) }.sorted { $0.minX < $1.minX }
+            let outer = try XCTUnwrap(fills.first)
+            let inner = try XCTUnwrap(fills.last)
+            XCTAssertGreaterThan(inner.minX, outer.minX)
+            let image = try bitmap(surface.editorView)
+            let red = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: CGFloat(alpha))
+            assertPixel(image, at: CGPoint(x: outer.minX + 6, y: outer.minY + 6), equals: try composite([red]))
+            assertPixel(image, at: CGPoint(x: inner.minX + 6, y: inner.minY + 6), equals: try composite([red, red]))
+            XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
         }
     }
 
@@ -104,7 +94,12 @@ final class EVBlockBackgroundDrawingTests: XCTestCase {
     }
 
     func testPartialRepaintOfTranslucentBackgroundMatchesFullRepaint() throws {
-        let surface = try makeSurface("<blockquote style='margin:0;padding:20pt;background:rgba(255,0,0,.5)'><blockquote style='margin:0;padding:20pt;background:rgba(0,0,255,.5)'><p>Text</p></blockquote></blockquote>")
+        let surface = try makeSurface("> Outer\n>\n>> Text")
+        let session = try XCTUnwrap(surface.session)
+        let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Block quote"))
+        try session.editStyle(key: key, expected: surface.backend.styleSheetSnapshot().identity,
+            mutation: .setDeclaration(.blockBackground, .color(EVStyleColor(red: 1, green: 0, blue: 0, alpha: 0.5))))
+        surface.refreshPresentation()
         let context = try context(surface.editorView)
         draw(surface.editorView, into: context, dirty: surface.editorView.bounds)
         let before = try XCTUnwrap(context.makeImage().flatMap { $0.dataProvider?.data }) as Data
@@ -117,7 +112,7 @@ final class EVBlockBackgroundDrawingTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-background-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data(source.utf8), typeName: requestedType ?? EVDocument.htmlType)
+        try backend.read(source: Data(source.utf8), typeName: requestedType ?? EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 500, height: 400)

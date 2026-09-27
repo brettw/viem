@@ -11,8 +11,6 @@ fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_ty
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
-        (Format::Html, "<p>word</p><!--keep-->", 0),
-        (Format::HtmlSource, "<p>word</p><!--keep-->", 3),
         (Format::Rtf, r"{\rtf1 word}", 0),
     ] {
         let mut core = Core::new(

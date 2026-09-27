@@ -51,21 +51,21 @@ import XCTest
     func testNativeRTFCopyRetainsSuperscriptAndSubscriptSemantics() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p>x<sup>2</sup> H<sub>2</sub>O</p>"
-        let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = #"{\rtf1{\pard x{\super 2} H{\sub 2}O}}"#
+        let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         try selectAll(session: session, surface: view)
         view.editorView.copyDocumentSelection(nil)
         let attributed = try richText(pasteboard, expected: "x2 H2O")
         XCTAssertEqual((attributed.attribute(.superscript, at: 1, effectiveRange: nil) as? NSNumber)?.intValue, 1)
         XCTAssertEqual((attributed.attribute(.superscript, at: 4, effectiveRange: nil) as? NSNumber)?.intValue, -1)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
     }
 
     func testNativeCopyExportsVisibleUnicodeWithCharacterAndParagraphFormatting() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p style='text-align:end;margin-block-end:12pt'><b>Bold 👩‍💻</b> <i>café العربية</i><br><span style='color:#336699'>中</span></p>"
-        let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = #"{\rtf1{\colortbl;\red51\green102\blue153;}{\pard \qr \sa240 {\b Bold \u-10179?\u-9111?\u8205?\u-10179?\u-9029?} {\i caf\u233? \u1575?\u1604?\u1593?\u1585?\u1576?\u1610?\u1577?}\line {\cf1 \u20013?}}}"#
+        let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         try selectAll(session: session, surface: view)
         view.editorView.copyDocumentSelection(nil)
         let attributed = try richText(pasteboard, expected: "Bold 👩‍💻 café العربية\n中")
@@ -79,7 +79,7 @@ import XCTest
         let paragraph = try XCTUnwrap(attributed.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(paragraph.alignment, .right)
         XCTAssertEqual(paragraph.paragraphSpacing, 12, accuracy: 0.1)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertNil(view.commandOutput)
     }
@@ -107,12 +107,12 @@ import XCTest
     }
 
     func testPlatformCopyRetainsVimCharacterLineAndBlockSelectionsInBothDirections() throws {
-        let source = "<p><b>one two</b> three</p><p>four five</p>"
+        let source = #"{\rtf1{\pard {\b one two} three}\par {\pard four five}}"#
         for sequence in ["vll", "vllo", "Vj", "Vjo", "\u{16}lj", "\u{16}ljo"] {
             for useSelector in [false, true] {
                 let pasteboard = NSPasteboard.withUniqueName()
                 defer { pasteboard.releaseGlobally() }
-                let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+                let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
                 for scalar in sequence.unicodeScalars {
                     _ = try session.sendKey(kind: UInt32(scalar.value == 22 ? VIEM_KEY_CONTROL_CHARACTER : VIEM_KEY_CHARACTER), codepoint: scalar.value == 22 ? 118 : scalar.value)
                 }
@@ -129,7 +129,7 @@ import XCTest
                 XCTAssertEqual(view.selectedUTF8Ranges(), ranges, sequence)
                 XCTAssertEqual(pasteboard.string(forType: .string), selected, sequence)
                 XCTAssertNotNil(pasteboard.data(forType: fragmentType))
-                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
                 XCTAssertNil(view.commandOutput)
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 121)
                 view.refreshPresentation()
@@ -139,11 +139,11 @@ import XCTest
     }
 
     func testPlatformCopyLeavesPendingMappingAndTemporaryVisualCommandUntouched() throws {
-        let source = "<p><b>abcdef</b></p>"
+        let source = #"{\rtf1{\pard {\b abcdef}}}"#
         for temporaryVisual in [false, true] {
             let pasteboard = NSPasteboard.withUniqueName()
             defer { pasteboard.releaseGlobally() }
-            let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+            let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
             if temporaryVisual {
                 _ = try session.selectAll()
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 111)
@@ -161,9 +161,9 @@ import XCTest
             XCTAssertEqual(view.viewPresentation.cursor_utf8_offset, before.cursor_utf8_offset)
             XCTAssertEqual(view.selectedUTF8Ranges(), ranges)
             _ = try richText(pasteboard, expected: temporaryVisual ? "abcdef" : "ab")
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
             try keys(temporaryVisual ? "y" : "d", session: session, surface: view)
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
             XCTAssertNil(view.commandOutput)
             if !temporaryVisual { XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL)) }
         }
@@ -172,8 +172,8 @@ import XCTest
     func testPartialCopyRetainsOriginalRTLParagraphDirectionForEndAlignment() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p style='text-align:end'>العربية English</p>"
-        let (_, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = #"{\rtf1{\pard \qr \u1575?\u1604?\u1593?\u1585?\u1576?\u1610?\u1577? English}}"#
+        let (_, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         // Only Latin text is selected. Its paragraph direction still comes
         // from the original paragraph's unselected first strong character.
         try keys("fEv$", session: session, surface: view)
@@ -185,11 +185,11 @@ import XCTest
         XCTAssertNil(view.commandOutput)
     }
 
-    func testHTMLHardBreakRemainsInsideOneRTFParagraph() throws {
+    func testHardBreakRemainsInsideOneRTFParagraph() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p style='margin-block-end:12pt'>a<br>b</p><p>tail</p>"
-        let (_, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = #"{\rtf1\pard\sa240 a\line b\par\pard tail}"#
+        let (_, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         try selectAll(session: session, surface: view)
         view.perform(menuCommand: .copy, sender: nil)
         let attributed = try richText(pasteboard, expected: "a\nb\ntail")
@@ -208,7 +208,6 @@ import XCTest
         defer { pasteboard.releaseGlobally() }
         for (source, sourceType, formattedType) in [
             ("let café = \"👩‍💻\";", EVDocument.codeType, EVDocument.codeType),
-            ("<p><b>café 👩‍💻</b></p>", EVDocument.htmlSourceType, EVDocument.htmlType),
             ("# Title\n\n__café 👩‍💻__", EVDocument.markdownSourceType, EVDocument.markdownType),
         ] {
             let (_, sourceView, sourceSession) = try surface(source, type: sourceType, pasteboard: pasteboard)
@@ -245,7 +244,7 @@ import XCTest
         defer { pasteboard.releaseGlobally() }
         for (source, type) in [
             ("__Bold__ café\n\nSecond *italic*", EVDocument.markdownType),
-            ("<p data-keep='x'><b>Bold</b> &amp; <i>café</i></p><!--keep-->", EVDocument.htmlType),
+            (#"{\rtf1{\pard {\b Bold} & {\i caf\u233?}}{\*\comment keep}}"#, EVDocument.rtfType),
         ] {
             for useSelectAllMenu in [false, true] {
                 let (original, sourceView, sourceSession) = try surface(source, type: type, pasteboard: pasteboard)
@@ -273,7 +272,7 @@ import XCTest
         defer { pasteboard.releaseGlobally() }
         for (source, type, markup) in [
             ("__Bold__", EVDocument.markdownType, "__"),
-            ("<p><b>Bold</b></p>", EVDocument.htmlType, "<b>"),
+            (#"{\rtf1{\pard {\b Bold}}}"#, EVDocument.rtfType, #"\b "#),
         ] {
             let (_, sourceView, sourceSession) = try surface(source, type: type, pasteboard: pasteboard)
             try selectAll(session: sourceSession, surface: sourceView)
@@ -289,35 +288,35 @@ import XCTest
         }
     }
 
-    func testNativePasteNormalizesLineEndingsAndShowsUnsupportedNullWithoutPrompt() throws {
+    func testNativePasteNormalizesLineEndingsAndPreservesRTFNullWithoutPrompt() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         let input = "é\0\r\nx\0y\rz"
-        let source = "<p>AB</p>"
+        let source = #"{\rtf1{\pard AB}}"#
         for matchStyle in [false, true] {
             pasteboard.clearContents()
             XCTAssertTrue(pasteboard.setString(input, forType: .string))
-            let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+            let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
             try keys("a", session: session, surface: view)
             view.perform(menuCommand: matchStyle ? .pasteAndMatchStyle : .paste, sender: nil)
-            XCTAssertEqual(try backend.formattedText(), "Aé␀\nx␀y\nzB")
+            XCTAssertEqual(try backend.formattedText(), "Aé\0\nx\0y\nzB")
             XCTAssertEqual(pasteboard.string(forType: .string), input)
             XCTAssertNil(view.commandOutput)
             XCTAssertNil(NSApp.modalWindow)
-            let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+            let saved = try backend.serializedSource(typeName: EVDocument.rtfType)
             let reopened = EVCoreDocumentBackend()
-            try reopened.read(source: saved, typeName: EVDocument.htmlType)
-            XCTAssertEqual(try reopened.formattedText(), "Aé␀\nx␀y\nzB")
+            try reopened.read(source: saved, typeName: EVDocument.rtfType)
+            XCTAssertEqual(try reopened.formattedText(), "Aé\0\nx\0y\nzB")
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             _ = try session.undo()
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
         }
     }
 
     func testCodePastesRichClipboardAsExactPlainQuotesAndCopiesWithoutTypography() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let (_, donor, donorSession) = try surface("<p><b>\"quoted\"</b> &amp; <i>'literal'</i></p>", type: EVDocument.htmlType, pasteboard: pasteboard)
+        let (_, donor, donorSession) = try surface(#"{\rtf1{\pard {\b "quoted"} & {\i 'literal'}}}"#, type: EVDocument.rtfType, pasteboard: pasteboard)
         try selectAll(session: donorSession, surface: donor)
         donor.perform(menuCommand: .copy, sender: nil)
         XCTAssertNotNil(pasteboard.data(forType: fragmentType))
@@ -335,7 +334,7 @@ import XCTest
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         for (source, type) in [
-            ("<p data-keep='x'><b>Bold</b> &amp; <i>café</i></p><!--keep-->", EVDocument.htmlType),
+            (#"{\rtf1{\pard {\b Bold} & {\i caf\u233?}}{\*\comment keep}}"#, EVDocument.rtfType),
         ] {
             let (original, sourceView, _) = try surface(source, type: type, pasteboard: pasteboard)
             let visible = try original.formattedText()
@@ -366,8 +365,8 @@ import XCTest
     func testPartialCopyExcludesUnselectedSourceAndFullCopyIncludesOffscreenText() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p><b>selected</b></p>" + (0..<80).map { "<p>outside-marker-\($0)</p>" }.joined()
-        let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = "{\\rtf1 {\\b selected}\\par " + (0..<80).map { "outside-marker-\($0)" }.joined(separator: "\\par ") + "}"
+        let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         try keys("v7l", session: session, surface: view)
         view.perform(menuCommand: .copy, sender: nil)
         _ = try richText(pasteboard, expected: "selected")
@@ -384,8 +383,8 @@ import XCTest
     func testVisualBlockCopyExportsStyledRowsAndOnlySelectedSourceSegments() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
-        let source = "<p><b>ab</b> outside-marker-one<br><b>ab</b> outside-marker-two</p><!--outside-marker-whole-->"
-        let (backend, view, session) = try surface(source, type: EVDocument.htmlType, pasteboard: pasteboard)
+        let source = #"{\rtf1{\pard {\b ab} outside-marker-one\line {\b ab} outside-marker-two}{\*\comment outside-marker-whole}}"#
+        let (backend, view, session) = try surface(source, type: EVDocument.rtfType, pasteboard: pasteboard)
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: UInt32(Character("v").asciiValue!))
         try keys("lj", session: session, surface: view)
         let secondRow = "ab outside-marker-one\n".utf8.count
@@ -407,9 +406,9 @@ import XCTest
             XCTAssertEqual(segment["end"] as? Int, row * 3 + 2)
             let fragment = try XCTUnwrap(segment["fragment"] as? [String: Any])
             XCTAssertEqual(fragment["plain_text"] as? String, "ab")
-            XCTAssertTrue((fragment["source_text"] as? String)?.contains("<b>ab</b>") == true)
+            XCTAssertTrue((fragment["source_text"] as? String)?.contains(#"\b ab"#) == true)
         }
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertNil(view.commandOutput)
     }

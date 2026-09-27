@@ -42,7 +42,7 @@ struct EVClipboardFragment: Decodable {
 
     struct ParagraphRun: Decodable {
         let start, end: Int
-        let spacingBefore, spacingAfter: Double
+        let marginTop, marginBottom: Double
         let lineSpacing: LineSpacing
         let firstLineIndent, leadingIndent, trailingIndent: Double
         let alignment, baseDirection, resolvedDirection: String
@@ -96,8 +96,8 @@ struct EVClipboardFragment: Decodable {
         }
         for run in paragraphRuns {
             let paragraph = NSMutableParagraphStyle()
-            paragraph.paragraphSpacingBefore = run.spacingBefore
-            paragraph.paragraphSpacing = run.spacingAfter
+            paragraph.paragraphSpacingBefore = run.marginTop
+            paragraph.paragraphSpacing = run.marginBottom
             paragraph.firstLineHeadIndent = run.firstLineIndent
             paragraph.headIndent = run.leadingIndent
             paragraph.tailIndent = -run.trailingIndent

@@ -144,7 +144,7 @@ final class EVExternalFileReviewTests: XCTestCase {
   }
 
   func testReloadPreservesCodeAndSourceViewFormats() throws {
-    for format in [EVSourceFormat.code, .markdownSource, .htmlSource] {
+    for format in [EVSourceFormat.code, .markdownSource] {
       let (document, backend, url) = try fixture()
       backend.sourceFormat = format
       document.externalFileReviewDecisionHandler = { _, _, decide in decide(.loadFile) }

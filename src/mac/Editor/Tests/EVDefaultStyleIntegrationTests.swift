@@ -15,7 +15,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
   }
   func testSaveDefaultMenuReloadsSparseStyleWithoutDirtyingNewDocument() throws {
     for (type, source, name) in [(EVDocument.plainTextType,"Text","text"),
-      (EVDocument.markdownType,"Text","markdown"), (EVDocument.htmlType,"<p>Text</p><!--keep-->","html"),
+      (EVDocument.markdownType,"Text","markdown"),
       (EVDocument.rtfType,#"{\rtf1 Text}"#,"rtf")] {
       let config = try configuration()
       let original = EVCoreDocumentBackend(configuration: config)
@@ -46,13 +46,13 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
   func testMalformedDefaultFileWarnsWithoutBlockingOrRewritingSource() throws {
     let config = try configuration()
     try FileManager.default.createDirectory(at: config.directory, withIntermediateDirectories: true)
-    let file = config.directory.appendingPathComponent("html_style.json")
+    let file = config.directory.appendingPathComponent("markdown_style.json")
     let invalid = Data(#"{"version":99}"#.utf8); try invalid.write(to: file)
     let backend = EVCoreDocumentBackend(configuration: config)
-    let source = Data("<p>Text</p><!--keep-->".utf8)
-    try backend.read(source: source, typeName: EVDocument.htmlType)
+    let source = Data("Text".utf8)
+    try backend.read(source: source, typeName: EVDocument.markdownType)
     XCTAssertNotNil(backend.configurationWarning)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), source)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     XCTAssertEqual(try Data(contentsOf: file), invalid)
     XCTAssertFalse(backend.persistenceState.isDirty)
   }

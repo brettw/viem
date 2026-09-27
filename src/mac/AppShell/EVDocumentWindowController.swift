@@ -1276,7 +1276,7 @@ extension EVDocumentWindowController {
   fileprivate func documentType(for url: URL, fallback: String?) -> String {
     switch url.pathExtension.lowercased() {
     case "md", "markdown", "mdown": EVDocument.markdownType
-    case "html", "htm": EVDocument.htmlType
+    case "html", "htm", "xhtml": EVDocument.codeType
     case "rtf": EVDocument.rtfType
     case "txt", "text": EVDocument.plainTextType
     default: fallback ?? EVDocument.plainTextType

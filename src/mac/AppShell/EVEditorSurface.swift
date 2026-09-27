@@ -334,6 +334,8 @@ public protocol EVEditorSurface: AnyObject {
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
   func showDocumentMessage(_ message: String)
+  /// A complete styled HTML copy of this view, without changing document state.
+  func htmlExportData() async throws -> Data
   /// Startup line in the first argument; UInt64.max selects its last line.
   func goToLine(_ line: UInt64)
   func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws
@@ -352,6 +354,7 @@ extension EVEditorSurface {
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
+  public func htmlExportData() async throws -> Data { throw EVDocumentHostError.unsupportedRequest }
   public func goToLine(_ line: UInt64) {}
   public func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
   public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] { throw EVDocumentHostError.unsupportedRequest }

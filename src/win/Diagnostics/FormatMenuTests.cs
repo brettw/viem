@@ -23,7 +23,7 @@ internal static class FormatMenuTests
     }
     internal static async Task Run(Preferences preferences)
     {
-        var document = new CoreDocument("<p><span style='color:#ff0000;background-color:#ffff00;font-size:12pt'>red</span> <span style='color:#0000ff;background-color:#00ff00;font-size:24pt'>blue</span></p>"u8.ToArray(), format: VIEM_FORMAT_HTML);
+        var document = new CoreDocument("{\\rtf1{\\colortbl;\\red255\\green0\\blue0;\\red255\\green255\\blue0;\\red0\\green0\\blue255;\\red0\\green255\\blue0;}{\\cf1\\highlight2\\fs24 red} {\\cf3\\highlight4\\fs48 blue}}"u8.ToArray(), format: VIEM_FORMAT_RTF);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate(); await Task.Delay(250);
         var pane = window.ActivePane!; var view = await pane.Ready;
@@ -153,22 +153,15 @@ internal static class FormatMenuTests
             (await markdown.Ready).SelectAll(); await CheckStyleAvailability(true); await Open();
             Check(!Toggle("Superscript").IsEnabled && !Toggle("Underline").IsEnabled && !Item("Center").IsEnabled && !Item("Font…").IsEnabled,
                 "unsupported Markdown direct formatting is disabled instead of failing after selection"); menuPeer.Collapse();
-            var htmlSource = window.AddPane(new CoreDocument("<p>source</p>"u8.ToArray(), format: VIEM_FORMAT_HTML_SOURCE));
-            (await htmlSource.Ready).Command("3li"); await CheckStyleAvailability(true); await Open();
-            Check(Toggle("Superscript").IsEnabled && Item("Text Color…").IsEnabled, "HTML Source exposes its supported rich formatting controls");
+            var rich = window.AddPane(new CoreDocument("{\\rtf1 source}"u8.ToArray(), format: VIEM_FORMAT_RTF));
+            (await rich.Ready).Command("i"); await CheckStyleAvailability(true); await Open();
+            Check(Toggle("Superscript").IsEnabled && Item("Text Color…").IsEnabled, "RTF exposes supported rich formatting controls");
             menuPeer.Collapse(); await Task.Delay(200);
             Check(foreground.Picker.Color == Microsoft.UI.Colors.Blue,
                 "persistent formatting panels retain their chosen document when another pane becomes active");
             await Invoke("Text Color…");
             Check(window.ColorPanel(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND) == foreground && foreground.Picker.Color == preferences.Theme.Foreground,
                 "explicit color menu invocation retargets the existing panel to the chosen document");
-            var inheritedDirection = window.AddPane(new CoreDocument("<style>p{direction:rtl}</style><p>sample</p>"u8.ToArray(), format: VIEM_FORMAT_HTML));
-            var inheritedView = await inheritedDirection.Ready;
-            await Invoke("Automatic");
-            using (var fragment = JsonDocument.Parse(inheritedView.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(inheritedDirection.Document.FormattedText()))))
-                Check(fragment.RootElement.GetProperty("paragraph_runs")[0].GetProperty("base_direction").GetString() == "Natural",
-                    "HTML Automatic direction explicitly overrides an inherited right-to-left style");
-            inheritedView.Undo();
             var rtf = window.AddPane(new CoreDocument("{\\rtf1\\ansi\\pard text\\par}"u8.ToArray(), format: VIEM_FORMAT_RTF));
             var rtfView = await rtf.Ready;
             await Invoke("Right to Left"); await Open();

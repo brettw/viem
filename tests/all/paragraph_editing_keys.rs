@@ -66,7 +66,6 @@ fn insert_at(core: &mut Editor, view: ViewId, at: usize) {
 #[test]
 fn enter_uses_following_style_only_at_the_end_of_a_paragraph() {
     for (format, source, current) in [
-        (Format::Html, "<h1>Title</h1>", "Heading1"),
         (Format::Markdown, "# Title", "Heading1"),
         (
             Format::Rtf,
@@ -139,20 +138,6 @@ fn reopen_and_history(core: &mut Editor, view: ViewId, original: &[u8]) {
 #[test]
 fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() {
     for (format, source) in [
-        (Format::Html, "<p>αβ👩‍💻xy</p><p>tail</p>"),
-        (
-            Format::Html,
-            "<blockquote cite='keep'><p>αβ👩‍💻xy</p></blockquote><p>tail</p>",
-        ),
-        (Format::Html, "<ul><li>αβ👩‍💻xy</li></ul><p>tail</p>"),
-        (
-            Format::Html,
-            "<ol start='4'><li>αβ👩‍💻xy</li></ol><p>tail</p>",
-        ),
-        (
-            Format::Html,
-            "<ul><li><blockquote>αβ👩‍💻xy</blockquote></li></ul><p>tail</p>",
-        ),
         (Format::Markdown, "αβ👩‍💻xy\n\ntail"),
         (Format::Markdown, "> αβ👩‍💻xy\n\ntail"),
         (Format::Markdown, "- αβ👩‍💻xy\n\ntail"),
@@ -199,7 +184,6 @@ fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() 
         if !source.contains("```") {
             assert!(
                 generated.contains(match format {
-                    Format::Html => "<br>",
                     Format::Rtf => "\\line ",
                     _ if source.starts_with('#') => "<br>",
                     _ => "\\\n",
@@ -214,7 +198,6 @@ fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() 
 #[test]
 fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_literal_endings() {
     for (format, source) in [
-        (Format::Html, "<p>abc</p>"),
         (Format::Markdown, "abc"),
         (Format::Markdown, "# abc"),
         (Format::Rtf, "{\\rtf1 abc}"),
@@ -236,10 +219,6 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
         }
     }
     for (format, source) in [
-        (Format::Html, "<p></p>"),
-        (Format::Html, ""),
-        (Format::Html, "<blockquote></blockquote>"),
-        (Format::Html, "<ul><li></li></ul>"),
         (Format::Markdown, ""),
         (Format::Markdown, "# "),
         (Format::Markdown, "> "),
@@ -267,7 +246,6 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
     }
     for (format, source) in [
         (Format::PlainText, "abc"),
-        (Format::HtmlSource, "<p>abc</p>"),
         (Format::MarkdownSource, "**abc**"),
     ] {
         let (mut core, view) = open(source, format);
@@ -284,16 +262,10 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
 #[test]
 fn empty_quote_enter_and_list_backspace_reset_while_other_block_backspace_joins() {
     for (format, source, at, enter, expected) in [
-        (Format::Html, "<p>previous</p><blockquote cite='keep'><p>body</p></blockquote><p>next</p>", 9, false, "previous\nbody\nnext"),
-        (Format::Html, "<p>previous</p><ul><li>body</li></ul><p>next</p>", 9, false, "previous\nbody\nnext"),
-        (Format::Html, "<p>previous</p><ol><li>body</li></ol><p>next</p>", 9, false, "previous\nbody\nnext"),
-        (Format::Html, "<p>previous</p><ul><li><blockquote>body</blockquote></li><li>other</li></ul><p>next</p>", 9, false, "previous\nbody\nother\nnext"),
         (Format::Markdown, "previous\n\n> body\n\nnext", 9, false, "previous\nbody\nnext"),
         (Format::Markdown, "previous\n\n- body\n\nnext", 9, false, "previous\nbody\nnext"),
         (Format::Markdown, "previous\n\n1. body\n\nnext", 9, false, "previous\nbody\nnext"),
-        (Format::Html, "<p>previous</p><blockquote></blockquote><p>next</p>", 9, true, "previous\n\nnext"),
         (Format::Markdown, "previous\n\n> \n\nnext", 9, true, "previous\n\nnext"),
-        (Format::Html, "<blockquote></blockquote>", 0, true, ""),
         (Format::Markdown, "> ", 0, true, ""),
     ] {
         let (mut core, view) = open(source, format);
@@ -316,10 +288,10 @@ fn empty_quote_enter_and_list_backspace_reset_while_other_block_backspace_joins(
 #[test]
 fn imported_list_quote_combinations_accept_typing_before_and_after_a_hard_break() {
     for source in [
-        "<ul><li><blockquote>body</blockquote></li><li>other</li></ul>",
-        "<blockquote><ol><li>body</li><li>other</li></ol></blockquote>",
+        "- > body\n- other",
+        "> 1. body\n> 2. other",
     ] {
-        let (mut core, view) = open(source, Format::Html);
+        let (mut core, view) = open(source, Format::Markdown);
         insert_at(&mut core, view, 2);
         input(&mut core, view, InputEvent::text("é👩‍💻"));
         input(&mut core, view, InputEvent::Key(Key::ShiftEnter));
@@ -381,7 +353,7 @@ fn backspace_restores_heading_and_empty_item_hard_break_source_exactly() {
 
 #[test]
 fn shift_enter_counts_dot_and_macros_replay_semantic_breaks() {
-    for (format, source) in [(Format::Html, "<p>ab</p>"), (Format::Markdown, "ab")] {
+    for (format, source) in [ (Format::Markdown, "ab")] {
         for counted in [false, true] {
             let (mut core, view) = open(source, format);
             input(&mut core, view, InputEvent::key('l'));
@@ -423,9 +395,9 @@ fn shift_enter_counts_dot_and_macros_replay_semantic_breaks() {
 #[test]
 fn hard_break_preparation_rejects_invalid_boundary_without_mutation() {
     let document = Document::from_bytes(
-        "<p>👩‍💻body</p>".as_bytes().to_vec(),
+        "👩‍💻body".as_bytes().to_vec(),
         Encoding::Utf8,
-        Format::Html,
+        Format::Markdown,
     )
     .unwrap();
     let source = document.source_bytes();
@@ -446,8 +418,6 @@ fn hard_break_preparation_rejects_invalid_boundary_without_mutation() {
 fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
     for (format, source) in [
         (Format::PlainText, "body"),
-        (Format::Html, "<p>body</p>"),
-        (Format::Html, "<h1>body</h1>"),
         (Format::Markdown, "body"),
         (Format::Markdown, "# body"),
         (Format::Rtf, "{\\rtf1 body}"),
@@ -478,11 +448,6 @@ fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
 #[test]
 fn revisiting_a_new_empty_list_item_keeps_backspace_semantic() {
     for (format, source) in [
-        (Format::Html, "<ul><li><b>body</b></li></ul>"),
-        (
-            Format::Html,
-            "<ol><li><p><b>body</b></p></li><li>tail</li></ol>",
-        ),
         (Format::Markdown, "- **body**"),
         (Format::Markdown, "1. **body**\n2. tail"),
     ] {
@@ -511,14 +476,6 @@ fn revisiting_a_new_empty_list_item_keeps_backspace_semantic() {
 fn tab_and_backtab_inside_a_list_item_change_structure_and_stay_in_the_insert_undo_unit() {
     use viem_core::document::BlockKind;
     for (format, source) in [
-        (
-            Format::Html,
-            "<ul><li>parent</li><li><b>body</b></li><li>tail</li></ul>",
-        ),
-        (
-            Format::Html,
-            "<ol start='4'><li>parent</li><li>body</li><li>tail</li></ol>",
-        ),
         (Format::Markdown, "- parent\n- **body**\n- tail"),
         (Format::Markdown, "4. parent\n5. body\n6. tail"),
         (
@@ -558,7 +515,6 @@ fn tab_and_backtab_inside_a_list_item_change_structure_and_stay_in_the_insert_un
 #[test]
 fn unavailable_list_indentation_is_a_noop_and_tab_elsewhere_inserts_text() {
     for (format, source) in [
-        (Format::Html, "<ul><li>body</li></ul>"),
         (Format::Markdown, "- body"),
     ] {
         let (mut core, view) = open(source, format);
@@ -570,7 +526,7 @@ fn unavailable_list_indentation_is_a_noop_and_tab_elsewhere_inserts_text() {
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 
-    let (mut core, view) = open("ordinary", Format::Html);
+    let (mut core, view) = open("ordinary", Format::Markdown);
     insert_at(&mut core, view, 2);
     input(&mut core, view, InputEvent::Key(Key::Tab));
     assert_ne!(core.document().text(), "ordinary");
@@ -580,8 +536,8 @@ fn unavailable_list_indentation_is_a_noop_and_tab_elsewhere_inserts_text() {
 fn tab_in_a_continuation_paragraph_moves_the_complete_item() {
     use viem_core::document::BlockKind;
     let source =
-        "<ul><li>parent</li><li><p>body</p><p>continuation text</p></li><li>tail</li></ul>";
-    let (mut core, view) = open(source, Format::Html);
+        "- parent\n- body\n\n  continuation text\n- tail";
+    let (mut core, view) = open(source, Format::Markdown);
     let at = core.document().text().find("continuation").unwrap() + 5;
     insert_at(&mut core, view, at);
     input(&mut core, view, InputEvent::Key(Key::Tab));
@@ -615,10 +571,6 @@ fn tab_in_a_continuation_paragraph_moves_the_complete_item() {
 fn backspace_unindents_nested_items_before_removing_the_top_level_marker() {
     use viem_core::document::BlockKind;
     for (format, source) in [
-        (
-            Format::Html,
-            "<ol><li>top<ol><li>middle<ol><li>body</li></ol></li></ol></li></ol>",
-        ),
         (Format::Markdown, "1. top\n   1. middle\n      1. body"),
     ] {
         let (mut core, view) = open(source, format);
@@ -703,14 +655,6 @@ fn list_indentation_is_replayed_as_structure_by_dot_and_macros() {
 fn source_list_body_uses_structural_tab_anywhere_and_preserves_literal_backspace() {
     use viem_core::document::BlockKind;
     for (format, source) in [
-        (
-            Format::HtmlSource,
-            "<ul><li>parent</li><li><b>body</b></li><li>tail</li></ul>",
-        ),
-        (
-            Format::HtmlSource,
-            "<ul><li>parent</li><li><blockquote>body</blockquote></li><li>tail</li></ul>",
-        ),
         (Format::MarkdownSource, "- parent\n- **body**\n- tail"),
     ] {
         let (mut core, view) = open(source, format);
@@ -721,9 +665,7 @@ fn source_list_body_uses_structural_tab_anywhere_and_preserves_literal_backspace
             let semantic = Document::from_bytes(
                 core.document().source_bytes(),
                 Encoding::Utf8,
-                if format == Format::HtmlSource {
-                    Format::Html
-                } else {
+                {
                     Format::Markdown
                 },
             )

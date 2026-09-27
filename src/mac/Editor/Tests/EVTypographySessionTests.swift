@@ -10,7 +10,7 @@ final class EVTypographySessionTests: XCTestCase {
   @MainActor
   func testShowFontsOpensVisibleNativePanelForArabicVisualSelection() throws {
     for (type, source) in [
-      (EVDocument.htmlType, "<p>Arabic word مرحبا in the middle</p>"),
+      (EVDocument.rtfType, #"{\rtf1{\pard Arabic word \u1605?\u1585?\u1581?\u1576?\u1575? in the middle}}"#),
       (
         EVDocument.rtfType,
         #"{\rtf1 Arabic word \u1605?\u1585?\u1581?\u1576?\u1575? in the middle}"#
@@ -51,8 +51,8 @@ final class EVTypographySessionTests: XCTestCase {
   @MainActor
   func testShowFontsResponderActionOpensPanelForVimWordSelection() throws {
     let backend = EVCoreDocumentBackend()
-    let source = "<p>Arabic word مرحبا in the middle</p>\n<p>This is a longer paragraph.</p>"
-    try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+    let source = #"{\rtf1{\pard Arabic word \u1605?\u1585?\u1581?\u1576?\u1575? in the middle}\line \par {\pard This is a longer paragraph.}}"#
+    try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let document = EVDocument()
@@ -80,14 +80,14 @@ final class EVTypographySessionTests: XCTestCase {
     XCTAssertTrue(panel.isVisible)
     XCTAssertTrue(panel.canBecomeKey)
     XCTAssertTrue(NSScreen.screens.contains { $0.visibleFrame.intersects(panel.frame) })
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
   }
 
   @MainActor
   func testFontBatchIsOneVerifiedUndoAndOpenTypeMenuUsesTheSelectedFontsCatalogue() throws {
-    for type in [EVDocument.htmlType, EVDocument.rtfType] {
+    for type in [EVDocument.rtfType] {
       let source =
-        type == EVDocument.htmlType ? "<p>Text</p><!--keep-->" : #"{\rtf1 Text{\*\opaque keep}}"#
+        #"{\rtf1 Text{\*\opaque keep}}"#
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: type)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -132,8 +132,8 @@ final class EVTypographySessionTests: XCTestCase {
     let backend = EVCoreDocumentBackend()
     try backend.read(
       source: Data(
-        "<p style='font-family:AvenirNext-UltraLight;font-weight:200;font-size:20pt;font-feature-settings: \"liga\" 0'><b>A</b>B</p>"
-          .utf8), typeName: EVDocument.htmlType)
+        #"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 AvenirNext-UltraLight;}}{\pard \f2 \fs40 \viemweight200\viemfeatures0\viemfeaturegmgjghgb0 {\b A}B}}"#
+          .utf8), typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -148,22 +148,22 @@ final class EVTypographySessionTests: XCTestCase {
     surface.perform(menuCommand: .selectAll, sender: nil)
     style = try session.selectedTypography()
     XCTAssertTrue(style.mixed)
-    let before = try backend.serializedSource(typeName: EVDocument.htmlType)
+    let before = try backend.serializedSource(typeName: EVDocument.rtfType)
     surface.perform(menuCommand: .bold, sender: nil)
     style = try session.selectedTypography()
     XCTAssertTrue(style.bold)
     XCTAssertEqual(style.weight, 500)
     XCTAssertFalse(style.mixed)
     surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), before)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), before)
   }
 
   @MainActor
   func testEmptyParagraphQueriesItsFontWithoutLayout() throws {
     let backend = EVCoreDocumentBackend()
     try backend.read(
-      source: Data("<p style='font-size:36pt;font-family:Georgia'></p>".utf8),
-      typeName: EVDocument.htmlType)
+      source: Data(#"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}}{\pard \fs72 \f2 }}"#.utf8),
+      typeName: EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)

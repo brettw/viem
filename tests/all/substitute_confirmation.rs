@@ -114,9 +114,9 @@ fn ranges_counts_repeat_flags_and_zero_width_matches_keep_substitute_semantics()
 }
 #[test]
 fn confirmed_captures_preserve_rich_styles_and_breaks() {
-    let source = "<p><b>one</b> <i>two</i></p><!--keep-->";
+    let source = "**one** *two*";
     let mut d =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let mut c = CommandInterpreter::new();
     begin(&mut c, &mut d, r":s/(one) (two)/\2 \1/c");
     key(&mut c, &mut d, Key::Char('a'));

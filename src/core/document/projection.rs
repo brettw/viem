@@ -28,8 +28,6 @@ pub enum Format {
     Markdown,
     /// Editable Markdown source with formatting applied to visible syntax.
     MarkdownSource,
-    Html,
-    HtmlSource,
     Rtf,
     /// Literal source text with disposable, asynchronously computed syntax styles.
     Code,
@@ -44,7 +42,7 @@ impl Format {
     pub const fn wysiwyg(self) -> Self {
         match self {
             Self::MarkdownSource => Self::Markdown,
-            Self::HtmlSource => Self::Html,
+
             format => format,
         }
     }
@@ -54,28 +52,23 @@ impl Format {
         matches!(self, Self::Markdown | Self::MarkdownSource)
     }
 
-    /// HTML, in either its WYSIWYG or its source view.
-    pub const fn is_html(self) -> bool {
-        matches!(self, Self::Html | Self::HtmlSource)
-    }
-
     /// A source view: the format's own markup is visible, editable text.
     pub const fn is_source_view(self) -> bool {
-        matches!(self, Self::HtmlSource | Self::MarkdownSource)
+        matches!(self, Self::MarkdownSource)
     }
 
     /// A WYSIWYG view: block structure and named styles are presented instead
     /// of the syntax which spells them. Plain text has no such structure and
     /// source views deliberately show the syntax, so neither qualifies.
     pub const fn is_wysiwyg(self) -> bool {
-        matches!(self, Self::Html | Self::Markdown | Self::Rtf)
+        matches!(self, Self::Markdown | Self::Rtf)
     }
 
     /// A WYSIWYG view whose source persists arbitrary character and paragraph
     /// declarations. Markdown carries structure but only a fixed inline
     /// vocabulary, so it is structured without being rich text.
     pub const fn is_rich_text(self) -> bool {
-        matches!(self, Self::Html | Self::Rtf)
+        matches!(self, Self::Rtf)
     }
 
     /// Backed by rich style markup in either view. Equivalent to
@@ -86,7 +79,7 @@ impl Format {
 
     /// `Enter` continues an enclosing list structure rather than inserting the
     /// marker text literally. Markdown Source qualifies because its list
-    /// syntax is still structural, unlike HTML Source's tags.
+    /// syntax is still structural.
     pub const fn has_structural_lists(self) -> bool {
         self.is_wysiwyg() || matches!(self, Self::MarkdownSource)
     }
@@ -1430,7 +1423,6 @@ impl From<FormattedTextError> for SourceToTextError {
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
     revision: Revision,
-    html_scope_index: Option<super::html_scope_index::HtmlScopeIndex>,
     /// Canonical persistent formatted-text representation.
     text: FormattedTextTree,
     /// Lazily materialized compatibility view. Regional candidates can remain
@@ -1508,19 +1500,6 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
-    pub(super) fn html_scope_index(&self) -> Option<&super::html_scope_index::HtmlScopeIndex> {
-        self.html_scope_index
-            .as_ref()
-            .filter(|index| index.revision() == self.revision)
-    }
-
-    pub(super) fn install_html_scope_index(
-        &mut self,
-        index: super::html_scope_index::HtmlScopeIndex,
-    ) {
-        debug_assert_eq!(index.revision(), self.revision);
-        self.html_scope_index = Some(index);
-    }
 
     pub(super) fn visit_retained_memory(
         &self,
@@ -1546,9 +1525,7 @@ impl FormattedDocument {
         self.source_boundaries.visit_retained_memory(visitor);
         if trace { eprintln!("  boundaries {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.decoding_diagnostics.visit_retained_memory(visitor);
-        if let Some(index) = &self.html_scope_index {
-            index.visit_retained_memory(visitor);
-        }
+
         visitor.arc(&self.style_sheet, |visitor| {
             visitor.owned(
                 Arc::as_ptr(&self.style_sheet) as usize,
@@ -1602,7 +1579,6 @@ impl FormattedDocument {
             IntervalRangeStore::new(source_text_boundaries(provenance.iter().cloned()));
         Self {
             revision,
-            html_scope_index: None,
             text,
             flat_text: compatibility_text,
             blocks: OrderedRangeStore::new(blocks),
@@ -1643,10 +1619,7 @@ impl FormattedDocument {
         ));
     }
 
-    pub(crate) fn install_flow_blocks(&mut self, mut blocks: Vec<Block>) {
-        super::containers::mark_edges(&mut blocks);
-        self.flow_blocks = Some(OrderedRangeStore::new(blocks));
-    }
+
 
     pub(crate) fn flow_blocks_for_region(&self, range: &Range<usize>) -> Option<Vec<Block>> {
         self.flow_blocks
@@ -2984,91 +2957,6 @@ impl FormattedDocument {
         self.provenance.as_slice()
     }
 
-    /// A synthetic paragraph separator can recover from the end of its last
-    /// visible character, inside a now-redundant HTML whitespace wrapper.
-    /// Move only that zero-byte recovery point past the removed closing syntax
-    /// before applying the ordinary source shift to the untouched suffix.
-    pub(crate) fn relocate_synthetic_hard_line_source_boundary(
-        &self,
-        formatted_at: usize,
-        source_from: usize,
-        source_to: usize,
-    ) -> Result<Option<(Self, ProjectionSpliceStatistics)>, BlockIdentityError> {
-        let Some(end) = formatted_at
-            .checked_add(1)
-            .filter(|end| *end <= self.text.byte_len())
-        else {
-            return Ok(None);
-        };
-        if self.text.slice(formatted_at..end).as_deref() != Ok("\n") {
-            return Ok(None);
-        }
-        let index = self.provenance.partition_point_start(formatted_at);
-        let Some(old) = self.provenance.get(index) else {
-            return Ok(None);
-        };
-        if old.formatted != (formatted_at..end) || old.source != (source_from..source_from) {
-            return Ok(None);
-        }
-        if source_to < source_from
-            || source_to > self.source_content_end
-            || index > 0
-                && self
-                    .provenance
-                    .get(index - 1)
-                    .is_some_and(|span| span.source.end > source_to)
-            || self
-                .provenance
-                .get(index + 1)
-                .is_some_and(|span| span.source.start < source_to)
-        {
-            return Err(BlockIdentityError::InvalidProjection);
-        }
-        let mut relocated = old.clone();
-        relocated.source = source_to..source_to;
-        let mut stats = RangeSpliceStats::default();
-        let provenance = self
-            .provenance
-            .splice(
-                index..index + 1,
-                vec![relocated.clone()],
-                end,
-                end,
-                &mut stats,
-            )
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let boundary_end = source_to
-            .checked_add(1)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let indices = self.source_boundaries.partition_point_start(source_from)
-            ..self.source_boundaries.partition_point_start(boundary_end);
-        let mut boundaries = self
-            .source_boundaries
-            .get_range(&indices)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let old_boundaries = source_text_boundaries([old]);
-        let old_count = boundaries.len();
-        boundaries.retain(|boundary| !old_boundaries.contains(boundary));
-        if old_count - boundaries.len() != old_boundaries.len() {
-            return Err(BlockIdentityError::InvalidProjection);
-        }
-        boundaries.extend(source_text_boundaries([relocated]));
-        normalize_source_boundaries(&mut boundaries);
-        let source_boundaries = self
-            .source_boundaries
-            .splice(indices, boundaries, source_to, source_to, &mut stats)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let mut projection = self.clone();
-        projection.provenance = provenance;
-        projection.source_boundaries = source_boundaries;
-        Ok(Some((
-            projection,
-            ProjectionSpliceStatistics {
-                range_indexes: stats,
-            },
-        )))
-    }
-
     pub(crate) fn provenance_for_region(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
         self.provenance.query_overlapping(range).into_iter()
             .map(|span| self.clip_literal_span(span, range)).collect()
@@ -3342,13 +3230,7 @@ impl FormattedDocument {
                 for block in &mut blocks { reassign(block); }
                 *flow = OrderedRangeStore::new(blocks);
             }
-            let mut spans = self.styles.to_vec();
-            for span in &mut spans {
-                if let StyleApplication::SourceParagraph { style, .. } = &mut span.application {
-                    if style == id { *style = self.style_sheet.base_paragraph.clone(); }
-                }
-            }
-            self.styles = IntervalRangeStore::new(spans);
+
             if &self.document_style.style == id {
                 self.document_style.style = self.style_sheet.base_paragraph.clone();
             }
@@ -3490,7 +3372,6 @@ impl FormattedDocument {
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
         self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
             || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
-            || self.styles.iter().any(|span| matches!(&span.application, StyleApplication::SourceParagraph { style: id, .. } if id == style))
     }
 
     pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
@@ -3529,9 +3410,7 @@ impl FormattedDocument {
                     StyleApplication::Named(id) | StyleApplication::Automatic(id) => {
                         character_styles.contains(id).then(|| span.range.clone())
                     }
-                    StyleApplication::SourceParagraph { style, .. } => {
-                        block_styles.contains(style).then(|| span.range.clone())
-                    }
+
                     _ => None,
                 }),
         );
@@ -4163,18 +4042,7 @@ pub(crate) fn project(
             source_content_end,
             true,
         ),
-        Format::Html => super::html::project(
-            normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-        ),
-        Format::HtmlSource => super::html_source::project(
-            normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-        ),
+
         Format::Rtf => super::rtf::project(
             normalized,
             revision,
@@ -4195,12 +4063,7 @@ pub(crate) struct ProjectionSpliceStatistics {
 }
 
 impl ProjectionSpliceStatistics {
-    pub(crate) fn include(&mut self, other: Self) {
-        self.range_indexes.nodes_visited += other.range_indexes.nodes_visited;
-        self.range_indexes.nodes_copied += other.range_indexes.nodes_copied;
-        self.range_indexes.leaves_copied += other.range_indexes.leaves_copied;
-        self.range_indexes.items_copied += other.range_indexes.items_copied;
-    }
+
 
     pub(crate) fn range_index_nodes_visited(self) -> usize {
         self.range_indexes.nodes_visited
@@ -4283,7 +4146,6 @@ pub(crate) fn splice_line_local_projection(
     new_source_content_end: usize,
     source_paragraphs: bool,
     literal_topology: bool,
-    preserve_containing_paragraph: bool,
     edits: &[TextEdit],
     next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
@@ -4316,15 +4178,11 @@ pub(crate) fn splice_line_local_projection(
         .blocks
         .get_range(&old_block_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
-    // HTML Source retains a pre's multi-line paragraph when it is quoted too.
+    // Code blocks retain their multi-line paragraph inside quote containers.
     // A regional text edit must extend that same paragraph rather than demand
     // that the captured physical line cover its entire source extent.
     let partial_preserved_block = previous_region_blocks.len() == 1
-        && (preserve_containing_paragraph
-            || matches!(
-                previous_region_blocks[0].style.0.as_str(),
-                "Code Block" | "Block quote"
-            ))
+        && matches!(previous_region_blocks[0].style.0.as_str(), "Code Block" | "Block quote")
         && previous_region_blocks[0].range.start <= old_formatted.start
         && old_formatted.end <= previous_region_blocks[0].range.end
         && regional.blocks.len() == 1
@@ -4567,11 +4425,7 @@ pub(crate) fn splice_line_local_projection(
             .map(|(line, old)| {
                 Ok(HardLine {
                     id: old.id,
-                    range: if preserve_containing_paragraph {
-                        old.range.start..old.range.end - old_formatted.len() + regional.text().len()
-                    } else {
-                        shift_region_range(&line.range, old_formatted.start)?
-                    },
+                    range: shift_region_range(&line.range, old_formatted.start)?,
                     separator_length: old.separator_length,
                 })
             })
@@ -4589,16 +4443,8 @@ pub(crate) fn splice_line_local_projection(
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
     let flow_lines = if let Some(old_flow) = &previous.flow_lines {
-        let indices = if preserve_containing_paragraph {
-            // An independent fragment inside one physical source line must
-            // keep adjacent presentation paragraphs as separate records.
-            let first = old_flow.index_touching_point(old_formatted.start)
-                .ok_or(BlockIdentityError::InvalidProjection)?;
-            first..old_flow.partition_point_start(old_formatted.end).max(first + 1)
-        } else {
-            old_flow.partition_point(|line| line.range.end < old_formatted.start)
-                ..old_flow.partition_point(|line| line.range.start <= old_formatted.end)
-        };
+        let indices = old_flow.partition_point(|line| line.range.end < old_formatted.start)
+            ..old_flow.partition_point(|line| line.range.start <= old_formatted.end);
         let old = old_flow
             .get_range(&indices)
             .ok_or(BlockIdentityError::InvalidProjection)?;
@@ -4618,7 +4464,7 @@ pub(crate) fn splice_line_local_projection(
             return Err(BlockIdentityError::InvalidProjection);
         };
         // Source restart regions retain an unchanged neighboring physical line
-        // (or validated inherited HTML prose context). Connections outside the
+        // Connections outside the
         // region therefore keep their old classification. Extend the edge
         // records without reading or rebuilding the untouched prose suffix.
         if first.range.start < old_formatted.start {
@@ -4727,10 +4573,7 @@ pub(crate) fn splice_line_local_projection(
 
     let literal_mapping = previous.literal_encoding.is_some()
         && regional.literal_encoding == previous.literal_encoding;
-    let style_indices = if preserve_containing_paragraph {
-        previous.styles.partition_point_start(old_formatted.start)
-            ..previous.styles.partition_point_start(old_formatted.end)
-    } else if literal_mapping {
+    let style_indices = if literal_mapping {
         let first = previous
             .styles
             .query_overlapping(&old_formatted)
@@ -4772,18 +4615,7 @@ pub(crate) fn splice_line_local_projection(
             }
         }
     }
-    let previous_styles = if preserve_containing_paragraph {
-        retain_crossing_styles(
-            &previous.styles,
-            &old_formatted,
-            new_formatted_end,
-            &mut regional_styles,
-            &mut range_stats,
-        )?
-    } else {
-        previous.styles.clone()
-    };
-    let styles = previous_styles
+    let styles = previous.styles
         .splice(
             style_indices,
             regional_styles,
@@ -5028,7 +4860,6 @@ pub(crate) fn splice_line_local_projection(
 
     let candidate = FormattedDocument {
         revision,
-        html_scope_index: previous.html_scope_index.clone(),
         text: target_text,
         flat_text: Arc::new(OnceLock::new()),
         blocks,
@@ -5077,85 +4908,7 @@ pub(crate) fn splice_line_local_projection(
     ))
 }
 
-/// A small verified text window may cut through long style runs. Rewrite only
-/// the crossing runs at their original ordinal positions; starting at their
-/// earliest source start would otherwise copy every intervening style record.
-/// Rejoin matching regional edges so repeated typing does not fragment a long
-/// inherited run into one style record per keystroke.
-fn retain_crossing_styles(
-    previous: &IntervalRangeStore<StyleSpan>,
-    old: &Range<usize>,
-    new_end: usize,
-    regional: &mut Vec<StyleSpan>,
-    stats: &mut RangeSpliceStats,
-) -> Result<IntervalRangeStore<StyleSpan>, BlockIdentityError> {
-    let overlapping = previous.query_overlapping(old);
-    let delta = new_end as i128 - old.end as i128;
-    let shifted_end = |end: usize| -> Result<usize, BlockIdentityError> {
-        (end as i128 + delta)
-            .try_into()
-            .map_err(|_| BlockIdentityError::InvalidProjection)
-    };
-    let mut result = previous.clone();
-    let mut starts = overlapping
-        .iter()
-        .filter(|span| span.range.start < old.start)
-        .map(|span| span.range.start)
-        .collect::<Vec<_>>();
-    starts.dedup();
-    for start in starts {
-        let indices =
-            previous.partition_point_start(start)..previous.partition_point_start(start + 1);
-        let mut group = previous
-            .get_range(&indices)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        for span in &mut group {
-            if span.range.end <= old.start {
-                continue;
-            }
-            let old_end = span.range.end;
-            span.range.end = old.start;
-            if let Some(index) = regional.iter().position(|candidate| {
-                candidate.range.start == old.start && candidate.application == span.application
-            }) {
-                span.range.end = regional.remove(index).range.end;
-            }
-            if old_end > old.end {
-                if span.range.end == new_end {
-                    span.range.end = shifted_end(old_end)?;
-                } else if let Some(candidate) = regional.iter_mut().find(|candidate| {
-                    candidate.range.end == new_end && candidate.application == span.application
-                }) {
-                    candidate.range.end = shifted_end(old_end)?;
-                } else {
-                    regional.push(StyleSpan {
-                        range: new_end..shifted_end(old_end)?,
-                        application: span.application.clone(),
-                    });
-                }
-            }
-        }
-        result = result
-            .splice(indices, group, old.end, old.end, stats)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-    }
-    for span in overlapping
-        .iter()
-        .filter(|span| span.range.start >= old.start && span.range.end > old.end)
-    {
-        if let Some(candidate) = regional.iter_mut().find(|candidate| {
-            candidate.range.end == new_end && candidate.application == span.application
-        }) {
-            candidate.range.end = shifted_end(span.range.end)?;
-        } else {
-            regional.push(StyleSpan {
-                range: new_end..shifted_end(span.range.end)?,
-                application: span.application.clone(),
-            });
-        }
-    }
-    Ok(result)
-}
+
 
 fn contained_interval_indices<T>(
     store: &IntervalRangeStore<T>,
@@ -6304,7 +6057,6 @@ impl<'a> MarkdownBuilder<'a> {
         self.unit_at(normalized).map(|unit| unit.normalized.end)
     }
 
-
 }
 
 /// The native inline HTML spelling for a hard break. Escapes and code spans
@@ -6470,79 +6222,6 @@ mod tests {
         markdown_at(source, Revision(1))
     }
 
-    #[test]
-    fn relocating_a_synthetic_separator_keeps_real_source_and_boundary_mappings() {
-        let source = "<p>A<span style=\"white-space: pre-wrap\"> </span></p><p>B</p>";
-        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
-        let normalized = normalize(&decoded, FileFormat::Unix);
-        let document = project(&normalized, Format::Html, Revision(1), 0, source.len());
-        let from = source.find("</span>").unwrap();
-        let to = from + "</span>".len();
-        let (relocated, _) = document
-            .relocate_synthetic_hard_line_source_boundary(2, from, to)
-            .unwrap()
-            .unwrap();
-        assert_eq!(relocated.text(), document.text());
-        assert_eq!(relocated.blocks(), document.blocks());
-        let old = document.provenance();
-        let new = relocated.provenance();
-        assert_eq!(old.len(), new.len());
-        for (before, after) in old.iter().zip(new) {
-            if before.formatted == (2..3) {
-                assert_eq!(after.source, to..to);
-            } else {
-                assert_eq!(before, after);
-            }
-        }
-        assert_eq!(
-            relocated
-                .map_source_boundary(Revision(1), from, BoundaryAffinity::Upstream)
-                .unwrap()
-                .formatted_offset,
-            2
-        );
-        assert_eq!(
-            relocated
-                .map_source_boundary(Revision(1), to, BoundaryAffinity::Downstream)
-                .unwrap()
-                .formatted_offset,
-            2
-        );
-        assert_eq!(
-            relocated
-                .map_source_boundary(Revision(1), to, BoundaryAffinity::Upstream)
-                .unwrap()
-                .formatted_offset,
-            3
-        );
-        assert!(document
-            .relocate_synthetic_hard_line_source_boundary(2, from + 1, to)
-            .unwrap()
-            .is_none());
-        assert!(document
-            .relocate_synthetic_hard_line_source_boundary(0, 3, to)
-            .unwrap()
-            .is_none());
-        assert_eq!(
-            document
-                .relocate_synthetic_hard_line_source_boundary(
-                    2,
-                    from,
-                    source.find('B').unwrap() + 1
-                )
-                .err(),
-            Some(BlockIdentityError::InvalidProjection)
-        );
-        let source = "<pre>A\nB</pre>";
-        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
-        let normalized = normalize(&decoded, FileFormat::Unix);
-        let document = project(&normalized, Format::Html, Revision(1), 0, source.len());
-        assert!(document
-            .relocate_synthetic_hard_line_source_boundary(1, 6, 7)
-            .unwrap()
-            .is_none());
-    }
-
     fn plain(text: String, revision: Revision) -> FormattedDocument {
         let length = text.len();
         FormattedDocument::from_parts(
@@ -6622,14 +6301,7 @@ mod tests {
                 Format::Markdown,
                 "# e\u{301} **bold**\n\n- item\n  continuation\n\n```\ncode\n\n```",
             ),
-            (
-                Format::Html,
-                "<p>A&amp;B<i></i>é👩🏽‍💻</p><ul><li>item</li></ul>",
-            ),
-            (
-                Format::Html,
-                "<table>before<tr><td>cell</td></tr>after</table>",
-            ),
+
             (Format::Rtf, "{\\rtf1 A{\\b }B\\par C}"),
         ] {
             let document = super::super::Document::from_bytes(
@@ -7233,12 +6905,11 @@ mod tests {
     /// deliberate decision about every predicate, not an inherited default.
     #[test]
     fn format_predicates_have_exact_membership() {
-        const ALL: [Format; 7] = [
+        const ALL: [Format; 5] = [
             Format::PlainText,
             Format::Markdown,
             Format::MarkdownSource,
-            Format::Html,
-            Format::HtmlSource,
+
             Format::Rtf,
             Format::Code,
         ];
@@ -7251,26 +6922,24 @@ mod tests {
             members(Format::is_markdown),
             [Format::Markdown, Format::MarkdownSource]
         );
-        assert_eq!(members(Format::is_html), [Format::Html, Format::HtmlSource]);
         assert_eq!(
             members(Format::is_source_view),
-            [Format::MarkdownSource, Format::HtmlSource]
+            [Format::MarkdownSource]
         );
         assert_eq!(
             members(Format::is_wysiwyg),
-            [Format::Markdown, Format::Html, Format::Rtf]
+            [Format::Markdown, Format::Rtf]
         );
-        assert_eq!(members(Format::is_rich_text), [Format::Html, Format::Rtf]);
+        assert_eq!(members(Format::is_rich_text), [Format::Rtf]);
         assert_eq!(
             members(Format::has_rich_source),
-            [Format::Html, Format::HtmlSource, Format::Rtf]
+            [Format::Rtf]
         );
         assert_eq!(
             members(Format::has_structural_lists),
             [
                 Format::Markdown,
                 Format::MarkdownSource,
-                Format::Html,
                 Format::Rtf
             ]
         );

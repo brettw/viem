@@ -10,8 +10,6 @@ final class EVPendingTypingStyleTests: XCTestCase {
   func testOptionItalicKeepsSourceCleanUntilTypedContentAndUndoIsExact() throws {
     for (type, source) in [
       (EVDocument.markdownType, "word"), (EVDocument.markdownSourceType, "word"),
-      (EVDocument.htmlType, "<p>word</p><!--keep-->"),
-      (EVDocument.htmlSourceType, "word<!--keep-->"),
       (EVDocument.rtfType, #"{\rtf1 word{\*\opaque keep}}"#),
     ] {
       let backend = EVCoreDocumentBackend()

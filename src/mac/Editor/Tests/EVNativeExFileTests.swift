@@ -89,8 +89,8 @@ import XCTest
         let originalBytes = try backend.serializedSource(typeName: EVDocument.markdownType)
         _ = try await perform(window, backend: backend, kind: .write).get()
         let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
-        _ = try session.setFormat(.html, operation: .convert, expected: backend.documentState())
-        let convertedBytes = try backend.serializedSource(typeName: EVDocument.htmlType)
+        _ = try session.setFormat(.plainText, operation: .convert, expected: backend.documentState())
+        let convertedBytes = try backend.serializedSource(typeName: EVDocument.plainTextType)
         XCTAssertNotEqual(convertedBytes, originalBytes)
         XCTAssertEqual(try Data(contentsOf: original), originalBytes)
         XCTAssertTrue(document.requiresNewFormatDestination)
@@ -106,7 +106,7 @@ import XCTest
             XCTAssertEqual(document.fileURL, original)
         }
 
-        let destination = directory.appendingPathComponent("converted.html")
+        let destination = directory.appendingPathComponent("converted.txt")
         _ = try await perform(window, backend: backend, kind: .saveAs, path: destination.path).get()
         XCTAssertEqual(try Data(contentsOf: original), originalBytes)
         XCTAssertEqual(try Data(contentsOf: destination), convertedBytes)

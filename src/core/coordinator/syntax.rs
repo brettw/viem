@@ -73,6 +73,23 @@ impl Default for CoreSyntax {
     }
 }
 impl<P: TextMeasurementProvider> Core<P> {
+    /// Capture a nonmutating whole-document export. The returned operation must
+    /// render after releasing the coordinator lease; it uses no layout provider.
+    pub fn prepare_html_export(&self, view: ViewId) -> Result<crate::document::HtmlExport, CoreError> {
+        if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
+        let export = self.document.prepare_html_export()
+            .with_tabstop(self.views[&view].commands.indentation_options().tabstop);
+        if !self.document.format().is_code() { return Ok(export); }
+        let input = self.syntax_input();
+        let mut service = self.syntax.service.for_export();
+        if !self.syntax.detected_for_code {
+            let detection = detection::detect_with_profile(&input, &self.syntax.filename,
+                &self.syntax.selection, &self.syntax.filename_associations, &self.syntax.detection_profile);
+            service.set_language(detection.language);
+        }
+        Ok(export.with_syntax(service, input))
+    }
+
     fn syntax_input(&self) -> SyntaxInputSnapshot {
         SyntaxInputSnapshot::new(
             SyntaxInputIdentity {

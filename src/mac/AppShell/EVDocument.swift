@@ -10,18 +10,24 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case plainText
     case markdown
     case markdownSource
-    case html
-    case htmlSource
     case rtf
     case code
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        if value == "html" || value == "htmlSource" { self = .code; return }
+        guard let format = Self(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown document format")
+        }
+        self = format
+    }
 
     public var displayName: String {
         switch self {
         case .plainText: "Plain Text"
         case .markdown: "Markdown WYSIWYG"
         case .markdownSource: "Markdown Source"
-        case .html: "HTML WYSIWYG"
-        case .htmlSource: "HTML Source"
         case .rtf: "RTF"
         case .code: "Code"
         }
@@ -31,7 +37,6 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
         self == other || ([Self.plainText, .code].contains(self)
             && [Self.plainText, .code].contains(other)) || ([Self.markdown, .markdownSource].contains(self)
             && [Self.markdown, .markdownSource].contains(other))
-            || ([Self.html, .htmlSource].contains(self) && [Self.html, .htmlSource].contains(other))
     }
 }
 
@@ -40,6 +45,7 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
     case formatConversionUnavailable(current: EVSourceFormat, requested: EVSourceFormat)
     case changedFormatNeedsNewDestination
     case destinationAliasesOriginal
+    case exportOverwritesSource
 
     public var errorDescription: String? {
         switch self {
@@ -49,6 +55,8 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
             "Saving \(current.displayName) as \(requested.displayName) requires a document format conversion, which is not available yet."
         case .changedFormatNeedsNewDestination:
             "The document format has changed. Use Save As and choose a different name or location to preserve the original file."
+        case .exportOverwritesSource:
+            "Choose a different destination for the HTML export to preserve the source document."
         case .destinationAliasesOriginal:
             "This destination refers to the original file. Choose a different name or location to preserve the original."
         }
@@ -68,7 +76,6 @@ public final class EVDocument: NSDocument {
     public static let markdownType = UTType(filenameExtension: "md")?.identifier
         ?? "net.daringfireball.markdown"
     public static let markdownSourceType = "com.viem.markdown-source"
-    public static let htmlSourceType = "com.viem.html-source"
     public static let htmlType = UTType.html.identifier
     public static let rtfType = UTType.rtf.identifier
     public static let codeType = "com.viem.code"
@@ -80,7 +87,9 @@ public final class EVDocument: NSDocument {
             // Keep fallback opens bound to the adapter's serialization type,
             // including when recovery restored a different source format.
             super.fileType = onMainActor {
-                if let type = newValue, Self.sourceFormat(forTypeName: type) == nil {
+                if let type = newValue, Self.sourceFormat(forTypeName: type) == nil
+                    || (Self.sourceFormat(forTypeName: type) == .code
+                        && self.editorBackend.sourceFormat == .code) {
                     return Self.typeName(for: self.editorBackend.sourceFormat)
                 }
                 return newValue
@@ -121,6 +130,7 @@ public final class EVDocument: NSDocument {
     var fileBaselineGeneration: UInt64 = 0
     public internal(set) var externalFileChange: EVExternalFileChange?
     var externalSaveDecisionHandler: ((EVExternalFileChange) -> Bool)?
+    var htmlExportPanelHandler: ((NSSavePanel, @escaping (URL?) -> Void) -> Void)?
     let externalFileReviewState = EVExternalFileReviewState()
     var externalFileObservation: EVExternalFileObservation?
     var externalFileCheckInFlight = false
@@ -242,7 +252,7 @@ public final class EVDocument: NSDocument {
             // Recovery may restore another format. The baseline describes the
             // original disk file, whose serialization must remain protected.
             if recovered {
-                self.fileBaselineFormat = Self.sourceFormat(forTypeName: typeName) ?? .plainText
+                self.fileBaselineFormat = Self.sourceFormat(forTypeName: Self.readableType(for: typeName)) ?? .plainText
             }
             self.recoveryTimer?.cancel()
             self.recoveryGeneration &+= 1
@@ -266,7 +276,6 @@ public final class EVDocument: NSDocument {
         switch format {
         case .code: openingType = Self.codeType
         case .markdownSource: openingType = Self.markdownSourceType
-        case .htmlSource: openingType = Self.htmlSourceType
         default: openingType = Self.typeName(for: format)
         }
         try editorBackend.read(source: snapshot.data, typeName: openingType,
@@ -418,11 +427,11 @@ public final class EVDocument: NSDocument {
     }
 
     public override class var readableTypes: [String] {
-        writableTypes + [UTType.data.identifier]
+        writableTypes + [htmlType, UTType.data.identifier]
     }
 
     public override class var writableTypes: [String] {
-        [plainTextType, markdownType, htmlType, rtfType]
+        [plainTextType, markdownType, rtfType]
     }
 
     public override class func isNativeType(_ type: String) -> Bool {
@@ -501,7 +510,6 @@ public final class EVDocument: NSDocument {
         switch format {
         case .plainText: plainTextType
         case .markdown, .markdownSource: markdownType
-        case .html, .htmlSource: htmlType
         case .rtf: rtfType
         case .code: plainTextType
         }
@@ -792,12 +800,12 @@ public final class EVDocument: NSDocument {
         switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":
             markdownSourceType
-        case "html", "htm":
-            htmlSourceType
+        case "html", "htm", "xhtml":
+            codeType
         default:
             switch sourceFormat(forTypeName: typeName) {
             case .some(.markdown): markdownSourceType
-            case .some(.html): htmlSourceType
+            case .some(.code): codeType
             default: readableType(for: typeName)
             }
         }
@@ -807,9 +815,8 @@ public final class EVDocument: NSDocument {
         let lowered = typeName.lowercased()
         if lowered == codeType { return .code }
         if lowered == markdownSourceType { return .markdownSource }
-        if lowered == htmlSourceType { return .htmlSource }
-        if [".html", ".htm", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
-            return .html
+        if [".html", ".htm", ".xhtml", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
+            return .code
         }
         if lowered == rtfType || lowered == ".rtf" || lowered.hasSuffix(".rtf") {
             return .rtf
@@ -819,7 +826,7 @@ public final class EVDocument: NSDocument {
         }
 
         if let type = UTType(typeName) {
-            if type.conforms(to: .html) { return .html }
+            if type.conforms(to: .html) { return .code }
             if type.conforms(to: .rtf) { return .rtf }
             if let markdown = UTType(filenameExtension: "md"),
                type == markdown || type.conforms(to: markdown)

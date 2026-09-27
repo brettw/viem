@@ -256,45 +256,10 @@ fn markdown_rich_paragraphs_keep_delimiters_and_styles() {
     assert_eq!(doc.text(), "a\nplain\nz");
     assert_eq!(doc.source_bytes(), b"**a**\n\nplain\n\n__z__");
 }
-#[test]
-fn html_rich_paragraphs_keep_exact_inline_source_and_outer_trivia() {
-    let original="<!doctype html><!--lead--><div><p lang='en'>Z &amp; last</p><!--gap--><h2 style='color:red'><b>A</b></h2></div><!--tail-->";
-    let mut doc = source(original, Format::Html);
-    let ids = doc
-        .projection()
-        .blocks()
-        .iter()
-        .map(|b| b.id)
-        .collect::<Vec<_>>();
-    let outcome = run(&mut doc, ":sort");
-    assert_eq!(doc.text(), "A\nZ & last");
-    assert_eq!(doc.source_bytes(), b"<!doctype html><!--lead--><div><h2 style='color:red'><b>A</b></h2><!--gap--><p lang='en'>Z &amp; last</p></div><!--tail-->");
-    assert_eq!(
-        doc.projection()
-            .blocks()
-            .iter()
-            .map(|b| b.id)
-            .collect::<Vec<_>>(),
-        vec![ids[1], ids[0]]
-    );
-    assert_eq!(
-        outcome
-            .model_transaction()
-            .unwrap()
-            .summary()
-            .source_patches()
-            .len(),
-        1
-    );
-    assert!(doc.undo());
-    assert_eq!(doc.source_bytes(), original.as_bytes());
-    assert!(doc.redo());
-}
+
 #[test]
 fn rich_ambiguous_context_rejects_without_flattening() {
     for (format, text) in [
-        (Format::Html, "<div><p>Z</p></div><div><p>A</p></div>"),
-        (Format::Html, "<p>Z<br>B</p><p>A</p>"),
         (Format::Rtf, r"{\rtf1\b Z\par\i A}"),
         (
             Format::Rtf,
@@ -349,22 +314,7 @@ fn command_prompt_sort_preserves_registers_and_undo_grouping() {
         .unwrap();
     assert_eq!(doc.text(), "z\nz\na");
 }
-#[test]
-fn source_view_sorts_raw_lines_even_when_html_interpretation_changes() {
-    let original = "<p>\nzebra\n</p>\n<p>apple</p>\n";
-    let mut doc = source(original, Format::HtmlSource);
-    run(&mut doc, ":sort");
-    assert_eq!(doc.source_bytes(), b"</p>\n<p>\n<p>apple</p>\nzebra\n");
-    assert_eq!(doc.text(), "</p>\n<p>\n<p>apple</p>\nzebra\n");
-    let reopened =
-        Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::HtmlSource).unwrap();
-    assert_eq!(
-        doc.projection().style_spans(),
-        reopened.projection().style_spans()
-    );
-    assert!(doc.undo());
-    assert_eq!(doc.source_bytes(), original.as_bytes());
-}
+
 #[test]
 fn unique_keeps_terminal_newline_and_one_source_row() {
     for (before, after) in [("b\na\nb\n", "a\nb\n"), ("x\nx\n", "x\n"), ("x\nx", "x")] {
@@ -405,33 +355,8 @@ fn sorted_line_identity_keeps_anchor_and_large_document_history() {
     assert!(doc.undo());
     assert_eq!(doc.text(), before);
 }
-#[test]
-fn html_subrange_can_sort_one_container_without_touching_other_containers() {
-    let mut doc = source(
-        "<div><p>Z</p><p>A</p></div><section><p>Other</p></section>",
-        Format::Html,
-    );
-    run(&mut doc, ":1,2sort");
-    assert_eq!(
-        doc.source_bytes(),
-        b"<div><p>A</p><p>Z</p></div><section><p>Other</p></section>"
-    );
-}
-#[test]
-fn rich_equal_text_reverse_and_unique_preserve_selected_run_identity() {
-    let original = "<p><b>same</b></p><!--between--><p><i>same</i></p>";
-    let mut doc = source(original, Format::Html);
-    run(&mut doc, ":sort!");
-    assert_eq!(
-        doc.source_bytes(),
-        b"<p><i>same</i></p><!--between--><p><b>same</b></p>"
-    );
-    assert!(doc.undo());
-    assert_eq!(doc.source_bytes(), original.as_bytes());
-    run(&mut doc, ":sort u");
-    assert_eq!(doc.source_bytes(), b"<p><b>same</b></p><!--between-->");
-    assert_eq!(doc.text(), "same");
-}
+
+
 #[test]
 fn numeric_overflow_saturates_and_pattern_resource_failure_is_atomic() {
     restored(

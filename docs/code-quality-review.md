@@ -1,5 +1,9 @@
 # Code quality review — September 2026
 
+Historical review: standalone HTML modes, stylesheet authoring, and their
+migration machinery were subsequently removed. HTML-specific policies and
+measurements below describe the earlier implementation.
+
 The initial behavior-preserving pass was reviewed against
 `7537b4f7e85f0d7705356e65886ff27dc3058125` and committed as `bf9ca47`. The user
 subsequently approved proposals 2–4: retire obsolete APIs, migrate legacy HTML

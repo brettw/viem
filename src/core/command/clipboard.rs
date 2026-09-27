@@ -198,13 +198,10 @@ impl ClipboardContent {
     /// Interpret external plain text as prose input, without modifying the
     /// clipboard or exact Vim registers. Private payloads already describe
     /// their line breaks; only controls the destination cannot store change.
-    pub(crate) fn to_paste_register(&self, format: crate::document::Format) -> RegisterValue {
+    pub(crate) fn to_paste_register(&self) -> RegisterValue {
         let value = self.to_register();
         let normalize_breaks = self.portable_register.is_none();
-        let replace_null = format == crate::document::Format::Html;
-        if !(normalize_breaks && value.text.contains('\r')
-            || replace_null && value.text.contains('\0'))
-        {
+        if !normalize_breaks || !value.text.contains('\r') {
             return value;
         }
         let mut text = String::with_capacity(value.text.len());
@@ -221,12 +218,9 @@ impl ClipboardContent {
                 if value.is_hard_break(at) {
                     breaks.push(text.len());
                 }
-                text.push(if replace_null && character == '\0' { '␀' } else { character });
+                text.push(character);
             }
         }
-        // A changed private fragment must not replay its original source over
-        // the sanitized text. In particular, an RTF NUL pasted into HTML uses
-        // the ordinary cross-format text path with the visible null marker.
         RegisterValue::try_new(text, value.kind, breaks)
             .expect("clipboard normalization preserves valid semantic break positions")
     }
@@ -670,9 +664,9 @@ mod rich_tests {
         use crate::layout::MockTextMeasurementProvider;
         use crate::{Core, CoreEvent};
 
-        let source = b"<p><B title='keep'>abcdefgh ijklmnop qrstuvwxyz</B></p>";
+        let source = b"__abcdefgh ijklmnop qrstuvwxyz__";
         for input in ["\"*yy", "\"*cc", "V\"*y", "V\"*c"] {
-            let mut core = Core::new(open(source, Format::Html));
+            let mut core = Core::new(open(source, Format::Markdown));
             let view = core.add_view(MockTextMeasurementProvider::new(), 55.0, 200.0);
             let row = core.layout(view).unwrap().snapshot().unwrap().rows[0]
                 .text_range
@@ -715,7 +709,7 @@ mod rich_tests {
             assert!(value["source_text"]
                 .as_str()
                 .unwrap()
-                .contains("<B title='keep'>"));
+                .contains("__"));
             assert_eq!(core.document().source_bytes(), source);
             assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
         }
@@ -729,13 +723,7 @@ mod rich_tests {
         for (format, source, expected) in [
             (Format::PlainText, "word", "word"),
             (Format::MarkdownSource, "__word__", "__word__"),
-            (
-                Format::HtmlSource,
-                "<p><b>word</b></p>",
-                "<p><b>word</b></p>",
-            ),
             (Format::Markdown, "__word__", "word"),
-            (Format::Html, "<p><b>word</b></p>", "word"),
         ] {
             for policy in [LineMode::Visual, LineMode::PhysicalSource] {
                 for input in ["V\"*c", "\"*cc"] {
@@ -784,9 +772,9 @@ mod rich_tests {
     fn rectangular_clipboard_yank_and_copy_alias_preserve_segment_payloads() {
         use crate::layout::MockTextMeasurementProvider;
         use crate::{Core, CoreEvent};
-        let source = b"<p><b>ab</b> outside-one<br><b>ab</b> outside-two</p>";
+        let source = b"**ab** outside-one\\\n**ab** outside-two";
         for operation in ['y', 'c'] {
-            let mut core = Core::new(open(source, Format::Html));
+            let mut core = Core::new(open(source, Format::Markdown));
             let view = core.add_view(MockTextMeasurementProvider::new(), 1000.0, 200.0);
             let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Primary);
             let mut writes = Vec::new();
@@ -843,7 +831,6 @@ mod rich_tests {
     fn clipboard_yank_and_insert_paste_roundtrip_authored_source_without_touching_ordinary_yanks() {
         for (format, source) in [
             (Format::Markdown, b"__bold__".as_slice()),
-            (Format::Html, b"<P><B title='x'>A&#38;B</B></P>".as_slice()),
         ] {
             let mut source_document = open(source, format);
             let mut commands = CommandInterpreter::new();
@@ -906,10 +893,10 @@ mod rich_tests {
         use crate::command::{Mode, SelectionOrigin};
         use crate::layout::MockTextMeasurementProvider;
         use crate::{Core, CoreEvent};
-        for source in ["<p><b>one two</b> three</p><p>four five</p>", "<p>abcdef ghijkl mnopqr stuvwx yz</p>"] {
+        for source in ["**one two** three\n\nfour five", "abcdef ghijkl mnopqr stuvwx yz"] {
             for sequence in ["vll", "vllo", "V", "Vjo", "\u{16}lj", "\u{16}ljo"] {
                 for native in [false, true] {
-                    let mut core = Core::new(open(source.as_bytes(), Format::Html));
+                    let mut core = Core::new(open(source.as_bytes(), Format::Markdown));
                     let view = core.add_view(MockTextMeasurementProvider::new(), 85., 200.);
                     for ch in sequence.chars() {
                         let key = if ch == '\u{16}' { Key::Ctrl('v') } else { Key::Char(ch) };
@@ -964,11 +951,9 @@ mod rich_tests {
         use crate::layout::MockTextMeasurementProvider;
         use crate::{Core, CoreEvent};
         for (source, format, plain) in [
-            ("<p><b>one</b> two</p>", Format::Html, "one two"),
             ("__one__ two", Format::Markdown, "one two"),
             ("one two", Format::PlainText, "one two"),
             ("one two\n", Format::PlainText, "one two\n"),
-            ("<p><b>one</b> two</p>", Format::HtmlSource, "<p><b>one</b> two</p>"),
             ("__one__ two", Format::MarkdownSource, "__one__ two"),
         ] {
             let mut core = Core::new(open(source.as_bytes(), format));

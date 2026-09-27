@@ -87,14 +87,7 @@ impl CommandInterpreter {
             next.values.push((property, value));
         }
         document.validate_typing_properties(&next.values)?;
-        if document.format() == crate::document::Format::HtmlSource
-            && !document.html_source_prose_at(self.cursor, self.insertion_boundary_affinity())?
-        {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
-        let exit = document
-            .html_typing_exit(self.cursor, &next.values)?
-            .or(document.markdown_source_typing_exit(self.cursor, &next.values)?);
+        let exit = document.markdown_source_typing_exit(self.cursor, &next.values)?;
         if let Some((at, preserved)) = exit {
             // A combining scalar can attach to a visible closing delimiter.
             // Never move a source caret into that grapheme's interior.

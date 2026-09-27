@@ -159,7 +159,6 @@ fn literal_and_markdown_code_keep_exact_encoding_failures_atomic() {
         (Format::PlainText, "middle", 0..6),
         (Format::Code, "middle", 0..6),
         (Format::MarkdownSource, "**middle**", 2..8),
-        (Format::HtmlSource, "<p>middle</p>", 3..9),
         (Format::Markdown, "`middle`", 0..6),
         (Format::Markdown, "```\nmiddle\n```", 0..6),
     ] {

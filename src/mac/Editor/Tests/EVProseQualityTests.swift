@@ -7,43 +7,6 @@ import XCTest
 
 @MainActor
 final class EVProseQualityTests: XCTestCase {
-  func testNativeBoldToggleAtElementEndUsesInheritedMenuState() throws {
-    let source = "<html><body><p><i><b>Bold</b></i></p></body></html>"
-    for type in [EVDocument.htmlType, EVDocument.htmlSourceType] {
-      check(type) {
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let session = try XCTUnwrap(surface.session)
-        if type == EVDocument.htmlSourceType {
-          try session.sendText("/Bold")
-          try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
-          try session.sendText("ea")
-        } else {
-          try session.sendText("A")
-        }
-        surface.refreshPresentation()
-        XCTAssertEqual(surface.presentation(for: .bold).state, .on)
-        XCTAssertEqual(surface.presentation(for: .italic).state, .on)
-        let before = surface.viewPresentation.cursor_utf8_offset
-        surface.perform(menuCommand: .bold, sender: nil)
-        XCTAssertEqual(surface.presentation(for: .bold).state, .off)
-        XCTAssertEqual(surface.presentation(for: .italic).state, .on)
-        XCTAssertEqual(
-          surface.viewPresentation.cursor_utf8_offset,
-          before + (type == EVDocument.htmlSourceType ? 4 : 0))
-        try session.sendText(" plain")
-        try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        let edited = String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self)
-        XCTAssertTrue(edited.contains("<b>Bold</b>"), edited)
-        XCTAssertTrue(edited.contains("plain"), edited)
-        XCTAssertNil(surface.commandOutput)
-        try session.undo()
-        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-      }
-    }
-  }
 
   func testCommonEditingCommandsDoNotPoisonReflowOrUndo() throws {
     let fixtures = [
@@ -51,10 +14,6 @@ final class EVProseQualityTests: XCTestCase {
       (
         EVDocument.markdownType,
         "**First** words with café and emoji 👩🏽‍💻.\n\nSecond paragraph.\n\nTail."
-      ),
-      (
-        EVDocument.htmlType,
-        "<p><b>First</b> words with café and emoji 👩🏽‍💻.</p><p>Second paragraph.</p><p>Tail.</p>"
       ),
       (
         EVDocument.rtfType,
@@ -101,14 +60,6 @@ final class EVProseQualityTests: XCTestCase {
       (
         EVDocument.markdownSourceType,
         "A **word** and more prose.\nA continuation.\n\nLast paragraph."
-      ),
-      (
-        EVDocument.htmlType,
-        "<html><body><p>A <b>word</b> and more prose.\nA continuation.</p><p>Last paragraph.</p></body></html>"
-      ),
-      (
-        EVDocument.htmlSourceType,
-        "<html><body><p>A <b>word</b> and more prose.\nA continuation.</p><p>Last paragraph.</p></body></html>"
       ),
       (EVDocument.rtfType, #"{\rtf1 A {\b word} and more prose.\par Last paragraph.}"#),
     ]
@@ -164,36 +115,6 @@ final class EVProseQualityTests: XCTestCase {
           XCTAssertNil(surface.commandOutput, "\(type), iteration \(iteration)")
         }
       }
-    }
-  }
-
-  func testEndOfHTMLRepeatedReturnsAndBackspaceRemainEditableAfterReflow() throws {
-    for source in ["", "<p>End</p>", "<html><body><p><b>End</b></p></body></html>"] {
-      let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
-      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-      surface.loadViewIfNeeded()
-      let session = try XCTUnwrap(surface.session)
-      let original = try backend.formattedText()
-      try session.sendText("GA")
-      for index in 0..<8 {
-        try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
-        try session.resize(width: CGFloat(index % 2 == 0 ? 160 : 640), height: 180)
-        surface.refreshPresentation()
-        XCTAssertNil(surface.commandOutput, "Return \(index): \(source)")
-        XCTAssertEqual(
-          try backend.formattedText(), original + String(repeating: "\n", count: index + 1))
-      }
-      for index in 0..<4 {
-        try session.sendKey(kind: UInt32(VIEM_KEY_BACKSPACE))
-        surface.refreshPresentation()
-        XCTAssertNil(surface.commandOutput, "Backspace \(index): \(source)")
-      }
-      try session.sendText("Tail")
-      try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-      XCTAssertEqual(try backend.formattedText(), original + "\n\n\n\nTail")
-      try session.undo()
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
     }
   }
 

@@ -217,7 +217,6 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         self.generated_indent = None;
-        self.input_assistance.clear_tag();
         self.input_assistance.literal = true;
         let program = self
             .insert_session
@@ -257,10 +256,10 @@ impl CommandInterpreter {
             (start < end).then(|| lines.slice_utf8(start..end).expect("validated replacement"));
         let value = RegisterValue::try_new(text, RegisterKind::Characterwise, Vec::new()).unwrap();
         let payload = FormattedTextPayload::new(&lines, text, Vec::new()).unwrap();
-        let edit = document.normalize_typing_payload(
+        let edit =
             FormattedPayloadEdit::new(start..end, payload)
-                .with_boundary_affinity(self.insertion_boundary_affinity()),
-        )?;
+                .with_boundary_affinity(self.insertion_boundary_affinity());
+        document.validate_typing_payload(&edit)?;
         let before = document.revision();
         self.cursor = if self.typing_style.is_empty() {
             commit_typing_payload(document, edit)?
@@ -524,8 +523,8 @@ mod tests {
     }
 
     #[test]
-    fn literal_replay_bypasses_smart_quotes_and_html_tag_assistance() {
-        for format in [Format::PlainText, Format::HtmlSource] {
+    fn literal_replay_bypasses_smart_quotes() {
+        for format in [Format::PlainText, Format::MarkdownSource] {
             let mut document = Document::from_bytes(Vec::new(), Encoding::Utf8, format).unwrap();
             let mut commands = CommandInterpreter::new();
             commands.set_smart_quotes(true);
@@ -729,10 +728,10 @@ mod tests {
     #[test]
     fn protected_quote_offsets_include_source_syntax_and_unicode_prefixes() {
         let document =
-            Document::from_bytes(Vec::new(), Encoding::Utf8, Format::HtmlSource).unwrap();
+            Document::from_bytes(Vec::new(), Encoding::Utf8, Format::MarkdownSource).unwrap();
         let mut commands = CommandInterpreter::new();
         commands.set_smart_quotes(true);
-        let input = "<i title=\"x\">é\"y\"</i>";
+        let input = "`code \"x\"` é\"y\"";
         let protected = input.find("\"y").unwrap();
         let transformed = commands
             .assist_input_payload_with_literals(
@@ -743,7 +742,7 @@ mod tests {
                 &[protected..protected + 1],
             )
             .unwrap();
-        assert_eq!(transformed.text, "<i title=\"x\">é\"y”</i>");
+        assert_eq!(transformed.text, "`code \"x\"` é\"y”");
     }
 
     #[test]

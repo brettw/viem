@@ -8,7 +8,7 @@ import XCTest
 final class EVFormattingToolbarTests: XCTestCase {
   private func surface(_ source: String, type: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.htmlType)
+    try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.rtfType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 300)
@@ -23,8 +23,8 @@ final class EVFormattingToolbarTests: XCTestCase {
   }
 
   func testSelectorsTrackCaretMixedSelectionAssignmentAndUndo() throws {
-    let source = "<h1>Heading</h1><p>plain <code>code</code></p>"
-    let (backend, surface) = try surface(source)
+    let source = "# Heading\n\nplain `code`"
+    let (backend, surface) = try surface(source, type: EVDocument.markdownType)
     let toolbar = surface.formattingToolbar
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Heading 1")
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 8, length: 0))
@@ -40,21 +40,21 @@ final class EVFormattingToolbarTests: XCTestCase {
     try choose("Heading2", from: toolbar.paragraphStyle, toolbar: toolbar)
     XCTAssertNil(surface.commandOutput)
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Heading 2")
-    let changed = try backend.serializedSource(typeName: EVDocument.htmlType)
+    let changed = try backend.serializedSource(typeName: EVDocument.markdownType)
     surface.perform(menuCommand: .undo, sender: nil)
     toolbar.refresh()
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, surface.currentStyleMenuCatalogue()?.entries.first {
       $0.role == .paragraph && $0.presentation.state == .on
     }?.displayName ?? "Mixed", "Undo restores the core's history caret/selection, which the selector follows")
     surface.perform(menuCommand: .redo, sender: nil)
     toolbar.refresh()
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), changed)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), changed)
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Heading 2")
   }
 
   func testCharacterCodeTogglesAndCodeBlockAvailability() throws {
-    for (type, source) in [(EVDocument.htmlType, "<p>Words</p>"), (EVDocument.markdownType, "Words")] {
+    for (type, source) in [(EVDocument.markdownType, "Words")] {
       let (_, surface) = try surface(source, type: type)
       let toolbar = surface.formattingToolbar
       surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
@@ -70,29 +70,6 @@ final class EVFormattingToolbarTests: XCTestCase {
       XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Default Paragraph")
       XCTAssertFalse(toolbar.codeBlock.isHidden)
     }
-  }
-
-  func testHTMLCodeContainerToolbarTogglesAndRestoresSourceWithUndo() throws {
-    let source = "<p>Words</p>"
-    let (backend, surface) = try surface(source)
-    let toolbar = surface.formattingToolbar
-    toolbar.refresh()
-    XCTAssertFalse(toolbar.codeBlock.isHidden)
-    toolbar.toggleCodeBlock(toolbar.codeBlock)
-    XCTAssertNil(surface.commandOutput)
-    XCTAssertEqual(toolbar.codeBlock.state, .on)
-    XCTAssertEqual(try backend.formattedText(), "Words")
-    let code = try backend.serializedSource(typeName: EVDocument.htmlType)
-    XCTAssertTrue(String(decoding: code, as: UTF8.self).contains("<pre"))
-    toolbar.toggleCodeBlock(toolbar.codeBlock)
-    XCTAssertNil(surface.commandOutput)
-    XCTAssertEqual(toolbar.codeBlock.state, .off)
-    XCTAssertEqual(try backend.formattedText(), "Words")
-    let paragraph = try backend.serializedSource(typeName: EVDocument.htmlType)
-    surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), code)
-    surface.perform(menuCommand: .redo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), paragraph)
   }
 
   func testMarkdownCodeBlockToolbarTogglesAndRestoresExactSourceWithUndo() throws {
@@ -164,17 +141,6 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
   }
 
-  func testSourceBackedCodeBlockCanBeToggledOff() throws {
-    let (_, surface) = try surface("<pre>Words</pre>")
-    let toolbar = surface.formattingToolbar
-    XCTAssertFalse(toolbar.codeBlock.isHidden)
-    XCTAssertEqual(toolbar.codeBlock.state, .on)
-    toolbar.toggleCodeBlock(toolbar.codeBlock)
-    XCTAssertNil(surface.commandOutput)
-    XCTAssertEqual(toolbar.codeBlock.state, .off)
-    XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Base Paragraph")
-  }
-
   func testMarkdownOmitsUnsupportedPropertiesAndButtonsShareMenuActions() throws {
     let (backend, surface) = try surface("Words", type: EVDocument.markdownType)
     let toolbar = surface.formattingToolbar
@@ -217,7 +183,7 @@ final class EVFormattingToolbarTests: XCTestCase {
   }
 
   func testColorsUseNativeWellsCommitOnceAndPreserveSelection() throws {
-    let source = "<p>Words</p>"
+    let source = #"{\rtf1{\pard Words}}"#
     let (backend, surface) = try surface(source)
     let toolbar = surface.formattingToolbar
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 80),
@@ -237,18 +203,18 @@ final class EVFormattingToolbarTests: XCTestCase {
     NSColorPanel.shared.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
     XCTAssertNil(surface.commandOutput)
     let formatting = try XCTUnwrap(surface.session).selectedFormatting()
-    XCTAssertEqual(formatting[.characterForeground], .color(.init(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)))
+    XCTAssertEqual(formatting[.characterForeground], .color(.init(red: 64 / 255, green: 128 / 255, blue: 191 / 255, alpha: 1)))
     let after = try XCTUnwrap(surface.session).listSelection()
     XCTAssertEqual(before.text_start, after.text_start)
     XCTAssertEqual(before.text_end, after.text_end)
     toolbar.foreground.dismissColorControls()
     surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.htmlType), Data(source.utf8))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
     XCTAssertFalse(surface.canUndo)
   }
 
   func testWindowRefreshKeepsToolbarCurrentWithoutPollingAndFitsNarrowWindows() throws {
-    let (backend, surface) = try surface("<h1>Head</h1><p>Words</p>")
+    let (backend, surface) = try surface("# Head\n\nWords", type: EVDocument.markdownType)
     let document = EVDocument(editorBackend: backend)
     let controller = EVDocumentWindowController(document: document, editorSurface: surface)
     defer { controller.close() }

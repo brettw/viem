@@ -64,18 +64,14 @@ fn ordinary_rtf_group_interior_deletion_remains_regional() {
 
 #[test]
 fn ordinary_rich_edits_reparse_one_line_and_share_unaffected_indexes() {
-    for format in [Format::Html, Format::Rtf] {
+    for format in [Format::Rtf] {
         let mut source = if format == Format::Rtf {
             String::from("{\\rtf1\\ansi\n")
         } else {
             String::new()
         };
         for index in 0..20_000 {
-            source.push_str(&if format == Format::Html {
-                format!("<p><b>line {index:05}</b> body</p>\n")
-            } else {
-                format!("{{\\b line {index:05}}} body\\par\n")
-            });
+            source.push_str(&format!("{{\\b line {index:05}}} body\\par\n"));
         }
         if format == Format::Rtf {
             source.push('}');
@@ -121,43 +117,17 @@ fn ordinary_rich_edits_reparse_one_line_and_share_unaffected_indexes() {
 }
 
 #[test]
-fn html_incremental_reparse_checks_character_reference_boundaries() {
-    let mut document = Document::from_bytes(
-        b"<p>&a</p><p>tail</p>".to_vec(),
-        Encoding::Utf8,
-        Format::Html,
-    )
-    .unwrap();
-    let original = document.source_bytes();
-    // Literal insertion must not complete &amp; across the source boundary.
-    document.insert(2, "mp;").unwrap();
-    assert_eq!(document.text(), "&amp;\ntail");
-    assert_eq!(document.source_bytes(), b"<p>&a&#x6D;p;</p><p>tail</p>");
-    let reopened =
-        Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
-    assert_eq!(document.text(), reopened.text());
-    assert_eq!(
-        document.projection().provenance(),
-        reopened.projection().provenance()
-    );
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), original);
-}
-
-#[test]
 fn multiline_paragraph_edits_reparse_only_the_affected_paragraph() {
-    for format in [Format::Html, Format::Rtf] {
+    for format in [Format::Rtf] {
         let mut source = if format == Format::Rtf {
             String::from(r"{\rtf1{\stylesheet{\s0 Normal;}{\*\cs2\i Accent;}}")
         } else {
             String::new()
         };
         for index in 0..12_000 {
-            source.push_str(&if format == Format::Html {
-                format!("<p><b>line {index:05}</b><br>second<br>third</p>\n")
-            } else {
-                format!("{{\\cs2 line {index:05}\\line second\\line third}}\\par\n")
-            });
+            source.push_str(&format!(
+                "{{\\cs2 line {index:05}\\line second\\line third}}\\par\n"
+            ));
         }
         if format == Format::Rtf {
             source.push('}');
@@ -225,11 +195,14 @@ fn native_typed_payloads_use_the_bounded_rich_edit_path() {
     use viem_core::document::{
         BoundaryAffinity, FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
     };
-    let source = (0..15_000)
-        .map(|i| format!("<p><b>word {i:05}</b> tail</p>\n"))
-        .collect::<String>();
+    let source = format!(
+        "{{\\rtf1 {}}}",
+        (0..15_000)
+            .map(|i| format!("{{\\b word {i:05}}} tail\\par\n"))
+            .collect::<String>()
+    );
     let mut document =
-        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Html).unwrap();
+        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
     let at = document.projection().hard_line_range(7_500).unwrap().start + 10;
     let payload =
         FormattedTextPayload::new(&document.hard_line_snapshot(), "X", Vec::new()).unwrap();
@@ -245,8 +218,7 @@ fn native_typed_payloads_use_the_bounded_rich_edit_path() {
     assert!(work.decoded_source_bytes() < 256);
     assert_eq!(work.full_text_bytes_materialized(), 0);
     document.commit_model_transaction(prepared).unwrap();
-    let fresh =
-        Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Html).unwrap();
+    let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
     assert_eq!(
         document.projection().style_spans(),
         fresh.projection().style_spans()

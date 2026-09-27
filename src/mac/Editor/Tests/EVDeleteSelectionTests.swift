@@ -44,7 +44,6 @@ import XCTest
         let text = "A\(selected)Z"
         for (source, type) in [
             (text, EVDocument.plainTextType),
-            ("<p data-keep='yes'>A<b>\(selected)</b>Z</p><!--keep-->", EVDocument.htmlType),
         ] {
             for keyCode: UInt16 in [51, 117] {
                 let (backend, view) = try surface(source, type: type)
@@ -88,20 +87,20 @@ import XCTest
 
     func testTripleClickDeleteAtEveryStructuralLineIncludingLastListItem() throws {
         for source in [
-            "<ul><li>Now ist the time </li><li>For all good men</li></ul>",
-            "<ol start='4'><li>First</li><li>Middle</li><li>Last</li></ol><!--keep-->",
-            "<ul><li>Parent<ul><li>Child</li><li>Last</li></ul></li></ul>",
-            "<ul><li><p>First</p><p>Last</p></li></ul>",
-            "<blockquote><p>First</p><p>Last</p></blockquote>",
+            "- Now ist the time\n- For all good men",
+            "4. First\n5. Middle\n6. Last",
+            "- Parent\n  - Child\n  - Last",
+            "- First\n\n  Last",
+            "> First\n>\n> Last",
         ] {
             let initial = EVCoreDocumentBackend()
-            try initial.read(source: Data(source.utf8), typeName: EVDocument.htmlType)
+            try initial.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
             let original = try initial.formattedText()
             let lines = original.components(separatedBy: "\n")
             for line in lines.indices {
                 for keyCode: UInt16 in [51, 117] {
                     for insertMode in [false, true] {
-                        let (backend, view) = try surface(source, type: EVDocument.htmlType)
+                        let (backend, view) = try surface(source, type: EVDocument.markdownType)
                         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 240),
                             styleMask: [.titled], backing: .buffered, defer: false)
                         window.isReleasedWhenClosed = false
@@ -130,10 +129,10 @@ import XCTest
                         let expected = String(decoding: retained, as: UTF8.self)
                         view.editorView.keyDown(with: try deleteEvent(keyCode: keyCode, windowNumber: window.windowNumber))
                         try assertHistory(backend: backend, view: view, source: source,
-                                          type: EVDocument.htmlType, expectedText: expected)
-                        let saved = try backend.serializedSource(typeName: EVDocument.htmlType)
+                                          type: EVDocument.markdownType, expectedText: expected)
+                        let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
                         let reopened = EVCoreDocumentBackend()
-                        try reopened.read(source: saved, typeName: EVDocument.htmlType)
+                        try reopened.read(source: saved, typeName: EVDocument.markdownType)
                         XCTAssertEqual(try reopened.formattedText(), expected)
                     }
                 }

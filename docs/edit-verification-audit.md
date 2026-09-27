@@ -1,5 +1,9 @@
 # Formatted-edit verification audit
 
+Historical validation: standalone HTML modes and their dedicated editing tests
+were subsequently removed. Markdown and RTF retain the shared verification rules;
+HTML-mode results below describe the earlier implementation.
+
 Markdown WYSIWYG deletion now repairs source syntax when removing visible text changes how the remaining source parses. The shared translation path serves Visual `x`/`d`, ordinary delete and Backspace, replacements, payloads, and batched edits. It still verifies the candidate projection before publishing one undoable transaction.
 
 ## Reproduced failures and fixes

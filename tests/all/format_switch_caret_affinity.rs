@@ -8,11 +8,7 @@ type Editor = Core<MockTextMeasurementProvider>;
 const PARAGRAPH: &str = "A uniquely identified paragraph with café and 👩‍💻 followed by enough ordinary words to wrap across several rows. Anchor.";
 
 fn editor(format: Format) -> (Editor, ViewId) {
-    let source = if format == Format::Markdown {
-        format!("# Heading\n\n{PARAGRAPH}\n\nFollowing paragraph.")
-    } else {
-        format!("<h1>Heading</h1><p>{PARAGRAPH}</p><p>Following paragraph.</p>")
-    };
+    let source = format!("# Heading\n\n{PARAGRAPH}\n\nFollowing paragraph.");
     let mut core =
         Core::new(Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap());
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 600.0);
@@ -48,14 +44,6 @@ fn place(core: &mut Editor, view: ViewId, offset: usize) {
         .expect("row navigation retains its exact caret");
     assert_eq!(visual.text_offset, offset);
     assert_eq!(visual.affinity, BoundaryAffinity::Upstream);
-}
-
-fn targets(from: Format) -> [Format; 3] {
-    if from == Format::Markdown {
-        [Format::MarkdownSource, Format::Html, Format::HtmlSource]
-    } else {
-        [Format::HtmlSource, Format::Markdown, Format::MarkdownSource]
-    }
 }
 
 fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_prefix: &str) {
@@ -113,8 +101,8 @@ fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_pr
 
 #[test]
 fn insert_upstream_soft_wrap_caret_keeps_its_semantic_boundary_across_format_switch() {
-    for from in [Format::Markdown, Format::Html] {
-        for target in targets(from) {
+    for from in [Format::Markdown,] {
+        for target in [Format::MarkdownSource] {
             let (mut core, view) = editor(from);
             let paragraph_start = core.document().text().find(PARAGRAPH).unwrap();
             let boundary = core
@@ -137,8 +125,8 @@ fn insert_upstream_soft_wrap_caret_keeps_its_semantic_boundary_across_format_swi
 
 #[test]
 fn insert_upstream_paragraph_end_caret_stays_before_generated_source_delimiters() {
-    for from in [Format::Markdown, Format::Html] {
-        for target in targets(from) {
+    for from in [Format::Markdown,] {
+        for target in [Format::MarkdownSource] {
             let (mut core, view) = editor(from);
             let boundary = core.document().text().find(PARAGRAPH).unwrap() + PARAGRAPH.len();
             place(&mut core, view, boundary);

@@ -64,7 +64,7 @@ pub(super) fn plan(
     };
     let source = document.source_bytes();
     let mut source_patches = match document.format() {
-        Format::PlainText | Format::Code | Format::MarkdownSource | Format::HtmlSource => {
+        Format::PlainText | Format::Code | Format::MarkdownSource => {
             let physical = transfer::physical_hard_lines(document, count)?;
             let mut replacement = Vec::new();
             for (slot, index) in order.iter().enumerate() {
@@ -83,13 +83,7 @@ pub(super) fn plan(
                 replacement,
             }]
         }
-        Format::Html => rich_patches(
-            document,
-            selected.clone(),
-            &order,
-            &source,
-            html_rows(document, selected.clone())?,
-        )?,
+
         Format::Rtf => return Err(DocumentError::UnsupportedFormatting),
         Format::Markdown => rich_patches(
             document,
@@ -172,104 +166,9 @@ fn rich_patches(
     }])
 }
 
-fn normalized(document: &Document) -> Result<super::line_endings::NormalizedText, DocumentError> {
-    let decoded = document.encoding().decode(&document.source_bytes())?;
-    Ok(super::line_endings::normalize(
-        &decoded,
-        document.file_format(),
-    ))
-}
 
-fn html_rows(
-    document: &Document,
-    selected: Range<usize>,
-) -> Result<Vec<Range<usize>>, DocumentError> {
-    use super::html::{self, TokenKind};
-    let input = normalized(document)?;
-    let tokens = html::tokenize(&input.text);
-    let converter = super::rich_text::Builder::new(&input, document.revision());
-    let mut stack: Vec<usize> = Vec::new();
-    let mut owners = Vec::new();
-    for (index, token) in tokens.iter().enumerate() {
-        let TokenKind::Tag(tag) = &token.kind else {
-            continue;
-        };
-        if tag.end {
-            let Some(open_at) = stack.iter().rposition(|open| matches!(&tokens[*open].kind, TokenKind::Tag(open_tag) if open_tag.name == tag.name)) else { continue; };
-            let opening = stack[open_at];
-            if super::html::heading_or_paragraph(&tag.name) {
-                // Misnested recovered phrasing and nested paragraph owners are
-                // not guessed. The HTML5 projection remains the authority.
-                if open_at + 1 != stack.len() {
-                    return Err(DocumentError::AmbiguousProjection);
-                }
-                owners.push((
-                    converter.source_range(tokens[opening].range.start..token.range.end),
-                    stack[..open_at].to_vec(),
-                ));
-            }
-            stack.truncate(open_at);
-        } else if !super::html::void(&tag.name) {
-            stack.push(index);
-        }
-    }
-    owners.sort_by_key(|(range, _)| range.start);
-    map_owners(document, owners, selected)
-}
 
-fn map_owners(
-    document: &Document,
-    owners: Vec<(Range<usize>, Vec<usize>)>,
-    selected: Range<usize>,
-) -> Result<Vec<Range<usize>>, DocumentError> {
-    let mut rows = Vec::new();
-    let mut parent = None;
-    for (index, block) in document.projection().blocks().iter().enumerate() {
-        if !selected.contains(&index) {
-            rows.push(0..0);
-            continue;
-        }
-        let provenance = document.projection().provenance_for_region(&block.range);
-        let source_ranges: Vec<_> = provenance
-            .iter()
-            .filter(|span| !span.source.is_empty())
-            .map(|span| span.source.clone())
-            .collect();
-        let at = source_ranges
-            .first()
-            .map(|range| range.start)
-            .or_else(|| {
-                document
-                    .projection()
-                    .source_insertion_point(block.range.start, true)
-            })
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let owner_index = owners
-            .partition_point(|(owner, _)| owner.start <= at)
-            .checked_sub(1)
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let (owner, ancestry) = &owners[owner_index];
-        if at > owner.end
-            || source_ranges
-                .iter()
-                .any(|range| range.start < owner.start || range.end > owner.end)
-        {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
-        if owner_index > 0 && owners[owner_index - 1].0.end >= at {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-        if let Some(expected) = &parent {
-            if expected != ancestry {
-                return Err(DocumentError::AmbiguousProjection);
-            }
-        } else {
-            parent = Some(ancestry.clone());
-        }
-        rows.push(owner.clone());
-    }
-    Ok(rows)
-}
+
 
 fn markdown_rows(document: &Document) -> Result<Vec<Range<usize>>, DocumentError> {
     // A blank-line-separated Markdown paragraph owns all its physical source

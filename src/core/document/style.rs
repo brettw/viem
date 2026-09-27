@@ -69,13 +69,6 @@ impl StyleId {
         matches!(
             self.0.as_str(),
             "* Incremental match"
-                | "* HTML Brackets"
-                | "* HTML Tag name"
-                | "* HTML Attribute key"
-                | "* HTML Attribute value"
-                | "* HTML Equals"
-                | "* HTML Entity"
-                | "* HTML Uninterpreted"
         )
     }
 }
@@ -472,8 +465,6 @@ pub struct StyleSheet {
     deleted_source_blocks: BTreeSet<StyleId>,
     source_defined_blocks: BTreeSet<StyleId>,
     source_defined_characters: BTreeSet<StyleId>,
-    html_configuration_blocks: BTreeSet<StyleId>,
-    html_configuration_characters: BTreeSet<StyleId>,
     source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
     // Settings-file seeds and assignment provenance. These are not cascade
     // layers: the editable maps above contain the complete own declarations.
@@ -515,7 +506,6 @@ impl StyleSheet {
         }
         for set in [&self.deleted_configuration_blocks, &self.deleted_configuration_characters,
                     &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters,
-                    &self.html_configuration_blocks, &self.html_configuration_characters,
                     &self.implicit_characters] {
             bytes += style_map_heap_bytes(set.len(), std::mem::size_of::<StyleId>())
                 + set.iter().map(id).sum::<usize>();
@@ -540,8 +530,6 @@ impl PartialEq for StyleSheet {
             && self.deleted_source_blocks == other.deleted_source_blocks
             && self.default_blocks == other.default_blocks
             && self.default_characters == other.default_characters
-            && self.html_configuration_blocks == other.html_configuration_blocks
-            && self.html_configuration_characters == other.html_configuration_characters
             && self.implicit_characters == other.implicit_characters
     }
 }
@@ -738,8 +726,6 @@ impl Default for StyleSheet {
             deleted_source_blocks: BTreeSet::new(),
             source_defined_blocks: BTreeSet::new(),
             source_defined_characters: BTreeSet::new(),
-            html_configuration_blocks: BTreeSet::new(),
-            html_configuration_characters: BTreeSet::new(),
             source_character_defaults: BTreeMap::new(),
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
@@ -1346,40 +1332,6 @@ impl StyleSheet {
         Ok(result)
     }
 
-    pub(crate) fn install_html_source_styles(&mut self) {
-        // When changing these identities, update StyleId::is_internal and the
-        // expected HTML styles in tests/html_source.rs:
-        // source_is_exact_normalized_decoding_with_lossless_bytes_and_semantic_context.
-        for (name, rgb) in [
-            ("Brackets", [0.48, 0.48, 0.52]),
-            ("Tag name", [0.62, 0.36, 0.80]),
-            ("Attribute key", [0.22, 0.57, 0.68]),
-            ("Attribute value", [0.29, 0.58, 0.31]),
-            ("Equals", [0.55, 0.48, 0.40]),
-            ("Entity", [0.76, 0.47, 0.20]),
-            ("Uninterpreted", [0.50, 0.52, 0.55]),
-        ] {
-            let id = StyleId(format!("* HTML {name}"));
-            self.character_styles
-                .entry(id.clone())
-                .or_insert_with(|| CharacterStyle {
-                    id: id.clone(),
-                    based_on: None,
-                    properties: CharacterProperties {
-                        foreground: Some(Color {
-                            red: rgb[0],
-                            green: rgb[1],
-                            blue: rgb[2],
-                            alpha: 1.0,
-                        }),
-                        ..Default::default()
-                    },
-                });
-            self.character_metadata
-                .entry(id.clone())
-                .or_insert_with(|| StyleDefinitionMetadata::generated(id.0));
-        }
-    }
     /// Look up one immutable block-style definition by its stable ID.
     pub fn block_style(&self, id: &StyleId) -> Option<&BlockStyle> {
         self.block_styles.get(id)
@@ -1414,7 +1366,6 @@ impl StyleSheet {
     pub(crate) fn retain_configuration_deletions(&mut self, previous: &Self) {
         self.retain_defaults(previous);
         self.retain_internal_styles(previous);
-        self.retain_html_native_configuration(previous);
         self.deleted_configuration_blocks = previous.deleted_configuration_blocks.clone();
         self.deleted_configuration_characters = previous.deleted_configuration_characters.clone();
         for id in &self.deleted_configuration_blocks {
@@ -1463,7 +1414,7 @@ impl StyleSheet {
     /// Plain text and RTF retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
         let mut sheet = Self::default();
-        if format.is_markdown() || format.is_html() {
+        if format.is_markdown() {
             sheet.character_styles.insert("Link".into(), CharacterStyle {
                 id: "Link".into(), based_on: None,
                 properties: CharacterProperties {
@@ -1964,17 +1915,6 @@ impl StyleSheet {
         candidate.validate_character_cycles()?;
         *self = candidate;
         Ok(())
-    }
-
-    pub(crate) fn mark_html_base_styles_source_backed(&mut self) {
-        for (id, metadata) in &mut self.block_metadata {
-            if id == &self.base_paragraph
-                || id.0.starts_with("Heading")
-                || Self::builtin_block(id)
-            {
-                metadata.origin = StyleDefinitionOrigin::SourceBacked;
-            }
-        }
     }
 
     pub(crate) fn builtin_block(id: &StyleId) -> bool {
@@ -3235,7 +3175,6 @@ fn declares_paragraph_properties(block: &BlockProperties) -> bool {
         || block.base_direction.is_some()
 }
 
-
 fn emergency_contributions(
     properties: impl IntoIterator<Item = StyleProperty>,
 ) -> BTreeMap<StyleProperty, StyleContribution> {
@@ -3570,20 +3509,6 @@ pub enum StyleApplication {
     Named(StyleId),
     /// Adapter-owned syntax decoration; never a user character assignment.
     Automatic(StyleId),
-    /// A source grammar extent, including unpainted whitespace inside a tag.
-    SourceSyntax,
-    /// Raw script/style-like contents where even the opening boundary is literal.
-    SourceRawText,
-    /// Adapter context only: these HTML characters preserve literal whitespace.
-    /// An empty range records the same context at a matching empty source
-    /// anchor. It has no appearance or user-assignment meaning.
-    SourcePreservedWhitespace,
-    /// The semantic paragraph underlying visible source syntax. Source hard
-    /// lines may contain several paragraph elements, so this context is inline.
-    SourceParagraph {
-        style: StyleId,
-        defaults: CharacterProperties,
-    },
     Direct(CharacterProperties),
     Semantic(SemanticInlineStyle),
 }
@@ -3592,7 +3517,7 @@ impl StyleApplication {
     pub(super) fn owned_heap_bytes(&self) -> usize {
         match self {
             Self::Named(id) | Self::Automatic(id) => id.0.capacity() + 16,
-            Self::SourceParagraph { style, defaults } => style.0.capacity() + 16 + defaults.owned_heap_bytes(),
+
             Self::Direct(properties) => properties.owned_heap_bytes(),
             _ => 0,
         }
@@ -3636,8 +3561,8 @@ mod tests {
             else if cfg!(target_os = "windows") { "Segoe UI" } else { "system-ui" };
         assert_eq!(DEFAULT_FONT_FAMILY, expected);
         for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
-            crate::document::Format::MarkdownSource, crate::document::Format::Html,
-            crate::document::Format::HtmlSource, crate::document::Format::Rtf] {
+            crate::document::Format::MarkdownSource,
+             crate::document::Format::Rtf] {
             let sheet = StyleSheet::for_format(format);
             assert_eq!(sheet.block_style(&sheet.base_paragraph).unwrap().character.font_families,
                 Some(vec![expected.to_owned()]), "{format:?}");

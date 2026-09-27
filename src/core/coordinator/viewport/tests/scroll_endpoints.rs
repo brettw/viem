@@ -141,10 +141,16 @@ fn counted_viewport_alignment_keeps_its_requested_position_with_margins() {
 fn explicit_paging_preserves_scrollbar_extent_when_trailing_space_exceeds_the_viewport() {
     for (format, source, bottom) in [
         (Format::PlainText, "line\n".repeat(20) + "last", 200.),
-        (Format::Html, "<p>line</p>".repeat(20)
-            + "<p style=\"margin-block-end:200pt\">last</p>", 29.),
+        (Format::Markdown, "line\n\n".repeat(20) + "# last", 29.),
     ] {
-        let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
+        let mut document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
+        if format == Format::Markdown {
+            use crate::document::{ConfigurationStyleIntent, StyleDefinitionEdit, StyleModelIntent, StyleModelRequest};
+            let mut heading = document.projection().style_sheet().block_style(&"Heading1".into()).unwrap().clone();
+            heading.block.margin_bottom = Some(200.);
+            document.apply_style_request(StyleModelRequest::new(document.id(), document.revision(),
+                StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateBlock(heading))))).unwrap();
+        }
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 80.);
         core.set_view_insets(view, crate::layout::EdgeInsets {

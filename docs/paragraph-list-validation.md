@@ -1,5 +1,8 @@
 # Paragraph, list, style-control, and zoom validation
 
+Historical validation: standalone HTML modes and their dedicated tests were
+subsequently removed. HTML-mode results below describe the earlier implementation.
+
 Validated on macOS 26 with the isolated `com.viem.todo-validation` app and
 temporary fixtures/configuration. The user's normal editor and settings were
 not used for test edits.

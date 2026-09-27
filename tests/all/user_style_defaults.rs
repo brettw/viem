@@ -22,9 +22,6 @@ fn defaults_are_visible_declarations_and_source_declarations_override_them() {
         (Format::PlainText, "Text", 0, 31.),
         (Format::Markdown, "Text", 0, 31.),
         (Format::MarkdownSource, "Text", 0, 31.),
-        (Format::Html, "<p>Text</p><!--keep-->", 0, 31.),
-        (Format::HtmlSource, "<p>Text</p><!--keep-->", 3, 31.),
-        (Format::Html, "<p style='font-size:20pt'>Text</p>", 0, 20.),
         (Format::Rtf, r"{\rtf1 Text{\*\unknown keep}}", 0, 31.),
         (Format::Rtf, r"{\rtf1\fs40 Text}", 0, 20.),
     ] {
@@ -88,7 +85,6 @@ fn defaults_are_visible_declarations_and_source_declarations_override_them() {
 #[test]
 fn explicit_source_style_update_does_not_materialize_default_font() {
     for (format, source) in [
-        (Format::Html, "<p>Text</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1 Text{\*\unknown keep}}"),
     ] {
         let mut doc = open(source, format);
@@ -156,7 +152,6 @@ fn default_files_skip_invalid_definitions_and_export_current_overrides() {
 #[test]
 fn assigning_saved_named_defaults_persists_their_own_declarations() {
     for (format, source) in [
-        (Format::Html, "<p>Text</p><!--keep-->"),
         (Format::Rtf, r"{\rtf1 Text{\*\unknown keep}}"),
     ] {
         for character in [false, true] {
@@ -239,21 +234,7 @@ fn assigning_saved_named_defaults_persists_their_own_declarations() {
                 "{format:?} character={character}"
             );
             let syntax = String::from_utf8(doc.source_bytes()).unwrap();
-            if format == Format::Html {
-                // A user-defined style has no native HTML counterpart. Its
-                // definition must travel with its assignment even when native
-                // style export is off and another editor has no user settings.
-                assert!(syntax.contains("font-size: 25pt"), "{syntax}");
-                assert!(!syntax.contains("body {"), "{syntax}");
-                let reopened = open(&syntax, format);
-                assert_eq!(
-                    DocumentLayoutStyles::character_at(reopened.projection(), 1, false)
-                        .unwrap()
-                        .size,
-                    25.0,
-                    "{syntax}"
-                );
-            } else {
+            {
                 // Assigning a named style persists its actual definition, so
                 // another editor does not need the user's settings file.
                 assert!(syntax.contains("\\fs50"), "{syntax}");
@@ -300,9 +281,9 @@ fn omitted_defaults_keep_adapter_values_and_rtf_native_font_still_wins() {
 #[test]
 fn defaults_do_not_invalidate_untouched_large_document_projection() {
     let source = (0..10_001)
-        .map(|i| format!("<p>Paragraph {i}</p>\n"))
+        .map(|i| format!("Paragraph {i}\n\n"))
         .collect::<String>();
-    let mut doc = open(&source, Format::Html);
+    let mut doc = open(&source, Format::Markdown);
     let work = doc.open_work_statistics();
     let id = doc.projection().blocks()[9_000].id;
     doc.initialize_style_defaults(&defaults()).unwrap();

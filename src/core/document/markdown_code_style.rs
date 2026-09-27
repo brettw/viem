@@ -12,10 +12,14 @@ impl Document {
         if !enabled && self.format() == Format::Markdown {
             let mut indented = Vec::new();
             for block in &blocks {
-                if super::super::markdown_indented_code::source_block(self, block)?.is_some() { indented.push(block.clone()); }
+                if super::super::markdown_indented_code::source_block(self, block)?.is_some() {
+                    indented.push(block.clone());
+                }
             }
             if !indented.is_empty() {
-                return self.prepare_with_fenced_indented_code(&indented, |doc| doc.prepare_markdown_code_style(range, enabled));
+                return self.prepare_with_fenced_indented_code(&indented, |doc| {
+                    doc.prepare_markdown_code_style(range, enabled)
+                });
             }
         }
         let mut patches = Vec::new();
@@ -35,9 +39,21 @@ impl Document {
                 .map_err(DocumentError::FormattedTextStorage)?;
             let (source, raw) = self.markdown_paragraph_source(&block, !enabled)?;
             let (syntax, body_range, body_syntax, opening, closing) = if enabled {
-                let container = &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))];
-                let source_body = if container.is_empty() { raw.clone() } else { strip_quote_prefixes(&raw, container.bytes().filter(|byte| *byte == b'>').count()) };
-                let body = if self.format().is_source_view() { source_body.as_str() } else { &visible };
+                let container =
+                    &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))];
+                let source_body = if container.is_empty() {
+                    raw.clone()
+                } else {
+                    strip_quote_prefixes(
+                        &raw,
+                        container.bytes().filter(|byte| *byte == b'>').count(),
+                    )
+                };
+                let body = if self.format().is_source_view() {
+                    source_body.as_str()
+                } else {
+                    &visible
+                };
                 // A fence must be longer than every possible closing run in
                 // its literal body, including pasted backtick-only lines.
                 let width = body
@@ -56,30 +72,68 @@ impl Document {
                     format!("{container}{fence}\n"),
                     format!("\n{container}{fence}"),
                 )
-            } else if let Some(code) = super::super::markdown_indented_code::source_block(self, &block)? {
+            } else if let Some(code) =
+                super::super::markdown_indented_code::source_block(self, &block)?
+            {
                 let mut lines = Vec::new();
                 for line in code.lines {
-                    let bytes = self.state().source.bytes_in(line.content_start..line.source.end)
+                    let bytes = self
+                        .state()
+                        .source
+                        .bytes_in(line.content_start..line.source.end)
                         .ok_or(DocumentError::AmbiguousProjection)?;
-                    lines.push(format!("{}{}", " ".repeat(line.padding), self.encoding().decode_region(&bytes, line.content_start)?.text));
+                    lines.push(format!(
+                        "{}{}",
+                        " ".repeat(line.padding),
+                        self.encoding()
+                            .decode_region(&bytes, line.content_start)?
+                            .text
+                    ));
                 }
                 let prose = prose_from_code(&lines.join("\n"));
-                (prose.clone(), 0..raw.len(), prose, String::new(), String::new())
+                (
+                    prose.clone(),
+                    0..raw.len(),
+                    prose,
+                    String::new(),
+                    String::new(),
+                )
             } else {
                 let first_end = raw.find('\n').unwrap_or(raw.len());
                 let opening = &raw[..first_end];
                 let quote = super::super::markdown_quotes::prefix(opening);
-                let marker = super::super::markdown_blocks::marker_prefix_length(&opening[quote..]).unwrap_or(0);
-                let (delimiter, width) = super::super::projection::markdown_fence(opening[quote + marker..].trim_start())
-                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                let marker = super::super::markdown_blocks::marker_prefix_length(&opening[quote..])
+                    .unwrap_or(0);
+                let (delimiter, width) = super::super::projection::markdown_fence(
+                    opening[quote + marker..].trim_start(),
+                )
+                .ok_or(DocumentError::UnsupportedFormatting)?;
                 let last_start = raw.rfind('\n').map_or(raw.len(), |at| at + 1);
                 let closing = &raw[last_start..];
                 let prefix = super::super::markdown_quotes::prefix(closing);
-                let closed = super::super::markdown_syntax::fence_close(&closing[prefix..], delimiter, width);
+                let closed = super::super::markdown_syntax::fence_close(
+                    &closing[prefix..],
+                    delimiter,
+                    width,
+                );
                 let body_end = if closed { last_start - 1 } else { raw.len() };
                 let body = &raw[(first_end + 1).min(body_end)..body_end];
-                let source_body = if quote > 0 { strip_quote_prefixes(body, opening[..quote].bytes().filter(|byte| *byte == b'>').count()) } else { body.to_owned() };
-                let prose = prose_from_code(if self.format().is_source_view() { &source_body } else { &visible });
+                let source_body = if quote > 0 {
+                    strip_quote_prefixes(
+                        body,
+                        opening[..quote]
+                            .bytes()
+                            .filter(|byte| *byte == b'>')
+                            .count(),
+                    )
+                } else {
+                    body.to_owned()
+                };
+                let prose = prose_from_code(if self.format().is_source_view() {
+                    &source_body
+                } else {
+                    &visible
+                });
                 let prose = quote_lines(&prose, &opening[..quote]);
                 (
                     prose.clone(),
@@ -177,8 +231,14 @@ impl Document {
                 .projection
                 .blocks_for_region(&(at..at))
                 .iter()
-                .any(|block| block.range.start == at && (block.style.0 == expected
-                    || !enabled && self.format().is_source_view() && block.quote_depth > 0 && block.style.0 == "Block quote"))
+                .any(|block| {
+                    block.range.start == at
+                        && (block.style.0 == expected
+                            || !enabled
+                                && self.format().is_source_view()
+                                && block.quote_depth > 0
+                                && block.style.0 == "Block quote")
+                })
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
@@ -279,20 +339,36 @@ fn prose_from_code(body: &str) -> String {
 }
 
 fn strip_quote_prefixes(body: &str, depth: usize) -> String {
-    body.split('\n').map(|line| {
-        let mut start = 0;
-        for _ in 0..depth {
-            let tail = &line[start..];
-            if super::super::markdown_quotes::prefix(tail) == 0 { break; }
-            let marker = tail.find('>').unwrap();
-            start += marker + 1;
-            if line.as_bytes().get(start).is_some_and(|byte| matches!(byte, b' ' | b'\t')) { start += 1; }
-        }
-        &line[start..]
-    }).collect::<Vec<_>>().join("\n")
+    body.split('\n')
+        .map(|line| {
+            let mut start = 0;
+            for _ in 0..depth {
+                let tail = &line[start..];
+                if super::super::markdown_quotes::prefix(tail) == 0 {
+                    break;
+                }
+                let marker = tail.find('>').unwrap();
+                start += marker + 1;
+                if line
+                    .as_bytes()
+                    .get(start)
+                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+                {
+                    start += 1;
+                }
+            }
+            &line[start..]
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn quote_lines(body: &str, prefix: &str) -> String {
-    if prefix.is_empty() { return body.to_owned(); }
-    body.split('\n').map(|line| format!("{prefix}{line}")).collect::<Vec<_>>().join("\n")
+    if prefix.is_empty() {
+        return body.to_owned();
+    }
+    body.split('\n')
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }

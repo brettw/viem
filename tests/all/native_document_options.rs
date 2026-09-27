@@ -7,48 +7,6 @@ use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreError, CoreEvent};
 
 #[test]
-fn switching_into_html_installs_source_styles_and_switching_back_uses_plain_styles() {
-    let mut document = Document::new("<p style='font-size: 30pt'>Large</p>");
-    document
-        .set_format(
-            Format::Html,
-            viem_core::document::FormatOperation::Reinterpret,
-        )
-        .unwrap();
-    assert_eq!(document.text(), "Large");
-    assert!(document.projection().style_spans().iter().any(|span|matches!(&span.application,viem_core::document::StyleApplication::Direct(properties)if properties.size==Some((30.0).into()))));
-    assert_eq!(
-        document
-            .projection()
-            .style_sheet()
-            .block_style_metadata(&"Paragraph".into())
-            .unwrap()
-            .origin,
-        // Without an owned stylesheet, built-in definitions come from settings;
-        // the direct 30pt declaration above is the source-backed style.
-        viem_core::document::StyleDefinitionOrigin::GeneratedConfiguration
-    );
-    document
-        .set_format(
-            Format::PlainText,
-            viem_core::document::FormatOperation::Reinterpret,
-        )
-        .unwrap();
-    assert_eq!(document.text(), "<p style='font-size: 30pt'>Large</p>");
-    assert_eq!(
-        document
-            .projection()
-            .style_sheet()
-            .block_style_metadata(&"Paragraph".into())
-            .unwrap()
-            .origin,
-        viem_core::document::StyleDefinitionOrigin::GeneratedConfiguration
-    );
-    assert!(document.undo());
-    assert_eq!(document.format(), Format::Html);
-}
-
-#[test]
 fn format_switch_with_identical_visible_text_including_empty_is_undoable() {
     for text in ["", "plain text", "__visible__"] {
         let mut document = Document::new(text);
