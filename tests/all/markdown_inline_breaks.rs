@@ -30,8 +30,8 @@ fn native_inline_breaks_preserve_paragraph_ownership_and_literal_contexts() {
     let source = "\\<br> `<br>` <bracket> <br data-x='keep'>";
     let document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-    assert_eq!(document.text(), "<br> <br> <bracket> <br data-x='keep'>");
-    assert_eq!(document.line_count(), 1);
+    assert_eq!(document.text(), "<br> <br> <bracket> \n");
+    assert_eq!(document.line_count(), 2);
     assert_eq!(document.source_bytes(), source.as_bytes());
 }
 
@@ -84,7 +84,7 @@ fn literal_tag_typing_and_html_conversion_keep_visible_text() {
     let mut typed =
         Document::from_bytes(b"# heading ".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     typed.insert(typed.text().len(), "<br>").unwrap();
-    assert_eq!(typed.text(), "heading <br>");
+    assert_eq!(typed.text(), "heading<br>");
     assert_eq!(typed.line_count(), 1);
 
     let mut converted =

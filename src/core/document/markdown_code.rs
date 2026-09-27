@@ -195,15 +195,13 @@ pub(super) fn patches(
             let plain = line.trim_end_matches('\n');
             if let Some((open, delimiter, length)) = fence.clone() {
                 if offset > start
-                    && plain.trim().len() >= length
-                    && plain.trim().bytes().all(|c| c == delimiter)
+                    && super::markdown_syntax::fence_close(plain, delimiter, length)
                 {
                     closing = Some(offset..offset + plain.len());
                     break;
                 }
                 if offset + line.len() <= start
-                    && plain.trim().len() >= length
-                    && plain.trim().bytes().all(|c| c == delimiter)
+                    && super::markdown_syntax::fence_close(plain, delimiter, length)
                 {
                     fence = None;
                 } else {
@@ -312,8 +310,7 @@ fn empty_body_patches(
     for line in input.text.split_inclusive('\n') {
         let body = line.trim_end_matches('\n');
         if let Some((_, delimiter, length)) = opening.as_ref() {
-            let trimmed = body.trim();
-            if trimmed.len() >= *length && trimmed.bytes().all(|byte| byte == *delimiter) {
+            if super::markdown_syntax::fence_close(body, *delimiter, *length) {
                 if offset >= position {
                     closing = Some(offset..offset + body.len());
                     break;
@@ -603,8 +600,11 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         let decoded = read(&line)?;
         let normalized = super::line_endings::normalize(&decoded, document.file_format());
         let quote = super::markdown_quotes::prefix(&normalized.text);
-        let value = normalized.text[quote..].trim();
-        if value.trim().len() >= width && value.trim().bytes().all(|byte| byte == delimiter) {
+        let line_body = normalized.text[quote..].trim_end_matches('\n');
+        let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) { result.body_prefix[super::markdown_quotes::prefix(&result.body_prefix)..].len() } else { 0 };
+        let trim = line_body.bytes().take(container).take_while(|b| *b == b' ').count();
+        let value = &line_body[trim..];
+        if super::markdown_syntax::fence_close(value, delimiter, width) {
             result.closing_content_end = Some(normalized.endings.last()
                 .filter(|ending| ending.source.end == line.end)
                 .map_or(line.end, |ending| ending.source.start));

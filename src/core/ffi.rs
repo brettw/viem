@@ -8190,7 +8190,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                 VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN
                             } else {
                                 0
-                            }) | if item.kind == crate::layout::DecorationKind::BlockQuoteBorder {
+                            }) | if matches!(item.kind, crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak) {
                                 VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER
                             } else { 0 },
                             row_index: checked_export_count(row_index)?,

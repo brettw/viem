@@ -223,7 +223,7 @@ fn native_options_relayout_all_views_and_keep_undo_units_separate() {
         },
     )
     .unwrap();
-    assert_eq!(core.document().text(), "Xalpha beta");
+    assert_eq!(core.document().text(), "X__alpha__ beta");
     for attached in [view, observer] {
         assert_eq!(
             core.layout(attached)

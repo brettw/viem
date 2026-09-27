@@ -126,6 +126,7 @@ mod manual_completion;
 mod manual_completion_anchor;
 mod manual_completion_lifecycle;
 mod markdown_authoring;
+mod markdown_gfm;
 mod markdown_block_quotes;
 mod markdown_continuation_batch_deletion;
 mod markdown_cross_style_edits;

@@ -181,8 +181,8 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                     content_indent: item.content_indent,
                 });
             }
-            let tail = text.trim();
-            if tail.len() >= length && tail.bytes().all(|byte| byte == delimiter) {
+            let prefix = result[index].as_ref().map_or(0, |line| line.content_start - lines[index].start);
+            if super::markdown_syntax::fence_close(&text[prefix..], delimiter, length) {
                 fence = None;
                 fenced_item = None;
                 if let Some(item) = stack.last_mut() {

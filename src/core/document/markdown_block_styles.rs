@@ -17,7 +17,8 @@ pub(super) fn preserve_retained_literals(
 ) -> Result<(), DocumentError> {
     let mut support = Vec::new();
     for edit in edits {
-        if document.projection().markdown_replacement_begins_in_code(&edit.range) {
+        if document.projection().markdown_replacement_begins_in_code(&edit.range)
+            || document.projection().blocks_for_region(&edit.range).iter().any(|block| block.markdown_html) {
             continue;
         }
         let text = document.projection().text_tree();
@@ -427,7 +428,8 @@ pub(super) fn preserve_split_literals(
     let projection = document.projection();
     let mut support = Vec::new();
     for edit in edits {
-        if projection.markdown_replacement_begins_in_code(&edit.range) {
+        if projection.markdown_replacement_begins_in_code(&edit.range)
+            || projection.blocks_for_region(&edit.range).iter().any(|block| block.markdown_html) {
             continue;
         }
         // Inserting an escaped delimiter can split a previously literal run

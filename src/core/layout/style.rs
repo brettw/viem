@@ -118,6 +118,8 @@ pub struct ParagraphLayoutStyle {
     pub list_marker_decoration: Option<String>,
     /// Noneditable left border for the shared HTML/Markdown quote treatment.
     pub quote_border: bool,
+    pub quote_depth: usize,
+    pub thematic_break: bool,
     pub marker_paint: ResolvedTextPaint,
     pub spacing_before: f32,
     pub spacing_after: f32,
@@ -227,6 +229,7 @@ impl DocumentLayoutStyles {
             for paragraph in &mut self.paragraphs {
                 if paragraph.quote_border {
                     paragraph.quote_border = false;
+                    paragraph.quote_depth = 0;
                     paragraph.leading_indent = 0.0;
                     paragraph.trailing_indent = 0.0;
                     paragraph.first_line_indent = 0.0;
@@ -453,7 +456,7 @@ impl DocumentLayoutStyles {
         }
         for block in input.blocks {
             let mut assigned = Some(&block.style);
-            let mut quote_border = false;
+            let mut quote_border = block.quote_depth > 0;
             while let Some(id) = assigned {
                 if id.0 == "Block quote" {
                     quote_border = true;
@@ -545,6 +548,8 @@ impl DocumentLayoutStyles {
                 text_range: block.range.clone(),
                 list_marker_range,
                 quote_border,
+                quote_depth: block.quote_depth.max(usize::from(quote_border)),
+                thematic_break: block.thematic_break,
                 list_marker_decoration: match block.kind {
                     crate::document::BlockKind::ListItem {
                         ordered,
@@ -557,8 +562,8 @@ impl DocumentLayoutStyles {
                     _ => None,
                 },
                 marker_paint: paint_style(&paragraph.character),
-                spacing_before: paragraph.spacing_before,
-                spacing_after: paragraph.spacing_after,
+                spacing_before: if block.list_loose { paragraph.spacing_before.max(7.0) } else { paragraph.spacing_before },
+                spacing_after: if block.list_loose { paragraph.spacing_after.max(7.0) } else { paragraph.spacing_after },
                 line_spacing: paragraph.line_spacing,
                 first_line_indent: if matches!(
                     block.kind,
@@ -572,8 +577,8 @@ impl DocumentLayoutStyles {
                 } else {
                     paragraph.first_line_indent
                 },
-                leading_indent: paragraph.leading_indent + list_inset,
-                trailing_indent: paragraph.trailing_indent,
+                leading_indent: paragraph.leading_indent + list_inset + 32.0 * block.quote_depth.saturating_sub(usize::from(block.style.0 == "Block quote")) as f32,
+                trailing_indent: paragraph.trailing_indent + 32.0 * block.quote_depth.saturating_sub(usize::from(block.style.0 == "Block quote")) as f32,
                 alignment: paragraph.alignment,
                 base_direction: paragraph.base_direction,
                 default_shaping_style: shaping_style(&paragraph.character)?,

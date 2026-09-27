@@ -92,7 +92,7 @@ impl Document {
             if wants_quote {
                 structural_body(block)
             } else {
-                block.style.0 == "Block quote"
+                (block.style.0 == "Block quote" || block.quote_depth > 0)
                     || (wants_plain || wants_code && block.style.0 != "Code Block")
                         && structural_body(block)
             }
@@ -111,7 +111,7 @@ impl Document {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
                 structural_body(block) && !(wants_code && block.style.0 == "Code Block")
-                    || !wants_quote && block.style.0 == "Block quote"
+                    || !wants_quote && (block.style.0 == "Block quote" || block.quote_depth > 0)
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
                 break;

@@ -34,8 +34,7 @@ impl Document {
             let prefix = super::markdown_quotes::prefix;
             let closed = opening.start < line.start
                 && super::projection::markdown_fence(&opener[prefix(&opener)..]).is_some_and(|(delimiter, length)| {
-                    let tail = text[prefix(&text)..].trim();
-                    tail.len() >= length && tail.bytes().all(|byte| byte == delimiter)
+                    super::markdown_syntax::fence_close(&text[prefix(&text)..], delimiter, length)
                 });
             return Ok(!closed);
         }

@@ -70,7 +70,7 @@ pub(super) fn is_fenced_block(
     document: &super::Document,
     block: &super::Block,
 ) -> Result<bool, super::DocumentError> {
-    if block.style.0 != "Block quote" {
+    if block.style.0 != "Block quote" && block.quote_depth == 0 {
         return Ok(false);
     }
     if !document.format().is_source_view() && !block.range.is_empty()
@@ -168,9 +168,8 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
                 depth = previous_depth;
             }
             if let Some((quote_depth, delimiter, length)) = fence {
-                let tail = body.trim();
                 if depth != quote_depth
-                    || tail.len() >= length && tail.bytes().all(|byte| byte == delimiter)
+                    || super::markdown_syntax::fence_close(body, delimiter, length)
                 {
                     fence = None;
                 }

@@ -39,6 +39,25 @@ impl Document {
         edit: &TextEdit,
         payload: Option<&FormattedPayloadEdit>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if self.format() == Format::Markdown && !edit.replacement.contains('\n')
+            && super::super::source_edit::complete_contributors(self.projection(), edit)?.range != edit.range { return Ok(None); }
+        if let Some(patches) = self.markdown_rule_text_patches(edit)? { return Ok(Some(patches)); }
+        if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
+            let literal = self.projection().style_spans_for_region(&edit.range).iter().any(|span| {
+                span.range.start <= edit.range.start && edit.range.end <= span.range.end
+                    && matches!(&span.application, StyleApplication::Automatic(id) if matches!(id.0.as_str(), "Markdown reference" | "Comment"))
+            });
+            let html = self.projection().blocks_for_region(&edit.range).iter().any(|block| block.markdown_html
+                && block.range.start <= edit.range.start && edit.range.end <= block.range.end);
+            if literal || html {
+                let range = if edit.range.is_empty() {
+                    let at = super::super::source_edit::insertion_point(self.projection(), edit.range.start, None).ok_or(DocumentError::AmbiguousProjection)?;
+                    at..at
+                } else { self.projection().source_range(edit.range.clone()).ok_or(DocumentError::AmbiguousProjection)? };
+                let replacement = if html && !literal { edit.replacement.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;") } else { edit.replacement.clone() };
+                return Ok(Some(vec![SourcePatch::primary(range, self.encoding().encode_fragment(&replacement)?)]));
+            }
+        }
         if let Some(patches) = self.structural_text_patches(edit)? {
             return Ok(Some(patches));
         }
@@ -176,6 +195,10 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
+            if edits.iter().all(|edit| !edit.replacement.contains('\n') && !self.text()[edit.range.clone()].contains('\n')
+                && self.projection().style_spans_for_region(&edit.range).iter().any(|span| span.range.start <= edit.range.start && edit.range.end <= span.range.end
+                    && span.application == StyleApplication::Automatic("Markdown reference".into())
+                    && self.text()[span.range.clone()].trim_start().starts_with('[') && self.text()[span.range.clone()].contains("]:"))) { return Ok(()); }
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
             super::super::markdown_code::preserve_edited_inline_delimiters(self, edits, patches)?;
             markdown_split::remove_empty_emphasis(self, edits, patches)?;
@@ -191,6 +214,9 @@ impl Document {
                 patches,
             )?;
             markdown_block_styles::preserve_retained_literals(self, edits, patches)?;
+            markdown_split::repair_flanking(self, edits, patches)?;
+            self.repair_markdown_authored_spaces(edits, patches)?;
+            self.repair_markdown_reference_spaces(edits, patches)?;
         }
         Ok(())
     }

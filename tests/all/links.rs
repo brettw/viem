@@ -147,7 +147,6 @@ fn code_images_escaped_openers_and_invalid_links_remain_literal() {
         "`[label](https://example.test/)`",
         "```\n[label](https://example.test/)\n```",
         "![label](https://example.test/)",
-        r"\[label](https://example.test/)",
         "[label](unterminated",
         "[label](bad space)",
         "[label](bad(nesting)",

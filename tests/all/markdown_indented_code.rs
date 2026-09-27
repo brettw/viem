@@ -18,7 +18,7 @@ fn gfm_indented_code_preserves_literal_body_and_source() {
         ("    foo\nbar", "foo\nbar", 1),
         (
             "paragraph\n    continuation",
-            "paragraph     continuation",
+            "paragraph continuation",
             0,
         ),
         ("paragraph\n\n    code", "paragraph\ncode", 1),

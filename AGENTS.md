@@ -45,6 +45,31 @@ The native frontends are macOS and Windows. Windows follows the macOS editor's
 presentation and behavior with Windows controls and the platform differences
 recorded below. A terminal frontend remains outside the current scope.
 
+### Markdown compatibility policy
+
+The GFM target has these explicit Viem presentation exceptions. Images and
+reference links (full, collapsed, and defined shortcut forms), including their
+reference definitions, MUST keep their literal bracket syntax in WYSIWYG and
+use the generated `Markdown reference` character style, light purple
+(`#A673D1`). They MUST NOT load image resources. Comments MUST remain visible
+and use the generated `Comment` character style. Surplus paragraph separator
+lines MUST retain Viem's editable empty paragraphs.
+
+CommonMark delimiter rules, strikethrough, automatic links, ATX and setext
+headings, thematic breaks, container composition, code indentation and closing
+rules, prose whitespace normalization, and tight/loose list spacing are part of
+the supported interpretation. Quote depth and list ownership are independent of
+a paragraph's heading or Code Block style. Thematic rules are non-text layout
+furniture with an editable paragraph boundary. Passive embedded HTML uses its
+semantic formatting; it MUST NOT execute code, install authored CSS, or fetch
+resources. Markdown syntax inside HTML blocks stays literal.
+
+Tables, task-list checkboxes, and fenced-code syntax highlighting are deferred.
+Footnotes, alerts, math, diagrams, emoji shortcodes, and GitHub repository and
+heading-navigation features remain outside the implemented scope. Demonstrate
+supported syntax and these exceptions in `docs/markdown_demo.md`; track remaining
+compatibility work in `MARKDOWN_GAPS.md`.
+
 ## Working rules for this repository
 
 - Put portable document-state logic under `src/core/document`, Vim command
@@ -1342,8 +1367,9 @@ between the anchor tags, excluding the opening and closing anchor tags.
 Recognition is passive and keeps source bytes unchanged. Inline and fenced code
 do not acquire Markdown link styling. Escaped punctuation, balanced destination
 parentheses, angle destinations, optional titles, and character references are
-recognized without fetching their targets. Reference-style Markdown links and
-autolinks are outside this initial inline-link feature.
+recognized without fetching their targets. Angle URL/email autolinks and GFM automatic URL, `www.`, and email links use
+that same Link style and target lookup. Reference links and images retain their
+literal syntax with the `Markdown reference` character style, as specified above.
 
 Right-clicking actual link content puts Open link first in the edit context
 menu, followed by a divider. Keyboard context menus use the current caret.
@@ -7271,8 +7297,9 @@ Markdown ordered and bulleted item continuations flow together into item
 paragraphs, including lazy continuations and indented continuation paragraphs.
 Ordered display labels count from the first source ordinal; untouched source
 marker spellings remain exact. Markdown and HTML list levels default to a
-32pt logical start inset per level, zero paragraph spacing, zero first-line body
-indent, and hanging labels. The label gutter is independent of the signed
+32pt logical start inset per level, zero paragraph spacing for tight lists, zero first-line body
+indent, and hanging labels. Loose Markdown items use the paragraph spacing of
+ordinary prose. The label gutter is independent of the signed
 first-line body indent, so explicit positive and negative values remain active.
 The measured label occupies the hanging area; first-row item text and following
 rows align at the body inset, including when the ordinal gains a digit. A

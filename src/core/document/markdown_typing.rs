@@ -129,6 +129,22 @@ pub(super) fn insertion(
     {
         return Ok(None);
     }
+    if document.format() == Format::MarkdownSource && text.chars().next().is_some_and(char::is_alphanumeric) {
+        let span = document.projection().style_spans_for_region(&(at.saturating_sub(1)..at)).into_iter()
+            .filter(|span| span.range.end == at && matches!(span.application, StyleApplication::Semantic(SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)))
+            .min_by_key(|span| span.range.start);
+        if let Some(span) = span {
+            let body = document.projection().text_tree().slice(span.range.clone()).map_err(DocumentError::FormattedTextStorage)?;
+            let prefix = body.bytes().take_while(|b| matches!(b, b'*' | b'_')).count();
+            let suffix = body.bytes().rev().take_while(|b| matches!(b, b'*' | b'_')).count();
+            if prefix > 0 && prefix == suffix && body[..prefix].contains('_') {
+                let source = document.projection().source_range(span.range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                let marker = "*".repeat(prefix);
+                return Ok(Some(super::super::html_typing::Insertion { source, source_caret: at + text.len(),
+                    syntax: format!("{marker}{}{marker}{text}", &body[prefix..body.len() - suffix]) }));
+            }
+        }
+    }
     let local;
     let (projection, local_at) = if document.format() == Format::MarkdownSource {
         (document.projection(), at)
@@ -228,17 +244,28 @@ pub(super) fn insertion(
         local_at
     };
     prefix.push_str(preserved);
-    let escaped = if document.format() == Format::MarkdownSource {
+    let mut escaped = if document.format() == Format::MarkdownSource {
         text.to_owned()
     } else {
         escape_markdown_insert_in_encoding(text, document.encoding())
     };
+    if active.iter().any(|scope| scope.marker.starts_with('_')) || preserved.starts_with('_') {
+        let mut characters = escaped.chars();
+        if let Some(first) = characters.next() {
+            let rest = characters.as_str();
+            let mut body = format!("&#{};", first as u32);
+            if let Some((last_at, last)) = rest.char_indices().next_back() {
+                body.push_str(&rest[..last_at]); body.push_str(&format!("&#{};", last as u32));
+            }
+            escaped = body;
+        }
+    }
     let source = projection
         .source_insertion_point(point, true)
         .ok_or(DocumentError::AmbiguousProjection)?;
     Ok(Some(super::super::html_typing::Insertion {
         source: source..source,
-        source_caret: point + prefix.len() + text.len(),
+        source_caret: point + prefix.len() + escaped.len(),
         syntax: format!("{prefix}{escaped}{suffix}"),
     }))
 }

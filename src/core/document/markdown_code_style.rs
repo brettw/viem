@@ -74,9 +74,9 @@ impl Document {
                 let (delimiter, width) = super::super::projection::markdown_fence(opening[quote + marker..].trim_start())
                     .ok_or(DocumentError::UnsupportedFormatting)?;
                 let last_start = raw.rfind('\n').map_or(raw.len(), |at| at + 1);
-                let closing = raw[last_start..].trim();
-                let closed =
-                    closing.len() >= width && closing.bytes().all(|byte| byte == delimiter);
+                let closing = &raw[last_start..];
+                let prefix = super::super::markdown_quotes::prefix(closing);
+                let closed = super::super::markdown_syntax::fence_close(&closing[prefix..], delimiter, width);
                 let body_end = if closed { last_start - 1 } else { raw.len() };
                 let body = &raw[(first_end + 1).min(body_end)..body_end];
                 let prose = prose_from_code(if self.format().is_source_view() { body } else { &visible });

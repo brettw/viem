@@ -468,7 +468,26 @@ impl Document {
                 found = Some(link);
             }
         }
-        Ok(found.map(|link| link.destination))
+        if let Some(link) = found { return Ok(Some(link.destination)); }
+        if let Some(link) = html_links(&input.text).into_iter().find(|link| link.range.contains(&at)) {
+            return Ok(Some(link.destination));
+        }
+        for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
+            if range.contains(&at) {
+                if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+                    link_type, dest_url, ..
+                }) = event {
+                    if link_type == pulldown_cmark::LinkType::Email { return Ok(Some(format!("mailto:{dest_url}"))); }
+                    if link_type == pulldown_cmark::LinkType::Autolink { return Ok(Some(dest_url.into_string())); }
+                }
+            }
+        }
+        for (start, _) in input.text.char_indices().take_while(|(start, _)| *start <= at) {
+            if let Some((end, destination)) = super::markdown_syntax::autolink(&input.text, start, input.text.len()) {
+                if start <= at && at < end { return Ok(Some(destination)); }
+            }
+        }
+        Ok(None)
     }
 }
 

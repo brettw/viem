@@ -49,7 +49,7 @@ impl Document {
             .blocks_for_region(&(at..at))
             .into_iter()
             .find(|block| {
-                block.range.start <= at && at <= block.range.end && block.style.0 == "Block quote"
+                block.range.start <= at && at <= block.range.end && (block.style.0 == "Block quote" || block.quote_depth > 0)
             })
         else {
             return Ok(None);
@@ -61,6 +61,8 @@ impl Document {
         {
             return Ok(None);
         }
+        if self.format() == Format::Markdown && block.style.0 == "Code Block"
+            && !crate::document::markdown_quotes::is_fenced_block(self, &block)? { return Ok(None); }
         if self.format() == Format::MarkdownSource {
             let row = self.projection().hard_line_at_offset(at)
                 .and_then(|index| self.projection().hard_line_range(index))
@@ -249,14 +251,14 @@ impl Document {
         let blocks = self.projection().blocks_for_region(&range);
         let mut lines = BTreeSet::new();
         for block in blocks.iter().filter(|block| {
-            (quote || block.style.0 == "Block quote")
+            (quote || (block.style.0 == "Block quote" || block.quote_depth > 0))
                 && if range.is_empty() {
                     block.range.start <= range.start && range.start <= block.range.end
                 } else {
                     block.range.start < range.end && range.start < block.range.end
                 }
         }) {
-            if quote && block.style.0 == "Block quote" {
+            if quote && (block.style.0 == "Block quote" || block.quote_depth > 0) {
                 continue;
             }
             let provenance = self.projection().provenance_for_region(&block.range);
