@@ -413,6 +413,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             if property == .characterForeground && (resolved?.usesThemeDefault == true || resolved == nil) {
                 well.color = theme.foreground.color
             } else if case let .color(value)? = resolved?.effective { well.color = value.appKitColor }
+            else if property == .blockBackground { well.color = newBlockBackground.appKitColor }
             else { well.color = .clear }
             well.isEnabled = isOverridden(property)
             setHelp(well, property)
@@ -639,11 +640,20 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         canEdit(property) && (isBaseParagraph || definition?.properties[property]?.isDeclared == true)
     }
 
+    // A missing fill is different from an explicitly transparent color. Seed
+    // a new fill with an opaque canvas color so RGB-only picker gestures are
+    // visible; retain any inherited or previously chosen alpha unchanged.
+    private var newBlockBackground: EVStyleColor {
+        EVStyleColor(red: Float(theme.background.red), green: Float(theme.background.green),
+            blue: Float(theme.background.blue), alpha: 1)
+    }
+
     private func enableOverride(_ property: EVStyleProperty) {
         guard canEdit(property), !isOverridden(property) else { return }
         var value = definition?.properties[property]?.effective
         if property == .characterScriptPosition, value == nil { value = .scriptPosition(0) }
-        if [.characterBackground, .blockBackground].contains(property), value == nil {
+        if property == .blockBackground, value == nil { value = .color(newBlockBackground) }
+        if property == .characterBackground, value == nil {
             value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0))
         }
         if EVStyleProperty.blockBorderColors.contains(property), value == nil {

@@ -61,13 +61,18 @@ internal sealed partial class EditorPane
     private void DrawTextBackgrounds(CanvasDrawingSession drawing)
     {
         if (snapshot == null) return;
-        foreach (var decoration in snapshot.Decorations)
-        {
-            if ((decoration.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) == 0) continue;
-            if (decoration.typographic_bounds.y + decoration.typographic_bounds.height < drawnTop - 4
-                || decoration.typographic_bounds.y > drawnBottom + 4) continue;
-            drawing.FillRectangle(OffsetRect(decoration.typographic_bounds, viewport), (decoration.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? preferences.Theme.Foreground : Color(decoration.paint.foreground));
-        }
+        // Shared edges of tiled box slices must not be antialiased separately.
+        var antialiasing = drawing.Antialiasing;
+        drawing.Antialiasing = CanvasAntialiasing.Aliased;
+        try {
+            foreach (var decoration in snapshot.Decorations)
+            {
+                if ((decoration.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) == 0) continue;
+                if (decoration.typographic_bounds.y + decoration.typographic_bounds.height < drawnTop - 4
+                    || decoration.typographic_bounds.y > drawnBottom + 4) continue;
+                drawing.FillRectangle(OffsetRect(decoration.typographic_bounds, viewport), (decoration.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? preferences.Theme.Foreground : Color(decoration.paint.foreground));
+            }
+        } finally { drawing.Antialiasing = antialiasing; }
         // Explicit character backgrounds precede selection, which must remain
         // visible even over opaque source-authored highlights.
         foreach (var cluster in snapshot.Clusters)

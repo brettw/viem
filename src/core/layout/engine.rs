@@ -5932,16 +5932,27 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
         let owner = paragraph.containers.get(index).map_or(DecorationOwner::Paragraph(paragraph.block_id),
             |container| DecorationOwner::Container(container.id));
         let mut paint = ResolvedTextPaint::default();
+        // Background covers content and padding, stopping at the inner border
+        // edge. Only the first/last slice owns a horizontal border. Partition
+        // the four border strips too, so translucent corners paint just once.
+        let inner_top = y + if is_top { style.border.top * scale } else { 0. };
+        let inner_bottom = end - if is_bottom { style.border.bottom * scale } else { 0. };
+        let inner_rect = LayoutRect {
+            x: left + style.border.left * scale,
+            y: inner_top,
+            width: (rect.width - (style.border.left + style.border.right) * scale).max(0.),
+            height: (inner_bottom - inner_top).max(0.),
+        };
         if let Some(color) = style.background {
             paint.foreground = color;
             paint.foreground_is_default = false;
-            push_box_rectangle(row, owner, DecorationKind::BlockBackground, rect, paint.clone());
+            push_box_rectangle(row, owner, DecorationKind::BlockBackground, inner_rect, paint.clone());
         }
         let borders = [
             (is_top, style.border.top, LayoutRect { height: style.border.top * scale, ..rect }),
-            (true, style.border.right, LayoutRect { x: right - style.border.right * scale, width: style.border.right * scale, ..rect }),
+            (true, style.border.right, LayoutRect { x: right - style.border.right * scale, width: style.border.right * scale, y: inner_top, height: inner_rect.height }),
             (is_bottom, style.border.bottom, LayoutRect { y: end - style.border.bottom * scale, height: style.border.bottom * scale, ..rect }),
-            (true, style.border.left, LayoutRect { width: style.border.left * scale, ..rect }),
+            (true, style.border.left, LayoutRect { x: left, width: style.border.left * scale, y: inner_top, height: inner_rect.height }),
         ];
         for (side, (visible, weight, bounds)) in borders.into_iter().enumerate() {
             if !visible || weight <= 0. { continue; }

@@ -409,7 +409,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             context.saveGState()
             context.clip(to: textViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
-            drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect)
+            drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             drawSelection(snapshot, dirtyRect: dirtyRect, in: context)
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
@@ -3075,12 +3075,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     }
 
-    private func drawBlockBackgrounds(_ snapshot: EVLayoutExport, dirtyRect: NSRect) {
+    private func drawBlockBackgrounds(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
+        context.saveGState()
+        defer { context.restoreGState() }
+        // These axis-aligned slices tile a box. Antialiasing each shared edge
+        // separately leaves translucent seams at fractional zoom/scroll positions.
+        context.setShouldAntialias(false)
+        context.setBlendMode(.normal)
         for item in snapshot.decorations where item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
             let rect = viewRect(item.typographic_bounds)
             guard rect.intersects(dirtyRect) else { continue }
-            nativeForeground(item.paint).setFill()
-            rect.fill()
+            EVBlockBoxDrawing.fill(rect, color: nativeForeground(item.paint).cgColor, in: context)
         }
     }
 

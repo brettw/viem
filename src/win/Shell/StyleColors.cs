@@ -51,7 +51,15 @@ internal sealed partial class StyleWindow
     private void DeclareEffective(uint property)
     {
         if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
+        else if (property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR)
+            SetColor(property, NewBlockBackground());
         else view.DeclareEffectiveStyle(selected, property, sheet);
+    }
+    private Color NewBlockBackground()
+    {
+        var color = preferences.Theme.Background;
+        color.A = 255;
+        return color;
     }
     private void DismissColorPickers(bool commit = true) { foreach (var dismiss in dismissColorPickers) dismiss(commit); refreshAfterColorPopup = false; }
     private void ThemeChanged()
@@ -164,7 +172,10 @@ internal sealed partial class StyleWindow
         {
             // Do not feed rounded RGB values back into an active HSV gesture.
             if (open) return;
-            picker.Color = StyleColor(selected, property);
+            // Absence seeds an opaque new fill; explicit transparent colors
+            // retain their alpha when reopening the picker.
+            picker.Color = property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR
+                ? NewBlockBackground() : StyleColor(selected, property);
             well.Background = new SolidColorBrush(picker.Color);
         }
         refreshFields.Add(Refresh); refreshColors.Add(Refresh);

@@ -114,9 +114,13 @@ final class EVCoreBlockStylePreview {
         guard let snapshot = try? prepare(bounds.size), let paint else { return }
         // Core exports complete boxes in owner order. Keep backgrounds and
         // borders together so an overlapping child paints above its parent.
+        context.saveGState()
+        context.setShouldAntialias(false)
+        context.setBlendMode(.normal)
         for item in snapshot.decorations where item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 {
-            color(item.paint.foreground).setFill(); rect(item.typographic_bounds).fill()
+            EVBlockBoxDrawing.fill(rect(item.typographic_bounds), color: color(item.paint.foreground).cgColor, in: context)
         }
+        context.restoreGState()
         for cluster in snapshot.clusters {
             let style = paint.runs.first { $0.text_start <= cluster.text_start && cluster.text_start < $0.text_end }?.paint ?? paint.info.default_paint
             if style.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
