@@ -19,7 +19,7 @@ namespace Viem.Windows.Shell;
 /// <summary>A modeless native inspector over the core-owned stylesheet.</summary>
 internal sealed partial class StyleWindow : Window
 {
-    private CoreView view;
+    private CoreView view = null!;
     private readonly Preferences preferences;
     private StyleSheet sheet = null!;
     private StyleDefinition selected = null!;
@@ -36,7 +36,6 @@ internal sealed partial class StyleWindow : Window
     private readonly MenuFlyoutItem createParagraph = new() { Text = "Paragraph style" };
     private readonly Button visitParent = NavigationButton();
     private readonly Button visitNext = NavigationButton();
-    private readonly Button restoreDefaults = new() { Content = "Restore Defaults" };
     private readonly StackPanel character = new() { Spacing = 12 };
     private readonly StackPanel paragraph = new() { Spacing = 8 };
     private readonly StackPanel block = new() { Spacing = 8 };
@@ -47,8 +46,9 @@ internal sealed partial class StyleWindow : Window
 
     public StyleWindow(CoreView initialView, Preferences preferences, bool followCaret = true)
     {
-        view = initialView; this.preferences = preferences;
-        Title = view.UsesGlobalStyles ? "Code Styles" : "Document Styles";
+        documentView = initialView; this.preferences = preferences;
+        CreateThemeSession();
+        Title = "Theme Styles — " + preferences.ThemeDisplayName;
         var scroll = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)) };
         Content = scroll;
         root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
@@ -82,8 +82,7 @@ internal sealed partial class StyleWindow : Window
         preview.Draw += (_, e) => DrawPreview(e.DrawingSession);
         Add(error);
         var buttons = new Grid(); buttons.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); buttons.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        restoreDefaults.HorizontalAlignment = HorizontalAlignment.Left;
-        restoreDefaults.Click += (_, _) => Try(() => view.ReplaceCodeStyles([])); buttons.Children.Add(restoreDefaults);
+        BuildThemeHistory(buttons);
         var close = new Button { Content = "Close", MinWidth = 82 }; close.Click += (_, _) => Close(); buttons.Children.Add(close); Grid.SetColumn(close, 1); Add(buttons);
         visitParent.Click += (_, _) => Navigate(new(selected.Namespace, selected.Parent));
         visitNext.Click += (_, _) => Navigate(new(1, selected.Next));
@@ -93,12 +92,12 @@ internal sealed partial class StyleWindow : Window
         next.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = next.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE : VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, id); }); };
         delete.Click += (_, _) => Try(() => { view.DeleteStyle(selected); Load(); });
         AttachView(followCaret);
-        preferences.Changed += ThemeChanged;
+        preferences.Changed += ThemeChanged; preferences.ThemesChanged += SelectedThemeChanged;
         AppWindow.Closing += (_, args) => {
             if (visibleColorPickers.Count == 0) return;
             args.Cancel = true; Close();
         };
-        Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; blockPreview?.Dispose(); blockPreview = null; preview.RemoveFromVisualTree(); };
+        Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; preferences.ThemesChanged -= SelectedThemeChanged; view.Dispose(); styleDocument.Dispose(); blockPreview?.Dispose(); blockPreview = null; preview.RemoveFromVisualTree(); };
         Load(followCaret: followCaret);
     }
     private readonly TextBlock availability = new() { FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap };
@@ -117,7 +116,7 @@ internal sealed partial class StyleWindow : Window
         DismissColorPickers();
         if (!CommitPendingName()) return;
         DetachView();
-        view = nextView; AttachView(true);
+        documentView = nextView; CreateThemeSession(); AttachView(true);
         Load(followCaret: true);
     }
     private void Add(FrameworkElement item) => root.Children.Add(item);
@@ -167,10 +166,10 @@ internal sealed partial class StyleWindow : Window
 #if DEBUG
             StyleLoads++;
 #endif
-            Title = view.UsesGlobalStyles ? "Code Styles" : "Document Styles";
-            availability.Text = view.UsesGlobalStyles ? "Shared by every Code document. Changes are saved to code_style.json." : "";
-            availability.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
-            restoreDefaults.Visibility = availability.Visibility;
+            Title = "Theme Styles — " + preferences.ThemeDisplayName;
+            availability.Text = preferences.SelectedTheme == null ? "Default changes last for this session. Create a theme to keep them." : "Changes are saved to “" + preferences.SelectedTheme + "”.";
+            availability.Visibility = Visibility.Visible;
+            restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
             create.IsEnabled = view.UsesGlobalStyles || view.Document.State.format is VIEM_FORMAT_RTF;
             createParagraph.Visibility = view.UsesGlobalStyles ? Visibility.Collapsed : Visibility.Visible;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
@@ -227,19 +226,22 @@ internal sealed partial class StyleWindow : Window
     private bool Try(Action action, bool reload = true)
     {
         if (loading || closed) return false;
+        if (preferences.EnsureCurrentThemeExists()) return false;
         if (reload) DismissColorPickers();
         updating = true;
         byte[]? before = null;
         try
         {
-            if (view.UsesGlobalStyles) before = view.ExportStyleDefaults();
+            before = view.ExportStyleDefaults();
             error.Text = ""; error.Visibility = Visibility.Collapsed; action(); var key = selected.Key;
-            if (view.UsesGlobalStyles) { Preferences.AtomicWrite(Path.Combine(preferences.DirectoryPath, "code_style.json"), view.ExportStyleDefaults()); foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct()) doc.NotifyChanged(); }
+            byte[] after = view.ExportStyleDefaults();
+            preferences.SaveThemeStyles(view.Document.State.format, after);
+            RecordThemeEdit(before, after, key);
             if (reload) Load(key); else RefreshCommittedColors();
             return true;
         }
         catch (Exception e) {
-            if (before != null) view.ReplaceCodeStyles(before);
+            if (before != null) { if (view.UsesGlobalStyles) view.ReplaceCodeStyles(before); else CreateThemeSession(); }
             error.Text = e.Message; error.Visibility = Visibility.Visible;
             if (reload) Load(selected.Key); else RefreshCommittedColors();
             return false;

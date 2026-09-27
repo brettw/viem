@@ -55,7 +55,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     func testCaretFollowingPrefersNamedCharactersAndManualPickerSurvivesRefreshAndStyleEdits() throws {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)
-        let coordinator = EVStyleEditorCoordinator { _ in nil }
+        let coordinator = EVStyleEditorCoordinator()
         coordinatorToSettle = coordinator
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
@@ -94,7 +94,9 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), afterStyleEdit,
                        "Following presentation state must not write source, styles, or undo history")
-        XCTAssertTrue(surface.canUndo, "Only the deliberate style edit contributes history")
+        XCTAssertFalse(surface.canUndo, "Theme style edits never enter document history")
+        XCTAssertEqual(coordinator.styleWindow?.undoManager?.canUndo, true,
+                       "Reopening the same theme family preserves its independent settings history")
     }
 
     func testTrackingIsBoundToTheTargetSurfaceAndStopsWhenTargetOrPanelCloses() throws {
@@ -103,14 +105,14 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         prepare(otherView)
         let unrelated = try markdownSurface()
         moveCaret(7, in: first)
-        let coordinator = EVStyleEditorCoordinator { _ in nil }
+        let coordinator = EVStyleEditorCoordinator()
         coordinatorToSettle = coordinator
         coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
         moveCaret(17, in: otherView)
         moveCaret(1, in: unrelated)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
-        XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(first.backend))
+        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         moveCaret(1, in: first)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
 
@@ -119,12 +121,12 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         coordinator.show(document: unrelated, sender: nil)
         moveCaret(7, in: first)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
-        XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(unrelated.backend))
+        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         coordinator.documentDidClose(unrelated)
         XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
-        XCTAssertNil(coordinator.inspection?.selectedStyleKey)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         moveCaret(7, in: unrelated)
-        XCTAssertNil(coordinator.inspection?.selectedStyleKey)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         coordinator.close()
         moveCaret(17, in: unrelated)
         XCTAssertNil(coordinator.styleWindow)
@@ -247,7 +249,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     func testRapidSelectionChangesWaitForHalfAnIdleSecondAndDoNotPollWhileUnchanged() async throws {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)
-        let coordinator = EVStyleEditorCoordinator { _ in nil }
+        let coordinator = EVStyleEditorCoordinator()
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
         // Let AppKit finish the first panel presentation before measuring idle

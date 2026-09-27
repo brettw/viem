@@ -94,7 +94,9 @@ internal sealed unsafe class CoreDocument : IDisposable
         fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         configurationKey = key;
     }
-    public string[] InitializeStyleDefaults(byte[] json)
+    public string[] InitializeStyleDefaults(byte[] json) => SetStyleDefaults(json, false);
+    public string[] ReplaceStyleDefaults(byte[] json) => SetStyleDefaults(json, true);
+    private string[] SetStyleDefaults(byte[] json, bool live)
     {
         var diagnostics = new List<string>();
         StyleDefaultsDiagnostic callback = (_, message, length) => {
@@ -102,8 +104,9 @@ internal sealed unsafe class CoreDocument : IDisposable
             catch { /* Exceptions cannot cross the native callback boundary. */ }
         };
         uint status;
-        fixed (byte* p = json) status = viem_core_initialize_style_defaults(Handle, State.document_revision,
-            p, (ulong)json.Length, Marshal.GetFunctionPointerForDelegate(callback), null);
+        fixed (byte* p = json) status = live
+            ? viem_core_replace_style_defaults(Handle, State.document_revision, p, (ulong)json.Length, Marshal.GetFunctionPointerForDelegate(callback), null)
+            : viem_core_initialize_style_defaults(Handle, State.document_revision, p, (ulong)json.Length, Marshal.GetFunctionPointerForDelegate(callback), null);
         GC.KeepAlive(callback);
         if (status != VIEM_STATUS_OK && diagnostics.Count > 0)
             throw new InvalidDataException(string.Join(Environment.NewLine, diagnostics));

@@ -32,3 +32,5 @@ HTML files open as literal Code, with syntax highlighting and ordinary code edit
 ### HTML export
 
 File > Export… writes a standalone HTML copy with the document’s styles translated to CSS. Markdown exports its formatted content from either view. Code exports its literal text with syntax highlighting and preserved whitespace. Export does not change the open document’s format, filename, source bytes, or saved state.
+
+Style > Theme selects an application-wide theme for all windows. Each file in `~/.viem/themes` contains the appearance settings and format style sheets; Settings > Theme and the Styles editor edit that active theme. New profiles include Paper and Midnight and select Midnight. Default uses the built-in Midnight values and is editable for the current session. Choose New theme… to save a copy of your current settings, including changes made to Default.

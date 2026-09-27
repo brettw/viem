@@ -18,7 +18,7 @@ final class EVFontFamilyApplicationTests: XCTestCase {
         let styleSession = try EVCodeStyleSession(configuration: configuration)
         let comment = try XCTUnwrap(styleSession.snapshot().definitions.first { $0.name == "Comment" })
         let editor = EVStyleEditorViewController()
-        editor.retarget(codeSession: styleSession)
+        editor.retarget(settingsSession: styleSession)
         editor.selectStyle(comment.key)
 
         try chooseFamily("Helvetica", in: editor)

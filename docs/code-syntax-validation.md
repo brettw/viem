@@ -80,10 +80,11 @@ relocation or launch from another working directory. Build and publish verify
 and replace only that resource subtree. See the
 [Windows runtime validation](windows-vim-runtime-followup.md).
 
-`code_style.json` beside `config.json` stores the global Code stylesheet using
-sparse overrides and explicit suppression of deleted/renamed built-ins. Both
-respect `VIEM_CONFIG_DIR`. The modeless Styles editor has an explicit global
-target and its own undo session. Valid file changes update all Code buffers;
+The selected `themes/<name>.json` file stores the global Code stylesheet in
+`styles.code`, using sparse overrides and explicit suppression of deleted or
+renamed built-ins. Theme selection lives in `config.json`; both respect
+`VIEM_CONFIG_DIR`. The modeless Styles editor targets the current theme and has
+its own undo session. Valid file changes update all Code buffers;
 invalid external changes preserve the last valid sheet and report a diagnostic.
 Color changes reuse shaping, and metrics/paragraph changes invalidate the
 corresponding layout while preserving viewport anchors.

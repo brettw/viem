@@ -57,6 +57,7 @@ final class EVConfigurationStoreTests: XCTestCase {
   func testWriteFailureDoesNotPublishSettingsChange() throws {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    try FileManager.default.removeItem(at: directory)
     try Data("obstruction".utf8).write(to: directory)
     let preferences = EVEditingPreferences(configuration: store)
     preferences.setSmartQuotes(true)
@@ -109,21 +110,33 @@ final class EVConfigurationStoreTests: XCTestCase {
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
     XCTAssertNil(store.lastError); XCTAssertEqual(store.textWidth, UInt32.max)
   }
-  func testStyleFilesAreFormatSpecificVersionedAndPreserveUnknownData() throws {
+  func testThemeStyleSheetsAreFormatSpecificVersionedAndPreserveUnknownData() throws {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-    XCTAssertNil(try store.styleDefaults(named: "text"))
-    let original = Data(#"{"version":1,"future":42,"block_styles":[{"id":"Document","futureProperty":3,"character":{"futureFont":4}}],"character_styles":[]}"#.utf8)
-    try store.saveStyleDefaults(original, named: "rtf")
-    let update = Data(#"{"version":1,"block_styles":[{"id":"Document","character":{"size":19}}],"character_styles":[]}"#.utf8)
-    try store.saveStyleDefaults(update, named: "rtf")
+    XCTAssertNotNil(try store.styleDefaults(named: "text"))
+    var original = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.styleDefaults(named: "rtf"))) as? [String: Any])
+    original["future"] = 42
+    var blocks = try XCTUnwrap(original["block_styles"] as? [[String: Any]])
+    blocks[0]["futureProperty"] = 3
+    var character = try XCTUnwrap(blocks[0]["character"] as? [String: Any])
+    character["futureFont"] = 4
+    blocks[0]["character"] = character
+    original["block_styles"] = blocks
+    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "rtf")
+    original.removeValue(forKey: "future")
+    blocks[0].removeValue(forKey: "futureProperty")
+    character.removeValue(forKey: "futureFont")
+    character["size"] = 19
+    blocks[0]["character"] = character
+    original["block_styles"] = blocks
+    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "rtf")
     let raw = try XCTUnwrap(store.styleDefaults(named: "rtf"))
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
     XCTAssertEqual(object["future"] as? Int, 42)
     let definition = try XCTUnwrap((object["block_styles"] as? [[String: Any]])?.first)
     XCTAssertEqual(definition["futureProperty"] as? Int, 3)
-    XCTAssertEqual((definition["character"] as? [String: Int])?["futureFont"], 4)
-    XCTAssertNil(try store.styleDefaults(named: "markdown"))
+    XCTAssertEqual((definition["character"] as? [String: Any])?["futureFont"] as? Int, 4)
+    XCTAssertNotNil(try store.styleDefaults(named: "markdown"))
     XCTAssertThrowsError(try store.saveStyleDefaults(Data(#"{"version":2}"#.utf8), named: "rtf"))
     XCTAssertEqual(try store.styleDefaults(named: "rtf"), raw)
     XCTAssertThrowsError(try store.styleDefaults(named: "../config"))

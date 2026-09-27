@@ -83,6 +83,7 @@ final class EVApplicationDelegate: NSObject,
 {
     private var menuBuilder: EVMenuBuilder?
     private var settingsWindowController: EVSettingsWindowController?
+    private lazy var themeStore = EVThemeStore(configuration: configuration)
     private weak var launchPlaceholderDocument: EVDocument?
     private let configuration: EVConfigurationStore
     private let launchArguments: EVLaunchArguments
@@ -110,7 +111,7 @@ final class EVApplicationDelegate: NSObject,
     func applicationWillFinishLaunching(_ notification: Notification) {
         let builder = EVMenuBuilder(owner: self, recentDocumentURLs: { [configuration] in
             configuration.recentDocumentURLs
-        })
+        }, themeStore: themeStore)
         NSApplication.shared.mainMenu = builder.buildMainMenu(for: NSApplication.shared)
         menuBuilder = builder
     }
@@ -118,6 +119,10 @@ final class EVApplicationDelegate: NSObject,
     func applicationDidFinishLaunching(_ notification: Notification) {
         openLaunchArguments()
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        try? configuration.ensureCurrentThemeExists()
     }
 
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
@@ -191,7 +196,7 @@ final class EVApplicationDelegate: NSObject,
 
     @objc func showSettings(_ sender: Any?) {
         if settingsWindowController == nil {
-            settingsWindowController = EVSettingsWindowController()
+            settingsWindowController = EVSettingsWindowController(store: themeStore)
         }
         settingsWindowController?.showWindow(sender)
         settingsWindowController?.window?.makeKeyAndOrderFront(sender)

@@ -14,7 +14,7 @@ internal sealed partial class EditorWindow
     private readonly List<(ToggleMenuFlyoutItem Item, Func<bool> Checked)> checks = [];
     private bool menusDirty = true;
     private MenuFlyoutSubItem recentMenu = null!;
-    private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!;
+    private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!, themeMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!, boldItem = null!, italicItem = null!;
     private CoreView? View => ActivePane?.View;
@@ -103,9 +103,9 @@ internal sealed partial class EditorWindow
         characterMenu = Sub("Character");
         validation.Add((paragraphMenu, () => Rich));
         validation.Add((characterMenu, () => Rich));
-        Top("Style", "S", paragraphMenu, characterMenu, Separator(), StyleEditorItem(),
-            ActionItem("Save as Default Style", SaveStyleDefaults, enabled: () => View != null),
-            ActionItem("Reload Code Style Sheet", LoadCodeStyles));
+        themeMenu = Sub("Theme"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
+        RefreshThemeMenu();
+        Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
         wrapItem = Toggle("Word Wrap", b => View?.Wrap(b));
         Top("View", "V", Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
             Toggle("Flow Source Paragraphs", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
@@ -203,18 +203,22 @@ internal sealed partial class EditorWindow
 #if DEBUG
     internal StyleWindow? StyleInspector => styleInspector;
 #endif
-    private void SaveStyleDefaults()
+    private void RefreshThemeMenu()
     {
-        if (View == null) return;
-        string name = View.UsesGlobalStyles ? "code_style.json" : CoreDocument.FormatName(ActivePane!.Document.State.format).Replace(" Source", "").ToLowerInvariant() + "_style.json";
-        Preferences.AtomicWrite(Path.Combine(preferences.DirectoryPath, name), View.ExportStyleDefaults()); ActivePane?.SetMessage("Saved " + name);
-    }
-    private unsafe void LoadCodeStyles()
-    {
-        string path = Path.Combine(preferences.DirectoryPath, "code_style.json");
-        if (!File.Exists(path)) return;
-        byte[] bytes = File.ReadAllBytes(path); fixed (byte* p = bytes) Viem.Windows.Interop.Abi.Check(viem_code_replace_style_json(p, (ulong)bytes.Length), "Load Code styles");
-        foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document).Distinct()) doc.NotifyChanged();
+        if (themeMenu == null) return;
+        preferences.EnsureCurrentThemeExists();
+        themeMenu.Items.Clear();
+        foreach (var file in preferences.ThemeFiles)
+        {
+            var item = new ToggleMenuFlyoutItem { Text = file.Name, IsChecked = preferences.SelectedThemePath == file.Path };
+            item.Click += (_, _) => Safe(() => { try { preferences.SelectTheme(file.Name, file.Path); } finally { RefreshThemeMenu(); } return Task.CompletedTask; });
+            themeMenu.Items.Add(item);
+        }
+        themeMenu.Items.Add(Separator());
+        var fallback = new ToggleMenuFlyoutItem { Text = "Default", IsChecked = preferences.SelectedTheme == null };
+        fallback.Click += (_, _) => Safe(() => { preferences.SelectTheme(null); return Task.CompletedTask; });
+        themeMenu.Items.Add(fallback);
+        themeMenu.Items.Add(Item("New theme…", () => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme)));
     }
     private unsafe void SetSpacing(uint kind, float amount) { var v = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, kind); v.number = amount; View?.DirectStyle(VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, v); }
     private FontPanelWindow? fontPanel;

@@ -18,12 +18,17 @@ internal sealed partial class SettingsWindow
     private readonly TextBlock previewSelection = new() { Text = "Keep your own rhythm.", FontSize = 15, Padding = new(3, 1, 3, 1) };
     private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };
     private readonly Border previewBody = new() { Height = 108 }, previewFooter = new(), selectionPaint = new(), caretPaint = new() { Width = 11, Height = 22, Margin = new(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-    private readonly Button paper = new() { Content = "Paper", MinWidth = 96 }, midnight = new() { Content = "Midnight", MinWidth = 96 }, restore = new() { Content = "Restore Defaults" };
+    private readonly ComboBox themePicker = new() { MinWidth = 230, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly Button newTheme = new() { Content = "New…" }, deleteTheme = new() { Content = "Delete" };
 
     private void BuildTheme(StackPanel page)
     {
-        var presets = Row(page); presets.Children.Add(paper); presets.Children.Add(midnight);
-        paper.Click += (_, _) => SetPreset(Theme.Paper); midnight.Click += (_, _) => SetPreset(Theme.Midnight);
+        var themes = Row(page); themes.Children.Add(themePicker); themes.Children.Add(newTheme); themes.Children.Add(deleteTheme);
+        AutomationProperties.SetName(themePicker, "Theme");
+        themePicker.SelectionChanged += (_, _) => { if (!loading) { Commit(() => { if (themePicker.SelectedItem is Preferences.ThemeFile file) preferences.SelectTheme(file.Name, file.Path); else preferences.SelectTheme(null); }); RefreshThemeControls(); } };
+        themePicker.DropDownOpened += (_, _) => Commit(RefreshThemeControls);
+        newTheme.Click += async (_, _) => { try { await ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
+        deleteTheme.Click += async (_, _) => { try { await ThemeDialogs.Delete(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
         var preview = new StackPanel { Spacing = 12, Padding = new(18, 16, 18, 16) };
         var title = Row(preview); title.Spacing = 0; title.Children.Add(previewTitle); title.Children.Add(caretPaint);
         selectionPaint.Child = previewSelection; selectionPaint.HorizontalAlignment = HorizontalAlignment.Left; preview.Children.Add(selectionPaint);
@@ -49,8 +54,9 @@ internal sealed partial class SettingsWindow
         statusFont.SelectionChanged += (_, _) => { if (!loading && statusFont.SelectedItem is string family) { statusFont.Text = family; SaveTheme(); } };
         statusFont.LostFocus += (_, _) => SaveTheme();
         statusSize.ValueChanged += (_, _) => { if (double.IsFinite(statusSize.Value)) SaveTheme(); };
-        page.Children.Add(restore); restore.Click += (_, _) => SetPreset(Theme.Midnight, resetFont: true);
-        RefreshThemePreview();
+        RefreshThemeControls();
+        preferences.ThemesChanged += RefreshThemeControls;
+        Closed += (_, _) => preferences.ThemesChanged -= RefreshThemeControls;
     }
     private StackPanel ThemeSection(Panel page, string heading)
     {
@@ -71,27 +77,37 @@ internal sealed partial class SettingsWindow
         // Preview while dragging, persist once the picker closes.
         picker.ColorChanged += (_, _) => RefreshThemePreview(); button.Flyout.Closed += (_, _) => SaveTheme();
     }
-    private void SetPreset(Theme theme, bool resetFont = false)
+    private void RefreshThemeControls()
     {
-        loading = true;
-        try {
+        preferences.EnsureCurrentThemeExists();
+        bool wasLoading = loading; loading = true;
+        try
+        {
+            var entries = preferences.ThemeFiles;
+            themePicker.ItemsSource = entries.Cast<object>().Append("Default").ToArray();
+            themePicker.SelectedItem = entries.FirstOrDefault(file => file.Path == preferences.SelectedThemePath) as object ?? "Default";
+            deleteTheme.IsEnabled = preferences.SelectedTheme != null;
+            var theme = preferences.Theme;
             colors["foreground"].Color = theme.Foreground; colors["background"].Color = theme.Background;
             colors["caret"].Color = theme.Caret; colors["selection"].Color = theme.Selection;
             colors["statusForeground"].Color = theme.StatusForeground; colors["statusBackground"].Color = theme.StatusBackground;
-            if (resetFont) { statusFont.Text = "System"; statusSize.Value = 11; }
+            statusFont.Text = preferences.Get("theme", "statusFontFamily", "System"); statusSize.Value = preferences.StatusFontSize;
+            statusFont.SelectedItem = ((string[])statusFont.ItemsSource).FirstOrDefault(f => string.Equals(f, statusFont.Text, StringComparison.OrdinalIgnoreCase));
+            RefreshThemePreview();
         }
-        finally { loading = false; }
-        SaveTheme();
+        finally { loading = wasLoading; }
     }
     private void SaveTheme()
     {
         if (loading) return;
+        if (preferences.EnsureCurrentThemeExists()) { RefreshThemeControls(); return; }
         RefreshThemePreview();
         Commit(() => {
             var theme = new JsonObject(); foreach (var pair in colors) theme[pair.Key] = Preferences.ColorJson(pair.Value.Color);
             theme["statusFontFamily"] = statusFont.Text.Trim(); theme["statusFontSize"] = statusSize.Value;
             preferences.SetSections(new JsonObject { ["theme"] = theme });
         });
+        RefreshThemeControls();
     }
     private void RefreshThemePreview()
     {
@@ -105,8 +121,9 @@ internal sealed partial class SettingsWindow
         foreach (var pair in swatches) pair.Value.Background = Paint(pair.Key);
     }
 #if DEBUG
-    internal Button PaperPreset => paper;
-    internal Button RestoreDefaults => restore;
+    internal ComboBox ThemePicker => themePicker;
+    internal Button NewTheme => newTheme;
+    internal Button DeleteTheme => deleteTheme;
     internal ComboBox StatusFont => statusFont;
     internal NumberBox StatusSize => statusSize;
     internal TextBlock PreviewStatus => previewStatus;

@@ -3,6 +3,112 @@ use viem_core::document::*;
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }
+
+#[test]
+fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_changes() {
+    let large = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
+    for (format, source) in [(Format::PlainText, "Text"), (Format::Markdown, "Text"),
+        (Format::MarkdownSource, "Text"), (Format::Rtf, "{\\rtf1 Text}")] {
+        let mut document = open(source, format);
+        document.insert(0, "New ").unwrap();
+        let source = document.source_bytes();
+        let text = document.text().to_owned();
+        let revision = document.revision();
+        let history = document.history_status();
+        document.replace_style_defaults(large).unwrap();
+        let size = |doc: &Document| doc.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character.size;
+        assert_eq!(size(&document), Some(FontSize::Points(27.)), "{format:?}");
+        assert_eq!(document.source_bytes(), source);
+        assert_eq!(document.text(), text);
+        assert_eq!(document.revision(), revision);
+        assert_eq!(document.history_status(), history);
+        document.insert(0, "Latest ").unwrap();
+        assert_eq!(size(&document), Some(FontSize::Points(27.)));
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source);
+        assert_eq!(size(&document), Some(FontSize::Points(27.)));
+        assert!(document.undo());
+        assert_eq!(document.text(), "Text");
+        assert_eq!(size(&document), Some(FontSize::Points(27.)), "undo must keep active theme");
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), source);
+        assert_eq!(size(&document), Some(FontSize::Points(27.)));
+        document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+        assert_eq!(size(&document), StyleSheet::default().block_style(&"Paragraph".into()).unwrap().character.size);
+        assert_eq!(document.source_bytes(), source);
+        assert!(document.undo());
+        assert_ne!(size(&document), Some(FontSize::Points(27.)));
+        viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+    }
+}
+
+#[test]
+fn live_theme_preserves_source_owned_rtf_styles_and_rejects_invalid_json_atomically() {
+    let mut document = open("{\\rtf1{\\stylesheet{\\s1\\fs48 Heading;}}\\s1 Title}", Format::Rtf);
+    let source = document.source_bytes();
+    let style = document.projection().blocks().first().unwrap().style.clone();
+    let definition = document.projection().style_sheet().block_style(&style).unwrap().clone();
+    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+    assert_eq!(document.projection().style_sheet().block_style(&style), Some(&definition));
+    let sheet = document.export_style_defaults().unwrap();
+    let history = document.history_status();
+    assert!(document.replace_style_defaults(br#"{"version":99}"#).is_err());
+    assert_eq!(document.export_style_defaults().unwrap(), sheet);
+    assert_eq!(document.history_status(), history);
+    assert_eq!(document.source_bytes(), source);
+}
+
+#[test]
+fn live_theme_replaces_custom_catalogue_and_current_generated_styles_remain_editable() {
+    let mut document = open("Text", Format::PlainText);
+    document.replace_style_defaults(br#"{"version":1,"character_styles":[{"id":"Old Theme","name":"Old Theme","properties":{"bold":true}}]}"#).unwrap();
+    assert!(document.projection().style_sheet().character_style(&"Old Theme".into()).is_some());
+    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+    assert!(document.projection().style_sheet().character_style(&"Old Theme".into()).is_none());
+    clear_definition(&mut document, &"Paragraph".into(), false);
+    assert_eq!(document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character,
+        CharacterProperties::default());
+    document.insert(0, "New ").unwrap();
+    assert_eq!(document.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character,
+        CharacterProperties::default());
+}
+
+#[test]
+fn rtf_theme_custom_definitions_round_trip_through_defaults_and_live_installation() {
+    let settings = br#"{"version":1,"block_styles":[{"id":"RtfP7","name":"Theme Paragraph","based_on":"Paragraph","role":"Paragraph","character":{"size":19},"block":{}}],"character_styles":[{"id":"RtfC8","name":"Theme Character","properties":{"bold":true}}]}"#;
+    let mut inspector = open("{\\rtf1 Text}", Format::Rtf);
+    inspector.initialize_style_defaults(settings).unwrap();
+    let exported = inspector.export_style_defaults().unwrap();
+    let mut document = open("{\\rtf1 Existing}", Format::Rtf);
+    document.insert(0, "Edited ").unwrap();
+    let before = document.source_bytes();
+    document.replace_style_defaults(&exported).unwrap();
+    let sheet = document.projection().style_sheet();
+    assert_eq!(sheet.block_style(&"RtfP7".into()).unwrap().character.size, Some(FontSize::Points(19.)));
+    assert_eq!(sheet.character_style(&"RtfC8".into()).unwrap().properties.bold, Some(true));
+    assert_eq!(document.source_bytes(), before);
+}
+
+#[test]
+fn undo_keeps_source_style_dependencies_authoritative_over_new_theme_relationships() {
+    let source = "{\\rtf1{\\stylesheet{\\s1\\sbasedon2 Child;}{\\s2 Parent;}}\\s1 Text}";
+    let mut document = open(source, Format::Rtf);
+    let original = document.export_style_defaults().unwrap();
+    document.insert(0, "New ").unwrap();
+    // This valid theme reverses the source's parent relationship. Source
+    // definitions must remain authoritative when older snapshots are selected.
+    document.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"RtfP1","name":"Child","role":"Paragraph","based_on":"Paragraph","block":{},"character":{}},{"id":"RtfP2","name":"Parent","role":"Paragraph","based_on":"RtfP1","block":{},"character":{}}]}"#).unwrap();
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert_eq!(document.text(), "Text");
+    let before: serde_json::Value = serde_json::from_slice(&original).unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+    for id in ["RtfP1", "RtfP2"] {
+        let definition = |value: &serde_json::Value| value["block_styles"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap().clone();
+        assert_eq!(definition(&before), definition(&after));
+    }
+    viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+}
 fn lists(document: &Document) -> Vec<String> {
     document
         .projection()

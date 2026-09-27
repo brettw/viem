@@ -39,7 +39,7 @@ final class EVIncrementalMatchStyleTests: XCTestCase {
 
             let editor = EVStyleEditorViewController()
             if type == EVDocument.codeType {
-                editor.retarget(codeSession: try EVCodeStyleSession(configuration: configuration))
+                editor.retarget(settingsSession: try EVCodeStyleSession(configuration: configuration))
                 editor.selectStyle(key)
             } else {
                 editor.retarget(document: surface, styleKey: key)
@@ -57,7 +57,9 @@ final class EVIncrementalMatchStyleTests: XCTestCase {
             XCTAssertEqual(try backend.serializedSource(typeName: type), original)
             XCTAssertFalse(backend.persistenceState.isDirty)
 
-            if type != EVDocument.codeType { _ = try backend.saveDefaultStyle() }
+            if type != EVDocument.codeType {
+                try configuration.saveStyleDefaults(backend.exportStyleDefaults(), named: backend.sourceFormat.defaultStyleName)
+            }
             let reopened = EVCoreDocumentBackend(configuration: configuration)
             try reopened.read(source: original, typeName: type)
             XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: key)?.properties[.characterBackground]?.effective, .color(color))

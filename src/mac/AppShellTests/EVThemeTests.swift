@@ -48,7 +48,7 @@ final class EVThemeTests: XCTestCase {
     defer { defaults.removePersistentDomain(forName: name) }
     defaults.set(Data("invalid json".utf8), forKey: "EVApplicationTheme.v1")
     let store = EVThemeStore(configuration: configuration)
-    XCTAssertEqual(store.theme, .paper)
+    XCTAssertEqual(store.theme, .midnight)
     let settings = EVSettingsWindowController(store: store)
     defer { settings.close() }
     settings.showWindow(nil)

@@ -92,7 +92,7 @@ set hlsearch incsearch
 
 Restart Viem after editing the file. Startup commands apply to every document
 and new view. `VIEM_CONFIG_DIR` overrides the profile directory for `config.json`,
-`code_style.json`, and `startup.viem` together; native code resolves it through
+the `themes` directory, and `startup.viem` together; native code resolves it through
 `EVProfileDirectory`. The optional startup file uses UTF-8, accepts a BOM and
 CRLF, and is limited to 1 MiB. Invalid lines report their path and line number
 without preventing later valid settings from loading.

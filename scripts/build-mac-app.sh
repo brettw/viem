@@ -54,6 +54,10 @@ cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
 mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
+# Theme presets are versioned resources. Profiles copy these when first made;
+# the core also carries an independent Midnight fallback for missing resources.
+mkdir -p "$resources_dir/themes"
+cp "$project_dir/assets/themes/"*.json "$resources_dir/themes/"
 # Replace this owned subtree so removed upstream files cannot survive a rebuild.
 # All files, including the original license and provenance manifest, are sealed
 # into the application signature. No installed Vim is needed at build/run time.

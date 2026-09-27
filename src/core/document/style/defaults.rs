@@ -323,6 +323,63 @@ fn repair_default_graph(
 
 impl StyleSheet {
 
+    /// Start from generated built-ins rather than the previous theme. Keep
+    /// source definitions and referenced custom IDs as fallbacks: existing
+    /// source assignments and inheritance may still refer to those IDs.
+    pub(crate) fn replacing_default_json(&self, bytes: &[u8], projection: &crate::document::FormattedDocument) -> Result<(Self, Vec<String>), StyleDefaultsError> {
+        let mut baseline = self.clone();
+        let builtins = StyleSheet::default();
+        let mut retained_blocks = self.source_defined_blocks.clone();
+        let mut retained_characters = self.source_defined_characters.clone();
+        for id in self.block_styles.keys().filter(|id| !builtins.block_styles.contains_key(*id)) {
+            if projection.has_block_style_assignment(id) { retained_blocks.insert(id.clone()); }
+        }
+        for id in self.character_styles.keys().filter(|id| !builtins.character_styles.contains_key(*id)) {
+            if id.is_internal() || projection.has_character_style_assignment(id) { retained_characters.insert(id.clone()); }
+        }
+        // Preserve transitive source dependencies without carrying unrelated
+        // definitions from a previously selected application theme.
+        let mut pending = retained_blocks.iter().cloned().collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            if let Some(style) = self.block_styles.get(&id) {
+                for dependency in [&style.based_on, &style.next_paragraph_style].into_iter().flatten() {
+                    if retained_blocks.insert(dependency.clone()) { pending.push(dependency.clone()); }
+                }
+            }
+        }
+        let mut pending = retained_characters.iter().cloned().collect::<Vec<_>>();
+        while let Some(id) = pending.pop() {
+            if let Some(parent) = self.character_styles.get(&id).and_then(|style| style.based_on.as_ref()) {
+                if retained_characters.insert(parent.clone()) { pending.push(parent.clone()); }
+            }
+        }
+        baseline.block_styles.retain(|id, _| builtins.block_styles.contains_key(id) || retained_blocks.contains(id));
+        baseline.block_metadata.retain(|id, _| baseline.block_styles.contains_key(id));
+        baseline.character_styles.retain(|id, _| builtins.character_styles.contains_key(id) || retained_characters.contains(id));
+        baseline.character_metadata.retain(|id, _| baseline.character_styles.contains_key(id));
+        for (id, definition) in builtins.block_styles {
+            if !baseline.source_defined_blocks.contains(&id) {
+                baseline.block_styles.insert(id.clone(), definition);
+                if let Some(metadata) = builtins.block_metadata.get(&id) {
+                    baseline.block_metadata.insert(id, metadata.clone());
+                }
+            }
+        }
+        for (id, definition) in builtins.character_styles {
+            if !baseline.source_defined_characters.contains(&id) {
+                baseline.character_styles.insert(id.clone(), definition);
+                if let Some(metadata) = builtins.character_metadata.get(&id) {
+                    baseline.character_metadata.insert(id, metadata.clone());
+                }
+            }
+        }
+        baseline.default_blocks.clear();
+        baseline.default_characters.clear();
+        baseline.deleted_configuration_blocks.clear();
+        baseline.deleted_configuration_characters.clear();
+        baseline.with_default_json(bytes)
+    }
+
     pub fn has_user_default(&self, id: &StyleId, character: bool) -> bool {
         if character {
             self.default_characters.contains_key(id)
@@ -497,6 +554,7 @@ impl StyleSheet {
     }
 
     pub(super) fn retain_defaults(&mut self, previous: &Self) {
+        self.theme_generation = previous.theme_generation;
         if !previous.default_blocks.is_empty() || !previous.default_characters.is_empty() {
             self.default_blocks = previous.default_blocks.clone();
             self.default_characters = previous.default_characters.clone();

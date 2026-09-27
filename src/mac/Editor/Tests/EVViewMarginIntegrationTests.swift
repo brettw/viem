@@ -12,36 +12,32 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         return try Data(contentsOf: root.appendingPathComponent("docs/markdown_demo.md"))
     }
 
-    private var partlyInvalidMarkdownDefaults: String {
-        #"""
-        {"version":1,"block_styles":[
-          {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph",
-           "based_on":null,"next_paragraph_style":null,
-           "block":{"padding_left":-8},"character":{"size":21}},
-          {"id":"Block quote","name":"Block quote","role":"Paragraph",
-           "based_on":"Paragraph","next_paragraph_style":"Block quote",
-           "block":{"leading_indent":32,"trailing_indent":32},
-           "character":{"size":19}},
-          {"id":"Code Block","name":"Code Block","role":"Paragraph",
-           "based_on":"Paragraph","next_paragraph_style":"Paragraph",
-           "block":{"leading_indent":24},
-           "character":{"font_families":["monospace"],"size":16}}
-        ],"character_styles":[]}
-        """#
+    private func saveMarkdownSize(_ size: Float, configuration: EVConfigurationStore) throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.styleDefaults(named: "markdown"))) as? [String: Any])
+        var blocks = try XCTUnwrap(json["block_styles"] as? [[String: Any]])
+        let index = try XCTUnwrap(blocks.firstIndex { $0["id"] as? String == "Paragraph" })
+        var properties = blocks[index]["character"] as? [String: Any] ?? [:]
+        properties["size"] = size
+        blocks[index]["character"] = properties
+        json["block_styles"] = blocks
+        try configuration.saveStyleDefaults(JSONSerialization.data(withJSONObject: json), named: "markdown")
     }
 
     func testMarkdownDemoReadBeforeNativeViewAttachmentAppliesMargins() throws {
         let source = try markdownDemo()
-        let savedDefaults: [String?] = [nil, partlyInvalidMarkdownDefaults, "{invalid", #"{"version":99}"#]
+        let savedDefaults: [String?] = [nil, "valid", "{invalid", #"{"version":99}"#]
         for useDocumentURL in [true, false] {
             for defaults in savedDefaults {
                 let directory = FileManager.default.temporaryDirectory
                     .appendingPathComponent("viem-markdown-startup-\(UUID().uuidString)")
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+                let initial = EVConfigurationStore(directory: directory)
+                let settings = try XCTUnwrap(initial.selectedThemeURL)
+                if defaults == "valid" { try saveMarkdownSize(21, configuration: initial) }
+                else if let defaults { try Data(defaults.utf8).write(to: settings) }
+                let saved = try Data(contentsOf: settings)
                 let configuration = EVConfigurationStore(directory: directory)
-                let settings = directory.appendingPathComponent("markdown_style.json")
-                if let defaults { try Data(defaults.utf8).write(to: settings) }
                 let backend = EVCoreDocumentBackend(configuration: configuration)
                 let document = EVDocument(editorBackend: backend)
                 defer { document.close() }
@@ -57,13 +53,11 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 let surface = EVEditorSurfaceController(backend: backend,
                     viewPreferences: EVViewPreferences(configuration: configuration))
                 surface.loadViewIfNeeded()
-                if defaults != nil {
+                if defaults != nil && defaults != "valid" {
                     let warning = try XCTUnwrap(backend.configurationWarning)
-                    XCTAssertTrue(warning.contains(settings.path), warning)
+                    XCTAssertTrue(warning.contains(settings.deletingPathExtension().lastPathComponent), warning)
                     XCTAssertEqual(surface.commandOutput, warning)
-                    if defaults != partlyInvalidMarkdownDefaults {
-                        XCTAssertTrue(warning.contains("Using built-in defaults"), warning)
-                    }
+                    XCTAssertTrue(warning.contains("Default"), warning)
                 } else {
                     XCTAssertNil(backend.configurationWarning)
                     XCTAssertNil(surface.commandOutput)
@@ -74,7 +68,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 let code = try XCTUnwrap(styles.definition(for: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))))
                 XCTAssertEqual(quote.kind, .quote)
                 XCTAssertEqual(code.kind, .codeBlock)
-                let expectedSize: Float = defaults == partlyInvalidMarkdownDefaults ? 21 : 14
+                let expectedSize: Float = defaults == "valid" ? 21 : 14
                 XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(expectedSize))
                 XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.blockPaddingLeft]?.effective, .float(0))
                 XCTAssertEqual(quote.properties[.characterSize]?.effective, .float(expectedSize))
@@ -92,12 +86,12 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 surface.performInput { _ = try session.undo() }
                 XCTAssertNil(surface.commandOutput)
                 XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
-                if let defaults { XCTAssertEqual(try Data(contentsOf: settings), Data(defaults.utf8)) }
+                XCTAssertEqual(try Data(contentsOf: settings), saved)
             }
         }
     }
 
-    func testReplacingAnAttachedDocumentShowsPartialStyleLoadWarningsAndKeepsValidProperties() throws {
+    func testReplacingAnAttachedDocumentAppliesCurrentThemeStylesAndKeepsSource() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-replacement-style-warning-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -107,15 +101,14 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         XCTAssertNil(surface.commandOutput)
-        let settings = directory.appendingPathComponent("markdown_style.json")
-        let defaults = Data(partlyInvalidMarkdownDefaults.utf8)
-        try defaults.write(to: settings)
+        let settings = try XCTUnwrap(configuration.selectedThemeURL)
+        try saveMarkdownSize(21, configuration: configuration)
+        let defaults = try Data(contentsOf: settings)
         let source = try markdownDemo()
         try backend.read(source: source, typeName: EVDocument.markdownSourceType,
             filename: "markdown_demo.md", allowAutomaticCode: false)
-        let warning = try XCTUnwrap(backend.configurationWarning)
-        XCTAssertTrue(warning.contains(settings.path), warning)
-        XCTAssertEqual(surface.commandOutput, warning)
+        XCTAssertNil(backend.configurationWarning)
+        XCTAssertNil(surface.commandOutput)
         XCTAssertNotNil(surface.session)
         XCTAssertNotNil(surface.layoutSnapshot)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(21))

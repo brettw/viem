@@ -27,7 +27,6 @@ internal sealed partial class EditorWindow
     {
         try
         {
-            LoadCodeStyles();
             await OpenArguments(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory));
             if (Panes.Count == 0 && !closed) AddPane(NewDocument());
             if (preferences.Error != null) ActivePane?.SetMessage(preferences.Error);

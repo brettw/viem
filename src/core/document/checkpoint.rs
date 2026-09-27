@@ -16,6 +16,7 @@ pub(crate) struct DocumentCommandCheckpoint {
     edit_group_generation: u64,
     position_map_capture: Option<PositionMap>,
     code_presentation: Option<super::code_presentation::CodePresentation>,
+    configuration_state: Option<super::DocumentState>,
     artifact_binding: Option<ArtifactBinding>,
     pending_artifact_writes: HashMap<ArtifactWriteToken, PendingArtifactWrite>,
     next_artifact_write_token: u64,
@@ -45,6 +46,7 @@ impl Document {
             edit_group_generation: self.edit_group_generation,
             position_map_capture: self.position_map_capture.clone(),
             code_presentation: self.code_presentation.clone(),
+            configuration_state: self.configuration_state.clone(),
             artifact_binding: self.artifact_binding.clone(),
             pending_artifact_writes: self.pending_artifact_writes.clone(),
             next_artifact_write_token: self.next_artifact_write_token,
@@ -85,6 +87,7 @@ impl Document {
         self.edit_group_generation = checkpoint.edit_group_generation;
         self.position_map_capture = checkpoint.position_map_capture;
         self.code_presentation = checkpoint.code_presentation;
+        self.configuration_state = checkpoint.configuration_state;
         self.artifact_binding = checkpoint.artifact_binding;
         self.pending_artifact_writes = checkpoint.pending_artifact_writes;
         self.next_artifact_write_token = checkpoint.next_artifact_write_token;

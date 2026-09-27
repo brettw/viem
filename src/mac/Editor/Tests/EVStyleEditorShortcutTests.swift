@@ -106,7 +106,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
             let panel = try XCTUnwrap(coordinator.styleWindow)
             XCTAssertTrue(panel.isVisible)
             XCTAssertNil(application.modalWindow)
-            XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(backend))
+            XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
             XCTAssertEqual(surface.viewPresentation.mode, mode)
             XCTAssertEqual(try backend.recoverySnapshot(), original)

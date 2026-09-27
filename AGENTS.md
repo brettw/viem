@@ -1683,14 +1683,51 @@ and requires no network resources to display its content and styles.
 
 ### Application theme and settings
 
-The theme is an application preference, shared across views and independent of
-source-backed named styles. It defines text foreground and canvas background,
-caret and selection colors, status foreground/background and font family/size,
-with color values in portable sRGB. The macOS Settings window has View, Theme,
+A theme is an application-wide style sheet containing appearance settings and
+Code, Text, Markdown, and RTF configuration style sheets. Each theme is one JSON
+file in the profile's `themes` subdirectory (`~/.viem/themes` by default).
+Appearance defines text foreground and canvas background, caret and selection
+colors, status foreground/background and font family/size, with portable sRGB
+values. Source-backed named styles and direct formatting remain authoritative
+over the theme's format defaults. The macOS Settings window has View, Theme,
 and Editing categories; there are no Code or Documents categories. Code styles
 remain editable through the ordinary modeless Styles inspector opened from a
-Code view by F8 or the menu. Theme contains
-its live preview, color controls, status typography, presets, and restore action.
+Code view by F8 or the menu. Theme contains a theme picker at the top with New
+and Delete buttons, followed by its live preview, color controls, and status
+typography. There is no Restore Defaults action in this tab: choosing Default
+loads the built-in theme.
+
+The Style menu begins with a Theme submenu. It lists the regular theme files
+in case-insensitive alphabetical order, removes a trailing `.json` from each
+display name, then has a separator, Default, and New theme…. Selecting a theme
+updates all open windows and is saved as `selectedTheme` in `config.json` for
+future windows and launches. An accompanying `selectedThemeFile` stores the
+actual filename so files with the same display name retain their identity.
+Missing selected files use Default. Theme changes
+are presentation configuration; undoing document edits does not restore an
+older theme. Reload style sheet re-reads the selected aggregate theme.
+
+Default uses the built-in Midnight values. It is fully editable in memory, but
+has no save path; its appearance and all format sheets use the same editing and
+application paths as named themes. New theme… prompts for a unique filename-safe
+name of 1–32 Unicode characters and copies the current in-memory aggregate,
+including edits to Default, to `<name>.json`, then selects it. Names cannot
+contain control characters, filename separators or Windows-reserved punctuation,
+end in a dot or space, or use reserved device names or Default. Case-insensitive
+collisions are rejected. The inspector edits the current theme and persists
+named-theme edits automatically, with settings undo independent of document
+undo. Source-authored RTF definitions remain document-owned.
+
+New profiles create `themes` and copy the version-tracked
+`assets/themes/Paper.json` and `assets/themes/Midnight.json` resources, selecting
+Midnight initially. Both native bundles include these files under `themes` in
+their resources. Existing profiles with legacy appearance or separate style
+files preserve them in a uniquely named Imported theme; legacy files are not
+deleted. A missing resource never prevents loading: the core carries complete
+built-in defaults independently of the files. **Whenever Midnight.json is
+updated, update the default values in code as well so Default stays in sync.**
+Tests compare the complete bundled presets against the code defaults.
+
 View contains independent top/left/bottom/right text margins in pixels, with
 defaults of 10 pixels on every side. Tab and Shift-Tab move forward and backward
 through the Settings values, committing the field being left. The margin fields
@@ -1703,8 +1740,9 @@ A missing foreground or canvas color means **Default**, resolved through the
 theme at painting time. Generated base styles leave these colors unspecified.
 An explicit document color, including black or white, takes precedence and is
 not confused with Default. Default is not serialized as an explicit theme color.
-Theme changes never modify source bytes, style declarations, history, or dirty
-state. Color changes require only repainting. View margins inset content in
+Theme changes never modify source bytes, source-authored style declarations,
+document history, or dirty state. Color-only changes require only repainting;
+font and paragraph changes invalidate affected layout. View margins inset content in
 document coordinates and are additive with
 source-authored canvas padding. Margin changes preserve viewport anchors and
 invalidate only affected view geometry, keeping large-document layout local.
@@ -1786,9 +1824,10 @@ for disambiguation, retain newest-first ordering, and keep the full path in
 the menu item's open target and tooltip. The menu reads the application
 settings authority rather than a separate operating-system recent-file list.
 
-Per-document format defaults live beside it in `text_style.json`,
-`markdown_style.json`, and `rtf_style.json`. A document loads
-the matching sparse style defaults before source declarations are applied. The
+Format defaults live in the selected theme's `styles` object under `text`,
+`markdown`, `rtf`, and `code`, using their existing versioned style schemas. A
+document loads the matching sparse defaults before source declarations are
+applied and updates them when the active theme changes. The
 cascade is built-in styles, user format defaults, source definitions/assignments, then direct
 formatting. Built-in defaults seed ordinary editable definitions: Heading 1 is
 a sparse delta on Base Paragraph, and its size, weight, and paragraph spacing
@@ -1813,16 +1852,13 @@ version leaves the existing defaults intact and shows a warning. The document
 remains usable. Loading MUST NOT migrate obsolete definitions or rewrite the
 saved file, and the installed style sheet MUST remain valid.
 
-The Style menu contains Edit Styles and Save as default <format> style.
-A trailing separated Reload style sheet re-reads the global Code
-`code_style.json` from disk; it stays enabled in every format because that sheet
-is application-wide. Saving defaults exports the current style configuration to
-the corresponding JSON file. Existing open buffers keep their current
-configuration; subsequently opened buffers load the saved defaults.
-
-Code instead uses the live application-wide `code_style.json` authority
-specified below. It is not a copy of per-document format defaults: a global
-Code style change updates existing Code buffers as well as future ones.
+The Style menu contains Theme and Edit Styles. The inspector edits a theme
+settings session, independently of source content and document undo. Changes
+update matching open buffers and future buffers, and named themes save them in
+the same aggregate JSON file. The obsolete Save as default <format> style action
+is removed. A trailing separated Reload style sheet re-reads the current theme
+and stays enabled in every format. Code retains its live process-wide authority
+specified below, populated from the selected theme's `styles.code`.
 
 
 ### Code format and syntax highlighting
@@ -1867,18 +1903,18 @@ does not use a Tree-sitter Vim grammar.
 
 #### Global Code stylesheet and named syntax runs
 
-There is one application-wide stylesheet named `code`, persisted atomically as
-`~/.viem/code_style.json` beside `config.json`, respecting `VIEM_CONFIG_DIR`.
+There is one application-wide stylesheet named `code`, persisted atomically in
+the selected theme's `styles.code`, respecting `VIEM_CONFIG_DIR`.
 It uses the normalized style schema, with built-in defaults plus sparse saved
 overrides, stable definition IDs, validation, and immutable revision identity.
 It is shared live by all Code buffers. Valid changes update every open Code
 view without modifying source, dirty state, or document undo history; undoing
 a document edit does not restore an older global stylesheet.
 
-The file is read once per application profile at startup and is never polled.
+The selected theme is read on selection/startup and is never polled.
 Style > Reload style sheet re-reads it on demand, republishing it to
-every open Code buffer even when the file appears unchanged, and reports a
-missing, oversized, or malformed file without overwriting it. An in-app style
+every open buffer even when the file appears unchanged. A missing file selects
+Default; an oversized or malformed file is reported without overwriting it. An in-app style
 edit that finds the file changed underneath it refuses the write and reloads.
 
 Core serializes mutations of the global authority and publishes an immutable
@@ -1945,8 +1981,8 @@ Publication creates no document history and changes no source or dirty state.
 Because appearance is unchanged by construction, it reshapes and relayouts
 nothing.
 
-Implicit definitions are held only in memory and are never written to
-`code_style.json`. They are regenerated after restart as their names reappear
+Implicit definitions are held only in memory and are never written to the
+theme's `styles.code`. They are regenerated after restart as their names reappear
 in accepted results. Reload style sheet, and any other replacement of the
 whole sheet, carries the current implicit definitions over with the same
 identities, so an open Styles editor keeps its selection. An edited definition
@@ -4580,6 +4616,12 @@ The menu hierarchy is:
   - Clear Direct Paragraph Formatting
   - Clear All Direct Formatting
 - **Style**
+  - Theme
+    - available themes in case-insensitive alphabetical order
+    - separator
+    - Default
+    - New theme…
+  - separator
   - Paragraph
     - Bulleted List
     - Numbered List
@@ -4594,8 +4636,6 @@ The menu hierarchy is:
     - dynamically listed named character styles
   - separator
   - Edit Styles… (`F8`)
-  - Save as default <format> style
-  - Include style definitions in file
   - separator
   - Reload style sheet
 - **View**
@@ -4791,18 +4831,19 @@ checkboxes, or `Cancel` and `OK` buttons.
 
 #### Window behavior and ownership
 
-These document-target rules also apply to the explicit global Code stylesheet
-target with the ownership and persistence exceptions in "Code format and
-syntax highlighting". Global Code style editing never retargets implicitly to
-a document stylesheet and never creates a document source transaction. Following
-a Code view selects definitions within the global sheet; it does not change
-their ownership or move their edits into document history.
+The inspector targets the active theme's style sheet for the invoking format.
+Its settings session owns independent undo and never creates a source transaction
+in the invoking document. Following a view selects a definition within the theme
+sheet; source-only definitions absent from that sheet fall back to Base Paragraph.
+Code uses its global sheet, while prose families use an isolated core settings
+specimen so all definitions, validation, and editing share the existing core
+style APIs. The specimen is never a persistence authority.
 
 - Although it is colloquially a dialog box, the style editor is a modeless
   auxiliary window or panel. It is never an application-modal dialog or a
   document-modal sheet. The user can focus and edit any document while it is
   open.
-- Its title is **Styles**, with the compact utility-panel title bar and window
+- Its title identifies **Theme Styles** and the active theme, with the compact utility-panel title bar and window
   buttons used by the native font picker. Formatting controls and preview have
   no section headings. There is no textual resolved-attribute summary. Omit the inherited-formatting
   instruction, live-apply footer text, and separator above the Close button;
@@ -4815,8 +4856,7 @@ their ownership or move their edits into document history.
 - Exactly one style-editor window exists application-wide. Invoking any
   `Edit Styles…` action while it is closed creates it. Invoking one while it is
   open brings the existing window forward, retargets it to the invoking
-  document or explicitly requested global Code sheet, and selects the requested
-  style by stable style ID.
+  format's theme style sheet, and selects the requested style by stable ID.
 - **Style > Edit Styles…**, including **F8**, immediately selects the style at the invoking
   view's cursor using the same rules as subsequent caret following below.
   Reopening an existing editor also reselects that current style. Choosing an
@@ -4862,7 +4902,7 @@ their ownership or move their edits into document history.
 From top to bottom, the content is:
 
 1. a properties section containing:
-   - **Style**, a pop-up that selects a style in the target document and groups
+   - **Style**, a pop-up that selects a style in the target theme sheet and groups
      Paragraph, Container, Character, and Internal styles, in that order. Internal styles,
      including Incremental match, appear only in the final Internal group even
      when their underlying style type is Character;
@@ -6084,8 +6124,8 @@ notifications that would invalidate editor layout while saving placement.
 
 Settings is a modeless window with View, Theme and Editing categories in
 a fixed left sidebar. Theme follows `docs/mac_references/settings_theme.png`:
-Paper/Midnight presets, a live writing preview with caret and selection,
-grouped Editor and Status bar colors, status font/size, and Restore Defaults.
+a theme picker with New and Delete buttons, a live writing preview with caret
+and selection, grouped Editor and Status bar colors, and status font/size.
 Validated edits persist through the shared portable profile schema;
 Windows-specific settings stay in `windows`.
 
@@ -6105,10 +6145,10 @@ following that view's caret context. Windows color wells and their
 popups resolve an undeclared emergency foreground through the active editor
 theme, while retaining explicit and inherited authored colors and alpha.
 Enabling such a foreground override copies the theme color. Opening or closing
-an unchanged picker creates no edit. Color changes update the document, swatch,
+an unchanged picker creates no edit. Color changes update the theme, matching open documents, swatch,
 and committed inspector preview live. Rapid changes coalesce at a 33 ms cadence;
-idle pickers schedule no work. One popup session forms one document undo unit.
-Global Code color changes update all Code views and persist live. Successful
+idle pickers schedule no work. One popup session forms one settings undo unit.
+Code color changes update all Code views and persist with the current theme. Successful
 changes do not rebuild the inspector, resize its popup, or write rounded RGB
 values back into the active picker. Closing or retargeting flushes the latest
 color to the original target and disconnects pending work. External document
@@ -6125,13 +6165,15 @@ Inherited entry fields are empty; enabling an override starts with its resolved
 value. Base Paragraph's override boxes stay checked and disabled. Character
 styles disable the Paragraph and Block tabs. The paragraph pane uses alignment icon buttons
 and aligned columns for indents and spacing. The font ellipsis edits the ordered
-fallback family list. Code Styles includes Restore Defaults, which replaces and
-persists the shared defaults; a write failure restores the previous global
-styles. Document Styles does not offer this global action.
+fallback family list. The Code theme inspector includes Restore Defaults,
+which replaces the current theme's Code sheet and persists it for named themes;
+a write failure restores the previous global styles. Prose theme inspectors
+do not offer this action.
 Font families are sorted using the current
 culture. Both style and direct-font pickers expose installed font variants.
 Variants retain their PostScript name, weight and slant, preserving a named
-style's fallback families and grouping a face change into one document undo.
+style's fallback families. A face change is one theme settings undo in the
+style inspector and one document undo for direct formatting.
 Family changes preserve a matching face name where possible, otherwise choose
 a regular face. Unavailable/custom faces remain unresolved instead of silently
 selecting the first variant. DirectWrite resolves persisted face names back to

@@ -31,6 +31,7 @@ internal static class FormatMenuTests
         var menuPeer = new MenuBarItemAutomationPeer(menu);
         var styles = window.Menu.Items.Single(m => m.Title == "Style");
         var stylesPeer = new MenuBarItemAutomationPeer(styles);
+        var themeMenu = styles.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Theme");
         var paragraphStyles = styles.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Paragraph");
         var characterStyles = styles.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Character");
         async Task CheckStyleAvailability(bool enabled) {
@@ -38,8 +39,8 @@ internal static class FormatMenuTests
             Check(paragraphStyles.IsEnabled == enabled && characterStyles.IsEnabled == enabled,
                 $"Style submenus validate for format {window.ActivePane!.Document.State.format}");
             Check(styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…").IsEnabled
-                && styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Reload Code Style Sheet").IsEnabled,
-                "style inspector and global stylesheet reload remain available");
+                && themeMenu.IsEnabled,
+                "theme selection and style editing remain available for every format");
             stylesPeer.Collapse();
         }
         async Task Open() { window.Activate(); menuPeer.Expand(); await Task.Delay(40); }
@@ -53,8 +54,9 @@ internal static class FormatMenuTests
         }
         try {
             Check(window.Menu.Items.All(m => m.Title is not ("Paragraph" or "Character"))
-                && styles.Items.Take(2).SequenceEqual(new MenuFlyoutItemBase[] { paragraphStyles, characterStyles }),
-                "Style replaces Paragraph and Character with the first two submenus");
+                && styles.Items.First() == themeMenu
+                && styles.Items.Skip(2).Take(2).SequenceEqual(new MenuFlyoutItemBase[] { paragraphStyles, characterStyles }),
+                "Style starts with Theme, then the paragraph and character assignment submenus");
             Check(!Descendants(menu.Items).Any(i => i is MenuFlyoutSubItem { Text: "Style" })
                 && Descendants(styles.Items).OfType<MenuFlyoutItem>().Count(i => i.Text == "Edit Styles…") == 1,
                 "Style commands have one home and the assignment menus have no editor footers");

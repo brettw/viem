@@ -14,7 +14,7 @@ final class EVCodePreferencesTests: XCTestCase {
   func testBundledResourcesFollowRelocationWithoutPersistingPaths() throws {
     let configuration = fixture()
     XCTAssertTrue(configuration.bundledVimSyntaxDirectory.hasSuffix("Moved Viem – Résumé.app/Contents/Resources/vim/runtime/syntax"))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: configuration.directory.appendingPathComponent("config.json").path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: configuration.directory.appendingPathComponent("config.json").path))
     try configuration.setSmartQuotes(true)
     let file = configuration.directory.appendingPathComponent("config.json")
     let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
@@ -86,8 +86,8 @@ final class EVCodePreferencesTests: XCTestCase {
 
   func testCodeStyleAuthorityDoesNotResurrectDeletedDeclarations() throws {
     let configuration = fixture()
-    let old = Data(#"{"version":2,"block_styles":[{"id":"Paragraph","character":{"size":19}}],"character_styles":[{"id":"keyword"}]}"#.utf8)
-    let cleared = Data(#"{"version":2,"block_styles":[{"id":"Paragraph","character":{}}],"character_styles":[],"suppressed":["keyword"]}"#.utf8)
+    let old = Data(#"{"version":3,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","block":{},"character":{"size":19}}],"character_styles":[{"id":"extra-keyword","name":"Extra keyword","properties":{}}]}"#.utf8)
+    let cleared = Data(#"{"version":3,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","block":{},"character":{}}],"character_styles":[],"suppressed_character_ids":[]}"#.utf8)
     try configuration.saveCodeStyleSheet(old)
     try configuration.saveCodeStyleSheet(cleared)
     let stored = try XCTUnwrap(configuration.codeStyleSheet())
@@ -95,12 +95,12 @@ final class EVCodePreferencesTests: XCTestCase {
     let blocks = try XCTUnwrap(object["block_styles"] as? [[String: Any]])
     XCTAssertNil((blocks[0]["character"] as? [String: Any])?["size"])
     XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, 0)
-    XCTAssertNil(try configuration.styleDefaults(named: "text"))
+    XCTAssertNotNil(try configuration.styleDefaults(named: "text"))
   }
 
   func testCanonicalCodeStylesAndLegacyVersionLoadWithoutResurrectingDeclarations() throws {
     let configuration = fixture()
-    let customized = Data(#"{"version":2,"character_styles":[{"id":"syntax:@comment","properties":{"foreground":{"red":0.4}}}]}"#.utf8)
+    let customized = Data(#"{"version":2,"character_styles":[{"id":"syntax:@comment","name":"@comment","properties":{"foreground":{"red":0.4,"green":0.5,"blue":0.6,"alpha":1}}}]}"#.utf8)
     let linked = Data(#"{"version":3,"character_styles":[],"suppressed_character_ids":["syntax:Todo"]}"#.utf8)
     for (data, expectedCount) in [(customized, 1), (linked, 0), (customized, 1), (linked, 0)] {
       try configuration.saveCodeStyleSheet(data)
@@ -125,16 +125,21 @@ final class EVCodePreferencesTests: XCTestCase {
     let configuration = fixture()
     let valid = Data(#"{"version":3,"character_styles":[]}"#.utf8)
     try configuration.saveCodeStyleSheet(valid)
-    let file = configuration.directory.appendingPathComponent("code_style.json")
+    let file = try XCTUnwrap(configuration.selectedThemeURL)
     for version in ["0", "1", "4", "2.5", "3.5", "true", "\"3\""] {
       let original = try Data(contentsOf: file)
       let unsupported = Data("{\"version\":\(version)}".utf8)
       XCTAssertThrowsError(try configuration.saveCodeStyleSheet(unsupported))
       XCTAssertEqual(try Data(contentsOf: file), original)
-      try unsupported.write(to: file)
-      XCTAssertThrowsError(try configuration.codeStyleSheet())
+      var theme = try XCTUnwrap(JSONSerialization.jsonObject(with: original) as? [String: Any])
+      var styles = try XCTUnwrap(theme["styles"] as? [String: Any])
+      styles["code"] = try JSONSerialization.jsonObject(with: unsupported)
+      theme["styles"] = styles
+      let invalidTheme = try JSONSerialization.data(withJSONObject: theme)
+      try invalidTheme.write(to: file)
+      XCTAssertThrowsError(try configuration.reloadCurrentTheme())
       XCTAssertThrowsError(try configuration.saveCodeStyleSheet(valid))
-      XCTAssertEqual(try Data(contentsOf: file), unsupported)
+      XCTAssertEqual(try Data(contentsOf: file), invalidTheme)
       try configuration.saveCodeStyleSheet(valid, replacingInvalidFile: true)
       XCTAssertNotNil(try configuration.codeStyleSheet())
     }

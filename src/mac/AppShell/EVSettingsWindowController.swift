@@ -18,6 +18,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   NSTableViewDelegate, NSTextFieldDelegate
 {
   private let store: EVThemeStore
+  let themeActions: EVThemeActions
+  private let themeSelect = NSPopUpButton()
+  private let deleteTheme = NSButton(title: "Delete Theme", target: nil, action: nil)
   private let viewPreferences: EVViewPreferences
   private var viewObserver: NSObjectProtocol?
   private let editingPreferences: EVEditingPreferences
@@ -47,6 +50,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   init(store: EVThemeStore, editingPreferences: EVEditingPreferences, viewPreferences: EVViewPreferences? = nil) {
     self.viewPreferences = viewPreferences ?? .shared
     self.store = store
+    self.themeActions = EVThemeActions(store: store)
     self.editingPreferences = editingPreferences
     let window = EVSettingsWindow(
       contentRect: NSRect(x: 0, y: 0, width: 800, height: 690),
@@ -80,6 +84,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   override func showWindow(_ sender: Any?) {
+    refresh()
     if !hasPresented { window?.setContentSize(NSSize(width: 800, height: 690)) }
     super.showWindow(sender)
     if !hasPresented {
@@ -272,11 +277,16 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       refreshEditingPreferences()
       return
     }
-    let paper = button("Paper", action: #selector(usePaper))
-    let midnight = button("Midnight", action: #selector(useMidnight))
-    let presets = NSStackView(views: [paper, midnight])
-    presets.spacing = 8
-    stack.addArrangedSubview(presets)
+    themeSelect.target = self
+    themeSelect.action = #selector(changeTheme(_:))
+    themeSelect.setAccessibilityLabel("Theme")
+    themeSelect.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
+    deleteTheme.target = self
+    deleteTheme.action = #selector(removeTheme(_:))
+    let themes = NSStackView(views: [label("Theme"), themeSelect,
+      button("New Theme…", action: #selector(createTheme(_:))), deleteTheme])
+    themes.spacing = 8
+    stack.addArrangedSubview(themes)
     preview.translatesAutoresizingMaskIntoConstraints = false
     preview.heightAnchor.constraint(equalToConstant: 135).isActive = true
     stack.addArrangedSubview(preview)
@@ -313,9 +323,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ])
     fonts.spacing = 10
     stack.addArrangedSubview(section("Status bar", views: [statusColors, fonts]))
-    let reset = button("Restore Defaults", action: #selector(usePaper))
-    reset.controlSize = .small
-    stack.addArrangedSubview(reset)
     for child in stack.arrangedSubviews where child is EVThemeSettingsSection {
       child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
     }
@@ -611,8 +618,21 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     return field
   }
   private func refresh() {
+    try? store.ensureCurrentThemeExists()
     persistenceDiagnostic.stringValue = (selectedCategory == 0 ? viewPreferences.lastError : store.lastError) ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
+    themeSelect.removeAllItems()
+    for theme in store.availableThemes {
+      let item = NSMenuItem(title: theme.name, action: nil, keyEquivalent: "")
+      item.representedObject = theme
+      themeSelect.menu?.addItem(item)
+    }
+    themeSelect.menu?.addItem(.separator())
+    themeSelect.menu?.addItem(NSMenuItem(title: "Default", action: nil, keyEquivalent: ""))
+    themeSelect.select(themeSelect.itemArray.first {
+      !$0.isSeparatorItem && ($0.representedObject as? EVThemeChoice)?.fileName == store.currentThemeFileName
+    })
+    deleteTheme.isEnabled = store.currentThemeName != nil
     let theme = store.theme
     let colors = [
       theme.foreground, theme.background, theme.caret, theme.selection, theme.statusForeground,
@@ -631,8 +651,16 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     viewPreferences.setMargins(EVViewMargins())
     refresh()
   }
-  @objc private func usePaper() {
-    store.update(.paper)
+  @objc private func changeTheme(_ sender: NSPopUpButton) {
+    themeActions.select(sender.selectedItem?.representedObject as? EVThemeChoice)
+    refresh()
+  }
+  @objc private func createTheme(_ sender: Any?) {
+    themeActions.create(window: window)
+    refresh()
+  }
+  @objc private func removeTheme(_ sender: Any?) {
+    themeActions.delete()
     refresh()
   }
   @objc private func changeSmartQuotes(_ sender: NSButton) {
@@ -640,10 +668,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     sender.state = editingPreferences.smartQuotes ? .on : .off
     persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
-  }
-  @objc private func useMidnight() {
-    store.update(.midnight)
-    refresh()
   }
   @objc private func changeFont() {
     var theme = store.theme
@@ -688,7 +712,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
 @MainActor
 private final class EVThemePreview: NSView {
-  var theme = EVTheme.paper { didSet { needsDisplay = true } }
+  var theme = EVTheme.midnight { didSet { needsDisplay = true } }
   override var isFlipped: Bool { true }
   override func draw(_ dirtyRect: NSRect) {
     NSBezierPath(roundedRect: bounds, xRadius: 9, yRadius: 9).addClip()

@@ -19,6 +19,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
     private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
     private var openTypeMenu: NSMenu?
+    private var themeMenu: NSMenu?
+    let themeActions: EVThemeActions
     private var trackingMenus = Set<ObjectIdentifier>()
 
     public init(
@@ -26,9 +28,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         recentDocumentURLs: @escaping @MainActor () -> [URL] = {
             EVConfigurationStore.shared.recentDocumentURLs
         },
-        styleMenuProvider: (@MainActor () -> (any EVStyleMenuProviding)?)? = nil
+        styleMenuProvider: (@MainActor () -> (any EVStyleMenuProviding)?)? = nil,
+        themeStore: EVThemeStore? = nil
     ) {
         self.owner = owner
+        self.themeActions = EVThemeActions(store: themeStore ?? .shared)
         self.recentDocumentURLs = recentDocumentURLs
         self.styleMenuProvider = styleMenuProvider ?? {
             EVMenuBuilder.focusedStyleMenuProvider()
@@ -69,6 +73,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // AppKit may request validation again while a mouse is held down.
         // Keep the tracked NSMenuItem objects and their geometry stable.
         guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
+        if menu === themeMenu { rebuildThemeMenu(menu); return }
         if menu === openTypeMenu {
             if let provider = styleMenuProvider() as? any EVOpenTypeMenuProviding {
                 provider.populateOpenTypeFeatureMenu(menu)
@@ -464,6 +469,13 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     private func makeStyleMenu() -> NSMenu {
         let menu = NSMenu(title: "Style")
+        let themes = NSMenu(title: "Theme")
+        themes.delegate = self
+        themes.autoenablesItems = false
+        themeMenu = themes
+        rebuildThemeMenu(themes)
+        menu.addItem(topLevelItem("Theme", submenu: themes))
+        menu.addItem(.separator())
         menu.addItem(makeNamedStyleMenu(title: "Paragraph", role: .paragraph,
             command: .paragraphStyles))
         menu.addItem(makeNamedStyleMenu(title: "Character", role: .character,
@@ -471,10 +483,37 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(coreItem("Edit Styles…", command: .editStyles,
             key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
-        menu.addItem(coreItem("Save as default text style", command: .saveDefaultStyle))
         menu.addItem(.separator())
         menu.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
         return menu
+    }
+
+    private func rebuildThemeMenu(_ menu: NSMenu) {
+        try? themeActions.store.ensureCurrentThemeExists()
+        menu.removeAllItems()
+        for theme in themeActions.store.availableThemes {
+            let item = NSMenuItem(title: theme.name, action: #selector(selectTheme(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = theme
+            item.state = themeActions.store.currentThemeFileName == theme.fileName ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let fallback = NSMenuItem(title: "Default", action: #selector(selectTheme(_:)), keyEquivalent: "")
+        fallback.target = self
+        fallback.state = themeActions.store.currentThemeName == nil ? .on : .off
+        menu.addItem(fallback)
+        let create = NSMenuItem(title: "New Theme…", action: #selector(createTheme(_:)), keyEquivalent: "")
+        create.target = self
+        menu.addItem(create)
+    }
+
+    @objc private func selectTheme(_ item: NSMenuItem) {
+        themeActions.select(item.representedObject as? EVThemeChoice)
+    }
+
+    @objc private func createTheme(_ sender: Any?) {
+        themeActions.create(window: NSApplication.shared.keyWindow)
     }
 
     private func makeNamedStyleMenu(

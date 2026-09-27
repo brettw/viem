@@ -17,17 +17,17 @@ internal sealed partial class StyleWindow
     private void AttachView(bool followCaret)
     {
         followsCaret = followCaret;
-        followedPresentation = view.Presentation;
-        view.Changed += ViewChanged;
-        view.Document.Changed += DocumentChanged;
-        view.Disposed += Close;
+        followedPresentation = documentView.Presentation;
+        documentView.Changed += ViewChanged;
+        documentView.Document.Changed += DocumentChanged;
+        documentView.Disposed += Close;
     }
     private void DetachView()
     {
         CancelCaretFollow();
-        view.Changed -= ViewChanged;
-        view.Document.Changed -= DocumentChanged;
-        view.Disposed -= Close;
+        documentView.Changed -= ViewChanged;
+        documentView.Document.Changed -= DocumentChanged;
+        documentView.Disposed -= Close;
     }
     private void CancelCaretFollow()
     {
@@ -36,8 +36,8 @@ internal sealed partial class StyleWindow
     }
     private void ViewChanged()
     {
-        if (closed || !followsCaret || view.Id == 0) return;
-        var next = view.Presentation;
+        if (closed || !followsCaret || documentView.Id == 0) return;
+        var next = documentView.Presentation;
         bool changed = SelectionChanged(followedPresentation, next);
         followedPresentation = next;
         if (!changed || updating) return;
@@ -54,7 +54,7 @@ internal sealed partial class StyleWindow
         timer.Interval = TimeSpan.FromMilliseconds(500);
         timer.IsRepeating = false;
         timer.Tick += (_, _) => {
-            if (closed || !followsCaret || view.Id == 0) return;
+            if (closed || !followsCaret || documentView.Id == 0) return;
             try
             {
                 bool refresh = refreshAfterFollowing;
@@ -74,12 +74,16 @@ internal sealed partial class StyleWindow
 #if DEBUG
         CaretStyleQueries++;
 #endif
-        try { return view.CurrentStyleEditorKey(snapshot); }
+        try {
+            var key = documentView.CurrentStyleEditorKey(documentView.Styles());
+            return key is { } selectedKey && snapshot.Styles.Any(style => style.Key == selectedKey) ? selectedKey : null;
+        }
         catch (CoreException) { return null; }
     }
     private void DocumentChanged()
     {
         if (updating || closed) return;
+        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) { DismissColorPickers(commit: false); CreateThemeSession(); }
         if (openColorPickers.Count > 0 && !view.Styles().Identity.Equals(sheet.Identity))
             DismissColorPickers(commit: false);
         ViewChanged();

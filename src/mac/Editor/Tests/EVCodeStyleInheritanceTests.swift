@@ -27,9 +27,9 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
             "suppressed_character_ids": ["syntax:Todo"],
         ]
         let saved = try JSONSerialization.data(withJSONObject: settings, options: [.sortedKeys])
-        try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
-        let file = configuration.directory.appendingPathComponent("code_style.json")
-        try saved.write(to: file)
+        try configuration.saveCodeStyleSheet(saved)
+        let file = try XCTUnwrap(configuration.selectedThemeURL)
+        let savedTheme = try Data(contentsOf: file)
         let session = try EVCodeStyleSession(configuration: configuration)
         XCTAssertNil(session.lastError)
         let snapshot = try session.snapshot()
@@ -46,7 +46,7 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         XCTAssertEqual(documentation.properties[.characterForeground]?.declared,
                        .color(EVStyleColor(red: 0.2, green: 0.3, blue: 0.8, alpha: 1)))
         XCTAssertFalse(snapshot.definitions.contains { $0.key.id.rawValue.contains("syntax:@") || $0.name == "Todo" })
-        XCTAssertEqual(try Data(contentsOf: file), saved, "Loading the settings file must not rewrite user settings")
+        XCTAssertEqual(try Data(contentsOf: file), savedTheme, "Loading the settings file must not rewrite user settings")
         XCTAssertFalse(session.undoManager.canUndo)
     }
 
@@ -144,7 +144,7 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         XCTAssertNotNil(comment.properties[.characterForeground]?.declared)
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)
-        editor.retarget(codeSession: session)
+        editor.retarget(settingsSession: session)
         editor.selectStyle(comment.key)
         func descendants(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(descendants) }
         let checkbox = try XCTUnwrap(descendants(editor.view).compactMap { $0 as? NSButton }

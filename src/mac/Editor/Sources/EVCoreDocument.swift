@@ -86,6 +86,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var surfaces: [WeakSurface] = []
     private var isRefreshingLayoutSurfaces = false
     private var isRefreshingSurfaces = false
+    private var isApplyingThemeStyles = false
     private var pendingSourceChangeOrigins: [ViemViewId] = []
 
     let configuration: EVConfigurationStore
@@ -111,6 +112,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 self.refreshSyntaxDiagnostics()
             }
         })
+        codeObservers.append(NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: configuration, queue: .main) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let names = notification.userInfo?["styleNames"] as? [String] ?? []
+                self.applyThemeStyles(changedNames: names)
+            }
+        })
         syntaxTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollSyntax() }
         }
@@ -125,6 +133,38 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         source = Data(stylePreviewMarkdown.utf8)
         typeName = "net.daringfireball.markdown"
         try createCore(publishDiagnostics: false)
+    }
+
+    /// An isolated editing target for one theme style family. It never owns a
+    /// user's source file, startup commands, or global style observers.
+    init(themeStyleFormat: EVSourceFormat, configuration: EVConfigurationStore) throws {
+        self.configuration = configuration
+        isStylePreview = true
+        typeName = Self.openingType(for: themeStyleFormat)
+        source = themeStyleFormat == .rtf ? Data("{\\rtf1 }".utf8) : Data()
+        try createCore(publishDiagnostics: false)
+        if let json = try configuration.styleDefaults(named: themeStyleFormat.defaultStyleName) {
+            let result = EVCoreStyleDefaults.initialize(core: core,
+                revision: currentDocumentState.document_revision, json: json,
+                path: configuration.selectedThemeURL?.path ?? "Default")
+            try checked(result.status, operation: "Load theme styles")
+        }
+    }
+
+    private func applyThemeStyles(changedNames: [String]) {
+        guard !isStylePreview, !isApplyingThemeStyles else { return }
+        isApplyingThemeStyles = true
+        defer { isApplyingThemeStyles = false }
+        do {
+            if changedNames.contains("code") { try EVCodeStyleSession.initialize(configuration: configuration) }
+            guard sourceFormat != .code, changedNames.contains(sourceFormat.defaultStyleName),
+                  let json = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) else { return }
+            let result = EVCoreStyleDefaults.initialize(core: core, revision: currentDocumentState.document_revision, json: json,
+                path: configuration.selectedThemeURL?.path ?? "Default", replacing: true)
+            try checked(result.status, operation: "Apply theme styles")
+            for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+            NotificationCenter.default.post(name: .viemCoreDocumentDidChange, object: self)
+        } catch { configurationWarning = error.localizedDescription }
     }
 
     /// A replacement has no observers, timers, surfaces, or persistence
@@ -520,7 +560,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         try checked(detected, operation: "Detect code language")
         _ = try documentState()
         let defaultStyleName = sourceFormat.defaultStyleName
-        let defaultStyleFile = configuration.directory.appendingPathComponent("\(defaultStyleName)_style.json")
+        let defaultStyleFile = configuration.selectedThemeURL ?? configuration.themesDirectory.appendingPathComponent("Default")
         do {
             if sourceFormat != .code, let defaults = try configuration.styleDefaults(named: defaultStyleName) {
                 let result = EVCoreStyleDefaults.initialize(core: core,
@@ -594,21 +634,20 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         EVCodePreferences.shared.reportLoadDiagnostics(diagnostics, source: syntaxDiagnosticSource)
     }
 
-    func saveDefaultStyle() throws -> URL {
+    func exportStyleDefaults() throws -> Data {
         let state = try documentState()
         var required: UInt64 = 0
         let first = viem_core_export_style_defaults(core, state.document_revision, nil, 0, &required)
         guard first == Status.ok || first == Status.bufferTooSmall, required <= UInt64(Int.max) else {
-            throw EVCoreFrontendError.core(operation: "Read default style", status: first)
+            throw EVCoreFrontendError.core(operation: "Read theme styles", status: first)
         }
         var data = Data(count: Int(required))
         let copied = data.withUnsafeMutableBytes { raw in
             viem_core_export_style_defaults(core, state.document_revision,
-                raw.bindMemory(to: UInt8.self).baseAddress, required, &required)
+                raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), &required)
         }
-        try checked(copied, operation: "Read default style")
-        try configuration.saveStyleDefaults(data, named: sourceFormat.defaultStyleName)
-        return configuration.directory.appendingPathComponent("\(sourceFormat.defaultStyleName)_style.json")
+        try checked(copied, operation: "Read theme styles")
+        return data
     }
 
     private func copySourceBytes(expectedRevision: UInt64) throws -> Data {
@@ -757,7 +796,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func installDocumentState(_ state: ViemDocumentStateV1) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
+        let changedFamily = currentDocumentState.document_id == state.document_id
+            && sourceFormat.defaultStyleName != Self.sourceFormat(from: state).defaultStyleName
         currentDocumentState = state
+        if changedFamily { applyThemeStyles(changedNames: [sourceFormat.defaultStyleName]) }
         let newPersistence = Self.persistenceState(from: state)
         if oldPersistence != newPersistence {
             persistenceStateDidChange?(newPersistence)

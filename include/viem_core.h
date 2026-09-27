@@ -2597,7 +2597,24 @@ ViemStatus viem_core_view_selected_styles_export(ViemCoreHandle core,
  * message bytes are borrowed only for the duration of each callback. */
 typedef void (*ViemStyleDefaultsDiagnosticCallback)(void *context, const uint8_t *message, uint64_t length);
 ViemStatus viem_core_initialize_style_defaults(ViemCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length, ViemStyleDefaultsDiagnosticCallback diagnostic, void *context);
+/* Live replacement uses the same v1 sheet schema and diagnostics. It preserves
+ * source, revision, dirty/savepoint state and undo history, refreshes all views,
+ * and keeps source-authored declarations authoritative. Code uses its global
+ * stylesheet API below. The current application defaults survive undo/redo. */
+ViemStatus viem_core_replace_style_defaults(ViemCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length, ViemStyleDefaultsDiagnosticCallback diagnostic, void *context);
 ViemStatus viem_core_export_style_defaults(ViemCoreHandle core, uint64_t expected_revision, uint8_t *output, uint64_t capacity, uint64_t *required);
+
+/* Portable aggregate theme v1: appearance plus optional text/markdown/rtf v1
+ * and code v3 style sheets. Validation is atomic and never installs styles.
+ * Omitted sheets use built-in defaults. Input is bounded to 20 MiB. Default
+ * export emits every sheet, uses the ordinary two-pass/disjoint output contract,
+ * and requires no files. Name validation accepts a UTF-8 filename stem of at
+ * most 32 characters, excluding reserved Default and Windows device names. */
+#define VIEM_THEME_PRESET_MIDNIGHT 0u
+#define VIEM_THEME_PRESET_PAPER 1u
+ViemStatus viem_theme_default_json(uint32_t preset, uint8_t *output, uint64_t capacity, uint64_t *required);
+ViemStatus viem_theme_validate_json(const uint8_t *json, uint64_t length);
+ViemStatus viem_theme_validate_name(const uint8_t *name, uint64_t length);
 
 /* Command prompt selection and editing carry the exact exported prompt identity. */
 typedef struct ViemCommandLineSelectionV1 {

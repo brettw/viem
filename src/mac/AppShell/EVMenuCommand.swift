@@ -69,7 +69,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case baseParagraphStyle
     case paragraphStyles
     case editStyles
-    case saveDefaultStyle
     case alignStart
     case alignCenter
     case alignEnd
