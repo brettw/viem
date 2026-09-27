@@ -24,11 +24,17 @@ public final class EVConfigurationStore {
   /// All buffers share the first read of startup.viem until this profile is
   /// reopened, normally at the next application launch.
   public private(set) lazy var startupFile = EVStartupFile.load(directory: directory)
-  public private(set) var lastError: String?
-  private var root: [String: Any] = ["version": 1]
-  private var writable = true
-  private let manager: FileManager
-  private let bundleResourceURL: URL?
+  public internal(set) var lastError: String?
+  var root: [String: Any] = ["version": 1]
+  var writable = true
+  let manager: FileManager
+  let bundleResourceURL: URL?
+
+  var activeTheme: [String: Any] = [:]
+  var activeThemeName: String?
+  var activeThemeFile: URL?
+  var activeThemeDiskData: Data?
+  private var reloadingFromDisk = false
 
   public init(directory: URL? = nil, legacyDefaults: UserDefaults? = nil,
               manager: FileManager = .default,
@@ -44,6 +50,8 @@ public final class EVConfigurationStore {
     let legacy = legacyDefaults ?? (profile.usesDefaultDirectory && homeDirectory == nil ? UserDefaults.standard : nil)
     self.directory = profile.url
     let file = self.directory.appendingPathComponent("config.json")
+    let newProfile = !manager.fileExists(atPath: file.path)
+    activeTheme = (try? EVThemeFile.builtin()) ?? [:]
     do {
       if manager.fileExists(atPath: file.path) {
         root = try Self.readObject(Data(contentsOf: file))
@@ -71,11 +79,21 @@ public final class EVConfigurationStore {
       writable = false
       root = ["version": 1]
     }
+    if writable {
+      do { try initializeThemes(newProfile: newProfile) }
+      catch {
+        lastError = error.localizedDescription
+        activeTheme = (try? EVThemeFile.builtin()) ?? [:]
+        activeThemeName = nil
+        activeThemeFile = nil
+        activeThemeDiskData = nil
+      }
+    }
   }
 
   public var theme: EVTheme {
-    guard let value = root["theme"], let data = try? JSONSerialization.data(withJSONObject: value),
-          let result = try? JSONDecoder().decode(EVTheme.self, from: data), result.isValid else { return .paper }
+    guard let value = activeTheme["theme"], let data = try? JSONSerialization.data(withJSONObject: value),
+          let result = try? JSONDecoder().decode(EVTheme.self, from: data), result.isValid else { return .midnight }
     return result
   }
   public var viewMargins: EVViewMargins {
@@ -138,7 +156,9 @@ public final class EVConfigurationStore {
   public func setTheme(_ theme: EVTheme) throws {
     guard theme.isValid else { throw invalid("Invalid theme values") }
     let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(theme)) as! [String: Any]
-    try update(section: "theme", values: value)
+    try updateActiveTheme(styleNames: []) { candidate in
+      candidate["theme"] = Self.mergePreservingUnknown(candidate["theme"] as? [String: Any] ?? [:], value)
+    }
   }
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
   public func setTextWidth(_ width: UInt32) throws {
@@ -167,6 +187,9 @@ public final class EVConfigurationStore {
 
   /// Refreshes this store after another settings owner commits the same file.
   public func reloadFromDisk() throws {
+    guard !reloadingFromDisk else { return }
+    reloadingFromDisk = true
+    defer { reloadingFromDisk = false }
     let file = directory.appendingPathComponent("config.json")
     guard manager.fileExists(atPath: file.path) else { return }
     do {
@@ -175,6 +198,11 @@ public final class EVConfigurationStore {
       root = candidate
       lastError = nil
       writable = true
+      // A malformed external theme must not prevent an otherwise valid
+      // preference update from reaching its observers. Keep the last usable
+      // theme; explicit theme reload still reports its validation failure.
+      do { try reloadSelectedThemeFromSettings() }
+      catch { lastError = error.localizedDescription }
     } catch { lastError = error.localizedDescription; throw error }
   }
   public func setShowStatusBar(_ enabled: Bool) throws { try update(section: "appearance", values: ["showStatusBar": enabled]) }
@@ -208,55 +236,30 @@ public final class EVConfigurationStore {
 
   public func codeStyleSheet() throws -> Data? { try styleDefaults(named: "code") }
   public func saveCodeStyleSheet(_ data: Data, replacingInvalidFile: Bool = false) throws {
-    let url = try styleURL("code")
-    let object = try Self.readObject(data)
-    try Self.validateStyleVersion(object, named: "code")
-    if !replacingInvalidFile, manager.fileExists(atPath: url.path) {
-      try Self.validateStyleVersion(Self.readObject(Data(contentsOf: url)), named: "code")
-    }
-    // The core exports the complete sparse authority, including explicit
-    // suppression of built-ins. Merging removed declarations from an older
-    // export would undo the user's Clear, Rename, Delete, or Undo action.
-    try write(object, to: url)
+    try saveThemeStyles(data, named: "code", replacingInvalidFile: replacingInvalidFile)
   }
-
   public func styleDefaults(named name: String) throws -> Data? {
-    let url = try styleURL(name)
-    guard manager.fileExists(atPath: url.path) else { return nil }
-    let data = try Data(contentsOf: url)
-    guard data.count <= 4 * 1024 * 1024 else { throw invalid("Style defaults exceed 4 MiB") }
-    let object = try Self.readObject(data)
-    try Self.validateStyleVersion(object, named: name)
-    return data
+    guard Self.styleNames.contains(name) else { throw invalid("Unknown style format") }
+    let value: Any?
+    if let configured = (activeTheme["styles"] as? [String: Any])?[name] {
+      value = configured
+    } else {
+      value = (try EVThemeFile.builtin()["styles"] as? [String: Any])?[name]
+    }
+    guard let value else { return nil }
+    return try JSONSerialization.data(withJSONObject: value, options: [.sortedKeys])
   }
-
   public func saveStyleDefaults(_ data: Data, named name: String) throws {
-    if name == "code" {
-      try saveCodeStyleSheet(data)
-      return
-    }
-    let url = try styleURL(name)
-    var object = try Self.readObject(data)
-    try Self.validateVersion(object)
-    if manager.fileExists(atPath: url.path) {
-      let old = try Self.readObject(Data(contentsOf: url))
-      try Self.validateVersion(old)
-      object = Self.mergePreservingUnknown(old, object)
-    }
-    try write(object, to: url)
+    try saveThemeStyles(data, named: name)
   }
 
-  private func styleURL(_ name: String) throws -> URL {
-    guard ["text", "markdown", "rtf", "code"].contains(name) else { throw invalid("Unknown style format") }
-    return directory.appendingPathComponent("\(name)_style.json")
-  }
-  private func update(section: String, values: [String: Any], notify: Bool = true) throws {
+  func update(section: String, values: [String: Any], notify: Bool = true) throws {
     try update(notify: notify) { candidate in
       candidate[section] = Self.mergePreservingUnknown(candidate[section] as? [String: Any] ?? [:], values)
       return true
     }
   }
-  private func update(notify: Bool = true, _ mutation: (inout [String: Any]) throws -> Bool) throws {
+  func update(notify: Bool = true, _ mutation: (inout [String: Any]) throws -> Bool) throws {
     guard writable else { throw invalid(lastError ?? "Configuration cannot be modified") }
     let url = directory.appendingPathComponent("config.json")
     do {
@@ -281,22 +284,22 @@ public final class EVConfigurationStore {
     }
     catch { lastError = error.localizedDescription; throw error }
   }
-  private func write(_ object: [String: Any], to url: URL) throws {
+  func write(_ object: [String: Any], to url: URL) throws {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed])
     guard data.count <= 4 * 1024 * 1024 else { throw invalid("Configuration must fit within 4 MiB") }
     try manager.createDirectory(at: directory, withIntermediateDirectories: true)
     try data.write(to: url, options: .atomic)
   }
-  private static func readObject(_ data: Data) throws -> [String: Any] {
+  static func readObject(_ data: Data) throws -> [String: Any] {
     guard data.count <= 4 * 1024 * 1024,
           let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw invalid("Configuration must be a JSON object below 4 MiB") }
     return object
   }
-  private static func validateVersion(_ object: [String: Any]) throws {
+  static func validateVersion(_ object: [String: Any]) throws {
     guard let version = object["version"] as? NSNumber, CFGetTypeID(version) != CFBooleanGetTypeID(), version.intValue == 1,
           version.doubleValue == 1 else { throw invalid("Unsupported configuration version; expected 1") }
   }
-  private static func validateStyleVersion(_ object: [String: Any], named name: String) throws {
+  static func validateStyleVersion(_ object: [String: Any], named name: String) throws {
     guard name == "code" else { try validateVersion(object); return }
     guard let version = object["version"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(),
@@ -304,8 +307,13 @@ public final class EVConfigurationStore {
           version.doubleValue == Double(version.intValue)
     else { throw invalid("Unsupported Code stylesheet version; expected 2 or 3") }
   }
-  private static func validate(_ object: [String: Any]) throws {
+  static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)
+    for key in ["selectedTheme", "selectedThemeFile"] {
+      if let value = object[key], !(value is NSNull), !(value is String) {
+        throw invalid("Selected theme must be a theme name and filename, or null for Default")
+      }
+    }
     if let raw = object["windows"] {
       guard let windows = raw as? [String: Any] else { throw invalid("Invalid window settings") }
       if windows["documentFrame"] != nil, documentWindowFrame(in: object) == nil {
@@ -417,7 +425,7 @@ public final class EVConfigurationStore {
     }
     return result
   }
-  private static func mergePreservingUnknown(_ old: [String: Any], _ new: [String: Any]) -> [String: Any] {
+  static func mergePreservingUnknown(_ old: [String: Any], _ new: [String: Any]) -> [String: Any] {
     var result = old
     for (key, value) in new {
       if let a = old[key] as? [String: Any], let b = value as? [String: Any] { result[key] = mergePreservingUnknown(a, b) }
@@ -430,8 +438,8 @@ public final class EVConfigurationStore {
     }
     return result
   }
-  private static func invalid(_ message: String) -> NSError { NSError(domain: "Viem.Configuration", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
-  private func invalid(_ message: String) -> NSError { Self.invalid(message) }
+  static func invalid(_ message: String) -> NSError { NSError(domain: "Viem.Configuration", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+  func invalid(_ message: String) -> NSError { Self.invalid(message) }
 }
 
 extension EVSourceFormat {

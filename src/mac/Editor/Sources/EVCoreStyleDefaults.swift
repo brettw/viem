@@ -11,10 +11,11 @@ enum EVCoreStyleDefaults {
     }
 
     static func initialize(core: ViemCoreHandle, revision: UInt64, json: Data,
-                           path: String) -> (status: UInt32, messages: [String]) {
+                           path: String, replacing: Bool = false) -> (status: UInt32, messages: [String]) {
         let diagnostics = Diagnostics(path: path)
         let status = json.withUnsafeBytes { raw in
-            viem_core_initialize_style_defaults(core, revision,
+            let apply = replacing ? viem_core_replace_style_defaults : viem_core_initialize_style_defaults
+            return apply(core, revision,
                 raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), { context, message, length in
                     guard let context, let message else { return }
                     let result = Unmanaged<Diagnostics>.fromOpaque(context).takeUnretainedValue()

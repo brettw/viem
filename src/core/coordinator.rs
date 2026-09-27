@@ -1113,6 +1113,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.document.initialize_style_defaults(json)
     }
 
+    pub fn replace_style_defaults(&mut self, json: &[u8]) -> Result<Vec<String>, crate::document::StyleDefaultsError> {
+        let anchors: BTreeMap<_, _> = self.views.iter().filter_map(|(id, view)| {
+            capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor))
+        }).collect();
+        let diagnostics = self.document.replace_style_defaults(json)?;
+        for (id, view) in &mut self.views {
+            cancel_active_layout_work(view);
+            if let Some(anchor) = anchors.get(id) { view.viewport_anchor = Some(*anchor); }
+            view.layout.invalidate_syntax_presentation(true);
+            view.long_line_checkpoints = LongLineCheckpointCache::default();
+        }
+        Ok(diagnostics)
+    }
+
     pub fn document(&self) -> &Document {
         &self.document
     }

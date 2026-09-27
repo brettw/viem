@@ -6,7 +6,7 @@ using Windows.UI;
 
 namespace Viem.Windows.Shell;
 
-internal sealed class Preferences
+internal sealed partial class Preferences
 {
     public string DirectoryPath { get; }
     private JsonObject root = new() { ["version"] = 1 };
@@ -25,6 +25,7 @@ internal sealed class Preferences
             if (File.Exists(path)) root = Read(path);
         }
         catch (Exception e) { Error = path + ": " + e.Message; writable = false; }
+        InitializeThemes(File.Exists(path));
         string startup = Path.Combine(DirectoryPath, "startup.viem");
         try { if (File.Exists(startup)) { if (new FileInfo(startup).Length > 1_048_576) throw new InvalidDataException("File is larger than 1 MiB."); StartupCommands = File.ReadAllBytes(startup); _ = new System.Text.UTF8Encoding(false, true).GetString(StartupCommands); } }
         catch (Exception e) { Error = startup + ": " + e.Message; StartupCommands = []; }
@@ -37,7 +38,7 @@ internal sealed class Preferences
         return result;
     }
     public T Get<T>(string section, string key, T fallback)
-    { try { var node = root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
+    { try { var node = section == "theme" ? activeTheme["theme"]?[key] : root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
     public bool ShowMenu => Get("windows", "showMenu", true);
     private static string ToolbarFormatKey(uint format) => format switch {
         Native.VIEM_FORMAT_MARKDOWN => "markdown", Native.VIEM_FORMAT_MARKDOWN_SOURCE => "markdownSource",
@@ -55,7 +56,7 @@ internal sealed class Preferences
     public bool ShowStatus => Get("appearance", "showStatusBar", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", false);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
-    public Theme Theme => ReadTheme(root);
+    public Theme Theme => ReadTheme(activeTheme);
     public string StatusFontFamily => Get("theme", "statusFontFamily", "System") is "System" or "system-ui" ? "Segoe UI" : Get("theme", "statusFontFamily", "Segoe UI");
     public double StatusFontSize => Get("theme", "statusFontSize", 11d);
     public uint TextWidth => Get("editing", "textWidth", 80u);
@@ -68,9 +69,15 @@ internal sealed class Preferences
     public string[] Recent => root["recentDocuments"] is JsonArray a ? a.Select(v => v?.GetValue<string>() ?? "").Where(v => v.Length > 0).Take(10).ToArray() : [];
     public void Set(string section, string key, JsonNode? value)
     {
+        if (section == "theme") { EditTheme(new JsonObject { [key] = value?.DeepClone() }); return; }
         Update(candidate => { if (candidate[section] is not JsonObject) candidate[section] = new JsonObject(); Merge((JsonObject)candidate[section]!, new JsonObject { [key] = value?.DeepClone() }); });
     }
-    public void SetSections(JsonObject values) => Update(candidate => Merge(candidate, values));
+    public void SetSections(JsonObject values)
+    {
+        var settings = (JsonObject)values.DeepClone();
+        if (settings["theme"] is JsonObject theme) { EditTheme(theme); settings.Remove("theme"); }
+        if (settings.Count > 0) Update(candidate => Merge(candidate, settings));
+    }
     private static void Merge(JsonObject target, JsonObject source)
     { foreach (var pair in source) { if (pair.Value is JsonObject next && target[pair.Key] is JsonObject existing) Merge(existing, next); else target[pair.Key] = pair.Value?.DeepClone(); } }
     public static JsonObject ThemeJson(Theme theme) => new()
@@ -93,6 +100,8 @@ internal sealed class Preferences
     }
     private static void Validate(JsonObject value)
     {
+        if (value["selectedTheme"] is JsonNode selectedTheme) _ = selectedTheme.GetValue<string>();
+        if (value["selectedThemeFile"] is JsonNode selectedThemeFile) _ = selectedThemeFile.GetValue<string>();
         foreach (string section in new[] { "theme", "view", "editing", "appearance", "code", "windows", "formattingToolbar" })
             if (value.ContainsKey(section) && value[section] is not JsonObject) throw new InvalidDataException(section + " must be an object.");
         void Number(JsonNode? node, double min, double max, string name, bool integral = false)

@@ -33,6 +33,7 @@
     <PackageReference Include="Microsoft.Graphics.Win2D" Version="1.3.2" />
     <None Include="../../target/$(RustProfile)/viem_core.dll" Link="viem_core.dll" CopyToOutputDirectory="PreserveNewest" />
     <Compile Remove="Tests/**/*.cs" />
+    <Content Include="../../assets/themes/*.json" Link="Resources/themes/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Update="Assets\Viem.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../src/core/document/syntax/treesitter/*.LICENSE;../../src/core/document/syntax/treesitter/nvim.NOTICES.md"
              Link="Resources/Licenses/nvim-treesitter/%(Filename)%(Extension)"

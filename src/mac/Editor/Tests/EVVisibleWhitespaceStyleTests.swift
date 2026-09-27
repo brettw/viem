@@ -93,6 +93,7 @@ final class EVVisibleWhitespaceStyleTests: XCTestCase {
         XCTAssertFalse(session.apply([.setDisplayName("Other")]))
         XCTAssertEqual(session.style, .defaultStyle)
         XCTAssertFalse(session.undoManager.canUndo)
+        try FileManager.default.removeItem(at: directory)
         try Data("obstruction".utf8).write(to: directory)
         XCTAssertFalse(session.apply([.setDeclaration(.characterBold, .boolean(true))]))
         XCTAssertEqual(session.style, .defaultStyle)

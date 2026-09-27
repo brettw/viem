@@ -68,7 +68,7 @@ internal sealed partial class EditorWindow : Window
         Activated += (_, e) => { IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated; foreach (var pane in Panes) pane.Canvas.Invalidate(); };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
-            closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu;
+            closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
             settingsWindow?.Close();
             fontPanel?.Close(); foreach (var panel in colorPanels.Values.ToArray()) panel.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
@@ -76,7 +76,7 @@ internal sealed partial class EditorWindow : Window
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
         };
         preferences.Changed += ApplyPreferences;
-        preferences.RecentChanged += RefreshRecentMenu;
+        preferences.RecentChanged += RefreshRecentMenu; preferences.ThemesChanged += RefreshThemeMenu;
         using (Diagnostics.StartupPerformance.Measure("window.menus")) BuildMenus();
         ApplyPreferences();
         if (openLaunchFiles && HasLaunchFiles())
@@ -134,22 +134,8 @@ internal sealed partial class EditorWindow : Window
         try
         {
             doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
-            string defaults = Path.Combine(preferences.DirectoryPath, CoreDocument.FormatName(doc.State.format).Replace(" Source", "").ToLowerInvariant() + "_style.json");
-            if (File.Exists(defaults) && doc.State.format != VIEM_FORMAT_CODE)
-            {
-                try
-                {
-                    string[] diagnostics = doc.InitializeStyleDefaults(File.ReadAllBytes(defaults));
-                    if (diagnostics.Length > 0)
-                        styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics.Select(message => defaults + ": " + message));
-                }
-                catch (Exception error)
-                {
-                    // Initialization validates before publication, so a failed
-                    // file leaves the new document's built-in styles intact.
-                    styleDefaultsWarnings[doc] = defaults + ": " + error.Message + Environment.NewLine + "Using built-in styles.";
-                }
-            }
+            string[] diagnostics = preferences.AttachThemeDocument(doc);
+            if (diagnostics.Length > 0) styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics);
             if (preferences.StartupCommands.Length > 0) doc.InitializeStartup(preferences.StartupCommands);
             GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
             if (path != null) { savedSources[doc] = SHA256.HashData(source ?? []); if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true); }
@@ -174,6 +160,7 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
+        preferences.AttachThemeDocument(doc, initialize: false);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
         Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(); SetActive(pane); return pane;

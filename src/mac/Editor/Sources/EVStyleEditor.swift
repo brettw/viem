@@ -45,33 +45,20 @@ private final class EVStyleEditorPanel: NSPanel {
 final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     static let shared = EVStyleEditorCoordinator()
 
-    private let replacementDocumentProvider: @MainActor (EVEditorSurfaceController) -> EVEditorSurfaceController?
     private var controller: NSWindowController?
-    private weak var target: EVEditorSurfaceController?
     private var contentController: EVStyleEditorViewController?
     private var targetWindowObserver: NSObjectProtocol?
     private var selectionObserver: NSObjectProtocol?
+    private var familyObserver: NSObjectProtocol?
     private weak var followedDocument: EVEditorSurfaceController?
     private var selectionFollowTimer: Timer?
     private(set) var caretFollowQueryCount = 0
     private var globalSession: EVCodeStyleSession?
+    private var themeSession: EVThemeStyleSession?
+    private var themeSessions: [String: EVThemeStyleSession] = [:]
 
     var styleWindow: NSWindow? { controller?.window }
     var inspection: EVStyleEditorInspection? { contentController?.inspection }
-
-    override init() {
-        replacementDocumentProvider = { closing in
-            Self.frontmostDocumentSurface(excluding: closing)
-        }
-        super.init()
-    }
-
-    init(
-        replacementDocumentProvider: @escaping @MainActor (EVEditorSurfaceController) -> EVEditorSurfaceController?
-    ) {
-        self.replacementDocumentProvider = replacementDocumentProvider
-        super.init()
-    }
 
     func show(document: EVEditorSurfaceController, sender: Any?) {
         let styleKey = document.currentStyleEditorKey()
@@ -80,15 +67,20 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                      following: document, sender: sender)
             return
         }
-        stopFollowingSelection()
-        target = document
-        observeTargetWindow(of: document)
-        let isNewWindow = prepareWindow()
-        (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = nil
-        controller?.window?.title = "Styles"
-        contentController?.retarget(document: document, styleKey: styleKey)
-        followSelection(of: document, globalCode: false)
-        present(sender: sender, center: isNewWindow)
+        do {
+            let session = try proseSession(configuration: document.backend.configuration,
+                format: document.backend.sourceFormat)
+            themeSession = session
+            stopFollowingSelection()
+            observeTargetWindow(of: document)
+            let isNewWindow = prepareWindow()
+            (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
+            controller?.window?.title = "Theme Styles — \(document.backend.configuration.currentThemeName ?? "Default")"
+            contentController?.retarget(settingsSession: session)
+            contentController?.followCaretStyle(styleKey)
+            followSelection(of: document, globalCode: false)
+            present(sender: sender, center: isNewWindow)
+        } catch { NSApplication.shared.presentError(error) }
     }
 
     func showCode(
@@ -99,6 +91,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         sender: Any?
     ) {
         do {
+            themeSession = nil
             let session: EVCodeStyleSession
             if let current = globalSession, current.configuration.directory.standardizedFileURL == configuration.directory.standardizedFileURL {
                 session = current
@@ -109,7 +102,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             var selectedStyle = preferredStyle
             if let name = definingSyntaxName {
                 // Generating an implicit definition is not a settings edit: it
-                // has no undo entry and is never written to code_style.json.
+                // has no undo entry and is never written to a theme file.
                 session.endGroup()
                 try EVCoreStyleBridge.materializeCodeStyle(name: name)
                 if let definition = try session.snapshot().definitions.first(where: {
@@ -119,12 +112,11 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                 }
             }
             stopFollowingSelection()
-            target = nil
             stopObservingTargetWindow()
             let isNewWindow = prepareWindow()
             (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
-            controller?.window?.title = "Code Styles"
-            contentController?.retarget(codeSession: session)
+            controller?.window?.title = "Theme Styles — \(configuration.currentThemeName ?? "Default")"
+            contentController?.retarget(settingsSession: session)
             contentController?.selectStyle(selectedStyle)
             if let document {
                 observeTargetWindow(of: document)
@@ -174,32 +166,10 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     }
 
     func documentDidClose(_ document: EVEditorSurfaceController) {
-        if target !== document, followedDocument === document {
-            // The global sheet outlives its optional source-view context.
-            stopFollowingSelection()
-            stopObservingTargetWindow()
-            return
-        }
-        guard target === document else { return }
+        guard followedDocument === document else { return }
+        // Theme settings outlive the source view that selected their family.
         stopFollowingSelection()
-        if let alternate = document.backend.alternateStyleEditorSurface(excluding: document) {
-            let retainedSelection = contentController?.inspection.selectedStyleKey ?? .baseParagraph
-            target = alternate
-            observeTargetWindow(of: alternate)
-            contentController?.retarget(document: alternate, styleKey: retainedSelection)
-            followSelection(of: alternate, globalCode: false)
-            return
-        }
-        if let replacement = replacementDocumentProvider(document) {
-            target = replacement
-            observeTargetWindow(of: replacement)
-            contentController?.retarget(document: replacement, styleKey: .baseParagraph)
-            followSelection(of: replacement, globalCode: false)
-            return
-        }
         stopObservingTargetWindow()
-        target = nil
-        contentController?.disableForClosedDocument()
     }
 
     func selectStyle(_ id: EVStyleID) { contentController?.selectStyle(id) }
@@ -214,25 +184,74 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         contentController?.disableForClosedDocument()
         controller = nil
         contentController = nil
-        target = nil
+        themeSession = nil
     }
 
     private func followSelection(of document: EVEditorSurfaceController, globalCode: Bool) {
         stopFollowingSelection()
         followedDocument = document
+        familyObserver = NotificationCenter.default.addObserver(
+            forName: .viemCoreDocumentDidChange, object: document.backend, queue: .main
+        ) { [weak self, weak document] _ in
+            MainActor.assumeIsolated {
+                guard let self, let document else { return }
+                let family = self.themeSession?.sourceFormat.defaultStyleName ?? "code"
+                if family != document.backend.sourceFormat.defaultStyleName {
+                    self.retargetFollowingFamily(of: document)
+                }
+            }
+        }
         selectionObserver = NotificationCenter.default.addObserver(
             forName: .viemEditorSelectionDidChange, object: document, queue: .main
         ) { [weak self, weak document] _ in
             guard let self, let document else { return }
             MainActor.assumeIsolated {
-                guard (document.backend.sourceFormat == .code) == globalCode else { return }
+                let format = document.backend.sourceFormat
+                let currentFamily = self.themeSession?.sourceFormat.defaultStyleName ?? "code"
+                if currentFamily != format.defaultStyleName {
+                    self.retargetFollowingFamily(of: document)
+                    return
+                }
                 self.scheduleSelectionFollow(of: document, globalCode: globalCode)
             }
         }
     }
 
+    private func proseSession(configuration: EVConfigurationStore, format: EVSourceFormat) throws -> EVThemeStyleSession {
+        let family = format.defaultStyleName
+        if let session = themeSessions[family], session.configuration === configuration { return session }
+        let session = try EVThemeStyleSession(configuration: configuration, format: format)
+        themeSessions[family] = session
+        return session
+    }
+
+    private func retargetFollowingFamily(of document: EVEditorSurfaceController) {
+        do {
+            let configuration = document.backend.configuration
+            let session: any EVStyleSettingsSession
+            if document.backend.sourceFormat == .code {
+                let code = try EVCodeStyleSession(configuration: configuration)
+                globalSession = code
+                themeSession = nil
+                session = code
+            } else {
+                let theme = try proseSession(configuration: configuration, format: document.backend.sourceFormat)
+                themeSession = theme
+                session = theme
+            }
+            (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
+            contentController?.retarget(settingsSession: session)
+            contentController?.followCaretStyle(document.currentStyleEditorKey())
+            followSelection(of: document, globalCode: document.backend.sourceFormat == .code)
+        } catch { NSApplication.shared.presentError(error) }
+    }
+
     private func stopFollowingSelection() {
         cancelPendingSelectionFollow()
+        if let familyObserver {
+            NotificationCenter.default.removeObserver(familyObserver)
+            self.familyObserver = nil
+        }
         if let selectionObserver {
             NotificationCenter.default.removeObserver(selectionObserver)
             self.selectionObserver = nil
@@ -291,24 +310,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         }
     }
 
-    private static func frontmostDocumentSurface(
-        excluding closing: EVEditorSurfaceController
-    ) -> EVEditorSurfaceController? {
-        var windows: [NSWindow] = []
-        if let key = NSApplication.shared.keyWindow { windows.append(key) }
-        if let main = NSApplication.shared.mainWindow { windows.append(main) }
-        windows.append(contentsOf: NSApplication.shared.orderedWindows)
-        var seen = Set<ObjectIdentifier>()
-        for window in windows where seen.insert(ObjectIdentifier(window)).inserted {
-            guard let controller = window.windowController as? EVDocumentWindowController,
-                  let surface = controller.editorSurface as? EVEditorSurfaceController,
-                  surface !== closing,
-                  surface.session != nil
-            else { continue }
-            return surface
-        }
-        return nil
-    }
+
 }
 
 @MainActor
@@ -319,9 +321,9 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private var themeObserver: NSObjectProtocol?
 
     private weak var document: EVEditorSurfaceController?
-    private var codeSession: EVCodeStyleSession?
-    private var hasTarget: Bool { document != nil || codeSession != nil }
-    override var undoManager: UndoManager? { codeSession?.undoManager ?? super.undoManager }
+    private var settingsSession: (any EVStyleSettingsSession)?
+    private var hasTarget: Bool { document != nil || settingsSession != nil }
+    override var undoManager: UndoManager? { settingsSession?.undoManager ?? super.undoManager }
     private var snapshot: EVStyleSheetSnapshot?
     private var selectedStyleKey: EVStyleKey = .baseParagraph
     private var documentObserver: NSObjectProtocol?
@@ -561,7 +563,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         loadViewIfNeeded()
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         stopObservingDocument()
-        codeSession = nil
+        settingsSession = nil
         restoreDefaultsButton.isHidden = true
         self.document = document
         selectedStyleKey = styleKey
@@ -575,23 +577,26 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         reloadCommittedStyle(preferredKey: styleKey)
     }
 
-    func retarget(codeSession: EVCodeStyleSession) {
+    func retarget(settingsSession: any EVStyleSettingsSession) {
         loadViewIfNeeded()
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         stopObservingDocument()
         document = nil
-        self.codeSession = codeSession
-        restoreDefaultsButton.isHidden = false
+        self.settingsSession = settingsSession
+        restoreDefaultsButton.isHidden = settingsSession.sourceFormat != .code
         selectedStyleKey = .baseParagraph
-        diagnosticMessage = codeSession.lastError ?? ""
-        documentObserver = NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] _ in
+        diagnosticMessage = settingsSession.lastError ?? ""
+        let notification: Notification.Name = settingsSession.sourceFormat == .code ? .viemGlobalCodeStyleDidChange : .viemThemeStyleSessionDidChange
+        documentObserver = NotificationCenter.default.addObserver(forName: notification,
+            object: settingsSession.sourceFormat == .code ? nil : settingsSession, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.targetDocumentDidChange() }
         }
         reloadCommittedStyle()
     }
 
+
     private func targetSnapshot() throws -> EVStyleSheetSnapshot {
-        if let codeSession { return try codeSession.snapshot() }
+        if let settingsSession { return try settingsSession.snapshot() }
         guard let document else { throw EVStyleBridgeError.noEditingView }
         return try document.backend.styleSheetSnapshot()
     }
@@ -632,18 +637,27 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     @discardableResult
     func createStyle(kind: EVStyleKind) -> Bool {
-        if let codeSession {
-            guard kind == .character else { return false }
+        if let settingsSession {
+            let code = settingsSession.sourceFormat == .code
+            guard (code && kind == .character) || (settingsSession.sourceFormat == .rtf && (kind == .character || kind == .paragraph)) else { return false }
             return changeStyleCatalogue {
-                let latest = try codeSession.snapshot()
-                let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
-                var name = "New Syntax Style"
+                let latest = try settingsSession.snapshot()
+                var id = UUID().uuidString.lowercased()
+                if !code {
+                    var index = 1
+                    let ids = Set(latest.definitions.map { $0.key.id.rawValue })
+                    while ids.contains("RtfP\(index)") || ids.contains("RtfC\(index)") { index += 1 }
+                    id = "\(kind == .character ? "RtfC" : "RtfP")\(index)"
+                }
+                let key = EVStyleKey(namespace: kind == .character ? .character : .block, id: EVStyleID(rawValue: id))
+                let baseName = code ? "New Syntax Style" : "New \(kind.displayName) Style"
+                var name = baseName
                 var suffix = 2
                 while latest.definitions.contains(where: { $0.name == name }) {
-                    name = "New Syntax Style \(suffix)"
+                    name = "\(baseName) \(suffix)"
                     suffix += 1
                 }
-                try codeSession.create(key: key, name: name, expected: latest.identity)
+                try settingsSession.create(key: key, name: name, expected: latest.identity)
                 self.selectedStyleKey = key
             }
         }
@@ -677,11 +691,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     @discardableResult
     func deleteSelectedStyle() -> Bool {
-        if let codeSession {
-            guard selectedDefinition?.capabilities.contains(.delete) == true else { return false }
+        if let settingsSession {
+            guard [.code, .rtf].contains(settingsSession.sourceFormat),
+                  selectedDefinition?.capabilities.contains(.delete) == true else { return false }
             return changeStyleCatalogue {
-                let latest = try codeSession.snapshot()
-                try codeSession.delete(key: self.selectedStyleKey, expected: latest.identity)
+                let latest = try settingsSession.snapshot()
+                try settingsSession.delete(key: self.selectedStyleKey, expected: latest.identity)
                 self.selectedStyleKey = .baseParagraph
             }
         }
@@ -717,7 +732,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         stopObservingDocument()
         document = nil
-        codeSession = nil
+        settingsSession = nil
         restoreDefaultsButton.isHidden = true
         snapshot = nil
         selectedStyleKey = .baseParagraph
@@ -747,7 +762,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     func beginContinuousStyleEditForTesting() { beginContinuousStyleEdit() }
     func endContinuousStyleEditForTesting() { endContinuousStyleEdit() }
-    var hasActiveStyleEditGroupForTesting: Bool { activeStyleEditGroup != nil || codeSession?.isEditingGroup == true }
+    var hasActiveStyleEditGroupForTesting: Bool { activeStyleEditGroup != nil || settingsSession?.isEditingGroup == true }
 
     @discardableResult
     func setParentForTesting(_ key: EVStyleKey) -> Bool { commit(.setParent(key.id)) }
@@ -841,11 +856,13 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         isUpdatingUI = true
         defer { isUpdatingUI = false }
 
+        if let settingsSession { view.window?.title = "Theme Styles — \(settingsSession.configuration.currentThemeName ?? "Default")" }
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
-        newStylePopup.isEnabled = codeSession != nil || (document.map { $0.backend.sourceFormat == .rtf } ?? false)
-        newStylePopup.item(at: 1)?.isHidden = codeSession != nil
+        newStylePopup.isEnabled = settingsSession.map { [.code, .rtf].contains($0.sourceFormat) } == true || (document.map { $0.backend.sourceFormat == .rtf } ?? false)
+        newStylePopup.item(at: 1)?.isHidden = settingsSession?.sourceFormat == .code
         deleteStyleButton.isEnabled = definition.capabilities.contains(.delete)
+            && (settingsSession == nil || settingsSession.map { [.code, .rtf].contains($0.sourceFormat) } == true)
         nameField.stringValue = definition.name
         nameDraftIsInvalid = false
         nameField.backgroundColor = .textBackgroundColor
@@ -862,7 +879,11 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             if definition.capabilities.isEmpty {
                 availabilityLabel.stringValue = "This \(definition.origin.displayName) style is read-only. Effective and inherited values remain available for inspection."
             } else {
-                availabilityLabel.stringValue = codeSession != nil ? "Shared by every Code document. Changes are saved to code_style.json." : ""
+                if let settingsSession {
+                    availabilityLabel.stringValue = settingsSession.configuration.currentThemeName.map {
+                        "Theme: \($0). Changes apply to all \(settingsSession.sourceFormat.displayName) documents."
+                    } ?? "Default theme. Changes remain in memory; create a theme to save them."
+                } else { availabilityLabel.stringValue = "" }
             }
             availabilityLabel.textColor = .secondaryLabelColor
         } else {
@@ -877,12 +898,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
             return value
         }()
-        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: codeSession != nil ? .code : (document?.backend.sourceFormat ?? .plainText), documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
+        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: settingsSession?.sourceFormat ?? document?.backend.sourceFormat ?? .plainText, documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
         nextStyleRow.configure(
             selected: definition.flags.isBase ? nil
                 : definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
             choices: definition.flags.isBase ? [] : snapshot.compatibleFollowingStyles(for: definition),
-            editable: !definition.flags.isBase && codeSession == nil
+            editable: !definition.flags.isBase && settingsSession?.sourceFormat != .code
                 && definition.capabilities.contains(.nextStyle)
         )
         configureNavigationTargets(snapshot: snapshot, definition: definition)
@@ -989,8 +1010,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func beginContinuousStyleEdit() {
-        if let codeSession {
-            do { try codeSession.beginGroup() }
+        if let settingsSession {
+            do { try settingsSession.beginGroup() }
             catch { diagnosticMessage = error.localizedDescription; reloadCommittedStyle() }
             return
         }
@@ -1014,7 +1035,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func endContinuousStyleEdit(reportUnexpectedFailure: Bool = true) {
-        codeSession?.endGroup()
+        settingsSession?.endGroup()
         guard let group = activeStyleEditGroup else { return }
         let session = activeStyleEditSession
         activeStyleEditGroup = nil
@@ -1033,7 +1054,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     @discardableResult
     private func commit(_ mutation: EVStyleMutation, forcedIdentity: EVStyleSheetIdentity? = nil) -> Bool {
-        guard hasTarget, codeSession != nil || document?.session != nil else {
+        guard hasTarget, settingsSession != nil || document?.session != nil else {
             diagnosticMessage = EVStyleBridgeError.noEditingView.localizedDescription
             renderUnavailableStyleSheet()
             return false
@@ -1063,8 +1084,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                     reloadCommittedStyle()
                 }
             }
-            if let codeSession {
-                try codeSession.edit(key: selectedStyleKey, expected: forcedIdentity ?? latest.identity, mutation: mutation)
+            if let settingsSession {
+                try settingsSession.edit(key: selectedStyleKey, expected: forcedIdentity ?? latest.identity, mutation: mutation)
             } else if let session = document?.session, let group = activeStyleEditGroup {
                 _ = try session.editStyle(
                     key: selectedStyleKey,
@@ -1309,8 +1330,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @objc private func restoreCodeDefaults(_ sender: Any?) {
-        guard let codeSession else { return }
-        _ = changeStyleCatalogue { try codeSession.restoreDefaults() }
+        guard let settingsSession else { return }
+        _ = changeStyleCatalogue { try settingsSession.restoreDefaults() }
     }
 
     @objc private func deleteStylePressed(_ sender: Any?) { _ = deleteSelectedStyle() }

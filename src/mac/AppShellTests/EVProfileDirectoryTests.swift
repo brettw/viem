@@ -33,16 +33,18 @@ final class EVProfileDirectoryTests: XCTestCase {
     try configuration.setSmartQuotes(true)
     try configuration.saveCodeStyleSheet(Data(#"{"version":2}"#.utf8))
     XCTAssertTrue(FileManager.default.fileExists(atPath: alternate.appendingPathComponent("config.json").path))
-    XCTAssertTrue(FileManager.default.fileExists(atPath: alternate.appendingPathComponent("code_style.json").path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(configuration.selectedThemeURL).path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".viem").path))
   }
 
-  func testInjectedHomeUsesItsProfileWithoutCreatingFilesOnRead() throws {
+  func testInjectedHomeSeedsItsOwnThemeCatalogue() throws {
     let home = FileManager.default.temporaryDirectory.appendingPathComponent("viem-home-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: home) }
     let configuration = EVConfigurationStore(environment: [:], homeDirectory: home)
     XCTAssertEqual(configuration.directory, home.appendingPathComponent(".viem", isDirectory: true))
-    XCTAssertFalse(FileManager.default.fileExists(atPath: home.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: home.path))
+    XCTAssertEqual(configuration.availableThemeNames, ["Midnight", "Paper"])
+    XCTAssertEqual(configuration.currentThemeName, "Midnight")
     XCTAssertFalse(configuration.smartQuotes)
   }
 }

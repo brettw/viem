@@ -16,7 +16,7 @@ final class EVCodeStyleLayoutTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         let keyword = try XCTUnwrap(session.snapshot().definitions.first { $0.name == "Keyword" })
         let editor = EVStyleEditorViewController()
-        editor.retarget(codeSession: session)
+        editor.retarget(settingsSession: session)
         editor.selectStyle(keyword.key)
 
         editor.beginContinuousStyleEditForTesting()

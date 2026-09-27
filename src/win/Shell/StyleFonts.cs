@@ -92,7 +92,6 @@ internal sealed partial class StyleWindow
     internal Microsoft.UI.Xaml.Controls.Primitives.ToggleButton ParagraphTab => paragraphTab;
     internal Microsoft.UI.Xaml.Controls.Primitives.ToggleButton CharacterTab => characterTab;
     internal string Error => error.Text;
-    internal Button RestoreDefaults => restoreDefaults;
     internal Button VisitParent => visitParent;
     internal Button VisitNext => visitNext;
     internal ComboBox ParentPicker => parent;

@@ -196,7 +196,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
       coordinator.inspection?.selectedStyleKey,
       EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading2"))
     )
-    XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, catalogue.documentID)
+    XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, catalogue.documentID)
   }
 
   @MainActor

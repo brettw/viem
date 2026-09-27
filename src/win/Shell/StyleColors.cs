@@ -65,6 +65,9 @@ internal sealed partial class StyleWindow
     private void ThemeChanged()
     {
         if (closed) return;
+        root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
+        if (Content is ScrollViewer scroll) { scroll.RequestedTheme = root.RequestedTheme; scroll.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)); }
+        WindowSizing.Appearance(this, preferences.Midnight);
         foreach (var refresh in refreshColors) refresh();
         preview.ClearColor = preferences.Theme.Background;
         preview.Invalidate();
@@ -166,12 +169,14 @@ internal sealed partial class StyleWindow
             timer.Stop(); pending = null;
             EndGroup();
             open = false;
+            EndThemeHistoryGroup();
             openColorPickers.Remove(property);
         }
         void Refresh()
         {
             // Do not feed rounded RGB values back into an active HSV gesture.
             if (open) return;
+            picker.RequestedTheme = root.RequestedTheme;
             // Absence seeds an opaque new fill; explicit transparent colors
             // retain their alpha when reopening the picker.
             picker.Color = property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR
@@ -191,6 +196,7 @@ internal sealed partial class StyleWindow
             refreshAfterColorPopup |= refreshAfterFollowing;
             CancelCaretFollow();
             Refresh(); committed = picker.Color; owner = view; target = selected; didChange = false; open = true;
+            BeginThemeHistoryGroup();
             openColorPickers.Add(property);
             visibleColorPickers.Add(property);
         };

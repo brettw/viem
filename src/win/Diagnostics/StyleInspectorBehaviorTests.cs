@@ -66,6 +66,7 @@ internal static class StyleInspectorBehaviorTests
     {
         byte[] source = System.Text.Encoding.UTF8.GetBytes("> Preview source stays unchanged.");
         using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var quote = view.Styles().Styles.Single(s => s.Id == "Block quote" && s.Namespace == 1);
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(17));
@@ -88,6 +89,7 @@ internal static class StyleInspectorBehaviorTests
     {
         byte[] source = "```\nCode block\n```"u8.ToArray();
         using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var inspector = new StyleWindow(view, preferences, followCaret: false);
         inspector.Activate(); await Task.Delay(150);
@@ -190,7 +192,7 @@ internal static class StyleInspectorBehaviorTests
             await Task.Delay(200);
             Check(Math.Abs(codeInspector.RootControl.XamlRoot.Size.Height - codeInspector.RootControl.ActualHeight) < 2,
                 $"initial Code inspector fits its rendered content (desired={codeInspector.RootControl.DesiredSize.Height}, actual={codeInspector.RootControl.ActualHeight}, client={codeInspector.RootControl.XamlRoot.Size.Height}, scale={codeInspector.RootControl.XamlRoot.RasterizationScale})");
-            Check(Selected(codeInspector).Namespace == 2 && codeInspector.Title == "Code Styles", "Code Styles opens the retained syntax style under the caret");
+            Check(Selected(codeInspector).Namespace == 2 && codeInspector.Title == "Theme Styles — " + preferences.ThemeDisplayName, "Code Styles opens the retained syntax style under the caret");
             Move(codeView, 2); await Task.Delay(1100);
             Check((Selected(codeInspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0, "Code whitespace follows Base Paragraph within the global sheet");
         }
@@ -232,8 +234,7 @@ internal static class StyleInspectorBehaviorTests
         var view = await editor.ActivePane!.Ready;
         var other = await editor.AddPane(second).Ready;
         byte[] original = view.ExportStyleDefaults();
-        string file = Path.Combine(preferences.DirectoryPath, "code_style.json");
-        byte[]? saved = File.Exists(file) ? File.ReadAllBytes(file) : null;
+        string file = preferences.SelectedThemePath ?? throw new InvalidOperationException("Persistence diagnostics require a named theme.");
         var inspector = new StyleWindow(view, preferences, followCaret: false); inspector.Activate(); await Task.Delay(200);
         try
         {
@@ -242,7 +243,7 @@ internal static class StyleInspectorBehaviorTests
             await Open(flyout, button);
             picker.Color = Microsoft.UI.Colors.Red; await Task.Delay(150);
             bool firstColor = HasColor(view, Microsoft.UI.Colors.Red), otherColor = HasColor(other, Microsoft.UI.Colors.Red);
-            bool persisted = File.Exists(file) && File.ReadAllBytes(file).AsSpan().SequenceEqual(view.ExportStyleDefaults());
+            bool persisted = File.Exists(file) && System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllBytes(file))!["styles"]!["code"], System.Text.Json.Nodes.JsonNode.Parse(view.ExportStyleDefaults()));
             Check(inspector.Error.Length == 0 && firstColor && otherColor && persisted && !document.IsDirty && !second.IsDirty,
                 $"live Code color changes repaint separate documents and persist shared styles without dirtying source (first={firstColor}, other={otherColor}, saved={persisted}, dirty={document.IsDirty}/{second.IsDirty}, error={inspector.Error})");
             byte[] red = view.ExportStyleDefaults();
@@ -254,17 +255,23 @@ internal static class StyleInspectorBehaviorTests
                     "a rejected live Code color restores committed style, picker and preview without rescheduling");
             }
             await Close(flyout);
+            inspector.UndoThemeForTesting();
+            Check(original.AsSpan().SequenceEqual(view.ExportStyleDefaults()) && !document.IsDirty && !second.IsDirty,
+                "theme Undo restores an entire Code color gesture independently of source history");
+            inspector.RedoThemeForTesting();
+            Check(HasColor(view, Microsoft.UI.Colors.Red) && HasColor(other, Microsoft.UI.Colors.Red),
+                "theme Redo reapplies Code color across all documents");
         }
         finally
         {
-            inspector.Close(); view.ReplaceCodeStyles(original);
-            if (saved != null) Preferences.AtomicWrite(file, saved); else File.Delete(file);
+            inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_CODE, original);
             editor.Close(); App.Instance.Windows.Remove(editor);
         }
     }
     private static async Task Colors(EditorPane pane, Preferences preferences)
     {
-        using var document = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 Color sample.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
+        using var document = new CoreDocument("Color sample."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
+        byte[] originalTheme = preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT);
         var editor = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(editor); editor.Activate();
         var renderedPane = editor.ActivePane!;
@@ -324,9 +331,9 @@ internal static class StyleInspectorBehaviorTests
             Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision, "rapid color input queues one coalesced edit");
             await Task.Delay(150);
             Check(inspector.PreviewForeground == custom && SwatchColor(button) == custom
-                && inspector.StyleLoads == loads && document.IsDirty && !original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
-                $"picker changes update the committed document, preview and swatch without dialog reloads (error={inspector.Error})");
-            Check(document.State.document_revision == revision + 1 && !inspector.ColorUpdateScheduled, "one color burst commits once and leaves no idle timer");
+                && inspector.StyleLoads == loads && !document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                $"picker changes update the theme, preview and swatch without changing source without dialog reloads (error={inspector.Error})");
+            Check(document.State.document_revision == revision && !inspector.ColorUpdateScheduled, "one color burst commits without advancing source revision and leaves no idle timer");
             Check(HasColor(view, custom) && HasColor(mirror, custom)
                 && !firstPixels.AsSpan().SequenceEqual(Pixels(renderedPane)) && !mirrorPixels.AsSpan().SequenceEqual(Pixels(mirrorPane))
                 && renderedPane.DrawingCacheBuilds > firstBuilds && mirrorPane.DrawingCacheBuilds > mirrorBuilds,
@@ -334,18 +341,23 @@ internal static class StyleInspectorBehaviorTests
             document.NotifyChanged();
             Check(picker.Color == custom && inspector.StyleLoads == loads, "a no-op document notification leaves the active picker stable");
             picker.Color = Microsoft.UI.Colors.Blue; await Task.Delay(100);
-            Check(inspector.PreviewForeground == Microsoft.UI.Colors.Blue && document.State.document_revision > revision + 1,
+            Check(inspector.PreviewForeground == Microsoft.UI.Colors.Blue && document.State.document_revision == revision,
                 "a sustained popup gesture commits subsequent colors before dismissal");
             picker.Color = custom; await Task.Delay(100);
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".color-preview.png");
             await Close(flyout);
-            Check(inspector.Error.Length == 0 && document.IsDirty && picker.Color == custom,
+            Check(inspector.Error.Length == 0 && !document.IsDirty && picker.Color == custom,
                 $"closing the live color picker retains custom RGBA (style={Selected(inspector).Id}, enabled={button.IsEnabled}, dirty={document.IsDirty}, color={picker.Color}, error={inspector.Error})");
             byte[] colored = document.Source(document.State.document_revision);
             await Open(flyout, button); await Close(flyout);
             Check(colored.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "reopening a custom color has no round-trip edit");
-            view.Undo();
-            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "one undo restores every live color change in the popup session");
+            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "theme color changes do not create source undo records");
+            inspector.UndoThemeForTesting();
+            Check(inspector.PreviewForeground == preferences.Theme.Foreground && !document.IsDirty,
+                "one theme Undo restores all coalesced colors in the popup gesture");
+            inspector.RedoThemeForTesting();
+            Check(inspector.PreviewForeground == custom && HasColor(mirror, custom),
+                "theme Redo restores the gesture and refreshes sibling views");
             var backgroundButton = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Background Color");
             var backgroundFlyout = (Flyout)backgroundButton.Flyout;
             var backgroundPicker = (ColorPicker)backgroundFlyout.Content;
@@ -353,38 +365,28 @@ internal static class StyleInspectorBehaviorTests
             Check(backgroundPicker.Color.A == 0, "an absent text background opens as transparent");
             var background = Color.FromArgb(255, 192, 64, 32); backgroundPicker.Color = background;
             await Task.Delay(100);
-            Check(inspector.PreviewBackground == background && document.IsDirty, "background color and alpha update the document and preview live");
+            Check(inspector.PreviewBackground == background && !document.IsDirty, "background color and alpha update the document and preview live");
             await Close(backgroundFlyout);
             Check(inspector.Error.Length == 0 && backgroundPicker.Color == background, "background picker commits and retains transparency");
-            view.Undo();
-            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "background color is a single undoable edit");
-            using var second = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 Second color target.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
+            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "theme background changes preserve source bytes");
+            using var second = new CoreDocument("Second color target."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
+            preferences.AttachThemeDocument(second);
             using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-                inspector.Retarget(other);
+            inspector.Retarget(other);
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
-            Check(second.IsDirty && !document.IsDirty, "a retargeted inspector edits the new view rather than its constructor's view");
-            colored = second.Source(second.State.document_revision);
+            Check(!second.IsDirty && !document.IsDirty && HasColor(other, Microsoft.UI.Colors.Red) && HasColor(view, Microsoft.UI.Colors.Red),
+                "a retargeted inspector edits the shared theme across documents without dirtying either source");
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Green;
             await Close(flyout, () => inspector.Retarget(view));
-            Check(!colored.AsSpan().SequenceEqual(second.Source(second.State.document_revision)) && !document.IsDirty && !inspector.ColorUpdateScheduled,
-                "retargeting flushes pending color to its original target and cancels the timer");
-            other.Undo();
-            Check(colored.AsSpan().SequenceEqual(second.Source(second.State.document_revision)), "retargeting closes the original target's undo group");
-            Check(inspector.PreviewForeground == preferences.Theme.Foreground, "retargeting shows the new document's committed color");
-            await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Task.Delay(100);
-            picker.Color = Microsoft.UI.Colors.Green;
-            await Close(flyout, view.Undo);
-            await Task.Delay(100);
-            Check(!inspector.ColorUpdateScheduled && !document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
-                "undo during an open picker cancels queued colors without replaying them");
+            Check(HasColor(other, Microsoft.UI.Colors.Green) && HasColor(view, Microsoft.UI.Colors.Green) && !inspector.ColorUpdateScheduled,
+                "retargeting flushes pending theme color once and cancels the timer");
             await Open(flyout, button); picker.Color = custom;
             await Close(flyout, inspector.Close);
-            Check(document.IsDirty && !inspector.ColorUpdateScheduled, "closing the inspector flushes the final color and cancels pending work");
-            view.Undo();
-            Check(!document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "closing the inspector ends its live undo group");
+            Check(HasColor(view, custom) && !document.IsDirty && !inspector.ColorUpdateScheduled,
+                "closing the inspector flushes the final theme color without a source edit");
         }
-        finally { inspector.Close(); document.MarkSaved(document.State); editor.Close(); App.Instance.Windows.Remove(editor); }
+        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, originalTheme); editor.Close(); App.Instance.Windows.Remove(editor); }
     }
 }
 #endif

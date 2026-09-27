@@ -70,7 +70,7 @@ final class EVStyleEditorTests: XCTestCase {
         let originalWindow = try XCTUnwrap(coordinator.styleWindow)
 
         XCTAssertTrue(originalWindow is NSPanel)
-        XCTAssertEqual(originalWindow.title, "Styles")
+        XCTAssertEqual(originalWindow.title, "Theme Styles — \(firstBackend.configuration.currentThemeName ?? "Default")")
         XCTAssertTrue(originalWindow.styleMask.contains(.titled))
         XCTAssertTrue(originalWindow.styleMask.contains(.utilityWindow))
         XCTAssertTrue(originalWindow.styleMask.contains(.resizable))
@@ -78,14 +78,14 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertNil(originalWindow.sheetParent)
         XCTAssertEqual(originalWindow.level, .normal)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey.baseParagraph)
-        XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, try firstBackend.documentState().document_id)
+        XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, try firstBackend.documentState().document_id)
 
         coordinator.show(document: secondSurface, sender: nil)
 
         XCTAssertTrue(coordinator.styleWindow === originalWindow)
-        XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(secondBackend))
+        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
-        XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, try secondBackend.documentState().document_id)
+        XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, try secondBackend.documentState().document_id)
     }
 
     @MainActor
@@ -307,7 +307,7 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testTargetWindowClosureDisablesEditorThroughLifecycleObserver() throws {
+    func testThemeEditorRemainsUsableAfterItsContextWindowCloses() throws {
         let backend = EVCoreDocumentBackend()
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
@@ -320,51 +320,40 @@ final class EVStyleEditorTests: XCTestCase {
         documentWindow.isReleasedWhenClosed = false
         defer { documentWindow.close() }
         documentWindow.contentViewController = surface
-        var replacementRequests = 0
-        // This case has no replacement document. AppKit may still retain an
-        // unrelated window from another test; its global window order must not
-        // decide whether the lifecycle observer disables this editor.
-        let coordinator = EVStyleEditorCoordinator { closing in
-            XCTAssertTrue(closing === surface)
-            replacementRequests += 1
-            return nil
-        }
+        let coordinator = EVStyleEditorCoordinator()
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
-        XCTAssertTrue(coordinator.inspection?.hasDocument == true)
+        XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
 
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: documentWindow)
 
-        XCTAssertEqual(replacementRequests, 1)
         XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
-        XCTAssertNil(coordinator.inspection?.selectedStyleKey)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
         XCTAssertNotNil(coordinator.styleWindow)
     }
 
     @MainActor
-    func testClosingTargetRetargetsBaseParagraphInCurrentOtherDocument() throws {
+    func testClosingContextDoesNotRetargetThemeToAnotherDocument() throws {
         let firstBackend = EVCoreDocumentBackend()
         let secondBackend = EVCoreDocumentBackend()
         let first = try XCTUnwrap(firstBackend.makeEditorSurface() as? EVEditorSurfaceController)
         let second = try XCTUnwrap(secondBackend.makeEditorSurface() as? EVEditorSurfaceController)
         first.loadViewIfNeeded()
         second.loadViewIfNeeded()
-        let coordinator = EVStyleEditorCoordinator { closing in
-            closing === first ? second : nil
-        }
+        let coordinator = EVStyleEditorCoordinator()
         coordinator.show(document: first, sender: nil)
         defer { coordinator.close() }
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
 
         coordinator.documentDidClose(first)
 
-        XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(secondBackend))
+        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
         XCTAssertEqual(coordinator.inspection?.selectedKind, .paragraph)
     }
 
     @MainActor
-    func testClosingOneViewRetargetsToAnotherViewOfSameDocument() throws {
+    func testClosingOneViewKeepsThemeSettingsIndependentOfOtherViews() throws {
         let backend = EVCoreDocumentBackend()
         let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -390,8 +379,8 @@ final class EVStyleEditorTests: XCTestCase {
 
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: firstWindow)
 
-        XCTAssertTrue(coordinator.inspection?.hasDocument == true)
-        XCTAssertEqual(coordinator.inspection?.targetDocumentIdentity, ObjectIdentifier(backend))
+        XCTAssertFalse(coordinator.inspection?.hasDocument ?? true)
+        XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey.baseParagraph)
     }
 
@@ -429,28 +418,29 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertEqual(editor.inspection.preview.effectiveValues, expectedValues)
         XCTAssertNil(definition.properties[.characterFontFamilies]?.declared)
-        XCTAssertEqual(editor.inspection.preview.requestedFontFamilies, ["SF Pro"])
+        XCTAssertEqual(editor.inspection.preview.requestedFontFamilies, ["system-ui"])
         XCTAssertEqual(editor.inspection.preview.kind, .paragraph)
         XCTAssertTrue(editor.inspection.preview.accessibilityText.contains("Previous paragraph"))
         XCTAssertTrue(editor.inspection.preview.accessibilityText.contains("Following paragraph"))
     }
 
     @MainActor
-    func testCoreTextPreviewUsesSFProFourteenPointDocumentDefault() throws {
+    func testCoreTextPreviewResolvesSystemFontAndUsesCurrentThemeCanvas() throws {
         let (_, surface, editor) = try makeEditor(source: "text", style: EVStyleKey.baseParagraph)
         defer { withExtendedLifetime(surface) {} }
         let preview = editor.previewInspectionForTesting(
             layoutSize: CGSize(width: 560, height: 300)
         )
 
-        XCTAssertEqual(preview.requestedFontFamilies, ["SF Pro"])
+        XCTAssertEqual(preview.requestedFontFamilies, ["system-ui"])
         XCTAssertEqual(preview.requestedFontSize, 14)
         XCTAssertEqual(preview.resolvedFontFamily, "SF Pro")
         XCTAssertEqual(preview.resolvedFontSize, 14, accuracy: 0.001)
         XCTAssertEqual(
             preview.canvasBackground,
-            EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1),
-            "the preview uses the document canvas instead of the window's dark appearance"
+            EVStyleColor(red: Float(editor.themeStore.theme.background.red), green: Float(editor.themeStore.theme.background.green),
+                         blue: Float(editor.themeStore.theme.background.blue), alpha: Float(editor.themeStore.theme.background.alpha)),
+            "the preview uses the current theme canvas"
         )
         XCTAssertGreaterThanOrEqual(preview.currentStyleLines.count, 2)
         XCTAssertGreaterThanOrEqual(preview.lines.filter { !$0.isCurrentStyle }.count, 2)
@@ -471,7 +461,7 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testDarkAppearancePropagatesToEditorAndKeepsPreviewCanvasLight() throws {
+    func testDarkAppearancePropagatesToEditorAndKeepsCurrentThemeCanvas() throws {
         let (_, surface, editor) = try makeEditor(source: "text", style: EVStyleKey.baseParagraph)
         defer { withExtendedLifetime(surface) {} }
         let panel = NSWindow(
@@ -493,8 +483,9 @@ final class EVStyleEditorTests: XCTestCase {
         )
         XCTAssertEqual(
             editor.inspection.preview.canvasBackground,
-            EVStyleColor(red: 1, green: 1, blue: 1, alpha: 1),
-            "the document preview remains a white canvas independent of window appearance"
+            EVStyleColor(red: Float(editor.themeStore.theme.background.red), green: Float(editor.themeStore.theme.background.green),
+                         blue: Float(editor.themeStore.theme.background.blue), alpha: Float(editor.themeStore.theme.background.alpha)),
+            "the document preview follows its theme independently of window appearance"
         )
 
         let cachedDisplay = try XCTUnwrap(

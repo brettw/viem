@@ -96,7 +96,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private(set) var hasInvalidDraft = false
     private var definition: EVStyleDefinition?
     private var documentID: UInt64?
-    private var theme = EVTheme.paper
+    private var theme = EVTheme.midnight
     private var sourceFormat = EVSourceFormat.plainText
     private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
     private var updating = false
@@ -275,7 +275,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         blockView.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     }
 
-    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .paper, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
+    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .midnight, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
         fallbackPopover?.close()
         fallbackPopover = nil
         let activeLineEditor = lineValue.currentEditor() as? NSTextView

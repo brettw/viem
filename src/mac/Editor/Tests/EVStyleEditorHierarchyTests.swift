@@ -87,7 +87,7 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         let parentKey = try XCTUnwrap(comment.parentKey)
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)
-        editor.retarget(codeSession: session)
+        editor.retarget(settingsSession: session)
         editor.selectStyle(comment.key)
         let persisted = try configuration.codeStyleSheet()
 

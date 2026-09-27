@@ -146,6 +146,39 @@ mod tests {
         (core, view)
     }
 
+    #[test]
+    fn live_theme_cancels_layout_and_prelayout_without_shaping_or_moving_large_document() {
+        let (mut core, view) = fixture();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('v')))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('l')))).unwrap();
+        let selection = core.active_linear_selection_identity(view).unwrap();
+        assert!(selection.is_some());
+        let background = core.prepare_view_prelayout(view, true).unwrap().unwrap();
+        let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
+        let background_result = compute_layout_job(&mut worker, &background, LayoutExecutionContext::WorkerPool).unwrap();
+        let foreground = core.prepare_view_layout_job(view, LayoutJobPriority::ChangedVisibleRows,
+            background.region().clone(), LayoutCancellationToken::new()).unwrap();
+        let foreground_result = compute_layout_job(&mut worker, &foreground, LayoutExecutionContext::WorkerPool).unwrap();
+        let source = core.document().source_bytes();
+        let history = core.document().history_status();
+        let cursor = core.command_state(view).unwrap().cursor();
+        let top = core.layout(view).unwrap().viewport_top();
+        let generation = core.layout(view).unwrap().configuration_generation();
+        let calls = core.views[&view].engine.provider().request_calls();
+        core.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":23},"block":{}}]}"#).unwrap();
+        assert!(background.cancellation_token().is_cancelled());
+        assert!(foreground.cancellation_token().is_cancelled());
+        assert!(!core.install_view_prelayout(view, true, background_result).unwrap());
+        assert!(core.install_view_layout_job(view, foreground_result).is_err());
+        assert!(core.layout(view).unwrap().configuration_generation() > generation);
+        assert_eq!(core.views[&view].engine.provider().request_calls(), calls);
+        assert_eq!(core.document().source_bytes(), source);
+        assert_eq!(core.document().history_status(), history);
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+        assert_eq!(core.active_linear_selection_identity(view).unwrap(), selection);
+        assert_eq!(core.layout(view).unwrap().viewport_top(), top);
+    }
+
     fn fill(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, forward: bool) -> usize {
         let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut jobs = 0;

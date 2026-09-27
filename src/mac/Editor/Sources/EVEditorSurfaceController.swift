@@ -779,9 +779,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
         case .editStyles:
             break // Routed above for both document and global Code styles.
-        case .saveDefaultStyle:
-            do { let url = try backend.saveDefaultStyle(); publishHostMessage("Saved default style to \(url.path)") }
-            catch { report(error) }
         case .save:
             (view.window?.windowController as? EVDocumentWindowController)?.activeDocument?.save(sender)
         case .saveAs:
@@ -917,8 +914,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
              .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
              .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
             paragraphFormattingPresentation(menuCommand)
-        case .saveDefaultStyle:
-            EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code, title: "Save as default \(backend.sourceFormat.defaultStyleName) style")
         case .reloadStyleSheet:
             .enabled
         case .editStyles:
@@ -1886,13 +1881,12 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
     public func showDocumentMessage(_ message: String) { publishHostMessage(message) }
 
-    /// The Code stylesheet is one application-wide authority, so an explicit
-    /// reload republishes it to every open Code buffer, not only this one.
+    /// Reload the selected theme aggregate, including all format style families.
     private func reloadCodeStyleSheet() {
-        let file = backend.configuration.directory.appendingPathComponent("code_style.json")
-        EVCodeStyleSession.reloadStyleSheet { [weak self] failure in
-            self?.publishHostMessage(failure ?? "Reloaded Code styles from \(file.path)")
-        }
+        do {
+            try backend.configuration.reloadCurrentTheme()
+            publishHostMessage("Reloaded theme \(backend.configuration.currentThemeName ?? "Default")")
+        } catch { publishHostMessage(error.localizedDescription) }
     }
 
     func publishHostMessage(_ message: String) {

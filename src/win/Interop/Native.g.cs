@@ -1764,6 +1764,8 @@ internal static unsafe partial class Native
     public const uint VIEM_SELECTED_STYLE_HAS_BULLETS = (1u << 2);
     public const uint VIEM_SELECTED_STYLE_HAS_NUMBERING = (1u << 3);
     public const uint VIEM_SELECTED_STYLE_HAS_NON_LIST = (1u << 4);
+    public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
+    public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_RTF = 2u;
     public const uint VIEM_SOURCE_MAX_BYTES = 1048576u;
@@ -2006,7 +2008,15 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length, nint @diagnostic, void* @context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_replace_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length, nint @diagnostic, void* @context);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_export_style_defaults(ulong @core, ulong @expected_revision, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_theme_default_json(uint @preset, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_theme_validate_json(byte* @json, ulong @length);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_theme_validate_name(byte* @name, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_command_line_selection(ulong @core, ulong @view, ViemCommandLineIdentityV1* @expected, ViemCommandLineSelectionV1* @out_selection);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

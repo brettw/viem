@@ -453,6 +453,8 @@ pub struct StyleSheetRevision(pub u64);
 #[derive(Clone, Debug)]
 pub struct StyleSheet {
     pub revision: StyleSheetRevision,
+    /// Session configuration identity; not a persisted style declaration.
+    pub(crate) theme_generation: u64,
     pub base_paragraph: StyleId,
     /// Format-defined fallback values, below application defaults and source declarations.
     intrinsic_character_defaults: CharacterProperties,
@@ -730,6 +732,7 @@ impl Default for StyleSheet {
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
             implicit_characters: BTreeSet::new(),
+            theme_generation: 0,
         };
         sheet.install_incremental_match_style();
         sheet

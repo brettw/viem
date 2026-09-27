@@ -56,7 +56,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     XCTAssertEqual(checkbox.state, .on)
     preferences.setSmartQuotes(false)
     XCTAssertEqual(checkbox.state, .off)
-    XCTAssertEqual(theme.theme, .paper)
+    XCTAssertEqual(theme.theme, .midnight)
     window.contentView?.layoutSubtreeIfNeeded()
     XCTAssertTrue(window.contentLayoutRect.contains(checkbox.convert(checkbox.bounds, to: nil)))
   }
@@ -120,7 +120,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     preferences.setTextWidth(60)
     XCTAssertEqual(field.stringValue, "60")
     XCTAssertFalse(preferences.smartQuotes)
-    XCTAssertEqual(theme.theme, .paper)
+    XCTAssertEqual(theme.theme, .midnight)
   }
 
   private func descendants(_ view: NSView?) -> [NSView] {

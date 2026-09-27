@@ -12,11 +12,34 @@ final class EVCodeStylesTests: XCTestCase {
         return EVConfigurationStore(directory: directory, legacyDefaults: nil)
     }
 
+    func testUnknownCodeThemeExtensionsPreserveContinuousEditUndo() throws {
+        let configuration = configuration()
+        var code = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.codeStyleSheet())) as? [String: Any])
+        code["futureExtension"] = ["enabled": true]
+        try configuration.saveCodeStyleSheet(JSONSerialization.data(withJSONObject: code))
+        let session = try EVCodeStyleSession(configuration: configuration)
+        let original = try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared
+        try session.beginGroup()
+        for size: Float in [21, 25] {
+            try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
+                mutation: .setDeclaration(.characterSize, .float(size)))
+            XCTAssertTrue(session.isEditingGroup)
+        }
+        session.endGroup()
+        session.undoManager.undo()
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, original)
+        XCTAssertFalse(session.undoManager.canUndo)
+        session.undoManager.redo()
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(25))
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.codeStyleSheet())) as? [String: Any])
+        XCTAssertEqual(saved["futureExtension"] as? [String: Bool], ["enabled": true])
+    }
+
     func testGlobalEditorHasIndependentTargetUndoAndPersistence() throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let editor = EVStyleEditorViewController()
-        editor.retarget(codeSession: session)
+        editor.retarget(settingsSession: session)
         XCTAssertNil(editor.inspection.targetDocumentIdentity)
         XCTAssertEqual(editor.inspection.targetCoreDocumentID, 0)
         XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
@@ -41,14 +64,14 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertEqual(viem_code_replace_style_json(nil, 0), UInt32(VIEM_STATUS_OK))
         XCTAssertEqual(data.withUnsafeBytes { viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count)) }, UInt32(VIEM_STATUS_OK))
         XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
-        XCTAssertNil(try configuration.styleDefaults(named: "text"))
+        XCTAssertNotNil(try configuration.styleDefaults(named: "text"))
     }
 
     func testNamesAreExactAndDeletionAndRenamePersistWithoutResurrectingBuiltins() throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let editor = EVStyleEditorViewController()
-        editor.retarget(codeSession: session)
+        editor.retarget(settingsSession: session)
         let initial = try session.snapshot()
         let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "Keyword" })
         editor.selectStyle(keyword.key)
@@ -73,6 +96,7 @@ final class EVCodeStylesTests: XCTestCase {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let before = try session.snapshot()
+        try FileManager.default.removeItem(at: configuration.directory)
         try Data("not a directory".utf8).write(to: configuration.directory)
         XCTAssertThrowsError(try session.edit(key: .baseParagraph, expected: before.identity, mutation: .setDeclaration(.characterSize, .float(27))))
         let after = try session.snapshot()
@@ -108,11 +132,11 @@ final class EVCodeStylesTests: XCTestCase {
     func testMalformedSavedSheetRemainsReviewableAndExplicitRestoreRepairsIt() throws {
         let configuration = configuration()
         try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
-        let file = configuration.directory.appendingPathComponent("code_style.json")
+        let file = try XCTUnwrap(configuration.selectedThemeURL)
         let invalid = Data("invalid json".utf8)
         try invalid.write(to: file)
         let session = try EVCodeStyleSession(configuration: configuration)
-        XCTAssertNotNil(session.lastError)
+        XCTAssertThrowsError(try configuration.reloadCurrentTheme())
         XCTAssertFalse(try session.snapshot().definitions.isEmpty)
         XCTAssertEqual(try Data(contentsOf: file), invalid)
         try session.restoreDefaults()
@@ -207,8 +231,8 @@ final class EVCodeStylesTests: XCTestCase {
         character["size"] = 23
         blocks[index]["character"] = character
         object["block_styles"] = blocks
-        let external = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        let file = configuration.directory.appendingPathComponent("code_style.json")
+        let external = try themeData(code: JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), configuration: configuration)
+        let file = try XCTUnwrap(configuration.selectedThemeURL)
         try external.write(to: file, options: .atomic)
         XCTAssertThrowsError(try session.edit(key: .baseParagraph, expected: initial.identity, mutation: .setDeclaration(.characterSize, .float(25))))
         await checkExternalChanges()
@@ -227,14 +251,13 @@ final class EVCodeStylesTests: XCTestCase {
         await checkExternalChanges()
         XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)
         XCTAssertEqual(try Data(contentsOf: file), malformed)
-        XCTAssertTrue(EVCodePreferences.shared.loadDiagnostics.contains { $0.contains("Unable to reload code_style.json") })
+        XCTAssertTrue(EVCodePreferences.shared.loadDiagnostics.contains { $0.contains("Unable to reload") })
         try FileManager.default.removeItem(at: file)
         await checkExternalChanges()
-        XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)
-        XCTAssertTrue(EVCodePreferences.shared.loadDiagnostics.contains { $0.contains("was removed") })
+        XCTAssertNil(configuration.currentThemeName)
         try external.write(to: file, options: .atomic)
-        await checkExternalChanges()
-        XCTAssertFalse(EVCodePreferences.shared.loadDiagnostics.contains { $0.contains("code_style.json") })
+        try configuration.selectTheme(named: file.deletingPathExtension().lastPathComponent)
+        XCTAssertFalse(EVCodePreferences.shared.loadDiagnostics.contains { $0.contains(file.lastPathComponent) })
     }
 
     func testLocalStyleWritesAreNotReimportedAndKeepSettingsUndo() async throws {
@@ -263,7 +286,7 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)
         let failure = await reloadStyleSheet()
         XCTAssertNil(failure)
-        XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, revision)
+        XCTAssertEqual(try session.snapshot().identity.styleSheetRevision, revision)
         XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?
             .properties[.characterSize]?.declared, .float(18))
         XCTAssertTrue(session.undoManager.canUndo,
@@ -277,17 +300,24 @@ final class EVCodeStylesTests: XCTestCase {
         }
     }
 
-    func testManualReloadOfAnAbsentSheetReportsItInsteadOfSucceedingSilently() async throws {
+    func testManualReloadOfAnExternallyRemovedThemeUsesDefault() async throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
-        let file = configuration.directory.appendingPathComponent("code_style.json")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path),
-                       "Nothing has written the sheet, so its stamp matches the absent baseline")
-        let size = try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective
+        let file = try XCTUnwrap(configuration.selectedThemeURL)
+        try FileManager.default.removeItem(at: file)
         let failure = await reloadStyleSheet()
-        XCTAssertTrue(try XCTUnwrap(failure).contains("was removed"))
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?
-            .properties[.characterSize]?.effective, size, "The last valid styles remain active")
+        XCTAssertNil(failure)
+        XCTAssertNil(configuration.currentThemeName)
+        XCTAssertFalse(try session.snapshot().definitions.isEmpty)
+    }
+
+    private func themeData(code: Data, configuration: EVConfigurationStore) throws -> Data {
+        let file = try XCTUnwrap(configuration.selectedThemeURL)
+        var theme = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        var styles = try XCTUnwrap(theme["styles"] as? [String: Any])
+        styles["code"] = try JSONSerialization.jsonObject(with: code)
+        theme["styles"] = styles
+        return try JSONSerialization.data(withJSONObject: theme, options: [.sortedKeys])
     }
 
     private func checkExternalChanges() async {

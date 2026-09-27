@@ -173,7 +173,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Base Paragraph", "Heading 1", "Heading 2", "Heading 3", "Heading 4", "Heading 5", "Heading 6",
         ])
         XCTAssertEqual(tokens(in: try submenu("Style", of: main)), [
-            "Paragraph", "Character", "-", "Edit Styles…", "Save as default text style",
+            "Theme", "-", "Paragraph", "Character", "-", "Edit Styles…",
             "-", "Reload style sheet",
         ])
 

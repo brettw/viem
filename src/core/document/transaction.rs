@@ -1040,6 +1040,8 @@ impl Document {
             read_only: false,
             recovered_dirty: false,
             code_presentation: None,
+            configuration: self.configuration.clone(),
+            configuration_state: None,
         }
     }
 
@@ -1453,6 +1455,7 @@ impl Document {
                 )
             }
         };
+        self.refresh_configuration();
         self.position_map_capture = next_position_capture;
         self.advance_code_presentation(&prepared.text_position_map);
         if prepared.after_revision != prepared.before_revision {

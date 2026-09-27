@@ -8,9 +8,11 @@ mod conversion;
 mod html_export;
 pub use html_export::{HtmlExport, HtmlExportError};
 mod code_presentation;
+mod configuration;
 mod completion;
 pub use completion::{WordCompletionBatch, WordCompletionDirection, WordCompletionPrefix, WordCompletionSearch, MAX_COMPLETION_WORD_BYTES};
 pub mod syntax;
+pub mod theme;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
 pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
@@ -714,6 +716,8 @@ pub struct Document {
     recovered_dirty: bool,
     /// Disposable presentation cache; never retained by document history.
     code_presentation: Option<code_presentation::CodePresentation>,
+    configuration: Option<configuration::Configuration>,
+    configuration_state: Option<DocumentState>,
 }
 
 impl Default for Document {
@@ -731,6 +735,7 @@ impl Document {
         state.format = Format::Code;
         state.projection.install_code_styles(code_style::snapshot(), &[]);
         self.history.initialize_projection(state);
+        self.refresh_configuration();
         Ok(())
     }
 
@@ -755,6 +760,8 @@ impl Document {
             .projection
             .install_configuration_styles(state.revision, sheet, assignment);
         self.history.initialize_projection(state);
+        self.configuration = None;
+        self.configuration_state = None;
         // Reserve the consumed style generation so the next source/model
         // transaction still advances both style and projection identities.
         self.next_revision = self.next_revision.max(generation);
@@ -849,6 +856,8 @@ impl Document {
             read_only: false,
             recovered_dirty: false,
             code_presentation: None,
+            configuration: None,
+            configuration_state: None,
         }
     }
 
@@ -1009,11 +1018,13 @@ impl Document {
             read_only: false,
             recovered_dirty: false,
             code_presentation: None,
+            configuration: None,
+            configuration_state: None,
         })
     }
 
     fn state(&self) -> &DocumentState {
-        self.history.current()
+        self.configuration_state.as_ref().unwrap_or(self.history.current())
     }
 
     pub fn id(&self) -> DocumentId {
@@ -1863,6 +1874,7 @@ impl Document {
         self.edit_group_depth = 0;
         let navigation = self.history.select_node(target.node)?;
         self.position_map_capture = next_capture;
+        self.refresh_configuration();
         self.advance_code_presentation(&map);
         Ok(navigation)
     }
@@ -1893,6 +1905,7 @@ impl Document {
         self.edit_group_depth = 0;
         let navigation = self.history.select_node(target.node)?;
         self.position_map_capture = next_capture;
+        self.refresh_configuration();
         self.advance_code_presentation(&map);
         Ok(navigation)
     }
@@ -2018,6 +2031,7 @@ impl Document {
         let navigation = self.history.select_node(node)?;
         self.edit_group_depth = 0;
         self.position_map_capture = next_capture;
+        self.refresh_configuration();
         self.advance_code_presentation(&map);
         Ok(navigation)
     }
@@ -2040,6 +2054,7 @@ impl Document {
         let navigation = self.history.select_change(change)?;
         self.edit_group_depth = 0;
         self.position_map_capture = next_capture;
+        self.refresh_configuration();
         self.advance_code_presentation(&map);
         Ok(navigation)
     }

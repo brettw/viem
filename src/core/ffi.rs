@@ -10639,6 +10639,7 @@ mod tests {
     mod prelayout_tests;
     mod html_export_tests;
     mod clipboard_import_tests;
+    mod theme_tests;
     use super::{
         checkout_core, viem_core_copy_formatted_utf8_range,
         viem_core_copy_style_sheet, viem_core_destroy, viem_core_formatted_point_info,
@@ -13815,6 +13816,63 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
 
 pub type ViemStyleDefaultsDiagnosticCallback =
     Option<unsafe extern "C" fn(*mut c_void, *const u8, u64)>;
+
+/// # Safety
+/// Output and required-length records must be writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_default_json(preset: u32, output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let bytes = crate::document::theme::default_json(preset).map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()); }
+        Ok(())
+    })
+}
+
+/// # Safety
+/// JSON is readable for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_validate_json(json: *const u8, length: u64) -> ViemStatus {
+    ffi_boundary(|| {
+        if length > crate::document::theme::MAX_THEME_BYTES as u64 { return Err(ViemStatus::InvalidArgument); }
+        crate::document::theme::validate_json(unsafe { input_bytes(json, length)? }).map_err(|_| ViemStatus::InvalidArgument)
+    })
+}
+
+/// # Safety
+/// Name is a readable UTF-8 slice for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_validate_name(name: *const u8, length: u64) -> ViemStatus {
+    ffi_boundary(|| {
+        if length > 128 { return Err(ViemStatus::InvalidArgument); }
+        let name = str::from_utf8(unsafe { input_bytes(name, length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
+        crate::document::theme::validate_name(name).map_err(|_| ViemStatus::InvalidArgument)
+    })
+}
+
+/// Replace live application defaults without editing source or document history.
+/// # Safety
+/// Input and callback follow `viem_core_initialize_style_defaults`'s contract.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_replace_style_defaults(handle: ViemCoreHandle, expected_revision: u64, json: *const u8, length: u64, diagnostic: ViemStyleDefaultsDiagnosticCallback, context: *mut c_void) -> ViemStatus {
+    ffi_boundary(|| {
+        let bytes = unsafe { input_bytes(json, length)? };
+        let result = with_core_mut(handle, |core| {
+            validate_revision(core.document(), expected_revision)?;
+            Ok(core.replace_style_defaults(bytes))
+        })?;
+        let (messages, status) = match result {
+            Ok(messages) => (messages, Ok(())),
+            Err(error) => (vec![error.to_string()], Err(ViemStatus::InvalidArgument)),
+        };
+        if let Some(callback) = diagnostic {
+            for message in messages { unsafe { callback(context, message.as_ptr(), message.len() as u64); } }
+        }
+        status
+    })
+}
 
 /// Load usable JSON defaults before a core has views or edits. No source mutation.
 /// Diagnostics describe ignored settings and run after releasing the core lease.

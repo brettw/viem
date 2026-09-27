@@ -151,7 +151,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertFalse(implicit.properties.values.contains { $0.declared != nil },
                        "An implicit definition only inherits")
         XCTAssertEqual(try surface.backend.configuration.codeStyleSheet(), savedAfterDelete,
-                       "Implicit definitions are never written to code_style.json")
+                       "Implicit definitions are never written to the theme file")
         let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
         let entry = try XCTUnwrap(catalogue.entries.first { $0.stableID == implicit.key.id.rawValue })
         XCTAssertEqual(entry.actionKind, .edit)
@@ -231,7 +231,6 @@ final class EVCodeStyleMenuTests: XCTestCase {
         XCTAssertFalse(surface.editorView.validateMenuItem(forged))
         surface.editorView.performEditorStyleMenuAction(forged)
         XCTAssertNil(coordinator.styleWindow)
-        XCTAssertFalse(surface.presentation(for: .saveDefaultStyle).isEnabled)
         XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
     }

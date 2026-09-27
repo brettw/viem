@@ -1,7 +1,7 @@
 import AppKit
 import ViemAppShell
 
-/// One process-wide handle on the Code stylesheet file, independent of the
+/// One process-wide handle on the selected theme file, independent of the
 /// number or size of buffers. The file is read at startup and thereafter only
 /// when the user reloads it or an in-app write needs its conflict check; it is
 /// never polled. File reads run off the main actor and are capped before
@@ -18,6 +18,7 @@ final class EVCodeStyleFileMonitor {
         case contents(Data, Stamp)
         case failed(String, Stamp?)
     }
+    private let configuration: EVConfigurationStore
     private let file: URL
     private let apply: @MainActor (Data) throws -> Void
     private var baseline: Stamp?
@@ -27,7 +28,8 @@ final class EVCodeStyleFileMonitor {
     private var completions: [@MainActor (String?) -> Void] = []
 
     init(configuration: EVConfigurationStore, apply: @escaping @MainActor (Data) throws -> Void) {
-        file = configuration.directory.appendingPathComponent("code_style.json")
+        self.configuration = configuration
+        file = configuration.selectedThemeURL!
         self.apply = apply
         baseline = try? Self.stamp(file)
         EVCodePreferences.shared.reportLoadDiagnostics([], source: "code_styles_file")
@@ -42,7 +44,7 @@ final class EVCodeStyleFileMonitor {
     func validateBeforeWrite() throws {
         guard try Self.stamp(file) == baseline else {
             checkForChanges()
-            throw NSError(domain: "ViemCodeStyle", code: 3, userInfo: [NSLocalizedDescriptionKey: "Code styles changed outside Viem and are being reloaded. Retry the edit after the styles refresh."])
+            throw NSError(domain: "ViemCodeStyle", code: 3, userInfo: [NSLocalizedDescriptionKey: "The theme changed outside Viem and is being reloaded. Retry the edit after the styles refresh."])
         }
     }
 
@@ -76,17 +78,18 @@ final class EVCodeStyleFileMonitor {
                 case .retry:
                     // Only reachable when the file kept changing under every
                     // read, so an explicit reload must not claim it applied.
-                    if forcing { outcome = "code_style.json is being written right now. Reload again once the writer finishes." }
+                    if forcing { outcome = "\(self.file.lastPathComponent) is being written right now. Reload again once the writer finishes." }
                 case .removed:
                     self.baseline = nil
-                    outcome = "code_style.json was removed. The last valid Code styles remain active; use Restore Defaults to reset them."
+                    do { try self.configuration.ensureCurrentThemeExists() }
+                    catch { outcome = error.localizedDescription }
                 case let .failed(message, stamp):
                     self.baseline = stamp
                     outcome = message
                 case let .contents(data, stamp):
                     self.baseline = stamp
                     do { try self.apply(data) }
-                    catch { outcome = "Unable to reload code_style.json: \(error.localizedDescription) The last valid Code styles remain active." }
+                    catch { outcome = "Unable to reload \(self.file.lastPathComponent): \(error.localizedDescription) The last valid theme remains active." }
                 }
                 self.report(outcome)
                 if self.forceRequested { self.checkForChanges(); return }
@@ -127,8 +130,8 @@ final class EVCodeStyleFileMonitor {
             // one absent stamp against another and calling it unchanged.
             if !force, observed == baseline { return .unchanged }
             guard let observed else { return .removed }
-            let limit = 4 * 1024 * 1024
-            guard observed.size <= limit else { return .failed("code_style.json exceeds 4 MiB. The last valid Code styles remain active.", observed) }
+            let limit = 20 * 1024 * 1024
+            guard observed.size <= limit else { return .failed("\(file.lastPathComponent) exceeds 20 MiB. The last valid theme remains active.", observed) }
             let handle = try FileHandle(forReadingFrom: file)
             defer { try? handle.close() }
             var data = Data()
@@ -137,9 +140,9 @@ final class EVCodeStyleFileMonitor {
                 if chunk.isEmpty { break }
                 data.append(chunk)
             }
-            guard data.count <= limit else { return .failed("code_style.json exceeds 4 MiB. The last valid Code styles remain active.", observed) }
+            guard data.count <= limit else { return .failed("\(file.lastPathComponent) exceeds 20 MiB. The last valid theme remains active.", observed) }
             guard try stamp(file) == observed else { return .retry }
             return .contents(data, observed)
-        } catch { return .failed("Unable to read code_style.json: \(error.localizedDescription)", observed) }
+        } catch { return .failed("Unable to read \(file.lastPathComponent): \(error.localizedDescription)", observed) }
     }
 }

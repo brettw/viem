@@ -13,42 +13,120 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); legacy.removePersistentDomain(forName: suite) }
     return EVConfigurationStore(directory: directory, legacyDefaults: legacy)
   }
-  func testSaveDefaultMenuReloadsSparseStyleWithoutDirtyingNewDocument() throws {
-    for (type, source, name) in [(EVDocument.plainTextType,"Text","text"),
-      (EVDocument.markdownType,"Text","markdown"),
-      (EVDocument.rtfType,#"{\rtf1 Text}"#,"rtf")] {
+  func testThemeStyleEditsUpdateExistingAndFutureDocumentsWithoutChangingSourceOrUndo() throws {
+    for (format, type, source) in [(EVSourceFormat.plainText, EVDocument.plainTextType, "Text"),
+      (.markdown, EVDocument.markdownType, "# Heading\n\nText"),
+      (.rtf, EVDocument.rtfType, #"{\rtf1 Text}"#)] {
       let config = try configuration()
-      let original = EVCoreDocumentBackend(configuration: config)
-      try original.read(source: Data(source.utf8), typeName: type)
-      let surface = try XCTUnwrap(original.makeEditorSurface() as? EVEditorSurfaceController)
-      surface.loadViewIfNeeded()
-      let snapshot = try original.styleSheetSnapshot()
-      try surface.session?.editStyle(key: .baseParagraph, expected: snapshot.identity,
+      let backends = [EVCoreDocumentBackend(configuration: config), EVCoreDocumentBackend(configuration: config)]
+      let surfaces = try backends.map { backend -> EVEditorSurfaceController in
+        try backend.read(source: Data(source.utf8), typeName: type)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        return surface
+      }
+      let originals = try backends.map { try $0.recoverySnapshot() }
+      let session = try EVThemeStyleSession(configuration: config, format: format)
+      try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
         mutation: .setDeclaration(.characterSize, .float(27)))
-      XCTAssertEqual(surface.presentation(for: .saveDefaultStyle).title, "Save as default \(name) style")
-      let before = try original.documentState()
-      let bytes = try original.serializedSource(typeName: type)
-      surface.perform(menuCommand: .saveDefaultStyle, sender: nil)
-      XCTAssertTrue(FileManager.default.fileExists(atPath: config.directory.appendingPathComponent("\(name)_style.json").path))
-      XCTAssertEqual(try original.documentState().document_revision, before.document_revision)
-      XCTAssertEqual(try original.serializedSource(typeName: type), bytes)
+      for (index, backend) in backends.enumerated() {
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
+        XCTAssertEqual(try backend.recoverySnapshot(), originals[index])
+        XCTAssertFalse(surfaces[index].canUndo)
+      }
       let reopened = EVCoreDocumentBackend(configuration: config)
       try reopened.read(source: Data(source.utf8), typeName: type)
-      XCTAssertNil(reopened.configurationWarning)
-      XCTAssertEqual(try reopened.documentState().document_revision, 0)
+      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
       XCTAssertFalse(reopened.persistenceState.isDirty)
       XCTAssertEqual(try reopened.serializedSource(typeName: type), Data(source.utf8))
-      let style = try XCTUnwrap(try reopened.styleSheetSnapshot().definition(for: .baseParagraph))
-      XCTAssertEqual(style.properties[.characterSize]?.declared, .float(27), "Saved defaults are ordinary visible declarations")
-      XCTAssertEqual(style.properties[.characterSize]?.effective, .float(27))
+      session.undoManager.undo()
+      XCTAssertNotEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
+      session.undoManager.redo()
+      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
     }
   }
-  func testMalformedDefaultFileWarnsWithoutBlockingOrRewritingSource() throws {
+
+  func testFormatChangesAndUndoUseCurrentThemeFamilyAndRetargetOpenInspector() throws {
     let config = try configuration()
-    try FileManager.default.createDirectory(at: config.directory, withIntermediateDirectories: true)
-    let file = config.directory.appendingPathComponent("markdown_style.json")
-    let invalid = Data(#"{"version":99}"#.utf8); try invalid.write(to: file)
+    let text = try EVThemeStyleSession(configuration: config, format: .plainText)
+    let markdown = try EVThemeStyleSession(configuration: config, format: .markdown)
+    try text.edit(key: .baseParagraph, expected: text.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(27)))
+    try markdown.edit(key: .baseParagraph, expected: markdown.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(19)))
     let backend = EVCoreDocumentBackend(configuration: config)
+    let source = Data("# Heading".utf8)
+    try backend.read(source: source, typeName: EVDocument.plainTextType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let view = try XCTUnwrap(surface.session)
+    let coordinator = EVStyleEditorCoordinator()
+    coordinator.show(document: surface, sender: nil)
+    defer { coordinator.close() }
+    let firstTarget = coordinator.inspection?.targetCoreDocumentID
+    func size() throws -> EVStyleValue? {
+      try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective
+    }
+    XCTAssertEqual(try size(), .float(27))
+    _ = try view.setFormat(.markdown, expected: backend.documentState())
+    XCTAssertEqual(try size(), .float(19))
+    XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, firstTarget)
+    XCTAssertEqual(coordinator.inspection?.selectedStyleID, EVStyleID(rawValue: "Heading1"))
+    try markdown.edit(key: .baseParagraph, expected: markdown.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(35)))
+    try text.edit(key: .baseParagraph, expected: text.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(31)))
+    _ = try view.undo()
+    XCTAssertEqual(backend.sourceFormat, .plainText)
+    XCTAssertEqual(try size(), .float(31))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
+    _ = try view.redo()
+    XCTAssertEqual(backend.sourceFormat, .markdown)
+    XCTAssertEqual(try size(), .float(35))
+  }
+
+  func testDefaultThemeStyleEditsRemainInMemoryAndAreClonedByNewTheme() throws {
+    let config = try configuration()
+    try config.selectTheme(named: nil)
+    let initialConfig = try Data(contentsOf: config.directory.appendingPathComponent("config.json"))
+    let session = try EVThemeStyleSession(configuration: config, format: .markdown)
+    try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(29)))
+    XCTAssertNil(config.selectedThemeURL)
+    XCTAssertEqual(try Data(contentsOf: config.directory.appendingPathComponent("config.json")), initialConfig)
+    try config.createTheme(named: "My writing")
+    let reopened = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: config.directory))
+    try reopened.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
+    XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(29))
+  }
+
+  func testThemeSwitchKeepsSourceOwnedRTFFormattingAndDocumentUndo() throws {
+    let config = try configuration()
+    let backend = EVCoreDocumentBackend(configuration: config)
+    let source = Data(#"{\rtf1\fs42 Text}"#.utf8)
+    try backend.read(source: source, typeName: EVDocument.rtfType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let view = try XCTUnwrap(surface.session)
+    _ = try view.sendText("A!")
+    _ = try view.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+    let before = try backend.recoverySnapshot()
+    let typography = try view.selectedTypography()
+    try config.selectTheme(named: "Paper")
+    XCTAssertEqual(try backend.recoverySnapshot(), before)
+    XCTAssertEqual(try view.selectedTypography().size, typography.size)
+    XCTAssertTrue(surface.canUndo)
+    _ = try view.undo()
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), source)
+  }
+
+  func testMalformedSelectedThemeWarnsWithoutBlockingOrRewritingSource() throws {
+    let config = try configuration()
+    let file = try XCTUnwrap(config.selectedThemeURL)
+    let invalid = Data(#"{"version":99}"#.utf8)
+    try invalid.write(to: file)
+    let reloaded = EVConfigurationStore(directory: config.directory)
+    let backend = EVCoreDocumentBackend(configuration: reloaded)
     let source = Data("Text".utf8)
     try backend.read(source: source, typeName: EVDocument.markdownType)
     XCTAssertNotNil(backend.configurationWarning)
@@ -56,6 +134,29 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: file), invalid)
     XCTAssertFalse(backend.persistenceState.isDirty)
   }
+  func testRTFThemeCustomStylesCanBeCreatedDeletedAndUndoneWithoutChangingDocuments() throws {
+    let config = try configuration()
+    let backend = EVCoreDocumentBackend(configuration: config)
+    let source = Data(#"{\rtf1 Text}"#.utf8)
+    try backend.read(source: source, typeName: EVDocument.rtfType)
+    let before = try backend.recoverySnapshot()
+    let session = try EVThemeStyleSession(configuration: config, format: .rtf)
+    let editor = EVStyleEditorViewController()
+    editor.retarget(settingsSession: session)
+    XCTAssertTrue(editor.createStyle(kind: .paragraph), editor.inspection.diagnostic)
+    let key = try XCTUnwrap(editor.inspection.selectedStyleKey)
+    XCTAssertTrue(key.id.rawValue.hasPrefix("RtfP"))
+    XCTAssertNotNil(try backend.styleSheetSnapshot().definition(for: key))
+    XCTAssertEqual(try backend.recoverySnapshot(), before)
+    XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(24)), editor.inspection.diagnostic)
+    XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: key)?.properties[.characterSize]?.effective, .float(24))
+    XCTAssertTrue(editor.deleteSelectedStyle(), editor.inspection.diagnostic)
+    XCTAssertNil(try backend.styleSheetSnapshot().definition(for: key))
+    session.undoManager.undo()
+    XCTAssertNotNil(try backend.styleSheetSnapshot().definition(for: key))
+    XCTAssertEqual(try backend.recoverySnapshot(), before)
+  }
+
   func testDefaultImportRejectsAnAlreadyOpenedViewWithoutMutation() throws {
     let config = try configuration()
     let backend = EVCoreDocumentBackend(configuration: config)
