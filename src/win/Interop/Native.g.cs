@@ -430,6 +430,19 @@ internal unsafe struct ViemViewportOriginV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemViewRestorationV1
+{
+    public uint @struct_size;
+    public uint @cursor_affinity;
+    public ulong @cursor_line;
+    public ulong @cursor_column;
+    public ulong @viewport_line;
+    public ulong @viewport_column;
+    public float @row_fraction;
+    public float @left;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemViewportStateV1
 {
     public uint @struct_size;
@@ -1495,6 +1508,7 @@ internal static unsafe partial class Native
     public const uint VIEM_VIEWPORT_STATE_HAS_LAYOUT = (1u << 3);
     public const uint VIEM_VIEWPORT_STATE_LINEBREAK = (1u << 4);
     public const uint VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT = (1u << 5);
+    public static readonly uint VIEM_VIEW_RESTORATION_V1_SIZE = ((uint)sizeof(ViemViewRestorationV1));
     public static readonly uint VIEM_VIEWPORT_STATE_V1_SIZE = ((uint)sizeof(ViemViewportStateV1));
     public static readonly uint VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE = ((uint)sizeof(ViemLayoutSnapshotIdentityV1));
     public const uint VIEM_STYLE_NAMESPACE_BLOCK = 1u;
@@ -1812,6 +1826,10 @@ internal static unsafe partial class Native
     public static extern uint viem_layout_work_release(ulong @work);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_state(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_capture_restoration(ulong @core, ulong @view, ViemViewRestorationV1* @out_state);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_restore(ulong @core, ulong @view, ulong @document, ulong @revision, ViemViewRestorationV1* @state, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_viewport_state(ulong @core, ulong @view, ViemViewportStateV1* @out_state);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

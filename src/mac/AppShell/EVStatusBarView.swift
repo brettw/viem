@@ -1,7 +1,7 @@
 import AppKit
 
 @MainActor
-public final class EVStatusBarView: NSView {
+public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public static var preferredHeight: CGFloat {
     max(25, ceil(EVThemeStore.shared.theme.statusFontSize + 14))
   }
@@ -35,6 +35,23 @@ public final class EVStatusBarView: NSView {
 
   private let modeLabel = NSTextField(labelWithString: "")
   private let messageLabel = NSTextField(labelWithString: "")
+  private let filePathLabel = NSTextField(labelWithString: "Untitled")
+  private var modeWidthConstraint: NSLayoutConstraint!
+  public var fileURL: URL? {
+    didSet { filePath = EVStatusFilePath.display(fileURL) }
+  }
+  var writeCopiedPath: (String) -> Void = { path in
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(path, forType: .string)
+  }
+  public private(set) var filePath: String = "Untitled" {
+    didSet {
+      guard filePath != oldValue else { return }
+      filePathLabel.stringValue = filePath
+      filePathLabel.toolTip = filePath
+      filePathLabel.setAccessibilityLabel("File: \(filePath)")
+    }
+  }
   private let locationLabel = NSButton(title: "", target: nil, action: nil)
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
   /// A click inside the command area, as a UTF-8 offset into its text.
@@ -65,14 +82,28 @@ public final class EVStatusBarView: NSView {
     locationLabel.action = #selector(toggleLineMode)
     locationLabel.setContentHuggingPriority(.required, for: .horizontal)
     modeLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-    modeLabel.setContentHuggingPriority(.required, for: .horizontal)
+    modeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+    modeWidthConstraint = modeLabel.widthAnchor.constraint(equalToConstant: 0)
+    modeWidthConstraint.isActive = true
+    filePathLabel.lineBreakMode = .byTruncatingHead
+    filePathLabel.maximumNumberOfLines = 1
+    filePathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    filePathLabel.setAccessibilityLabel("File: Untitled")
+    let pathMenu = NSMenu()
+    for (title, action) in [("Copy full path", #selector(copyFullPath(_:))),
+                            ("Copy relative path", #selector(copyRelativePath(_:)))] {
+      let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+      item.target = self
+      pathMenu.addItem(item)
+    }
+    filePathLabel.menu = pathMenu
     messageLabel.textColor = .secondaryLabelColor
     messageLabel.lineBreakMode = .byTruncatingTail
-    messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    messageLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
     // Everything except the caret position widget is left-aligned; the widget
     // is always present and always at the trailing edge.
-    leftGroup.setViews([modeLabel, messageLabel], in: .leading)
+    leftGroup.setViews([modeLabel, filePathLabel, messageLabel], in: .leading)
     leftGroup.orientation = .horizontal
     leftGroup.spacing = 14
     leftGroup.alignment = .centerY
@@ -151,6 +182,12 @@ public final class EVStatusBarView: NSView {
     layer?.backgroundColor = theme.statusBackground.color.cgColor
     modeLabel.font = theme.statusFont
     messageLabel.font = theme.statusFont
+    filePathLabel.font = theme.statusFont
+    filePathLabel.textColor = theme.statusForeground.color
+    modeWidthConstraint.constant = ceil([
+      "NORMAL", "INSERT", "REPLACE", "VISUAL", "VISUAL LINE", "VISUAL BLOCK",
+      "SELECTION", "SELECT", "SELECT LINE", "SELECT BLOCK", "COMMAND",
+    ].map { ($0 as NSString).size(withAttributes: [.font: theme.statusFont]).width }.max() ?? 0) + 4
     modeLabel.textColor = theme.statusForeground.color
     messageLabel.textColor = theme.statusForeground.color.withAlphaComponent(0.75)
     locationLabel.font = theme.statusFont
@@ -164,6 +201,20 @@ public final class EVStatusBarView: NSView {
     outputCloseButton.contentTintColor = theme.statusForeground.color
     heightConstraint.constant = Self.preferredHeight
     needsDisplay = true
+  }
+
+  public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    fileURL != nil
+  }
+
+  @objc private func copyFullPath(_ sender: NSMenuItem) {
+    guard let fileURL else { return }
+    writeCopiedPath(fileURL.standardizedFileURL.path)
+  }
+
+  @objc private func copyRelativePath(_ sender: NSMenuItem) {
+    guard let fileURL else { return }
+    writeCopiedPath(EVStatusFilePath.relative(fileURL))
   }
 
   @objc private func toggleLineMode() {
@@ -381,6 +432,7 @@ public final class EVStatusBarView: NSView {
     }
     modeLabel.stringValue = state.mode
     messageLabel.stringValue = state.message
+    messageLabel.isHidden = state.message.isEmpty
     locationLabel.title = state.location
     locationLabel.image = Self.lineIcon(state.lineMode)
     locationLabel.toolTip =

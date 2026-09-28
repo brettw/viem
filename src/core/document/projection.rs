@@ -795,6 +795,28 @@ impl HardLineSnapshot {
         Some(count)
     }
 
+    /// Capture a display location for explicit recovery in a replacement
+    /// document. Unlike a snapshot point, these zero-based line/grapheme
+    /// coordinates are only a presentation hint, never an editing target.
+    pub fn recovery_location(&self, offset: usize) -> Option<(usize, usize)> {
+        let line = self.line_at_offset(offset).ok()?;
+        let column = self.grapheme_count(line.content_range.start..offset)?;
+        Some((line.index, column))
+    }
+
+    /// Recover the nearest valid boundary on the requested line, or the final
+    /// line if it disappeared. Work touches only the local line and never
+    /// materializes a flat copy of the document.
+    pub fn recover_location(&self, line: usize, column: usize) -> Option<usize> {
+        let line = self.line(line.min(self.line_count().checked_sub(1)?))?;
+        let mut offset = line.content_range.start;
+        for _ in 0..column {
+            if offset == line.content_range.end { break; }
+            offset = self.next_grapheme_boundary(offset)?;
+        }
+        Some(offset)
+    }
+
     /// Advance exactly `count` logical items, returning `None` when that would
     /// pass EOF or when `offset` is not itself a legal boundary.
     pub fn advance_graphemes(&self, offset: usize, count: usize) -> Option<usize> {

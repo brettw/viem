@@ -115,6 +115,14 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     }?.window
   }
 
+  static func refreshStatusFilePaths(for document: EVDocument) {
+    for controller in instances.compactMap(\.value) where !controller.isClosed {
+      for pane in controller.paneContainer.panes where pane.document === document {
+        pane.refreshStatusFilePath()
+      }
+    }
+  }
+
   var paneCount: Int { paneContainer.panes.count }
 
   /// `CTRL-W` window effects. Pane order, focus, and heights live in the pane
@@ -799,6 +807,9 @@ extension EVDocumentWindowController {
         completion(.failure(EVDocumentHostError.invalidPath(path)))
         return
       }
+      for controller in Self.instances.compactMap(\.value) where !controller.isClosed {
+        for pane in controller.paneContainer.panes { pane.refreshStatusFilePath() }
+      }
       completion(.success(FileManager.default.currentDirectoryPath))
 
     case .editNewWindow:
@@ -1382,7 +1393,9 @@ final class EVDocumentContentViewController: NSViewController,
   EVEditorCommandRouting,
   NSMenuItemValidation
 {
-  weak var document: EVDocument?
+  weak var document: EVDocument? {
+    didSet { refreshStatusFilePath() }
+  }
   var argumentList: EVArgumentList?
   var argumentIndex: Int?
 
@@ -1475,6 +1488,10 @@ final class EVDocumentContentViewController: NSViewController,
       statusBar: statusBar.convert(statusBar.bounds, to: root),
       statusBarIsVisible: !statusBar.isHidden
     )
+  }
+
+  func refreshStatusFilePath() {
+    statusBar.fileURL = document?.fileURL
   }
 
   var statusBarHeight: CGFloat { statusBar.isHidden ? 0 : EVStatusBarView.preferredHeight }

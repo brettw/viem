@@ -96,6 +96,7 @@ public final class EVDocument: NSDocument {
                     self.fileBaselineGeneration &+= 1
                     self.resetExternalFileReview()
                     self.updateExternalFileMonitor(at: newValue)
+                    EVDocumentWindowController.refreshStatusFilePaths(for: self)
                 }
                 if let newValue {
                     self.editorBackend.updateFilename(EVDocumentIdentity.canonicalURL(newValue).path)

@@ -16,6 +16,8 @@
 
 mod argument_list;
 pub use argument_list::*;
+mod view_restoration;
+pub use view_restoration::*;
 mod external_change;
 pub use external_change::*;
 mod completion;
@@ -10262,6 +10264,7 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8(
 
 #[cfg(test)]
 mod tests {
+    mod view_restoration_tests;
     mod prelayout_tests;
     mod html_export_tests;
     mod clipboard_import_tests;

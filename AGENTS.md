@@ -1046,6 +1046,9 @@ inactive-document prompts wait until they can be presented.
 Load File explicitly discards unsaved changes in every view after warning.
 Consent becomes stale when the buffer, bound path, or disk state changes. Reload
 uses the exact verified bytes, retains editing format, and installs atomically.
+Each view retains its cursor and viewport location across reload, recovering to
+the closest valid positions when the new document is shorter or changes geometry.
+Reuse portable location and viewport restoration policy across native frontends.
 The dialog alone reports a change; do not add duplicate status messages.
 Viem's saves refresh the baseline before queued notifications are reviewed.
 Every save path, including forced Ex writes and close-review saves, checks for
@@ -1237,7 +1240,14 @@ choice, Formatted view is off. Text/Code documents and passive refreshes do not
 change the choice, and existing or recovered documents retain their own view.
 The status line
 has no format popup/label; its caret widget remains right-aligned beside prompts/
-output. Flow Source Paragraphs is initially-off Markdown Source layout only,
+output. Show each view's file path relative to cwd, using an absolute path when
+relativizing would traverse the filesystem root or cross Windows drives. Trim
+overlong paths from the left and reserve enough fixed mode-label space that
+changing modes does not move the path's starting position. The filename context
+menu copies its full path or its cwd-relative path, independent of truncation
+and the display's root fallback. Disable path copying for unnamed documents, and
+relative copying across Windows drives/shares. Flow Source Paragraphs
+is initially-off Markdown Source layout only,
 never a text-coordinate, serialization, or history change.
 
 Choosing/rechoosing a named character style clears direct declarations and

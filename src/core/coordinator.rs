@@ -51,6 +51,8 @@ mod completion_layout;
 mod search;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
+mod restoration;
+pub use restoration::ViewRestoration;
 use viewport::capture_caret_baseline_anchor;
 
 static NEXT_STYLE_EDIT_GROUP_ID: AtomicU64 = AtomicU64::new(1);
@@ -879,9 +881,20 @@ struct ViewportTextAnchor {
     reference: ViewportAnchorReference,
 }
 
+impl ViewportTextAnchor {
+    fn viewport_top(self, row: &crate::layout::VisualRow) -> f32 {
+        match self.reference {
+            ViewportAnchorReference::RowTop => row.y + self.offset_from_reference,
+            ViewportAnchorReference::RowFraction => row.y + self.offset_from_reference * row.height(),
+            ViewportAnchorReference::Baseline => row.baseline + self.offset_from_reference,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ViewportAnchorReference {
     RowTop,
+    RowFraction,
     Baseline,
 }
 
@@ -2658,10 +2671,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         && focus_offset <= row.text_range.end).expect("focus lies in the candidate");
                     let view = &self.views[&view_id];
                     let desired_top = if intent != ImmediateLayoutIntent::RevealCaret {
-                        preserved_anchor.map(|anchor| match anchor.reference {
-                            ViewportAnchorReference::Baseline => row.baseline,
-                            ViewportAnchorReference::RowTop => row.y,
-                        } + anchor.offset_from_reference)
+                        preserved_anchor.map(|anchor| anchor.viewport_top(row))
                     } else { None }.unwrap_or_else(|| {
                         let prefix = view.layout.hard_line_prefix_height(focus_line)
                             .expect("validated focus line").height() as f32;
@@ -2698,12 +2708,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     if let Some(anchor) = preserved_anchor {
                         let relative_reference = candidate.regional_snapshot().lines()[0].rows()
                             .iter().find(|row| row.text_range.start <= focus_offset && focus_offset <= row.text_range.end)
-                            .map(|row| match anchor.reference {
-                                ViewportAnchorReference::Baseline => row.baseline,
-                                ViewportAnchorReference::RowTop => row.y,
-                            });
+                            .map(|row| anchor.viewport_top(row));
                         if let Some(reference) = relative_reference {
-                            let required = -(reference + anchor.offset_from_reference);
+                            let required = -reference;
                             if required > 0. {
                                 candidate = viewport::include_preceding_rows(self, view_id, candidate, required)?;
                             }
@@ -7405,11 +7412,7 @@ fn restore_viewport_anchor<P: TextMeasurementProvider>(
         };
         let geometry = viewport::anchor_geometry(snapshot, anchor)?;
         let row = &snapshot.rows[geometry.row_index];
-        let reference = match anchor.reference {
-            ViewportAnchorReference::RowTop => row.y,
-            ViewportAnchorReference::Baseline => row.baseline,
-        };
-        reference + anchor.offset_from_reference
+        anchor.viewport_top(row)
     };
     view.layout.set_viewport_top(requested_top)?;
     if anchor.reference == ViewportAnchorReference::Baseline {

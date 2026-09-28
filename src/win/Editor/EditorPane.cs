@@ -25,7 +25,7 @@ namespace Viem.Windows.Editor;
 
 internal sealed partial class EditorPane : Grid, IDisposable
 {
-    public CoreDocument Document { get; }
+    public CoreDocument Document { get; private set; }
     public CoreView? View { get; private set; }
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
     private readonly EditorWindow window;
@@ -60,7 +60,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public event Action<EditorPane>? Focused;
     internal Exception? LastError { get; private set; }
     private readonly TaskCompletionSource<CoreView> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    internal Task<CoreView> Ready => ready.Task;
+    internal Task<CoreView> Ready => View is { } current ? Task.FromResult(current) : ready.Task;
     [DllImport("user32.dll")] private static extern uint GetCaretBlinkTime();
 
     public EditorPane(EditorWindow window, CoreDocument document, Preferences preferences)
@@ -159,6 +159,37 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);
         window.PaneReady(this);
+    }
+    internal CoreView? PrepareReplacement(CoreDocument document)
+    {
+        if (View == null) return null;
+        var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
+        var prepared = new CoreView(document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
+        try
+        {
+            var viewport = View.Viewport;
+            prepared.Wrap((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0);
+            prepared.Zoom(viewport.scale);
+            prepared.LineMode(View.CurrentLineMode);
+            if (document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE) prepared.ParagraphFlow(View.ParagraphFlowEnabled);
+            prepared.SmartQuotes(preferences.SmartQuotes);
+            prepared.ClipboardText = View.ClipboardText;
+            prepared.ClipboardFragment = View.ClipboardFragment;
+            prepared.ClipboardGeneration = View.ClipboardGeneration;
+            prepared.RestorePosition(View);
+            return prepared;
+        }
+        catch { prepared.Dispose(); throw; }
+    }
+    internal void InstallReplacement(CoreDocument document, CoreView? prepared)
+    {
+        Document.Changed -= DocumentChanged;
+        if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
+        Document = document; View = prepared;
+        Document.Changed += DocumentChanged;
+        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; }
+        mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
+        snapshot = null; InvalidateDrawingCache(); Refresh();
     }
     private void DocumentChanged() { if (View != null) Run(() => { View.Refresh(); }); }
     private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); }

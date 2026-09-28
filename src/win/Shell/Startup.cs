@@ -55,6 +55,9 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
@@ -66,6 +69,12 @@ internal sealed partial class EditorWindow
                             Environment.Exit(0);
                             return;
                         }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
+                            await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1")
+                            await TestReloadPositions();
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1")
+                            await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1")
                             await Diagnostics.FormattingToolbarTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
@@ -105,6 +114,7 @@ internal sealed partial class EditorWindow
                     Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                    await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                     var scrolled = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
                     await Diagnostics.ScrollDrawingTests.Run(scrolled);
@@ -143,6 +153,7 @@ internal sealed partial class EditorWindow
                     pane.View.Command("ggi"); pane.View.Text("Saved "); pane.View.Key(VIEM_KEY_ESCAPE); await Save(pane);
                     if (pane.Document.IsDirty || !File.ReadAllBytes(saved).AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision))) throw new InvalidOperationException("Native save did not preserve source bytes or clear dirty state.");
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native save and atomic replacement preserve source bytes");
+                    await TestReloadPositions();
                     await Diagnostics.HtmlExportTests.Run(this, pane, preferences.DirectoryPath);
                     string renamed = Path.Combine(preferences.DirectoryPath, "renamed.md");
                     string priorSlot = recoveries[pane.Document].Slot;
