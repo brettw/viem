@@ -519,7 +519,7 @@ reload in memory with stable identity, and persist with necessary ancestry only
 when edited. Saved definitions survive restart before their names are emitted.
 Deleting an emitted definition permits empty regeneration; renaming ends its
 old syntax association. Suppress removed/renamed built-in declarations across
-reload. Preserve migration/user overrides without rewriting files on load.
+reload. Preserve user overrides without rewriting files on load.
 
 Read themes on selection/startup and explicit Reload, without polling. Reload
 republishes to open buffers even if the file appears unchanged. Missing files
@@ -1164,8 +1164,10 @@ configuration, with settings undo independent of document undo. Named-theme
 edits save automatically. Default is editable in memory with no save path;
 New theme copies current values, including unsaved Default edits. Names must be
 unique, portable, and filename-safe; retain filename identity when display names
-collide. Missing selected files use Default. Preserve legacy files when importing
-them into a named theme; missing resources must not prevent loading.
+collide. Missing selected files use Default. Load only the current theme format,
+one file per theme in the profile's `themes` directory, with current stylesheet
+versions. Ignore obsolete top-level appearance and stylesheet files; do not
+import or migrate them. Missing resources must not prevent loading.
 **When changing `assets/themes/Midnight.json`, update the built-in defaults too;
 tests must compare the complete preset against code defaults.**
 

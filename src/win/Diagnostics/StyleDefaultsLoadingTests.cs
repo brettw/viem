@@ -25,7 +25,7 @@ internal static class StyleDefaultsLoadingTests
         byte[] midnight = File.ReadAllBytes(preferences.SelectedThemePath!);
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(17));
+        preferences.Set("theme", "statusFontSize", JsonValue.Create(17d));
         Check(preferences.StatusFontSize == 17 && new Preferences(directory).StatusFontSize == 11
             && File.ReadAllBytes(Path.Combine(directory, "config.json")).SequenceEqual(config)
             && File.ReadAllBytes(Path.Combine(preferences.ThemesDirectory, "Midnight.json")).SequenceEqual(midnight),
@@ -40,7 +40,7 @@ internal static class StyleDefaultsLoadingTests
         string customPath = preferences.SelectedThemePath!;
         var external = Read(customPath); external["future"] = new JsonObject { ["enabled"] = true };
         external["theme"]!["futureColor"] = 42; external["theme"]!["statusFontFamily"] = "Consolas"; Write(customPath, external);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(18));
+        preferences.Set("theme", "statusFontSize", JsonValue.Create(18d));
         var edited = Read(customPath);
         Check(edited["future"]!["enabled"]!.GetValue<bool>() && edited["theme"]!["futureColor"]!.GetValue<int>() == 42
             && preferences.StatusFontFamily == "Consolas", "theme edits preserve extension fields and unrelated external edits");
@@ -84,7 +84,7 @@ internal static class StyleDefaultsLoadingTests
         Check(new Preferences(directory).SelectedTheme == null && File.Exists(duplicateBare),
             "a missing selected filename falls back to Default without selecting another file with the same name");
         preferences.SelectTheme(".External", externalPath);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(19));
+        preferences.Set("theme", "statusFontSize", JsonValue.Create(19d));
         Check(Read(externalPath)["theme"]!["statusFontSize"]!.GetValue<int>() == 19,
             "external theme filenames keep their actual path when saving");
         preferences.DeleteTheme();
@@ -93,7 +93,7 @@ internal static class StyleDefaultsLoadingTests
 
         preferences.CreateTheme("Disappearing");
         string disappearedPath = preferences.SelectedThemePath!; File.Delete(disappearedPath);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(20));
+        preferences.Set("theme", "statusFontSize", JsonValue.Create(20d));
         Check(preferences.SelectedTheme == null && preferences.StatusFontSize == 20 && !File.Exists(disappearedPath)
             && new Preferences(directory).StatusFontSize == 11,
             "editing after an active theme file disappears uses memory-only Default and never recreates the missing file");
@@ -106,18 +106,44 @@ internal static class StyleDefaultsLoadingTests
         root["selectedTheme"] = "Missing"; Write(Path.Combine(directory, "config.json"), root);
         Check(new Preferences(directory).SelectedTheme == null, "a missing selected theme falls back to Default");
 
-        string legacyDirectory = Path.Combine(directory, "legacy"); Directory.CreateDirectory(Path.Combine(legacyDirectory, "themes"));
-        File.WriteAllBytes(Path.Combine(legacyDirectory, "themes", "Imported.json"), midnight);
-        var legacyConfig = new JsonObject { ["version"] = 1, ["theme"] = new JsonObject { ["statusFontSize"] = 16 }, ["future"] = 99 };
-        Write(Path.Combine(legacyDirectory, "config.json"), legacyConfig);
-        byte[] legacyStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
-        File.WriteAllBytes(Path.Combine(legacyDirectory, "markdown_style.json"), legacyStyles);
-        var imported = new Preferences(legacyDirectory);
-        Check(imported.SelectedTheme == "Imported2" && imported.StatusFontSize == 16
-            && File.ReadAllBytes(Path.Combine(legacyDirectory, "markdown_style.json")).SequenceEqual(legacyStyles)
-            && Read(Path.Combine(legacyDirectory, "config.json"))["future"]!.GetValue<int>() == 99
-            && !Read(Path.Combine(legacyDirectory, "config.json")).ContainsKey("theme"),
-            "legacy appearance moves into a unique aggregate, removing its old config block while retaining style files and config extensions");
+        string legacyDirectory = Path.Combine(directory, "legacy"); Directory.CreateDirectory(legacyDirectory);
+        string legacyConfigPath = Path.Combine(legacyDirectory, "config.json");
+        var legacyConfig = new JsonObject {
+            ["version"] = 1, ["theme"] = new JsonObject { ["statusFontSize"] = "obsolete", ["foreground"] = false },
+            ["editing"] = new JsonObject { ["smartQuotes"] = true }, ["future"] = 99
+        };
+        Write(legacyConfigPath, legacyConfig);
+        byte[] legacyConfigBytes = File.ReadAllBytes(legacyConfigPath);
+        string[] retiredStyleFiles = ["text_style.json", "markdown_style.json", "code_style.json"];
+        foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(legacyDirectory, file), "obsolete stylesheet");
+        var ignored = new Preferences(legacyDirectory);
+        Check(ignored.SelectedTheme == null && ignored.StatusFontSize == 11 && ignored.SmartQuotes && ignored.Error == null
+            && ignored.ThemeNames.Length == 0 && !Directory.Exists(ignored.ThemesDirectory)
+            && File.ReadAllBytes(legacyConfigPath).SequenceEqual(legacyConfigBytes)
+            && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(legacyDirectory, file)) == "obsolete stylesheet"),
+            "old appearance and top-level stylesheet files are ignored without importing, validating, or rewriting them");
+        ignored.Set("editing", "smartQuotes", JsonValue.Create(false));
+        Check(!new Preferences(legacyDirectory).SmartQuotes
+            && JsonNode.DeepEquals(Read(legacyConfigPath)["theme"], legacyConfig["theme"])
+            && Read(legacyConfigPath)["future"]!.GetValue<int>() == 99,
+            "obsolete appearance data does not block preference edits and is preserved as an unknown config field");
+
+        Directory.CreateDirectory(ignored.ThemesDirectory);
+        string importedPath = Path.Combine(ignored.ThemesDirectory, "Imported.json");
+        var currentTheme = JsonNode.Parse(midnight)!; currentTheme["theme"]!["statusFontSize"] = 16; Write(importedPath, currentTheme);
+        ignored.SelectTheme("Imported");
+        var selected = new Preferences(legacyDirectory);
+        Check(selected.SelectedTheme == "Imported" && selected.SelectedThemePath == importedPath && selected.StatusFontSize == 16
+            && selected.Error == null && selected.ThemeNames.SequenceEqual(new[] { "Imported" })
+            && JsonNode.DeepEquals(Read(legacyConfigPath)["theme"], legacyConfig["theme"]),
+            "a current-format theme named Imported loads normally despite obsolete profile data");
+
+        string freshDirectory = Path.Combine(directory, "legacy-styles-only"); Directory.CreateDirectory(freshDirectory);
+        foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(freshDirectory, file), "obsolete stylesheet");
+        var fresh = new Preferences(freshDirectory);
+        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper" }) && fresh.Error == null
+            && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(freshDirectory, file)) == "obsolete stylesheet"),
+            "obsolete top-level styles do not suppress fresh-profile presets or create an Imported theme");
 
         preferences.SelectTheme("Custom");
         var window = new EditorWindow(preferences); App.Instance.Windows.Add(window);

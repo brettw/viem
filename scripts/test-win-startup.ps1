@@ -19,8 +19,15 @@ try {
             $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
             if ($ProfileDirectory) {
                 New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null
-                Get-ChildItem -LiteralPath $ProfileDirectory -File | Where-Object { $_.Name -in @('config.json', 'startup.viem') -or $_.Name -like '*_style.json' } |
+                Get-ChildItem -LiteralPath $ProfileDirectory -File | Where-Object { $_.Name -in @('config.json', 'startup.viem') } |
                     ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $env:VIEM_CONFIG_DIR $_.Name) }
+                $themesDirectory = Join-Path $ProfileDirectory 'themes'
+                if (Test-Path -LiteralPath $themesDirectory -PathType Container) {
+                    $themesDestination = Join-Path $env:VIEM_CONFIG_DIR 'themes'
+                    New-Item -ItemType Directory -Path $themesDestination -Force | Out-Null
+                    Get-ChildItem -LiteralPath $themesDirectory -File -Force |
+                        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $themesDestination $_.Name) }
+                }
             }
             if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
             $env:VIEM_STARTUP_REPORT = $reportPath

@@ -193,32 +193,8 @@ extension EVConfigurationStore {
       }
     }
 
-    if root["selectedTheme"] == nil {
-      var imported = try EVThemeFile.builtin()
-      var hasLegacy = false
-      if let appearance = root["theme"] { imported["theme"] = appearance; hasLegacy = true }
-      var styles = imported["styles"] as? [String: Any] ?? [:]
-      for name in Self.styleNames {
-        let file = directory.appendingPathComponent("\(name)_style.json")
-        if manager.fileExists(atPath: file.path) {
-          let object = try Self.readObject(Data(contentsOf: file))
-          try Self.validateStyleVersion(object, named: name)
-          styles[name] = object
-          hasLegacy = true
-        }
-      }
-      imported["styles"] = styles
-      if hasLegacy {
-        activeTheme = imported
-        var name = "Imported"
-        var suffix = 2
-        while availableThemeNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
-          name = "Imported\(suffix)"; suffix += 1
-        }
-        try createTheme(named: name)
-        return
-      }
-      if newProfile && !hadThemes { try persistThemeSelection("Midnight") }
+    if root["selectedTheme"] == nil && newProfile && !hadThemes {
+      try persistThemeSelection("Midnight")
     }
     let selected = root["selectedTheme"] as? String
     let filename = root["selectedThemeFile"] as? String
@@ -313,7 +289,6 @@ extension EVConfigurationStore {
     try update(notify: false) { candidate in
       candidate["selectedTheme"] = name as Any? ?? NSNull()
       candidate["selectedThemeFile"] = name.map { fileName ?? ($0 + ".json") } as Any? ?? NSNull()
-      candidate.removeValue(forKey: "theme")
       return true
     }
   }

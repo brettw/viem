@@ -46,8 +46,10 @@ final class EVThemeTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: name) }
-    defaults.set(Data("invalid json".utf8), forKey: "EVApplicationTheme.v1")
-    let store = EVThemeStore(configuration: configuration)
+    try Data("invalid json".utf8).write(to: XCTUnwrap(configuration.selectedThemeURL))
+    let reopened = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
+    XCTAssertNotNil(reopened.lastError)
+    let store = EVThemeStore(configuration: reopened)
     XCTAssertEqual(store.theme, .midnight)
     let settings = EVSettingsWindowController(store: store)
     defer { settings.close() }

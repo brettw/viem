@@ -7,22 +7,19 @@ import XCTest
 
 @MainActor
 final class EVCodeStyleInheritanceTests: XCTestCase {
-    func testLegacyCaptureAliasesCanonicalizeWithoutLosingLocalEditsOrRewritingTheFile() throws {
+    func testSavedCanonicalStylesPreserveInheritanceWithoutRewritingTheFile() throws {
         let configuration = configuration()
         let parentColor: [String: Float] = ["red": 0.1, "green": 0.5, "blue": 0.3, "alpha": 1]
         let localColor: [String: Float] = ["red": 0.2, "green": 0.3, "blue": 0.8, "alpha": 1]
         let entries: [[String: Any]] = [
                 ["id": "syntax:Comment", "name": "Project comments",
-                 "properties": ["foreground": parentColor, "size": 21] as [String: Any]],
-                ["id": "syntax:@comment", "name": "@comment",
+                 "properties": ["foreground": parentColor, "size": 27] as [String: Any]],
+                ["id": "syntax:Comment.documentation", "name": "Comment.documentation",
                  "based_on": "syntax:Comment",
-                 "properties": ["size": 27] as [String: Any]],
-                ["id": "syntax:@comment.documentation", "name": "@comment.documentation",
-                 "based_on": "syntax:@comment",
                  "properties": ["foreground": localColor]],
         ]
         let settings: [String: Any] = [
-            "version": 2,
+            "version": 3,
             "character_styles": entries,
             "suppressed_character_ids": ["syntax:Todo"],
         ]
@@ -36,12 +33,11 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
         let commentKey = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "syntax:Comment"))
         let comment = try XCTUnwrap(snapshot.definition(for: commentKey))
         let documentation = try definition(named: "Comment.documentation", in: snapshot)
-        XCTAssertNil(comment.parentKey, "The former capture aliases the existing Comment definition")
+        XCTAssertNil(comment.parentKey)
         XCTAssertEqual(documentation.parentKey, comment.key)
         XCTAssertEqual(comment.properties[.characterForeground]?.declared,
                        .color(EVStyleColor(red: 0.1, green: 0.5, blue: 0.3, alpha: 1)))
-        XCTAssertEqual(comment.properties[.characterSize]?.declared, .float(27),
-                       "The former capture's explicit size takes precedence over its parent")
+        XCTAssertEqual(comment.properties[.characterSize]?.declared, .float(27))
         XCTAssertEqual(documentation.properties[.characterSize]?.effective, .float(27))
         XCTAssertEqual(documentation.properties[.characterForeground]?.declared,
                        .color(EVStyleColor(red: 0.2, green: 0.3, blue: 0.8, alpha: 1)))

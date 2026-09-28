@@ -98,9 +98,9 @@ final class EVCodePreferencesTests: XCTestCase {
     XCTAssertNotNil(try configuration.styleDefaults(named: "text"))
   }
 
-  func testCanonicalCodeStylesAndLegacyVersionLoadWithoutResurrectingDeclarations() throws {
+  func testCanonicalCodeStylesLoadWithoutResurrectingDeclarations() throws {
     let configuration = fixture()
-    let customized = Data(#"{"version":2,"character_styles":[{"id":"syntax:@comment","name":"@comment","properties":{"foreground":{"red":0.4,"green":0.5,"blue":0.6,"alpha":1}}}]}"#.utf8)
+    let customized = Data(#"{"version":3,"character_styles":[{"id":"syntax:Comment","name":"Comment","properties":{"foreground":{"red":0.4,"green":0.5,"blue":0.6,"alpha":1}}}]}"#.utf8)
     let linked = Data(#"{"version":3,"character_styles":[],"suppressed_character_ids":["syntax:Todo"]}"#.utf8)
     for (data, expectedCount) in [(customized, 1), (linked, 0), (customized, 1), (linked, 0)] {
       try configuration.saveCodeStyleSheet(data)
@@ -108,7 +108,7 @@ final class EVCodePreferencesTests: XCTestCase {
       let saved = try XCTUnwrap(reopened.codeStyleSheet())
       XCTAssertEqual(try reopened.styleDefaults(named: "code"), saved)
       let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
-      XCTAssertEqual(object["version"] as? Int, data == customized ? 2 : 3)
+      XCTAssertEqual(object["version"] as? Int, 3)
       XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, expectedCount)
     }
     // The generic format entry point must retain Code's complete replacement
@@ -126,7 +126,7 @@ final class EVCodePreferencesTests: XCTestCase {
     let valid = Data(#"{"version":3,"character_styles":[]}"#.utf8)
     try configuration.saveCodeStyleSheet(valid)
     let file = try XCTUnwrap(configuration.selectedThemeURL)
-    for version in ["0", "1", "4", "2.5", "3.5", "true", "\"3\""] {
+    for version in ["0", "1", "2", "4", "2.5", "3.5", "true", "\"3\""] {
       let original = try Data(contentsOf: file)
       let unsupported = Data("{\"version\":\(version)}".utf8)
       XCTAssertThrowsError(try configuration.saveCodeStyleSheet(unsupported))

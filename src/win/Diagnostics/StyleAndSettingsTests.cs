@@ -197,7 +197,8 @@ internal static class StyleAndSettingsTests
                 "opening the theme dropdown discovers external files without changing selection or saving settings");
             settings.ThemePicker.IsDropDownOpen = false;
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper"); await Task.Delay(100);
-            Check(settings.Error.Length == 0 && preferences.Theme == Theme.Paper, "Paper selection commits the named aggregate theme");
+            Check(settings.Error.Length == 0 && preferences.SelectedTheme == "Paper" && preferences.SelectedThemePath == paperPath
+                && preferences.Theme.Background == Theme.Paper.Background, "Paper selection commits the named aggregate theme");
             settings.StatusFont.SelectedItem = "Consolas"; settings.StatusSize.Value = 14; await Task.Delay(100);
             Check(preferences.StatusFontFamily == "Consolas" && preferences.StatusFontSize == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
