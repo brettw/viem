@@ -1,4 +1,9 @@
 //! The bundled language catalogue, independent of the host and lazy providers.
+//! Language changes must also review canonical/provider aliases and filename rules
+//! in detection/filenames.rs; see detection/PROFILE.md's maintenance checklist.
+//! The Vim manifest supplies names, not extensions or a compatibility guarantee.
+//! Tree-sitter-only languages need explicit entries here; registering a grammar
+//! does not automatically update this catalogue or filename detection.
 use std::{collections::BTreeSet, sync::OnceLock};
 
 #[derive(Clone, Debug, serde::Serialize)]

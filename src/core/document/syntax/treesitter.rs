@@ -23,6 +23,10 @@ pub use native::{
     AllocationMetrics,
 };
 
+// Keep this list and package_exists aliases in sync with bundled.rs. Package
+// changes must also review languages.rs and detection/filenames.rs; see the
+// language maintenance checklist in detection/PROFILE.md. This is the provider
+// inventory, not the complete language catalogue or an extension table.
 pub const BUNDLED_LANGUAGES: &[&str] = &[
     "c",
     "cpp",

@@ -452,6 +452,15 @@ scrolling or highlighting completion. Markers are data, not executable Vimscript
 or arbitrary option settings. See the [detection profile](src/core/document/syntax/detection/PROFILE.md)
 for bounded sampling, supported marker syntax and registered rules.
 
+When adding, removing, renaming or updating bundled languages, keep the shared
+catalogue, canonical/provider aliases, filename extensions and special basenames
+in sync in the same change. Follow the [language maintenance checklist](src/core/document/syntax/detection/PROFILE.md#keeping-language-support-and-filename-rules-in-sync)
+and add detection/opening coverage, or document why automatic matching is
+deliberately omitted. Vim `.vim` syntax programs and Tree-sitter grammars plus
+`.scm` queries are separate highlighting backends; neither registers filename
+rules. Do not infer extensions from syntax filenames or limit detection to
+Tree-sitter's smaller package set. Preserve ambiguous-name and Text fallbacks.
+
 View offers per-document Plain text, Markdown, and Code overrides above its
 other controls. Code contains Auto, a separator, and every supported language
 sorted case-insensitively by display name. Check the actual top-level mode and

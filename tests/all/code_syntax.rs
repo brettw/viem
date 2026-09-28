@@ -553,3 +553,120 @@ fn syntax_winning_unknown_names_and_grapheme_start_ownership_remain_presentation
     assert_eq!(document.source_bytes(), "a\u{301}😀x".as_bytes());
     assert!(!document.undo());
 }
+
+#[test]
+fn newly_recognized_files_open_as_code_without_changing_source_or_explicit_format() {
+    let source = b"literal 'text'\r\nsecond line\r\n";
+    for (filename, language) in [
+        ("build.bat", "dosbatch"), ("build.BaT", "dosbatch"), ("build.CMD", "dosbatch"),
+        ("profile.PS1", "ps1"), ("main.kt", "kotlin"), ("main.scss", "scss"),
+        ("module.cmake.in", "cmake"), ("meson.build", "meson"), (".gitignore", "gitignore"),
+    ] {
+        for (format, automatic, expected_format) in [
+            (Format::PlainText, true, Format::Code),
+            (Format::PlainText, false, Format::PlainText),
+            (Format::MarkdownSource, true, Format::MarkdownSource),
+        ] {
+            let document = Document::from_bytes_with_file_format(
+                source.to_vec(), Encoding::Utf8, format, FileFormat::Dos,
+            ).unwrap();
+            let revision = document.revision();
+            let mut core = Core::<MockTextMeasurementProvider>::new(document);
+            core.initialize_code_detection(filename, automatic).unwrap();
+            assert_eq!(core.document().format(), expected_format, "{filename}");
+            assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some(language), "{filename}");
+            assert_eq!(core.document().source_bytes(), source);
+            assert_eq!(core.document().revision(), revision);
+            assert_eq!(core.document().file_format(), FileFormat::Dos);
+            assert!(!core.document().is_dirty());
+        }
+    }
+}
+
+#[test]
+fn detected_batch_language_highlights_bundled_commands_without_changing_source() {
+    use viem_core::document::syntax::{
+        vim::{VimBudget, VimLoadLimits, VimProgram, VimSession, VimSetupContext},
+        Coverage, SyntaxInputIdentity, SyntaxInputSnapshot,
+    };
+    use viem_core::document::FormattedTextTree;
+
+    let source = concat!(
+        "@ECHO OFF\r\n",
+        "REM Build comment\r\n",
+        "SET NAME=world\r\n",
+        "IF defined NAME (\r\n",
+        "  echo \"Hello %NAME%\"\r\n",
+        ")\r\n",
+        "FOR %%F in (*.txt) do CALL :process %%F\r\n",
+        "GOTO :done\r\n",
+        ":process\r\n",
+        "EXIT /b 0\r\n",
+        ":done\r\n",
+    );
+    let document = Document::from_bytes_with_file_format(
+        source.as_bytes().to_vec(),
+        Encoding::Utf8,
+        Format::PlainText,
+        FileFormat::Dos,
+    )
+    .unwrap();
+    let mut core = Core::<MockTextMeasurementProvider>::new(document);
+    core.initialize_code_detection("build.bat", true).unwrap();
+    let language = core.code_language_detection().unwrap().language.as_deref().unwrap();
+    assert_eq!(language, "dosbatch");
+    assert_eq!(core.document().format(), Format::Code);
+
+    let text = core.document().text();
+    let input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity { document: 1, revision: 1, generation: 1 },
+        FormattedTextTree::try_from_text(text).unwrap(),
+    );
+    let mut context = VimSetupContext::from_input(&input);
+    context.filename = Some("build.bat".into());
+    let program = VimProgram::load_directory_with_context(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/vim/runtime/syntax"),
+        language,
+        VimLoadLimits::default(),
+        &context,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut session = VimSession::new(program);
+    let budget = VimBudget { allow_provisional: false, ..Default::default() };
+    let result = (0..256)
+        .find_map(|_| {
+            let result = session.highlight(&input, 0..text.len(), budget);
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert!(result.stats.instructions <= budget.instructions);
+            (!result.stats.yielded).then_some(result)
+        })
+        .expect("batch syntax must complete within bounded slices");
+    assert_eq!(result.coverage, Coverage::Exact);
+    assert_eq!(result.covered, 0..text.len());
+
+    for (needle, expected) in [
+        ("ECHO", "Function"),
+        ("OFF", "Operator"),
+        ("Build comment", "Comment"),
+        ("SET", "Function"),
+        ("IF", "Conditional"),
+        ("Hello", "String"),
+        ("%NAME%", "Identifier"),
+        ("FOR", "Repeat"),
+        ("%%F", "Identifier"),
+        ("CALL", "Statement"),
+        ("GOTO", "Statement"),
+        (":done", "Label"),
+        ("EXIT", "Statement"),
+    ] {
+        let start = text.find(needle).unwrap();
+        for at in start..start + needle.len() {
+            let name = result.runs.iter().find(|run| run.range.contains(&at))
+                .map(|run| run.name.as_str());
+            assert_eq!(name, Some(expected), "{needle} at byte {at}");
+        }
+    }
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    assert!(!core.document().is_dirty());
+}

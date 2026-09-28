@@ -36,6 +36,22 @@ The import replaces the owned `runtime` subtree, removing obsolete files, and
 preserves this README. Runtime globs and includes require preserving the helper
 directories. The compiler never runs a Vim executable during normal editing.
 
+## Language and filename maintenance
+
+Whenever this snapshot gains, loses or renames syntax files, follow the
+[language maintenance checklist](../../src/core/document/syntax/detection/PROFILE.md#keeping-language-support-and-filename-rules-in-sync).
+Review the catalogue/aliases and update
+[`detection/filenames.rs`](../../src/core/document/syntax/detection/filenames.rs)
+and detection/opening tests in the same change, or document intentional omissions.
+The manifest feeds the language catalogue, but import does not update filename
+rules. Syntax-file stems are language/helper names, not an extension inventory.
+
+These `.vim` programs are consumed by the native Vim compiler. The separate
+[Tree-sitter packages](../../src/core/document/syntax/treesitter/PROFILE.md) use
+compiled grammars and `.scm` queries for a smaller set of languages. Vim-only
+languages can have automatic filename detection too. Keep maintenance notes here,
+outside the byte-preserved upstream `runtime` subtree and its manifest.
+
 ## Resource discovery
 
 Viem always uses its bundled syntax files. The frontend resolves the bundle's
