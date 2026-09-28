@@ -149,3 +149,5 @@ mod zoom_policy;
 
 mod containers;
 mod block_boxes;
+
+mod document_mode;

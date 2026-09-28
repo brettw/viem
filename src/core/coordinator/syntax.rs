@@ -40,13 +40,15 @@ mod filename_tests {
 
 pub(super) struct CoreSyntax {
     service: SyntaxService,
-    selection: LanguageSelection,
+    pub(super) selection: LanguageSelection,
+    pub(super) automatic_detection: Option<Detection>,
+    pub(super) automatic_mode: bool,
     detection: Option<Detection>,
-    detected_for_code: bool,
+    pub(super) detected_for_code: bool,
     filename_associations: Vec<detection::FilenameAssociation>,
     detection_profile: Arc<detection::DetectionProfile>,
     filename: String,
-    published: Option<(SyntaxInputIdentity, u64)>,
+    pub(super) published: Option<(SyntaxInputIdentity, u64)>,
     referenced_names: Vec<String>,
     implicit_limited: bool,
     sheet: Arc<crate::document::StyleSheet>,
@@ -59,6 +61,8 @@ impl Default for CoreSyntax {
         Self {
             service: Default::default(),
             selection: LanguageSelection::Automatic,
+            automatic_detection: None,
+            automatic_mode: true,
             detection: None,
             detected_for_code: false,
             filename_associations: Vec::new(),
@@ -100,6 +104,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.document.projection().text_tree().clone(),
         )
     }
+    pub(super) fn detect_code_language(&self, selection: &LanguageSelection) -> Detection {
+        detection::detect_sampled_lines(&self.document.code_detection_samples(), &self.syntax.filename,
+            selection, &self.syntax.filename_associations, &self.syntax.detection_profile)
+    }
+
     pub fn initialize_code_detection(
         &mut self,
         filename: &str,
@@ -110,13 +119,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         self.syntax.filename = filename.to_owned();
         self.syntax.service.set_filename((!filename.is_empty()).then(|| filename.to_owned()));
-        let detection = detection::detect_with_profile(
-            &self.syntax_input(),
-            filename,
-            &self.syntax.selection,
-            &self.syntax.filename_associations,
-            &self.syntax.detection_profile,
-        );
+        let detection = self.detect_code_language(&self.syntax.selection);
         if allow_auto_code
             && detection.language.is_some()
             && self.document.format() == Format::PlainText
@@ -124,6 +127,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.document.initialize_code_format()?;
         }
         self.syntax.service.set_language(detection.language.clone());
+        self.syntax.automatic_detection = Some(detection.clone());
         self.syntax.detection = Some(detection);
         self.syntax.detected_for_code = self.document.format().is_code();
         self.publish_reflow_language();
@@ -137,15 +141,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             .and_then(|detection| detection.language.clone())
     }
     pub fn set_code_language(&mut self, selection: LanguageSelection) {
+        self.syntax.automatic_mode = selection == LanguageSelection::Automatic;
         self.syntax.selection = selection;
+        self.refresh_code_detection();
+    }
+    fn refresh_code_detection(&mut self) {
+        self.syntax.automatic_detection = Some(self.detect_code_language(&LanguageSelection::Automatic));
         self.syntax.service.set_filename((!self.syntax.filename.is_empty()).then(|| self.syntax.filename.clone()));
-        let detection = detection::detect_with_profile(
-            &self.syntax_input(),
-            &self.syntax.filename,
-            &self.syntax.selection,
-            &self.syntax.filename_associations,
-            &self.syntax.detection_profile,
-        );
+        let detection = self.detect_code_language(&self.syntax.selection);
         self.syntax.service.set_language(detection.language.clone());
         self.syntax.detection = Some(detection);
         self.syntax.published = None;
@@ -174,7 +177,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         self.syntax.filename_associations = associations;
         if self.syntax.detection.is_some() {
-            self.set_code_language(self.syntax.selection.clone());
+            self.refresh_code_detection();
         }
         Ok(())
     }
@@ -183,14 +186,14 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub fn set_code_detection_profile(&mut self, profile: Arc<detection::DetectionProfile>) {
         self.syntax.detection_profile = profile;
         if self.syntax.detection.is_some() {
-            self.set_code_language(self.syntax.selection.clone());
+            self.refresh_code_detection();
         }
     }
     pub fn redetect_code_language(&mut self, filename: Option<&str>) {
         if let Some(filename) = filename {
             self.syntax.filename = filename.to_owned();
         }
-        self.set_code_language(self.syntax.selection.clone());
+        self.refresh_code_detection();
         self.syntax.detected_for_code = self.document.format().is_code();
     }
     pub fn code_language_detection(&self) -> Option<&Detection> {
@@ -253,13 +256,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         let input = self.syntax_input();
         if !self.syntax.detected_for_code {
-            let detection = detection::detect_with_profile(
-                &input,
-                &self.syntax.filename,
-                &self.syntax.selection,
-                &self.syntax.filename_associations,
-                &self.syntax.detection_profile,
-            );
+            let detection = self.detect_code_language(&self.syntax.selection);
             self.syntax.service.set_language(detection.language.clone());
             self.syntax.detection = Some(detection);
             self.syntax.detected_for_code = true;

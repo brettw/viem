@@ -37,6 +37,33 @@ impl Drop for Core {
 }
 
 #[test]
+fn document_mode_and_language_catalogue_queries_check_storage_without_mutating() {
+    let core = Core::new();
+    let before = core.state();
+    for catalogue in [false, true] {
+        let query = |output, capacity, required| unsafe {
+            if catalogue { viem_copy_code_languages_json(output, capacity, required) }
+            else { viem_core_copy_document_mode_json(core.0, output, capacity, required) }
+        };
+        let mut required = 0;
+        assert_eq!(query(ptr::null_mut(), 0, &mut required), ViemStatus::BufferTooSmall);
+        let mut bytes = vec![0xa5; required as usize];
+        assert_eq!(query(bytes.as_mut_ptr(), required - 1, &mut required), ViemStatus::BufferTooSmall);
+        assert!(bytes.iter().all(|&b| b == 0xa5));
+        assert_eq!(query(bytes.as_mut_ptr(), required, &mut required), ViemStatus::Ok);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if catalogue { assert!(json.as_array().unwrap().len() > 600); }
+        else { assert_eq!(json["documentId"], before.document_id); assert_eq!(json["format"], "plainText"); }
+        assert_eq!(query(ptr::null_mut(), 0, ptr::null_mut()), ViemStatus::NullPointer);
+        let mut alias = 99u64;
+        let pointer = &mut alias as *mut u64;
+        assert_eq!(query(pointer.cast(), 8, pointer), ViemStatus::InvalidArgument);
+        assert_eq!(alias, 99);
+    }
+    assert_eq!(core.state(), before);
+}
+
+#[test]
 fn syntax_style_name_export_is_read_only_and_checks_output_storage() {
     let core = Core::new();
     let before = core.state();

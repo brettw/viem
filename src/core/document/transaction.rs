@@ -272,6 +272,12 @@ pub enum ModelRequest {
         revision: Revision,
         source: bool,
     },
+    /// Reproject the same physical source in another supported view format.
+    SetViewFormat {
+        document: DocumentId,
+        revision: Revision,
+        target: Format,
+    },
     /// Explicitly transcode the source, preserving decoded syntax and content.
     SetEncoding {
         document: DocumentId,
@@ -322,6 +328,7 @@ impl ModelRequest {
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
             | Self::SetMarkdownSource { document, .. }
+            | Self::SetViewFormat { document, .. }
             | Self::SetEncoding { document, .. }
             | Self::ReorderHardLines { document, .. }
             | Self::TransferHardLines { document, .. }
@@ -347,6 +354,7 @@ impl ModelRequest {
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
             | Self::SetMarkdownSource { revision, .. }
+            | Self::SetViewFormat { revision, .. }
             | Self::SetEncoding { revision, .. }
             | Self::ReorderHardLines { revision, .. }
             | Self::TransferHardLines { revision, .. }
@@ -1106,6 +1114,7 @@ impl Document {
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
 
             ModelRequest::SetMarkdownSource { source, .. } => self.prepare_markdown_source_change(source),
+            ModelRequest::SetViewFormat { target, .. } => self.prepare_view_format_change(target),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
             ModelRequest::ReorderHardLines {
                 source_lines,
@@ -3763,6 +3772,10 @@ impl Document {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let target = if source { Format::MarkdownSource } else { Format::Markdown };
+        self.prepare_view_format_change(target)
+    }
+
+    fn prepare_view_format_change(&self, target: Format) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if target == self.format() { return Ok(self.no_op_prepared()); }
         let revision = Revision(self.next_revision);
         let mut candidate = build_state_from_decoded(

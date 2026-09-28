@@ -4,6 +4,7 @@ use super::{FormattedTextError, FormattedTextTree};
 use std::ops::Range;
 
 pub mod detection;
+pub mod languages;
 pub mod service;
 pub mod treesitter;
 pub mod vim;

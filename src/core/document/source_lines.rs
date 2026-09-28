@@ -11,6 +11,27 @@ pub struct PhysicalSourceLine {
     pub text: String,
 }
 impl Document {
+    pub(crate) fn code_detection_samples(&self) -> Vec<(usize, String)> {
+        let count = self.state().source_hard_lines.len();
+        let mut indexes = std::collections::BTreeSet::new();
+        indexes.extend(0..count.min(5));
+        indexes.extend(count.saturating_sub(5)..count);
+        let half = super::syntax::detection::DETECTION_BYTE_LIMIT / 2;
+        let length = self.source_byte_len();
+        let mut decoded_budget = super::syntax::detection::DETECTION_BYTE_LIMIT;
+        indexes.into_iter().filter_map(|index| {
+            let range = self.state().source_hard_lines.get(index)?;
+            if !((index < 5 && range.end <= half) || (index >= count.saturating_sub(5) && range.start >= length.saturating_sub(half))) {
+                return None;
+            }
+            let line = self.physical_line(index).ok()?;
+            // Latin-1 can expand in UTF-8; retain the decoded inspection cap too.
+            if line.text.len() > decoded_budget { return None; }
+            decoded_budget -= line.text.len();
+            Some((index, line.text.trim_end_matches('\n').to_owned()))
+        }).collect()
+    }
+
     pub fn physical_line_count(&self) -> Result<usize, DocumentError> {
 
         Ok(self.state().source_hard_lines.len())

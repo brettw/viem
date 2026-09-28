@@ -78,7 +78,6 @@ pub fn detect_with_profile(
     let mut lines = BTreeSet::new();
     lines.extend(0..count.min(5));
     lines.extend(count.saturating_sub(5)..count);
-    let mut inspected = 0;
     let mut samples = Vec::new();
     let half = DETECTION_BYTE_LIMIT / 2;
     let head_end = input.byte_len().min(half);
@@ -93,12 +92,33 @@ pub fn detect_with_profile(
             continue;
         }
         if let Ok(value) = input.slice(start..end) {
-            inspected += value.len();
             samples.push((line, value));
         }
     }
+    detect_sampled_lines(&samples, filename, selection, associations, profile)
+}
+
+/// Detection over bounded, complete physical source lines. Formatted views use
+/// this entry point so hidden Markdown syntax cannot change language selection.
+pub(crate) fn detect_sampled_lines(
+    samples: &[(usize, String)], filename: &str, selection: &LanguageSelection,
+    associations: &[FilenameAssociation], profile: &DetectionProfile,
+) -> Detection {
+    let result = |language: Option<String>, reason: &str, bytes| Detection {
+        language,
+        reason: reason.into(),
+        bytes_inspected: bytes,
+    };
+    match selection {
+        LanguageSelection::None => return result(None, "explicit none", 0),
+        LanguageSelection::Language(value) => {
+            return result(Some(canonical_language(value)), "explicit language", 0)
+        }
+        _ => {}
+    }
+    let inspected = samples.iter().map(|(_, line)| line.len()).sum();
     let mut modeline = None;
-    for (_, line) in &samples {
+    for (_, line) in samples {
         if let Some(language) = marker(line) {
             modeline = Some(canonical_language(&language));
         }
@@ -106,7 +126,7 @@ pub fn detect_with_profile(
     if modeline.is_some() {
         return result(modeline, "Vim modeline", inspected);
     }
-    let (content_matches, _) = profile.scan(&samples);
+    let (content_matches, _) = profile.scan(samples);
     let base = filename.rsplit(['/', '\\']).next().unwrap_or(filename);
     if base.len() <= 4096 {
         let characters = base.chars().collect::<Vec<_>>();
@@ -167,7 +187,7 @@ pub fn detect_with_profile(
                 "sql" => Some("sql"),
                 "conf" => Some("conf"),
                 "ini" => Some("dosini"),
-                "md" | "markdown" | "mkd" => Some("markdown"),
+                "md" | "markdown" | "mdown" | "mkd" => Some("markdown"),
                 extension
                     if ["html", "htm", "xhtml"]
                         .iter()

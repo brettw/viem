@@ -2603,6 +2603,28 @@ ViemStatus viem_code_materialize_style(const uint8_t *name, uint64_t length,
     ViemStyleSheetInfoV1 *output);
 ViemStatus viem_code_replace_style_json(const uint8_t *input, uint64_t length);
 ViemStatus viem_code_export_style_json(uint8_t *output, uint64_t capacity, uint64_t *required);
+/* Buffer-local source-preserving mode override. Auto returns to detection. */
+#define VIEM_DOCUMENT_MODE_AUTO 0u
+#define VIEM_DOCUMENT_MODE_PLAIN_TEXT 1u
+#define VIEM_DOCUMENT_MODE_MARKDOWN 2u
+#define VIEM_DOCUMENT_MODE_CODE 3u
+typedef struct ViemSetDocumentModeV1 {
+    uint32_t struct_size;
+    uint32_t mode;
+    uint64_t document_id;
+    uint64_t document_revision;
+    uint32_t formatted_markdown;
+    uint32_t reserved;
+} ViemSetDocumentModeV1;
+#define VIEM_SET_DOCUMENT_MODE_V1_SIZE ((uint32_t)sizeof(ViemSetDocumentModeV1))
+/* Only Code accepts a nonempty language ID. All input/output regions disjoint. */
+ViemStatus viem_core_view_set_document_mode_with_effects(ViemCoreHandle core, ViemViewId view,
+    const ViemSetDocumentModeV1 *request, const uint8_t *language, uint64_t length,
+    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+/* Two-pass UTF-8 JSON queries. Output regions must be disjoint. Mode reads
+   cached detection; language enumeration does not load or execute providers. */
+ViemStatus viem_core_copy_document_mode_json(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
+ViemStatus viem_copy_code_languages_json(uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_core_initialize_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, uint8_t allow_auto_code);
 ViemStatus viem_core_configure_syntax(ViemCoreHandle core, const uint8_t *vim_directory, uint64_t length);
 ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, const uint8_t *json, uint64_t length);

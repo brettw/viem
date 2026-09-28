@@ -4830,3 +4830,53 @@ fn markdown_source_request_validates_boolean_size_and_preserves_source() {
     assert_eq!(copy_core_bytes(viem_core_copy_formatted_utf8, &core, after.document_revision), b"**First**\nSecond");
     assert_eq!(unsafe { test_set_markdown_source(core.handle, view, &request, &mut outcome) }, ViemStatus::StaleRevision);
 }
+
+#[test]
+fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
+    let original = b"**First**\r\n\r\nSecond";
+    let core = create_core(original, ViemDocumentOptions::default());
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let before = document_state(&core);
+    let request = ViemSetDocumentModeV1 {
+        struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+        mode: VIEM_DOCUMENT_MODE_MARKDOWN,
+        document_id: before.document_id,
+        document_revision: before.document_revision,
+        formatted_markdown: 1,
+        reserved: 0,
+    };
+    let call = |request: &ViemSetDocumentModeV1, language: &[u8]| {
+        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut effects = 0;
+        let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, request,
+            language.as_ptr(), language.len() as u64, &mut outcome, &mut effects) };
+        if effects != 0 { assert_eq!(viem_effect_batch_release(effects), ViemStatus::Ok); }
+        status
+    };
+    for invalid in [
+        ViemSetDocumentModeV1 { formatted_markdown: 2, ..request },
+        ViemSetDocumentModeV1 { reserved: 1, ..request },
+        ViemSetDocumentModeV1 { mode: 99, ..request },
+        ViemSetDocumentModeV1 { mode: VIEM_DOCUMENT_MODE_CODE, ..request },
+        ViemSetDocumentModeV1 { struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE - 1, ..request },
+    ] {
+        assert_eq!(call(&invalid, b""), ViemStatus::InvalidArgument);
+        assert_eq!(document_state(&core), before);
+    }
+    assert_eq!(call(&request, b"rust"), ViemStatus::InvalidArgument);
+    let code_request = ViemSetDocumentModeV1 { mode: VIEM_DOCUMENT_MODE_CODE, ..request };
+    assert_eq!(call(&code_request, &[0xff]), ViemStatus::InvalidUtf8);
+    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut effects = 99;
+    let alias = (&mut outcome as *mut ViemCoreOutcomeV1).cast::<u8>();
+    assert_eq!(unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &code_request,
+        alias, 4, &mut outcome, &mut effects) }, ViemStatus::InvalidArgument);
+    assert_eq!(effects, 99);
+    assert_eq!(document_state(&core), before);
+    assert_eq!(call(&request, b""), ViemStatus::Ok);
+    let after = document_state(&core);
+    assert_eq!(after.format, VIEM_FORMAT_MARKDOWN);
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, after.document_revision), original);
+    assert_eq!(call(&request, b""), ViemStatus::StaleRevision);
+}

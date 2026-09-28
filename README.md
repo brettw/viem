@@ -14,6 +14,11 @@ It has several presentation modes.
 - Code (for source code)
 - Markdown source and WYSIWYG
 
+The View menu overrides the current document's mode with Plain text, Markdown,
+or Code and a language. Code > Auto shows the detected language and falls back to
+Plain text when none is detected. On Markdown files, Code > Auto shows literal
+source with Markdown syntax highlighting. Mode changes preserve the file's bytes.
+
 ### Code editing
 
 Viem uses treesitter for the most popular languages for dynamic syntax highlighting. This happens on demand asynchronously to remain responsive, with the disadvantage being that you can get flashes of unstyled content when scrolling quickly. It falls back to vim syntax definitions for other formats.

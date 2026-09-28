@@ -85,6 +85,7 @@ internal static class StyleAndSettingsTests
         await FontChecks(pane, preferences);
         await StyleFontSizeTests.Run(pane, preferences);
         await FormatMenuTests.Run(preferences);
+        await DocumentModeMenuTests.Run(preferences);
         await ListInteractionTests.Run(preferences);
         await CodeStyleChecks(pane, preferences);
         await StyleInspectorBehaviorTests.Run(pane, preferences);

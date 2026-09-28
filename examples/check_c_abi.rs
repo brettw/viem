@@ -61,6 +61,8 @@ fn probe_source() -> String {
 #include "viem_core.h"
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
+_Static_assert(sizeof(ViemSetDocumentModeV1) == {set_mode_size}, "document mode operation size");
+_Static_assert(offsetof(ViemSetDocumentModeV1, formatted_markdown) == {set_mode_formatted}, "document mode preference offset");
 _Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, source) == {set_markdown_source}, "format operation offset");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_document}, "format document offset");
@@ -621,6 +623,8 @@ static void typecheck(void) {{
         selection_line = VIEM_MODE_SELECTION_LINE,
         selection_block = VIEM_MODE_SELECTION_BLOCK,
         autoselect = VIEM_EX_OPTION_AUTOSELECT,
+        set_mode_size = std::mem::size_of::<ViemSetDocumentModeV1>(),
+        set_mode_formatted = std::mem::offset_of!(ViemSetDocumentModeV1, formatted_markdown),
         set_markdown_size = std::mem::size_of::<ViemSetMarkdownSourceV1>(),
         set_markdown_source = std::mem::offset_of!(ViemSetMarkdownSourceV1, source),
         set_markdown_document = std::mem::offset_of!(ViemSetMarkdownSourceV1, document_id),

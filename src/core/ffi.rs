@@ -2113,6 +2113,23 @@ pub struct ViemSetMarkdownSourceV1 {
 }
 pub const VIEM_SET_MARKDOWN_SOURCE_V1_SIZE: u32 = size_of::<ViemSetMarkdownSourceV1>() as u32;
 
+/// Revision-bound source-preserving document view selection.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ViemSetDocumentModeV1 {
+    pub struct_size: u32,
+    pub mode: u32,
+    pub document_id: u64,
+    pub document_revision: u64,
+    pub formatted_markdown: u32,
+    pub reserved: u32,
+}
+pub const VIEM_SET_DOCUMENT_MODE_V1_SIZE: u32 = size_of::<ViemSetDocumentModeV1>() as u32;
+pub const VIEM_DOCUMENT_MODE_AUTO: u32 = 0;
+pub const VIEM_DOCUMENT_MODE_PLAIN_TEXT: u32 = 1;
+pub const VIEM_DOCUMENT_MODE_MARKDOWN: u32 = 2;
+pub const VIEM_DOCUMENT_MODE_CODE: u32 = 3;
+
 /// Lossless source transcoding request; automatic detection is not a target.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -14161,4 +14178,108 @@ unsafe fn copy_clipboard_json_bytes(bytes: &[u8], output: *mut u8, capacity: u64
     if checked_length(capacity)? < bytes.len() { return Err(ViemStatus::BufferTooSmall); }
     if !bytes.is_empty() { unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(),output,bytes.len()); } }
     Ok(())
+}
+
+/// Source-preserving view selection with the same checked transaction and owned effects as editing.
+/// # Safety
+/// Request, input language and outputs must be valid, aligned and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    request: *const ViemSetDocumentModeV1,
+    language: *const u8,
+    length: u64,
+    out_outcome: *mut ViemCoreOutcomeV1,
+    out_effects: *mut ViemEffectBatchHandle,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let regions = [
+            typed_pointer_region(request, 1)?,
+            typed_pointer_region(language, length)?,
+            typed_pointer_region(out_outcome, 1)?,
+            typed_pointer_region(out_effects, 1)?,
+        ];
+        validate_disjoint_regions(&regions)?;
+        let request = unsafe { request.read() };
+        if request.struct_size < VIEM_SET_DOCUMENT_MODE_V1_SIZE || request.formatted_markdown > 1 || request.reserved != 0 || length > 128 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        unsafe {
+            clear_outcome(out_outcome)?;
+            out_effects.write(0);
+        }
+        let language = str::from_utf8(unsafe { input_bytes(language, length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
+        let mode = match request.mode {
+            VIEM_DOCUMENT_MODE_AUTO if language.is_empty() => crate::DocumentMode::Automatic,
+            VIEM_DOCUMENT_MODE_PLAIN_TEXT if language.is_empty() => crate::DocumentMode::PlainText,
+            VIEM_DOCUMENT_MODE_MARKDOWN if language.is_empty() => crate::DocumentMode::Markdown,
+            VIEM_DOCUMENT_MODE_CODE if !language.is_empty() => crate::DocumentMode::Code(language.into()),
+            _ => return Err(ViemStatus::InvalidArgument),
+        };
+        let reservation = reserve_effect_batch()?;
+        let (summary, effects) = with_core_mut(handle, |core| {
+            let view = ViewId(view);
+            let outcome = core
+                .handle(
+                    view,
+                    CoreEvent::SetDocumentMode {
+                        document: DocumentId(request.document_id),
+                        revision: Revision(request.document_revision),
+                        mode,
+                        formatted_markdown: request.formatted_markdown != 0,
+                    },
+                )
+                .map_err(core_status)?;
+            let summary = summarize_core_outcome(core, view, Some(&outcome))?;
+            let effects = OwnedEffectBatch::from_command(
+                core.document(),
+                core.command_state(view).ok_or(ViemStatus::InvalidView)?,
+                &ClipboardCommandContext::default(),
+                outcome.command,
+            );
+            Ok((summary, effects))
+        })?;
+        let effects = if let Some(effects) = effects {
+            reservation.commit(effects)?
+        } else {
+            drop(reservation);
+            0
+        };
+        unsafe {
+            out_outcome.write(summary);
+            out_effects.write(effects);
+        }
+        Ok(())
+    })
+}
+
+/// Cached mode/detection state as UTF-8 JSON. Never scans or parses source.
+/// # Safety
+/// Output storage and the length record must be writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_document_mode_json(handle: ViemCoreHandle, output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let bytes = with_core(handle, |core| serde_json::to_vec(&core.document_mode_state()).map_err(|_| ViemStatus::CoreFailure))?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(&bytes, output); }
+        Ok(())
+    })
+}
+
+/// Bundled language IDs and display names, sorted case-insensitively by name.
+/// # Safety
+/// Output storage and the length record must be writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_copy_code_languages_json(output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let bytes = serde_json::to_vec(crate::document::syntax::languages::supported_languages()).map_err(|_| ViemStatus::CoreFailure)?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(&bytes, output); }
+        Ok(())
+    })
 }

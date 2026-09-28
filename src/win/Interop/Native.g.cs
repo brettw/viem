@@ -1188,6 +1188,17 @@ internal unsafe struct ViemCommandLineSelectionV1
     public ulong @active_utf8_offset;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemSetDocumentModeV1
+{
+    public uint @struct_size;
+    public uint @mode;
+    public ulong @document_id;
+    public ulong @document_revision;
+    public uint @formatted_markdown;
+    public uint @reserved;
+}
+
 internal static unsafe partial class Native
 {
     public const uint VIEM_CORE_ABI_VERSION = 7u;
@@ -1729,6 +1740,11 @@ internal static unsafe partial class Native
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
+    public const uint VIEM_DOCUMENT_MODE_AUTO = 0u;
+    public const uint VIEM_DOCUMENT_MODE_PLAIN_TEXT = 1u;
+    public const uint VIEM_DOCUMENT_MODE_MARKDOWN = 2u;
+    public const uint VIEM_DOCUMENT_MODE_CODE = 3u;
+    public static readonly uint VIEM_SET_DOCUMENT_MODE_V1_SIZE = ((uint)sizeof(ViemSetDocumentModeV1));
     public const uint VIEM_SOURCE_MAX_BYTES = 1048576u;
     public const uint VIEM_SOURCE_MAX_COMMANDS = 10000u;
     public const uint VIEM_SOURCE_MAX_DEPTH = 16u;
@@ -2000,6 +2016,12 @@ internal static unsafe partial class Native
     public static extern uint viem_code_replace_style_json(byte* @input, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_code_export_style_json(byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_document_mode_with_effects(ulong @core, ulong @view, ViemSetDocumentModeV1* @request, byte* @language, ulong @length, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_copy_document_mode_json(ulong @core, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_copy_code_languages_json(byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_code_detection(ulong @core, byte* @filename, ulong @length, byte @allow_auto_code);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

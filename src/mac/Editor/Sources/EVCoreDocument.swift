@@ -1349,6 +1349,24 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
+    func setDocumentMode(_ choice: EVDocumentModeChoice, expected state: EVDocumentModeState,
+                         formattedMarkdown: Bool) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetDocumentModeV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetDocumentModeV1>.size)
+        request.mode = choice.code
+        request.document_id = state.documentId
+        request.document_revision = state.documentRevision
+        request.formatted_markdown = formattedMarkdown ? 1 : 0
+        let language = Array(choice.language.utf8)
+        return try performHostEffectTurn("Change document mode") { outcome, effects in
+            language.withUnsafeBufferPointer {
+                viem_core_view_set_document_mode_with_effects(document.core, viewID, &request,
+                    $0.baseAddress, UInt64($0.count), outcome, effects)
+            }
+        }
+    }
+
+    @discardableResult
     func setMarkdownSource(_ source: Bool,
                            expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
         var request = ViemSetMarkdownSourceV1()
