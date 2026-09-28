@@ -17,6 +17,7 @@ internal static class CommandStatusTests
         void Check(bool value, string name)
         { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
         async Task Screenshot(string name) => await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + name + ".png");
+        await StatusFilePathTests.Run(pane, window, preferences, Check);
         var view = pane.View!;
         bool showStatus = preferences.ShowStatus;
         double height = pane.StatusControl.ActualHeight;

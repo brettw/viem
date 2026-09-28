@@ -93,8 +93,11 @@ fullscreen bounds do not replace the saved normal frame.
   `editing.markdownFormattedView` in `config.json` and used for subsequent Markdown
   opens, including Ex commands. With no saved choice, Markdown opens in Source.
   Existing documents and recovered sessions retain their view.
-  The status bar shows mode and messages on
-  the left and cursor position on the right.
+  The status bar shows mode, the current file path, and messages on
+  the left and cursor position on the right. Paths are relative to the working
+  directory unless that would traverse the root or cross drives; narrow panes
+  trim paths from the left while keeping the mode column a fixed width. Right-click
+  the filename to copy its full path or its path relative to the working directory.
 - View starts with Plain text, Markdown, and Code mode overrides. Code lists Auto
   followed by the bundled languages in case-insensitive alphabetical order.
   Auto shows the detected language, keeps Markdown in literal Code, and uses

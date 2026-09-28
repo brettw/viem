@@ -25,6 +25,6 @@ pub use coordinator::{
     DocumentMode, DocumentModeState, CompletionPopupAnchor, CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
     LogicalSelectionIdentity, LogicalSelectionKind, SemanticStylePresentation, SemanticStyleState,
     StyleEditGroup, StyleEditGroupError, StyleEditGroupId, ViewCompositionChange,
-    ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewportState,
+    ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewRestoration, ViewportState,
 };
 pub use document::{Document, DocumentError, Encoding, Format, Revision};

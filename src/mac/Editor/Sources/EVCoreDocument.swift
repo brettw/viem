@@ -1430,6 +1430,17 @@ final class EVCoreViewSession {
         }
     }
 
+    func restorePosition(from previous: EVCoreViewSession) throws {
+        var state = ViemViewRestorationV1()
+        try checked(viem_core_view_capture_restoration(previous.document.core, previous.viewID, &state),
+                    operation: "Capture document position")
+        let target = try document.documentState()
+        _ = try performCoreOperation("Restore document position") { outcome in
+            viem_core_view_restore(document.core, viewID, target.document_id,
+                                   target.document_revision, &state, outcome)
+        }
+    }
+
     func viewportState() throws -> ViemViewportStateV1 {
         var state = ViemViewportStateV1()
         state.struct_size = UInt32(MemoryLayout<ViemViewportStateV1>.size)

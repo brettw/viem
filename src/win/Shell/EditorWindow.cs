@@ -35,6 +35,11 @@ internal sealed partial class EditorWindow : Window
     private Task effectQueue = Task.CompletedTask;
 #if DEBUG
     internal Task PendingEffectsForTesting => effectQueue;
+    internal Func<CoreDocument, Task<ContentDialogResult>>? CloseReviewDecisionForTesting { get; set; }
+    internal Task RequestCloseForTesting() => RequestClose();
+    internal Func<Task>? BeforePublishOpenForTesting { get; set; }
+    internal bool HasSavedBaselineForTesting(CoreDocument document, byte[] source) =>
+        savedSources.TryGetValue(document, out var baseline) && baseline.AsSpan().SequenceEqual(SHA256.HashData(source));
 #endif
     private int pollTicks;
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -47,11 +52,6 @@ internal sealed partial class EditorWindow : Window
         ConfigureFormattingToolbar();
         menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
-        if (document != null)
-        {
-            var owner = App.Instance.Windows.FirstOrDefault(w => w.savedSources.ContainsKey(document));
-            if (owner != null) savedSources[document] = owner.savedSources[document];
-        }
         Title = "Viem";
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
@@ -161,6 +161,12 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane AddPane(CoreDocument doc, int? position = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        if (!savedSources.ContainsKey(doc))
+        {
+            var owner = App.Instance.Windows.FirstOrDefault(w => !w.closed
+                && w.Panes.Any(p => p.Document == doc) && w.savedSources.ContainsKey(doc));
+            if (owner != null) savedSources[doc] = owner.savedSources[doc];
+        }
         preferences.ObserveMarkdownView(doc, error => App.Instance.Windows.SelectMany(w => w.Panes)
             .FirstOrDefault(p => p.Document == doc)?.Report(error));
         GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
@@ -230,12 +236,23 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         path = ResolvePath(path);
-        var existing = App.Instance.Windows.SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p))).FirstOrDefault(x => x.Pane.Document.FilePath is string named && FileIdentity.Same(named, path));
-        if (existing.Pane != null && !split) { existing.Window.Activate(); existing.Pane.FocusEditor(); preferences.Remember(path); return; }
+        (EditorWindow Window, EditorPane Pane) FindExisting() => App.Instance.Windows.Prepend(this).Distinct()
+            .Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
+            .FirstOrDefault(x => x.Pane.Document.FilePath is string named && FileIdentity.Same(named, path));
+        var existing = FindExisting();
+        bool ShowExisting()
+        {
+            if (existing.Pane == null || split) return false;
+            existing.Window.Activate(); existing.Pane.FocusEditor(); preferences.Remember(path); return true;
+        }
+        if (ShowExisting()) return;
         var old = ActivePane;
         if (!split && old != null && !force && old.Document.IsDirty && App.Instance.Windows.SelectMany(w => w.Panes).Count(p => p.Document == old.Document) == 1) throw new InvalidOperationException("E37: No write since last change (add ! to override).");
         byte[] bytes;
         using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
+        if (closed) return;
+        existing = FindExisting();
+        if (ShowExisting()) return;
         RecoverySnapshot? recovered = null; bool readOnly = false;
         if (existing.Pane == null)
         {
@@ -259,8 +276,22 @@ internal sealed partial class EditorWindow : Window
             // Parsing a newly opened source needs no view or native shaper.
             // Keep the shell responsive while constructing that private core.
             doc = await Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView));
+#if DEBUG
+            if (BeforePublishOpenForTesting is { } beforePublish) await beforePublish();
+#endif
             if (closed) { doc.Dispose(); return; }
-            doc = ConfigureNewDocument(doc, source, path);
+            // Another window may have published this file while its bytes or
+            // private core were loading. Join that document before claiming
+            // recovery ownership or exposing a second history for the file.
+            existing = FindExisting();
+            if (existing.Pane != null)
+            {
+                doc.Dispose();
+                if (ShowExisting()) return;
+                doc = existing.Pane.Document;
+                recovered = null; readOnly = false;
+            }
+            else doc = ConfigureNewDocument(doc, source, path);
         }
         if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
         if (readOnly) doc.SetReadOnly(true);
@@ -328,10 +359,20 @@ internal sealed partial class EditorWindow : Window
         pane.SetMessage($"Saved {Path.GetFileName(path)}"); UpdateTitle();
         return true;
     }
-    private async Task<bool> ConfirmDiscard(EditorPane pane)
+    private bool HasSurvivingView(CoreDocument document, EditorPane? removing = null, bool closingWindow = false)
     {
-        if (!pane.Document.IsDirty || App.Instance.Windows.SelectMany(w => w.Panes).Count(p => p.Document == pane.Document) > 1) return true;
-        var result = await Dialog("Save changes?", $"Save changes to {pane.Document.Name} before closing?", "Save", "Cancel", "Discard");
+        if (!closingWindow && Panes.Any(p => p != removing && p.Document == document)) return true;
+        return App.Instance.Windows.Any(w => w != this && !w.closed && w.Panes.Any(p => p.Document == document));
+    }
+    private async Task<bool> ConfirmDiscard(EditorPane pane, bool closingWindow = false)
+    {
+        if (!pane.Document.IsDirty || HasSurvivingView(pane.Document, pane, closingWindow)) return true;
+        ContentDialogResult result;
+#if DEBUG
+        if (CloseReviewDecisionForTesting is { } decide) result = await decide(pane.Document);
+        else
+#endif
+        result = await Dialog("Save changes?", $"Save changes to {pane.Document.Name} before closing?", "Save", "Cancel", "Discard");
         if (result == ContentDialogResult.Secondary) return true;
         if (result != ContentDialogResult.Primary) return false;
         await Save(pane); return !pane.Document.IsDirty;
@@ -341,16 +382,15 @@ internal sealed partial class EditorWindow : Window
         foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray())
         {
             var pane = Panes.First(p => p.Document == doc);
-            if (!doc.IsDirty || App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) continue;
-            var result = await Dialog("Save changes?", $"Save changes to {doc.Name} before closing?", "Save", "Cancel", "Discard");
-            if (result == ContentDialogResult.None) return;
-            if (result == ContentDialogResult.Primary) { await Save(pane); if (doc.IsDirty) return; }
+            if (!await ConfirmDiscard(pane, closingWindow: true)) return;
         }
         closing = true; Close();
     }
     internal async Task ClosePane(EditorPane pane, bool force = false)
     {
+        if (closed || !Panes.Contains(pane)) return;
         if (!force && !await ConfirmDiscard(pane)) return;
+        if (closed || !Panes.Contains(pane)) return;
         if (Panes.Count == 1) { closing = true; Close(); return; }
         RemovePane(pane); ActivePane?.FocusEditor();
     }
@@ -382,7 +422,9 @@ internal sealed partial class EditorWindow : Window
                 foreach (var request in effects.Requests)
                 {
                     var r = request.Value; bool force = (r.flags & VIEM_EX_FRONTEND_FORCE) != 0;
-                    if (pane.View == null) break;
+                    // Reload retains the pane but replaces its document. A
+                    // queued command still belongs to the document that emitted it.
+                    if (pane.View == null || r.document_id != pane.Document.State.document_id) break;
                     switch (r.kind)
                     {
                         case VIEM_EX_FRONTEND_SPLIT: if (request.Text.Length > 0) await OpenPath(request.Text, true, force); else AddPane(pane.Document, Panes.IndexOf(pane) + 1); break;
@@ -402,7 +444,10 @@ internal sealed partial class EditorWindow : Window
                         case VIEM_EX_FRONTEND_WINDOW: await WindowCommand(pane, r.window_command, r.window_count); break;
                         case VIEM_EX_FRONTEND_ONLY: await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1); break;
                         case VIEM_EX_FRONTEND_PWD: pane.SetMessage(Environment.CurrentDirectory); break;
-                        case VIEM_EX_FRONTEND_CD: Environment.CurrentDirectory = Path.GetFullPath(request.Text); pane.SetMessage(Environment.CurrentDirectory); break;
+                        case VIEM_EX_FRONTEND_CD:
+                            Environment.CurrentDirectory = Path.GetFullPath(request.Text);
+                            foreach (var openPane in App.Instance.Windows.SelectMany(w => w.Panes)) openPane.RefreshStatusFilePath();
+                            pane.SetMessage(Environment.CurrentDirectory); break;
                         case VIEM_EX_FRONTEND_FILE: if (request.Text.Length > 0) await RenameDocument(pane, ResolvePath(request.Text)); UpdateTitle(); break;
                         case VIEM_EX_FRONTEND_MESSAGE: pane.SetMessage(request.Text); break;
                         case VIEM_EX_FRONTEND_NORMAL: pane.View.Command(request.Text); break;
@@ -434,15 +479,36 @@ internal sealed partial class EditorWindow : Window
     }
     private async Task Reload(EditorPane pane, bool force = false)
     {
-        string? path = pane.Document.FilePath; if (path == null) return;
-        if (!force && pane.Document.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) return;
-        byte[] bytes = await File.ReadAllBytesAsync(path); var replacement = NewDocument(bytes, path, pane.Document.State.format);
         var old = pane.Document;
-        foreach (var w in App.Instance.Windows.ToArray())
+        string? path = old.FilePath; if (path == null) return;
+        var expected = old.State;
+        if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) return;
+        byte[] bytes = await File.ReadAllBytesAsync(path);
+        if (old.Handle == 0 || old.FilePath != path || old.State.document_revision != expected.document_revision) return;
+        var replacement = NewDocument(bytes, path, expected.format);
+        var prepared = new List<(EditorWindow Window, EditorPane Pane, CoreView? View)>();
+        try
         {
-            foreach (var p in w.Panes.Where(p => p.Document == old).ToArray()) { int index = w.Panes.IndexOf(p); w.RemovePane(p, false); w.AddPane(replacement, index); }
-            w.savedSources[replacement] = SHA256.HashData(bytes);
+            if (old.IsReadOnly) replacement.SetReadOnly(true);
+            preferences.ObserveMarkdownView(replacement, error => App.Instance.Windows.SelectMany(w => w.Panes)
+                .FirstOrDefault(p => p.Document == replacement)?.Report(error));
+            foreach (var w in App.Instance.Windows.ToArray())
+                foreach (var p in w.Panes.Where(p => p.Document == old))
+                    prepared.Add((w, p, p.PrepareReplacement(replacement)));
         }
+        catch
+        {
+            foreach (var entry in prepared) entry.View?.Dispose();
+            savedSources.Remove(replacement); replacement.Dispose(); throw;
+        }
+        // All new views are ready before publishing; keep the panes themselves
+        // so focus, split sizes, and argument-list positions remain unchanged.
+        foreach (var entry in prepared) entry.Pane.InstallReplacement(replacement, entry.View);
+        foreach (var w in prepared.Select(entry => entry.Window).Distinct())
+        {
+            w.savedSources.Remove(old); w.savedSources[replacement] = SHA256.HashData(bytes); w.UpdateTitle();
+        }
+        old.Dispose();
     }
     private EditorWindow NewWindow(CoreDocument? document)
     {

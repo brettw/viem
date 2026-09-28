@@ -156,6 +156,14 @@ internal sealed unsafe partial class CoreView : IDisposable
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
         if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException("The command could not be completed.");
     }
+    public void RestorePosition(CoreView previous)
+    {
+        var state = New<ViemViewRestorationV1>();
+        Check(viem_core_view_capture_restoration(previous.Document.Handle, previous.Id, &state), "Capture document position");
+        var target = Document.State;
+        var captured = state;
+        Apply(outcome => { var copy = captured; return viem_core_view_restore(Document.Handle, Id, target.document_id, target.document_revision, &copy, outcome); });
+    }
     public void Refresh() => Apply(o => viem_core_view_state(Document.Handle, Id, o));
     public void Resize(float width, float height) => Apply(o => viem_core_view_resize(Document.Handle, Id, Math.Max(1, width), Math.Max(1, height), o));
     public void Undo() => Apply(o => viem_core_view_undo(Document.Handle, Id, o));

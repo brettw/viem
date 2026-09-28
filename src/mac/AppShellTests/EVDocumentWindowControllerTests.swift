@@ -49,6 +49,34 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     func acknowledgeNativeSave(_: EVDocumentSaveSnapshot) throws {}
   }
 
+  func testFileURLChangesRefreshEveryStatusPathWithoutSurfaceUpdates() throws {
+    let backend = Backend()
+    let document = EVDocument(editorBackend: backend)
+    document.makeWindowControllers()
+    document.addEditorWindowController()
+    defer { document.close() }
+    let controllers = document.windowControllers.compactMap { $0 as? EVDocumentWindowController }
+    for controller in controllers { controller.showWindow(nil) }
+    let first = try XCTUnwrap(controllers.first)
+    var split: Result<String?, Error>?
+    first.perform(documentHostRequests: [.init(kind: .split, documentID: 0, documentRevision: 0)]) { split = $0 }
+    _ = try XCTUnwrap(split).get()
+    func bars(_ view: NSView) -> [EVStatusBarView] {
+      view.subviews.flatMap { child in (child as? EVStatusBarView).map { [$0] } ?? bars(child) }
+    }
+    let statusBars = controllers.flatMap { bars($0.window!.contentView!) }
+    XCTAssertEqual(statusBars.count, 3)
+    // Both :file and successful Save As adopt their path through this setter.
+    // The fake backend deliberately emits no source/presentation callbacks.
+    for name in ["first.md", "renamed.md", "saved-as.md"] {
+      let url = URL(fileURLWithPath: "/tmp/viem-status-\(UUID().uuidString)-\(name)")
+      document.fileURL = url
+      XCTAssertEqual(statusBars.map(\.filePath), Array(repeating: EVStatusFilePath.display(url), count: 3))
+    }
+    document.fileURL = nil
+    XCTAssertEqual(statusBars.map(\.filePath), Array(repeating: "Untitled", count: 3))
+  }
+
   private func preservingStatusBarDefault(_ body: () throws -> Void) rethrows {
     let configuration = EVConfigurationStore.shared
     let previous = configuration.showStatusBar

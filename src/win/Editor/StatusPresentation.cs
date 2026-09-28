@@ -4,6 +4,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.System;
+using Viem.Windows.Shell;
+using Viem.Windows.Input;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Editor;
@@ -12,6 +14,11 @@ internal sealed partial class EditorPane
 {
     internal const double StatusInset = 10;
     private readonly Grid normalStatus = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 12 };
+    private readonly TextBlock filePath = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
+    private readonly TextBlock statusMeasure = new() { TextWrapping = TextWrapping.NoWrap };
+    private readonly Grid filePathHost = new();
+    private (string? Path, string Cwd)? filePathIdentity;
+    private string fullStatusFilePath = "Untitled";
     private readonly Grid commandOutput = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 6, Visibility = Visibility.Collapsed };
     private readonly TextBlock outputText = new() { IsTextSelectionEnabled = true, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly ScrollViewer outputScroll = new() {
@@ -58,10 +65,22 @@ internal sealed partial class EditorPane
     {
         status.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         status.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star) })
+        foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto })
             normalStatus.ColumnDefinitions.Add(new() { Width = width });
         normalStatus.Children.Add(mode);
-        normalStatus.Children.Add(message); SetColumn(message, 1);
+        normalStatus.Children.Add(filePathHost); SetColumn(filePathHost, 1); filePathHost.Children.Add(filePath);
+        normalStatus.Children.Add(message); SetColumn(message, 2);
+        var pathMenu = new MenuFlyout();
+        foreach (var (title, relative) in new[] { ("Copy full path", false), ("Copy relative path", true) })
+        {
+            var item = new MenuFlyoutItem { Text = title, IsEnabled = false };
+            pathMenu.Items.Add(item);
+            pathMenu.Opening += (_, _) => item.IsEnabled = !disposed && PathToCopy(relative) != null;
+            item.Click += (_, _) => Run(() => CopyFilePath(relative));
+        }
+        filePath.ContextFlyout = pathMenu;
+        filePathHost.SizeChanged += (_, _) => UpdateFilePathText();
+        normalStatus.SizeChanged += (_, _) => message.MaxWidth = Math.Max(0, normalStatus.ActualWidth / 2);
         status.Children.Add(normalStatus); status.Children.Add(prompt); status.Children.Add(commandOutput);
         location.Margin = new(0, 0, StatusInset, 0); status.Children.Add(location); SetColumn(location, 1);
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -120,11 +139,58 @@ internal sealed partial class EditorPane
         outputText.FontFamily = new("Consolas"); outputText.FontSize = preferences.StatusFontSize;
         outputText.Foreground = outputClose.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         outputClose.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        filePath.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
+        filePath.FontFamily = statusMeasure.FontFamily = mode.FontFamily;
+        filePath.FontSize = statusMeasure.FontSize = mode.FontSize;
+        mode.Width = Math.Ceiling(new[] { "NORMAL", "INSERT", "REPLACE", "VISUAL", "V-LINE", "V-BLOCK",
+            "SELECTION", "SELECT", "S-LINE", "S-BLOCK", "COMMAND" }.Max(MeasureStatusText));
+        UpdateFilePathText();
         UpdateStatusPresentation();
+    }
+
+    private double MeasureStatusText(string text)
+    {
+        statusMeasure.Text = text;
+        // This detached probe is reused synchronously, before XAML's next
+        // layout pass has processed Text changes. Discard its prior measure.
+        statusMeasure.InvalidateMeasure();
+        statusMeasure.Measure(new(double.PositiveInfinity, double.PositiveInfinity));
+        return statusMeasure.DesiredSize.Width;
+    }
+
+    internal void RefreshStatusFilePath()
+    {
+        var identity = (Document.FilePath, Environment.CurrentDirectory);
+        if (filePathIdentity == identity) return;
+        filePathIdentity = identity;
+        fullStatusFilePath = StatusFilePath.Display(identity.Item1, identity.Item2);
+        ToolTipService.SetToolTip(filePath, fullStatusFilePath);
+        AutomationProperties.SetName(filePath, "File: " + fullStatusFilePath);
+        UpdateFilePathText();
+    }
+
+    private string? PathToCopy(bool relative) => relative
+        ? StatusFilePath.Relative(Document.FilePath, Environment.CurrentDirectory)
+        : StatusFilePath.Full(Document.FilePath);
+
+    private void CopyFilePath(bool relative)
+    {
+        if (disposed || PathToCopy(relative) is not { } path) return;
+#if DEBUG
+        if (FilePathClipboardWriterForTesting is { } write) { write(path); return; }
+#endif
+        ClipboardFormats.Write(path, "");
+    }
+
+    private void UpdateFilePathText()
+    {
+        filePath.Text = StatusFilePath.TrimLeft(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
     }
 
     private void UpdateStatusPresentation(bool refreshPrompt = true)
     {
+        RefreshStatusFilePath();
+        message.Visibility = message.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         bool command = presentation.mode == VIEM_MODE_COMMAND_LINE;
         if (command) { output = null; outputText.Text = ""; outputTimer.Stop(); outputDeadline = 0; outputHadFocus = false; }
         bool showingOutput = !command && output != null;
@@ -157,6 +223,7 @@ internal sealed partial class EditorPane
     { if (output != null && now >= outputDeadline) DismissCommandOutput(); }
 
 #if DEBUG
+    internal Action<string>? FilePathClipboardWriterForTesting { get; set; }
     internal CommandPrompt PromptControl => prompt;
     internal string? CommandOutputText => output;
     internal Grid StatusControl => status;
@@ -165,5 +232,9 @@ internal sealed partial class EditorPane
     internal Button OutputCloseControl => outputClose;
     internal TextBlock LocationControl => location;
     internal TextBlock ModeControl => mode;
+    internal double ModeSlotWidth => normalStatus.ColumnDefinitions[0].ActualWidth;
+    internal TextBlock FilePathControl => filePath;
+    internal Grid FilePathHost => filePathHost;
+    internal string FullStatusFilePath => fullStatusFilePath;
 #endif
 }

@@ -160,7 +160,7 @@ internal static class InputRoutingTests
         await Text(":set nowrap");
         Check(pane.View.Prompt().Text == "set nowrap", "native characters enter the command prompt");
         await Key(VirtualKey.Back); await Text("p"); await Key(VirtualKey.Enter);
-        Check((pane.View.Viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0, "native command-line editing and execution");
+        Check((pane.View.Viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0, $"native command-line editing and execution (mode={pane.View.Presentation.mode}, prompt={pane.View.Prompt().Text}, error={pane.LastError}, wrap={pane.View.Viewport.flags})");
         await Text("ggiX"); await Key(VirtualKey.Escape);
         Check(pane.Document.FormattedText().StartsWith("XNative"), "queued characters observe preceding vi mode changes");
         await Text("u");

@@ -872,6 +872,21 @@ typedef struct ViemViewportOriginV1 {
 #define VIEM_VIEWPORT_STATE_LINEBREAK (1u << 4)
 #define VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT (1u << 5)
 
+/* Explicit replacement recovery hints in zero-based logical hard-line and
+ * grapheme-column coordinates. These are not snapshot editing positions. */
+typedef struct ViemViewRestorationV1 {
+  uint32_t struct_size;
+  uint32_t cursor_affinity;
+  uint64_t cursor_line;
+  uint64_t cursor_column;
+  uint64_t viewport_line;
+  uint64_t viewport_column;
+  float row_fraction;
+  float left;
+} ViemViewRestorationV1;
+#define VIEM_VIEW_RESTORATION_V1_SIZE \
+  ((uint32_t)sizeof(ViemViewRestorationV1))
+
 /*
  * maximum_left describes rows intersecting the current vertical viewport.
  * It is authoritative only with MAXIMUM_LEFT_EXACT; otherwise it is a
@@ -2037,6 +2052,13 @@ ViemStatus viem_layout_work_cancel(uint64_t request);
 ViemStatus viem_layout_work_release(uint64_t work);
 ViemStatus viem_core_view_state(ViemCoreHandle core, ViemViewId view,
                                 ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_capture_restoration(ViemCoreHandle core, ViemViewId view,
+    ViemViewRestorationV1 *out_state);
+/* Stage positions in the explicitly identified replacement before publication.
+ * Input and output must be aligned, readable/writable and mutually disjoint. */
+ViemStatus viem_core_view_restore(ViemCoreHandle core, ViemViewId view,
+    uint64_t document, uint64_t revision, const ViemViewRestorationV1 *state,
+    ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_viewport_state(ViemCoreHandle core, ViemViewId view,
                                          ViemViewportStateV1 *out_state);
 

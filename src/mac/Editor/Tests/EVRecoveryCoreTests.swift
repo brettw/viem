@@ -33,6 +33,42 @@ final class EVRecoveryCoreTests: XCTestCase {
     XCTAssertFalse(backend.persistenceState.isRecovered)
   }
 
+  func testReloadPreservesEachViewPositionAndClampsAfterTruncation() throws {
+    let backend = EVCoreDocumentBackend()
+    let source = Data(String(repeating: "a fairly long line of content\n", count: 120).utf8)
+    try backend.read(source: source, typeName: EVDocument.plainTextType)
+    let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    first.loadViewIfNeeded(); second.loadViewIfNeeded()
+    let sessions = try [XCTUnwrap(first.session), XCTUnwrap(second.session)]
+    for (index, session) in sessions.enumerated() {
+      _ = try session.resize(width: 350, height: 120)
+      _ = try session.sendText(index == 0 ? "jlll" : "jjlllll")
+      _ = try session.setViewportOrigin(left: 0, top: CGFloat(310 + index * 220))
+    }
+    func captured(_ surface: EVEditorSurfaceController) throws -> ViemViewRestorationV1 {
+      var state = ViemViewRestorationV1()
+      let session = try XCTUnwrap(surface.session)
+      XCTAssertEqual(viem_core_view_capture_restoration(backend.core, session.viewID, &state), UInt32(VIEM_STATUS_OK))
+      return state
+    }
+    let before = try [captured(first), captured(second)]
+    try backend.read(source: source, typeName: EVDocument.plainTextType)
+    for (surface, expected) in zip([first, second], before) {
+      let after = try captured(surface)
+      XCTAssertEqual(after.cursor_line, expected.cursor_line)
+      XCTAssertEqual(after.cursor_column, expected.cursor_column)
+      XCTAssertEqual(after.viewport_line, expected.viewport_line)
+      XCTAssertEqual(after.row_fraction, expected.row_fraction, accuracy: 0.001)
+    }
+    try backend.read(source: Data(), typeName: EVDocument.plainTextType)
+    for surface in [first, second] {
+      let after = try captured(surface)
+      XCTAssertEqual(after.cursor_line, 0); XCTAssertEqual(after.cursor_column, 0)
+      XCTAssertEqual(after.viewport_line, 0)
+    }
+  }
+
   func testReadOnlyIsBufferPolicyWithoutChangingSourceOrRevision() throws {
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data("text".utf8), typeName: EVDocument.plainTextType)

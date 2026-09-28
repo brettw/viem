@@ -179,6 +179,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     try prepared.setParagraphFlow(session.paragraphFlow())
                 }
             }
+            try prepared.restorePosition(from: session)
         }
         return prepared
     }
