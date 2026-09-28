@@ -7,7 +7,9 @@ import XCTest
 @MainActor
 final class EVListDecorationIntegrationTests: XCTestCase {
     private func makeSurface(_ source: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-list-decoration-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

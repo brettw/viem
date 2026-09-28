@@ -303,7 +303,8 @@ final class EVApplicationDelegate: NSObject,
         } else {
             try document.read(
                 from: Data(),
-                ofType: EVDocument.defaultOpeningType(for: url, nativeType: type)
+                ofType: EVDocument.defaultOpeningType(for: url, nativeType: type,
+                    markdownFormattedView: document.editorBackend.prefersMarkdownFormattedView)
             )
             document.configureRecovery(for: url)
         }

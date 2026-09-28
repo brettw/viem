@@ -33,6 +33,9 @@ internal sealed partial class EditorWindow : Window
     private static readonly Dictionary<CoreDocument, string> styleDefaultsWarnings = [];
     private static readonly Dictionary<CoreDocument, DocumentRecovery> recoveries = [];
     private Task effectQueue = Task.CompletedTask;
+#if DEBUG
+    internal Task PendingEffectsForTesting => effectQueue;
+#endif
     private int pollTicks;
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
@@ -124,7 +127,7 @@ internal sealed partial class EditorWindow : Window
     }
     private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0)
     {
-        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat);
+        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, preferences.MarkdownFormattedView);
         return ConfigureNewDocument(doc, source ?? [], path);
     }
     private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path)
@@ -158,6 +161,8 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane AddPane(CoreDocument doc, int? position = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        preferences.ObserveMarkdownView(doc, error => App.Instance.Windows.SelectMany(w => w.Panes)
+            .FirstOrDefault(p => p.Document == doc)?.Report(error));
         GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
         preferences.AttachThemeDocument(doc, initialize: false);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
@@ -250,9 +255,10 @@ internal sealed partial class EditorWindow : Window
         else
         {
             byte[] source = recovered?.source ?? bytes;
+            bool markdownFormattedView = preferences.MarkdownFormattedView;
             // Parsing a newly opened source needs no view or native shaper.
             // Keep the shell responsive while constructing that private core.
-            doc = await Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0));
+            doc = await Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView));
             if (closed) { doc.Dispose(); return; }
             doc = ConfigureNewDocument(doc, source, path);
         }

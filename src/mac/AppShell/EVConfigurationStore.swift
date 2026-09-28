@@ -109,6 +109,9 @@ public final class EVConfigurationStore {
     try update(section: "view", values: ["margins": value])
   }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
+  public var markdownFormattedView: Bool {
+    (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? false
+  }
   /// Application default for hard-line reflow (`gq`/`gw`); buffers inherit it
   /// unless `:set textwidth` overrides them locally. Missing values use 80.
   public static let defaultTextWidth: UInt32 = 80
@@ -161,6 +164,10 @@ public final class EVConfigurationStore {
     }
   }
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
+  public func setMarkdownFormattedView(_ enabled: Bool) throws {
+    // This default affects future opens; existing views retain their own state.
+    try update(section: "editing", values: ["markdownFormattedView": enabled], notify: false)
+  }
   public func setTextWidth(_ width: UInt32) throws {
     guard width > 0 else { throw invalid("Text width must be a positive whole number of columns") }
     try update(section: "editing", values: ["textWidth": NSNumber(value: width)])
@@ -338,7 +345,7 @@ public final class EVConfigurationStore {
         guard margins.isValid else { throw invalid("View margins must be between 0 and 1000 pixels") }
       }
     }
-    for (section, key) in [("editing", "smartQuotes"), ("appearance", "showStatusBar")] {
+    for (section, key) in [("editing", "smartQuotes"), ("editing", "markdownFormattedView"), ("appearance", "showStatusBar")] {
       if let raw = object[section] {
         guard let fields = raw as? [String: Any] else { throw invalid("Invalid \(section) settings") }
         if let value = fields[key] {

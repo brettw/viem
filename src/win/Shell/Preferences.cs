@@ -113,6 +113,8 @@ internal sealed partial class Preferences
         if (value["theme"]?["statusFontFamily"] is JsonNode family && (family.GetValue<string>().Length is 0 or >= 256)) throw new InvalidDataException("Invalid status font family.");
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
         foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
+        if (value["editing"] is JsonObject editing && editing.ContainsKey("markdownFormattedView"))
+            _ = editing["markdownFormattedView"]?.GetValue<bool>() ?? throw new InvalidDataException("markdownFormattedView must be a boolean.");
         if (value["formattingToolbar"] is JsonObject toolbar)
             foreach (string key in new[] { "plainText", "code", "markdown", "markdownSource" })
                 if (toolbar[key] is JsonNode visible) _ = visible.GetValue<bool>();

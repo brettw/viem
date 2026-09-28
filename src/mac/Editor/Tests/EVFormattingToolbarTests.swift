@@ -7,7 +7,9 @@ import XCTest
 @MainActor
 final class EVFormattingToolbarTests: XCTestCase {
   private func surface(_ source: String, type: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
-    let backend = EVCoreDocumentBackend()
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-toolbar-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
     try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
@@ -27,8 +29,8 @@ final class EVFormattingToolbarTests: XCTestCase {
     let (backend, first) = try surface(String(decoding: source, as: UTF8.self), type: EVDocument.markdownSourceType)
     let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     let document = EVDocument(editorBackend: backend)
-    let firstWindow = EVDocumentWindowController(document: document, editorSurface: first)
-    let secondWindow = EVDocumentWindowController(document: document, editorSurface: second)
+    let firstWindow = EVDocumentWindowController(document: document, editorSurface: first, configuration: backend.configuration)
+    let secondWindow = EVDocumentWindowController(document: document, editorSurface: second, configuration: backend.configuration)
     defer { firstWindow.close(); secondWindow.close() }
     firstWindow.showWindow(nil)
     secondWindow.showWindow(nil)

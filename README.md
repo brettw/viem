@@ -24,7 +24,7 @@ In code mode, leading spaces are always treated as 1en wide. This allows the use
 
 ### Markdown modes
 
-Markdown files open in Source mode, which keeps markup visible while applying its styles. The status control switches to WYSIWYG to show the interpreted document.
+The toolbar’s Formatted view toggle switches between Markdown Source, which keeps markup visible while applying its styles, and WYSIWYG, which shows the interpreted document. New Markdown documents remember your last choice across launches. With no previous choice, Formatted view is off.
 
 HTML files open as literal Code, with syntax highlighting and ordinary code editing.
 
