@@ -1,4 +1,4 @@
-//! Isolated large-file memory probe. See docs/large-file-memory-analysis.md.
+//! Isolated large-file memory probe. See docs/performance.md.
 //! Arguments: plain|code lines|short|long SOURCE_BYTES [open|document|views|flat|exercise|search] [utf8|utf16le|utf16be|latin1].
 //! Supplemental shapes include crlf and invalid (all invalid UTF-8 bytes).
 //! Run each case in a fresh release process; syntax providers are disabled.

@@ -66,7 +66,7 @@ shell filters and `:!`, tags, quickfix, diff mode, folding, spellchecking, tab
 pages, side-by-side splits, sessions/viminfo, remote server commands, and full
 option/regex parity.
 
-Normal-mode `U` was removed on purpose (`docs/code-quality-review.md`).
+Normal-mode `U` is deliberately unsupported; see [AGENTS.md](AGENTS.md).
 
 Viem Regex v2 is a specified dialect, not a shortfall. Two absences will still
 be felt weekly by a Vim user: `\zs`/`\ze` match trimming and `\c`/`\C` inline
