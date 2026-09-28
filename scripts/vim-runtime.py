@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Import or verify the shared Vim syntax snapshot using only Python's stdlib."""
+"""Import or verify the shared Vim syntax snapshot using only Python's stdlib.
+
+Import does not update language aliases or filename detection. When the inventory
+changes, follow assets/vim/README.md and the language maintenance checklist in
+src/core/document/syntax/detection/PROFILE.md; update filename rules/tests too.
+"""
 
 import argparse
 import hashlib

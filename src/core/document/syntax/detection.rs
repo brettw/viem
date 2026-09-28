@@ -2,6 +2,7 @@
 //! they never run Vimscript or configure arbitrary editor options.
 use super::SyntaxInputSnapshot;
 use std::collections::BTreeSet;
+mod filenames;
 mod profile;
 pub use profile::{
     bundled_profile, ContentMatch, ContentSignature, DetectionProfile, ExtensionDisambiguator,
@@ -9,7 +10,7 @@ pub use profile::{
 };
 
 pub const DETECTION_BYTE_LIMIT: usize = 64 * 1024;
-pub const PROFILE_VERSION: u32 = 2;
+pub const PROFILE_VERSION: u32 = 3;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LanguageSelection {
     Automatic,
@@ -153,53 +154,7 @@ pub(crate) fn detect_sampled_lines(
                 inspected,
             );
         }
-        let language = match base {
-            "Makefile" | "makefile" | "GNUmakefile" => Some("make"),
-            "Dockerfile" => Some("dockerfile"),
-            "CMakeLists.txt" => Some("cmake"),
-            ".exrc" | "_exrc" | ".netrwhist" => Some("vim"),
-            _ => match extension {
-                "c" => Some("c"),
-                "h" => Some("c"),
-                "cc" | "cpp" | "cxx" | "c++" | "hpp" | "hxx" | "hh" | "C" | "H" => Some("cpp"),
-                "m" => Some("objc"),
-                "mm" => Some("objc"),
-                "rs" => Some("rust"),
-                "swift" => Some("swift"),
-                "cs" => Some("c_sharp"),
-                "js" | "jsx" | "mjs" | "cjs" => Some("javascript"),
-                "ts" | "mts" | "cts" => Some("typescript"),
-                "tsx" => Some("tsx"),
-                "py" | "pyw" | "pyi" => Some("python"),
-                "sh" | "bash" | "zsh" => Some("bash"),
-                "vim" => Some("vim"),
-                "go" => Some("go"),
-                "java" => Some("java"),
-                "rb" => Some("ruby"),
-                "lua" => Some("lua"),
-                "pl" | "pm" => Some("perl"),
-                "php" => Some("php"),
-                "json" | "jsonc" => Some("json"),
-                "yaml" | "yml" => Some("yaml"),
-                "toml" => Some("toml"),
-                "xml" => Some("xml"),
-                "css" | "scss" | "sass" => Some("css"),
-                "sql" => Some("sql"),
-                "conf" => Some("conf"),
-                "ini" => Some("dosini"),
-                "md" | "markdown" | "mdown" | "mkd" => Some("markdown"),
-                extension
-                    if ["html", "htm", "xhtml"]
-                        .iter()
-                        .any(|html| extension.eq_ignore_ascii_case(html)) => Some("html"),
-                "rtf" => Some("rtf"),
-                _ => None,
-            },
-        }
-        // Vim's broad *vimrc* rule runs after specific filename rules. Keep
-        // that precedence for names such as vimrc.py while recognizing local
-        // variants such as .vimrc.local and .gvimrc. `base` is already bounded.
-        .or_else(|| base.contains("vimrc").then_some("vim"));
+        let language = filenames::language(base, extension);
         if let Some(language) = language {
             return result(
                 Some(language.into()),
@@ -293,7 +248,9 @@ fn shebang(line: &str) -> Option<String> {
                 "node" | "nodejs" | "deno" | "bun" => "javascript",
                 "ruby" => "ruby",
                 "perl" => "perl",
-                "sh" | "bash" | "zsh" | "fish" => "bash",
+                "sh" | "bash" | "zsh" => "bash",
+                "fish" => "fish",
+                "pwsh" | "powershell" => "ps1",
                 "lua" | "luajit" => "lua",
                 "swift" => "swift",
                 _ => return None,
@@ -449,6 +406,99 @@ mod tests {
             Some("rust")
         );
     }
+    #[test]
+    fn audited_filename_rules_cover_scripts_languages_build_files_and_data() {
+        let source = input("");
+        for (filename, expected) in [
+            ("build.bat", "dosbatch"), ("BUILD.BAT", "dosbatch"), ("build.BaT", "dosbatch"),
+            ("build.cmd", "dosbatch"), ("BUILD.CMD", "dosbatch"), ("build.CmD", "dosbatch"),
+            (r"C:\scripts\build.BAT", "dosbatch"), ("/scripts/build.cmd", "dosbatch"),
+            ("profile.Ps1", "ps1"), ("module.PSM1", "ps1"), ("module.psd1", "ps1"),
+            ("session.pssc", "ps1"), ("format.ps1xml", "ps1xml"), ("script.VBS", "vb"),
+            ("script.wsf", "wsh"), ("script.fish", "fish"), ("script.tcsh", "tcsh"),
+            (".bash_profile", "bash"), (".zshrc", "bash"), (".cshrc", "csh"),
+            ("api.ixx", "cpp"), ("api.csx", "c_sharp"), ("api.swiftinterface", "swift"),
+            ("main.kt", "kotlin"), ("build.gradle.kts", "kotlin"), ("build.gradle", "groovy"),
+            ("main.scala", "scala"), ("main.cljc", "clojure"), ("main.hs", "haskell"),
+            ("main.erl", "erlang"), ("main.mli", "ocaml"), ("main.ml.cppo", "ocaml"),
+            ("main.dart", "dart"), ("main.jl", "julia"), ("main.zig", "zig"),
+            ("module.pyx", "pyrex"), ("data.ipynb", "json"), ("config.json5", "json5"),
+            ("main.rkt", "racket"), ("main.el", "lisp"), ("main.F90", "fortran"),
+            ("analysis.Rmd", "rmd"), ("article.latex", "tex"), ("sources.bib", "bib"),
+            ("main.less", "less"), ("main.scss", "scss"), ("main.sass", "sass"),
+            ("main.vue", "vue"), ("view.erb", "eruby"), ("page.haml", "haml"),
+            ("api.graphql", "graphql"), ("message.proto", "proto"), ("message.textproto", "pbtxt"),
+            ("image.svg", "svg"), ("schema.xsd", "xsd"), ("style.xsl", "xslt"),
+            ("project.csproj", "xml"), ("project.vcxproj.user", "xml"),
+            ("Directory.Build.props", "xml"), ("nuget.nuspec", "xml"), ("strings.resx", "xml"),
+            ("data.csv", "csv"), ("data.tsv", "tsv"), ("notes.rst", "rst"), ("notes.adoc", "asciidoc"),
+            ("module.cmake", "cmake"), ("module.cmake.in", "cmake"), ("CMakeCache.txt", "cmakecache"),
+            ("rules.mk", "make"), ("Makefile.am", "automake"), ("Kbuild", "make"),
+            ("build.xml", "ant"), ("meson.build", "meson"), ("meson_options.txt", "meson"),
+            ("build.ninja", "ninja"), ("Jenkinsfile", "groovy"), ("Gemfile", "ruby"),
+            ("Containerfile", "dockerfile"), ("ci.Dockerfile", "dockerfile"),
+            ("Dockerfile.release", "dockerfile"), ("Containerfile.release", "dockerfile"),
+            ("Makefile.local", "make"), ("Justfile", "just"), ("ci.JUSTFILE", "just"),
+            ("rules.JUST", "just"), (".gitconfig", "gitconfig"), (".gitmodules", "gitconfig"),
+            (".gitignore", "gitignore"), (".dockerignore", "gitignore"), (".gitattributes", "gitattributes"),
+            ("git-rebase-todo", "gitrebase"), (".editorconfig", "editorconfig"),
+            ("Cargo.lock", "toml"), ("change.patch", "diff"),
+            ("main.VB", "vb"), ("page.jsp", "jsp"), ("build.rake", "ruby"), ("main.F", "fortran"),
+            ("settings.InI", "dosini"), ("messages.properties", "jproperties"), (".clang-tidy", "yaml"),
+            ("diagram.dot", "dot"), ("diagram.gv", "dot"), ("diagram.mermaid", "mermaid"),
+        ] {
+            let result = detect(&source, filename, &LanguageSelection::Automatic, &[]);
+            assert_eq!(result.language.as_deref(), Some(expected), "{filename}");
+            assert_eq!(result.reason, "bundled filename association", "{filename}");
+        }
+    }
+
+    #[test]
+    fn filename_matching_preserves_case_scope_precedence_and_unknown_files() {
+        let source = input("");
+        for (filename, expected) in [
+            ("main.c", "c"), ("main.C", "cpp"), ("main.h", "c"), ("main.H", "cpp"),
+            ("Dockerfile.py", "python"), ("Containerfile.json", "json"),
+            ("Makefile.rs", "rust"), ("vimrc.py", "python"),
+            ("settings.jsonc", "json"), ("page.XHTML", "html"),
+        ] {
+            assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &[]).language.as_deref(), Some(expected), "{filename}");
+        }
+        for filename in [
+            "notes", "notes.unknown", "notes.txt", "data.obj", "data.pdb", "data.mat", "data.mo", "data.pdf",
+            "main.tf", "main.tex", "main.edn", "main.sc", "main.cls", "main.pp", "main.f", "main.d", "main.cl",
+            "settings.config", "settings.user", "main.svelte", "main.fs", "solution.sln",
+            ".prettierrc", ".stylelintrc", ".VIMRC", "settings.VIM", "backup.bat.txt",
+            "/path.bat/notes", r"C:\path.cmd\notes", "/Dockerfile/notes", "/.git/config",
+        ] {
+            assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &[]).language, None, "{filename}");
+        }
+        let oversized = format!("{}.bat", "x".repeat(4096));
+        assert_eq!(detect(&source, &oversized, &LanguageSelection::Automatic, &[]).language, None);
+
+        for filename in ["build.BAT", "module.ps1", "build.xml", "module.cmake.in", "main.scss", "Dockerfile.release"] {
+            let associations = [FilenameAssociation { pattern: "*".into(), language: "rust".into() }];
+            assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &associations).language.as_deref(), Some("rust"));
+            assert_eq!(detect(&input("# vim: ft=python"), filename, &LanguageSelection::Automatic, &associations).language.as_deref(), Some("python"));
+            assert_eq!(detect(&source, filename, &LanguageSelection::None, &associations).language, None);
+            assert_eq!(detect(&source, filename, &LanguageSelection::Language("lua".into()), &associations).language.as_deref(), Some("lua"));
+        }
+    }
+
+    #[test]
+    fn fish_and_powershell_shebangs_select_their_own_languages() {
+        for (source, language) in [
+            ("#!/usr/bin/fish\necho hello", "fish"),
+            ("#!/usr/bin/env -S fish --no-config\necho hello", "fish"),
+            ("#!/usr/bin/pwsh\nWrite-Host hello", "ps1"),
+            ("#!/usr/bin/env pwsh\nWrite-Host hello", "ps1"),
+        ] {
+            let source = input(source);
+            assert_eq!(detect(&source, "script", &LanguageSelection::Automatic, &[]).language.as_deref(), Some(language));
+            assert_eq!(detect(&source, "script.bat", &LanguageSelection::Automatic, &[]).language.as_deref(), Some("dosbatch"));
+        }
+    }
+
     #[test]
     fn bounded_giant_lines_and_env() {
         let x = input(&format!("{}vim: ft=rust", "x".repeat(4 * 1024 * 1024)));

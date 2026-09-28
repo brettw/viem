@@ -1,4 +1,7 @@
 //! Pinned, unmodified nvim-treesitter queries and their inherited dependencies.
+//! When adding/removing packages, follow PROFILE.md and ../detection/PROFILE.md:
+//! keep grammar pins, BUNDLED_LANGUAGES/aliases, catalogue entries and filename
+//! rules/tests in sync. Query helpers alone do not register languages/extensions.
 use super::*;
 
 fn source(id: &str, injection: bool) -> Result<&'static str, TreeSitterError> {

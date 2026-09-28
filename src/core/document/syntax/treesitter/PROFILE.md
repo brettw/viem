@@ -54,6 +54,26 @@ Queries may request child languages such as `comment`, `doxygen`, `printf`,
 or loadable bundled Vim syntax is available. Missing children leave the host
 highlighting intact. No locals-query scope analysis is claimed.
 
+## Adding or updating a language
+
+Follow the [language maintenance checklist](../detection/PROFILE.md#keeping-language-support-and-filename-rules-in-sync)
+in the same change. Tree-sitter support consists of a pinned grammar dependency
+in `Cargo.toml`/`Cargo.lock`, query files and inherited dependencies, package
+construction/aliases in [`bundled.rs`](bundled.rs), and `BUNDLED_LANGUAGES` plus
+availability aliases in [`../treesitter.rs`](../treesitter.rs). Keep those in sync
+with this package table and `nvim.NOTICES.md`; preserve upstream query bytes and
+include licenses in both native packages. Query helpers are not standalone
+languages merely because a `.scm` file exists.
+
+Review the shared catalogue, canonical/Vim fallback aliases and
+[`../detection/filenames.rs`](../detection/filenames.rs), and add detection/opening
+examples for new filename support. A newly registered Tree-sitter language does
+not automatically appear in the catalogue or gain extensions. Adding Tree-sitter
+for an already recognized Vim language may need no filename change; verify the
+existing mappings and provider/fallback behavior. Vim `.vim` syntax programs are
+a separate backend with broader language coverage, not Tree-sitter queries or
+grammars. Detection must continue to cover Vim-only languages.
+
 ## Validation and matching
 
 Packages select Upstream or NeovimV1 explicitly. Every predicate is rewritten
