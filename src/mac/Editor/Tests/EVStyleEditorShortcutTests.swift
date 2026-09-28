@@ -29,7 +29,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
             item.target = controller.documentContentController
         }
         for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
-            surface.perform(statusOption: .format(format))
+            surface.setFormattedView(format == .markdown)
             styles.update()
             XCTAssertTrue(paragraph.isEnabled, "\(format)")
             XCTAssertTrue(character.isEnabled, "\(format)")

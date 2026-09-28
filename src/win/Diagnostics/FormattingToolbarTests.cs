@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Text;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -32,6 +33,12 @@ internal static class FormattingToolbarTests
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
         await Task.Delay(40);
     }
+    private static async Task SwitchView(FormattingToolbar toolbar)
+    {
+        Check(toolbar.FormattedView.Focus(FocusState.Programmatic), "formatted-view toggle takes keyboard focus");
+        await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+        await Task.Delay(40);
+    }
 
     internal static async Task Run(Preferences preferences)
     {
@@ -46,6 +53,32 @@ internal static class FormattingToolbarTests
             Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
             Check(toolbar.Paragraph.Content as string == "Heading 1", "toolbar reads the initial named paragraph");
+            Check(toolbar.FormattedView.IsChecked == true && !toolbar.FormattedView.IsThreeState
+                && AutomationProperties.GetName(toolbar.FormattedView) == "Formatted view"
+                && ToolTipService.GetToolTip(toolbar.FormattedView) as string == "Formatted view (WYSIWYG)",
+                "formatted-view toggle has a stable accessible label and WYSIWYG pressed state");
+            object viewIcon = toolbar.FormattedView.Content;
+            byte[] beforeSwitch = document.Source(document.State.document_revision);
+            ulong caret = (ulong)document.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
+            view.Place(caret, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            await SwitchView(toolbar);
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && toolbar.FormattedView.IsChecked == false
+                && view.Presentation.cursor_utf8_offset == (ulong)source.IndexOf("plain", StringComparison.Ordinal) + 2
+                && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                "toolbar switches to Markdown Source while preserving source and semantic caret");
+            view.Undo();
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true,
+                "undoing a view switch synchronizes the formatted-view toggle");
+            view.Redo();
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && toolbar.FormattedView.IsChecked == false,
+                "redoing a view switch synchronizes the formatted-view toggle");
+            await SwitchView(toolbar);
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true
+                && view.Presentation.cursor_utf8_offset == caret
+                && ReferenceEquals(viewIcon, toolbar.FormattedView.Content)
+                && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                "formatted view round trip retains the caret, fixed icon and source bytes");
+            view.Command("gg0");
             view.Command("j0");
             Check(toolbar.Paragraph.Content as string == "Base Paragraph", "toolbar follows a caret command synchronously");
             var items = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.ToArray();
@@ -99,10 +132,20 @@ internal static class FormattingToolbarTests
             preferences.SetSections(new() { ["theme"] = Preferences.ThemeJson(Theme.Paper) }); await Task.Delay(80);
             await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".toolbar-paper.png");
             preferences.SetSections(new() { ["theme"] = Preferences.ThemeJson(originalTheme) });
-            var size = window.AppWindow.Size; window.AppWindow.Resize(new(540, 450)); await Task.Delay(120);
+            var size = window.AppWindow.Size; window.AppWindow.Resize(new(1100, 450)); await Task.Delay(120);
+            double toggleX = toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X;
+            Check(Math.Abs(toggleX + toolbar.FormattedView.ActualWidth - (toolbar.ActualWidth - 10)) < 1
+                && toolbar.Scroll.ScrollableWidth == 0,
+                "wide toolbar aligns the formatted-view toggle at the right edge across a flexible gap");
+            window.AppWindow.Resize(new(540, 450)); await Task.Delay(120);
             Check(toolbar.Scroll.ScrollableWidth > 0, "narrow Windows toolbar keeps all groups accessible by scrolling");
+            toggleX = toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X;
+            Check(toggleX >= 0 && toggleX + toolbar.FormattedView.ActualWidth <= toolbar.ActualWidth,
+                "formatted-view toggle stays visible beside narrow toolbar overflow");
             toolbar.Scroll.ChangeView(toolbar.Scroll.ScrollableWidth, null, null, true); await Task.Delay(50);
             Check(toolbar.Scroll.HorizontalOffset > 0, "toolbar overflow scrolls to its trailing indent controls");
+            Check(Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
+                "scrolling formatting controls leaves the formatted-view toggle fixed");
             window.AppWindow.Resize(size);
 
             bool showMenu = preferences.ShowMenu;
@@ -116,7 +159,8 @@ internal static class FormattingToolbarTests
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
             var markdown = window.AddPane(new CoreDocument("- One\n  - Two\n\nPlain"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
             var md = await markdown.Ready;
-            Check(toolbar.Visibility == Visibility.Visible, "switching panes restores each format's toolbar preference");
+            Check(toolbar.Visibility == Visibility.Visible && toolbar.FormattedView.IsChecked == true,
+                "switching panes restores each format's toolbar preference and formatted-view state");
             md.Command("vj");
             Check(State(toolbar, ToolbarAction.Bullets) == true && toolbar.Paragraph.Content as string == "Mixed", "list state is structural across nested paragraph styles");
             md.SelectAll(); Check(State(toolbar, ToolbarAction.Bullets) == null, "mixed list and non-list selection shows a mixed toggle");
@@ -131,7 +175,8 @@ internal static class FormattingToolbarTests
             await Click(toolbar, ToolbarAction.Bullets); Check(State(toolbar, ToolbarAction.Bullets) == false, "active bulleted list toolbar action removes the list");
             await Click(toolbar, ToolbarAction.Numbers); Check(State(toolbar, ToolbarAction.Numbers) == true, "numbered list toolbar action applies structural numbering");
             md.SetMarkdownSource(true);
-            Check(toolbar.Visibility == Visibility.Visible, "Markdown Source has its own visible toolbar");
+            Check(toolbar.Visibility == Visibility.Visible && toolbar.FormattedView.IsChecked == false,
+                "Markdown Source has its own visible toolbar and an unpressed formatted-view toggle");
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, false);
             md.SetMarkdownSource(false); Check(toolbar.Visibility == Visibility.Visible, "Source and WYSIWYG toolbar preferences are independent");
             pane.FocusEditor(); await Task.Delay(80);

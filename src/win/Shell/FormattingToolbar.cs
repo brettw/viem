@@ -17,10 +17,11 @@ internal sealed class FormattingToolbar : UserControl
 {
     internal readonly ScrollViewer Scroll = new() { HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private EditorPane? pane;
-    private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
     internal readonly DropDownButton Character = Selector("Character style");
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
+    internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     private StyleSheet? sheet;
     private SelectedStyles? selected;
     private StyleChoice[] choices = [];
@@ -34,7 +35,20 @@ internal sealed class FormattingToolbar : UserControl
     {
         Height = 42; Visibility = Visibility.Collapsed;
         Scroll.Content = row;
-        var chrome = new Border { Child = Scroll };
+        var layout = new Grid { ColumnSpacing = 12, Padding = new(0, 0, 10, 0) };
+        layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        layout.Children.Add(Scroll); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
+        FormattedView.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
+        FormattedView.Content = FormattedViewIcon(FormattedView);
+        AutomationProperties.SetName(FormattedView, "Formatted view");
+        ToolTipService.SetToolTip(FormattedView, "Formatted view (WYSIWYG)");
+        FormattedView.Click += (_, _) => {
+            if (View is not { } view) return;
+            Run(() => view.SetMarkdownSource(FormattedView.IsChecked != true));
+            RestoreEditorFocus();
+        };
+        var chrome = new Border { Child = layout };
         chrome.SetBinding(Border.BackgroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = this, Path = new PropertyPath("Background") });
         Content = chrome;
         AutomationProperties.SetName(this, "Formatting toolbar");
@@ -77,6 +91,21 @@ internal sealed class FormattingToolbar : UserControl
         AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
+    }
+
+    private static Canvas FormattedViewIcon(ToggleButton owner)
+    {
+        var canvas = new Canvas { Width = 18, Height = 20 };
+        var geometry = new GeometryGroup();
+        void Line(double x, double y, double endX, double endY) => geometry.Children.Add(new LineGeometry { StartPoint = new(x, y), EndPoint = new(endX, endY) });
+        Line(2, 1, 12, 1); Line(12, 1, 17, 6); Line(17, 6, 17, 19); Line(17, 19, 2, 19); Line(2, 19, 2, 1);
+        Line(12, 1, 12, 6); Line(12, 6, 17, 6);
+        var outline = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
+        outline.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        var text = new TextBlock { Text = "Aa", FontFamily = new FontFamily("Georgia"), FontSize = 10 };
+        text.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        Canvas.SetLeft(text, 3); Canvas.SetTop(text, 6);
+        canvas.Children.Add(outline); canvas.Children.Add(text); return canvas;
     }
 
     private static Canvas StructuralIcon(ButtonBase owner, ToolbarAction action)
@@ -123,6 +152,7 @@ internal sealed class FormattingToolbar : UserControl
         refreshing = true;
         try
         {
+            FormattedView.IsChecked = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
             selected = view.SelectedNamedStyles();
             sheet = view.Styles(selected.Identity);
             choices = CoreView.StyleChoices(sheet, selected);

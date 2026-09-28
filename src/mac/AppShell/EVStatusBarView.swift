@@ -41,8 +41,6 @@ public final class EVStatusBarView: NSView {
   public var commandLineDidSelect: ((Int, Bool) -> Void)?
   public var commandOutputDidDismiss: (() -> Void)?
   public var commandOutputDidReceiveKey: ((NSEvent) -> Void)?
-  private let formatSelect = EVStatusSelect()
-  private let formatLabel = NSTextField(labelWithString: "")
   private let leftGroup = NSStackView()
   private let commandCaret = NSTextInsertionIndicator(frame: .zero)
   private let outputScroll = NSScrollView()
@@ -72,16 +70,9 @@ public final class EVStatusBarView: NSView {
     messageLabel.lineBreakMode = .byTruncatingTail
     messageLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-    formatSelect.configure(
-      label: "Format",
-      options: [EVSourceFormat.markdownSource, .markdown].map {
-        ($0.displayName, .format($0))
-      }
-    )
-    formatSelect.didChoose = { [weak self] option in self?.optionDidChange?(option) }
     // Everything except the caret position widget is left-aligned; the widget
     // is always present and always at the trailing edge.
-    leftGroup.setViews([modeLabel, formatSelect, formatLabel, messageLabel], in: .leading)
+    leftGroup.setViews([modeLabel, messageLabel], in: .leading)
     leftGroup.orientation = .horizontal
     leftGroup.spacing = 14
     leftGroup.alignment = .centerY
@@ -167,9 +158,6 @@ public final class EVStatusBarView: NSView {
     locationLabel.attributedTitle = NSAttributedString(
       string: currentState.location,
       attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
-    formatSelect.applyTheme(theme)
-    formatLabel.font = theme.statusFont
-    formatLabel.textColor = theme.statusForeground.color
     outputTextView.font = commandFont
     outputTextView.textColor = theme.statusForeground.color
     outputTextView.insertionPointColor = .clear
@@ -402,18 +390,9 @@ public final class EVStatusBarView: NSView {
     if state.locationIsFragment {
       locationLabel.toolTip = "Position shows hard line · visual row. Click to change line mode."
     }
-    let isMarkdown = [EVSourceFormat.markdown.displayName, EVSourceFormat.markdownSource.displayName].contains(state.format)
-    formatSelect.isHidden = !isMarkdown
-    formatLabel.isHidden = isMarkdown
-    formatLabel.stringValue = state.format
-    formatLabel.setAccessibilityLabel("Format: \(state.format)")
-    formatSelect.selectItem(withTitle: state.format)
-    formatSelect.invalidateIntrinsicContentSize()
-
     modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
     locationLabel.setAccessibilityLabel(
       "\(state.lineMode == .visual ? "Visual" : "Physical source") lines: \(state.location)")
-    formatSelect.setAccessibilityLabel("Format: \(state.format)")
     if let command = state.commandLine {
       setAccessibilityLabel("Command line: \(command.displayText)")
     } else if let output = state.commandOutput {
@@ -465,105 +444,5 @@ final class EVStatusOutputTextView: NSTextView {
       withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
     selectAll.target = self
     return menu
-  }
-}
-
-/// Native select tracking and keyboard accessibility with unobtrusive status chrome.
-@MainActor
-private final class EVStatusSelect: NSPopUpButton {
-  var didChoose: ((EVStatusBarOption) -> Void)?
-  private var options: [EVStatusBarOption] = []
-  private var hoverTracking: NSTrackingArea?
-  private var themeForeground = NSColor.labelColor
-
-  init() {
-    super.init(frame: .zero, pullsDown: false)
-    cell = EVStatusSelectCell(textCell: "", pullsDown: false)
-    isBordered = false
-    font = .systemFont(ofSize: 11)
-    controlSize = .small
-    (cell as? NSPopUpButtonCell)?.arrowPosition = .noArrow
-    setContentHuggingPriority(.required, for: .horizontal)
-    setContentCompressionResistancePriority(.required, for: .horizontal)
-    wantsLayer = true
-    layer?.cornerRadius = 4
-    target = self
-    action = #selector(choose(_:))
-  }
-
-  @available(*, unavailable)
-  required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-
-  func applyTheme(_ theme: EVTheme) {
-    font = theme.statusFont
-    themeForeground = theme.statusForeground.color
-    (cell as? EVStatusSelectCell)?.themeForeground = themeForeground
-    invalidateIntrinsicContentSize()
-    needsDisplay = true
-  }
-
-  override var intrinsicContentSize: NSSize {
-    let textWidth = (title as NSString).size(withAttributes: [
-      .font: font ?? NSFont.systemFont(ofSize: 11)
-    ]).width
-    return NSSize(width: ceil(textWidth) + 26, height: super.intrinsicContentSize.height)
-  }
-
-  func configure(label: String, options: [(String, EVStatusBarOption)]) {
-    self.options = options.map(\.1)
-    addItems(withTitles: options.map(\.0))
-    setAccessibilityLabel(label)
-  }
-
-  override func updateTrackingAreas() {
-    if let hoverTracking { removeTrackingArea(hoverTracking) }
-    let tracking = NSTrackingArea(
-      rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-      owner: self, userInfo: nil
-    )
-    addTrackingArea(tracking)
-    hoverTracking = tracking
-    super.updateTrackingAreas()
-  }
-
-  override func mouseEntered(with event: NSEvent) {
-    if isEnabled { layer?.backgroundColor = themeForeground.withAlphaComponent(0.12).cgColor }
-  }
-
-  override func mouseExited(with event: NSEvent) { layer?.backgroundColor = nil }
-
-  @objc private func choose(_ sender: Any?) {
-    guard options.indices.contains(indexOfSelectedItem) else { return }
-    didChoose?(options[indexOfSelectedItem])
-  }
-}
-
-@MainActor
-private final class EVStatusSelectCell: NSPopUpButtonCell {
-  var themeForeground = NSColor.labelColor
-  override var cellSize: NSSize {
-    var size = super.cellSize
-    size.width += 10
-    return size
-  }
-
-  override func draw(withFrame cellFrame: NSRect, in controlView: NSView) {
-    var titleFrame = cellFrame
-    titleFrame.size.width -= 10
-    let textFont = font ?? NSFont.systemFont(ofSize: 11)
-    let color = themeForeground.withAlphaComponent(isEnabled ? 1 : 0.4)
-    let height = textFont.ascender - textFont.descender
-    titleFrame.origin.y = cellFrame.midY - height / 2 - 1
-    (title as NSString).draw(
-      in: titleFrame, withAttributes: [.font: textFont, .foregroundColor: color])
-    let x = cellFrame.maxX - 6
-    let y = cellFrame.midY
-    let triangle = NSBezierPath()
-    triangle.move(to: NSPoint(x: x - 2.5, y: y - 1.5))
-    triangle.line(to: NSPoint(x: x + 2.5, y: y - 1.5))
-    triangle.line(to: NSPoint(x: x, y: y + 1.5))
-    triangle.close()
-    color.setFill()
-    triangle.fill()
   }
 }

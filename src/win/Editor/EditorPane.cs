@@ -37,8 +37,6 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly ScrollBar horizontal = new() { Orientation = Orientation.Horizontal, Height = 14, SmallChange = 30, Visibility = Visibility.Collapsed };
     private readonly Grid status = new() { Height = 28, ColumnSpacing = 5 };
     private readonly TextBlock mode = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
-    private readonly DropDownButton format = new() { MinWidth = 0, MinHeight = 0, Padding = new(4, 0, 4, 0), BorderThickness = new(0), Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), FontSize = 12 };
-    private readonly TextBlock formatLabel = new() { VerticalAlignment = VerticalAlignment.Center, Margin = new(4, 0, 4, 0), Visibility = Visibility.Collapsed };
     private readonly TextBlock location = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly TextBlock message = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly CommandPrompt prompt;
@@ -80,7 +78,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Children.Add(status); SetRow(status, 2); SetColumnSpan(status, 2);
         BuildStatus();
         AutomationProperties.SetName(input, "Viem document input"); AutomationProperties.SetName(Canvas, "Document");
-        AutomationProperties.SetName(format, "Document format"); AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
+        AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
         inputLayer.IsHitTestVisible = true; input.IsHitTestVisible = false;
         Canvas.CreateResources += (_, _) => { try { Attach(); } catch (Exception error) { ready.TrySetException(error); Report(error); } };
         Canvas.Draw += (_, args) => Run(() => {
@@ -148,7 +146,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         foreach (var (title, action) in new (string, Func<Task>)[] { ("Cut", () => Copy(true)), ("Copy", () => Copy(false)), ("Copy Source", CopySource), ("Paste", () => Paste()), ("Paste and Match Style", () => Paste(true)), ("Select All", () => { SelectAll(); return Task.CompletedTask; }) })
         { var item = new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Enqueue(action); context.Items.Add(item); }
         Canvas.ContextFlyout = context;
-        BuildFormatMenu(); ApplyTheme();
+        ApplyTheme();
     }
     private void Attach()
     {
@@ -174,30 +172,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
         InvalidateDrawingCache();
         var theme = preferences.Theme;
         Background = new SolidColorBrush(theme.Background); status.Background = new SolidColorBrush(theme.StatusBackground);
-        mode.Foreground = format.Foreground = formatLabel.Foreground = message.Foreground = location.Foreground = new SolidColorBrush(theme.StatusForeground);
+        mode.Foreground = message.Foreground = location.Foreground = new SolidColorBrush(theme.StatusForeground);
         foreach (var label in new[] { mode, message, location }) { label.FontFamily = new FontFamily(preferences.StatusFontFamily); label.FontSize = preferences.StatusFontSize; }
-        format.FontFamily = formatLabel.FontFamily = new FontFamily(preferences.StatusFontFamily); format.FontSize = formatLabel.FontSize = preferences.StatusFontSize;
         status.Height = Math.Max(28, preferences.StatusFontSize + 12);
         ApplyStatusTheme();
         Canvas.Invalidate();
-    }
-    private void BuildFormatMenu()
-    {
-        var flyout = new MenuFlyout();
-        bool restoreEditorFocus = false;
-        flyout.Closed += (_, _) => {
-            if (!restoreEditorFocus) return;
-            restoreEditorFocus = false;
-            // Let the flyout finish restoring focus to its button first.
-            DispatcherQueue.TryEnqueue(() => FocusEditor());
-        };
-        foreach (uint f in new uint[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
-        {
-            var item = new MenuFlyoutItem { Text = CoreDocument.FormatName(f) };
-            item.Click += (_, _) => { restoreEditorFocus = true; Run(() => View?.SetMarkdownSource(f == VIEM_FORMAT_MARKDOWN_SOURCE)); };
-            flyout.Items.Add(item);
-        }
-        format.Flyout = flyout;
     }
     public void FocusEditor() { if (!disposed) input.Focus(FocusState.Programmatic); }
     public void Report(Exception error) { LastError = error; Diagnostics.StartupPerformance.Failed(error); ShowCommandOutput(error.Message); }
@@ -372,10 +351,6 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 VIEM_MODE_SELECT_CHARACTER => "SELECT", VIEM_MODE_SELECT_LINE => "S-LINE", VIEM_MODE_SELECT_BLOCK => "S-BLOCK",
                 VIEM_MODE_COMMAND_LINE => "COMMAND", _ => "NORMAL"
             };
-            format.Content = formatLabel.Text = CoreDocument.FormatName(Document.State.format);
-            bool markdown = Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
-            format.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
-            formatLabel.Visibility = markdown ? Visibility.Collapsed : Visibility.Visible;
             UpdateLocation();
             scrollUpdating = true;
             vertical.Maximum = viewport.maximum_top; vertical.ViewportSize = Math.Max(1, snapshot.Info.viewport_height); vertical.LargeChange = Math.Max(1, snapshot.Info.viewport_height * .9); vertical.Value = viewport.top;

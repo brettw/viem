@@ -615,15 +615,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public func perform(statusOption: EVStatusBarOption) {
         guard acceptCompletionForNativeInput() else { return }
         guard let session else { return }
-        let expected = documentState
         performInput {
             switch statusOption {
             case let .lineMode(mode): try session.setLineMode(mode)
-            case let .format(format):
-                guard format == .markdown || format == .markdownSource else { return }
-                _ = try session.setMarkdownSource(format == .markdownSource, expected: expected)
             }
         }
+    }
+
+    func setFormattedView(_ enabled: Bool) {
+        guard [.markdown, .markdownSource].contains(backend.sourceFormat),
+              acceptCompletionForNativeInput(), let session else { return }
+        let expected = documentState
+        performInput { _ = try session.setMarkdownSource(!enabled, expected: expected) }
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
@@ -1373,7 +1376,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             mode: modeLabel(viewPresentation.mode),
             message: substituteConfirmationPrompt ?? lastErrorMessage,
             location: "Ln \(line), Col \(column)",
-            format: backend.formatLabel,
             lineMode: (try? session?.lineMode()) ?? .visual,
             locationIsFragment: point.map { $0.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false,
             commandLine: editorView.commandLineRenderState().map {

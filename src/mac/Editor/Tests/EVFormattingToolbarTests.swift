@@ -22,6 +22,59 @@ final class EVFormattingToolbarTests: XCTestCase {
     toolbar.chooseStyle(popup)
   }
 
+  func testFormattedViewTogglePreservesSourceTracksSharedHistoryAndRestoresFocus() throws {
+    let source = Data("# Heading\n\n**Words**".utf8)
+    let (backend, first) = try surface(String(decoding: source, as: UTF8.self), type: EVDocument.markdownSourceType)
+    let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    let document = EVDocument(editorBackend: backend)
+    let firstWindow = EVDocumentWindowController(document: document, editorSurface: first)
+    let secondWindow = EVDocumentWindowController(document: document, editorSurface: second)
+    defer { firstWindow.close(); secondWindow.close() }
+    firstWindow.showWindow(nil)
+    secondWindow.showWindow(nil)
+    let button = first.formattingToolbar.formattedView
+    let otherButton = second.formattingToolbar.formattedView
+    let image = try XCTUnwrap(button.image)
+    XCTAssertEqual(button.state, .off)
+    XCTAssertEqual(button.accessibilityLabel(), "Formatted view")
+    XCTAssertEqual(button.toolTip, "Formatted view (WYSIWYG)")
+    XCTAssertFalse(button.allowsMixedState)
+    XCTAssertTrue(button.isEnabled)
+
+    button.performClick(nil)
+    XCTAssertEqual(backend.sourceFormat, .markdown)
+    XCTAssertEqual(button.state, .on)
+    XCTAssertEqual(otherButton.state, .on)
+    XCTAssertEqual(try backend.formattedText(), "Heading\nWords")
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+    XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
+    XCTAssertTrue(button.image === image)
+
+    second.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+    XCTAssertEqual(button.state, .off)
+    XCTAssertEqual(otherButton.state, .off)
+    second.perform(menuCommand: .redo, sender: nil)
+    XCTAssertEqual(button.state, .on)
+    XCTAssertEqual(otherButton.state, .on)
+    button.performClick(nil)
+    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+    XCTAssertEqual(button.state, .off)
+    XCTAssertEqual(otherButton.state, .off)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), source)
+
+    let wasVisible = backend.configuration.showFormattingToolbar(for: .markdown)
+    defer { try? backend.configuration.setShowFormattingToolbar(wasVisible, for: .markdown) }
+    try backend.configuration.setShowFormattingToolbar(false, for: .markdown)
+    let field = NSTextField(string: "Another control")
+    first.view.addSubview(field)
+    XCTAssertTrue(firstWindow.window?.makeFirstResponder(field) == true)
+    button.performClick(nil)
+    XCTAssertNil(button.window, "The target mode retains its hidden-toolbar preference")
+    XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+  }
+
   func testSelectorsTrackCaretMixedSelectionAssignmentAndUndo() throws {
     let source = "# Heading\n\nplain `code`"
     let (backend, surface) = try surface(source, type: EVDocument.markdownType)
@@ -193,6 +246,13 @@ final class EVFormattingToolbarTests: XCTestCase {
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 5, length: 0))
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Base Paragraph")
     let window = try XCTUnwrap(controller.window)
+    window.setContentSize(NSSize(width: 920, height: 300))
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    let button = toolbar.formattedView
+    XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
+    let lastFormattingButton = try XCTUnwrap(toolbar.commandButtons[.decreaseIndent])
+    let lastFrame = lastFormattingButton.convert(lastFormattingButton.bounds, to: toolbar)
+    XCTAssertGreaterThan(button.frame.minX - lastFrame.maxX, 12)
     if let directory = ProcessInfo.processInfo.environment["VIEM_TOOLBAR_SCREENSHOT_DIR"] {
       window.setContentSize(NSSize(width: 920, height: 300))
       surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 5, length: 5))
@@ -213,5 +273,8 @@ final class EVFormattingToolbarTests: XCTestCase {
     let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
     XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).frame.width, scroll.contentSize.width)
     XCTAssertTrue(scroll.hasHorizontalScroller)
+    XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
+    XCTAssertGreaterThanOrEqual(button.frame.minX - scroll.frame.maxX, 12)
+    XCTAssertFalse(button.isHidden)
   }
 }

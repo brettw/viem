@@ -87,15 +87,17 @@ fullscreen bounds do not replace the saved normal frame.
   there is no Format menu. Fonts, colors,
   script position, and paragraph properties remain available in the independent
   theme style inspector. Its x²/x₂ buttons share one inheritance checkbox.
-- Markdown's status selector switches between Source and WYSIWYG while retaining
-  source bytes. Text and Code display a format label; general format conversion
-  and reinterpretation are no longer offered.
+- Markdown's right-aligned **Formatted view** toolbar toggle switches between
+  Source and WYSIWYG while retaining source bytes. Its document/Aa icon is pressed
+  for WYSIWYG and unpressed for Source. The status bar shows mode and messages on
+  the left and cursor position on the right. General format conversion and
+  reinterpretation are no longer offered.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
 - File > Export… writes a styled HTML copy through the shared core exporter.
   Markdown exports formatted content and Code exports syntax-highlighted text.
   Export keeps the open document's filename, source, and unsaved state intact.
   HTML files open in Code; HTML interpretation and conversion modes are no
-  longer offered in the File menu or status selector.
+  longer offered in the File menu.
 - Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
   literal-next input. Normal-mode `u` and Ctrl+R remain available.
 - Ctrl+0–5 select Base Paragraph / Headings 1–5. Heading 6 is menu-only to
@@ -142,11 +144,13 @@ per-font OpenType discovery are not claimed as implemented.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
 Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
-visibility, selection/undo, color-picker, and large-document latency checks.
+visibility, selection/undo, formatted-view switching, overflow, and large-document latency checks.
 The toolbar uses the active pane's core selection, the shared style catalogue,
 and the same commands as the menus. Refreshes reuse exact-revision style exports
 and native selector items; visibility uses the shared per-format
 `formattingToolbar` configuration keys.
+The formatted-view toggle stays pinned at the right edge while the formatting
+controls scroll on narrow windows.
 `scripts/test-win-vim-runtime.ps1` additionally checks build/publish inventories,
 stale-file removal, native syntax paint after relocation into a path containing
 spaces and non-ASCII characters, and editing/Tree-sitter with missing resources.
