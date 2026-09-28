@@ -1030,7 +1030,7 @@ pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)>
             .ok()
             .unwrap_or(0xfffd);
         let code = if (0x80..=0x9f).contains(&code) {
-            super::rtf::windows_1252(code as u8) as u32
+            windows_1252(code as u8) as u32
         } else {
             code
         };
@@ -2036,5 +2036,18 @@ mod reference_tests {
         assert_eq!(reference("&amp;=", true), Some(("&".into(), 5)));
         assert_eq!(reference("&CounterClockwise", false), None);
         assert_eq!(reference("&apos", false), None);
+    }
+}
+
+fn windows_1252(value: u8) -> char {
+    const C1: [char; 32] = [
+        '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž',
+        '\u{8f}', '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}',
+        'ž', 'Ÿ',
+    ];
+    if (0x80..=0x9f).contains(&value) {
+        C1[(value - 0x80) as usize]
+    } else {
+        char::from(value)
     }
 }

@@ -11,7 +11,7 @@ fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_ty
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
-        (Format::Rtf, r"{\rtf1 word}", 0),
+
     ] {
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
@@ -69,14 +69,14 @@ fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_ty
             "{format:?}"
         );
         assert_ne!(
-            core.selected_typography(view).unwrap().0.slant,
+            core.selected_character_style(view).unwrap().slant,
             FontSlant::Upright
         );
         let after_composition = core.document().source_bytes();
         core.handle(view, CoreEvent::Input(InputEvent::text("é")))
             .unwrap();
         assert_ne!(
-            core.selected_typography(view).unwrap().0.slant,
+            core.selected_character_style(view).unwrap().slant,
             FontSlant::Upright
         );
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))

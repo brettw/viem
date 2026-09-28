@@ -53,15 +53,9 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
             format!("# first\n\nsecond\n\n{tail}"),
             Format::MarkdownSource,
         ),
-        (
-            format!("{{\\rtf1 first\\par second\\par {tail}}}"),
-            Format::Rtf,
-        ),
+
     ] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
-            if format == Format::Rtf && mode == LineMode::PhysicalSource {
-                continue;
-            }
             for flow in [false, true] {
                 let (mut core, view) = opened(&source, format);
                 if format.is_source_view() {
@@ -130,10 +124,9 @@ fn whole_selection_delete_clears_quote_list_and_character_context_with_exact_his
     for (source, format) in [
         ("> **quoted**\n> continuation", Format::Markdown),
         ("> - **item**\n> - second", Format::Markdown),
-        ("{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown keep}\\li640\\b quoted}", Format::Rtf),
+
     ] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
-            if format == Format::Rtf && mode == LineMode::PhysicalSource { continue; }
             let (mut core, view) = opened(source, format);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
             select(&mut core, view);
@@ -194,8 +187,7 @@ fn whole_content_clear_preserves_bom_and_authored_envelopes_without_regeneration
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
         for (source, cleared, format) in [
             ("> - **word**", "", Format::Markdown),
-            ("{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown Keep}\\li640\\b word}",
-             "{\\rtf1\\ansi{\\fonttbl{\\f0 Helvetica;}}{\\*\\unknown Keep}}", Format::Rtf),
+
         ] {
             fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
                 match encoding {
@@ -205,13 +197,12 @@ fn whole_content_clear_preserves_bom_and_authored_envelopes_without_regeneration
                     _ => unreachable!(),
                 }
             }
-            if format == Format::Rtf && encoding != Encoding::Utf8 { continue; }
-            let original = if format == Format::Rtf { source.as_bytes().to_vec() } else { encoded(source, encoding) };
-            let expected = if format == Format::Rtf { cleared.as_bytes().to_vec() } else { encoded(cleared, encoding) };
+            let original = encoded(source, encoding);
+            let expected = encoded(cleared, encoding);
             let mut document = Document::from_bytes(original.clone(), encoding, format).unwrap();
             document.clear_document_content().unwrap();
             assert_eq!(document.source_bytes(), expected, "{format:?} {encoding:?}");
-            assert_eq!(document.has_bom(), format != Format::Rtf);
+            assert!(document.has_bom());
             assert_eq!(document.text(), "");
             assert!(document.undo());
             assert_eq!(document.source_bytes(), original);

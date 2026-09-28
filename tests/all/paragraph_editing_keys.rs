@@ -67,11 +67,7 @@ fn insert_at(core: &mut Editor, view: ViewId, at: usize) {
 fn enter_uses_following_style_only_at_the_end_of_a_paragraph() {
     for (format, source, current) in [
         (Format::Markdown, "# Title", "Heading1"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0 Heading 1;}}\s5 Title}",
-            "RtfP5",
-        ),
+
     ] {
         for (at, expected_text, expected_styles) in [
             (0, "\nTitle", vec![current, current]),
@@ -149,15 +145,11 @@ fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() 
         (Format::Markdown, "### `αβ👩‍💻xy`\n\ntail"),
         (Format::Markdown, "```\nαβ👩‍💻xy\n```\n\ntail"),
         (Format::Markdown, "> ```\n> αβ👩‍💻xy\n> ```\n\ntail"),
-        (Format::Rtf, "{\\rtf1 abcd\\par tail}"),
+
     ] {
         let (mut core, view) = open(source, format);
         let before_text = core.document().text().to_owned();
-        let at = if format == Format::Rtf {
-            2
-        } else {
-            "αβ".len()
-        };
+        let at = "αβ".len();
         let original_style = core.document().projection().blocks()[0].style.clone();
         let count = core.document().projection().blocks().len();
         insert_at(&mut core, view, at);
@@ -184,7 +176,6 @@ fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() 
         if !source.contains("```") {
             assert!(
                 generated.contains(match format {
-                    Format::Rtf => "\\line ",
                     _ if source.starts_with('#') => "<br>",
                     _ => "\\\n",
                 }),
@@ -200,7 +191,7 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
     for (format, source) in [
         (Format::Markdown, "abc"),
         (Format::Markdown, "# abc"),
-        (Format::Rtf, "{\\rtf1 abc}"),
+
     ] {
         for at in [0, 3] {
             let (mut core, view) = open(source, format);
@@ -223,7 +214,7 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
         (Format::Markdown, "# "),
         (Format::Markdown, "> "),
         (Format::Markdown, "- "),
-        (Format::Rtf, "{\\rtf1 }"),
+
     ] {
         let (mut core, view) = open(source, format);
         insert_at(&mut core, view, 0);
@@ -420,7 +411,7 @@ fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
         (Format::PlainText, "body"),
         (Format::Markdown, "body"),
         (Format::Markdown, "# body"),
-        (Format::Rtf, "{\\rtf1 body}"),
+
     ] {
         let (mut core, view) = open(source, format);
         input(&mut core, view, InputEvent::key('A'));
@@ -478,10 +469,7 @@ fn tab_and_backtab_inside_a_list_item_change_structure_and_stay_in_the_insert_un
     for (format, source) in [
         (Format::Markdown, "- parent\n- **body**\n- tail"),
         (Format::Markdown, "4. parent\n5. body\n6. tail"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\*\listtable{\list{\listlevel\levelnfc23\levelstartat1{\leveltext\'01\u8226?;}{\levelnumbers;}\li640\fi-200}{\listlevel\levelnfc23\levelstartat1{\leveltext\'01\u8226?;}{\levelnumbers;}\li1280\fi-200}\listid42}}{\*\listoverridetable{\listoverride\listid42\listoverridecount0\ls1}}\pard\ls1\ilvl0 parent\par body\par tail}",
-        ),
+
     ] {
         let (mut core, view) = open(source, format);
         let at = core.document().text().find("body").unwrap() + 2;

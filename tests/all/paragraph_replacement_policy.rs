@@ -79,7 +79,7 @@ fn replacement_preserves_the_first_paragraph_and_skips_leading_separators_for_ch
     for (format, source) in [
         (Format::Markdown, "# A\n\n## BC\n\nD"),
         (Format::Markdown, "**A**\n\nBC\n\nD"),
-        (Format::Rtf, r"{\rtf1 \qr {\b A}\par \qc BC\par \ql D}"),
+
     ] {
         for (range, sample, upstream) in [
             (2..4, 2, false),
@@ -204,7 +204,7 @@ fn separators_alone_do_not_extend_links_and_empty_paragraphs_supply_their_own_de
 fn vim_whole_final_paragraph_change_preserves_its_style() {
     for (format, source) in [
         (Format::Markdown, "A\n\n## BC"),
-        (Format::Rtf, r"{\rtf1 A\par \qc\sb120 BC}"),
+
     ] {
         for native in [false, true] {
             let (mut core, view) = fixture(source, format);
@@ -277,120 +277,6 @@ fn whole_document_replacement_keeps_structural_paragraph_styles() {
 }
 
 #[test]
-fn changing_an_empty_styled_paragraph_keeps_its_assignment() {
-    for source in [
-        r"{\rtf1{\stylesheet{\s1\fs40 Heading2;}}\s1 }",
-        r"{\rtf1\qc\fs40 }",
-    ] {
-        let (mut core, view) = fixture(source, Format::Rtf);
-        let expected = owner(core.document(), 0);
-        key(&mut core, view, Key::Escape);
-        key(&mut core, view, Key::Char('V'));
-        key(&mut core, view, Key::Char('c'));
-        text(&mut core, view, "X");
-        assert_eq!(owner(core.document(), 0).style, expected.style);
-        assert_eq!(
-            owner(core.document(), 0).direct_paragraph,
-            expected.direct_paragraph
-        );
-        key(&mut core, view, Key::Escape);
-        key(&mut core, view, Key::Char('u'));
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
-fn replacing_from_an_empty_first_paragraph_retains_its_defaults_separately_from_character_traits() {
-    for source in [
-        r"{\rtf1{\stylesheet{\s1\qc\fs60 Large;}}\s1\par\pard\fs20 B}",
-
-    ] {
-        for reverse in [false, true] {
-            for composition in [false, true] {
-                let (mut core, view) = fixture(source, Format::Rtf);
-                let expected = owner(core.document(), 0);
-                select(&mut core, view, 0..2, reverse);
-                if composition {
-                    ime(&mut core, view, 0..2);
-                } else {
-                    text(&mut core, view, "X");
-                }
-                text(&mut core, view, "Y");
-                assert_eq!(core.document().text(), "XY");
-                let reopened = Document::from_bytes(
-                    core.document().source_bytes(),
-                    Encoding::Utf8,
-                    Format::Rtf,
-                )
-                .unwrap();
-                for document in [core.document(), &reopened] {
-                    let actual = owner(document, 0);
-                    assert_eq!(actual.style, expected.style);
-                    assert_eq!(actual.direct_paragraph, expected.direct_paragraph);
-                    assert_eq!(
-                        actual.direct_default_character,
-                        expected.direct_default_character
-                    );
-                    assert_eq!(character(document, 0, false).size, 10.);
-                    assert_eq!(character(document, 1, false).size, 10.);
-                }
-                key(&mut core, view, Key::Enter);
-                let paragraphs = core.document().projection().blocks();
-                assert_eq!(paragraphs.len(), 2);
-                assert_eq!(paragraphs[1].style, expected.style);
-                // An empty inline scope supplies the visible typing seed; after text is
-                // inserted the paragraph defaults and inline traits remain distinct.
-                text(&mut core, view, "Z");
-                assert_eq!(
-                    owner(core.document(), 3).direct_default_character,
-                    expected.direct_default_character,
-                    "source={source}, reverse={reverse}, ime={composition}: {:?}",
-                    String::from_utf8_lossy(&core.document().source_bytes())
-                );
-                assert_eq!(character(core.document(), 3, false).size, 10.);
-                key(&mut core, view, Key::Escape);
-                key(&mut core, view, Key::Char('u'));
-                if composition {
-                    key(&mut core, view, Key::Char('u'));
-                }
-                assert_eq!(core.document().source_bytes(), source.as_bytes());
-            }
-        }
-    }
-}
-
-#[test]
-fn changing_the_only_word_keeps_its_existing_paragraph_owner() {
-    for source in [
-        r"{\rtf1{\b bold}}",
-        r"{\rtf1{\stylesheet{\s1\fs60 Heading2;}}\s1{\fs20 word}}",
-    ] {
-        let (mut core, view) = fixture(source, Format::Rtf);
-        let expected = owner(core.document(), 0);
-        let character = character(core.document(), 0, false);
-        key(&mut core, view, Key::Escape);
-        text(&mut core, view, "cw");
-        text(&mut core, view, "X");
-        text(&mut core, view, "Y");
-        assert_eq!(core.document().text(), "XY");
-        assert_eq!(core.document().projection().blocks().len(), 1);
-        assert_eq!(owner(core.document(), 0).style, expected.style);
-        assert_eq!(
-            owner(core.document(), 0).direct_default_character,
-            expected.direct_default_character
-        );
-        assert_eq!(
-            DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false)
-                .unwrap(),
-            character
-        );
-        key(&mut core, view, Key::Escape);
-        key(&mut core, view, Key::Char('u'));
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
 fn replacing_a_code_block_keeps_new_markdown_syntax_literal() {
     let source = "```\nA\n```";
     let (mut core, view) = fixture(source, Format::Markdown);
@@ -409,48 +295,4 @@ fn replacing_a_code_block_keeps_new_markdown_syntax_literal() {
     key(&mut core, view, Key::Escape);
     key(&mut core, view, Key::Char('u'));
     assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn replacement_clears_character_background_without_changing_paragraph_defaults() {
-    let source = r"{\rtf1{\colortbl ;\red255\green0\blue0;}\cbpat1 A\par\pard BC}";
-    for reverse in [false, true] {
-        for composition in [false, true] {
-            let (mut core, view) = fixture(source, Format::Rtf);
-            let expected = owner(core.document(), 0);
-            select(&mut core, view, 1..4, reverse);
-            if composition {
-                ime(&mut core, view, 1..4);
-            } else {
-                text(&mut core, view, "X");
-            }
-            text(&mut core, view, "Y");
-            let reopened =
-                Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Rtf)
-                    .unwrap();
-            for document in [core.document(), &reopened] {
-                assert_eq!(document.text(), "AXY");
-                assert_eq!(
-                    owner(document, 0).direct_default_character,
-                    expected.direct_default_character
-                );
-                assert_eq!(owner(document, 0).direct_paragraph.background.unwrap().alpha, 1.);
-                assert!(character(document, 0, false).background.is_none());
-                for at in 1..3 {
-                    assert_eq!(
-                        character(document, at, false)
-                            .background
-                            .map_or(0., |color| color.alpha),
-                        0.
-                    );
-                }
-            }
-            key(&mut core, view, Key::Escape);
-            key(&mut core, view, Key::Char('u'));
-            if composition {
-                key(&mut core, view, Key::Char('u'));
-            }
-            assert_eq!(core.document().source_bytes(), source.as_bytes());
-        }
-    }
 }

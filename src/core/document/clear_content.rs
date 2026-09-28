@@ -8,73 +8,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let bytes = self.source_bytes();
         let decoded = self.encoding().decode(&bytes)?;
-        let input = normalize(&decoded, self.file_format());
-        let converter = super::super::rich_text::Builder::new(&input, Revision(0));
         let mut keep = vec![0..decoded.bom_len];
-        match self.format() {
-            Format::Rtf => {
-                use super::super::rtf::{self, Kind};
-                let tokens = rtf::tokenize(&input);
-                let mut stack = Vec::new();
-                for (index, token) in tokens.iter().enumerate() {
-                    match &token.kind {
-                        Kind::Open => {
-                            if stack.is_empty() {
-                                keep.push(converter.source_range(token.range.clone()));
-                            }
-                            stack.push(index);
-                        }
-                        Kind::Close => {
-                            if let Some(open) = stack.pop() {
-                                if stack.is_empty() {
-                                    keep.push(converter.source_range(token.range.clone()));
-                                } else if tokens[open + 1..index].iter().take(2).any(|token| {
-                                    matches!(&token.kind, Kind::Symbol('*')) || matches!(&token.kind,
-                                        Kind::Control(name, _) if matches!(name.as_str(),
-                                            "fonttbl" | "colortbl" | "stylesheet" | "listtable" |
-                                            "listoverridetable" | "info" | "generator"))
-                                }) && !tokens[open + 1..index].iter().take(2).any(|token| {
-                                    matches!(&token.kind, Kind::Control(name, _) if name == "pn")
-                                }) {
-                                    keep.push(converter.source_range(tokens[open].range.start..token.range.end));
-                                }
-                            }
-                        }
-                        Kind::Control(name, _)
-                            if stack.len() <= 1
-                                && matches!(
-                                    name.as_str(),
-                                    "rtf"
-                                        | "ansi"
-                                        | "mac"
-                                        | "pc"
-                                        | "pca"
-                                        | "ansicpg"
-                                        | "deff"
-                                        | "deflang"
-                                        | "deflangfe"
-                                        | "adeflang"
-                                        | "uc"
-                                        | "deftab"
-                                        | "paperw"
-                                        | "paperh"
-                                        | "margl"
-                                        | "margr"
-                                        | "margt"
-                                        | "margb"
-                                        | "landscape"
-                                        | "viewkind"
-                                        | "viewscale"
-                                ) =>
-                        {
-                            keep.push(converter.source_range(token.range.clone()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
         keep.sort_by_key(|range| (range.start, range.end));
         let mut patches = Vec::new();
         let mut at = 0;

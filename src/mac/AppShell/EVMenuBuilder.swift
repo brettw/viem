@@ -18,7 +18,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private let styleMenuProvider: @MainActor () -> (any EVStyleMenuProviding)?
     private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
     private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
-    private var openTypeMenu: NSMenu?
     private var themeMenu: NSMenu?
     let themeActions: EVThemeActions
     private var trackingMenus = Set<ObjectIdentifier>()
@@ -45,7 +44,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("Viem", submenu: makeApplicationMenu(for: application)))
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
-        mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
         mainMenu.addItem(topLevelItem("Style", submenu: makeStyleMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
@@ -74,12 +72,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // Keep the tracked NSMenuItem objects and their geometry stable.
         guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
         if menu === themeMenu { rebuildThemeMenu(menu); return }
-        if menu === openTypeMenu {
-            if let provider = styleMenuProvider() as? any EVOpenTypeMenuProviding {
-                provider.populateOpenTypeFeatureMenu(menu)
-            } else { menu.removeAllItems() }
-            return
-        }
         if let role = styleMenuRoles[ObjectIdentifier(menu)] {
             rebuildStyleMenu(menu, role: role)
             return
@@ -225,17 +217,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(revertItem)
 
         menu.addItem(.separator())
-        for (title, commands) in [
-            ("Convert to", [EVMenuCommand.convertToText, .convertToMarkdown]),
-            ("Reinterpret as", [EVMenuCommand.reinterpretAsText, .reinterpretAsCode, .reinterpretAsMarkdown]),
-        ] {
-            let formats = NSMenu(title: title)
-            let names = title == "Reinterpret as" ? ["Text", "Code", "Markdown"] : ["Text", "Markdown"]
-            for (name, command) in zip(names, commands) {
-                formats.addItem(coreItem(name, command: command))
-            }
-            menu.addItem(submenuItem(title, submenu: formats))
-        }
         let encodings = NSMenu(title: "Text Encoding")
         encodings.showsStateColumn = true
         encodings.addItem(coreItem("UTF-8", command: .encodingUTF8))
@@ -326,82 +307,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             key: " ",
             modifiers: [.command, .control]
         ))
-        return menu
-    }
-
-    private func makeFormatMenu() -> NSMenu {
-        let menu = NSMenu(title: "Format")
-
-        let font = NSMenu(title: "Font")
-        font.addItem(coreItem("Show Fonts", command: .showFonts, key: "t"))
-        font.addItem(.separator())
-        font.addItem(coreItem("Bold", command: .bold, key: "b"))
-        font.addItem(coreItem("Italic", command: .italic, key: "i"))
-        font.addItem(coreItem("Underline", command: .underline, key: "u"))
-        font.addItem(coreItem("Strikethrough", command: .strikethrough))
-        font.addItem(.separator())
-        font.addItem(coreItem("Superscript", command: .superscript))
-        font.addItem(coreItem("Subscript", command: .subscriptText))
-        font.addItem(.separator())
-
-        let ligatures = NSMenu(title: "Ligatures")
-        ligatures.addItem(coreItem("Use Default Ligatures", command: .defaultLigatures))
-        ligatures.addItem(coreItem("Use All Ligatures", command: .allLigatures))
-        ligatures.addItem(coreItem("Use No Ligatures", command: .noLigatures))
-        font.addItem(submenuItem("Ligatures", submenu: ligatures))
-
-        let features = NSMenu(title: "OpenType Features")
-        features.delegate = self
-        openTypeMenu = features
-        let featuresItem = submenuItem("OpenType Features", submenu: features)
-        featuresItem.tag = EVMenuCommand.openTypeFeatures.rawValue
-        font.addItem(featuresItem)
-        for item in font.items { font.removeItem(item); menu.addItem(item) }
-
-        let color = NSMenu(title: "Color")
-        color.addItem(coreItem("Show Colors", command: .showColors))
-        color.addItem(coreItem("Text Color…", command: .textColor))
-        color.addItem(coreItem("Highlight Color…", command: .highlightColor))
-        menu.addItem(.separator())
-        for item in color.items { color.removeItem(item); menu.addItem(item) }
-        menu.addItem(.separator())
-
-        let paragraph = NSMenu(title: "Paragraph")
-        let alignment = NSMenu(title: "Alignment")
-        alignment.addItem(coreItem("Start", command: .alignStart))
-        alignment.addItem(coreItem("Center", command: .alignCenter))
-        alignment.addItem(coreItem("End", command: .alignEnd))
-        paragraph.addItem(submenuItem("Alignment", submenu: alignment))
-
-        let direction = NSMenu(title: "Writing Direction")
-        direction.addItem(coreItem("Automatic", command: .directionAutomatic))
-        direction.addItem(coreItem("Left to Right", command: .directionLeftToRight))
-        direction.addItem(coreItem("Right to Left", command: .directionRightToLeft))
-        paragraph.addItem(submenuItem("Writing Direction", submenu: direction))
-        paragraph.addItem(coreItem("Paragraph Spacing…", command: .paragraphSpacing))
-
-        let lineSpacing = NSMenu(title: "Line Spacing")
-        lineSpacing.addItem(coreItem("Normal", command: .lineSpacingNormal))
-        lineSpacing.addItem(coreItem("Single", command: .lineSpacingSingle))
-        lineSpacing.addItem(coreItem("1.5 Lines", command: .lineSpacingOneAndHalf))
-        lineSpacing.addItem(coreItem("Double", command: .lineSpacingDouble))
-        lineSpacing.addItem(coreItem("Custom…", command: .lineSpacingCustom))
-        paragraph.addItem(submenuItem("Line Spacing", submenu: lineSpacing))
-        paragraph.addItem(coreItem("Remove List", command: .removeList))
-        menu.addItem(submenuItem("Paragraph", submenu: paragraph))
-
-        menu.addItem(.separator())
-        menu.addItem(coreItem("Copy Style", command: .copyStyle))
-        menu.addItem(coreItem("Paste Style", command: .pasteStyle))
-        menu.addItem(coreItem(
-            "Clear Direct Character Formatting",
-            command: .clearDirectCharacterFormatting
-        ))
-        menu.addItem(coreItem(
-            "Clear Direct Paragraph Formatting",
-            command: .clearDirectParagraphFormatting
-        ))
-        menu.addItem(coreItem("Clear All Direct Formatting", command: .clearAllDirectFormatting))
         return menu
     }
 

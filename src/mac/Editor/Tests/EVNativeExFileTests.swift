@@ -82,42 +82,6 @@ import XCTest
         XCTAssertEqual(document.fileURL?.lastPathComponent, "original.md")
     }
 
-    func testConvertedFormatWritesNewFileAndProtectsOriginalFromEveryExWrite() async throws {
-        let (directory, backend, document, window) = try fixture()
-        defer { window.close(); document.close(); try? FileManager.default.removeItem(at: directory) }
-        let original = try XCTUnwrap(document.fileURL)
-        let originalBytes = try backend.serializedSource(typeName: EVDocument.markdownType)
-        _ = try await perform(window, backend: backend, kind: .write).get()
-        let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
-        _ = try session.setFormat(.plainText, operation: .convert, expected: backend.documentState())
-        let convertedBytes = try backend.serializedSource(typeName: EVDocument.plainTextType)
-        XCTAssertNotEqual(convertedBytes, originalBytes)
-        XCTAssertEqual(try Data(contentsOf: original), originalBytes)
-        XCTAssertTrue(document.requiresNewFormatDestination)
-
-        for (kind, path) in [(EVDocumentHostRequest.Kind.write, Optional<String>.none), (.write, original.path), (.saveAs, original.path)] {
-            let refused = await perform(window, backend: backend, kind: kind, path: path, force: true)
-            switch refused {
-            case .success: XCTFail("Changed serialization overwrote the original")
-            case let .failure(error):
-                XCTAssertEqual(error as? EVDocumentSerializationError, .changedFormatNeedsNewDestination)
-            }
-            XCTAssertEqual(try Data(contentsOf: original), originalBytes)
-            XCTAssertEqual(document.fileURL, original)
-        }
-
-        let destination = directory.appendingPathComponent("converted.txt")
-        _ = try await perform(window, backend: backend, kind: .saveAs, path: destination.path).get()
-        XCTAssertEqual(try Data(contentsOf: original), originalBytes)
-        XCTAssertEqual(try Data(contentsOf: destination), convertedBytes)
-        XCTAssertEqual(document.fileURL, EVDocumentIdentity.canonicalURL(destination))
-        XCTAssertFalse(document.requiresNewFormatDestination)
-        XCTAssertFalse(backend.persistenceState.isDirty)
-        _ = try await perform(window, backend: backend, kind: .write).get()
-        XCTAssertEqual(try Data(contentsOf: original), originalBytes)
-        XCTAssertEqual(try Data(contentsOf: destination), convertedBytes)
-    }
-
     func testEditReplacesActivePaneWhileUppercaseEditAddsWindow() async throws {
         let (directory, backend, original, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }

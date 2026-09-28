@@ -15,11 +15,7 @@ const FIXTURES: &[(Format, &str)] = &[
     (Format::Markdown, "> a\n>\n> b"),
     (Format::Markdown, "# a\n\nb\n\n```\nc\nd\n```"),
     (Format::Markdown, "a\n\n---\n\nb"),
-    (Format::Rtf, "{\\rtf1 a\\par b}"),
-    (Format::Rtf, "{\\rtf1 a\\line b\\par c\\par}"),
-    (Format::Rtf, "{\\rtf1 {\\b a\\par b}\\par c}"),
-    (Format::Rtf, "{\\rtf1 a\\par {\\pict\\pngblip 00}\\par b}"),
-    (Format::Rtf, "{\\rtf1{\\pntext 1.}{\\*\\pn\\pnlvlbody\\pndec\\pnstart1}a\\par {\\pntext 2.}{\\*\\pn\\pnlvlbody\\pndec\\pnstart2}b}"),
+
 ];
 
 fn editor(source: &[u8], format: Format) -> (Editor, ViewId) {

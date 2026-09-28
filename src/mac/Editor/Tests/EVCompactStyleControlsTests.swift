@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
     func testFontSizeUnitConversionTracksBasedOnParagraphAndKeepsDeclaration() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
@@ -64,45 +64,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(try backend.styleSheetSnapshot(), before, "Base Paragraph cannot declare a relative size even through an action sent directly")
     }
 
-    func testCharacterPercentagePreviewIgnoresNamedParentPointSizeAndOverrideClears() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
-        defer { withExtendedLifetime(surface) {} }
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)))
-        let parent = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC1"))
-        _ = try XCTUnwrap(surface.session).createStyle(parent, name: "Parent", identity: backend.styleSheetSnapshot().identity)
-        editor.selectStyle(parent)
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(100)))
-        let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC2"))
-        _ = try XCTUnwrap(surface.session).createStyle(code, name: "Child", identity: backend.styleSheetSnapshot().identity)
-        editor.selectStyle(code)
-        XCTAssertTrue(editor.setParentForTesting(parent), editor.inspection.diagnostic)
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
-        let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
-        let size = try control(NSTextField.self, label: "Size", in: editor.view)
-        unit.selectItem(withTitle: "%")
-        XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
-        XCTAssertEqual(size.stringValue, "90", "Character percentages use underlying text; the preview uses Base Paragraph")
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: code)?.properties[.characterSize]?.declared, .percentage(90))
-        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(18))
-        editor.selectStyle(EVStyleKey.baseParagraph)
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)), editor.inspection.diagnostic)
-        editor.selectStyle(code)
-        XCTAssertEqual(size.stringValue, "90")
-        guard case let .float(points)? = editor.inspection.preview.effectiveValues[.characterSize] else { return XCTFail("Expected resolved points") }
-        XCTAssertEqual(points, 10.8, accuracy: 0.0001, "Resolved percentages retain fractional points")
-        let checkbox = try control(NSButton.self, label: "Override font size", in: editor.view)
-        checkbox.performClick(nil)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: code)?.properties[.characterSize]?.declared)
-        XCTAssertEqual(size.stringValue, "")
-        XCTAssertFalse(unit.isEnabled)
-        XCTAssertNil(unit.selectedItem)
-        checkbox.performClick(nil)
-        XCTAssertEqual(unit.titleOfSelectedItem, "pt")
-        XCTAssertEqual(size.stringValue, "100", "Enabling an inherited override retains the existing resolved-value behavior")
-    }
-
     func testFontSizePercentageDraftsRequireIntegersWithinBoundsAndStepperUsesPercent() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -133,7 +96,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFontSizeUnitConversionRoundsAndClampsOnlyThePercentageDeclaration() throws {
-        let (_, surface, editor, _) = try makeEditor(rich: true)
+        let (_, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(12)))
         editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
@@ -151,7 +114,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFirstClickOnInheritedFontSizeUnitActivatesPercentageAsOneUndoGesture() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -173,40 +136,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(checkbox.state, .off)
     }
 
-    func testRTFPercentageToPointsUsesNearestRepresentableHalfPoint() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-percentage-rtf-\(UUID().uuidString)")
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
-        let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(#"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0 Heading;}}\s5 Text}"#.utf8), typeName: EVDocument.rtfType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        defer { withExtendedLifetime(surface) {} }
-        surface.loadViewIfNeeded()
-        let editor = EVStyleEditorViewController()
-        editor.themeStore = EVThemeStore(configuration: configuration)
-        editor.retarget(document: surface, styleKey: .baseParagraph)
-        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "RtfP5"))
-        let cases: [(Float, UInt32, Float)] = [(14, 90, 12.5), (0.5, 10, 0.5)]
-        for (base, percentage, points) in cases {
-            editor.selectStyle(EVStyleKey.baseParagraph)
-            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(base)))
-            editor.selectStyle(heading)
-            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .percentage(percentage)))
-            let unit = try control(NSPopUpButton.self, label: "Font size unit", in: editor.view)
-            XCTAssertEqual(unit.titleOfSelectedItem, "%")
-            guard case let .float(resolved)? = editor.inspection.preview.effectiveValues[.characterSize] else { return XCTFail("Expected resolved points") }
-            XCTAssertEqual(resolved, base * Float(percentage) / 100, accuracy: 0.0001,
-                "Keeping percent must retain exact fractional resolution in RTF")
-            unit.selectItem(withTitle: "pt")
-            XCTAssertTrue(unit.sendAction(try XCTUnwrap(unit.action), to: unit.target))
-            XCTAssertEqual(editor.inspection.diagnostic, "")
-            XCTAssertEqual(unit.titleOfSelectedItem, "pt")
-            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(points))
-        }
-    }
-
     func testScriptButtonsShareOneOverrideAndAreExclusive() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
@@ -304,7 +235,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testClearingFaceOverrideResolvesInheritedWeightForAnExplicitPostScriptFont() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let styleKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(styleKey)
@@ -480,7 +411,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testUnderlineButtonHasVisibleUnderlineAndNativeAction() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let button = try control(NSButton.self, label: "Underline", in: editor.view)
         XCTAssertEqual(button.attributedTitle.string, "U")
@@ -488,9 +419,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
         button.performClick(nil)
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterUnderline]?.declared, .boolean(true))
     }
-    private func makeEditor(theme: EVTheme = .paper, rich: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
+    private func makeEditor(theme: EVTheme = .paper) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data((rich ? #"{\rtf1{\stylesheet{\s0\fs28 Paragraph;}}\s0 Text}"# : "Text").utf8), typeName: rich ? EVDocument.rtfType : EVDocument.markdownType)
+        try backend.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let suite = "viem-style-theme-\(UUID().uuidString)"
@@ -611,7 +542,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testNativeLightFaceThenBoldCommitsSourceBackedStyle() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         XCTAssertEqual(family.numberOfVisibleItems, 20)
@@ -748,7 +679,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testRejectedFamilyMutationRestoresCommittedComboAndActiveFieldEditor() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName])))
@@ -821,23 +752,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         withExtendedLifetime(window) {}
     }
 
-    func testNativeRTFColorWellNormalizesPickerValuesToSourcePrecision() throws {
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(#"{\rtf1 Text}"#.utf8), typeName: EVDocument.rtfType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let editor = EVStyleEditorViewController()
-        editor.retarget(document: surface, styleKey: .baseParagraph)
-        let well = try control(NSColorWell.self, label: "Text color", in: editor.view)
-        well.color = NSColor(srgbRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
-        XCTAssertTrue(well.sendAction(try XCTUnwrap(well.action), to: well.target))
-        XCTAssertEqual(editor.inspection.diagnostic, "")
-        let expected = EVStyleColor(red: 191 / 255, green: 64 / 255, blue: 32 / 255, alpha: 1)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]?.declared, .color(expected))
-        withExtendedLifetime(surface) {}
-    }
     func testEveryNumericControlHasAnAdjacentNativeStepperAndInheritedValue() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let fields = ["Size", "Tracking", "Start indent", "End indent", "First line", "Margin top", "Margin bottom", "Line spacing value"]
         for title in fields {
@@ -863,37 +779,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
     }
 
-    func testStepperAutorepeatIsLiveAndOneSourceBackedUndoGesture() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
-        defer { withExtendedLifetime(surface) {} }
-        let source = try backend.serializedSource(typeName: EVDocument.rtfType)
-        let stepper = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
-        stepper.performTrackingGesture {
-            for expected in [15, 16, 17] {
-                stepper.doubleValue += stepper.increment
-                XCTAssertTrue(stepper.sendAction(stepper.action, to: stepper.target))
-                XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
-                XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(expected)))
-            }
-        }
-        XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
-        let changed = try backend.serializedSource(typeName: EVDocument.rtfType)
-        XCTAssertNotEqual(changed, source)
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), source)
-        XCTAssertEqual(stepper.doubleValue, 14)
-        surface.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), changed)
-        XCTAssertEqual(stepper.doubleValue, 17)
-        let indent = try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view)
-        indent.doubleValue = -2
-        XCTAssertTrue(indent.sendAction(try XCTUnwrap(indent.action), to: indent.target))
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.paragraphFirstLineIndent]?.declared, .float(-2))
-        XCTAssertEqual(editor.inspection.diagnostic, "")
-    }
-
     func testLineSpacingDraftPreservesIntermediateDecimalTextAndCaretUntilEditingEnds() throws {
-        let (backend, surface, editor, _) = try makeEditor(rich: true)
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770),
             styleMask: [.titled], backing: .buffered, defer: false)

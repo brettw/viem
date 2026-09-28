@@ -9,7 +9,7 @@ fn open(source: &str, format: Format) -> Document {
 #[test]
 fn captured_runs_reorder_with_style_and_one_atomic_source_transaction() {
     for (format, source) in [
-        (Format::Rtf, r"{\rtf1 {\b one} {\i two}{\*\unknown keep}}"),
+
         (Format::Markdown, "**one** *two*"),
     ] {
         let mut document = open(source, format);
@@ -94,7 +94,7 @@ fn captures_keep_literal_and_semantic_newlines_distinct() {
 fn unchanged_capture_does_not_author_resolved_defaults_or_change_source() {
     for (source, format) in [
         ("**word**", Format::Markdown),
-        (r"{\rtf1 {\b word}}", Format::Rtf),
+
     ] {
         let mut document = open(source, format);
         let prepared = document
@@ -112,40 +112,7 @@ fn unchanged_capture_does_not_author_resolved_defaults_or_change_source() {
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
-#[test]
-fn captures_restore_default_color_when_the_destination_inherits_a_source_override() {
-    let mut document = open(
-        r"{\rtf1{\colortbl ;\red255\green0\blue0;}{\cf1 red} plain}",
-        Format::Rtf,
-    );
-    let space = FormattedTextPayload::new(&document.hard_line_snapshot(), " ", vec![]).unwrap();
-    let prepared = document
-        .prepare_model_request(ModelRequest::ApplyFragmentEdits {
-            document: document.id(),
-            revision: document.revision(),
-            edits: vec![FragmentEdit {
-                range: 0..9,
-                fragments: vec![
-                    ReplacementFragment::Capture(4..9),
-                    ReplacementFragment::Literal(space),
-                    ReplacementFragment::Capture(0..3),
-                ],
-            }],
-        })
-        .unwrap();
-    document.commit_model_transaction(prepared).unwrap();
-    assert_eq!(document.text(), "plain red");
-    assert!(
-        DocumentLayoutStyles::character_at(document.projection(), 0, false)
-            .unwrap()
-            .foreground_is_default
-    );
-    assert!(
-        !DocumentLayoutStyles::character_at(document.projection(), 6, false)
-            .unwrap()
-            .foreground_is_default
-    );
-}
+
 #[test]
 fn captured_plain_text_can_clear_only_part_of_a_surviving_code_span() {
     let mut document = open("`abcdef` plain", Format::Markdown);

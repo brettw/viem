@@ -34,21 +34,21 @@ fn percentage_sizes_refresh_visible_and_distant_text_without_shaping_a_large_doc
     edit(&mut core, StyleNamespace::Block, "Paragraph", StylePropertyValue::Float(12.0));
     edit(&mut core, StyleNamespace::Block, "Heading1", StylePropertyValue::Percentage(200));
     edit(&mut core, StyleNamespace::Character, "Code", StylePropertyValue::Percentage(90));
-    assert!((core.selected_typography(view).unwrap().0.size - 21.6).abs() < 0.0001);
+    assert!((core.selected_character_style(view).unwrap().size - 21.6).abs() < 0.0001);
     let calls = core.views[&view].engine.provider().request_calls();
     let revision = core.layout(view).unwrap().snapshot().unwrap().revision;
     edit(&mut core, StyleNamespace::Block, "Paragraph", StylePropertyValue::Float(20.0));
     let reshaped = core.views[&view].engine.provider().request_calls() - calls;
     assert!(reshaped > 0 && reshaped < 1000, "Only visible/buffered rows need shaping: {reshaped}");
     assert_ne!(core.layout(view).unwrap().snapshot().unwrap().revision, revision);
-    assert!((core.selected_typography(view).unwrap().0.size - 36.0).abs() < 0.0001);
+    assert!((core.selected_character_style(view).unwrap().size - 36.0).abs() < 0.0001);
     let at = core.document.text().match_indices("heading").nth(5_000).unwrap().0;
     let calls = core.views[&view].engine.provider().request_calls();
     core.handle(view, CoreEvent::PlaceCursor {
         document_revision: core.document.revision(), text_offset: at,
         affinity: BoundaryAffinity::Downstream, extend_selection: false,
     }).unwrap();
-    assert!((core.selected_typography(view).unwrap().0.size - 36.0).abs() < 0.0001);
+    assert!((core.selected_character_style(view).unwrap().size - 36.0).abs() < 0.0001);
     assert!(core.views[&view].engine.provider().request_calls() - calls < 1000);
     assert_eq!(core.document.source_bytes(), source.as_bytes());
 }
@@ -419,27 +419,10 @@ fn committing_marked_text_keeps_the_displayed_composition_baseline() {
 
 #[test]
 fn typing_near_bottom_preserves_visible_rows_in_every_text_format() {
-    for format in [Format::PlainText, Format::Markdown, Format::Rtf] {
+    for format in [Format::PlainText, Format::Markdown] {
         // Every format contains many independent paragraphs so edits must
         // invalidate only the active neighborhood of the large document.
-        let (mut core, view) = if format.is_rich_text() {
-            let source = format!(r"{{\rtf1 {}}}", r"An ordinary paragraph with several words that wrap across the narrow text view.\par ".repeat(20_000));
-            let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
-            let mut core = Core::new(document);
-            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 240.);
-            core.handle(view, CoreEvent::PlaceCursor {
-                document_revision: core.document.revision(), text_offset: 60_006,
-                affinity: BoundaryAffinity::Downstream, extend_selection: false,
-            }).unwrap();
-            let row = caret_row(&core, view);
-            core.handle(view, CoreEvent::SetViewportOrigin {
-                left: 0., top: Some(row.baseline - 220.),
-            }).unwrap();
-            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
-            (core, view)
-        } else {
-            fixture_for_format(220., format)
-        };
+        let (mut core, view) = fixture_for_format(220., format);
         let initial = baseline(&core, view);
         let old_top = core.views[&view].layout.viewport_top();
         assert!(old_top > 500., "fixture must be scrolled far from the top");
@@ -653,11 +636,21 @@ fn document_end_including_an_empty_final_line_can_scroll_above_bottom_margin() {
     }
 }
 
+
+
 #[test]
 fn exact_line_spacing_at_document_end_keeps_full_row_above_bottom_margin() {
-    let source = format!(r"{{\rtf1\ansi\fs40\sl-160\slmult0\sb0\sa0 {}last}}", r"line\line ".repeat(20));
+    let source = format!("{}last", "line<br>".repeat(20));
     for wrap in [true, false] {
-        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut defaults: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+        let paragraph = defaults["block_styles"].as_array_mut().unwrap().iter_mut().find(|style| style["id"] == "Paragraph").unwrap();
+        paragraph["character"]["size"] = serde_json::json!(20.0);
+        paragraph["block"]["line_spacing"] = serde_json::json!({"Exact": 8.0});
+        paragraph["block"]["margin_top"] = serde_json::json!(0.0);
+        paragraph["block"]["margin_bottom"] = serde_json::json!(0.0);
+        assert!(document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap().is_empty());
+
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 400., 60.);
         core.handle(view, CoreEvent::SetWrap(wrap)).unwrap();

@@ -97,7 +97,6 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var definition: EVStyleDefinition?
     private var documentID: UInt64?
     private var theme = EVTheme.midnight
-    private var sourceFormat = EVSourceFormat.plainText
     private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
     private var updating = false
     private var publishingFontChange = false
@@ -275,13 +274,12 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         blockView.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     }
 
-    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .midnight, sourceFormat: EVSourceFormat = .plainText, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
+    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .midnight, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
         fallbackPopover?.close()
         fallbackPopover = nil
         let activeLineEditor = lineValue.currentEditor() as? NSTextView
         let activeLineDraft = activeLineEditor.map { ($0.string, $0.selectedRange()) }
         self.theme = theme
-        self.sourceFormat = sourceFormat
         let wasUpdating = updating
         updating = true
         defer { updating = wasUpdating }
@@ -528,7 +526,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
                 || lineKind.selectedItem?.tag == Int(VIEM_STYLE_LINE_SPACING_MULTIPLIER))
         let positive = property == .characterSize || relativeLineSpacing
         control.increment = relativeLineSpacing || property == .characterLetterSpacing ? 0.1 : 1
-        control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), sourceFormat == .rtf && property == .characterSize ? 0.5 : 0.1)
+        control.minValue = positive ? min(max(value, Double(Float.leastNormalMagnitude)), 0.1)
             : property == .paragraphLineSpacing || EVStyleProperty.nonnegativeBlockProperties.contains(property) ? 0 : -Double(Float.greatestFiniteMagnitude)
         control.maxValue = Double(Float.greatestFiniteMagnitude)
         control.doubleValue = value
@@ -735,10 +733,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             // integer percentage range allows. Resolved point sizes stay exact.
             value = .percentage(UInt32(min(1000, max(10, (Double(points) / Double(basis) * 100).rounded()))))
         } else {
-            // RTF stores absolute font sizes in half-points. The relative
-            // declaration itself still resolves without this quantization.
-            let absolute = sourceFormat == .rtf ? Float(max(0.5, (Double(points) * 2).rounded() / 2)) : points
-            value = .float(absolute)
+            value = .float(points)
         }
         hasInvalidDraft = false
         send([.setDeclaration(.characterSize, value)])
@@ -855,7 +850,6 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     @objc private func colorChanged(_ sender: NSColorWell) {
         guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)), let rgb = sender.color.usingColorSpace(.sRGB) else { return }
         let color = EVStyleColor(red: Float(rgb.redComponent), green: Float(rgb.greenComponent), blue: Float(rgb.blueComponent), alpha: Float(rgb.alphaComponent))
-            .normalizedForNativePicker(format: sourceFormat)
         send([.setDeclaration(property, .color(color))])
     }
     @objc private func directionChanged(_ sender: NSPopUpButton) { guard let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }; send([.setDeclaration(property, .writingDirection(UInt32(sender.indexOfSelectedItem)))]) }

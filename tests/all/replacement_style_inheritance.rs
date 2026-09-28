@@ -139,9 +139,9 @@ fn utf16_markdown_link_replacement_keeps_formatted_caret_and_destination() {
 }
 
 #[test]
-fn markdown_and_rtf_replace_use_first_character_bold() {
+fn markdown_replace_use_first_character_bold() {
     for (format, source) in [
-        (Format::Rtf, r"{\rtf1 plain {\b bold} tail}"),
+
         (Format::Markdown, "plain **bold** tail"),
     ] {
         for (range, bold) in [
@@ -357,40 +357,6 @@ fn markdown_link_replacement_uses_the_normalized_first_character() {
     }
 }
 
-#[test]
-fn explicit_pending_style_after_deletion_overrides_inherited_traits() {
-    use viem_core::document::{StyleNamespace, StyleProperty, StylePropertyValue};
-    let (mut core, view) = fixture_format(br"{\rtf1{\b bold} regular}".to_vec(), Encoding::Utf8, Format::Rtf);
-    select(&mut core, view, 0..5, false);
-    key(&mut core, view, Key::Backspace);
-    core.handle(
-        view,
-        CoreEvent::AssignNamedStyle {
-            expected: core.list_selection_identity(view).unwrap(),
-            style_sheet_revision: core.document().projection().style_sheet().revision,
-            namespace: StyleNamespace::Character,
-            style: "".into(),
-        },
-    )
-    .unwrap();
-    core.handle(
-        view,
-        CoreEvent::SetDirectCharacterProperties {
-            expected: core.list_selection_identity(view).unwrap(),
-            values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(21.))],
-        },
-    )
-    .unwrap();
-    text(&mut core, view, "X");
-    text(&mut core, view, "Y");
-    for at in 0..2 {
-        let actual =
-            DocumentLayoutStyles::semantic_character_at(core.document().projection(), at, false)
-                .unwrap();
-        assert!(!actual.bold);
-        assert_eq!(actual.size, 21.);
-    }
-}
 fn select(core: &mut Editor, view: ViewId, range: Range<usize>, reverse: bool) {
     let (anchor, active) = if reverse {
         (range.end, range.start)

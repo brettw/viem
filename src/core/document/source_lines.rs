@@ -12,9 +12,7 @@ pub struct PhysicalSourceLine {
 }
 impl Document {
     pub fn physical_line_count(&self) -> Result<usize, DocumentError> {
-        if self.format() == Format::Rtf {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
+
         Ok(self.state().source_hard_lines.len())
     }
     pub fn physical_line(&self, index: usize) -> Result<PhysicalSourceLine, DocumentError> {

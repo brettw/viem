@@ -99,6 +99,7 @@ struct Scope {
     marker: String,
     bold: bool,
     italic: bool,
+    strike: bool,
 }
 fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, DocumentError> {
     let text = projection.text_tree();
@@ -106,11 +107,10 @@ fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, Docum
         .style_spans_for_region(&(at.saturating_sub(1)..at.saturating_add(1).min(text.byte_len())));
     let mut result: Vec<Scope> = Vec::new();
     for span in &spans {
-        let StyleApplication::Semantic(
-            style @ (SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis),
-        ) = span.application
-        else {
-            continue;
+        let style = match &span.application {
+            StyleApplication::Semantic(style @ (SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)) => Some(*style),
+            StyleApplication::Automatic(id) if id.0 == "Strikethrough" => None,
+            _ => continue,
         };
         if result.iter().any(|scope| scope.range == span.range) {
             continue;
@@ -123,9 +123,13 @@ fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, Docum
             s.range == span.range
                 && s.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)
         });
-        let width = if bold && italic {
+        let strike = style.is_none();
+        let width = if strike {
+            let opening = text.slice(span.range.start..span.range.end).map_err(DocumentError::FormattedTextStorage)?;
+            if opening.starts_with("~~") { 2 } else { 1 }
+        } else if bold && italic {
             3
-        } else if style == SemanticInlineStyle::Strong {
+        } else if style == Some(SemanticInlineStyle::Strong) {
             2
         } else {
             1
@@ -139,7 +143,7 @@ fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, Docum
         let marker = text
             .slice(span.range.start..span.range.start + width)
             .map_err(DocumentError::FormattedTextStorage)?;
-        if (!marker.bytes().all(|b| b == b'*') && !marker.bytes().all(|b| b == b'_'))
+        if (!marker.bytes().all(|b| b == b'*') && !marker.bytes().all(|b| b == b'_') && !(strike && marker.bytes().all(|b| b == b'~')))
             || text
                 .slice(span.range.end - width..span.range.end)
                 .map_err(DocumentError::FormattedTextStorage)?
@@ -152,6 +156,7 @@ fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, Docum
             marker,
             bold,
             italic,
+            strike,
         });
     }
     result.sort_by_key(|scope| (scope.range.start, std::cmp::Reverse(scope.range.end)));
@@ -169,7 +174,7 @@ pub(super) fn insertion(
         || text.is_empty()
         || document.projection().text_tree().byte_len() == 0
         || text.contains('\n')
-        || desired.bold != Some(false) && desired.slant != Some(crate::document::FontSlant::Upright)
+        || desired.bold != Some(false) && desired.slant != Some(crate::document::FontSlant::Upright) && desired.strikethrough != Some(false)
     {
         return Ok(None);
     }
@@ -279,6 +284,7 @@ pub(super) fn insertion(
     let Some(first) = scopes.iter().position(|scope| {
         scope.bold && desired.bold == Some(false)
             || scope.italic && desired.slant == Some(crate::document::FontSlant::Upright)
+            || scope.strike && desired.strikethrough == Some(false)
     }) else {
         return Ok(None);
     };
@@ -307,8 +313,11 @@ pub(super) fn insertion(
         (false, true, false) => "*",
         _ => "",
     };
+    let strike = desired.strikethrough != Some(false) && active.iter().any(|scope| scope.strike);
+    let preserved_open = format!("{}{preserved}", if strike { "~~" } else { "" });
+    let preserved_close = format!("{preserved}{}", if strike { "~~" } else { "" });
     let mut prefix = String::new();
-    let mut suffix = preserved.to_owned();
+    let mut suffix = preserved_close;
     let point = if exact_exit {
         exit
     } else {
@@ -320,7 +329,7 @@ pub(super) fn insertion(
         }
         local_at
     };
-    prefix.push_str(preserved);
+    prefix.push_str(&preserved_open);
     let mut escaped = if document.format() == Format::MarkdownSource {
         text.to_owned()
     } else {

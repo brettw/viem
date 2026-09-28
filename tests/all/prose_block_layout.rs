@@ -57,12 +57,8 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
         }
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
-    for format in [Format::PlainText, Format::Rtf] {
-        let source = if format == Format::Rtf {
-            r"{\rtf1 Text}"
-        } else {
-            "Text"
-        };
+    for format in [Format::PlainText] {
+        let source = "Text";
         let document = open(source, format);
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
         assert_eq!(styles.paragraphs[0].margin_top, 0.);

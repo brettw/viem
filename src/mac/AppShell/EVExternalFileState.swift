@@ -94,10 +94,9 @@ struct EVExternalWriteAuthorization {
 extension EVDocument {
   /// Baseline is a compact fingerprint of the exact source loaded or written,
   /// not another retained full-document byte copy.
-  func recordFileBaseline(_ data: Data, at url: URL, format: EVSourceFormat? = nil,
+  func recordFileBaseline(_ data: Data, at url: URL,
                           fingerprint: EVFileFingerprint? = nil) {
     fileBaselineURL = EVDocumentIdentity.canonicalURL(url)
-    fileBaselineFormat = format ?? editorBackend.sourceFormat
     fileBaseline = fingerprint ?? EVFileFingerprint.bytes(data, at: fileBaselineURL!)
     fileBaselineGeneration &+= 1
     externalFileChange = nil
@@ -106,7 +105,6 @@ extension EVDocument {
   }
   func recordMissingFileBaseline(at url: URL) {
     fileBaselineURL = EVDocumentIdentity.canonicalURL(url)
-    fileBaselineFormat = editorBackend.sourceFormat
     fileBaseline = EVFileFingerprint(digest: nil, device: nil, inode: nil)
     fileBaselineGeneration &+= 1
     externalFileChange = nil
@@ -166,9 +164,6 @@ extension EVDocument {
   /// Returning the accepted state also lets the actual writer detect a change
   /// while its immutable snapshot was queued or its temporary file was built.
   func authorizeExternalWrite(to url: URL) throws -> EVExternalWriteAuthorization {
-    // Writers validate the requested pathname before resolving it. This layer
-    // also receives canonical URLs from AppKit and background write retries.
-    try validatePreservedOriginal(at: url, checkDestinationName: false)
     let observed: EVFileFingerprint
     do { observed = try EVFileFingerprint.read(url) }
     catch {
@@ -196,7 +191,6 @@ extension EVDocument {
   /// A late change is a different disk state, so it needs a fresh choice.
   /// The state already accepted by Save Anyway does not prompt a second time.
   func authorizeExternalWrite(to url: URL, since expected: EVFileFingerprint) throws -> EVExternalWriteAuthorization {
-    try validatePreservedOriginal(at: url, checkDestinationName: false)
     let observed = try EVFileFingerprint.read(url)
     if let change = observed.change(from: expected) {
       externalFileChange = change

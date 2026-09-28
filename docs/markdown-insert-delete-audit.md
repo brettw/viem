@@ -1,5 +1,10 @@
 # Markdown insertion and deletion audit
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 This pass follows the source-mode bulleted-list consistency error and the
 list/code toolbar and numbering fixes. It checks command execution, saved-source
 reopening, and exact undo/redo, including failures previously tolerated by tests.

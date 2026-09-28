@@ -280,23 +280,6 @@ fn coordinator_visual_marks_are_shared_rebased_and_valid_after_visual_deletion()
 }
 
 #[test]
-fn global_targets_hard_lines_inside_a_single_rich_paragraph() {
-    use viem_core::document::{Encoding, Format};
-    let mut d = Document::from_bytes(
-        br"{\rtf1 x1\line keep\line x2\line tail}".to_vec(),
-        Encoding::Utf8,
-        Format::Rtf,
-    )
-    .unwrap();
-    assert_eq!(d.line_count(), 4);
-    let mut c = CommandInterpreter::new();
-    success(ex(&mut c, &mut d, ":g/x/normal A!"));
-    assert_eq!(d.text(), "x1!\nkeep\nx2!\ntail");
-    assert!(d.undo());
-    assert_eq!(d.source_bytes(), br"{\rtf1 x1\line keep\line x2\line tail}");
-}
-
-#[test]
 fn pattern_addresses_use_pending_search_and_preserve_literal_backward_delimiter() {
     let mut d = Document::new("foo?bar\nother\nfoo?bar\ntail");
     let mut c = CommandInterpreter::new();

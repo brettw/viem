@@ -287,8 +287,7 @@ fn repair_default_graph(
                 if discard_block_dependency(sheet, &id, blocks, "inheritance cycle", diagnostics) { return true; }
             }
             Ok(chain) => {
-                let mut size = sheet.intrinsic_character_defaults.size
-                    .map_or(DEFAULT_FONT_SIZE, |value| value.resolve(DEFAULT_FONT_SIZE));
+                let mut size = DEFAULT_FONT_SIZE;
                 let mut saved_size = None;
                 for ancestor in chain {
                     if let Some(value) = ancestor.character.size {
@@ -329,8 +328,8 @@ impl StyleSheet {
     pub(crate) fn replacing_default_json(&self, bytes: &[u8], projection: &crate::document::FormattedDocument) -> Result<(Self, Vec<String>), StyleDefaultsError> {
         let mut baseline = self.clone();
         let builtins = StyleSheet::default();
-        let mut retained_blocks = self.source_defined_blocks.clone();
-        let mut retained_characters = self.source_defined_characters.clone();
+        let mut retained_blocks = BTreeSet::new();
+        let mut retained_characters = BTreeSet::new();
         for id in self.block_styles.keys().filter(|id| !builtins.block_styles.contains_key(*id)) {
             if projection.has_block_style_assignment(id) { retained_blocks.insert(id.clone()); }
         }
@@ -358,19 +357,15 @@ impl StyleSheet {
         baseline.character_styles.retain(|id, _| builtins.character_styles.contains_key(id) || retained_characters.contains(id));
         baseline.character_metadata.retain(|id, _| baseline.character_styles.contains_key(id));
         for (id, definition) in builtins.block_styles {
-            if !baseline.source_defined_blocks.contains(&id) {
-                baseline.block_styles.insert(id.clone(), definition);
-                if let Some(metadata) = builtins.block_metadata.get(&id) {
-                    baseline.block_metadata.insert(id, metadata.clone());
-                }
+            baseline.block_styles.insert(id.clone(), definition);
+            if let Some(metadata) = builtins.block_metadata.get(&id) {
+                baseline.block_metadata.insert(id, metadata.clone());
             }
         }
         for (id, definition) in builtins.character_styles {
-            if !baseline.source_defined_characters.contains(&id) {
-                baseline.character_styles.insert(id.clone(), definition);
-                if let Some(metadata) = builtins.character_metadata.get(&id) {
-                    baseline.character_metadata.insert(id, metadata.clone());
-                }
+            baseline.character_styles.insert(id.clone(), definition);
+            if let Some(metadata) = builtins.character_metadata.get(&id) {
+                baseline.character_metadata.insert(id, metadata.clone());
             }
         }
         baseline.default_blocks.clear();
@@ -380,47 +375,6 @@ impl StyleSheet {
         baseline.with_default_json(bytes)
     }
 
-    pub fn has_user_default(&self, id: &StyleId, character: bool) -> bool {
-        if character {
-            self.default_characters.contains_key(id)
-        } else {
-            self.default_blocks.contains_key(id)
-        }
-    }
-    pub(crate) fn materialize_default_definition(&mut self, id: &StyleId, character: bool) {
-        let mut current = Some(id.clone());
-        while let Some(id) = current {
-            if character {
-                let Some(style) = self.character_styles.get(&id) else {
-                    break;
-                };
-                current = style.based_on.clone();
-                if let Some(metadata) = self.character_metadata.get_mut(&id) {
-                    metadata.origin = StyleDefinitionOrigin::SourceBacked;
-                }
-                self.source_defined_characters.insert(id);
-            } else {
-                let Some(style) = self.block_styles.get(&id) else {
-                    break;
-                };
-                current = style.based_on.clone();
-                if id == self.base_paragraph {
-                    break;
-                }
-                if let Some(metadata) = self.block_metadata.get_mut(&id) {
-                    metadata.origin = StyleDefinitionOrigin::SourceBacked;
-                }
-                self.source_defined_blocks.insert(id);
-            }
-        }
-    }
-    pub(crate) fn record_source_character_defaults(
-        &mut self,
-        id: StyleId,
-        properties: CharacterProperties,
-    ) {
-        self.source_character_defaults.insert(id, properties);
-    }
     pub(crate) fn with_default_json(&self, bytes: &[u8]) -> Result<(Self, Vec<String>), StyleDefaultsError> {
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(StyleDefaultsError::Json("file exceeds 4 MiB".into()));
@@ -441,9 +395,8 @@ impl StyleSheet {
         let mut characters = parse_character_defaults(character_entries, &mut diagnostics);
         let mut baseline = builtins;
         // Keep adapter-specific defaults and already installed configuration.
-        // Source-owned definitions remain authoritative in the final candidate.
         for (id, style) in &self.block_styles {
-            if !self.source_defined_blocks.contains(id) {
+            {
                 baseline.block_styles.insert(id.clone(), style.clone());
                 if let Some(metadata) = self.block_metadata.get(id) {
                     baseline.block_metadata.insert(id.clone(), metadata.clone());
@@ -451,7 +404,7 @@ impl StyleSheet {
             }
         }
         for (id, style) in &self.character_styles {
-            if !self.source_defined_characters.contains(id) {
+            {
                 baseline.character_styles.insert(id.clone(), style.clone());
                 if let Some(metadata) = self.character_metadata.get(id) {
                     baseline.character_metadata.insert(id.clone(), metadata.clone());
@@ -498,16 +451,13 @@ impl StyleSheet {
         character_names: &BTreeMap<StyleId, StyleDefinitionMetadata>,
     ) {
         for (id, default) in &self.default_blocks {
-            if self.deleted_source_blocks.contains(id)
-                || self.deleted_configuration_blocks.contains(id)
+            if self.deleted_configuration_blocks.contains(id)
             {
                 continue;
             }
-            if !self.source_defined_blocks.contains(id) {
-                let mut definition = default.clone();
-                if let Some(source) = self.source_character_defaults.get(id) {
-                    definition.character.overlay(source);
-                }
+            {
+                let definition = default.clone();
+
                 self.block_styles.insert(id.clone(), definition);
                 let origin = self
                     .block_metadata
@@ -531,7 +481,7 @@ impl StyleSheet {
             if self.deleted_configuration_characters.contains(id) {
                 continue;
             }
-            if !self.source_defined_characters.contains(id) {
+            {
                 self.character_styles.insert(id.clone(), default.clone());
                 let origin = self
                     .character_metadata
@@ -562,10 +512,9 @@ impl StyleSheet {
         }
         // Configuration-only overrides survive source reparsing even when the
         // user has never loaded a saved default sheet. A generated style may
-        // also be the parent of a source-backed or native configuration style.
+        // also be the parent of another configuration style.
         for (id, style) in &previous.block_styles {
-            if !self.source_defined_blocks.contains(id)
-                && previous
+            if previous
                     .block_metadata
                     .get(id)
                     .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)
@@ -576,8 +525,7 @@ impl StyleSheet {
             }
         }
         for (id, style) in &previous.character_styles {
-            if !self.source_defined_characters.contains(id)
-                && previous
+            if previous
                     .character_metadata
                     .get(id)
                     .is_some_and(|m| m.origin == StyleDefinitionOrigin::GeneratedConfiguration)

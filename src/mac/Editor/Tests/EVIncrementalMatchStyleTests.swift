@@ -19,7 +19,6 @@ final class EVIncrementalMatchStyleTests: XCTestCase {
             (EVDocument.plainTextType, "one two"),
             (EVDocument.markdownType, "one **two**"),
             (EVDocument.markdownSourceType, "one **two**"),
-            (EVDocument.rtfType, #"{\rtf1 one {\b two}}"#),
             (EVDocument.codeType, "one two"),
         ] {
             let configuration = configuration()

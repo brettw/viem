@@ -23,13 +23,11 @@ fn fragments(document: &Document, range: &Range<usize>) -> Vec<(Range<usize>, bo
     result
 }
 
-pub(super) fn verify_assignment(
+fn verify_assignment(
     before: &FormattedDocument,
     after: &FormattedDocument,
     range: &Range<usize>,
     style: &StyleId,
-    preserve_code_paragraphs: bool,
-    preserve_direct: bool,
 ) -> Result<(), DocumentError> {
     let mut boundaries = BTreeSet::from([0, range.start, range.end]);
     for span in before.style_spans().iter().chain(after.style_spans()) {
@@ -48,11 +46,10 @@ pub(super) fn verify_assignment(
         let new = after
             .selected_named_styles(at..at + 1, BoundaryAffinity::Downstream)
             .character;
-        let preserved_paragraph = preserve_code_paragraphs
-            && before
-                .blocks_for_region(&(at..at + 1))
-                .iter()
-                .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+        let preserved_paragraph = before
+            .blocks_for_region(&(at..at + 1))
+            .iter()
+            .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
         let expected = if range.contains(&at) && !preserved_paragraph {
             (!style.0.is_empty()).then(|| style.clone())
         } else {
@@ -70,7 +67,7 @@ pub(super) fn verify_assignment(
             }
             properties
         };
-        if (preserve_direct || !range.contains(&at)) && direct(before) != direct(after) {
+        if direct(before) != direct(after) {
             return Err(DocumentError::VerificationFailed);
         }
     }
@@ -222,15 +219,6 @@ impl Document {
         if range.is_empty() {
             return Ok(self.no_op_prepared());
         }
-        if self.format().is_rich_text() {
-            if let Some(prepared) = self
-                .prepare_with_materialized_style_boundaries(&range, |scratch| {
-                    scratch.prepare_character_style_choice(range.clone(), style.clone())
-                })?
-            {
-                return Ok(prepared);
-            }
-        }
 
         let original_range = range.clone();
         let mut scratch = self.scratch_document();
@@ -325,36 +313,6 @@ impl Document {
                     &mut formatted,
                 )?;
             }
-        } else {
-            let decoded = self.encoding().decode(&self.source_bytes())?;
-            let input = normalize(&decoded, self.file_format());
-            let clear = super::super::style::CHARACTER_STYLE_PROPERTIES
-                .into_iter()
-                .collect();
-            let syntax = {
-                super::super::rtf_direct::clear_character_patches(
-                    &input,
-                    self.projection(),
-                    range.clone(),
-                    &clear,
-                )?
-            };
-            let patches = syntax
-                .into_iter()
-                .map(|(range, text)| {
-                    self.encoding()
-                        .encode_fragment(&text)
-                        .map(|bytes| SourcePatch::primary(range, bytes))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let prepared = scratch.prepare_source_only_patches(patches)?;
-            publish(
-                &mut scratch,
-                prepared,
-                &mut range,
-                &mut sources,
-                &mut formatted,
-            )?;
         }
         let target = TextRange::new(
             scratch.text_point(range.start)?,
@@ -519,14 +477,7 @@ impl Document {
             {
                 return Err(DocumentError::VerificationFailed.into());
             }
-            verify_assignment(
-                self.projection(),
-                &candidate.projection,
-                &range,
-                style,
-                true,
-                true,
-            )?;
+            verify_assignment(self.projection(), &candidate.projection, &range, style)?;
         }
         Ok(prepared)
     }

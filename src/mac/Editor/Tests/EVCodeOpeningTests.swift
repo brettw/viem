@@ -49,22 +49,6 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertFalse(surface.canUndo)
     }
 
-    func testProtocolReadRetainsRustFilenameWhenTextIsReinterpretedAsCode() async throws {
-        let concrete = backend()
-        let backend: any EVDocumentBackend = concrete
-        let source = Data("fn main() {\n    let answer = 42;\n}\n".utf8)
-        try backend.read(source: source, typeName: EVDocument.plainTextType,
-                         filename: "main.rs", allowAutomaticCode: false)
-        XCTAssertEqual(backend.sourceFormat, .plainText)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        surface.perform(menuCommand: .reinterpretAsCode, sender: nil)
-        XCTAssertEqual(backend.sourceFormat, .code)
-        try await assertRustKeywordIsHighlighted(backend: concrete, surface: surface)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
-        XCTAssertFalse(backend.persistenceState.isDirty)
-    }
-
     func testDocumentURLReadDetectsRustAndPublishesSyntaxPaint() async throws {
         let backend = backend()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-rust-document-\(UUID().uuidString)")
@@ -302,7 +286,7 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
-    func testCodeDisablesDocumentFormattingWhileRetainingLiteralReinterpretationUndo() throws {
+    func testCodeDisablesDocumentFormattingAndRetainsGlobalStyleEditing() throws {
         let backend = backend()
         let text = "# Heading\n<b>literal &amp;</b>\n"
         try backend.read(source: Data(text.utf8), typeName: EVDocument.codeType)
@@ -323,27 +307,6 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertTrue(styles.canEditStyles)
         XCTAssertTrue(styles.entries.allSatisfy { $0.actionKind != .assign })
         XCTAssertFalse(surface.canUndo)
-        surface.perform(menuCommand: .reinterpretAsText, sender: nil)
-        XCTAssertEqual(backend.sourceFormat, .plainText)
-        XCTAssertEqual(try backend.formattedText(), text)
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(backend.sourceFormat, .code)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(text.utf8))
     }
 
-    func testConvertingCodeKeepsItsLiteralVisibleContentAndUndoRestoresCode() throws {
-        let backend = backend()
-        let source = "# literal\n<b>tags &amp;</b>"
-        for command in [EVMenuCommand.convertToText, .convertToMarkdown] {
-            try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            surface.loadViewIfNeeded()
-            surface.perform(menuCommand: command, sender: nil)
-            XCTAssertEqual(backend.sourceFormat, command.formatChange?.format)
-            XCTAssertEqual(try backend.formattedText(), source)
-            surface.perform(menuCommand: .undo, sender: nil)
-            XCTAssertEqual(backend.sourceFormat, .code)
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
-        }
-    }
 }

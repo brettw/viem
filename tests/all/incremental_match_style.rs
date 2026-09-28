@@ -5,7 +5,7 @@ fn documents() -> Vec<Document> {
         (Format::PlainText, "one two"),
         (Format::Markdown, "one **two**"),
         (Format::MarkdownSource, "one **two**"),
-        (Format::Rtf, r"{\rtf1 one {\b two}}"),
+
         (Format::Code, "one two"),
     ]
     .into_iter()
@@ -85,56 +85,6 @@ fn default_overlay_preserves_the_complete_underlying_character_style() {
     let mut expected = underlying;
     expected.background = sheet.incremental_match_properties().unwrap().background;
     assert_eq!(actual, expected);
-}
-
-#[test]
-fn explicit_overlay_properties_win_over_direct_named_and_paragraph_styles() {
-    let mut document = Document::from_bytes(
-        br"{\rtf1{\colortbl ;\red0\green0\blue255;}\fs62\cf1\b one}".to_vec(),
-        Encoding::Utf8,
-        Format::Rtf,
-    )
-    .unwrap();
-    let color = Color {
-        red: 0.7,
-        green: 0.1,
-        blue: 0.3,
-        alpha: 1.0,
-    };
-    let properties = CharacterProperties {
-        size: Some((18.0).into()),
-        weight: Some(300),
-        foreground: Some(color),
-        underline: Some(false),
-        ..Default::default()
-    };
-    let before = document.source_bytes();
-    configure(&mut document, properties.clone());
-    assert_eq!(document.source_bytes(), before);
-    assert!(!document.is_dirty());
-    let sheet = document.projection().style_sheet();
-    let ordinary = sheet
-        .resolve_paragraph_style(
-            &sheet.base_paragraph,
-            &StyleId::from("Heading1"),
-            Some(&StyleId::from("Code")),
-            &BlockProperties::default(),
-            &CharacterProperties {
-                size: Some((31.0).into()),
-                underline: Some(true),
-                bold: Some(true),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .character;
-    let matched = sheet.overlay_incremental_match(&ordinary).unwrap();
-    assert_eq!(matched.size, 18.0);
-    assert_eq!(matched.weight, 300);
-    assert_eq!(matched.foreground, color);
-    assert!(!matched.underline);
-    assert_eq!(matched.font_families, ordinary.font_families);
-    assert_eq!(sheet.incremental_match_properties().unwrap(), properties);
 }
 
 #[test]

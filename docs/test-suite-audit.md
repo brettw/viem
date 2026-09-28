@@ -1,5 +1,10 @@
 # Test-suite audit — 19 September 2026
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Historical measurements: standalone HTML modes and their dedicated test modules
 were subsequently removed. References below record the suite at the audit date.
 

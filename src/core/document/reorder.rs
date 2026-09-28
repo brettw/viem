@@ -84,7 +84,6 @@ pub(super) fn plan(
             }]
         }
 
-        Format::Rtf => return Err(DocumentError::UnsupportedFormatting),
         Format::Markdown => rich_patches(
             document,
             selected.clone(),
@@ -165,10 +164,6 @@ fn rich_patches(
         replacement,
     }])
 }
-
-
-
-
 
 fn markdown_rows(document: &Document) -> Result<Vec<Range<usize>>, DocumentError> {
     // A blank-line-separated Markdown paragraph owns all its physical source

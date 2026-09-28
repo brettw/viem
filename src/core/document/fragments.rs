@@ -19,7 +19,6 @@ struct CapturedStyle {
     properties: CharacterProperties,
     named: Option<StyleId>,
     code: bool,
-    expected: super::super::ResolvedCharacterStyle,
 }
 impl Document {
     pub(super) fn prepare_fragment_edits(
@@ -280,102 +279,6 @@ impl Document {
                     )?;
                     publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
                 }
-            } else {
-                let current_runs = scratch.capture_style_runs(capture.range.clone())?;
-                let named = capture.named.clone().or_else(|| {
-                    current_runs
-                        .iter()
-                        .any(|run| run.named.is_some())
-                        .then(|| StyleId::from(""))
-                });
-                if let Some(named) = named {
-                    let range = TextRange::new(
-                        scratch.text_point(capture.range.start)?,
-                        scratch.text_point(capture.range.end)?,
-                    )?;
-                    let prepared = scratch.prepare_persisted_style_intent(
-                        PersistedStyleIntent::AssignCharacterStyle {
-                            range,
-                            style: named,
-                        },
-                    )?;
-                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
-                }
-                let current_runs = scratch.capture_style_runs(capture.range.clone())?;
-                let clear = [
-                    (
-                        StyleProperty::CharacterForeground,
-                        capture.properties.foreground.is_none(),
-                        current_runs
-                            .iter()
-                            .any(|run| run.properties.foreground.is_some()),
-                    ),
-                    (
-                        StyleProperty::CharacterBackground,
-                        capture.properties.background.is_none(),
-                        current_runs
-                            .iter()
-                            .any(|run| run.properties.background.is_some()),
-                    ),
-                    (
-                        StyleProperty::CharacterLanguage,
-                        capture.properties.language.is_none(),
-                        current_runs
-                            .iter()
-                            .any(|run| run.properties.language.is_some()),
-                    ),
-                    (
-                        StyleProperty::CharacterDirection,
-                        capture.properties.direction.is_none(),
-                        current_runs
-                            .iter()
-                            .any(|run| run.properties.direction.is_some()),
-                    ),
-                ]
-                .into_iter()
-                .filter_map(|(property, absent, present)| (absent && present).then_some(property))
-                .collect::<BTreeSet<_>>();
-                if !clear.is_empty() {
-                    let range = TextRange::new(
-                        scratch.text_point(capture.range.start)?,
-                        scratch.text_point(capture.range.end)?,
-                    )?;
-                    let prepared = scratch.prepare_persisted_style_intent(
-                        PersistedStyleIntent::ClearDirectCharacterProperties {
-                            range,
-                            properties: clear,
-                        },
-                    )?;
-                    publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
-                }
-                let mut authored = capture.properties.clone();
-                let current_runs = scratch.capture_style_runs(capture.range.clone())?;
-                for property in capture.properties.declared_properties() {
-                    if current_runs.iter().all(|current| {
-                        !capture
-                            .properties
-                            .changed_properties(&current.properties)
-                            .contains(&property)
-                    }) {
-                        super::super::style::clear_character_property(
-                            &StyleId::from("Capture"),
-                            &mut authored,
-                            property,
-                        )?;
-                    }
-                }
-                let prepared =
-                    scratch.prepare_rich_character_properties(capture.range.clone(), authored)?;
-                publish(&mut scratch, prepared, &mut sources, &mut formatted)?;
-                if super::super::rich_text::resolved_character_at(
-                    scratch.projection(),
-                    capture.range.start,
-                )
-                .as_ref()
-                    != Some(&capture.expected)
-                {
-                    return Err(DocumentError::UnsupportedFormatting.into());
-                }
             }
         }
         let patches = sources.source_patches();
@@ -413,7 +316,6 @@ impl Document {
             else {
                 continue;
             };
-            let expected = resolved.clone();
             let mut properties = CharacterProperties {
                 font_families: Some(resolved.font_families),
                 size: Some(resolved.size.into()),
@@ -462,8 +364,7 @@ impl Document {
                     properties,
                     named,
                     code,
-                    expected,
-                });
+                    });
             }
         }
         Ok(runs)

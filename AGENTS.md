@@ -14,8 +14,7 @@ word-processor-quality text surface:
 - proportional or monospaced fonts;
 - kerning, ligatures, font fallback, and OpenType shaping;
 - different font families, sizes, and attributes in different text spans;
-- lossless, format-aware projections from source such as plain text, Markdown,
-  or RTF into an editable formatted view;
+- lossless, format-aware projections from source such as plain text or Markdown into an editable formatted view;
 - optional soft word wrapping to the current window width;
 - visual-row navigation when wrapping is enabled; and
 - responsive editing and scrolling in large documents.
@@ -189,21 +188,17 @@ Use these terms consistently in code, tests, and documentation:
 - **Document**: a source artifact, its configured transformation pipeline, and
   cached derived projections.
 - **WYSIWYG view**: a format which presents block structure and named styles
-  instead of the syntax spelling them: Markdown and RTF.
+  instead of the syntax spelling them: Markdown.
 - **Source view**: a format whose own markup is visible, editable text:
   Markdown Source.
 - **Code**: a literal-text format with automatic syntax styles, distinct from
   the Normal/Insert/Replace command modes and from rich-format Code styles.
   It has no WYSIWYG counterpart. All pre-existing format-family predicates
   below are false for Code; `Format::is_code` is true only for Code.
-- **Rich text**: a WYSIWYG view whose source persists arbitrary character and
-  paragraph declarations: RTF. Markdown carries
-  structure but only a fixed inline vocabulary, so it is structured without
-  being rich text.
 
   These families are `const fn` predicates on `Format` (`is_wysiwyg`,
-  `is_source_view`, `is_rich_text`, `is_markdown`,
-  `has_rich_source`, `has_structural_lists`, and `is_code`). Implementations
+  `is_source_view`, `is_markdown`,
+  `has_structural_lists`, and `is_code`). Implementations
   MUST ask through these predicates rather than spelling a `matches!` set of
   variants, so that adding a format is a deliberate decision at each predicate
   instead of a search for every call site. Their membership is pinned by test.
@@ -617,8 +612,8 @@ SourceArtifact (original bytes or package parts)
 The implementation MAY fuse stages for efficiency, but their responsibilities,
 revision identities, provenance, invalidation, and reverse-edit behavior must
 remain observable and testable. Plain text uses an identity format projection
-after decoding. Markdown and RTF are motivating format adapters, not an
-implicit commitment that every feature of each format is in the first release.
+after decoding. Markdown uses a lossless syntax projection for its source and
+WYSIWYG views; supported syntax is defined by the compatibility policy above.
 
 ### Preservation guarantees
 
@@ -632,15 +627,15 @@ Every editable format pipeline MUST define and test these guarantees:
    edit the user requested.
 
 A patch set may include supporting changes outside the selected formatted
-range when the source format requires them, such as an RTF font/color table,
-a shared style definition. Such patches must
+range when the source format requires them, such as list-continuation prefixes
+or paired Markdown delimiters. Such patches must
 be minimal, explicit, and reported as part of the same atomic transaction.
 Never regenerate an entire document merely because a small local edit is
 easier to serialize that way.
 
 Equivalent syntax is not interchangeable for untouched source. For example,
 Markdown `**bold**` and `__bold__`, HTML entities with different spellings,
-attribute order, comments, whitespace, and RTF control-word spelling must be
+attribute order, comments, and whitespace must be
 retained unless the edit necessarily changes that source region.
 
 ### Source storage and lossless syntax
@@ -686,8 +681,7 @@ retained unless the edit necessarily changes that source region.
   use a semantically exact format escape, change the document encoding and any
   declarations, or reject/request a user decision. Silent substitution or data
   loss is forbidden.
-- RTF uses exact native escapes for otherwise unencodable input.
-  Markdown WYSIWYG prose uses numeric references where they reproduce the
+- Markdown WYSIWYG prose uses numeric references where they reproduce the
   requested Unicode character. Code spans/fences and literal/source views retain
   exact literal semantics; an entity spelling must not masquerade as a character
   there. Ordinary input never silently changes the file's encoding.
@@ -847,14 +841,13 @@ must never affect correctness because any projection can be regenerated.
 
 The formatted document has a platform-independent, immutable style sheet. It
 expresses semantic block and character styling without exposing CSS, AppKit,
-Core Text, RTF, or another source format's object model to general core code.
+Core Text or a source format's object model to general core code.
 Format adapters project their native styling systems into this model and retain
 the original syntax and provenance needed for lossless reverse edits.
 Source-language cascade rules remain adapter responsibilities to the extent an
 adapter claims them. Passive HTML import supports semantic elements and a
 bounded set of inline CSS declarations, with no authored stylesheets or general
-CSS cascade. The generic style resolver does not reinterpret source CSS or RTF
-control state.
+CSS cascade. The generic style resolver does not reinterpret source CSS.
 
 The style sheet has a revision identity, stable style identities, and two
 namespaces:
@@ -890,7 +883,8 @@ paragraph assignment and the fallback selection for style-editing UI. Its
 initial generated font is **SF Pro on macOS and Segoe UI on Windows, at 14
 layout units**; other hosts use `system-ui`. Code uses the system
 monospace family at the same size. Every other paragraph style derives through
-it. Adapters identify source-backed and generated declarations.
+it. Style definitions identify generated configuration and synthetic read-only
+origins; source-derived inline declarations retain their own provenance.
 
 **Default Paragraph** is the user-facing character-style choice meaning no
 named character style is applied. It is not a stored definition or assignment,
@@ -904,7 +898,7 @@ typing at the caret without a source edit until text is inserted.
 
 There are no Base Document or Base Character definitions. View margins belong
 to Settings > View, not to a style. Source-root declarations needed to preserve
-Embedded Markdown HTML or RTF source semantics remain distinct from editable named styles.
+Embedded Markdown HTML semantics remain distinct from editable named styles.
 
 #### Declarations and values
 
@@ -915,8 +909,8 @@ are explicit values and are distinct from absence. Clearing formatting removes
 the declaration at the requested layer; it does not write a guessed value from
 an ancestor.
 
-Source-language constructs such as CSS `inherit`, relative units, or RTF state
-transitions remain represented in the lossless syntax model. The adapter
+Source-language constructs such as CSS `inherit` or relative units
+remain represented in the lossless syntax model. The adapter
 projects their semantic declaration and records dependency/provenance edges so
 that a change to an ancestor invalidates every dependent result. Unsupported
 expressions may be projected as resolved read-only values with a capability
@@ -1048,19 +1042,18 @@ direct-declaration identity, and structural-context identity.
 
 #### Editing, insertion, and provenance
 
-Style operations are typed semantic intentions, including applying a compatible
-named block or character style, setting or clearing a direct property, and
-editing a style definition. Document- and Paragraph-role assignments use the
-same block-style intention with different target kinds. Each adapter reports
-these capabilities separately: support for displaying a style does not imply
-that its definition, assignment, or every direct property can be
-reverse-projected.
+Source-changing style operations are typed semantic intentions for Markdown's
+supported block structure and inline vocabulary. Arbitrary fonts, colors,
+script positions, OpenType features, and paragraph declarations cannot be
+stored by a document formatting command. Displaying a property from a theme or
+passively interpreted source does not grant an editing capability for it.
 
-Style definitions, assignments, direct declarations, and generated defaults all
-carry provenance. A source-backed style edit follows the same minimal-patch,
-reprojection, verification, and undo transaction path as text. A generated
-configuration style may be edited only through an explicit configuration
-intention. A synthetic read-only style cannot be edited.
+Style definitions are independent configuration. Every style-definition edit
+uses an explicit configuration intention and retains all normalized properties,
+including those unavailable as document formatting actions. Supported Markdown
+assignments and inline edits follow the same minimal-patch, reprojection,
+verification, and undo path as text. Synthetic read-only definitions remain
+read-only.
 
 Inserted text inherits the character-style assignment and direct character
 declarations at the caret side selected by its boundary affinity. Inside a run
@@ -1255,13 +1248,11 @@ Committed edits follow this path:
    registers, marks, cursor, and invalidations—or commit nothing.
 
 Formatting syntax is adapter policy. A Markdown adapter may preserve nearby
-`**` versus `__` convention; an RTF adapter must respect group and
-formatting state. Each adapter defines a deterministic local-style-preservation
+`**` versus `__` convention. Each adapter defines a deterministic local-style-preservation
 rule and a configurable default for newly authored syntax.
 
 Plain text cannot persist bold or other rich styles. Its adapter reports that
-capability as unsupported, allowing the frontend to disable the action or
-offer an explicit conversion to a richer format. Do not create a hidden style
+capability as unsupported, allowing the frontend to disable the action. Do not create a hidden style
 sidecar unless a future source format expressly defines one.
 
 IME marked text and similar native composition MAY use a short-lived projected
@@ -1306,7 +1297,7 @@ can translate it.
   flows invalidation forward through later stages and layout.
 - Stateful formats use restart checkpoints and reprocess until parser or
   transformation state converges with an unchanged checkpoint. Unclosed
-  Markdown constructs, RTF groups, HTML parsing state, shared definitions, and
+  Markdown constructs, HTML parsing state, shared definitions, and
   CSS may legitimately widen invalidation; the stage must expose why.
 - Opening a large document may index or parse source progressively. Producing
   the first interactive viewport must not require formatting unrelated content
@@ -1322,25 +1313,7 @@ can translate it.
   result and reverse-edit semantics commute. Transformation order is otherwise
   document configuration and part of the projection identity.
 
-## Passive HTML import and the RTF round-trip adapter
-
-RTF is an editable source format. Its adapter obeys source-authority,
-preservation, semantic-intention, and verified reverse-projection requirements.
-Opening malformed or partially unsupported RTF never grants permission to
-normalize or regenerate the file.
-
-The RTF adapter maintains two related structures:
-
-1. a lossless concrete syntax representation containing every original byte,
-   delimiter, escape, spelling choice, comment, unknown construct, error, and
-   opaque payload; and
-2. a semantic interpretation containing only the visible text, blocks, styles,
-   objects, and dependencies that Viem understands.
-
-The semantic interpretation may use repaired, implied, or inherited structure,
-but provenance always returns to the concrete source nodes that produced it.
-Untouched concrete nodes serialize from their original byte slices. Unsupported
-syntax may affect neither display nor editing, but it is never discarded.
+## Passive HTML import
 
 ### Common safety and edit-boundary rules
 
@@ -1409,156 +1382,15 @@ Styled export uses the same normalized style resolution and CSS serializers.
 It is a one-way file operation; it does not restore HTML editing, tag completion,
 HTML-specific typing/whitespace repair, or source-owned CSS editing.
 
-### RTF adapter
+### Import conformance tests
 
-#### Parsing, state, preservation, and safety
-
-The RTF adapter follows RTF 1.9.1's group stack, control-word/control-symbol,
-destination, binary-data, code-page, Unicode escape, and property-state rules.
-It builds a lossless token/group tree in addition to its semantic formatting
-state. Original brace placement, control-word spelling and delimiter, numeric
-spelling, insignificant source line breaks, escaped characters, fallback bytes,
-unknown controls, destinations, and binary payloads remain exact source.
-
-RTF text decoding depends on header code page, font character set, `\ucN`
-fallback count, and `\uN` escapes. The RTF adapter may fuse grammar-aware
-decoding with its format projection, but it must still expose the revision,
-valid UTF-8, byte provenance, invalid-byte preservation, and reverse-encoding
-behavior required of the conceptual EncodingProjection. RTF does not use the
-shared TextLineEndingProjection: source CR/LF used to format the RTF stream is
-not document content; `\par` and `\line` carry formatted break semantics.
-
-Named-style percentage font sizes persist as the Viem extension
-`\viemsizepercentN`. Relative paragraph definitions also carry a resolved
-`\fsN` fallback, rounded to a positive half-point, which updates when their
-named ancestors change. Viem retains exact relative sizes when reopening.
-RTF has no native dynamic character percentage: other RTF readers ignore this
-extension and use their normal inherited character size. Direct formatting
-continues to use absolute point sizes.
-
-Recognized non-body destinations such as `\fonttbl`, `\colortbl`,
-`\stylesheet`, and `\info` are parsed for supported dependencies but do not
-emit body text. Unknown ignorable destinations beginning with `{\*` are
-retained as opaque groups and skipped semantically. Unknown non-ignorable
-controls follow RTF state rules while remaining in the lossless tree.
-Pictures, objects, fields, headers/footers, annotations, macros, data stores,
-and other unsupported destinations are never executed, updated, fetched, or
-instantiated. An unsupported item that is visibly positioned in body content
-may project as an atomic opaque object with no editable interior. Whole-object
-deletion or replacement owns its complete source group.
-
-For fields, Viem may display an unambiguous stored result destination, but it
-never evaluates or refreshes the instruction. A visible edit that would make
-the preserved instruction and result inconsistent is rejected unless a future
-field-edit policy explicitly owns both.
-
-#### RTF body and formatting projection
-
-The adapter evaluates supported formatting as scoped state:
-
-- opening/closing braces push and restore state;
-- `\plain` and `\pard` reset Character and Paragraph state respectively;
-- `\par` ends a paragraph and `\line` inserts a hard line within a paragraph;
-- `\b`/`\b0`, `\i`/`\i0`, underline controls, and strike controls map to
-  weight, slant, underline, and strike;
-- `\fN` and `\fsN` map through the font table to font request and size;
-- `\cfN` and supported background/highlight controls map through the color
-  table;
-- supported language, direction, character-spacing, script-position, and feature
-  controls map to their corresponding Character properties; and
-- `\liN`, `\riN`, `\fiN`, `\sbN`, `\saN`, `\slN`/`\slmultN`,
-  `\ql`/`\qc`/`\qr`, and paragraph-direction controls map to the supported
-  Paragraph properties when exactly representable.
-
-Unsupported controls and values remain source but contribute no normalized
-property. Justification and other reserved properties are not approximated as
-a supported alignment.
-
-The RTF `\stylesheet` destination supplies named styles. Paragraph style
-`\s0` maps to Base Paragraph. Other `\sN` definitions map to Paragraph
-styles; `\*\csN` definitions map to Character styles. `\sbasedonN` and
-`\snextN` map to parent and following-paragraph relationships when valid.
-Recognized styles named Heading 1 through Heading 6 map to the corresponding
-adapter heading identities when doing so is unambiguous. Section and table
-styles remain opaque until their normalized block roles are specified.
-
-Style handles, rather than names or source order, provide stable identity.
-The initial stable IDs are `RtfP<N>` and `RtfC<N>` for native Paragraph and
-Character handles respectively, with `\s0` represented by `Paragraph`.
-The standard Heading 1 through Heading 6 actions resolve a unique matching
-native heading style, or create one with an unused handle when absent. Renaming
-a heading keeps its native handle and stable identity.
-Effective RTF style selection follows the RTF formatting-state stream; it is not
-treated as an unordered list of classes. Direct controls after style selection
-become direct declarations over the affected formatted ranges.
-
-#### RTF canonical writing and targeted edits
-
-New RTF syntax and any formatting construct that must be regenerated use one
-versioned canonical RTF 1.9.1 representation:
-
-- balanced groups with deterministic control ordering and delimiters;
-- standard `\sN` and `\*\csN` stylesheet entries for Paragraph and Character
-  styles;
-- `\sbasedonN` and `\snextN` when those relationships are present;
-- direct formatting as the smallest balanced group or explicit property delta
-  that scopes exactly to the intended range; and
-- canonical escaped text/`\uN` output with the document's declared code-page
-  and `\ucN` policy.
-
-Existing font, color, and style-table entries retain their order, numbering,
-spelling, and unused entries. A new font, color, or style uses a previously
-unused handle/index and is appended canonically; existing entries are never
-renumbered merely to compact a table. The body patch and required table patch
-commit together.
-
-Where safe, changing one supported direct property patches or inserts only its
-control word and preserves unrelated or unknown controls in the same group. If
-RTF state interactions make that ambiguous, the adapter wraps the selected
-range in a new canonical group with an explicit override rather than
-regenerating surrounding content. It rejects the edit if neither operation can
-preserve the required group/destination semantics.
-
-Editing a supported style definition may canonicalize that one style-definition
-group. Unsupported controls inside that group are part of the declared
-canonicalization boundary and may be removed; other style definitions and
-header destinations remain original bytes. Descendant style groups are patched
-only when the canonical representation materializes a changed dependent value.
-Applying, removing, or changing a named style patches the smallest applicable
-`\sN` or `\csN` body control region.
-
-RTF's canonical Viem extension preserves semantic base weight with
-`\viemweightN` and OpenType features with scoped private control words. These
-controls are ignored by conventional RTF readers; ordinary `\b` and other
-standard controls provide the interoperable appearance fallback. Viem must retain
-feature state through partial clearing, named styles, `\plain`, and reopening.
-### Import and RTF conformance tests
-
-The RTF adapter has corpus, property, and targeted golden tests. Passive HTML
-import and export have separate tests for semantic styling, escaping, and
-absence of active content or resource loading.
-
-- Opening and immediately saving RTF is byte-identical, including malformed
-  syntax, mixed encodings, unknown controls, ignorable destinations, binary
-  data, fields, and embedded-object groups.
-- A targeted body-text edit changes only its declared source range and required
-  escaping bytes, preserving unrelated controls, destinations, and tables.
-- RTF tests cover nested state, `\plain`/`\pard` resets, font/color tables,
-  Unicode and code-page text, `\par`/`\line`, paragraph and character style
-  definitions, based-on/next relationships, and unknown controls adjacent to
-  supported ones.
-- Editing an RTF style definition changes only its declared style group and
-  necessary dependent/table patches. Applying a style or direct property
-  preserves unrelated group state and opaque destinations.
-- No test may observe script, field, macro, object, external resource, or
-  embedded payload execution or network/file access.
-- Incremental parsing/projection after every edit equals a clean projection of
-  the patched source, and undo/redo restores exact source bytes and formatted
-  state.
+Passive HTML import and export have tests for semantic styling, escaping, and
+absence of active content or resource loading. No import may execute scripts,
+fields, macros, objects, or embedded payloads, or load external resources.
 
 ## Required user-visible behavior
 
-### Rich text and typography
+### Styled text and typography
 
 - The formatted document MUST support style spans over arbitrary text ranges.
 - At minimum, a resolved text style contains font family/fallback request,
@@ -1581,8 +1413,9 @@ absence of active content or resource loading.
   that row. Rows are not assumed to have a uniform global height.
 - Internal register operations SHOULD preserve formatted structure and rich
   styles together with enough portable semantics for the destination adapter
-  to translate a paste. WYSIWYG system Copy publishes plain text, macOS rich
-  text (RTF), and a versioned private Viem fragment containing selected source
+  to translate a paste. WYSIWYG system Copy publishes plain text, a native rich
+  representation (RTF on macOS, HTML on Windows), and a versioned private Viem
+  fragment containing selected source
   bytes, pipeline metadata, and resolved styling. Compatible contiguous private
   pastes reconstruct the selected source through verified local transactions.
   Rectangular copies retain the exact source fragments for their selected
@@ -1608,7 +1441,7 @@ absence of active content or resource loading.
   clipboard. Exact internal registers, command-prompt input, literal-input
   commands, and representable NUL characters retain their existing semantics.
 
-### Format interpretation and conversion
+### File formats and Markdown views
 
 Every file-opening path MUST accept files whose type or extension is unknown
 to Viem, including extensionless files and dotfiles such as `.vimrc`. When no
@@ -1617,40 +1450,12 @@ encoding and line-ending projections. Native file-type admission MUST NOT
 reject these files before the Text fallback runs. Recognized format defaults
 and explicit format choices still take precedence.
 
-Format changes carry an explicit operation in the portable core. Reinterpret
-changes only the adapter applied to the current source artifact: every source
-byte, encoding, BOM, and line-ending spelling remains unchanged. It must never
-implicitly convert markup.
-
-Convert explicitly serializes the current formatted semantics into Text
-or Markdown. Source views first use their corresponding WYSIWYG
-projection. Code uses its literal text, without syntax styles, as Text input
-to conversion. This is a best-effort lossy operation: retain representable
-paragraphs, headings, lists, code, and inline formatting; unsupported formatting
-falls back to ordinary visible text. Unsupported objects use available alternate
-or descendant text, with a readable placeholder when no text is available.
-This explicit whole-document operation may replace all source bytes. It uses
-the shared transaction, source correspondence,
-anchor remapping, reprojection, and undo machinery rather than a frontend
-serializer. Existing conversion-loss messages remain available.
-
-For conversion, blank physical lines delimit Text paragraphs. A single newline
-inside a Text paragraph remains a hard line break, represented by a Markdown
-hard break. Each pair of breaks separates paragraphs; surplus
-pairs create empty paragraphs and an unmatched break remains internal. Preserve
-these empty paragraphs where the destination can represent them.
-Conversion to Text places a blank line between
-paragraph blocks, preserves internal hard breaks, and removes formatting and
-generated list markers while retaining their text.
-
-Each successful operation is one undo unit restoring both source and format.
-Reinterpret and Convert are distinct from encoding conversion. The File menu
-offers Text and Markdown conversion targets and additionally Code as a
-reinterpretation target. Selecting Code in the format popup or Reinterpret as
-preserves source bytes and reveals their literal decoded text; Code introduces
-no new serialization or separate Convert to Code action. Choosing a different
-rich/structured family selects its WYSIWYG display when available. A same-family
-source/view switch elsewhere can still reinterpret without changing bytes.
+The supported source formats are Text, Code, and Markdown. Markdown has Source
+and WYSIWYG views over the same source bytes. Switching between those views is
+an explicit portable operation, preserving source bytes, encoding, BOM, line
+endings, anchors, and undo restoration. Text and Code display their format as a
+label. There is no general format reinterpretation or conversion operation, and
+the File menu has no Convert to or Reinterpret as submenus.
 
 ### Styled HTML export
 
@@ -1669,7 +1474,7 @@ exceptions still apply. Literal Code exports its source as escaped text with
 preserved line breaks, spaces, and tabs and the active Code syntax styles.
 Syntax coverage MUST include the whole exported snapshot, not only the visible
 viewport; disabled or unavailable highlighting uses the normal Code defaults.
-Text and RTF export their formatted content through the same path.
+Text exports its formatted content through the same path.
 
 The portable exporter MUST reuse the existing normalized style cascade used by
 layout and the existing CSS property serializers. Paragraph/container styles,
@@ -1684,11 +1489,11 @@ and requires no network resources to display its content and styles.
 ### Application theme and settings
 
 A theme is an application-wide style sheet containing appearance settings and
-Code, Text, Markdown, and RTF configuration style sheets. Each theme is one JSON
+Code, Text, and Markdown configuration style sheets. Each theme is one JSON
 file in the profile's `themes` subdirectory (`~/.viem/themes` by default).
 Appearance defines text foreground and canvas background, caret and selection
 colors, status foreground/background and font family/size, with portable sRGB
-values. Source-backed named styles and direct formatting remain authoritative
+values. Markdown's structural and inline style assignments remain authoritative
 over the theme's format defaults. The macOS Settings window has View, Theme,
 and Editing categories; there are no Code or Documents categories. Code styles
 remain editable through the ordinary modeless Styles inspector opened from a
@@ -1716,7 +1521,7 @@ contain control characters, filename separators or Windows-reserved punctuation,
 end in a dot or space, or use reserved device names or Default. Case-insensitive
 collisions are rejected. The inspector edits the current theme and persists
 named-theme edits automatically, with settings undo independent of document
-undo. Source-authored RTF definitions remain document-owned.
+undo.
 
 New profiles create `themes` and copy the version-tracked
 `assets/themes/Paper.json` and `assets/themes/Midnight.json` resources, selecting
@@ -1825,23 +1630,21 @@ the menu item's open target and tooltip. The menu reads the application
 settings authority rather than a separate operating-system recent-file list.
 
 Format defaults live in the selected theme's `styles` object under `text`,
-`markdown`, `rtf`, and `code`, using their existing versioned style schemas. A
+`markdown` and `code`, using their existing versioned style schemas. A
 document loads the matching sparse defaults before source declarations are
 applied and updates them when the active theme changes. The
-cascade is built-in styles, user format defaults, source definitions/assignments, then direct
-formatting. Built-in defaults seed ordinary editable definitions: Heading 1 is
+cascade is built-in styles, user format defaults, source assignments, then direct
+declarations. Built-in defaults seed ordinary editable definitions: Heading 1 is
 a sparse delta on Base Paragraph, and its size, weight, and paragraph spacing
 are declarations visible in the style editor. The same applies to other built-in
 paragraph, character, internal, and Code styles. Clearing a declaration inherits
 from its parent or contextual paragraph; it must not uncover a hidden copy of
 that style's original default. Clearing every own declaration therefore leaves
-only parent inheritance. Source-defined styles supply their own declarations
-without an extra per-style fallback underneath them. Loading defaults does not
-flatten parent values into child definitions.
+only parent inheritance. Loading defaults does not flatten parent values into
+child definitions.
 An inherited default remains unset in source: changing an unrelated
 property must not serialize an inherited font, color, or other declaration.
-Explicit assignment of a custom default style materializes only declarations
-needed to represent that assignment in a source-backed format. Source and
+Only assignments representable by Markdown may change its source. Source and
 WYSIWYG variants share their format's defaults. Loading defaults is presentation
 configuration and never changes source bytes, dirty state, or undo history.
 Saved style defaults MUST be validated before installation, including the
@@ -1865,7 +1668,7 @@ specified below, populated from the selected theme's `styles.code`.
 
 #### Literal content and editing
 
-Code is a selectable source format alongside Text, Markdown, and RTF. It
+Code is a selectable source format alongside Text and Markdown. It
 always displays every decoded content character, including delimiters, tags,
 entities, comments, indentation, and empty lines. Only the shared encoding and
 line-ending projections interpret physical serialization; invalid bytes retain
@@ -1885,12 +1688,10 @@ Syntax availability never changes editing semantics.
 Code has no source-backed formatting, manually assigned character/paragraph
 styles, direct formatting, or pending typing styles. Rich paste takes its plain
 text representation. Syntax styles never enter saved source, rich clipboard
-payloads, registers, semantic format conversion, or document undo history.
-Reinterpreting into or out of Code preserves bytes using the normal transaction
-and anchor-remapping rules; undo restores that format choice.
+payloads, registers, or document undo history.
 
 Explicit format selection takes precedence on open. Existing Markdown
-and RTF opening defaults remain unchanged. Otherwise, a recognized code-language
+opening defaults remain unchanged. Otherwise, a recognized code-language
 filename or load-time marker can select Code where opening would use Text;
 unrecognized input remains Text. Once Code is selected, detecting a language
 such as Markdown does not select its WYSIWYG format. Language and
@@ -2540,8 +2341,7 @@ Each view has a portable line-mode policy, initially **Physical Source** for
 Code and **Visual** for every other format. Clicking the status-bar location
 toggles Visual (an eye icon) and Physical Source (a file icon). These are
 original vector icons. The mode is independent of `wrap` and is not persisted
-in source. RTF does not expose Physical Source mode; changing a buffer to RTF
-returns any physical-mode views to Visual.
+in source.
 
 - Visual mode counts the exact displayed rows, including soft wraps. Without
   wrapping, these are formatted hard lines. Physical Source mode counts the
@@ -2952,7 +2752,7 @@ formatted document, not one source-artifact part.
 Search can cross character-style, direct-formatting, paragraph-style, and
 source-piece boundaries. It crosses a hard-line or paragraph boundary only
 when the pattern explicitly consumes its U+000A or uses dot-all mode. A search
-never sees HTML tags, Markdown delimiters, RTF controls, or other source syntax
+never sees HTML tags, Markdown delimiters or other source syntax
 that has no formatted representation.
 
 An addressed `:substitute` uses the same matcher and logical stream. A selected
@@ -3394,7 +3194,7 @@ recentering when the caret is already visible.
 #### Paragraphs and comment leaders
 
 The initial formatter supports Text and Code, operating on their literal hard
-lines. Markdown Source and WYSIWYG Markdown and RTF require
+lines. Markdown Source and WYSIWYG Markdown require
 separate format-aware semantics and initially return a non-destructive
 unsupported-format result. They MUST NOT acquire structural paragraph breaks
 through a generic text reflow implementation. Formatting is internal portable
@@ -4145,11 +3945,7 @@ restricts conversion to leading whitespace. Omitted or zero tabstop retains
 the current value; a valid nonzero value also sets the buffer's tabstop.
 Invalid arguments do not partially edit source or options.
 
-In RTF formatted views, `:left`, `:right`, and `:center` set sparse
-direct paragraph alignment on the addressed paragraphs, retaining their text
-and other styles. Alignment follows paragraph start/end direction. Numeric
-indent/width arguments are rejected in these views. Formatted Markdown reports
-unsupported alignment. In plain text, Code, and source views, the commands
+Formatted Markdown reports unsupported paragraph alignment. In plain text, Code, and source views, the commands
 adjust leading whitespace using logical columns and the indentation options.
 `:left [indent]` defaults to zero; `:right [width]` and `:center [width]` default
 to `textwidth`, or 80 when it is zero. Each operation is one verified,
@@ -4203,7 +3999,7 @@ final terminator, and delimiter spellings are retained. Source-visible formats
 sort literal displayed source rows and reparse their styling. WYSIWYG sorting
 supports complete Markdown paragraphs with one hard line, retaining each
 paragraph's source syntax and styles.
-RTF sorting and ambiguous or split rich paragraph owners return an unsupported
+Ambiguous or split paragraph owners return an unsupported
 result without changing source.
 
 ### Startup files and argument navigation
@@ -4485,8 +4281,8 @@ closures.
 
 ### macOS main menu
 
-The initial main-menu order is `Viem`, `File`, `Edit`, `Format`, `Style`,
-`View`, `Window`, and `Help`. There are no `Navigate` or `Command` top-level menus.
+The initial main-menu order is `Viem`, `File`, `Edit`, `Style`, `View`, `Window`,
+and `Help`. There are no `Format`, `Navigate`, or `Command` top-level menus.
 Vim motions, mode changes, command-line entry, registers, marks, and macros
 remain available through the Vim command grammar and any separately specified
 UI; they are not duplicated into speculative menu hierarchies.
@@ -4521,13 +4317,6 @@ The menu hierarchy is:
     - Last Saved Version
     - Browse All Versions…
   - separator
-  - Convert to
-    - Text
-    - Markdown
-  - Reinterpret as
-    - Text
-    - Code
-    - Markdown
   - Text Encoding
     - UTF-8
     - Latin-1
@@ -4574,47 +4363,6 @@ The menu hierarchy is:
   - separator
   - Start Dictation…
   - Emoji & Symbols (`Control-Command-Space`)
-- **Format**
-  - Show Fonts (`Command-T`)
-  - Bold (`Command-B`)
-  - Italic (`Command-I`)
-  - Underline (`Command-U`)
-  - Strikethrough
-  - Superscript
-  - Subscript
-  - Ligatures
-    - Use Default Ligatures
-    - Use All Ligatures
-    - Use No Ligatures
-  - OpenType Features (available features of the current resolved font)
-  - Show Colors
-  - Text Color…
-  - Highlight Color…
-  - separator
-  - Paragraph
-    - Alignment
-      - Start
-      - Center
-      - End
-    - Writing Direction
-      - Automatic
-      - Left to Right
-      - Right to Left
-    - Increase Indent
-    - Decrease Indent
-    - Paragraph Spacing…
-    - Line Spacing
-      - Normal
-      - Single
-      - 1.5 Lines
-      - Double
-      - Custom…
-  - separator
-  - Copy Style
-  - Paste Style
-  - Clear Direct Character Formatting
-  - Clear Direct Paragraph Formatting
-  - Clear All Direct Formatting
 - **Style**
   - Theme
     - available themes in case-insensitive alphabetical order
@@ -4673,19 +4421,14 @@ The menu hierarchy is:
   - Release Notes
   - Report a Problem…
 
-The Format font and color commands open persistent native choosers. On macOS
-these are the system Fonts and Colors panels; Windows uses modeless windows
-with native WinUI font and color controls. Text Color and Highlight Color
-initialize from the current foreground and background, including transparent
-backgrounds. While a chooser remains open, caret/selection changes in its
-invoking view refresh its values and editing target after a 150ms coalescing
-delay. Invoking the command from another view explicitly retargets the panel;
-unrelated document or pane activation alone does not retarget it.
-Programmatic refreshes do not mutate source or create undo entries. A gesture
-resolves the latest target before committing, so it cannot act on the previous
-caret during a pending refresh. Unsupported formats or modes remain visible
-but cannot apply direct formatting. All exposed Format actions have handlers;
-availability follows format capabilities and current selection/mode.
+Neither macOS nor Windows has a Format menu. The formatting toolbar exposes
+supported inline formatting, and macOS retains `Command-B` and `Command-I`
+as editor shortcuts for Bold and Italic. The independent Styles inspector and
+theme style definitions retain all their typography, color, and paragraph
+properties. Style > Paragraph retains named-style and list actions.
+Document-formatting APIs expose the supported Markdown actions; there is no
+arbitrary character/paragraph property-editing or batch-formatting API. Full
+property editing remains available for independent style definitions.
 
 The Windows frontend uses `Control-0` through `Control-5` for the same
 paragraph/heading assignments. Heading 6 is menu-only because `Control-6`
@@ -4713,12 +4456,6 @@ conversion rules in "Changing `fileformat`". `Text Encoding` is a File submenu
 with the four supported encodings; the current encoding is checked and choosing
 another encoding performs the same verified, undoable conversion as the core API.
 
-`Convert to` and `Reinterpret as` dispatch the distinct portable format
-operations above. Both disable the current source family, including its Source
-display variant, and all targets are disabled without an attached document.
-Read-only buffers retain these in-memory operations; their external write
-restriction remains unchanged.
-
 `Flow Source Paragraphs` is a portable per-view option, initially off, available
 in Markdown Source. It suppresses nonstructural physical line
 breaks in layout while retaining source characters, editing coordinates, and
@@ -4734,13 +4471,12 @@ within that range; each control chooses the next strictly adjacent stop.
 
 Menu validation comes from current core state and pipeline capabilities.
 Actions that cannot apply to the current selection or adapter are disabled.
-Rich-formatting actions are disabled for Text and Code; `Convert to` offers an
-explicit conversion into a format that supports them. Style and
+Document-formatting actions are disabled for Text and Code. Style and
 formatting items show a checkmark, mixed state, or no mark as appropriate.
-Style > Paragraph and Style > Character are the first two Style items and are
+Style > Paragraph and Style > Character follow Theme and its separator and are
 disabled in Text and Code. Their contents retain their existing style and list
-actions without an Edit Styles footer. The former Format > Style commands
-follow them directly in Style and no longer appear in Format. Windows uses the
+actions without an Edit Styles footer. Edit Styles and Reload style sheet
+follow them directly in Style. Windows uses the
 same hierarchy with its existing platform-specific commands and shortcuts.
 Character and Paragraph submenus reserve the same mark column for every item,
 so labels align whether or not the item is checked. Active named styles remain
@@ -4790,11 +4526,9 @@ Windows places the toggle immediately to the right of its menu toggle, using
 the same neutral title-bar styling, and places the toolbar below the menu bar.
 
 Left to right, the toolbar contains Paragraph and Character style selectors;
-Bold, Italic, Underline, Strikethrough, character Code, Superscript, Subscript;
-then Text Color and Background Color; then Bulleted List, Numbered List, Code
-Block; then Indent and Unindent. Groups have spacing between them. Unsupported
-format controls are omitted, including colors and rich direct properties in
-Markdown. Supported actions may be temporarily unavailable for a selection.
+Bold, Italic, Strikethrough, character Code; then Bulleted List, Numbered List,
+Code Block; then Indent and Unindent. Groups have spacing between them. Unsupported
+format controls are omitted. Supported actions may be temporarily unavailable for a selection.
 Narrow windows keep the controls accessible through horizontal scrolling.
 
 Selectors reflect the current named styles (or Mixed), and use the same exact
@@ -4802,9 +4536,7 @@ catalogue identities and assignment actions as Style menus. Formatting buttons
 reflect current on/off/mixed state. List toggles use structural membership,
 independent of list depth or named paragraph assignment; activating an already
 uniformly selected list kind removes it. Code toggles assign/clear the existing
-Code character or Code Block container style. Native color wells behave like
-the style editor's controls but edit the current selection or pending typing
-style through the existing direct-formatting transaction. No toolbar action
+Code character or Code Block container style. No toolbar action
 owns separate document, selection, or undo state.
 
 Refreshing the toolbar on cursor or selection changes MUST NOT build candidate
@@ -4814,7 +4546,7 @@ List affordances query the persistent structural index and parser-retained
 adapter capabilities; execution still verifies the source transaction. Native
 selectors retain their menu items and reuse exact-revision style catalogues
 until the document or stylesheet changes. Local inline formatting SHOULD reuse
-verified regional projections, including table-independent RTF character groups. Resolving styled
+verified regional projections. Resolving styled
 runs MUST preserve cascade order without rescanning every unrelated span for
 each text segment.
 
@@ -4990,8 +4722,7 @@ property without an editor control):
   **Size** label above it; retain its accessible control name. The trailing unit
   is a **pt**/**%** popup. Percentages accept integers from 10 through 1000;
   Base Paragraph permits only **pt**. Switching units preserves the preview's
-  current effective size as closely as the integer percentage bounds and the
-  source format's point-size precision allow (half-points in RTF).
+  current effective size as closely as the integer percentage bounds allow.
   This control and the relative-size rules apply on both macOS and Windows;
 - a native font-face picker (Regular, Light, Bold, Italic, etc.) and separate
   Bold and Italic toggles, with no generic numeric weight/slant fields;
@@ -5004,7 +4735,7 @@ property without an editor control):
 - underline and strike decoration;
 - writing-direction override;
 - an original SVG feature button opening the selected font’s supported OpenType
-  feature menu, with checkmarks and the same catalog as Format > OpenType Features;
+  feature menu, with checkmarks;
 - letter spacing; and
 - exclusive Superscript and Subscript buttons labeled **x²** and **x₂**, with
   one shared **Override inherited** checkbox. Both off explicitly means Normal;
@@ -5049,8 +4780,7 @@ Font-family fallback order requires an ordered editor rather than a single-font
 field. Primary and fallback font-name dropdowns request 20 visible font rows;
 native AppKit may constrain their height to available screen space. Native font
 and color panels remain modeless and update the same selected style while owned
-by the inspector. They must not become alternate persistence or undo authorities;
-opening a direct-formatting panel transfers ownership from the inspector.
+by the inspector. They must not become alternate persistence or undo authorities.
 
 #### Paragraph tab
 
@@ -5093,11 +4823,11 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
 #### Live application, preview, and undo
 
 - Every valid control change immediately issues a typed style-definition
-  intention against the exact current core snapshot. Successful reverse
-  projection commits through the normal verified source transaction path and
-  updates every view of the document without waiting for the window to close.
-  For the global Code target, the intention instead updates the application
-  stylesheet authority and all Code views through a checked global-style operation.
+  intention against the exact current configuration style sheet and updates
+  affected views without waiting for the window to close. These definitions
+  are independent of document source. The global Code target updates the
+  application stylesheet authority and all Code views through a checked
+  global-style operation.
 - The preview is not a private draft. It renders the currently committed style
   after cascade resolution. A Character style preview shows the style in
   representative surrounding text. A Paragraph style preview shows preceding,
@@ -5122,13 +4852,12 @@ their supported signed ranges. Held autorepeat is one continuous undo gesture.
 
 #### Selection validity and deletion
 
-Deleting any non-base style that is in use reassigns its content to the
-Base Paragraph assignment or no character assignment (Default Paragraph),
-rather than to the deleted style's parent. Definitions, assignments, and supporting source metadata change
-atomically and undo restores all of them. Generated heading/list definitions
-must not silently reappear after reparsing; an adapter may persist an explicit
-deletion marker in its owned schema. Base Paragraph remains undeletable. Required tests cover local edits and reopen after deletion, source
-locality, and deeper generated list levels.
+Deleting a non-base configuration style that is in use reassigns its generated
+content to Base Paragraph or Default Paragraph, rather than to the deleted
+style's parent. Definition references and assignments change atomically and
+undo restores them; document source remains unchanged. Base Paragraph remains
+undeletable. Native New/Delete controls apply to the Code catalogue; the Text
+and Markdown inspectors edit their existing configuration definitions.
 
 The global Code target instead follows the name-reference and persisted
 suppression rules in its section: no source assignments or document history
@@ -6170,10 +5899,10 @@ which replaces the current theme's Code sheet and persists it for named themes;
 a write failure restores the previous global styles. Prose theme inspectors
 do not offer this action.
 Font families are sorted using the current
-culture. Both style and direct-font pickers expose installed font variants.
+culture. Style font pickers expose installed font variants.
 Variants retain their PostScript name, weight and slant, preserving a named
 style's fallback families. A face change is one theme settings undo in the
-style inspector and one document undo for direct formatting.
+style inspector.
 Family changes preserve a matching face name where possible, otherwise choose
 a regular face. Unavailable/custom faces remain unresolved instead of silently
 selecting the first variant. DirectWrite resolves persisted face names back to
@@ -6301,9 +6030,8 @@ the portable document or vi command contract:
   Windows IME or speech-input service.
 - The modeless style inspector exposes inheritance, names, fonts, colors,
   decoration, tracking, script position, paragraph direction/alignment/indents and
-  spacing. Font and color commands open persistent modeless WinUI control
-  windows. Per-font OpenType feature discovery and the full Mac typography
-  menus are omitted. Existing source OpenType features still participate in
+  spacing. Per-font OpenType feature discovery is omitted. Theme OpenType
+  features still participate in
   DirectWrite shaping. The inspector preview currently demonstrates font,
   decoration, script position, tracking, and alignment in surrounding text
   rather than the complete paragraph layout. Mac's click-through activation of
@@ -6312,10 +6040,7 @@ the portable document or vi command contract:
   by the Win2D adapter; their inspector control is omitted. Unicode bidi and
   explicit paragraph direction are supported.
 - Windows clipboard interchange writes Unicode text, HTML, and the lossless
-  Viem private fragment, and reads text, private fragments, HTML and RTF.
-  An outgoing RTF representation is omitted; applications supporting only RTF
-  receive the plain-text fallback. HTML cannot exactly express RTF's
-  minimum-line-height policy; Viem-to-Viem transfer retains the original data.
+  Viem private fragment, and reads text, private fragments, and HTML.
 
 Changes to these gaps MUST update this list and the Windows integration tests
 when the relevant mechanism becomes available.
@@ -6350,7 +6075,7 @@ Maintain automated fixtures for at least:
 5. two views of one buffer at different widths; and
 6. rapid live resize through many widths followed immediately by an edit.
 
-The source/transform suite additionally includes Text, Code, Markdown, and RTF samples as adapters are implemented, with alternate equivalent syntax,
+The source/transform suite additionally includes Text, Code, and Markdown samples as adapters are implemented, with alternate equivalent syntax,
 comments/trivia, malformed and unknown constructs, legacy encodings, and
 characters that cannot be represented in the original encoding.
 
@@ -6515,7 +6240,7 @@ alone accounts for the entire amplification.
    anchor remapping, and exact reverse-edit translation. Rich formats retain
    relational provenance, hidden syntax, indivisible entities, and structured
    ambiguous/synthetic/unresolvable results. An identity fast path for Code/Text
-   must not incorrectly assume those properties for Markdown or RTF.
+   must not incorrectly assume those properties for Markdown.
 7. **Resolve the undo-budget consequence explicitly.** The original 256 MiB
    combined history policy charged the live document state as well as retained
    history. The implemented default now allows 256 MiB of additional history
@@ -6754,7 +6479,7 @@ structural gates. All cache and worker budgets must have tested finite defaults.
 - **Pipeline tests**: composed provenance and reverse edits match an equivalent
   unfused pipeline; stale, generated, ambiguous, and unsupported edits return
   the required structured result.
-- **Code conformance tests**: byte-exact no-op saves, local edits, reinterpret
+- **Code conformance tests**: byte-exact no-op saves, local edits,
   round-trips, literal markup/entities/whitespace, and all input paths with
   Smart Quotes both on and off. Syntax styles never affect clipboard/register
   text, editing boundaries, source serialization, or undo. Test marker/filename
@@ -6868,12 +6593,11 @@ Primary source-preservation and transformation references:
 - [ICU character conversion behavior](https://unicode-org.github.io/icu/userguide/conversion/converters.html)
 - [Bidirectional lens round-trip laws](https://www.cis.upenn.edu/~bcpierce/papers/wagner-thesis.pdf)
 
-Primary passive HTML and RTF adapter references:
+Primary passive HTML references:
 
 - [WHATWG HTML syntax](https://html.spec.whatwg.org/multipage/syntax.html)
 - [WHATWG HTML parsing](https://html.spec.whatwg.org/multipage/parsing.html)
 - [W3C CSS Style Attributes](https://www.w3.org/TR/css-style-attr/)
-- [Microsoft RTF 1.9.1 specification](https://officeprotocoldoc.z19.web.core.windows.net/files/Archive_References/%5BMSFT-RTF%5D.pdf)
 
 Primary macOS caret references:
 
@@ -6897,33 +6621,28 @@ decision in this file or an architecture decision record first:
 
 ## Format controls, Markdown authoring, and lists
 
-The status bar exposes a native popup for source format, with a small vertical
-triangle and hover highlight. Encoding and line endings appear only in their
-File submenus, not in the status bar. A choice is a checked core transaction
-shared by the buffer's views and reversible with undo. Completing a format
-selection returns keyboard focus to the document as soon as the popup closes. Format
-selection within a format family or to Text/Code changes interpretation while
-preserving source bytes. An explicit Text/Markdown conversion instead translates
-the formatted text and representable styling to new source syntax as one undoable transaction, including source-visible variants.
-This explicitly requested conversion may replace the entire source and reports
-lost unsupported information through command output in the status line. It is distinct
-from no-op saves and ordinary local edits, which remain lossless.
+The status bar exposes a native popup between Markdown Source and Markdown
+WYSIWYG, with a small vertical triangle and hover highlight. Text and Code show
+a noninteractive format label. Encoding and line endings appear only in their
+File submenus. A Markdown view choice is a checked core transaction shared by
+the buffer's views and reversible with undo. Completing the selection returns
+keyboard focus to the document as soon as the popup closes. Switching views
+preserves source bytes.
 Mode/format changes preserve each view's insertion cursor and visible text as
-closely as possible. Unchanged source provenance and explicit conversion
-correspondence carry text anchors into the new projection. Hidden or removed
+closely as possible. Unchanged source provenance carries text anchors into
+the new projection. Hidden or removed
 syntax recovers at the nearest surviving content according to the anchor's
 recovery policy. The viewport retains its top text anchor and fractional row
 offset rather than resetting to the document start or preserving stale pixels.
 For format changes, an upstream Insert/Replace caret follows preceding content
 and stays before newly exposed closing syntax; downstream follows subsequent
-content. This conversion policy does not change ordinary typing associations.
+content. This view-switch policy does not change ordinary typing associations.
 Encoding selection transcodes source syntax and verifies the new projection.
 An explicit conversion to Latin-1 may replace unrepresentable scalars with `?`,
 reporting the count in the status line; undo restores the exact original bytes.
 Ordinary typing in an existing Latin-1 document remains strict and must never
 silently substitute. Line-ending selection delegates
-to the shared conversion component. RTF disables the generic encoding and
-line-ending controls because its grammar owns those interpretations.
+to the shared line-ending component.
 
 The two Markdown views share one physical Markdown serialization:
 
@@ -7005,7 +6724,7 @@ undo transaction. Clearing Code Block removes code indentation just as it remove
 fences, preserving the text and surrounding paragraph boundaries.
 In WYSIWYG, Shift-Enter inserts an explicit line break within the current paragraph:
 Markdown uses a backslash followed by a source line ending,
-and RTF uses `\line`. Markdown uses inline `<br>` where a physical source
+or inline `<br>` where a physical source
 ending would change paragraph structure, such as headings and empty items.
 Bare inline `<br>` and `<br />` project as breaks; escaped tags and code spans
 retain their literal text. Markdown quote/list continuation syntax keeps the break
@@ -7069,14 +6788,14 @@ established within that bound, quotes retain their literal spelling.
 
 With no selected text in Insert or Replace mode, supported character-formatting
 actions update a sparse, view-local typing override tied to the exact caret.
-They do not insert empty Markdown/RTF wrappers, change source, or create an
+They do not insert empty Markdown wrappers, change source, or create an
 undo unit. The next nonempty insertion combines text and its requested style
 into one verified transaction. Repeated typing retains the override; explicit
 caret movement, leaving the insertion mode, or changing projection retires it.
-Menu checkmarks and typography queries show inherited style plus pending
+Toolbar states, style-menu checkmarks, and typography queries show inherited style plus pending
 overrides, without including automatic source-syntax colors. Formatting with a
 selection continues to modify that exact range. Bold, Italic, and other
-supported character actions work in RTF and compatible Markdown views.
+supported character actions work in compatible Markdown views.
 
 Turning off an inherited inline property at the end of its element exits that
 formatting context. In a source-visible view the caret moves over the matching
@@ -7092,12 +6811,12 @@ recorded local source patches for each overwritten grapheme, including original
 formatting and generated delimiters. It must not reconstruct the old state
 from plain text alone or retain a full-document copy for each keystroke.
 
-`Command-I` remains the standard Italic action. As an additional requested
+`Command-B` and `Command-I` invoke Bold and Italic in the focused macOS editor.
+As an additional requested
 editing shortcut, `Option-I` toggles the typing Italic property in Insert and
 Replace mode when no input-method composition is active. In that context it
 takes precedence over the keyboard layout's Option-I dead key; other native
-fields retain their normal keyboard behavior. Underline's U icon includes a
-visible underline.
+fields retain their normal keyboard behavior.
 
 A paragraph-style menu choice applies to the paragraph containing the caret
 when there is no selection, and to the selected paragraph span otherwise.
@@ -7116,10 +6835,7 @@ requires an existing parent; top-level items cannot be unindented. Availability
 queries parsed structure and adapter capabilities without preparing edits;
 execution verifies the complete source transaction. Existing deeper source
 lists can still be unindented.
-Modern RTF list items use local level-selector patches when their authored list
-table has a compatible target level; legacy flat RTF lists and unavailable
-target levels leave Indent and Unindent disabled.
-Remove List remains available among the Format paragraph controls. Enter
+Remove List remains available in the Style paragraph actions. Enter
 continues an item; Enter on an empty item exits the list.
 Markdown Source uses parsed item ownership for Enter and `o`/`O`, including
 continuation lines, nested items, tab-separated markers, and bare empty markers
@@ -7178,37 +6894,16 @@ the affected source and destination runs; unrelated marker bytes remain unchange
 New plain-text lists and Markdown source use `- ` or decimal `1. ` markers, with
 sequential numbers across the selected items. Source-visible Markdown displays
 and edits those markers; Markdown WYSIWYG renders canonical bullets and ordered
-labels as described above. Markdown/RTF WYSIWYG labels are shaped and painted
+labels as described above. Markdown WYSIWYG labels are shaped and painted
 from list metadata by layout; source marker syntax remains losslessly preserved.
 
 Linewise deletion of complete list items removes their source structure and
 selected paragraph boundaries as one structural edit. Characterwise deletion or
 replacement of the entire body retains an empty list item. Deleting partial
-visual rows retains the containing item. For RTF, surviving items retain their
-displayed ordinals. The transaction may add scoped RTF numbering overrides to preserve those ordinals; source tables and
-unrelated opaque content remain untouched. Markdown numbering follows the
+visual rows retains the containing item. Markdown numbering follows the
 container's starting ordinal and semantic item deletion updates the affected
-source labels in the same transaction.
-Enter advances following item numbers within the same list until an explicit
-restart or container boundary. RTF updates the affected legacy numbering controls
-or adds scoped overrides while preserving table handles. New RTF paragraphs
-clear inherited modern numbering with `\ls0`; the original selector resumes
-at the existing following-paragraph boundary when necessary.
-
-Canonical RTF list paragraphs use scoped groups with `\ls0\li400\fi-200`,
-`\pntext`, and the standard `\pn` destination: `\pnlvlblt` for bullets or
-`\pnlvlbody\pndec\pnstartN` with `\pntxta .` for decimal numbering. Clearing a
-list uses a scoped `\ls0\li0\fi0` and `\pnlvlbody` reset. The scope includes
-the existing paragraph terminator when present so independent RTF readers apply
-its paragraph properties consistently. Existing source outside
-the declared list-control patches remains byte-identical.
-
-Word-style RTF `\listtable` and `\listoverridetable` definitions also project
-decimal and bullet levels selected by `\lsN` and `\ilvlN`. Decimal levels use
-the current level's number followed by a period. Start-at and format overrides,
-nested level restarts, and list indentation are interpreted from their table
-definitions. Cached `\listtext` remains untouched source and does not duplicate
-the generated marker. Body edits retain both tables and their original handles.
+source labels in the same transaction. Enter advances following item numbers
+within the same list until an explicit restart or container boundary.
 
 Ctrl-Q is an alias for Ctrl-V in every supported Visual Block entry and toggle
 path. Its rectangle resolves each proportional-font row to the nearest legal

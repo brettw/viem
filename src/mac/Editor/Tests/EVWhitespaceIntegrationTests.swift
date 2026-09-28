@@ -98,7 +98,6 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
     func testWhitespaceMarkersAreSuppressedInWYSIWYGAndShownInSourceViews() throws {
         let fixtures = [
             (EVDocument.markdownType, "A  \n\nB", false),
-            (EVDocument.rtfType, #"{\rtf1 A \par B}"#, false),
             (EVDocument.markdownSourceType, "A  \n\nB", true),
             (EVDocument.codeType, "A  \nB", true),
         ]

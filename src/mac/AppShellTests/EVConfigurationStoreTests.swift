@@ -114,7 +114,7 @@ final class EVConfigurationStoreTests: XCTestCase {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
     XCTAssertNotNil(try store.styleDefaults(named: "text"))
-    var original = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.styleDefaults(named: "rtf"))) as? [String: Any])
+    var original = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.styleDefaults(named: "markdown"))) as? [String: Any])
     original["future"] = 42
     var blocks = try XCTUnwrap(original["block_styles"] as? [[String: Any]])
     blocks[0]["futureProperty"] = 3
@@ -122,23 +122,23 @@ final class EVConfigurationStoreTests: XCTestCase {
     character["futureFont"] = 4
     blocks[0]["character"] = character
     original["block_styles"] = blocks
-    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "rtf")
+    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "markdown")
     original.removeValue(forKey: "future")
     blocks[0].removeValue(forKey: "futureProperty")
     character.removeValue(forKey: "futureFont")
     character["size"] = 19
     blocks[0]["character"] = character
     original["block_styles"] = blocks
-    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "rtf")
-    let raw = try XCTUnwrap(store.styleDefaults(named: "rtf"))
+    try store.saveStyleDefaults(JSONSerialization.data(withJSONObject: original), named: "markdown")
+    let raw = try XCTUnwrap(store.styleDefaults(named: "markdown"))
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: raw) as? [String: Any])
     XCTAssertEqual(object["future"] as? Int, 42)
     let definition = try XCTUnwrap((object["block_styles"] as? [[String: Any]])?.first)
     XCTAssertEqual(definition["futureProperty"] as? Int, 3)
     XCTAssertEqual((definition["character"] as? [String: Any])?["futureFont"] as? Int, 4)
     XCTAssertNotNil(try store.styleDefaults(named: "markdown"))
-    XCTAssertThrowsError(try store.saveStyleDefaults(Data(#"{"version":2}"#.utf8), named: "rtf"))
-    XCTAssertEqual(try store.styleDefaults(named: "rtf"), raw)
+    XCTAssertThrowsError(try store.saveStyleDefaults(Data(#"{"version":2}"#.utf8), named: "markdown"))
+    XCTAssertEqual(try store.styleDefaults(named: "markdown"), raw)
     XCTAssertThrowsError(try store.styleDefaults(named: "../config"))
   }
 }

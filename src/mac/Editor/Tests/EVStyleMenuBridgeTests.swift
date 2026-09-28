@@ -85,27 +85,6 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   }
 
   @MainActor
-  func testDefaultListParagraphStyleMenuWritesSourceWithoutChangingText() throws {
-    for (type, source) in [
-      (EVDocument.rtfType, "{\\rtf1 Words{\\*\\unknown keep}}"),
-    ] {
-      let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: type)
-      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-      surface.loadViewIfNeeded()
-      XCTAssertTrue(surface.presentation(for: .numberedList).isEnabled)
-      surface.perform(menuCommand: .numberedList, sender: nil)
-      XCTAssertEqual(surface.currentStyleMenuCatalogue()?.entries.first {
-        $0.stableID == "NumberedList1"
-      }?.presentation.state, .on)
-      XCTAssertEqual(surface.statusBarState.message, "")
-      XCTAssertNotEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-      surface.perform(menuCommand: .undo, sender: nil)
-      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-    }
-  }
-
-  @MainActor
   func testHeadingMenuWritesFormatMarkersAndRejectsStaleActions() throws {
     for (type, source, expected) in [
       (EVDocument.markdownSourceType, "Paragraph", "## Paragraph"),

@@ -60,7 +60,7 @@ internal static class ScrollDrawingTests
         Check(view.Viewport.top == 0 && pane.VerticalScrollControl.Value == 0,
             "repeated Page Up agrees with the scrollbar origin");
 
-        view.Format(VIEM_FORMAT_MARKDOWN_SOURCE); view.VisibleWhitespace(true);
+        view.SetMarkdownSource(true); view.VisibleWhitespace(true);
         Draw(); builds = pane.DrawingCacheBuilds;
         view.Scroll(0, view.Viewport.top + 16);
         byte[] markers = Draw();

@@ -123,7 +123,7 @@ pub fn comment_profile_for_language(language: &str) -> Option<&'static CommentPr
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReflowError {
-    /// Markdown, HTML, WYSIWYG, and RTF need format-aware semantics.
+    /// Markdown source and formatted views need format-aware semantics.
     UnsupportedFormat(Format),
     InvalidLineRange {
         start: usize,
@@ -1200,7 +1200,6 @@ mod tests {
         for format in [
             Format::Markdown,
             Format::MarkdownSource,
-            Format::Rtf,
         ] {
             assert_eq!(
                 reflow_edits(&ReflowRequest {

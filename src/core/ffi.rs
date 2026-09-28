@@ -14,8 +14,6 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
-mod formatting;
-pub use formatting::*;
 mod argument_list;
 pub use argument_list::*;
 mod external_change;
@@ -58,7 +56,7 @@ use crate::document::{
     BlockProperties, BlockRole, BoundaryAffinity, CANVAS_STYLE_PROPERTIES,
     CHARACTER_STYLE_PROPERTIES, PARAGRAPH_STYLE_PROPERTIES, CharacterProperties, Color, Document,
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
-    FontSize, FontSlant, Format, FormatOperation, FormattedTextError, HardLineQueryError,
+    FontSize, FontSlant, Format, FormattedTextError, HardLineQueryError,
     HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
     ParagraphAlignment, Revision, ScriptPosition,
     SemanticInlineStyle, SourceArtifactDigest, StyleContribution, StyleContributionOrigin,
@@ -118,12 +116,10 @@ pub const VIEM_ENCODING_UTF16_BE: u32 = 4;
 
 pub const VIEM_FORMAT_PLAIN_TEXT: u32 = 1;
 pub const VIEM_FORMAT_MARKDOWN: u32 = 2;
-pub const VIEM_FORMAT_RTF: u32 = 4;
 pub const VIEM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
 pub const VIEM_FORMAT_CODE: u32 = 7;
 
 pub const VIEM_CLIPBOARD_FORMAT_HTML: u32 = 1;
-pub const VIEM_CLIPBOARD_FORMAT_RTF: u32 = 2;
 
 /// Detect the line-ending interpretation through the core's shared open
 /// policy.
@@ -1227,7 +1223,6 @@ pub const VIEM_STYLE_ROLE_CODE_BLOCK: u32 = 4;
 pub const VIEM_STYLE_ROLE_LIST: u32 = 5;
 pub const VIEM_STYLE_ROLE_LIST_ITEM: u32 = 6;
 
-pub const VIEM_STYLE_ORIGIN_SOURCE_BACKED: u32 = 1;
 pub const VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION: u32 = 2;
 pub const VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY: u32 = 3;
 
@@ -2076,18 +2071,6 @@ pub struct ViemSetSemanticStyleV1 {
 
 pub const VIEM_SET_SEMANTIC_STYLE_V1_SIZE: u32 = size_of::<ViemSetSemanticStyleV1>() as u32;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ViemDirectStyleEditV1 {
-    pub struct_size: u32,
-    pub operation: u32,
-    pub property: u32,
-    pub reserved: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
-    pub value: ViemStyleEditValueV1,
-}
-pub const VIEM_DIRECT_STYLE_EDIT_V1_SIZE: u32 = size_of::<ViemDirectStyleEditV1>() as u32;
-
 pub const VIEM_PLACE_CURSOR_EXTEND_SELECTION: u32 = 1 << 0;
 
 /// Revision-bound pointer-placement intention. `text_offset` is a formatted
@@ -2119,21 +2102,16 @@ pub struct ViemSetFileFormatV1 {
 
 pub const VIEM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<ViemSetFileFormatV1>() as u32;
 
-pub const VIEM_FORMAT_OPERATION_REINTERPRET: u32 = 0;
-pub const VIEM_FORMAT_OPERATION_CONVERT: u32 = 1;
-
-/// Explicit format operation bound to one exact document snapshot.
+/// Markdown source visibility bound to one exact document snapshot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetFormatV1 {
+pub struct ViemSetMarkdownSourceV1 {
     pub struct_size: u32,
-    pub format: u32,
-    pub operation: u32,
-    pub reserved: u32,
+    pub source: u32,
     pub document_id: u64,
     pub document_revision: u64,
 }
-pub const VIEM_SET_FORMAT_V1_SIZE: u32 = size_of::<ViemSetFormatV1>() as u32;
+pub const VIEM_SET_MARKDOWN_SOURCE_V1_SIZE: u32 = size_of::<ViemSetMarkdownSourceV1>() as u32;
 
 /// Lossless source transcoding request; automatic detection is not a target.
 #[repr(C)]
@@ -2425,7 +2403,6 @@ fn parse_format(raw: u32) -> Result<Format, ViemStatus> {
     match raw {
         VIEM_FORMAT_PLAIN_TEXT => Ok(Format::PlainText),
         VIEM_FORMAT_MARKDOWN => Ok(Format::Markdown),
-        VIEM_FORMAT_RTF => Ok(Format::Rtf),
         VIEM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
         VIEM_FORMAT_CODE => Ok(Format::Code),
         _ => Err(ViemStatus::InvalidFormat),
@@ -2460,7 +2437,6 @@ fn format_to_ffi(format: Format) -> u32 {
         Format::PlainText => VIEM_FORMAT_PLAIN_TEXT,
         Format::Markdown => VIEM_FORMAT_MARKDOWN,
 
-        Format::Rtf => VIEM_FORMAT_RTF,
         Format::MarkdownSource => VIEM_FORMAT_MARKDOWN_SOURCE,
 
         Format::Code => VIEM_FORMAT_CODE,
@@ -4426,11 +4402,8 @@ fn style_transaction_status(error: StyleTransactionError) -> ViemStatus {
     match error {
         StyleTransactionError::Definition(error) => style_error_status(error),
         StyleTransactionError::Unsupported { .. }
-        | StyleTransactionError::TranslationUnavailable => ViemStatus::UnsupportedOperation,
-        StyleTransactionError::NeedsPolicy(_) => ViemStatus::PolicyRequired,
-        StyleTransactionError::DefinitionReadOnly(_) => ViemStatus::StyleReadOnly,
-        StyleTransactionError::ConfigurationIntentRequired(_)
-        | StyleTransactionError::InvalidPropertyTarget { .. } => ViemStatus::InvalidStyleValue,
+        => ViemStatus::UnsupportedOperation,
+        StyleTransactionError::InvalidPropertyTarget { .. } => ViemStatus::InvalidStyleValue,
     }
 }
 
@@ -5163,7 +5136,6 @@ fn style_role_to_ffi(role: BlockRole) -> u32 {
 
 fn style_origin_to_ffi(origin: StyleDefinitionOrigin) -> u32 {
     match origin {
-        StyleDefinitionOrigin::SourceBacked => VIEM_STYLE_ORIGIN_SOURCE_BACKED,
         StyleDefinitionOrigin::GeneratedConfiguration => VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION,
         StyleDefinitionOrigin::SyntheticReadOnly => VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY,
     }
@@ -5659,11 +5631,8 @@ fn generated_style_capabilities(
     origin: StyleDefinitionOrigin,
     is_base: bool,
     role: Option<BlockRole>,
-    source_editable: bool,
 ) -> u32 {
-    if origin != StyleDefinitionOrigin::GeneratedConfiguration
-        && !(source_editable && origin == StyleDefinitionOrigin::SourceBacked)
-    {
+    if origin != StyleDefinitionOrigin::GeneratedConfiguration {
         return 0;
     }
     let mut capabilities =
@@ -5673,15 +5642,6 @@ fn generated_style_capabilities(
     }
     if !is_base && role == Some(BlockRole::Paragraph) {
         capabilities |= VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE;
-    }
-    if source_editable
-        && origin == StyleDefinitionOrigin::SourceBacked
-        && role != Some(BlockRole::Document)
-    {
-        capabilities |= VIEM_STYLE_CAPABILITY_ASSIGN;
-        if !is_base {
-            capabilities |= VIEM_STYLE_CAPABILITY_DELETE;
-        }
     }
     capabilities
 }
@@ -5802,23 +5762,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 metadata.origin,
                 is_base_paragraph,
                 Some(style.role),
-                format.has_rich_source(),
-            ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if sheet.has_user_default(&style.id, false)
-                && style.role == BlockRole::Paragraph
-                && ((format == Format::Rtf && style.id.0.starts_with("RtfP")))
-            {
-                VIEM_STYLE_CAPABILITY_ASSIGN
-            } else {
-                0
-            } | if format.is_markdown()
+            ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if format.is_markdown()
                 && matches!(style.id.0.as_str(), "Block quote" | "Code Block")
-            {
-                VIEM_STYLE_CAPABILITY_ASSIGN
-            } else {
-                0
-            } | if format == Format::Rtf
-                && style.id.0.starts_with("List")
-                && crate::document::StyleSheet::builtin_block(&style.id)
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
@@ -5889,8 +5834,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     metadata.origin,
                     is_base,
                     None,
-                    format.has_rich_source(),
-                ) | if format.has_rich_source() || format.is_markdown() && style.id.0 == "Code"
+                    ) | if format.is_markdown() && style.id.0 == "Code"
                 {
                     VIEM_STYLE_CAPABILITY_ASSIGN
                 } else {
@@ -6976,20 +6920,6 @@ unsafe fn parse_style_edit_items<O>(
         ));
     }
     Ok(parsed)
-}
-
-// Relative font sizes are named-style declarations. Native direct-formatting
-// controls continue to exchange absolute sizes.
-unsafe fn parse_direct_style_property_value<O>(
-    property: StyleProperty,
-    value: &ViemStyleEditValueV1,
-    out_outcome: *mut O,
-) -> Result<StylePropertyValue, ViemStatus> {
-    let value = unsafe { parse_style_property_value(property, value, out_outcome)? };
-    if matches!(value, StylePropertyValue::Percentage(_)) {
-        return Err(ViemStatus::InvalidStyleValue);
-    }
-    Ok(value)
 }
 
 unsafe fn parse_style_property_value<O>(
@@ -9970,147 +9900,49 @@ pub unsafe extern "C" fn viem_core_view_assign_style(
     })
 }
 
-/// Apply one direct declaration through exact source/selection verification.
+/// Set Markdown strikethrough through exact source/selection verification.
 /// # Safety
-/// All request, nested value, and output pointers must be valid and disjoint.
+/// The selection and output pointers must be valid and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_edit_direct_style(
+pub unsafe extern "C" fn viem_core_view_set_strikethrough(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemDirectStyleEditV1,
+    expected_selection: *const ViemLogicalSelectionIdentityV1,
+    enabled: u8,
     out_outcome: *mut ViemCoreOutcomeV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_DIRECT_STYLE_EDIT_V1_SIZE || request.reserved != 0 {
+        let expected_selection = unsafe { read_core_request(expected_selection, out_outcome)? };
+        if enabled > 1 {
             return Err(ViemStatus::InvalidArgument);
         }
-        let property = parse_style_property(request.property)?;
-        if CANVAS_STYLE_PROPERTIES.contains(&property) {
-            return Err(ViemStatus::UnsupportedOperation);
-        }
-        let value = match request.operation {
-            VIEM_STYLE_EDIT_SET_DECLARATION => {
-                Some(unsafe { parse_direct_style_property_value(property, &request.value, out_outcome)? })
-            }
-            VIEM_STYLE_EDIT_CLEAR_DECLARATION
-                if request.value.struct_size >= VIEM_STYLE_EDIT_VALUE_V1_SIZE
-                    && request.value.kind == VIEM_STYLE_VALUE_NONE
-                    && request.value.reserved == 0
-                    && request.value.item_count == 0
-                    && request.value.text.length == 0 =>
-            {
-                None
-            }
-            _ => return Err(ViemStatus::InvalidArgument),
-        };
         unsafe { clear_outcome(out_outcome)? };
         let outcome = with_core_mut(handle, |core| {
-            let expected = core
-                .list_selection_identity(ViewId(view))
-                .map_err(core_status)?;
+            let expected = core.list_selection_identity(ViewId(view)).map_err(core_status)?;
             validate_logical_selection_identity(
-                request.expected_selection,
+                expected_selection,
                 logical_selection_identity_to_ffi(&expected)?,
             )?;
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::EditDirectProperty {
-                    expected,
-                    property,
-                    value,
-                },
-            )
+            dispatch_event(core, view, CoreEvent::SetStrikethrough { expected, enabled: enabled != 0 })
         })?;
         unsafe { out_outcome.write(outcome) };
         Ok(())
     })
 }
 
-/// Query decoration toggle state using the exact current logical selection.
-/// # Safety
-/// The request array, nested inputs, and output must be valid and disjoint.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_edit_direct_character_batch(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    requests: *const ViemDirectStyleEditV1,
-    count: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if !(1..=32).contains(&count) {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let input = typed_pointer_region(requests, count)?;
-        let output = typed_pointer_region(out_outcome, 1)?;
-        if regions_overlap(input, output) {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let requests = unsafe { std::slice::from_raw_parts(requests, count as usize) };
-        let expected_selection = requests[0].expected_selection;
-        let mut values = Vec::with_capacity(count as usize);
-        let mut seen = std::collections::BTreeSet::new();
-        for request in requests {
-            if request.struct_size < VIEM_DIRECT_STYLE_EDIT_V1_SIZE
-                || request.reserved != 0
-                || request.operation != VIEM_STYLE_EDIT_SET_DECLARATION
-            {
-                return Err(ViemStatus::InvalidArgument);
-            }
-            validate_logical_selection_identity(request.expected_selection, expected_selection)?;
-            let property = parse_style_property(request.property)?;
-            if !crate::document::is_character_property(property) || !seen.insert(property) {
-                return Err(ViemStatus::InvalidArgument);
-            }
-            let value =
-                unsafe { parse_direct_style_property_value(property, &request.value, out_outcome)? };
-            values.push((property, value));
-        }
-        unsafe {
-            clear_outcome(out_outcome)?;
-        }
-        let outcome = with_core_mut(handle, |core| {
-            let expected = core
-                .list_selection_identity(ViewId(view))
-                .map_err(core_status)?;
-            validate_logical_selection_identity(
-                expected_selection,
-                logical_selection_identity_to_ffi(&expected)?,
-            )?;
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::SetDirectCharacterProperties { expected, values },
-            )
-        })?;
-        unsafe {
-            out_outcome.write(outcome);
-        }
-        Ok(())
-    })
-}
-
-/// Query decoration toggle state using the exact current logical selection.
+/// Query strikethrough toggle state using the current logical selection.
 /// # Safety
 /// out_state must point to writable, aligned u32 storage for this call.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_decoration_state(
+pub unsafe extern "C" fn viem_core_view_strikethrough_state(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    property: u32,
     out_state: *mut u32,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_state, 1)?;
-        let strike = match parse_style_property(property)? {
-            StyleProperty::CharacterUnderline => false,
-            StyleProperty::CharacterStrikethrough => true,
-            _ => return Err(ViemStatus::InvalidArgument),
-        };
         let state = with_core(handle, |core| {
-            core.selection_decoration_state(ViewId(view), strike)
+            core.selection_strikethrough_state(ViewId(view))
                 .map(semantic_style_state_to_ffi)
                 .map_err(core_status)
         })?;
@@ -10119,251 +9951,28 @@ pub unsafe extern "C" fn viem_core_view_decoration_state(
     })
 }
 
-/// Current selection/caret typography. Output strings and features are copied
-/// in one batch and tied to the caller's exact document revision.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ViemTypographyInfoV1 {
-    pub struct_size: u32,
-    /// bit0 bold, bit1 mixed, bit2 default foreground, bit3 mixed script.
-    pub flags: u32,
-    pub document_id: u64,
-    pub document_revision: u64,
-    pub font_family_bytes: u64,
-    pub feature_count: u64,
-    pub size: f32,
-    pub weight: u32,
-    pub base_weight: u32,
-    pub slant: u32,
-    pub foreground: ViemRgbaV1,
-    pub script_position: u32,
-    pub has_background: u32,
-    pub background: ViemRgbaV1,
-}
-
+/// Resolve an unscaled en width for the caret's current typing style, including
+/// empty lines with no shaped cluster. The caller supplies the exact revision.
 /// # Safety
-/// Outputs must be valid for their capacities and mutually disjoint.
+/// out_width must point to writable, aligned f32 storage for this call.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_typography_export(
+pub unsafe extern "C" fn viem_core_view_font_en_width(
     handle: ViemCoreHandle,
     view: ViemViewId,
     expected_revision: u64,
-    out_info: *mut ViemTypographyInfoV1,
-    out_family: *mut u8,
-    family_capacity: u64,
-    out_features: *mut ViemOpenTypeFeatureV1,
-    feature_capacity: u64,
+    out_width: *mut f32,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        typed_pointer_region(out_info, 1)?;
-        let family_region = typed_pointer_region(out_family, family_capacity)?;
-        let feature_region = typed_pointer_region(out_features, feature_capacity)?;
-        let info_region = typed_pointer_region(out_info, 1)?;
-        if regions_overlap(info_region, family_region)
-            || regions_overlap(info_region, feature_region)
-            || regions_overlap(family_region, feature_region)
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let (info, family, features) = with_core(handle, |core| {
+        typed_pointer_region(out_width, 1)?;
+        let width = with_core(handle, |core| {
             if core.document().revision().0 != expected_revision {
                 return Err(ViemStatus::StaleRevision);
             }
-            let (style, mixed, script_mixed) = core
-                .selected_typography_details(ViewId(view))
-                .map_err(core_status)?;
-            let family = style
-                .font_families
-                .first()
-                .cloned()
-                .unwrap_or_default()
-                .into_bytes();
-            let features = style
-                .open_type_features
-                .iter()
-                .map(|(tag, value)| ViemOpenTypeFeatureV1 {
-                    tag: tag.as_bytes().try_into().unwrap_or(*b"    "),
-                    value: *value,
-                })
-                .collect::<Vec<_>>();
-            let info = ViemTypographyInfoV1 {
-                struct_size: size_of::<ViemTypographyInfoV1>() as u32,
-                flags: u32::from(style.bold)
-                    | (u32::from(mixed) << 1)
-                    | (u32::from(style.foreground_is_default) << 2)
-                    | (u32::from(script_mixed) << 3),
-                document_id: core.document().id().0,
-                document_revision: expected_revision,
-                font_family_bytes: family.len() as u64,
-                feature_count: features.len() as u64,
-                size: style.size,
-                weight: u32::from(style.weight),
-                base_weight: u32::from(style.base_weight),
-                slant: match style.slant {
-                    FontSlant::Upright => VIEM_FONT_SLANT_UPRIGHT,
-                    FontSlant::Italic => VIEM_FONT_SLANT_ITALIC,
-                    FontSlant::Oblique => VIEM_FONT_SLANT_OBLIQUE,
-                },
-                foreground: ViemRgbaV1 {
-                    red: style.foreground.red,
-                    green: style.foreground.green,
-                    blue: style.foreground.blue,
-                    alpha: style.foreground.alpha,
-                },
-                script_position: style.script_position as u32,
-                has_background: u32::from(style.background.is_some()),
-                background: style.background.map(color_to_ffi).unwrap_or_default(),
-            };
-            Ok((info, family, features))
+            core.selected_character_style(ViewId(view))
+                .map(|style| style.size / 2.0)
+                .map_err(core_status)
         })?;
-        unsafe {
-            out_info.write(info);
-        }
-        if family_capacity < info.font_family_bytes || feature_capacity < info.feature_count {
-            return Err(ViemStatus::BufferTooSmall);
-        }
-        if !family.is_empty() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(family.as_ptr(), out_family, family.len());
-            }
-        }
-        if !features.is_empty() {
-            unsafe {
-                std::ptr::copy_nonoverlapping(features.as_ptr(), out_features, features.len());
-            }
-        }
-        Ok(())
-    })
-}
-
-/// Create one sparse source-backed paragraph or character definition. Empty
-/// parent selects its namespace base; empty next-style means no explicit next.
-///
-/// # Safety
-/// Request, nested UTF-8 slices, and outcome must be valid and not overlap output.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_create_style(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemCreateStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_CREATE_STYLE_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let namespace = parse_style_namespace(request.namespace)?;
-        let id = unsafe { composition_utf8(request.style_id, out_outcome)? };
-        let name = unsafe { composition_utf8(request.display_name, out_outcome)? };
-        let parent = unsafe { composition_utf8(request.parent_id, out_outcome)? };
-        let next = unsafe { composition_utf8(request.next_style_id, out_outcome)? };
-        if id.is_empty()
-            || name.is_empty()
-            || [&id, &name, &parent, &next]
-                .iter()
-                .any(|value| value.contains('\0'))
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        if namespace == StyleNamespace::Character && !next.is_empty() {
-            return Err(ViemStatus::InvalidStyleRelationship);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let outcome = with_core_mut(handle, |core| {
-            validate_style_sheet_identity(request.identity, core.document())?;
-            let sheet = core.document().projection().style_sheet();
-            let parent = if parent.is_empty() {
-                (namespace == StyleNamespace::Block).then(|| sheet.base_paragraph.clone())
-            } else { Some(StyleId(parent)) };
-            let role = parent.as_ref().and_then(|id| sheet.block_style(id)).map_or(BlockRole::Paragraph, |s| if s.role.is_container() { s.role } else { BlockRole::Paragraph });
-            let metadata = crate::document::StyleDefinitionMetadata {
-                display_name: name,
-                origin: StyleDefinitionOrigin::SourceBacked,
-            };
-            let edit = match namespace {
-                StyleNamespace::Block => crate::document::StyleDefinitionEdit::InsertBlock {
-                    style: crate::document::BlockStyle {
-                        id: StyleId(id),
-                        based_on: parent,
-                        next_paragraph_style: (!next.is_empty()).then_some(StyleId(next)),
-                        role,
-                        character: CharacterProperties::default(),
-                        block: BlockProperties::default(),
-                    },
-                    metadata,
-                },
-                StyleNamespace::Character => {
-                    crate::document::StyleDefinitionEdit::InsertCharacter {
-                        style: crate::document::CharacterStyle {
-                            id: StyleId(id),
-                            based_on: parent,
-                            properties: CharacterProperties::default(),
-                        },
-                        metadata,
-                    }
-                }
-            };
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::EditNamedStyleDefinition {
-                    document: DocumentId(request.identity.document_id),
-                    revision: Revision(request.identity.document_revision),
-                    style_sheet_revision: StyleSheetRevision(request.identity.style_sheet_revision),
-                    edit,
-                },
-            )
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
-/// Delete a source-backed style and rebase its assignments and references in the
-/// same undoable source transaction.
-///
-/// # Safety
-/// Request, its UTF-8 slice, and outcome must be valid and not overlap output.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_delete_style(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemDeleteStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_DELETE_STYLE_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let namespace = parse_style_namespace(request.namespace)?;
-        let id = unsafe { composition_utf8(request.style_id, out_outcome)? };
-        if id.is_empty() || id.contains('\0') {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { clear_outcome(out_outcome)? };
-        let outcome = with_core_mut(handle, |core| {
-            validate_style_sheet_identity(request.identity, core.document())?;
-            dispatch_event(
-                core,
-                view,
-                CoreEvent::EditNamedStyleDefinition {
-                    document: DocumentId(request.identity.document_id),
-                    revision: Revision(request.identity.document_revision),
-                    style_sheet_revision: StyleSheetRevision(request.identity.style_sheet_revision),
-                    edit: match namespace {
-                        StyleNamespace::Block => {
-                            crate::document::StyleDefinitionEdit::DeleteBlock(StyleId(id))
-                        }
-                        StyleNamespace::Character => {
-                            crate::document::StyleDefinitionEdit::DeleteCharacter(StyleId(id))
-                        }
-                    },
-                },
-            )
-        })?;
-        unsafe { out_outcome.write(outcome) };
+        unsafe { out_width.write(width) };
         Ok(())
     })
 }
@@ -10413,7 +10022,7 @@ pub unsafe extern "C" fn viem_core_view_begin_style_edit_group(
 }
 
 /// Atomically edit one field of an existing style through its core-owned
-/// authority: source-backed HTML/RTF definitions patch source, while generated
+/// authority: generated
 /// definitions update configuration. Synthetic definitions remain read-only.
 /// Each successful non-no-op call is one standalone undo unit.
 ///
@@ -11558,7 +11167,7 @@ mod tests {
             (Format::Markdown, "# Heading"),
             (Format::MarkdownSource, "# Heading"),
 
-            (Format::Rtf, r"{\rtf1 Text}"),
+
         ] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             document.initialize_style_defaults(br#"{"version":1}"#).unwrap();
@@ -13544,7 +13153,7 @@ pub unsafe extern "C" fn viem_core_view_line_mode(
         Ok(())
     })
 }
-/// Set a view's line-command domain. RTF rejects physical-source mode.
+/// Set a view's line-command domain.
 /// # Safety
 /// out_outcome must identify one aligned writable outcome.
 #[no_mangle]
@@ -14241,14 +13850,14 @@ pub unsafe extern "C" fn viem_core_view_edit_command_line(
     })
 }
 
-/// Change format and return an owned immutable warning/effect batch.
+/// Switch Markdown source visibility and return an owned immutable effect batch.
 /// # Safety
 /// All request/output regions must be aligned, valid and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
+pub unsafe extern "C" fn viem_core_view_set_markdown_source_with_effects(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetFormatV1,
+    request: *const ViemSetMarkdownSourceV1,
     out_outcome: *mut ViemCoreOutcomeV1,
     out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
@@ -14260,30 +13869,24 @@ pub unsafe extern "C" fn viem_core_view_set_format_with_effects(
         ];
         validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_FORMAT_V1_SIZE || request.reserved != 0 {
+        if request.struct_size < VIEM_SET_MARKDOWN_SOURCE_V1_SIZE || request.source > 1 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe {
             clear_outcome(out_outcome)?;
             out_effects.write(0);
         }
-        let target = parse_format(request.format)?;
-        let operation = match request.operation {
-            VIEM_FORMAT_OPERATION_REINTERPRET => FormatOperation::Reinterpret,
-            VIEM_FORMAT_OPERATION_CONVERT => FormatOperation::Convert,
-            _ => return Err(ViemStatus::InvalidArgument),
-        };
+        let source = request.source != 0;
         let reservation = reserve_effect_batch()?;
         let (summary, effects) = with_core_mut(handle, |core| {
             let view = ViewId(view);
             let outcome = core
                 .handle(
                     view,
-                    CoreEvent::SetFormat {
+                    CoreEvent::SetMarkdownSource {
                         document: DocumentId(request.document_id),
                         revision: Revision(request.document_revision),
-                        target,
-                        operation,
+                        source,
                     },
                 )
                 .map_err(core_status)?;
@@ -14496,7 +14099,7 @@ pub unsafe extern "C" fn viem_core_copy_clipboard_json(
     })
 }
 
-/// Import passive HTML or RTF into a portable styled clipboard fragment.
+/// Import passive HTML into a portable styled clipboard fragment.
 /// This does not create an editable HTML document or execute document content.
 /// # Safety
 /// Input and output storage must be valid, aligned where typed, and non-overlapping.
@@ -14523,8 +14126,6 @@ pub unsafe extern "C" fn viem_import_clipboard_json(
         let fragment = match format {
             VIEM_CLIPBOARD_FORMAT_HTML => crate::document::ClipboardFragment::from_html_utf8(bytes)
                 .map(|value| value.0),
-            VIEM_CLIPBOARD_FORMAT_RTF => Document::from_bytes(bytes.to_vec(), Encoding::Utf8, Format::Rtf)
-                .and_then(|document| document.clipboard_fragment(0..document.projection().text_tree().byte_len())),
             _ => return Err(ViemStatus::InvalidArgument),
         }.map_err(|_| ViemStatus::InvalidArgument)?;
         unsafe { copy_clipboard_json_bytes(fragment.json().as_bytes(), output, output_capacity, out_required) }

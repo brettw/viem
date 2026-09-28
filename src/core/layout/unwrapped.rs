@@ -1631,13 +1631,7 @@ mod tests {
                 Format::MarkdownSource,
                 format!("> {}", "AV fi word ".repeat(7_000)),
             ),
-            (
-                Format::Rtf,
-                format!(
-                    r"{{\rtf1\ansi\fs40\qc\li240 {}}}",
-                    "AV fi word ".repeat(7_000)
-                ),
-            ),
+
         ] {
             let document =
                 Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();

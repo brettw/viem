@@ -35,15 +35,15 @@ internal static class FormattingToolbarTests
 
     internal static async Task Run(Preferences preferences)
     {
-        const string source = "{\\rtf1{\\stylesheet{\\s0 Base Paragraph;}{\\s1\\sbasedon0\\b\\fs48 Heading 1;}{\\s2\\sbasedon0\\b\\fs36 Heading 2;}{\\*\\cs1\\f1 Code;}}{\\fonttbl{\\f0 Times New Roman;}{\\f1 Courier New;}}\\s1 Heading\\par\\s0 plain {\\cs1 code}}";
-        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_RTF);
+        const string source = "# Heading\n\nplain `code`";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
         var pane = window.ActivePane!; var view = await pane.Ready; var toolbar = window.Toolbar;
         try
         {
             await Task.Delay(150);
-            Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "RTF toolbar defaults visible");
+            Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
             Check(toolbar.Paragraph.Content as string == "Heading 1", "toolbar reads the initial named paragraph");
             view.Command("j0");
@@ -56,14 +56,14 @@ internal static class FormattingToolbarTests
                 "cursor movement retains native menu items and the exact stylesheet snapshot");
             view.SelectAll();
             Check(toolbar.Paragraph.Content as string == "Mixed" && toolbar.Character.Content as string == "Mixed", "toolbar selectors show mixed assignments");
-            await Choose(toolbar.Paragraph, "RtfP2");
+            await Choose(toolbar.Paragraph, "Heading2");
             Check(toolbar.Paragraph.Content as string == "Heading 2" && pane.LastError == null, "toolbar selector invokes the shared heading action");
             byte[] changed = document.Source(document.State.document_revision);
             view.Undo(); Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source, "toolbar paragraph assignment is one undo transaction");
             view.Redo(); Check(changed.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "toolbar paragraph redo restores exact source"); view.Undo();
 
             view.Key(VIEM_KEY_ESCAPE); view.Command("j0viw");
-            foreach (var action in new[] { ToolbarAction.Bold, ToolbarAction.Italic, ToolbarAction.Underline, ToolbarAction.Strikethrough, ToolbarAction.Superscript, ToolbarAction.Subscript })
+            foreach (var action in new[] { ToolbarAction.Bold, ToolbarAction.Italic, ToolbarAction.Strikethrough })
             {
                 byte[] before = document.Source(document.State.document_revision);
                 await Click(toolbar, action);
@@ -71,30 +71,12 @@ internal static class FormattingToolbarTests
                 view.Undo(); Check(before.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "toolbar undo restores " + action);
                 view.Key(VIEM_KEY_ESCAPE); view.Command("ggj0viw");
             }
-            Check(toolbar.Buttons[ToolbarAction.CodeBlock].Visibility == Visibility.Collapsed, "unsupported generated Code Block action is omitted");
 
             view.Key(VIEM_KEY_ESCAPE); view.Command("ggj0i");
             ulong revision = document.State.document_revision;
             await Click(toolbar, ToolbarAction.Italic);
             Check(State(toolbar, ToolbarAction.Italic) == true && document.State.document_revision == revision, "toolbar supports pending typing formatting without a source edit");
             view.Text("typed"); view.Key(VIEM_KEY_ESCAPE); view.Undo();
-
-            view.Command("ggj0viw");
-            byte[] beforeColor = document.Source(document.State.document_revision);
-            var beforeSelection = view.LogicalSelection();
-            toolbar.TextColor.Flyout.ShowAt(toolbar.TextColor); await Task.Delay(100);
-            Check(beforeColor.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "opening a toolbar color well creates no edit");
-            toolbar.TextColor.Picker!.Color = Microsoft.UI.Colors.Orange;
-            await Task.Delay(100);
-            Check(view.Typography().Info.foreground.red > .99f && view.Typography().Info.foreground.blue < .01f, "toolbar color changes apply live through the direct formatting transaction");
-            var afterSelection = view.LogicalSelection();
-            Check(beforeSelection.text_start == afterSelection.text_start && beforeSelection.text_end == afterSelection.text_end, "toolbar colors retain the logical selection");
-            toolbar.TextColor.Flyout.Hide(); await Task.Delay(100);
-            view.Undo(); Check(beforeColor.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "toolbar color edit undoes exactly");
-            toolbar.TextColor.Flyout.ShowAt(toolbar.TextColor); await Task.Delay(80);
-            toolbar.TextColor.Picker.Color = Microsoft.UI.Colors.Blue;
-            view.Key(VIEM_KEY_ESCAPE); view.Command("gg0"); await Task.Delay(100);
-            Check(beforeColor.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "queued toolbar color samples never follow a moved selection");
 
             view.Command("j0viw");
             var staleIdentity = view.SelectedNamedStyles().Identity;
@@ -103,22 +85,12 @@ internal static class FormattingToolbarTests
             view.ChooseStyle(new(1, "Heading3"), staleIdentity);
             Check(document.State.document_revision == afterBold, "stale catalogue actions cannot edit a later source revision");
             view.Undo();
-            var oldSheet = view.Styles(view.SelectedNamedStyles().Identity);
-            string custom = view.CreateStyle(2, "Toolbar Test");
-            Check(!ReferenceEquals(oldSheet, view.Styles(view.SelectedNamedStyles().Identity)) && Entry(toolbar.Character, custom).Text == "Toolbar Test",
-                "stylesheet edits invalidate the toolbar catalogue and expose new stable identities");
-            view.Key(VIEM_KEY_ESCAPE); view.Command("ggj0viw");
-            await Choose(toolbar.Character, custom);
-            await Click(toolbar, ToolbarAction.Bold);
-            await Choose(toolbar.Character, custom);
-            Check(toolbar.Character.Content as string == "Toolbar Test" && State(toolbar, ToolbarAction.Bold) == false,
-                "rechoosing a named style clears direct overrides through the shared assignment action");
             view.Key(VIEM_KEY_ESCAPE); view.Command("gg0");
 
             view.Key(VIEM_KEY_CONTROL_CHARACTER, 'q');
             Check(!toolbar.Buttons[ToolbarAction.Bold].IsEnabled && !toolbar.Paragraph.IsEnabled && pane.LastError == null, "Visual Block disables unsupported toolbar actions without errors");
             view.Key(VIEM_KEY_ESCAPE); view.Command(":");
-            Check(!toolbar.Paragraph.IsEnabled && !toolbar.TextColor.IsEnabled && pane.LastError == null, "command prompt disables formatting without stale selection errors");
+            Check(!toolbar.Paragraph.IsEnabled && !toolbar.Character.IsEnabled && pane.LastError == null, "command prompt disables formatting without stale selection errors");
             view.Key(VIEM_KEY_ESCAPE);
 
             // Save the native chrome in both appearances and verify overflow.
@@ -139,13 +111,12 @@ internal static class FormattingToolbarTests
             preferences.Set("windows", "showMenu", showMenu);
             window.ToolbarToggle.Focus(FocusState.Programmatic);
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(50);
-            Check(toolbar.Visibility == Visibility.Collapsed && !new Preferences(preferences.DirectoryPath).ShowFormattingToolbar(VIEM_FORMAT_RTF), "title-bar toggle persists the RTF toolbar preference");
+            Check(toolbar.Visibility == Visibility.Collapsed && !new Preferences(preferences.DirectoryPath).ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN), "title-bar toggle persists the Markdown toolbar preference");
 
+            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
             var markdown = window.AddPane(new CoreDocument("- One\n  - Two\n\nPlain"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
             var md = await markdown.Ready;
             Check(toolbar.Visibility == Visibility.Visible, "switching panes restores each format's toolbar preference");
-            Check(toolbar.Buttons[ToolbarAction.Underline].Visibility == Visibility.Collapsed && toolbar.Buttons[ToolbarAction.Superscript].Visibility == Visibility.Collapsed,
-                "Markdown omits rich direct formatting controls");
             md.Command("vj");
             Check(State(toolbar, ToolbarAction.Bullets) == true && toolbar.Paragraph.Content as string == "Mixed", "list state is structural across nested paragraph styles");
             md.SelectAll(); Check(State(toolbar, ToolbarAction.Bullets) == null, "mixed list and non-list selection shows a mixed toggle");
@@ -159,13 +130,13 @@ internal static class FormattingToolbarTests
             md.Key(VIEM_KEY_ESCAPE); md.Command("gg0");
             await Click(toolbar, ToolbarAction.Bullets); Check(State(toolbar, ToolbarAction.Bullets) == false, "active bulleted list toolbar action removes the list");
             await Click(toolbar, ToolbarAction.Numbers); Check(State(toolbar, ToolbarAction.Numbers) == true, "numbered list toolbar action applies structural numbering");
-            md.Format(VIEM_FORMAT_MARKDOWN_SOURCE);
+            md.SetMarkdownSource(true);
             Check(toolbar.Visibility == Visibility.Visible, "Markdown Source has its own visible toolbar");
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, false);
-            md.Format(VIEM_FORMAT_MARKDOWN); Check(toolbar.Visibility == Visibility.Visible, "Source and WYSIWYG toolbar preferences are independent");
+            md.SetMarkdownSource(false); Check(toolbar.Visibility == Visibility.Visible, "Source and WYSIWYG toolbar preferences are independent");
             pane.FocusEditor(); await Task.Delay(80);
-            Check(toolbar.Visibility == Visibility.Collapsed, "returning to RTF restores its hidden toolbar");
-            preferences.SetFormattingToolbar(VIEM_FORMAT_RTF, true); preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, true);
+            Check(toolbar.Visibility == Visibility.Visible, "returning to Markdown restores its own toolbar preference");
+            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true); preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, true);
 
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
@@ -181,8 +152,7 @@ internal static class FormattingToolbarTests
     private static async Task Performance(Preferences preferences)
     {
         string md = "# Heading\n\n- First item\n- Second item\n\n" + string.Concat(Enumerable.Repeat("A paragraph with **bold** and `code` text.\n\n", 4000));
-        string rtf = "{\\rtf1 First item\\par Second item\\par " + string.Concat(Enumerable.Repeat("A paragraph with {\\b bold} text.\\par ", 4000)) + "}";
-        foreach (var (format, source) in new[] { (VIEM_FORMAT_MARKDOWN, md), (VIEM_FORMAT_MARKDOWN_SOURCE, md), (VIEM_FORMAT_RTF, rtf) })
+        foreach (var (format, source) in new[] { (VIEM_FORMAT_MARKDOWN, md), (VIEM_FORMAT_MARKDOWN_SOURCE, md) })
         {
             var doc = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
             var window = new EditorWindow(preferences, doc); App.Instance.Windows.Add(window); window.Activate();

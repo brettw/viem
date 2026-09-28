@@ -240,9 +240,9 @@ internal static class StyleAndSettingsTests
             && FontCatalog.StorageFamily("Segoe UI") == null, "only the picker's own two labels reverse to a portable token");
         foreach (string family in FontCatalog.Families.Where(f => f.Contains("Flightline", StringComparison.OrdinalIgnoreCase)))
             Check(FontCatalog.Faces(family).Length > 1, $"installed {family} exposes its font variants");
-        using var doc = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 A sample for font selection.}"u8.ToArray(), format: VIEM_FORMAT_RTF);
+        using var doc = new CoreDocument("A sample for font selection."u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-        string id = view.CreateStyle(2, "Font test");
+        string id = "Code";
         var style = view.Styles().Styles.Single(s => s.Id == id);
         view.EditStyleFont(style, ["Segoe UI", "serif"], null);
         view.SelectAll(); view.AssignStyle(2, id);
@@ -255,10 +255,9 @@ internal static class StyleAndSettingsTests
         var changed = view.Layout();
         Check(!CoreView.SameLayout(prior.Info.identity, changed.Info.identity) && view.Provider.ShapedCharacters > shaped
             && changed.Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(face.Name), "font change invalidates layout and DirectWrite renders the selected face");
-        view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "one undo restores all properties of a font variant change");
-        view.Redo(); Check(view.Typography().Family == face.Name, "redo restores the selected font variant");
-        byte[] originalThemeStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_RTF);
-        preferences.SaveThemeStyles(VIEM_FORMAT_RTF, view.ExportStyleDefaults());
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "theme font variants leave Markdown source unchanged");
+        byte[] originalThemeStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
         try {
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == id);
@@ -313,7 +312,7 @@ internal static class StyleAndSettingsTests
             Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "system-ui", "serif" }),
                 "choosing System Default in the native picker stores its portable token, not a resolved font name, and keeps the fallback tail");
             Check(inspector.FontFamilyControl.Text == "System Default", "the stored portable token displays as its picker label again");
-            string parentId = inspector.ThemeView.CreateStyle(1, "Parent"), childId = inspector.ThemeView.CreateStyle(1, "Child");
+            string parentId = "Heading1", childId = "Heading2";
             var child = inspector.ThemeView.Styles().Styles.Single(s => s.Id == childId);
             inspector.ThemeView.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId);
             inspector.ThemeView.EditStyleString(child, VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, parentId); inspector.RefreshForTesting();
@@ -335,24 +334,7 @@ internal static class StyleAndSettingsTests
             Check(inspector.Error.Length == 0 && inspector.ThemeView.Styles().Styles.Single(s => s.Id == childId).Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == 3, "native paragraph alignment buttons apply the chosen alignment");
             Check(alignmentBefore.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "theme paragraph alignment leaves authored source unchanged");
         }
-        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_RTF, originalThemeStyles); }
-        view.SelectAll(); byte[] directBefore = doc.Source(doc.State.document_revision);
-        view.SetFont(face.Family, 18, face);
-        Check(view.Typography().Family == face.Name && view.Typography().Info.base_weight == 700 && view.Typography().Info.slant == 1, "direct font action applies family, size and variant as a batch");
-        view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(directBefore), "one undo restores a direct font batch");
-        foreach (string family in FontCatalog.Families.Where(f => f.Contains("Flightline", StringComparison.OrdinalIgnoreCase))) {
-            var variant = FontCatalog.Faces(family).First(f => f.Weight != 400 && f.Slant == FontStyle.Normal);
-            view.SelectAll(); view.SetFont(family, 18, variant);
-            Check(view.Layout().Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(variant.Name), $"DirectWrite renders the selected {family} {variant.StyleName} face");
-        }
-        view.SelectAll();
-        if (view.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state != VIEM_SEMANTIC_STYLE_STATE_ON) view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG);
-        byte[] boldBeforeFace = doc.Source(doc.State.document_revision);
-        var regularFace = faces.First(f => f.Weight == 400 && f.Slant == FontStyle.Normal);
-        view.SetFont(regularFace.Family, 18, regularFace);
-        Check(view.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON
-            && view.Typography().Info.base_weight == 400, "atomic direct face selection preserves independent semantic Bold");
-        view.Undo(); Check(boldBeforeFace.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "one undo restores the full face selection while retaining semantic Bold");
+        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalThemeStyles); }
     }
     private static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
     {
@@ -364,7 +346,7 @@ internal static class StyleAndSettingsTests
             var restore = Children<Button>(inspector.RootControl).Single(b => b.Content as string == "Restore Defaults");
             Check(restore.Visibility == Visibility.Visible, "Code theme styles expose Restore Defaults");
             Check(Children<CheckBox>(inspector.CharacterPanel).All(c => c.IsChecked == true && !c.IsEnabled), "base paragraph overrides are checked and fixed while values remain editable");
-            string parentId = view.CreateStyle(2, "Parent"), childId = view.CreateStyle(2, "Child");
+            string parentId = view.CreateCodeStyle("Parent"), childId = view.CreateCodeStyle("Child");
             var child = view.Styles().Styles.Single(s => s.Id == childId);
             view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId); inspector.RefreshForTesting();
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);

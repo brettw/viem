@@ -33,7 +33,7 @@ internal static class ClipboardFormats
         var data = Clipboard.GetContent();
         string text = data.Contains(StandardDataFormats.Text) ? await data.GetTextAsync() : "";
         // Rich representations are optional enhancements. A malformed or
-        // unavailable private/HTML/RTF representation must not make ordinary
+        // unavailable private/HTML representation must not make ordinary
         // system clipboard text unusable.
         if (data.Contains(PrivateFormat))
             try
@@ -49,9 +49,6 @@ internal static class ClipboardFormats
                 string html = HtmlFormatHelper.GetStaticFragment(await data.GetHtmlFormatAsync());
                 return Import(html, VIEM_CLIPBOARD_FORMAT_HTML, text);
             }
-            catch (Exception error) when (!Transient(error)) { }
-        if (data.Contains(StandardDataFormats.Rtf))
-            try { return Import(await data.GetRtfAsync(), VIEM_CLIPBOARD_FORMAT_RTF, text); }
             catch (Exception error) when (!Transient(error)) { }
         return (text, "");
     }

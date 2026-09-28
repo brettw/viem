@@ -12,9 +12,6 @@ protocol EVStyleSettingsSession: AnyObject {
     func beginGroup() throws
     func endGroup()
     func edit(key: EVStyleKey, expected: EVStyleSheetIdentity, mutation: EVStyleMutation) throws
-    func create(key: EVStyleKey, name: String, expected: EVStyleSheetIdentity) throws
-    func delete(key: EVStyleKey, expected: EVStyleSheetIdentity) throws
-    func restoreDefaults() throws
 }
 
 extension Notification.Name {
@@ -22,7 +19,7 @@ extension Notification.Name {
 }
 
 /// A settings editing session with its own history, separate from every open
-/// document. RTF's source-owned style edits stay in this disposable specimen.
+/// document. Style edits stay in this disposable specimen.
 @MainActor
 final class EVThemeStyleSession: EVStyleSettingsSession {
     let configuration: EVConfigurationStore
@@ -68,14 +65,6 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
     func edit(key: EVStyleKey, expected: EVStyleSheetIdentity, mutation: EVStyleMutation) throws {
         try mutate { _ = try viewSession.editStyle(key: key, expected: expected, mutation: mutation) }
     }
-    func create(key: EVStyleKey, name: String, expected: EVStyleSheetIdentity) throws {
-        try mutate { _ = try viewSession.createStyle(key, name: name, identity: expected) }
-    }
-    func delete(key: EVStyleKey, expected: EVStyleSheetIdentity) throws {
-        try mutate { _ = try viewSession.deleteStyle(key, identity: expected) }
-    }
-    func restoreDefaults() throws { throw EVStyleBridgeError.noEditingView }
-
     private func mutate(_ action: () throws -> Void) throws {
         try EVCodeStyleSession.validateThemeBeforeWrite(configuration: configuration)
         let before = try backend.exportStyleDefaults()

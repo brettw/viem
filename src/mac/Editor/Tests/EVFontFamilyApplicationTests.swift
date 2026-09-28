@@ -63,52 +63,6 @@ final class EVFontFamilyApplicationTests: XCTestCase {
         try assertLocalCurrentLayout(reopened)
     }
 
-    func testNativeFamilyChoiceUpdatesRTFPreviewGlyphsUndoAndSourcePersistence() async throws {
-        let configuration = configuration()
-        let source = Data(("{\\rtf1{\\stylesheet{\\s0\\fs28 Paragraph;}}\\s0 " + (0..<512).map {
-            "Wide WWW and narrow iii change width \($0)"
-        }.joined(separator: "\\par ") + "}").utf8)
-        let fixture = try makeSurface(source: source, type: EVDocument.rtfType,
-                                      configuration: configuration)
-        let editor = EVStyleEditorViewController()
-        editor.retarget(document: fixture.surface, styleKey: .baseParagraph)
-
-        try chooseFamily("Helvetica", in: editor)
-        try await waitForFamily("Helvetica", fixture: fixture)
-        let firstWidth = try firstRowWidth(fixture)
-        let firstPreviewWidth = previewWidth(editor)
-        let firstResource = try firstCluster(fixture).render_run.identifier
-
-        try chooseFamily("Georgia", in: editor)
-        try await waitForFamily("Georgia", fixture: fixture)
-        XCTAssertEqual(editor.inspection.preview.resolvedFontFamily, "Georgia")
-        // The installed font identity is checked above; geometry only needs
-        // to demonstrate that the attributed preview was actually reshaped.
-        XCTAssertGreaterThan(abs(previewWidth(editor) - firstPreviewWidth), 0.01)
-        XCTAssertGreaterThan(abs(try firstRowWidth(fixture) - firstWidth), 0.5)
-        XCTAssertNotEqual(try firstCluster(fixture).render_run.identifier, firstResource)
-        try assertLocalCurrentLayout(fixture)
-        let saved = try fixture.backend.serializedSource(typeName: EVDocument.rtfType)
-        let committed = try fixture.backend.styleSheetSnapshot().definition(for: .baseParagraph)?
-            .properties[.characterFontFamilies]?.declared
-
-        fixture.surface.perform(menuCommand: .undo, sender: nil)
-        try await waitForFamily("Helvetica", fixture: fixture)
-        XCTAssertEqual(editor.inspection.preview.resolvedFontFamily, "Helvetica")
-        XCTAssertEqual(try firstRowWidth(fixture), firstWidth, accuracy: 0.01)
-        XCTAssertEqual(previewWidth(editor), firstPreviewWidth, accuracy: 0.01)
-        fixture.surface.perform(menuCommand: .redo, sender: nil)
-        try await waitForFamily("Georgia", fixture: fixture)
-        XCTAssertEqual(try fixture.backend.serializedSource(typeName: EVDocument.rtfType), saved)
-
-        let reopened = try makeSurface(source: saved, type: EVDocument.rtfType,
-                                       configuration: configuration)
-        XCTAssertEqual(try reopened.backend.styleSheetSnapshot().definition(for: .baseParagraph)?
-            .properties[.characterFontFamilies]?.declared, committed)
-        try await waitForFamily("Georgia", fixture: reopened)
-        try assertLocalCurrentLayout(reopened)
-    }
-
     private struct Fixture {
         let backend: EVCoreDocumentBackend
         let surface: EVEditorSurfaceController

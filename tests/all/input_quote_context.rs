@@ -106,38 +106,10 @@ fn source_input_can_leave_existing_code_and_enter_new_prose() {
 }
 
 #[test]
-fn named_code_inheritance_is_semantic_and_direct_monospace_remains_prose() {
-    let source = "{\\rtf1{\\stylesheet{\\s0 Normal;}{\\s1\\sbasedon0 Code Block;}{\\s2\\sbasedon1 Derived;}{\\cs1 Code;}{\\cs2\\sbasedon1 Derived Code;}}\\s2 Block\\par\\s0 {\\cs2 Inline} ordinary}";
-    let document = open(source, Format::Rtf);
-    assert!(document
-        .is_code_at(0, BoundaryAffinity::Downstream)
-        .unwrap());
-    let inline = document.text().find("Inline").unwrap();
-    assert!(document
-        .is_code_at(inline, BoundaryAffinity::Downstream)
-        .unwrap());
-    assert!(document.character_style_is_code(&"RtfC2".into()));
-    let ordinary = document.text().find("ordinary").unwrap();
-    assert!(!document
-        .is_code_at(ordinary, BoundaryAffinity::Downstream)
-        .unwrap());
-    let document = open(
-        r"{\rtf1{\fonttbl{\f0 Courier New;}}\f0 ordinary}",
-        Format::Rtf,
-    );
-    assert!(!document
-        .is_code_at(0, BoundaryAffinity::Downstream)
-        .unwrap());
-}
-
-#[test]
 fn rich_fragments_transform_prose_and_rebase_styles_without_changing_original() {
     for (format, source) in [
         (Format::Markdown, "**\"prose\"** `\"code\"`"),
-        (
-            Format::Rtf,
-            "{\\rtf1{\\stylesheet{\\cs1 Code;}}{\\b \"prose\"} {\\cs1 \"code\"}}",
-        ),
+
     ] {
         let document = open(source, format);
         let fragment = document
@@ -190,19 +162,6 @@ fn fragment_quotes_keep_configuration_only_typography_and_combining_graphemes() 
         .unwrap()
         .iter()
         .all(|run| run["size"] == 31.));
-}
-
-#[test]
-fn physical_rtf_source_only_transforms_quotes_in_visible_noncode_text() {
-    let document = open("{\\rtf1 Before }", Format::Rtf);
-    let at = document.source_bytes().len() - 1;
-    let input = "\"prose\"{\\*\\unknown \"syntax\"}";
-    assert_eq!(
-        document
-            .transform_source_input(at..at, input, quote)
-            .unwrap(),
-        "“prose”{\\*\\unknown \"syntax\"}"
-    );
 }
 
 #[test]

@@ -21,7 +21,7 @@ use crate::document::{
     ArtifactOverwrite, ArtifactPath, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWriteScope, ArtifactWriteToken, Association, BoundaryAffinity,
     ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, Encoding,
-    FileFormat, Format, FormatOperation, HardLineSourceRangeError, HistoryError, HistoryLocation,
+    FileFormat, Format, HardLineSourceRangeError, HistoryError, HistoryLocation,
     HistoryNavigationRequest, HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome,
     ModelRequest, ModelTransactionError, PersistenceError, PositionDomain, PositionError,
     PositionMap, PreparedArtifactWrite, Revision, SemanticInlineStyle, StyleApplication,
@@ -297,21 +297,9 @@ pub enum CoreEvent {
     FlushMappingPrefix,
     FlushMappingPrefixWithClipboard(ClipboardCommandContext),
     EditCommandLine(crate::command::CommandLineEditRequest),
-    SetDirectCharacterProperties {
+    SetStrikethrough {
         expected: LogicalSelectionIdentity,
-        values: Vec<(
-            crate::document::StyleProperty,
-            crate::document::StylePropertyValue,
-        )>,
-    },
-    EditDirectProperties {
-        expected: LogicalSelectionIdentity,
-        values: Vec<(crate::document::StyleProperty, Option<crate::document::StylePropertyValue>)>,
-    },
-    EditDirectProperty {
-        expected: LogicalSelectionIdentity,
-        property: crate::document::StyleProperty,
-        value: Option<crate::document::StylePropertyValue>,
+        enabled: bool,
     },
     /// Ordinary input cancels active marked text before dispatch. Undo/redo
     /// continue in the same coordinator turn after cancellation; other input
@@ -364,11 +352,10 @@ pub enum CoreEvent {
         revision: Revision,
         target: FileFormat,
     },
-    SetFormat {
+    SetMarkdownSource {
         document: DocumentId,
         revision: Revision,
-        target: Format,
-        operation: FormatOperation,
+        source: bool,
     },
     SetEncoding {
         document: DocumentId,
@@ -392,12 +379,6 @@ pub enum CoreEvent {
         style_sheet_revision: StyleSheetRevision,
         namespace: StyleNamespace,
         style: StyleId,
-    },
-    EditNamedStyleDefinition {
-        document: DocumentId,
-        revision: Revision,
-        style_sheet_revision: StyleSheetRevision,
-        edit: crate::document::StyleDefinitionEdit,
     },
     /// Atomically edit one field through its core-owned source or configuration
     /// authority. Callers cannot promote synthetic definitions to editable.
@@ -1131,19 +1112,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self.document
     }
 
-    pub fn selected_typography(
+    pub fn selected_character_style(
         &self,
         view_id: ViewId,
-    ) -> Result<(crate::document::ResolvedCharacterStyle, bool), CoreError> {
-        self.selected_typography_details(view_id).map(|(style, mixed, _)| (style, mixed))
-    }
-
-    /// The script-specific flag keeps unrelated font/color differences from
-    /// changing Superscript and Subscript menu toggle behavior.
-    pub fn selected_typography_details(
-        &self,
-        view_id: ViewId,
-    ) -> Result<(crate::document::ResolvedCharacterStyle, bool, bool), CoreError> {
+    ) -> Result<crate::document::ResolvedCharacterStyle, CoreError> {
         let view = self
             .views
             .get(&view_id)
@@ -1166,37 +1138,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             view.commands
                 .apply_typing_presentation(&self.document, &mut first)?;
         }
-        let (mixed, script_mixed) = if let Some(range) = range.filter(|range| !range.is_empty()) {
-            let styles =
-                DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
-                    .map_err(LayoutError::from)?;
-            let mut boundaries = std::collections::BTreeSet::from([range.start, range.end]);
-            for run in &styles.shaping_runs {
-                boundaries.insert(run.text_range.start.max(range.start));
-                boundaries.insert(run.text_range.end.min(range.end));
-            }
-            for run in &styles.paint_runs {
-                boundaries.insert(run.text_range.start.max(range.start));
-                boundaries.insert(run.text_range.end.min(range.end));
-            }
-            for paragraph in &styles.paragraphs {
-                boundaries.insert(paragraph.text_range.start.max(range.start));
-            }
-            let mut mixed = false;
-            let mut script_mixed = false;
-            for at in boundaries.into_iter().filter(|at| *at < range.end) {
-                let value = DocumentLayoutStyles::semantic_character_at(
-                    self.document.projection(), at, false,
-                ).map_err(LayoutError::from)?;
-                mixed |= value != first;
-                script_mixed |= value.script_position != first.script_position;
-                if mixed && script_mixed { break; }
-            }
-            (mixed, script_mixed)
-        } else {
-            (false, false)
-        };
-        Ok((first, mixed, script_mixed))
+        Ok(first)
     }
 
     /// Return native Bold/Italic presentation from the authoritative logical
@@ -1238,7 +1180,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             let supported = !values.is_empty()
                 && self.document.validate_typing_properties(&values).is_ok()
 ;
-            let (current, _) = self.selected_typography(view_id)?;
+            let current = self.selected_character_style(view_id)?;
             let on = match style {
                 SemanticInlineStyle::Strong => current.bold,
                 SemanticInlineStyle::Emphasis => {
@@ -1298,25 +1240,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             })
             .collect::<Vec<_>>();
         covered.sort_by_key(|segment| (segment.start, segment.end));
-        let state = if self.document.format().has_rich_source() {
-            let resolved =
-                DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
-                    .map_err(LayoutError::from)?;
-            let enabled = |value: &crate::layout::ResolvedTextStyle| match style {
-                SemanticInlineStyle::Strong => value.relative_bold,
-                SemanticInlineStyle::Emphasis => value.slant != crate::document::FontSlant::Upright,
-                SemanticInlineStyle::Code => false,
-            };
-            ranged_boolean_style_state(
-                self.document.projection().text_tree(),
-                range.clone(),
-                enabled(&resolved.default_shaping_style),
-                resolved
-                    .shaping_runs
-                    .iter()
-                    .map(|run| (run.text_range.clone(), enabled(&run.style))),
-            )
-        } else if covered.is_empty() {
+        let state = if covered.is_empty() {
             SemanticStyleState::Off
         } else {
             let mut cursor = range.start;
@@ -1354,64 +1278,36 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
-    /// Exact paragraph target for native list actions. An insertion/Normal
-    /// caret names its current paragraph through a checked empty range.
-    pub fn selection_decoration_state(
+    /// Strikethrough state for the current selection or pending typing style.
+    pub fn selection_strikethrough_state(
         &self,
         view_id: ViewId,
-        strike: bool,
     ) -> Result<SemanticStyleState, CoreError> {
         if self.active_linear_selection_identity(view_id)?.is_none() {
-            let view = self
-                .views
-                .get(&view_id)
-                .ok_or(CoreError::UnknownView(view_id))?;
+            let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
             if !matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
                 return Err(CoreError::StaleLogicalSelection);
             }
             self.document.validate_typing_properties(&[(
-                if strike {
-                    StyleProperty::CharacterStrikethrough
-                } else {
-                    StyleProperty::CharacterUnderline
-                },
+                StyleProperty::CharacterStrikethrough,
                 crate::document::StylePropertyValue::Boolean(true),
             )])?;
-            let (style, _) = self.selected_typography(view_id)?;
-            return Ok(
-                if if strike {
-                    style.strikethrough
-                } else {
-                    style.underline
-                } {
-                    SemanticStyleState::On
-                } else {
-                    SemanticStyleState::Off
-                },
-            );
+            return Ok(if self.selected_character_style(view_id)?.strikethrough {
+                SemanticStyleState::On
+            } else {
+                SemanticStyleState::Off
+            });
         }
-        let selection = self
-            .active_linear_selection_identity(view_id)?
+        let selection = self.active_linear_selection_identity(view_id)?
             .ok_or(CoreError::StaleLogicalSelection)?;
         let range = selection.range();
-        let resolved =
-            DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
-                .map_err(LayoutError::from)?;
-        let enabled = |value: &crate::layout::ResolvedTextPaint| {
-            if strike {
-                value.strikethrough
-            } else {
-                value.underline
-            }
-        };
+        let resolved = DocumentLayoutStyles::resolve_region(self.document.projection(), range.clone())
+            .map_err(LayoutError::from)?;
         Ok(ranged_boolean_style_state(
             self.document.projection().text_tree(),
             range,
-            enabled(&resolved.default_paint),
-            resolved
-                .paint_runs
-                .iter()
-                .map(|run| (run.text_range.clone(), enabled(&run.paint))),
+            resolved.default_paint.strikethrough,
+            resolved.paint_runs.iter().map(|run| (run.text_range.clone(), run.paint.strikethrough)),
         ))
     }
 
@@ -4230,7 +4126,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     /// Prepare all controller images before a native transaction commits. The
-    /// caller chooses ordinary or format-conversion anchor association; every
+    /// caller chooses ordinary or Markdown-view anchor association; every
     /// view must map successfully before any live controller is replaced.
     fn prepare_mapped_commands(
         &self,
@@ -4439,7 +4335,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         request: ModelRequest,
     ) -> Result<CoreOutcome, CoreError> {
-        let pending_typing = self.select_typing_after_direct_request(view_id, &request);
+        let pending_typing = match &request {
+            ModelRequest::SetStrikethrough { enabled, .. } => self.select_typing_after_character_property(
+                view_id, StyleProperty::CharacterStrikethrough,
+                crate::document::StylePropertyValue::Boolean(*enabled),
+            ),
+            _ => None,
+        };
         let quote_at_end = match &request {
             ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Block, style, .. }
             | ModelRequest::SetParagraphStyle { range, style, .. }
@@ -4475,7 +4377,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view existence checked before native file-format change")
             .commands
             .capture_history_restoration(&self.document)?;
-        let capture_anchors = if matches!(request, ModelRequest::SetFormat { .. }) {
+        let capture_anchors = if matches!(request, ModelRequest::SetMarkdownSource { .. }) {
             CommandInterpreter::capture_format_position_anchors
         } else {
             CommandInterpreter::capture_position_anchors
@@ -4499,12 +4401,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let changed = committed.after_revision() != committed.before_revision();
         debug_assert!(changed);
 
-        for (id, mut commands) in next_commands {
-            if self.document.format() == Format::Rtf
-                && commands.line_mode() == crate::command::LineMode::PhysicalSource
-            {
-                commands.set_line_mode(&self.document, crate::command::LineMode::Visual)?;
-            }
+        for (id, commands) in next_commands {
             self.views
                 .get_mut(&id)
                 .expect("prepared view remains attached during serial dispatch")
@@ -4566,30 +4463,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         edit: &StyleDefinitionFieldEdit,
     ) -> Result<StyleModelRequest, CoreError> {
         self.validate_style_sheet_identity(document, revision, style_sheet_revision)?;
-        let sheet = self.document.projection().style_sheet();
-        let origin = match namespace {
-            StyleNamespace::Block => sheet.block_style_metadata(style),
-            StyleNamespace::Character => sheet.character_style_metadata(style),
-        }
-        .map(|metadata| metadata.origin);
-        if self.document.format().has_rich_source()
-            && origin == Some(crate::document::StyleDefinitionOrigin::SourceBacked)
-        {
-            let definition_edit = sheet
-                .prepare_source_field_edit(namespace, style, edit)
-                .map_err(ModelTransactionError::from)
-                .map_err(command_model_transaction_error)?;
-            return Ok(StyleModelRequest::new(
-                document,
-                revision,
-                StyleModelIntent::Persisted(
-                    crate::document::PersistedStyleIntent::EditStyleDefinition {
-                        origin: crate::document::StyleDefinitionOrigin::SourceBacked,
-                        edit: definition_edit,
-                    },
-                ),
-            ));
-        }
         let definition_edit = self
             .document
             .projection()
@@ -5084,85 +4957,25 @@ impl<P: TextMeasurementProvider> Core<P> {
                     composition_changes: Vec::new(),
                 });
             }
-            CoreEvent::SetDirectCharacterProperties { expected, values } => {
+            CoreEvent::SetStrikethrough { expected, enabled } => {
+                if self.list_selection_identity(view_id)? != expected {
+                    return Err(CoreError::StaleLogicalSelection);
+                }
                 if expected.kind() == LogicalSelectionKind::None {
-                    if self.list_selection_identity(view_id)? != expected {
-                        return Err(CoreError::StaleLogicalSelection);
-                    }
-                    let previous_cursor = self
-                        .views
-                        .get(&view_id)
-                        .expect("view checked")
-                        .commands
-                        .cursor();
-                    self.views
-                        .get_mut(&view_id)
-                        .expect("view checked")
-                        .commands
-                        .set_typing_properties(&self.document, values)?;
-                    return self.pending_typing_outcome(view_id, previous_cursor);
-                }
-                let actual = self
-                    .active_linear_selection_identity(view_id)?
-                    .ok_or(CoreError::StaleLogicalSelection)?;
-                if actual != expected {
-                    return Err(CoreError::StaleLogicalSelection);
-                }
-                return self.apply_native_model_request(
-                    view_id,
-                    ModelRequest::SetDirectCharacterProperties {
-                        document: expected.document(),
-                        revision: expected.revision(),
-                        range: expected.range(),
-                        values,
-                    },
-                );
-            }
-            CoreEvent::EditDirectProperties { expected, values } => {
-                return self.edit_direct_properties(view_id, expected, values);
-            }
-            CoreEvent::EditDirectProperty {
-                expected,
-                property,
-                value,
-            } => {
-                let character = crate::document::is_character_property(property);
-                if character && expected.kind() == LogicalSelectionKind::None {
-                    if self.list_selection_identity(view_id)? != expected {
-                        return Err(CoreError::StaleLogicalSelection);
-                    }
-                    let commands =
-                        &mut self.views.get_mut(&view_id).expect("view checked").commands;
-                    if !matches!(commands.mode(), Mode::Insert | Mode::Replace) {
-                        return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
-                    }
+                    let commands = &mut self.views.get_mut(&view_id).expect("view checked").commands;
                     let previous_cursor = commands.cursor();
-                    if let Some(value) = value {
-                        commands.set_typing_properties(&self.document, vec![(property, value)])?;
-                    } else {
-                        commands.clear_typing_property(property);
-                    }
+                    commands.set_typing_properties(&self.document, vec![(
+                        StyleProperty::CharacterStrikethrough,
+                        crate::document::StylePropertyValue::Boolean(enabled),
+                    )])?;
                     return self.pending_typing_outcome(view_id, previous_cursor);
                 }
-                let actual = if character {
-                    self.active_linear_selection_identity(view_id)?
-                        .ok_or(CoreError::StaleLogicalSelection)?
-                } else {
-                    self.list_selection_identity(view_id)?
-                };
-                if actual != expected {
-                    return Err(CoreError::StaleLogicalSelection);
-                }
-                return self.apply_native_model_request(
-                    view_id,
-                    ModelRequest::EditDirectProperty {
-                        document: expected.document(),
-                        revision: expected.revision(),
-                        range: expected.range(),
-                        property,
-                        value,
-                    },
-                );
+                return self.apply_native_model_request(view_id, ModelRequest::SetStrikethrough {
+                    document: expected.document(),
+                    revision: expected.revision(),
+                    range: expected.range(),
+                    enabled,
+                });
             }
             CoreEvent::Composition(event) => {
                 return self.handle_composition_event(view_id, event);
@@ -5208,19 +5021,17 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
-            CoreEvent::SetFormat {
+            CoreEvent::SetMarkdownSource {
                 document,
                 revision,
-                target,
-                operation,
+                source,
             } => {
                 return self.apply_native_model_request(
                     view_id,
-                    ModelRequest::SetFormat {
+                    ModelRequest::SetMarkdownSource {
                         document,
                         revision,
-                        target,
-                        operation,
+                        source,
                     },
                 );
             }
@@ -5332,22 +5143,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
                 return Ok(outcome);
             }
-            CoreEvent::EditNamedStyleDefinition {
-                document,
-                revision,
-                style_sheet_revision,
-                edit,
-            } => {
-                self.validate_style_sheet_identity(document, revision, style_sheet_revision)?;
-                return self.apply_native_model_request(
-                    view_id,
-                    ModelRequest::EditNamedStyleDefinition {
-                        document,
-                        revision,
-                        edit,
-                    },
-                );
-            }
             CoreEvent::SetSelectionSemanticStyle {
                 expected,
                 style,
@@ -5363,7 +5158,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     _ => None,
                 };
                 let pending_typing = value.and_then(|(property, value)| {
-                    self.select_typing_after_character_properties(view_id, &[(property, Some(value))])
+                    self.select_typing_after_character_property(view_id, property, value)
                 });
                 let outcome = self.set_selection_semantic_style(view_id, expected, style, enabled)?;
                 self.publish_select_typing(view_id, pending_typing);
@@ -6279,17 +6074,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::NavigateHistory(_) => {
                 unreachable!("native history navigation returns before ordinary dispatch")
             }
-            CoreEvent::SetDirectCharacterProperties { .. }
-            | CoreEvent::EditDirectProperty { .. }
-            | CoreEvent::EditDirectProperties { .. }
+            CoreEvent::SetStrikethrough { .. }
             | CoreEvent::SetFileFormat { .. }
-            | CoreEvent::SetFormat { .. }
+            | CoreEvent::SetMarkdownSource { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
             | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }
-            | CoreEvent::AssignNamedStyle { .. }
-            | CoreEvent::EditNamedStyleDefinition { .. } => {
+            | CoreEvent::AssignNamedStyle { .. } => {
                 unreachable!("native file-format changes return before ordinary dispatch")
             }
             CoreEvent::SetSelectionSemanticStyle { .. } => {

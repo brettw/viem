@@ -49,8 +49,8 @@ Vim. The [installed runtime audit](vim-syntax-audit.md) records the complete
 
 ## Configuration and persistence
 
-The macOS format menu and status controls expose Code. Automatic detection can
-select it where opening would otherwise select Text; existing rich-format
+The macOS status controls identify Code. Automatic detection can
+select it where opening would otherwise select Text; existing Markdown
 opening defaults remain. Explicit language selection, safe Vim modelines,
 filename associations, shebangs, and bounded content signatures follow the
 specification's precedence. The [detection profile](../src/core/document/syntax/detection/PROFILE.md)
@@ -137,7 +137,7 @@ maximum cold slice was 2.993 ms against a cooperative 2 ms target, with bounded
 provisional recovery when exact priming did not complete.
 
 The tests cover literal quote ingress and rich-paste stripping, format
-reinterpretation and undo, source/encoding preservation, exact-name styles,
+source/encoding preservation, exact-name styles,
 global persistence/reload, query dependencies and injections, fallback,
 supersession, native ownership, finite limits, and Code command paths that
 reject whole-document string materialization. Persistent source/text diffs and

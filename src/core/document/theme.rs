@@ -115,12 +115,6 @@ struct Styles {
         deserialize_with = "present_style",
         skip_serializing_if = "Option::is_none"
     )]
-    rtf: Option<Value>,
-    #[serde(
-        default,
-        deserialize_with = "present_style",
-        skip_serializing_if = "Option::is_none"
-    )]
     code: Option<Value>,
 }
 
@@ -174,7 +168,6 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
         styles: Styles {
             text: Some(defaults.clone()),
             markdown: Some(defaults.clone()),
-            rtf: Some(defaults),
             code: Some(code),
         },
     })
@@ -192,7 +185,7 @@ pub fn validate_json(bytes: &[u8]) -> Result<(), String> {
         return Err("Unsupported theme version".into());
     }
     file.theme.validate()?;
-    for style in [file.styles.text, file.styles.markdown, file.styles.rtf]
+    for style in [file.styles.text, file.styles.markdown]
         .into_iter()
         .flatten()
     {

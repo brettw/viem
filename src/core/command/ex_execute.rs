@@ -2440,8 +2440,7 @@ fn prepare_set(
             }
             let defaults = { let mut d = values.indentation; d.local = Default::default(); indentation_options(d) };
             shown.extend(indentation_options(values.indentation).into_iter().zip(defaults).filter_map(|(value, default)| (value != default).then_some(value)));
-            if document.format() != crate::document::Format::Rtf
-                && values.file_format != FileFormat::Unix
+            if values.file_format != FileFormat::Unix
             {
                 shown.push(display(
                     ExOptionName::FileFormat,
@@ -2462,23 +2461,12 @@ fn prepare_set(
             plan.outcome
                 .frontend_requests
                 .push(ExFrontendRequest::Info(ExInfoRequest::Options(
-                    all_option_values(&values)
-                        .into_iter()
-                        .filter(|option| {
-                            document.format() != crate::document::Format::Rtf
-                                || option.name != ExOptionName::FileFormat
-                        })
-                        .collect(),
+                    all_option_values(&values),
                 )));
         }
         SetOperation::Options(operations) => {
             let original_file_format = values.file_format;
             for operation in operations {
-                if document.format() == crate::document::Format::Rtf
-                    && matches!(operation.name.as_str(), "fileformat" | "ff")
-                {
-                    return Err(ExExecuteError::UnsupportedOption(operation.name.clone()));
-                }
                 apply_option_operation(scope, operation, &mut values, plan)?;
             }
             if values.file_format != original_file_format {

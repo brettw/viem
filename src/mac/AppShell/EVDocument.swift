@@ -1,16 +1,10 @@
 import AppKit
 import UniformTypeIdentifiers
 
-public enum EVFormatOperation: Equatable, Sendable {
-    case reinterpret
-    case convert
-}
-
 public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case plainText
     case markdown
     case markdownSource
-    case rtf
     case code
 
     public init(from decoder: any Decoder) throws {
@@ -28,7 +22,6 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
         case .plainText: "Plain Text"
         case .markdown: "Markdown WYSIWYG"
         case .markdownSource: "Markdown Source"
-        case .rtf: "RTF"
         case .code: "Code"
         }
     }
@@ -42,8 +35,7 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
 
 public enum EVDocumentSerializationError: LocalizedError, Equatable {
     case unsupportedWritableType(String)
-    case formatConversionUnavailable(current: EVSourceFormat, requested: EVSourceFormat)
-    case changedFormatNeedsNewDestination
+    case unsupportedSerializationFormat(current: EVSourceFormat, requested: EVSourceFormat)
     case destinationAliasesOriginal
     case exportOverwritesSource
 
@@ -51,10 +43,8 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
         switch self {
         case let .unsupportedWritableType(typeName):
             "Viem cannot serialize the requested document type ‘\(typeName)’ safely."
-        case let .formatConversionUnavailable(current, requested):
-            "Saving \(current.displayName) as \(requested.displayName) requires a document format conversion, which is not available yet."
-        case .changedFormatNeedsNewDestination:
-            "The document format has changed. Use Save As and choose a different name or location to preserve the original file."
+        case let .unsupportedSerializationFormat(current, requested):
+            "Saving \(current.displayName) as \(requested.displayName) is not supported."
         case .exportOverwritesSource:
             "Choose a different destination for the HTML export to preserve the source document."
         case .destinationAliasesOriginal:
@@ -77,7 +67,6 @@ public final class EVDocument: NSDocument {
         ?? "net.daringfireball.markdown"
     public static let markdownSourceType = "com.viem.markdown-source"
     public static let htmlType = UTType.html.identifier
-    public static let rtfType = UTType.rtf.identifier
     public static let codeType = "com.viem.code"
 
     public override var fileType: String? {
@@ -126,7 +115,6 @@ public final class EVDocument: NSDocument {
     private var activeSave: ActiveSave?
     var fileBaseline: EVFileFingerprint?
     var fileBaselineURL: URL?
-    var fileBaselineFormat: EVSourceFormat?
     var fileBaselineGeneration: UInt64 = 0
     public internal(set) var externalFileChange: EVExternalFileChange?
     var externalSaveDecisionHandler: ((EVExternalFileChange) -> Bool)?
@@ -249,11 +237,6 @@ public final class EVDocument: NSDocument {
             self.wasRecovered = recovered
             if let original = try? original.get() { self.recordFileBaseline(original, at: target) }
             else { self.recordMissingFileBaseline(at: target) }
-            // Recovery may restore another format. The baseline describes the
-            // original disk file, whose serialization must remain protected.
-            if recovered {
-                self.fileBaselineFormat = Self.sourceFormat(forTypeName: Self.readableType(for: typeName)) ?? .plainText
-            }
             self.recoveryTimer?.cancel()
             self.recoveryGeneration &+= 1
             self.recoveryRequestedTarget = target
@@ -283,7 +266,7 @@ public final class EVDocument: NSDocument {
         if readOnly { try setReadOnly(true) }
         wasRecovered = false
         fileModificationDate = snapshot.modificationDate
-        recordFileBaseline(snapshot.data, at: url, format: format, fingerprint: snapshot.fingerprint)
+        recordFileBaseline(snapshot.data, at: url, fingerprint: snapshot.fingerprint)
         synchronizeEditedState(editorBackend.persistenceState)
         captureRecoveryNow()
     }
@@ -431,7 +414,7 @@ public final class EVDocument: NSDocument {
     }
 
     public override class var writableTypes: [String] {
-        [plainTextType, markdownType, rtfType]
+        [plainTextType, markdownType]
     }
 
     public override class func isNativeType(_ type: String) -> Bool {
@@ -471,25 +454,8 @@ public final class EVDocument: NSDocument {
         saveAs(sender)
     }
 
-    public override func save(
-        withDelegate delegate: Any?, didSave didSaveSelector: Selector?,
-        contextInfo: UnsafeMutableRawPointer?
-    ) {
-        if requiresNewFormatDestination {
-            runModalSavePanel(for: .saveAsOperation, delegate: delegate,
-                              didSave: didSaveSelector, contextInfo: contextInfo)
-        } else {
-            super.save(withDelegate: delegate, didSave: didSaveSelector, contextInfo: contextInfo)
-        }
-    }
-
-    var requiresNewFormatDestination: Bool {
-        guard fileURL != nil, let originalFormat = fileBaselineFormat else { return false }
-        return !editorBackend.sourceFormat.hasSameSerialization(as: originalFormat)
-    }
-
-    func validatePreservedOriginal(at destination: URL, checkDestinationName: Bool = true) throws {
-        if checkDestinationName, let original = fileURL,
+    func validateDestinationAlias(at destination: URL) throws {
+        if let original = fileURL,
            original.standardizedFileURL != destination.standardizedFileURL {
             let sameResolvedPath = EVDocumentIdentity.canonicalURL(original) == EVDocumentIdentity.canonicalURL(destination)
             let sameFoldedPath = original.standardizedFileURL.path.compare(
@@ -499,18 +465,12 @@ public final class EVDocument: NSDocument {
                 throw EVDocumentSerializationError.destinationAliasesOriginal
             }
         }
-        guard requiresNewFormatDestination, let original = fileBaselineURL ?? fileURL else { return }
-        if original.standardizedFileURL == destination.standardizedFileURL
-            || EVDocumentIdentity.sameFile(original, destination) {
-            throw EVDocumentSerializationError.changedFormatNeedsNewDestination
-        }
     }
 
     public static func typeName(for format: EVSourceFormat) -> String {
         switch format {
         case .plainText: plainTextType
         case .markdown, .markdownSource: markdownType
-        case .rtf: rtfType
         case .code: plainTextType
         }
     }
@@ -550,7 +510,6 @@ public final class EVDocument: NSDocument {
             try self.editorBackend.read(source: data, typeName: Self.readableType(for: typeName))
             self.fileBaseline = nil
             self.fileBaselineURL = nil
-            self.fileBaselineFormat = nil
             self.fileBaselineGeneration &+= 1
             self.externalFileChange = nil
             self.resetExternalFileReview()
@@ -581,7 +540,7 @@ public final class EVDocument: NSDocument {
 
     public override nonisolated func write(to url: URL, ofType typeName: String) throws {
         try onMainActor {
-            try self.validatePreservedOriginal(at: url, checkDestinationName: self.activeSave == nil)
+            if self.activeSave == nil { try self.validateDestinationAlias(at: url) }
         }
         try super.write(to: url, ofType: typeName)
     }
@@ -608,7 +567,7 @@ public final class EVDocument: NSDocument {
         let sourceFormat: EVSourceFormat
         let expectedFile: EVFileFingerprint
         do {
-            try validatePreservedOriginal(at: url)
+            try validateDestinationAlias(at: url)
             expectedFile = try authorizeExternalWrite(to: url).fingerprint
             sourceFormat = try Self.validateSerializationType(
                 typeName,
@@ -648,7 +607,7 @@ public final class EVDocument: NSDocument {
         let sourceFormat: EVSourceFormat
         let expectedFile: EVFileFingerprint
         do {
-            try validatePreservedOriginal(at: url)
+            try validateDestinationAlias(at: url)
             sourceFormat = try Self.validateSerializationType(
                 typeName,
                 currentFormat: editorBackend.sourceFormat
@@ -712,7 +671,7 @@ public final class EVDocument: NSDocument {
                 // native NSDocument semantics do not make that copy the
                 // source document's new save point.
                 if let bound = self.fileURL, EVDocumentIdentity.sameFile(bound, url) {
-                    self.recordFileBaseline(snapshot.data, at: url, format: sourceFormat)
+                    self.recordFileBaseline(snapshot.data, at: url)
                 }
                 self.synchronizeEditedState(self.editorBackend.persistenceState)
                 completionHandler(nil)
@@ -720,7 +679,7 @@ public final class EVDocument: NSDocument {
             }
             let target = EVDocumentIdentity.canonicalURL(url)
             self.recordRecentDocument(target)
-            self.recordFileBaseline(snapshot.data, at: target, format: sourceFormat)
+            self.recordFileBaseline(snapshot.data, at: target)
             if self.recoveryTarget != target {
                 // A successful Save As already adopted its native target even
                 // when a newer edit makes the core acknowledgement stale.
@@ -745,7 +704,7 @@ public final class EVDocument: NSDocument {
         to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType
     ) throws {
         try onMainActor {
-            if self.activeSave == nil { try self.validatePreservedOriginal(at: url) }
+            if self.activeSave == nil { try self.validateDestinationAlias(at: url) }
             if var save = self.activeSave, EVDocumentIdentity.sameFile(save.destination, url) {
                 save.expectedFile = try self.authorizeExternalWrite(to: url, since: save.expectedFile).fingerprint
                 self.activeSave = save
@@ -818,16 +777,12 @@ public final class EVDocument: NSDocument {
         if [".html", ".htm", ".xhtml", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
             return .code
         }
-        if lowered == rtfType || lowered == ".rtf" || lowered.hasSuffix(".rtf") {
-            return .rtf
-        }
         if lowered.contains("markdown") || lowered == ".md" || lowered.hasSuffix(".md") {
             return .markdown
         }
 
         if let type = UTType(typeName) {
             if type.conforms(to: .html) { return .code }
-            if type.conforms(to: .rtf) { return .rtf }
             if let markdown = UTType(filenameExtension: "md"),
                type == markdown || type.conforms(to: markdown)
             {
@@ -857,7 +812,7 @@ public final class EVDocument: NSDocument {
             throw EVDocumentSerializationError.unsupportedWritableType(typeName)
         }
         guard requestedFormat.hasSameSerialization(as: currentFormat) else {
-            throw EVDocumentSerializationError.formatConversionUnavailable(
+            throw EVDocumentSerializationError.unsupportedSerializationFormat(
                 current: currentFormat,
                 requested: requestedFormat
             )

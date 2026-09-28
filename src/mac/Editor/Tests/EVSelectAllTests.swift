@@ -33,10 +33,8 @@ import XCTest
             ("first\nsecond\n\(tail)", EVDocument.plainTextType),
             ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownType),
             ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownSourceType),
-            ("{\\rtf1 first\\par second\\par \(tail)}", EVDocument.rtfType),
         ] {
             for mode: EVLineMode in [.visual, .physicalSource] {
-                if type == EVDocument.rtfType && mode == .physicalSource { continue }
                 let (backend, view, session, pasteboard) = try surface(source, type: type)
                 try session.setLineMode(mode)
                 if type == EVDocument.markdownSourceType {
@@ -79,7 +77,6 @@ import XCTest
             ("> - first\n> - second", EVDocument.markdownType),
         ] {
             for mode: EVLineMode in [.visual, .physicalSource] {
-                if type == EVDocument.rtfType && mode == .physicalSource { continue }
                 let (backend, view, session, _) = try surface(source, type: type)
                 try session.setLineMode(mode)
                 view.perform(menuCommand: .selectAll, sender: nil)

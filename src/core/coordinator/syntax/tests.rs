@@ -1,7 +1,7 @@
 use super::*;
 use crate::command::{InputEvent, Key};
 use crate::document::syntax::service::{SyntaxProvider, SyntaxRequest, SyntaxResult, WORKER_COUNT};
-use crate::document::{Encoding, FileFormat, FormatOperation};
+use crate::document::{Encoding, FileFormat};
 use crate::layout::MockTextMeasurementProvider;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -404,9 +404,7 @@ fn language_detection_is_load_time_state_with_explicit_redetection_and_overrides
     core.initialize_code_detection("notes", true).unwrap();
     assert_eq!(core.document.format(), Format::PlainText);
     core.document.insert(0, "// vim: ft=rust\n").unwrap();
-    core.document
-        .set_format(Format::Code, FormatOperation::Reinterpret)
-        .unwrap();
+    core.document = Document::from_bytes(core.document.source_bytes(), Encoding::Utf8, Format::Code).unwrap();
     core.poll_syntax();
     assert_eq!(
         core.code_language_detection().unwrap().language.as_deref(),

@@ -7,52 +7,6 @@ import XCTest
 
 final class EVStyleEditorTests: XCTestCase {
     @MainActor
-    func testNativeNamedStyleLifecyclePersistsAndUndoesInRichFormats() throws {
-        for (type, source) in [
-            (EVDocument.rtfType, #"{\rtf1{\pard Words}{\*\comment keep}}"#),
-            (EVDocument.rtfType, #"{\rtf1{\info{\title Keep}}Words}"#),
-        ] {
-            for kind in [EVStyleKind.paragraph, .character] {
-                let backend = EVCoreDocumentBackend()
-                try backend.read(source: Data(source.utf8), typeName: type)
-                let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-                surface.loadViewIfNeeded()
-                let editor = EVStyleEditorViewController()
-                editor.retarget(document: surface, styleKey: .baseParagraph)
-                XCTAssertTrue(editor.createStyle(kind: kind), editor.inspection.diagnostic)
-                let key = try XCTUnwrap(editor.inspection.selectedStyleKey)
-                guard key != .baseParagraph && key != .defaultParagraph else {
-                    XCTFail("\(type) \(kind): new style disappeared: \(String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self))")
-                    continue
-                }
-                XCTAssertTrue(editor.renameForTesting("My Style"), editor.inspection.diagnostic)
-                XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(22)), "\(type) \(kind): \(editor.inspection.diagnostic)")
-                if kind == .character { surface.perform(menuCommand: .selectAll, sender: nil) }
-                let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-                let entry = try XCTUnwrap(catalogue.entries.first { $0.stableID == key.id.rawValue })
-                XCTAssertTrue(entry.presentation.isEnabled)
-                surface.perform(styleMenuAction: EVStyleMenuAction(kind: .assign,
-                    role: kind == .paragraph ? .paragraph : .character,
-                    stableID: key.id.rawValue, documentID: catalogue.documentID,
-                    documentRevision: catalogue.documentRevision,
-                    styleSheetRevision: catalogue.styleSheetRevision), sender: nil)
-                XCTAssertEqual(surface.statusBarState.message, "")
-                let saved = try backend.serializedSource(typeName: type)
-                let reopened = EVCoreDocumentBackend()
-                try reopened.read(source: saved, typeName: type)
-                let definition = try XCTUnwrap(try reopened.styleSheetSnapshot().definition(for: key))
-                XCTAssertEqual(definition.name, "My Style")
-                XCTAssertEqual(definition.properties[.characterSize]?.declared, .float(22))
-                XCTAssertEqual(try reopened.formattedText(), "Words")
-                XCTAssertTrue(editor.deleteSelectedStyle(), editor.inspection.diagnostic)
-                XCTAssertNil(try backend.styleSheetSnapshot().definition(for: key))
-                surface.perform(menuCommand: .undo, sender: nil)
-                XCTAssertEqual(try backend.serializedSource(typeName: type), saved)
-            }
-        }
-    }
-
-    @MainActor
     func testCoordinatorReusesOneModelessWindowAndRetargetsByStableIdentity() throws {
         let firstBackend = EVCoreDocumentBackend()
         try firstBackend.read(source: Data("first".utf8), typeName: "public.plain-text")

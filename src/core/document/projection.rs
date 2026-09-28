@@ -28,7 +28,6 @@ pub enum Format {
     Markdown,
     /// Editable Markdown source with formatting applied to visible syntax.
     MarkdownSource,
-    Rtf,
     /// Literal source text with disposable, asynchronously computed syntax styles.
     Code,
 }
@@ -61,20 +60,7 @@ impl Format {
     /// of the syntax which spells them. Plain text has no such structure and
     /// source views deliberately show the syntax, so neither qualifies.
     pub const fn is_wysiwyg(self) -> bool {
-        matches!(self, Self::Markdown | Self::Rtf)
-    }
-
-    /// A WYSIWYG view whose source persists arbitrary character and paragraph
-    /// declarations. Markdown carries structure but only a fixed inline
-    /// vocabulary, so it is structured without being rich text.
-    pub const fn is_rich_text(self) -> bool {
-        matches!(self, Self::Rtf)
-    }
-
-    /// Backed by rich style markup in either view. Equivalent to
-    /// [`Self::is_rich_text`] on this format's [`Self::wysiwyg`] view.
-    pub const fn has_rich_source(self) -> bool {
-        self.wysiwyg().is_rich_text()
+        matches!(self, Self::Markdown)
     }
 
     /// `Enter` continues an enclosing list structure rather than inserting the
@@ -1619,8 +1605,6 @@ impl FormattedDocument {
         ));
     }
 
-
-
     pub(crate) fn flow_blocks_for_region(&self, range: &Range<usize>) -> Option<Vec<Block>> {
         self.flow_blocks
             .as_ref()
@@ -2244,46 +2228,6 @@ impl FormattedDocument {
         Ok(())
     }
 
-    /// Retain block identity while publishing properties and definitions newly
-    /// parsed from an authoritative rich source rather than configuration.
-    pub(crate) fn install_source_block_ids(
-        &mut self,
-        previous: &Self,
-    ) -> Result<(), BlockIdentityError> {
-        let parsed_blocks = self.blocks.to_vec();
-        let parsed_sheet = self.style_sheet.clone();
-        let parsed_document = self.document_style.clone();
-        self.install_unchanged_block_ids(previous)?;
-        let mut blocks = self.blocks.to_vec();
-        for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
-            block.direct_formatting = parsed.direct_formatting.clone();
-            if previous
-                .style_sheet
-                .configuration_deleted(&block.style, true)
-            {
-                block.style = previous.style_sheet.base_paragraph.clone();
-            }
-        }
-        self.blocks = OrderedRangeStore::new(blocks);
-        self.style_sheet = parsed_sheet;
-        Arc::make_mut(&mut self.style_sheet)
-            .retain_configuration_deletions(&previous.style_sheet);
-        self.document_style = parsed_document;
-        // Source adapters do not author these configuration-only root layers.
-        // Retain them when preserving source-backed parsed definitions.
-        self.document_style.direct_canvas = previous.document_style.direct_canvas.clone();
-        self.document_style.direct_default_character =
-            previous.document_style.direct_default_character.clone();
-        if self
-            .style_sheet
-            .block_style(&previous.document_style.style)
-            .is_some()
-        {
-            self.document_style.style = previous.document_style.style.clone();
-        }
-        Ok(())
-    }
-
     /// Reconcile provisional block IDs after the candidate has been fully
     /// parsed and semantically verified. The exact position map establishes
     /// the snapshot transition; edit ranges decide which source-backed line
@@ -2387,17 +2331,10 @@ impl FormattedDocument {
     /// hard line; refusing any other shape keeps this temporary contract
     /// explicit until nested/multi-line block transfer is modeled directly.
     pub(crate) fn install_reconciled_format_block_ids(
-        &mut self,
-        format: Format,
-        previous: &Self,
-        edits: &[TextEdit],
-        position_map: &PositionMap,
-        next_id: u64,
+        &mut self, _format: Format, previous: &Self, edits: &[TextEdit],
+        position_map: &PositionMap, next_id: u64,
     ) -> Result<u64, BlockIdentityError> {
-        if !format.has_rich_source() {
-            return self.install_reconciled_block_ids(previous, edits, position_map, next_id);
-        }
-        self.install_reconciled_source_block_ids(previous, edits, position_map, next_id)
+        self.install_reconciled_block_ids(previous, edits, position_map, next_id)
     }
 
     /// Reprojection may replace the format's complete style interpretation.
@@ -2825,12 +2762,6 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
     }
 
-    pub(super) fn install_implicit_list_containers(&mut self) {
-        let mut blocks = self.blocks.to_vec();
-        super::containers::install_list_paths(&mut blocks);
-        self.blocks = OrderedRangeStore::new(blocks);
-    }
-
     pub fn blocks(&self) -> &[Block] {
         self.blocks.as_slice()
     }
@@ -2945,12 +2876,6 @@ impl FormattedDocument {
         styles.extend(spans);
         styles.sort_by_key(|span| span.range.start);
         self.styles = IntervalRangeStore::new(styles);
-    }
-
-    /// Includes point annotations at an empty editable boundary, located in
-    /// `O(log n + k)` without materializing the complete style collection.
-    pub(crate) fn style_spans_touching(&self, range: &Range<usize>) -> Vec<StyleSpan> {
-        self.styles.query_touching(range)
     }
 
     pub fn provenance(&self) -> &[ProvenanceSpan] {
@@ -4043,12 +3968,6 @@ pub(crate) fn project(
             true,
         ),
 
-        Format::Rtf => super::rtf::project(
-            normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-        ),
     }
 }
 
@@ -4063,7 +3982,6 @@ pub(crate) struct ProjectionSpliceStatistics {
 }
 
 impl ProjectionSpliceStatistics {
-
 
     pub(crate) fn range_index_nodes_visited(self) -> usize {
         self.range_indexes.nodes_visited
@@ -4907,8 +4825,6 @@ pub(crate) fn splice_line_local_projection(
         },
     ))
 }
-
-
 
 fn contained_interval_indices<T>(
     store: &IntervalRangeStore<T>,
@@ -6302,7 +6218,6 @@ mod tests {
                 "# e\u{301} **bold**\n\n- item\n  continuation\n\n```\ncode\n\n```",
             ),
 
-            (Format::Rtf, "{\\rtf1 A{\\b }B\\par C}"),
         ] {
             let document = super::super::Document::from_bytes(
                 source.as_bytes().to_vec(),
@@ -6905,12 +6820,11 @@ mod tests {
     /// deliberate decision about every predicate, not an inherited default.
     #[test]
     fn format_predicates_have_exact_membership() {
-        const ALL: [Format; 5] = [
+        const ALL: [Format; 4] = [
             Format::PlainText,
             Format::Markdown,
             Format::MarkdownSource,
 
-            Format::Rtf,
             Format::Code,
         ];
 
@@ -6928,19 +6842,13 @@ mod tests {
         );
         assert_eq!(
             members(Format::is_wysiwyg),
-            [Format::Markdown, Format::Rtf]
-        );
-        assert_eq!(members(Format::is_rich_text), [Format::Rtf]);
-        assert_eq!(
-            members(Format::has_rich_source),
-            [Format::Rtf]
+            [Format::Markdown]
         );
         assert_eq!(
             members(Format::has_structural_lists),
             [
                 Format::Markdown,
                 Format::MarkdownSource,
-                Format::Rtf
             ]
         );
 

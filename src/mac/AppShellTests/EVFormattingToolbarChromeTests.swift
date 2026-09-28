@@ -40,7 +40,7 @@ final class EVFormattingToolbarChromeTests: XCTestCase {
       chrome.synchronize(surface: first)
       XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
     }
-    for format in [EVSourceFormat.markdownSource, .rtf] {
+    for format in [EVSourceFormat.markdownSource] {
       first.formattingToolbarFormat = format
       chrome.synchronize(surface: first)
       XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 2)
@@ -49,12 +49,12 @@ final class EVFormattingToolbarChromeTests: XCTestCase {
     chrome.synchronize(surface: second)
     XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1, "Markdown remembers hidden")
     XCTAssertNil(first.formattingToolbarView.window)
-    second.formattingToolbarFormat = .rtf
+    second.formattingToolbarFormat = .markdownSource
     chrome.synchronize(surface: second)
     XCTAssertTrue(second.formattingToolbarView.window === window)
     XCTAssertNil(first.formattingToolbarView.window)
     // A preference changed in another window updates this one too.
-    try config.setShowFormattingToolbar(false, for: .rtf)
+    try config.setShowFormattingToolbar(false, for: .markdownSource)
     XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
     XCTAssertEqual(chrome.toggleButton.state, .off)
   }
@@ -65,11 +65,11 @@ final class EVFormattingToolbarChromeTests: XCTestCase {
     let first = EVConfigurationStore(directory: directory)
     let second = EVConfigurationStore(directory: directory)
     try first.setShowFormattingToolbar(false, for: .markdown)
-    try second.setShowFormattingToolbar(false, for: .rtf)
+    try second.setShowFormattingToolbar(false, for: .markdownSource)
     let reopened = EVConfigurationStore(directory: directory)
     XCTAssertFalse(reopened.showFormattingToolbar(for: .markdown))
-    XCTAssertFalse(reopened.showFormattingToolbar(for: .rtf))
-    XCTAssertTrue(reopened.showFormattingToolbar(for: .markdownSource))
+    XCTAssertFalse(reopened.showFormattingToolbar(for: .markdownSource))
+    XCTAssertTrue(reopened.showFormattingToolbar(for: .code))
     let file = directory.appendingPathComponent("config.json")
     try Data(#"{"version":1,"formattingToolbar":{"markdown":1}}"#.utf8).write(to: file)
     XCTAssertNotNil(EVConfigurationStore(directory: directory).lastError)

@@ -1728,7 +1728,7 @@ impl CommandInterpreter {
     }
 
     /// Capture a format-change caret with the text on its chosen side. A
-    /// conversion exposes or hides wrappers; it does not type those wrappers
+    /// Markdown view switch exposes or hides wrappers; it does not type those wrappers
     /// at the caret. An upstream insertion caret therefore stays before new
     /// closing syntax. Ordinary editing keeps its AfterInsertion association.
     pub(crate) fn capture_format_position_anchors(
@@ -11031,12 +11031,6 @@ impl CommandInterpreter {
         document: &Document,
         program: &EditSessionProgram,
     ) -> Result<(), DocumentError> {
-        if document.format().is_rich_text() {
-            // Rich adapters serialize otherwise unrepresentable scalars as
-            // exact character references or Unicode controls. The source
-            // transaction validates that escaped representation atomically.
-            return Ok(());
-        }
         for step in &program.steps {
             if let EditSessionStep::LiteralText(value) | EditSessionStep::CopiedCharacter(value) = step {
                 document.encoding().encode_fragment(value)?;

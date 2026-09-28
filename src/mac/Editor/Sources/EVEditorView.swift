@@ -1469,6 +1469,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         // keyDown. Let core accept the preview before AppKit handles them.
         if isActiveTextSurface, event.modifierFlags.contains(.command),
            surface?.acceptCompletionForNativeInput() == false { return true }
+        // Inline formatting remains available from the keyboard without a
+        // Format menu, and only the focused document editor owns these keys.
+        if isActiveTextSurface, !compositionActive, !corePromptInputPending,
+           let surface, surface.commandLine?.prompt == nil,
+           event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command] {
+            let command: EVMenuCommand? = switch event.charactersIgnoringModifiers?.lowercased() {
+            case "b": .bold
+            case "i": .italic
+            default: nil
+            }
+            if let command, surface.presentation(for: command).isEnabled {
+                surface.perform(menuCommand: command, sender: event)
+                return true
+            }
+        }
         return super.performKeyEquivalent(with: event)
     }
 

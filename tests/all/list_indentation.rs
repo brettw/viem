@@ -289,113 +289,12 @@ fn tabbed_markers_use_columns_and_preserve_the_original_marker_bytes() {
     }
 }
 
-fn modern_rtf(levels: usize, ordered: bool, body: &str) -> String {
-    let table = (0..levels)
-        .map(|level| {
-            let marker = if ordered {
-                format!("{{\\leveltext\\'02\\'{level:02x}.;}}{{\\levelnumbers\\'01;}}")
-            } else {
-                "{\\leveltext\\'01\\u8226?;}{\\levelnumbers;}".to_owned()
-            };
-            format!(
-                "{{\\listlevel\\levelnfc{}\\levelstartat1{marker}\\li{}\\fi-200}}",
-                if ordered { 0 } else { 23 },
-                640 * (level + 1)
-            )
-        })
-        .collect::<String>();
-    format!("{{\\rtf1{{\\*\\listtable{{\\list{table}\\listid42}}}}{{\\*\\listoverridetable{{\\listoverride\\listid42\\listoverridecount0\\ls1}}}}\\pard\\ls1\\ilvl0 {body}{{\\*\\unknown keep}}}}")
-}
-#[test]
-fn modern_rtf_lists_indent_locally_and_restore_table_selectors() {
-    for ordered in [false, true] {
-        for body in ["A\\par {\\b B}\\par C", "A\\par B\\line hard\\par C"] {
-            let source = modern_rtf(4, ordered, body);
-            let mut document = open(&source, Format::Rtf);
-            let at = document.text().find('B').unwrap();
-            let text = document.text().to_owned();
-            assert!(
-                document.list_indent_capabilities(at..at).0,
-                "{ordered}: {:?}",
-                document.prepare_list_indent(at..at, false)
-            );
-            let committed = apply(&mut document, at..at, false).unwrap();
-            assert!(committed
-                .summary()
-                .source_patches()
-                .iter()
-                .all(|patch| patch.range().is_empty()));
-            assert_eq!(document.text(), text);
-            assert_eq!(
-                levels(&document),
-                [(ordered, 0), (ordered, 1), (ordered, 0)]
-            );
-            let nested = document.source_bytes();
-            assert!(document.list_indent_capabilities(at..at).1);
-            apply(&mut document, at..at, true).unwrap();
-            assert_eq!(
-                levels(&document),
-                [(ordered, 0), (ordered, 0), (ordered, 0)]
-            );
-            assert_eq!(
-                open(
-                    std::str::from_utf8(&document.source_bytes()).unwrap(),
-                    Format::Rtf
-                )
-                .text(),
-                text
-            );
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), nested);
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-            assert!(document.redo());
-            assert_eq!(document.source_bytes(), nested);
-        }
-    }
-}
-#[test]
-fn rtf_without_a_compatible_nested_definition_is_disabled_atomically() {
-    for source in [
-        modern_rtf(1, false, "A\\par B"),
-        r"{\rtf1{\*\pn\pnlvlblt}A\par B}".to_owned(),
-    ] {
-        let mut document = open(&source, Format::Rtf);
-        let at = document.text().find('B').unwrap();
-        let revision = document.revision();
-        assert_eq!(document.list_indent_capabilities(at..at), (false, false));
-        assert!(apply(&mut document, at..at, false).is_err());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert_eq!(document.revision(), revision);
-    }
-}
-#[test]
-fn empty_final_modern_rtf_item_can_indent_and_unindent() {
-    let source = modern_rtf(4, false, "A\\par\\ilvl0 ");
-    let mut document = open(&source, Format::Rtf);
-    assert_eq!(document.text(), "A\n");
-    let at = document.text().len();
-    assert!(
-        document.list_indent_capabilities(at..at).0,
-        "{:?}",
-        document.prepare_list_indent(at..at, false)
-    );
-    apply(&mut document, at..at, false).unwrap();
-    assert_eq!(levels(&document), [(false, 0), (false, 1)]);
-    apply(&mut document, at..at, true).unwrap();
-    assert_eq!(levels(&document), [(false, 0), (false, 0)]);
-    assert!(document.undo());
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
 #[test]
 fn toolbar_capabilities_do_not_prepare_edits_or_scan_large_lists() {
     for count in [32, 12_000] {
         let markdown = format!("- Parent\n{}  - Target\n- Following", "  - Child\n".repeat(count));
-        let rtf = modern_rtf(4, false, &format!("Parent\\par\\ilvl1 {}Target\\par\\ilvl0 Following", "Child\\par ".repeat(count)));
         for (source, format) in [
-            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource), (&rtf, Format::Rtf),
+            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource),
         ] {
             let document = open(source, format);
             let at = document.text().find("Target").unwrap();

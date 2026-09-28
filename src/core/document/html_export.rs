@@ -416,7 +416,7 @@ fn render_projection(
         );
         output.push_str("</code></pre>\n");
     } else {
-        let numbers = super::conversion::containers::numbering(document.blocks());
+        let numbers = super::markdown_serialization::containers::numbering(document.blocks());
         let mut previous: &[ContainerLayoutStyle] = &[];
         for (block, paragraph) in document.blocks().iter().zip(&styles.paragraphs) {
             let path = paragraph.containers.as_ref();

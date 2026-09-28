@@ -445,9 +445,7 @@ fn unsupported_formats_return_a_non_destructive_error() {
         Format::MarkdownSource,
         Format::Markdown,
     ] {
-        let mut d = Document::new("aaa\nbbb\n");
-        d.set_format(format, viem_core::document::FormatOperation::Reinterpret)
-            .unwrap();
+        let mut d = Document::from_bytes(b"aaa\nbbb\n".to_vec(), viem_core::Encoding::Utf8, format).unwrap();
         let revision = d.revision();
         let source = d.source_bytes();
         let mut c = CommandInterpreter::new();
@@ -851,38 +849,6 @@ fn generated_text_never_passes_through_typing_assistance() {
         core.document().text(),
         "say \"aaa bbb\"\n\"ccc\" ddd\n'eee'\n"
     );
-}
-
-#[test]
-fn a_failed_reflow_keeps_the_prior_dot_recipe_and_registers() {
-    let mut d = Document::new("aaa\nbbb\n\nccc\nddd\n\neee\nfff\n");
-    let mut c = CommandInterpreter::new();
-    keys(&mut c, &mut d, "yy");
-    let yanked = c.register('"').cloned();
-    keys(&mut c, &mut d, "gqip");
-    assert_eq!(d.text(), "aaa bbb\n\nccc\nddd\n\neee\nfff\n");
-    d.set_format(
-        Format::MarkdownSource,
-        viem_core::document::FormatOperation::Reinterpret,
-    )
-    .unwrap();
-    let revision = d.revision();
-    let status = keys(&mut c, &mut d, "gqip");
-    assert!(matches!(status, CommandStatus::Error(_)), "{status:?}");
-    assert_eq!(d.revision(), revision);
-    assert_eq!(c.register('"').cloned(), yanked);
-    d.set_format(
-        Format::PlainText,
-        viem_core::document::FormatOperation::Reinterpret,
-    )
-    .unwrap();
-    keys(&mut c, &mut d, "3j.");
-    assert_eq!(
-        d.text(),
-        "aaa bbb\n\nccc ddd\n\neee\nfff\n",
-        "the earlier recipe replayed"
-    );
-    assert_eq!(c.register('"').cloned(), yanked);
 }
 
 #[test]

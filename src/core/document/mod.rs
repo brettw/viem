@@ -4,7 +4,8 @@
 //! UTF-8 is an immutable derived projection and is always regenerated and
 //! verified before a source transaction is committed.
 
-mod conversion;
+mod markdown_serialization;
+mod encoding_warning;
 mod html_export;
 pub use html_export::{HtmlExport, HtmlExportError};
 mod code_presentation;
@@ -15,7 +16,7 @@ pub mod syntax;
 pub mod theme;
 mod checkpoint;
 pub(crate) use checkpoint::DocumentCommandCheckpoint;
-pub use conversion::{ConversionLoss, ConversionWarning, FormatOperation};
+pub use encoding_warning::ConversionWarning;
 mod encoding;
 mod external_change;
 pub use external_change::{ExternalFileReview, ExternalFileReviewState, InvalidExternalFileObservation, MAX_EXTERNAL_FILE_OBSERVATION_BYTES};
@@ -42,11 +43,6 @@ mod markdown_quotes;
 mod markdown_source_edit;
 mod paragraph_flow;
 mod rich_text;
-mod rtf;
-mod rtf_direct;
-mod rtf_lists;
-mod rtf_structure;
-mod rtf_styles;
 pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
 mod links;
@@ -67,7 +63,6 @@ pub use source_lines::PhysicalSourceLine;
 mod style;
 #[cfg(test)]
 mod percentage_styles_tests;
-pub(crate) use style::is_character_property;
 mod reflow;
 mod indentation;
 pub use indentation::{IndentationOptions, IndentationOverrides, IndentationSetting};
@@ -145,7 +140,7 @@ pub use transaction::{
     ClipboardFragment, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
-    SourcePatch, StyleBlockTarget, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
+    SourcePatch, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
     StylePropertyTarget, StyleTransactionError,
 };
 pub use transfer::HardLineTransfer;
@@ -944,14 +939,7 @@ impl Document {
         // persistent source tree. Besides avoiding a whole-source copy at
         // open, the same decoded value is consumed by detection and state
         // construction, so opening performs exactly one decoder pass.
-        // RTF owns decoding through its grammar, code-page and Unicode state.
-        // Latin-1 here is a reversible byte transport to that grammar, not the
-        // selected body text encoding.
-        let decoded = if format == Format::Rtf {
-            Encoding::Latin1.decode(&bytes)?
-        } else {
-            encoding.decode(&bytes)?
-        };
+        let decoded = encoding.decode(&bytes)?;
         Self::from_decoded_source(bytes, decoded, format, line_endings)
     }
 
@@ -963,11 +951,7 @@ impl Document {
         // Detection and decoding share their strict UTF-8 validation pass, so
         // automatic opening has the same bounded opening work as a forced
         // encoding while still retaining the original source bytes.
-        let decoded = if format == Format::Rtf {
-            Encoding::Latin1.decode(&bytes)?
-        } else {
-            Encoding::detect_and_decode(&bytes)?
-        };
+        let decoded = Encoding::detect_and_decode(&bytes)?;
         Self::from_decoded_source(bytes, decoded, format, line_endings)
     }
 
@@ -1649,16 +1633,7 @@ impl Document {
                 return Ok(None);
             }
             let BlockKind::ListItem { item_start, .. } = block.kind else {
-                if matches!(self.format(), Format::Markdown)
-                    || (self.format() == Format::Rtf
-                        && at == block.range.end
-                        && self
-                            .projection()
-                            .style_sheet()
-                            .block_style(&block.style)
-                            .and_then(|style| style.next_paragraph_style.as_ref())
-                            .is_some_and(|next| next != &block.style))
-                {
+                if self.format() == Format::Markdown {
                     return Ok(Some(TextEdit::new(at..at, "\n")));
                 }
                 return Ok(None);
@@ -2107,17 +2082,10 @@ impl Document {
         })
     }
 
-    /// Reinterpret source or convert its semantics as one explicit undo unit.
-    pub fn set_format(
-        &mut self,
-        target: Format,
-        operation: FormatOperation,
-    ) -> Result<(), DocumentError> {
-        self.execute_compat_request(ModelRequest::SetFormat {
-            document: self.id,
-            revision: self.revision(),
-            target,
-            operation,
+    /// Switch between Markdown source and formatted presentation as one undo unit.
+    pub fn set_markdown_source(&mut self, source: bool) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetMarkdownSource {
+            document: self.id, revision: self.revision(), source,
         })
     }
 
@@ -2369,7 +2337,6 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<bool, DocumentError> {
         if !matches!(self.encoding(), Encoding::Utf16Le | Encoding::Utf16Be)
-            || self.format() == Format::Rtf
             || self.source_byte_len() % 2 == 0
         {
             return Ok(false);
@@ -2519,7 +2486,6 @@ mod tests {
             (super::Format::Markdown, "Text"),
             (super::Format::MarkdownSource, "Text"),
 
-            (super::Format::Rtf, r"{\rtf1\fs40 Text}"),
         ] {
             let mut document = super::Document::from_bytes(
                 source.as_bytes().to_vec(), super::Encoding::Utf8, format,

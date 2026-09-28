@@ -18,9 +18,8 @@ internal static class HtmlExportTests
         var file = window.Menu.Items.Single(item => item.Title == "File");
         Check(file.Items.OfType<MenuFlyoutItem>().Any(item => item.Text == "Export…"), "File menu includes HTML Export");
         foreach (string title in new[] { "Convert to", "Reinterpret as" })
-            Check(file.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == title).Items
-                .OfType<MenuFlyoutItem>().All(item => item.Text is not ("HTML" or "HTML Source")),
-                title + " omits retired HTML modes");
+            Check(!file.Items.OfType<MenuFlyoutSubItem>().Any(item => item.Text == title),
+                title + " is absent from the File menu");
 
         string directory = Path.Combine(profile, "html-export");
         Directory.CreateDirectory(directory);

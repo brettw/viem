@@ -1,7 +1,7 @@
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use viem_core::command::{CommandInterpreter, InputEvent, Key, LineMode};
+use viem_core::command::{InputEvent, Key, LineMode};
 use viem_core::document::{
-    Document, Encoding, FontSlant, Format, SemanticInlineStyle, StyleApplication, StyleId,
+    Document, Encoding, Format, SemanticInlineStyle, StyleApplication, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue,
 };
 use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
@@ -69,11 +69,7 @@ fn named_at(document: &Document, range: Range<usize>, name: &str) {
 fn named_choice_is_pending_in_normal_insert_and_replace_until_text_commits() {
     for (format, source, name) in [
         (Format::Markdown, "word", "Code"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}word}",
-            "RtfC2",
-        ),
+
     ] {
         for (before, entry) in [
             (None, Some('i')),
@@ -105,12 +101,7 @@ fn named_choice_is_pending_in_normal_insert_and_replace_until_text_commits() {
                 Some(name.into())
             );
             assert!(!core.selected_named_styles(view).unwrap().character_mixed);
-            if name == "RtfC2" {
-                assert_eq!(
-                    core.selected_typography(view).unwrap().0.slant,
-                    FontSlant::Italic
-                );
-            }
+
             if let Some(entry) = entry {
                 key(&mut core, view, Key::Char(entry));
             }
@@ -153,7 +144,7 @@ fn percentage_named_style_sizes_pending_typing_from_the_current_paragraph() {
         }
         key(&mut core, view, Key::Char('i'));
         assign(&mut core, view, "Code");
-        assert!((core.selected_typography(view).unwrap().0.size - points).abs() < 0.0001);
+        assert!((core.selected_character_style(view).unwrap().size - points).abs() < 0.0001);
         text(&mut core, view, "new");
         named_at(core.document(), 0..3, "Code");
         assert!((DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap().size - points).abs() < 0.0001);
@@ -163,39 +154,6 @@ fn percentage_named_style_sizes_pending_typing_from_the_current_paragraph() {
         key(&mut core, view, Key::Ctrl('r'));
         assert!((DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap().size - points).abs() < 0.0001);
     }
-}
-
-#[test]
-fn named_identity_and_sparse_direct_overrides_remain_separate() {
-    let source = r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}word}";
-    let (mut core, view) = fixture(Format::Rtf, source);
-    key(&mut core, view, Key::Char('i'));
-    assign(&mut core, view, "RtfC2");
-    core.handle(
-        view,
-        CoreEvent::SetDirectCharacterProperties {
-            expected: core.list_selection_identity(view).unwrap(),
-            values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(22.))],
-        },
-    )
-    .unwrap();
-    assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
-    text(&mut core, view, "x");
-    named_at(core.document(), 0..1, "RtfC2");
-    assign(&mut core, view, "");
-    assert_eq!(
-        core.selected_named_styles(view).unwrap().character,
-        None
-    );
-    assert_eq!(
-        core.selected_typography(view).unwrap().0.slant,
-        FontSlant::Upright
-    );
-    assert_eq!(core.selected_typography(view).unwrap().0.size, 12.);
-    text(&mut core, view, "y");
-    let style = DocumentLayoutStyles::character_at(core.document().projection(), 1, false).unwrap();
-    assert_eq!(style.slant, FontSlant::Upright);
-    assert_eq!(style.size, 12.);
 }
 
 #[test]
@@ -309,37 +267,6 @@ fn empty_documents_accept_pending_identity_and_invalid_choices_leave_it_unchange
 }
 
 #[test]
-fn clearing_direct_typing_properties_keeps_the_pending_named_identity() {
-    let mut document = Document::from_bytes(
-        br"{\rtf1{\stylesheet{\*\cs2\i Accent;}}word}".to_vec(),
-        Encoding::Utf8,
-        Format::Rtf,
-    )
-    .unwrap();
-    let mut commands = CommandInterpreter::new();
-    commands
-        .handle(&mut document, InputEvent::key('i'))
-        .unwrap();
-    commands
-        .set_typing_named_style(&document, "RtfC2".into())
-        .unwrap();
-    commands
-        .set_typing_properties(
-            &document,
-            vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(22.))],
-        )
-        .unwrap();
-    commands.clear_typing_properties();
-    commands
-        .handle(&mut document, InputEvent::text("x"))
-        .unwrap();
-    named_at(&document, 0..1, "RtfC2");
-    let style = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
-    assert_eq!(style.slant, FontSlant::Italic);
-    assert_ne!(style.size, 22.);
-}
-
-#[test]
 fn vertical_navigation_resets_pending_name_in_both_line_policies() {
     for policy in [LineMode::Visual, LineMode::PhysicalSource] {
         let (mut core, view) = fixture(Format::Markdown, "word\n\ntail");
@@ -364,7 +291,7 @@ fn vertical_navigation_resets_pending_name_in_both_line_policies() {
 #[test]
 fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_replace() {
     for (format, source, named) in [
-        (Format::Rtf, r"{\rtf1{\stylesheet{\*\cs2\i Accent;}}{\fs60\b\super word}{\*\opaque keep}}", "RtfC2"),
+
         (Format::Markdown, "***word***", "Code"),
     ] {
         for chosen in [named, ""] {
@@ -372,7 +299,7 @@ fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_repl
                 let (mut core, view) = fixture(format, source);
                 let expected = core.document().typing_named_style_at(0, viem_core::document::BoundaryAffinity::Downstream, &chosen.into()).unwrap();
                 assign(&mut core, view, chosen);
-                assert_eq!(core.selected_typography(view).unwrap().0, expected);
+                assert_eq!(core.selected_character_style(view).unwrap(), expected);
                 assert_eq!(core.document().source_bytes(), source.as_bytes());
                 key(&mut core, view, Key::Char(entry));
                 let start = core.command_state(view).unwrap().cursor();
@@ -385,80 +312,6 @@ fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_repl
                 key(&mut core, view, Key::Char('u'));
                 assert_eq!(core.document().source_bytes(), source.as_bytes());
             }
-        }
-    }
-}
-
-#[test]
-fn reselecting_pending_style_resets_new_overrides_and_preserves_named_identity() {
-    let (mut core, view) = fixture(Format::Rtf, r"{\rtf1{\stylesheet{\*\cs1\fs28 Code;}}\fs28{\b word}}");
-    key(&mut core, view, Key::Char('i'));
-    assign(&mut core, view, "RtfC1");
-    core.handle(view, CoreEvent::SetDirectCharacterProperties {
-        expected: core.list_selection_identity(view).unwrap(),
-        values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(22.))],
-    }).unwrap();
-    assert_eq!(core.selected_typography(view).unwrap().0.size, 22.);
-    assign(&mut core, view, "RtfC1");
-    assert_eq!(core.selected_typography(view).unwrap().0.size, 14.);
-    assert!(!core.selected_typography(view).unwrap().0.bold);
-    text(&mut core, view, "X");
-    named_at(core.document(), 0..1, "RtfC1");
-    let resolved = DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false).unwrap();
-    assert_eq!(resolved.size, 14.);
-    assert!(!resolved.bold);
-}
-
-#[test]
-fn select_replacement_keeps_later_direct_edits_after_a_clean_named_choice() {
-    use viem_core::command::NavigationKey;
-    use viem_core::document::{ParagraphAlignment, ScriptPosition};
-    for chosen in ["RtfC1", ""] {
-        for operation in 0..5 {
-            let source = r"{\rtf1{\stylesheet{\*\cs1\fs28 Code;}}\fs28{\fs60\b\super word}}";
-            let (mut core, view) = fixture(Format::Rtf, source);
-            key(&mut core, view, Key::ModifiedNavigation { key: NavigationKey::Right, modifiers: 1 });
-            assign(&mut core, view, chosen);
-            let expected = core.list_selection_identity(view).unwrap();
-            let event = match operation {
-                0 => CoreEvent::EditDirectProperty { expected, property: StyleProperty::CharacterSize,
-                    value: Some(StylePropertyValue::Float(21.)) },
-                1 => CoreEvent::SetDirectCharacterProperties { expected, values: vec![(
-                    StyleProperty::CharacterScriptPosition,
-                    StylePropertyValue::ScriptPosition(ScriptPosition::Subscript),
-                )] },
-                2 => CoreEvent::EditDirectProperties { expected, values: vec![
-                    (StyleProperty::CharacterSize, Some(StylePropertyValue::Float(22.))),
-                    (StyleProperty::ParagraphAlignment, Some(StylePropertyValue::ParagraphAlignment(ParagraphAlignment::Center))),
-                ] },
-                3 => CoreEvent::SetSelectionSemanticStyle { expected, style: SemanticInlineStyle::Strong, enabled: true },
-                _ => {
-                    core.handle(view, CoreEvent::EditDirectProperty { expected,
-                        property: StyleProperty::CharacterSize, value: Some(StylePropertyValue::Float(23.)),
-                    }).unwrap();
-                    CoreEvent::EditDirectProperties { expected: core.list_selection_identity(view).unwrap(),
-                        values: vec![(StyleProperty::CharacterSize, None)] }
-                }
-            };
-            core.handle(view, event).unwrap();
-            let expected_style = DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false).unwrap();
-            let after_formatting = core.document().source_bytes();
-            let revision = core.document().revision();
-            assert!(core.handle(view, CoreEvent::SetDirectCharacterProperties {
-                expected: core.list_selection_identity(view).unwrap(),
-                values: vec![(StyleProperty::CharacterSize, StylePropertyValue::Float(f32::NAN))],
-            }).is_err());
-            assert_eq!(core.document().revision(), revision);
-            assert_eq!(core.document().source_bytes(), after_formatting);
-            text(&mut core, view, "XY");
-            assert_eq!(core.document().text(), "XYord");
-            for at in 0..2 {
-                assert_eq!(DocumentLayoutStyles::semantic_character_at(core.document().projection(), at, false).unwrap(),
-                    expected_style, "choice={chosen}, operation={operation}");
-            }
-            key(&mut core, view, Key::Escape);
-            key(&mut core, view, Key::Char('u'));
-            assert_eq!(core.document().source_bytes(), after_formatting);
         }
     }
 }

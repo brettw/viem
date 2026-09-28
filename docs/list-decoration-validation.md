@@ -1,5 +1,10 @@
 # WYSIWYG list decoration validation
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Historical validation: standalone HTML modes and their dedicated tests were
 subsequently removed. HTML-mode results below describe the earlier implementation.
 

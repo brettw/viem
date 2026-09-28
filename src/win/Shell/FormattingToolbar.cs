@@ -10,7 +10,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
-internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, CharacterCode, Superscript, Subscript, Bullets, Numbers, CodeBlock, Indent, Unindent }
+internal enum ToolbarAction { Bold, Italic, Strikethrough, CharacterCode, Bullets, Numbers, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
 internal sealed class FormattingToolbar : UserControl
@@ -21,19 +21,16 @@ internal sealed class FormattingToolbar : UserControl
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
     internal readonly DropDownButton Character = Selector("Character style");
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
-    internal readonly ToolbarColorWell TextColor;
-    internal readonly ToolbarColorWell BackgroundColor;
-    private readonly StackPanel colors = Group(8);
     private StyleSheet? sheet;
     private SelectedStyles? selected;
     private StyleChoice[] choices = [];
     private bool refreshing;
     private int tracking;
     internal event Action? PopupsClosed;
-    internal bool HasOpenPopup => TextColor.PopupVisible || BackgroundColor.PopupVisible || tracking > 0;
+    internal bool HasOpenPopup => tracking > 0;
     private CoreView? View => pane?.View;
 
-    internal FormattingToolbar(Preferences preferences)
+    internal FormattingToolbar()
     {
         Height = 42; Visibility = Visibility.Collapsed;
         Scroll.Content = row;
@@ -51,15 +48,8 @@ internal sealed class FormattingToolbar : UserControl
         var character = Group(); row.Children.Add(character);
         Add(character, ToolbarAction.Bold, "Bold", "\uE8DD");
         Add(character, ToolbarAction.Italic, "Italic", "\uE8DB");
-        Add(character, ToolbarAction.Underline, "Underline", "\uE8DC");
         Add(character, ToolbarAction.Strikethrough, "Strikethrough", "\uEDE0");
         Add(character, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
-        Add(character, ToolbarAction.Superscript, "Superscript", "x²", literal: true);
-        Add(character, ToolbarAction.Subscript, "Subscript", "x₂", literal: true);
-        TextColor = new("Text Color", "\uE8D3", VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, preferences, Run);
-        BackgroundColor = new("Background Color", ((char)Symbol.Highlight).ToString(), VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND, preferences, Run);
-        TextColor.PopupClosed += () => PopupsClosed?.Invoke(); BackgroundColor.PopupClosed += () => PopupsClosed?.Invoke();
-        colors.Children.Add(TextColor); colors.Children.Add(BackgroundColor); row.Children.Add(colors);
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
@@ -120,11 +110,7 @@ internal sealed class FormattingToolbar : UserControl
 
     internal void Synchronize(EditorPane? active, bool visible)
     {
-        if (pane != active || !visible)
-        {
-            TextColor.Dismiss(); BackgroundColor.Dismiss();
-            if (pane != active) { sheet = null; selected = null; choices = []; }
-        }
+        if (pane != active) { sheet = null; selected = null; choices = []; }
         pane = active;
         Visibility = visible && View != null ? Visibility.Visible : Visibility.Collapsed;
         if (Visibility == Visibility.Visible) Refresh();
@@ -143,15 +129,12 @@ internal sealed class FormattingToolbar : UserControl
             bool available = view.HasFormattingSelection;
             if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
             if (tracking == 0) { RefreshSelector(Paragraph, 1); RefreshSelector(Character, 2); }
-            bool rich = view.Document.State.format is VIEM_FORMAT_RTF;
-            bool direct = rich && available && view.CanFormatCharacter;
             foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
             {
                 var state = view.SemanticStyle(semantic);
                 Set(action, state.state, (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
             }
-            Set(ToolbarAction.Underline, direct ? view.DecorationState(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE) : 0, direct, rich);
-            Set(ToolbarAction.Strikethrough, direct ? view.DecorationState(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH) : 0, direct, rich);
+            Set(ToolbarAction.Strikethrough, available ? view.StrikethroughState() : 0, view.CanFormatStrikethrough);
             RefreshCode(ToolbarAction.CharacterCode, new(2, "Code"), new(2, ""));
             RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
             Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);
@@ -159,14 +142,6 @@ internal sealed class FormattingToolbar : UserControl
             uint indent = available ? view.ListCapabilities() : 0;
             Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
             Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
-            colors.Visibility = rich ? Visibility.Visible : Visibility.Collapsed;
-            if (!rich) { TextColor.Dismiss(); BackgroundColor.Dismiss(); }
-            var typography = rich ? view.Typography().Info : default;
-            uint Script(uint position) => (typography.flags & 8) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : typography.script_position == position ? 1u : 0u;
-            Set(ToolbarAction.Superscript, Script(VIEM_SCRIPT_POSITION_SUPERSCRIPT), direct, rich);
-            Set(ToolbarAction.Subscript, Script(VIEM_SCRIPT_POSITION_SUBSCRIPT), direct, rich);
-            if (rich && available) { TextColor.Refresh(view, typography, direct); BackgroundColor.Refresh(view, typography, direct); }
-            else { TextColor.Dismiss(); BackgroundColor.Dismiss(); TextColor.IsEnabled = BackgroundColor.IsEnabled = false; }
         }
         catch (Exception error) { pane?.Report(error); }
         finally { refreshing = false; }
@@ -235,10 +210,7 @@ internal sealed class FormattingToolbar : UserControl
             {
                 case ToolbarAction.Bold: view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); break;
                 case ToolbarAction.Italic: view.ToggleSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS); break;
-                case ToolbarAction.Underline: Decoration(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE); break;
-                case ToolbarAction.Strikethrough: Decoration(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH); break;
-                case ToolbarAction.Superscript: view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT); break;
-                case ToolbarAction.Subscript: view.ToggleScript(VIEM_SCRIPT_POSITION_SUBSCRIPT); break;
+                case ToolbarAction.Strikethrough: view.ToggleStrikethrough(); break;
                 case ToolbarAction.CharacterCode: Code(new(2, "Code"), new(2, "")); break;
                 case ToolbarAction.CodeBlock: Code(new(1, "Code Block"), new(1, "Paragraph")); break;
                 case ToolbarAction.Bullets: List(VIEM_LIST_STYLE_BULLET); break;
@@ -248,7 +220,6 @@ internal sealed class FormattingToolbar : UserControl
             }
         });
         RestoreEditorFocus();
-        void Decoration(uint property) => view.DirectStyle(property, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, view.DecorationState(property) == 1 ? 0u : 1u));
         void List(uint kind) => view.SetList(view.SelectedNamedStyles().ListState(kind) == 1 ? VIEM_LIST_STYLE_NONE : kind);
         void Code(StyleKey code, StyleKey fallback) { if (sheet != null) view.ChooseStyle(choices.Any(c => c.Key == code && c.Selected) ? fallback : code, sheet.Identity); }
     }
@@ -256,8 +227,7 @@ internal sealed class FormattingToolbar : UserControl
     internal bool DismissPopups()
     {
         ((MenuFlyout)Paragraph.Flyout).Hide(); ((MenuFlyout)Character.Flyout).Hide();
-        TextColor.Dismiss(); BackgroundColor.Dismiss();
-        return TextColor.PopupVisible || BackgroundColor.PopupVisible || tracking > 0;
+        return tracking > 0;
     }
 
     internal void RestoreEditorFocus()

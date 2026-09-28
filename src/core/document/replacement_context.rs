@@ -17,24 +17,6 @@ pub(crate) struct ReplacementTypingContext {
 pub(crate) struct ReplacementParagraphStyle {
     pub style: super::StyleId,
     pub quote_depth: usize,
-    pub direct: super::BlockProperties,
-    pub defaults: CharacterProperties,
-}
-
-impl ReplacementParagraphStyle {
-    pub(crate) fn matches(&self, document: &Document, at: usize) -> bool {
-        document
-            .projection()
-            .blocks_for_region(&(at..at))
-            .iter()
-            .find(|block| block.range.contains(&at) || block.range.start == at)
-            .is_some_and(|block| {
-                block.style == self.style
-                    && block.direct_paragraph == self.direct
-                    && block.direct_default_character == self.defaults
-                    && block.quote_depth == self.quote_depth
-            })
-    }
 }
 
 impl Document {
@@ -56,8 +38,6 @@ impl Document {
         let paragraph = ReplacementParagraphStyle {
             style: owner.style.clone(),
             quote_depth: owner.quote_depth,
-            direct: owner.direct_paragraph.clone(),
-            defaults: owner.direct_default_character.clone(),
         };
         // Paragraph separators have no character style of their own. Skip
         // only structural separators, retaining authored hard breaks/spaces.

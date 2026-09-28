@@ -48,7 +48,7 @@ impl Document {
         let split = if self.format() == Format::Markdown {
             scratch.prepare_text_edits_with_patches(vec![TextEdit::new(end..end, "\n")], None)?
         } else {
-            scratch.prepare_rich_list_enter(end)?
+            scratch.prepare_structural_list_enter(end)?
         };
         record(&mut scratch, split, &mut sources, &mut formatted)?;
         let end = scratch.projection().text_tree().byte_len();

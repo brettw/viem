@@ -8,7 +8,7 @@ fn clipboard_import_is_passive_styled_and_uses_dedicated_format_tags() {
             VIEM_CLIPBOARD_FORMAT_HTML,
             b"<style>b{color:red}</style><script>bad()</script><p><b>A&amp;B</b></p>".as_slice(),
         ),
-        (VIEM_CLIPBOARD_FORMAT_RTF, br"{\rtf1{\b A&B}}".as_slice()),
+
     ] {
         let mut required = 0;
         unsafe {

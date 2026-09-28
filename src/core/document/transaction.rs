@@ -9,8 +9,6 @@
 mod clear_content;
 #[path = "clipboard_fragment.rs"]
 mod clipboard_fragment;
-#[path = "direct_style.rs"]
-mod direct_style;
 #[path = "fragments.rs"]
 mod fragments;
 pub use clipboard_fragment::ClipboardFragment;
@@ -52,8 +50,8 @@ mod paragraph_keys;
 mod replacement;
 #[path = "structural_style.rs"]
 mod structural_style;
-#[path = "style_contributors.rs"]
-mod style_contributors;
+#[path = "strikethrough.rs"]
+mod strikethrough;
 #[path = "typing.rs"]
 mod typing;
 pub use fragments::{FragmentEdit, ReplacementFragment};
@@ -75,10 +73,10 @@ use super::{
     FormattedTextPayload, FormattedTextTree, HistoryChangeNumber, HistoryError, HistoryLocation,
     HistoryNavigation, HistoryNodeId, HistoryRestoration, HistoryRestorationSnapshot,
     HistorySemanticChangeKind, HistorySourcePatch, HistoryTransactionSummary, MappingOutcome,
-    PipelineCapabilityDecision, PipelineEditIntent, PipelinePolicyRequest, PositionError,
+    PositionError,
     PositionMap, Revision, SemanticInlineStyle, SourcePartId, Splice, StyleApplication,
-    StyleDefinitionEdit, StyleDefinitionOrigin, StyleError, StyleId, StyleInvalidationEffect,
-    StyleProperty, StylePropertyValue, StyleSheet, StyleSheetRevision, StyleSpan, TextEdit,
+    StyleDefinitionEdit, StyleError, StyleId, StyleInvalidationEffect,
+    StyleProperty, StyleSheet, StyleSheetRevision, StyleSpan, TextEdit,
     TextRange, UnsupportedEditReason,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -95,47 +93,18 @@ pub enum HistoryNavigationRequest {
     SelectChange(HistoryChangeNumber),
 }
 
-/// Paragraph/document target for a source-backed block-style operation.
-/// Paragraph ranges are exact snapshot ranges; adapters decide which touched
-/// paragraph-bearing blocks participate.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StyleBlockTarget {
-    DocumentRoot,
-    Paragraphs(TextRange),
-}
-
 /// A persisted-content style intention. These are deliberately representable
 /// even when an adapter cannot translate them, so capability failures are
 /// typed and non-destructive instead of silently creating a sidecar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PersistedStyleIntent {
     AssignBlockStyle {
-        target: StyleBlockTarget,
+        range: TextRange,
         style: StyleId,
     },
     AssignCharacterStyle {
         range: TextRange,
         style: StyleId,
-    },
-    SetDirectCharacterProperties {
-        range: TextRange,
-        properties: CharacterProperties,
-    },
-    ClearDirectCharacterProperties {
-        range: TextRange,
-        properties: BTreeSet<StyleProperty>,
-    },
-    SetDirectBlockProperties {
-        target: StyleBlockTarget,
-        properties: BlockProperties,
-    },
-    ClearDirectBlockProperties {
-        target: StyleBlockTarget,
-        properties: BTreeSet<StyleProperty>,
-    },
-    EditStyleDefinition {
-        origin: StyleDefinitionOrigin,
-        edit: StyleDefinitionEdit,
     },
 }
 
@@ -169,10 +138,6 @@ pub enum StyleTransactionError {
         format: Format,
         reason: UnsupportedEditReason,
     },
-    NeedsPolicy(PipelinePolicyRequest),
-    TranslationUnavailable,
-    DefinitionReadOnly(StyleId),
-    ConfigurationIntentRequired(StyleId),
     InvalidPropertyTarget {
         property: StyleProperty,
         target: StylePropertyTarget,
@@ -208,29 +173,16 @@ impl StyleModelRequest {
 /// rather than silently rebasing it to the current state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelRequest {
+    SetStrikethrough {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        enabled: bool,
+    },
     ApplyFragmentEdits {
         document: DocumentId,
         revision: Revision,
         edits: Vec<FragmentEdit>,
-    },
-    SetDirectCharacterProperties {
-        document: DocumentId,
-        revision: Revision,
-        range: Range<usize>,
-        values: Vec<(StyleProperty, super::StylePropertyValue)>,
-    },
-    EditDirectProperties {
-        document: DocumentId,
-        revision: Revision,
-        range: Range<usize>,
-        values: Vec<(StyleProperty, Option<StylePropertyValue>)>,
-    },
-    EditDirectProperty {
-        document: DocumentId,
-        revision: Revision,
-        range: Range<usize>,
-        property: StyleProperty,
-        value: Option<super::StylePropertyValue>,
     },
     ReplacePhysicalSource {
         document: DocumentId,
@@ -287,11 +239,6 @@ pub enum ModelRequest {
         namespace: super::StyleNamespace,
         style: StyleId,
     },
-    EditNamedStyleDefinition {
-        document: DocumentId,
-        revision: Revision,
-        edit: StyleDefinitionEdit,
-    },
     ContinueList {
         document: DocumentId,
         revision: Revision,
@@ -319,12 +266,11 @@ pub enum ModelRequest {
         target: FileFormat,
     },
 
-    /// Explicitly reinterpret unchanged source or convert formatted semantics.
-    SetFormat {
+    /// Switch between the two views of the same Markdown source.
+    SetMarkdownSource {
         document: DocumentId,
         revision: Revision,
-        target: Format,
-        operation: super::FormatOperation,
+        source: bool,
     },
     /// Explicitly transcode the source, preserving decoded syntax and content.
     SetEncoding {
@@ -360,9 +306,7 @@ pub enum ModelRequest {
 impl ModelRequest {
     pub fn document(&self) -> DocumentId {
         match self {
-            Self::SetDirectCharacterProperties { document, .. } => *document,
-            Self::EditDirectProperty { document, .. }
-            | Self::EditDirectProperties { document, .. } => *document,
+            Self::SetStrikethrough { document, .. } => *document,
             Self::ReplacePhysicalSource { document, .. } => *document,
             Self::ApplyFragmentEdits { document, .. }
             | Self::ApplyTextEdits { document, .. }
@@ -373,12 +317,11 @@ impl ModelRequest {
             | Self::IndentList { document, .. }
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
-            | Self::EditNamedStyleDefinition { document, .. }
             | Self::ContinueList { document, .. }
             | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
-            | Self::SetFormat { document, .. }
+            | Self::SetMarkdownSource { document, .. }
             | Self::SetEncoding { document, .. }
             | Self::ReorderHardLines { document, .. }
             | Self::TransferHardLines { document, .. }
@@ -388,9 +331,7 @@ impl ModelRequest {
 
     pub fn revision(&self) -> Revision {
         match self {
-            Self::SetDirectCharacterProperties { revision, .. } => *revision,
-            Self::EditDirectProperty { revision, .. }
-            | Self::EditDirectProperties { revision, .. } => *revision,
+            Self::SetStrikethrough { revision, .. } => *revision,
             Self::ReplacePhysicalSource { revision, .. } => *revision,
             Self::ApplyFragmentEdits { revision, .. }
             | Self::ApplyTextEdits { revision, .. }
@@ -401,12 +342,11 @@ impl ModelRequest {
             | Self::IndentList { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
-            | Self::EditNamedStyleDefinition { revision, .. }
             | Self::ContinueList { revision, .. }
             | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
-            | Self::SetFormat { revision, .. }
+            | Self::SetMarkdownSource { revision, .. }
             | Self::SetEncoding { revision, .. }
             | Self::ReorderHardLines { revision, .. }
             | Self::TransferHardLines { revision, .. }
@@ -1107,81 +1047,8 @@ impl Document {
             .flatten();
         let prepared = match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
-            ModelRequest::EditDirectProperties { range, values, .. } => {
-                self.prepare_direct_properties(range, values)
-            }
-            ModelRequest::SetDirectCharacterProperties { range, values, .. } => {
-                let range =
-                    TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
-                let mut properties = CharacterProperties::default();
-                for (property, value) in values {
-                    super::style::set_character_property(
-                        &StyleId::from("Direct"),
-                        &mut properties,
-                        property,
-                        &value,
-                    )?;
-                }
-                super::style::validate_direct_character_properties(
-                    &StyleId::from("Direct"),
-                    &properties,
-                )?;
-                self.prepare_persisted_style_intent(
-                    PersistedStyleIntent::SetDirectCharacterProperties { range, properties },
-                )
-            }
-            ModelRequest::EditDirectProperty {
-                range,
-                property,
-                value,
-                ..
-            } => {
-                let range =
-                    TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
-                let character = super::style::is_character_property(property);
-                let intent = if let Some(value) = value {
-                    if character {
-                        let mut properties = CharacterProperties::default();
-                        super::style::set_character_property(
-                            &StyleId::from("Direct"),
-                            &mut properties,
-                            property,
-                            &value,
-                        )?;
-                        super::style::validate_direct_character_properties(
-                            &StyleId::from("Direct"),
-                            &properties,
-                        )?;
-                        PersistedStyleIntent::SetDirectCharacterProperties { range, properties }
-                    } else {
-                        let mut properties = BlockProperties::default();
-                        super::style::set_block_property(
-                            &StyleId::from("Direct"),
-                            &mut properties,
-                            property,
-                            &value,
-                        )?;
-                        super::style::validate_block_property_values(
-                            &StyleId::from("Direct"),
-                            &properties,
-                        )?;
-                        PersistedStyleIntent::SetDirectBlockProperties {
-                            target: StyleBlockTarget::Paragraphs(range),
-                            properties,
-                        }
-                    }
-                } else if character {
-                    PersistedStyleIntent::ClearDirectCharacterProperties {
-                        range,
-                        properties: BTreeSet::from([property]),
-                    }
-                } else {
-                    PersistedStyleIntent::ClearDirectBlockProperties {
-                        target: StyleBlockTarget::Paragraphs(range),
-                        properties: BTreeSet::from([property]),
-                    }
-                };
-                self.prepare_persisted_style_intent(intent)
+            ModelRequest::SetStrikethrough { range, enabled, .. } => {
+                self.prepare_strikethrough(range, enabled)
             }
             ModelRequest::ReplacePhysicalSource {
                 range, replacement, ..
@@ -1204,11 +1071,6 @@ impl Document {
             ModelRequest::SetParagraphStyle { range, style, .. } => {
                 self.prepare_markdown_paragraph_style(range, style)
             }
-            ModelRequest::EditNamedStyleDefinition { edit, .. } => self
-                .prepare_persisted_style_intent(PersistedStyleIntent::EditStyleDefinition {
-                    origin: StyleDefinitionOrigin::SourceBacked,
-                    edit,
-                }),
             ModelRequest::AssignNamedStyle {
                 range,
                 namespace,
@@ -1222,7 +1084,7 @@ impl Document {
                     TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
                 let intent = match namespace {
                     super::StyleNamespace::Block => PersistedStyleIntent::AssignBlockStyle {
-                        target: StyleBlockTarget::Paragraphs(range),
+                        range,
                         style,
                     },
                     super::StyleNamespace::Character => {
@@ -1234,7 +1096,7 @@ impl Document {
                 };
                 self.prepare_persisted_style_intent(intent)
             }
-            ModelRequest::ContinueList { at, .. } => self.prepare_rich_list_enter(at),
+            ModelRequest::ContinueList { at, .. } => self.prepare_structural_list_enter(at),
             ModelRequest::InsertHardBreak { at, affinity, .. } => {
                 self.prepare_intra_paragraph_break(at, affinity)
             }
@@ -1243,9 +1105,7 @@ impl Document {
             } => self.prepare_open_line(at, origin, after),
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
 
-            ModelRequest::SetFormat {
-                target, operation, ..
-            } => self.prepare_format(target, operation),
+            ModelRequest::SetMarkdownSource { source, .. } => self.prepare_markdown_source_change(source),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
             ModelRequest::ReorderHardLines {
                 source_lines,
@@ -1273,9 +1133,9 @@ impl Document {
     }
 
     /// Prepare a typed style operation against one exact formatted snapshot.
-    /// Persisted-content operations are capability checked through every
-    /// transformation stage. Generated configuration operations use their
-    /// distinct authority and never modify source bytes.
+    /// Persisted-content operations validate their Markdown representation.
+    /// Generated configuration operations use their distinct authority and
+    /// never modify source bytes.
     pub fn prepare_style_request(
         &self,
         request: StyleModelRequest,
@@ -1763,21 +1623,9 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if let PersistedStyleIntent::SetDirectCharacterProperties { properties, .. } = &intent {
-            super::style::validate_direct_character_properties(
-                &StyleId::from("Direct"),
-                properties,
-            )?;
-        }
-
         if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal())
         {
             return Err(DocumentError::UnsupportedFormatting.into());
-        }
-        if self.format().is_rich_text() {
-            if let Some(prepared) = self.prepare_materialized_character_intent(&intent)? {
-                return Ok(prepared);
-            }
         }
 
         if self.format().is_markdown() {
@@ -1791,7 +1639,7 @@ impl Document {
                 }
             }
             if let PersistedStyleIntent::AssignBlockStyle {
-                target: StyleBlockTarget::Paragraphs(range),
+                range,
                 style,
             } = &intent
             {
@@ -1802,147 +1650,19 @@ impl Document {
                 );
             }
         }
-        if let PersistedStyleIntent::EditStyleDefinition { origin, edit } = &intent {
-            match origin {
-                StyleDefinitionOrigin::GeneratedConfiguration => {
-                    return Err(ModelTransactionError::Style(
-                        StyleTransactionError::ConfigurationIntentRequired(edit.style_id().clone()),
-                    ));
-                }
-                StyleDefinitionOrigin::SyntheticReadOnly => {
-                    return Err(ModelTransactionError::Style(
-                        StyleTransactionError::DefinitionReadOnly(edit.style_id().clone()),
-                    ));
-                }
-                StyleDefinitionOrigin::SourceBacked => {}
-            }
-        }
-
-        if self.format().is_rich_text() {
-            match &intent {
-                PersistedStyleIntent::SetDirectCharacterProperties { range, properties } => {
-                    self.validate_style_text_range(*range)?;
-                    return self.prepare_rich_character_properties(
-                        range.start().offset()..range.end().offset(),
-                        properties.clone(),
-                    );
-                }
-                PersistedStyleIntent::ClearDirectCharacterProperties { range, properties } => {
-                    self.validate_style_text_range(*range)?;
-                    return self.prepare_rich_clear_character(
-                        range.start().offset()..range.end().offset(),
-                        properties.clone(),
-                    );
-                }
-                PersistedStyleIntent::SetDirectBlockProperties { .. }
-                | PersistedStyleIntent::ClearDirectBlockProperties { .. } => {
-                    return self.prepare_rich_block_properties(intent)
-                }
-                _ => {}
-            }
-        }
-
-        if self.format() == Format::Rtf
-            && matches!(
-                intent,
-                PersistedStyleIntent::EditStyleDefinition { .. }
-                    | PersistedStyleIntent::AssignBlockStyle { .. }
-                    | PersistedStyleIntent::AssignCharacterStyle { .. }
-            )
-        {
-            return self.prepare_rtf_named_style(intent);
-        }
-        let whole_document = self.whole_text_range()?;
-        let (range, pipeline_intent) = match &intent {
-            PersistedStyleIntent::AssignBlockStyle { target, style } => (
-                style_block_target_range(*target, whole_document),
-                PipelineEditIntent::AssignBlockStyle {
-                    style: style.clone(),
-                },
-            ),
-            PersistedStyleIntent::AssignCharacterStyle { range, style } => (
-                *range,
-                PipelineEditIntent::AssignCharacterStyle {
-                    style: style.clone(),
-                },
-            ),
-            PersistedStyleIntent::SetDirectCharacterProperties { range, properties } => {
-                let Some(property) = properties.declared_properties().into_iter().next() else {
-                    self.validate_style_text_range(*range)?;
-                    return Ok(self.no_op_prepared());
-                };
-                (*range, PipelineEditIntent::SetDirectProperty { property })
-            }
-            PersistedStyleIntent::ClearDirectCharacterProperties { range, properties } => {
-                let Some(property) = properties.iter().next().copied() else {
-                    self.validate_style_text_range(*range)?;
-                    return Ok(self.no_op_prepared());
-                };
-                (*range, PipelineEditIntent::ClearDirectProperty { property })
-            }
-            PersistedStyleIntent::SetDirectBlockProperties { target, properties } => {
-                let Some(property) = properties.declared_properties().into_iter().next() else {
-                    self.validate_style_text_range(style_block_target_range(
-                        *target,
-                        whole_document,
-                    ))?;
-                    return Ok(self.no_op_prepared());
-                };
-                (
-                    style_block_target_range(*target, whole_document),
-                    PipelineEditIntent::SetDirectProperty { property },
-                )
-            }
-            PersistedStyleIntent::ClearDirectBlockProperties { target, properties } => {
-                let Some(property) = properties.iter().next().copied() else {
-                    self.validate_style_text_range(style_block_target_range(
-                        *target,
-                        whole_document,
-                    ))?;
-                    return Ok(self.no_op_prepared());
-                };
-                (
-                    style_block_target_range(*target, whole_document),
-                    PipelineEditIntent::ClearDirectProperty { property },
-                )
-            }
-            PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
-                let pipeline_intent = if edit.is_block() {
-                    PipelineEditIntent::EditBlockStyleDefinition {
-                        style: edit.style_id().clone(),
-                    }
-                } else {
-                    PipelineEditIntent::EditCharacterStyleDefinition {
-                        style: edit.style_id().clone(),
-                    }
-                };
-                (whole_document, pipeline_intent)
-            }
+        let range = match intent {
+            PersistedStyleIntent::AssignBlockStyle { range, .. }
+            | PersistedStyleIntent::AssignCharacterStyle { range, .. } => range,
         };
-        let report = self
-            .transformation_pipeline_snapshot()
-            .capabilities(range, &pipeline_intent)?;
-        match report.decision {
-            PipelineCapabilityDecision::Supported => Err(ModelTransactionError::Style(
-                StyleTransactionError::TranslationUnavailable,
-            )),
-            PipelineCapabilityDecision::Unsupported { reason, .. } => Err(
-                ModelTransactionError::Style(StyleTransactionError::Unsupported {
-                    format: self.format(),
-                    reason,
-                }),
-            ),
-            PipelineCapabilityDecision::NeedsPolicy { request, .. } => Err(
-                ModelTransactionError::Style(StyleTransactionError::NeedsPolicy(request)),
-            ),
-        }
-    }
-
-    fn whole_text_range(&self) -> Result<TextRange, ModelTransactionError> {
-        Ok(TextRange::new(
-            self.text_point(0)?,
-            self.text_point(self.projection().text_tree().byte_len())?,
-        )?)
+        self.validate_style_text_range(range)?;
+        Err(ModelTransactionError::Style(StyleTransactionError::Unsupported {
+            format: self.format(),
+            reason: if self.format() == Format::PlainText {
+                UnsupportedEditReason::PlainTextHasNoRichStyleStorage
+            } else {
+                UnsupportedEditReason::FormatHasNoNamedStyleStorage
+            },
+        }))
     }
 
     pub(super) fn validate_style_text_range(
@@ -1967,364 +1687,6 @@ impl Document {
             self.text_point(point.offset())?;
         }
         Ok(())
-    }
-
-    /// Publish a verified semantic-style candidate.
-    ///
-    /// Retain unchanged storage and block identities, install the resolved
-    /// style sheet, and map positions across the verified snapshots.
-    fn finish_semantic_style(
-        &self,
-        revision: Revision,
-        style_sheet: StyleSheet,
-        mut candidate: DocumentState,
-        source_patches: Vec<SourcePatch>,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        candidate
-            .projection
-            .install_unchanged_text_storage(self.projection())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        candidate
-            .projection
-            .install_source_block_ids(self.projection())
-            .map_err(super::block_identity_document_error)?;
-        let assignment = candidate.projection.document_style().clone();
-        candidate
-            .projection
-            .install_configuration_styles(revision, style_sheet, assignment);
-        let map = PositionMap::for_text_snapshots(
-            self.id,
-            self.revision(),
-            revision,
-            self.projection(),
-            &candidate.projection,
-            Vec::new(),
-        )?;
-        let work = ProjectionWorkStatistics::full(&candidate);
-        Ok(self.prepared(
-            revision,
-            ModelChangeSummary {
-                kind: ModelChangeKind::SemanticStyle,
-                source_patches,
-                formatted_splices: Vec::new(),
-                projection_work: work,
-                style_change: None,
-                conversion_warnings: Vec::new(),
-            },
-            map,
-            None,
-            self.next_projected_block_id,
-            PreparedPublication::State(candidate),
-        ))
-    }
-
-    fn prepare_rtf_named_style(
-        &self,
-        intent: PersistedStyleIntent,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let revision = Revision(self.next_revision);
-        let decoded = self.state().encoding.decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        let before = self.projection().style_sheet();
-        let mut expected = before.clone();
-        let mut intent = intent;
-        let mut supporting = Vec::new();
-        let default_assignment = match &intent {
-            PersistedStyleIntent::AssignCharacterStyle { style, .. }
-                if style.0.starts_with("RtfC") && before.has_user_default(style, true) =>
-            {
-                Some((style.clone(), true))
-            }
-            PersistedStyleIntent::AssignBlockStyle { style, .. }
-                if style.0.starts_with("RtfP") && before.has_user_default(style, false) =>
-            {
-                Some((style.clone(), false))
-            }
-            _ => None,
-        };
-        if let Some((style, character)) = default_assignment {
-            expected.materialize_default_definition(&style, character);
-            supporting = super::rtf_styles::definition_patches(&input, before, &expected)?;
-        }
-        if let PersistedStyleIntent::AssignBlockStyle { style, .. } = &mut intent {
-            if StyleSheet::builtin_block(style) {
-                let native = super::rtf_styles::read(&input);
-                let name = before
-                    .block_style_metadata(style)
-                    .ok_or(DocumentError::UnsupportedFormatting)?
-                    .display_name
-                    .clone();
-                let matches = native
-                    .entries
-                    .iter()
-                    .filter(|entry| {
-                        !entry.character
-                            && before
-                                .block_style_metadata(&entry.id)
-                                .is_some_and(|metadata| {
-                                    metadata.display_name.eq_ignore_ascii_case(&name)
-                                })
-                    })
-                    .collect::<Vec<_>>();
-                if matches.len() > 1 {
-                    return Err(DocumentError::UnsupportedFormatting.into());
-                }
-                if let Some(entry) = matches.first() {
-                    *style = entry.id.clone();
-                } else {
-                    let handle = native
-                        .entries
-                        .iter()
-                        .filter(|entry| !entry.character)
-                        .map(|entry| entry.handle)
-                        .max()
-                        .unwrap_or(0)
-                        .checked_add(1)
-                        .ok_or(DocumentError::UnsupportedFormatting)?;
-                    let mut definition = before
-                        .block_style(style)
-                        .ok_or(DocumentError::UnsupportedFormatting)?
-                        .clone();
-                    definition.id = StyleId(format!("RtfP{handle}"));
-                    definition.next_paragraph_style = Some("Paragraph".into());
-                    *style = definition.id.clone();
-                    expected.apply_source_edit(
-                        &StyleDefinitionEdit::InsertBlock {
-                            style: definition,
-                            metadata: super::StyleDefinitionMetadata {
-                                display_name: name,
-                                origin: StyleDefinitionOrigin::SourceBacked,
-                            },
-                        },
-                        StyleSheetRevision(revision.0 + 1),
-                        false,
-                    )?;
-                    supporting = super::rtf_styles::definition_patches(&input, before, &expected)?;
-                }
-            }
-        }
-        let mut syntax = match &intent {
-            PersistedStyleIntent::EditStyleDefinition { edit, .. } => {
-                expected.rebase_source_references_for_delete(
-                    edit,
-                    StyleSheetRevision(revision.0 + 1),
-                )?;
-                if !expected.apply_source_edit(edit, StyleSheetRevision(revision.0 + 1), false)? {
-                    return Ok(self.no_op_prepared());
-                }
-                let mut patches = super::rtf_styles::definition_patches(&input, before, &expected)?;
-                if let StyleDefinitionEdit::DeleteBlock(id) = edit {
-                    patches.extend(super::rtf_styles::remove_assignment_patches(
-                        &input,
-                        id,
-                        false,
-                        Some(&before.base_paragraph),
-                    )?);
-                }
-                if let StyleDefinitionEdit::DeleteCharacter(id) = edit {
-                    patches.extend(super::rtf_styles::remove_assignment_patches(
-                        &input, id, true, None,
-                    )?);
-                }
-                patches
-            }
-            PersistedStyleIntent::AssignCharacterStyle { range, style } => {
-                self.validate_style_text_range(*range)?;
-                if !style.0.is_empty() && expected.character_style(style).is_none() {
-                    return Err(StyleError::UnknownStyle(style.clone()).into());
-                }
-                super::rtf_styles::character_assignment_patches(
-                    &input,
-                    self.projection(),
-                    &(range.start().offset()..range.end().offset()),
-                    style,
-                )?
-            }
-            PersistedStyleIntent::AssignBlockStyle {
-                target: StyleBlockTarget::Paragraphs(range),
-                style,
-            } => {
-                self.validate_style_text_range(*range)?;
-                if expected.block_style(style).is_none() {
-                    return Err(StyleError::UnknownStyle(style.clone()).into());
-                }
-                let start = range.start().offset();
-                let end = range.end().offset();
-                let sources = self
-                    .projection()
-                    .blocks()
-                    .iter()
-                    .filter(|block| {
-                        if start == end {
-                            block.range.start <= start && start <= block.range.end
-                        } else {
-                            block.range.start < end && start < block.range.end
-                        }
-                    })
-                    .map(|block| {
-                        self.projection()
-                            .source_range(block.range.clone())
-                            .ok_or(DocumentError::AmbiguousProjection)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                super::rtf_styles::assignment_patches(
-                    &input,
-                    self.projection(),
-                    &sources,
-                    style,
-                    false,
-                )?
-            }
-            _ => return Err(DocumentError::UnsupportedFormatting.into()),
-        };
-        supporting.extend(syntax);
-        supporting.sort_by_key(|(range, _)| (range.start, range.end));
-        syntax = Vec::new();
-        for (range, value) in supporting {
-            if let Some((_, previous)) = syntax
-                .last_mut()
-                .filter(|(previous, _)| previous.is_empty() && *previous == range)
-            {
-                previous.push_str(&value);
-            } else {
-                syntax.push((range, value));
-            }
-        }
-        let mut source_patches = syntax
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.state()
-                    .encoding
-                    .encode_fragment(&syntax)
-                    .map(|replacement| SourcePatch::primary(range, replacement))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        validate_source_patches(&mut source_patches)?;
-        let source = apply_source_patches(&self.state().source, &source_patches)?;
-        let decoded = self.state().encoding.decode(&source.bytes())?;
-        let candidate = build_state_from_decoded(
-            source,
-            decoded,
-            Format::Rtf,
-            self.file_format(),
-            self.file_format_origin(),
-            self.line_ending_evidence(),
-            revision,
-        )?;
-        if candidate.projection.text() != self.text()
-            || !candidate
-                .projection
-                .has_same_hard_line_structure(self.projection())
-        {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        let mut actual = candidate.projection.style_sheet().clone();
-        actual.retain_configuration_deletions(&expected);
-        actual.set_configuration_revision(expected.revision);
-        if actual != expected {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        validate_percentage_font_contexts(
-            &candidate.projection,
-            &actual,
-            candidate.projection.document_style(),
-            percentage_style_edit_range(&intent),
-        )?;
-        if let PersistedStyleIntent::AssignBlockStyle {
-            target: StyleBlockTarget::Paragraphs(range),
-            style,
-        } = &intent
-        {
-            let range = range.start().offset()..range.end().offset();
-            let previous = self.projection().blocks();
-            let next = candidate.projection.blocks();
-            if previous.len() != next.len()
-                || previous.iter().zip(next).any(|(old, new)| {
-                    let selected = if range.is_empty() {
-                        old.range.start <= range.start && range.start <= old.range.end
-                    } else {
-                        old.range.start < range.end && range.start < old.range.end
-                    };
-                    old.range != new.range
-                        || &new.style != if selected { style } else { &old.style }
-                })
-            {
-                return Err(DocumentError::VerificationFailed.into());
-            }
-        }
-        if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
-            let range = range.start().offset()..range.end().offset();
-            let mut boundaries = BTreeSet::from([0, range.start, range.end]);
-            for span in self
-                .projection()
-                .style_spans()
-                .iter()
-                .chain(candidate.projection.style_spans().iter())
-            {
-                boundaries.extend([span.range.start, span.range.end]);
-            }
-            for span in self
-                .projection()
-                .provenance()
-                .iter()
-                .filter(|span| span.is_synthetic())
-            {
-                boundaries.extend([span.formatted.start, span.formatted.end]);
-            }
-            for at in boundaries {
-                if at >= self.text().len() || self.text().as_bytes()[at] == b'\n' {
-                    continue;
-                }
-                let old = self.projection().style_spans_for_region(&(at..at + 1));
-                let new = candidate.projection.style_spans_for_region(&(at..at + 1));
-                let old_named = old
-                    .iter()
-                    .filter_map(|span| {
-                        if let StyleApplication::Named(id) = &span.application {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    })
-                    .last();
-                let new_named = new
-                    .iter()
-                    .filter_map(|span| {
-                        if let StyleApplication::Named(id) = &span.application {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    })
-                    .last();
-                let synthetic = self
-                    .projection()
-                    .provenance_for_region(&(at..at + 1))
-                    .iter()
-                    .any(|span| span.is_synthetic());
-                let expected = if range.contains(&at) && !synthetic {
-                    Some(style)
-                } else {
-                    old_named
-                };
-                if new_named != expected.filter(|id| !id.0.is_empty()) {
-                    return Err(DocumentError::VerificationFailed.into());
-                }
-                let direct = |spans: &Vec<super::StyleSpan>| {
-                    let mut properties = CharacterProperties::default();
-                    for span in spans {
-                        if let StyleApplication::Direct(value) = &span.application {
-                            super::rich_text::overlay(&mut properties, value);
-                        }
-                    }
-                    properties
-                };
-                if direct(&old) != direct(&new) {
-                    return Err(DocumentError::VerificationFailed.into());
-                }
-            }
-        }
-        self.finish_semantic_style(revision, actual, candidate, source_patches)
     }
 
     fn prepare_configuration_style_intent(
@@ -2357,7 +1719,7 @@ impl Document {
                     StyleDefinitionEdit::DeleteBlock(_) | StyleDefinitionEdit::DeleteCharacter(_)
                 );
                 if deleting {
-                    style_sheet.rebase_source_references_for_delete(edit, style_sheet_revision)?;
+                    style_sheet.rebase_definition_references_for_delete(edit, style_sheet_revision)?;
                     configured_projection.reassign_deleted_style(edit.style_id(), edit.is_block());
                     if document_style.style == *edit.style_id() {
                         document_style.style = style_sheet.base_paragraph.clone();
@@ -2486,22 +1848,6 @@ impl Document {
         let range = { range };
         let patches = if self.format() == Format::Markdown {
             markdown_list_structure::deletion_patches(self, &range, true)?
-        } else if self.format().is_rich_text() {
-            let decoded = self.encoding().decode(&self.source_bytes())?;
-            let input = normalize(&decoded, self.file_format());
-            let patches = { super::rtf_structure::deletion_patches(self, &input, &range, true)? };
-            patches
-                .map(|patches| {
-                    patches
-                        .into_iter()
-                        .map(|(range, syntax)| {
-                            self.encoding()
-                                .encode_fragment(&syntax)
-                                .map(|bytes| SourcePatch::primary(range, bytes))
-                        })
-                        .collect::<Result<Vec<_>, _>>()
-                })
-                .transpose()?
         } else {
             None
         };
@@ -2517,16 +1863,11 @@ impl Document {
 
     fn validate_formatted_replacement_characters(&self, text: &str) -> Result<(), DocumentError> {
         let unrepresentable = if self.file_format() == FileFormat::Mac
-            && matches!(
-                self.format(),
-                Format::PlainText | Format::Code | Format::Markdown | Format::MarkdownSource
-            )
             && text.contains('\r')
         {
             // The shared line-ending stage consumes every literal source CR
             // before these projections run. Plain/source modes and the current
             // Markdown adapter have no escape that can recreate a literal CR.
-            // RTF can recreate it with \u13?.
             Some('\r')
         } else {
             None
@@ -3196,9 +2537,7 @@ impl Document {
                     .zip(&edits)
                     .map(|(text, payload)| (text, Some(payload))),
             )?;
-            if self.format().is_rich_text() {
-                return self.prepare_text_edits_with_patches(logical_edits, Some(patches));
-            }
+
             // Markdown reaches its bounded regional candidates through the same
             // text-edit preparation. An edit that route cannot verify, such as
             // a delimiter typed into a fenced list item, keeps the complete
@@ -3525,258 +2864,6 @@ impl Document {
         self.prepare_text_edits_with_patches(edits, Some(patches))
     }
 
-    fn prepare_rich_clear_character(
-        &self,
-        range: Range<usize>,
-        properties: BTreeSet<StyleProperty>,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if range.is_empty() || properties.is_empty() {
-            return Ok(self.no_op_prepared());
-        }
-        let decoded = self.state().encoding.decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        let syntax = {
-            super::rtf_direct::clear_character_patches(
-                &input,
-                self.projection(),
-                range.clone(),
-                &properties,
-            )?
-        };
-        let patches = syntax
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.encoding()
-                    .encode_fragment(&syntax)
-                    .map(|bytes| SourcePatch::primary(range, bytes))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prepared = self.prepare_source_only_patches(patches)?;
-        let after = match &prepared.publication {
-            PreparedPublication::State(state) => &state.projection,
-            _ => self.projection(),
-        };
-        if !super::rich_text::character_clear_verified(
-            self.projection(),
-            after,
-            &range,
-            &properties,
-        ) {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        Ok(prepared)
-    }
-
-    fn prepare_rich_block_properties(
-        &self,
-        intent: PersistedStyleIntent,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let (target, set, clear) = match intent {
-            PersistedStyleIntent::SetDirectBlockProperties { target, properties } => {
-                (target, properties, BTreeSet::new())
-            }
-            PersistedStyleIntent::ClearDirectBlockProperties { target, properties } => {
-                (target, BlockProperties::default(), properties)
-            }
-            _ => unreachable!(),
-        };
-        let StyleBlockTarget::Paragraphs(range) = target else {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        };
-        self.validate_style_text_range(range)?;
-        let range = range.start().offset()..range.end().offset();
-        let mut expected = Vec::new();
-        let mut changed = false;
-        for block in self.projection().blocks() {
-            let mut properties = block.direct_paragraph.clone();
-            let selected = if range.is_empty() {
-                block.range.start <= range.start && range.start <= block.range.end
-            } else {
-                (block.range.is_empty() && range.contains(&block.range.start))
-                    || (block.range.start < range.end && range.start < block.range.end)
-            };
-            if selected {
-                super::rich_text::overlay_block(&mut properties, &set);
-                for property in &clear {
-                    super::style::clear_block_property(
-                        &"Direct".into(),
-                        &mut properties,
-                        *property,
-                    )?;
-                }
-                if properties != block.direct_paragraph {
-                    changed = true;
-                }
-            }
-            expected.push(properties);
-        }
-        if !changed {
-            return Ok(self.no_op_prepared());
-        }
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        let syntax = { self.rtf_paragraph_property_patches(&input, &expected, &clear)? };
-        let patches = syntax
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.encoding()
-                    .encode_fragment(&syntax)
-                    .map(|bytes| SourcePatch::primary(range, bytes))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prepared = self.prepare_source_only_patches(patches)?;
-        let after = match &prepared.publication {
-            PreparedPublication::State(state) => &state.projection,
-            _ => self.projection(),
-        };
-        if after.blocks().len() != expected.len()
-            || after
-                .blocks()
-                .iter()
-                .zip(expected)
-                .any(|(block, expected)| block.direct_paragraph != expected)
-            || after
-                .blocks()
-                .iter()
-                .zip(self.projection().blocks())
-                .any(|(new, old)| new.kind != old.kind || new.style != old.style)
-        {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        if after.style_spans() != self.projection().style_spans() {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        Ok(prepared)
-    }
-
-    fn rtf_paragraph_property_patches(
-        &self,
-        input: &super::line_endings::NormalizedText,
-        expected: &[BlockProperties],
-        clear: &BTreeSet<StyleProperty>,
-    ) -> Result<Vec<(Range<usize>, String)>, ModelTransactionError> {
-        let native = super::rtf_styles::read(input);
-        let mut patches = Vec::new();
-        for (block, properties) in self.projection().blocks().iter().zip(expected) {
-            if properties == &block.direct_paragraph {
-                continue;
-            }
-            // RTF readers attach paragraph properties to the entire paragraph,
-            // including its terminator. A delta only around \par can leave
-            // character-attributed readers with unchanged properties at its
-            // first character, so cover every visible source run.
-            let extent = block.range.start
-                ..(block.range.end + usize::from(block.range.end < self.text().len()));
-            let mut runs: Vec<(Range<usize>, CharacterProperties, Option<StyleId>)> = Vec::new();
-            for span in self.projection().provenance_for_region(&extent) {
-                if span.formatted.is_empty() || span.source.is_empty() {
-                    continue;
-                }
-                let mut direct = CharacterProperties::default();
-                let mut named = None;
-                for style in self.projection().style_spans_for_region(&span.formatted) {
-                    if !style.range.contains(&span.formatted.start) {
-                        continue;
-                    }
-                    match style.application {
-                        StyleApplication::Direct(properties) => {
-                            super::rich_text::overlay(&mut direct, &properties)
-                        }
-                        StyleApplication::Named(id) => named = Some(id),
-                        _ => {}
-                    }
-                }
-                if let Some((source, _, _)) =
-                    runs.last_mut()
-                        .filter(|(source, previous, previous_named)| {
-                            source.end == span.source.start
-                                && previous == &direct
-                                && previous_named == &named
-                        })
-                {
-                    source.end = span.source.end;
-                } else {
-                    runs.push((span.source, direct, named));
-                }
-            }
-            if runs.is_empty() && block.range.is_empty() {
-                // An empty paragraph has an explicit editable boundary even
-                // though it contributes no text run. A scoped declaration at
-                // that boundary also supplies the style for subsequent typing.
-                let source = super::rich_text::text_source_range(self, &block.range)?;
-                runs.push((source, CharacterProperties::default(), None));
-            }
-            if runs.is_empty() {
-                return Err(DocumentError::AmbiguousProjection.into());
-            }
-            for (source, direct, named) in runs {
-                let mut controls = String::new();
-                if !clear.is_empty() {
-                    controls.push_str("\\pard");
-                    if let Some(handle) = super::rtf_styles::handle(&native, &block.style, false) {
-                        controls.push_str(&format!("\\s{handle}"));
-                        if let Some(id) = named {
-                            let character_handle = super::rtf_styles::handle(&native, &id, true)
-                                .ok_or(DocumentError::UnsupportedFormatting)?;
-                            controls.push_str(&format!("\\cs{character_handle}"));
-                        }
-                        if direct != CharacterProperties::default() {
-                            let mut authored = super::rtf::character_patches(
-                                input,
-                                &(usize::MAX - 1..usize::MAX),
-                                &direct,
-                            )?;
-                            authored.pop();
-                            let (_, prefix) =
-                                authored.pop().ok_or(DocumentError::UnsupportedFormatting)?;
-                            controls.push_str(prefix.trim_start_matches('{').trim_end());
-                            for patch in authored {
-                                if !patches.contains(&patch) {
-                                    patches.push(patch);
-                                }
-                            }
-                        }
-                    }
-                    if let super::BlockKind::ListItem {
-                        ordered, ordinal, ..
-                    } = block.kind
-                    {
-                        if let Some((handle, level)) =
-                            super::rtf_direct::modern_list_at(input, source.start)
-                        {
-                            controls.push_str(&format!("\\ls{handle}\\ilvl{level}"));
-                        } else {
-                            controls.push_str(&if ordered {
-                                format!("{{\\*\\pn\\pndec\\pnstart{ordinal}}}")
-                            } else {
-                                "{\\*\\pn\\pnlvlblt}".to_owned()
-                            });
-                        }
-                    }
-                }
-                controls.push_str(&super::rtf_styles::paragraph_controls(properties)?);
-                patches.push((source.start..source.start, format!("{{{controls} ")));
-                patches.push((source.end..source.end, "}".to_owned()));
-            }
-        }
-        // Adjacent paragraphs/runs share a source insertion boundary. Close
-        // the preceding scope and open the following scope in one ordered
-        // insertion so the source transaction has no ambiguous duplicate point.
-        patches.sort_by_key(|(range, _)| (range.start, range.end));
-        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
-        for (range, syntax) in patches {
-            if let Some((previous, text)) = merged.last_mut().filter(|(previous, _)| {
-                previous.is_empty() && range.is_empty() && previous.start == range.start
-            }) {
-                let _ = previous;
-                text.push_str(&syntax);
-            } else {
-                merged.push((range, syntax));
-            }
-        }
-        Ok(merged)
-    }
-
     fn prepare_markdown_paragraph_style(
         &self,
         range: Range<usize>,
@@ -3838,14 +2925,7 @@ impl Document {
         mut range: Range<usize>,
         style: StyleId,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if self.format().is_rich_text() {
-            let range = TextRange::new(self.text_point(range.start)?, self.text_point(range.end)?)?;
-            let intention = PersistedStyleIntent::AssignBlockStyle {
-                target: StyleBlockTarget::Paragraphs(range),
-                style,
-            };
-            return self.prepare_rtf_named_style(intention);
-        }
+
         self.validate_range(&range)?;
         if !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
@@ -4032,9 +3112,6 @@ impl Document {
             }
         }
 
-        if self.format().is_rich_text() {
-            return self.prepare_rich_list_style(range, style);
-        }
         if !matches!(
             self.format(),
             Format::PlainText | Format::Markdown | Format::MarkdownSource
@@ -4196,134 +3273,8 @@ impl Document {
         self.prepare_text_edits_with_patches(edits, Some(combined))
     }
 
-    fn prepare_rich_list_style(
-        &self,
-        range: Range<usize>,
-        style: Option<super::ListStyle>,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let mut targets = Vec::new();
-        let mut blocks = self
-            .projection()
-            .blocks_for_region(&range)
-            .into_iter()
-            .filter(|block| {
-                if range.is_empty() {
-                    block.range.start <= range.start && range.start <= block.range.end
-                } else {
-                    block.range.start < range.end && range.start < block.range.end
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let selected = blocks.iter().map(|block| block.id).collect::<BTreeSet<_>>();
-        let mut containers = std::collections::BTreeMap::new();
-        for list in self.projection().list_structure().lists {
-            for item in list.items {
-                if !item.paragraph_ids.iter().any(|id| selected.contains(id)) {
-                    continue;
-                }
-                let paragraphs = self
-                    .projection()
-                    .blocks()
-                    .iter()
-                    .filter(|block| item.paragraph_ids.contains(&block.id))
-                    .collect::<Vec<_>>();
-                if let (Some(first), Some(last)) = (paragraphs.first(), paragraphs.last()) {
-                    let mut whole = (*first).clone();
-                    whole.range.end = last.range.end;
-                    blocks.retain(|block| !item.paragraph_ids.contains(&block.id));
-                    containers.insert(whole.id, list.id.0);
-                    blocks.push(whole);
-                }
-            }
-        }
-        blocks.sort_by_key(|block| block.range.start);
-        let mut ordinals = std::collections::BTreeMap::new();
-        for block in blocks {
-            let next = ordinals
-                .entry(containers.get(&block.id).copied().unwrap_or(0))
-                .or_insert(1u64);
-            let ordinal = *next;
-            *next += 1;
-            let line = block.range.clone();
-            let kind = &block.kind;
-            let old_style = match kind {
-                super::BlockKind::ListItem { ordered, .. } => Some(if *ordered {
-                    super::ListStyle::Numbered
-                } else {
-                    super::ListStyle::Bullet
-                }),
-                _ => None,
-            };
-            if old_style == style {
-                continue;
-            }
-            let body = line.clone();
-            let spans = self
-                .projection()
-                .provenance_for_region(&body)
-                .into_iter()
-                .filter(|span| !span.formatted.is_empty() && !span.source.is_empty())
-                .collect::<Vec<_>>();
-            let source = if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
-                first.source.start..last.source.end
-            } else {
-                // Several empty continuation paragraphs still identify one
-                // list item. Their synthetic separators have no contiguous
-                // source range; the first paragraph's editable boundary
-                // identifies the structural owner without consuming them.
-                let at = super::rich_text::block_source_point(self.projection(), &block)?;
-                at..at
-            };
-            let original_ordinal = if let super::BlockKind::ListItem { ordinal, .. } = kind {
-                Some(*ordinal)
-            } else {
-                None
-            };
-            targets.push((source, style, ordinal, original_ordinal));
-        }
-        if targets.is_empty() {
-            return Ok(self.no_op_prepared());
-        }
-        let bytes = self.source_bytes();
-        let decoded = self.state().encoding.decode(&bytes)?;
-        let normalized = normalize(&decoded, self.file_format());
-        let raw_patches = { super::rtf::list_patches(&normalized, &targets, self.projection())? };
-        let mut raw_patches = raw_patches;
-        raw_patches.sort_by_key(|(range, _)| (range.start, range.end));
-        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
-        for (range, syntax) in raw_patches {
-            if let Some((_, previous)) = merged.last_mut().filter(|(previous, _)| {
-                previous.is_empty() && range.is_empty() && previous.start == range.start
-            }) {
-                previous.push_str(&syntax);
-            } else {
-                merged.push((range, syntax));
-            }
-        }
-        let patches = merged
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.state()
-                    .encoding
-                    .encode_fragment(&syntax)
-                    .map(|replacement| SourcePatch::primary(range, replacement))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.prepare_text_edits_with_patches(Vec::new(), Some(patches))
-    }
-
-    fn prepare_rich_list_enter(
-        &self,
-        at: usize,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        self.prepare_rich_list_enter_with_empty_policy(at, true)
-    }
-
-    fn prepare_rich_list_enter_with_empty_policy(
-        &self,
-        at: usize,
-        exit_empty: bool,
+    fn prepare_structural_list_enter(
+        &self, at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if self.format() == Format::MarkdownSource {
             return self.prepare_markdown_source_list_enter(at);
@@ -4334,216 +3285,7 @@ impl Document {
         if self.format() == Format::Markdown {
             return self.prepare_markdown_list_enter(at);
         }
-        let block = self
-            .projection()
-            .blocks_for_region(&(at..at))
-            .into_iter()
-            .find(|block| block.range.start <= at && at <= block.range.end)
-            .ok_or(DocumentError::VerificationFailed)?;
-
-        let edit = if exit_empty {
-            self.list_enter_edit(at)?
-                .ok_or(DocumentError::UnsupportedFormatting)?
-        } else {
-            TextEdit::new(at..at, "\n")
-        };
-        if !edit.range.is_empty() || edit.replacement.is_empty() {
-            return self.prepare_rich_list_style(edit.range, None);
-        }
-        let super::BlockKind::ListItem {
-            ordered, ordinal, ..
-        } = block.kind
-        else {
-            return self.prepare_rtf_next_paragraph_enter(at, &block);
-        };
-        let source_at = super::rich_text::text_source_range(self, &(at..at))?.start;
-        let bytes = self.source_bytes();
-        let decoded = self.state().encoding.decode(&bytes)?;
-        let input = normalize(&decoded, self.file_format());
-        let (range, syntax) = {
-            (
-                source_at..source_at,
-                if ordered {
-                    format!(
-                        "\\par\\ls0 {{\\*\\pn\\pnlvlbody\\pndec\\pnstart{}{{\\pntxta .}}}}",
-                        ordinal.saturating_add(1)
-                    )
-                } else {
-                    "\\par\\ls0 {\\*\\pn\\pnlvlblt{\\pntxtb\\bullet}}".to_owned()
-                },
-            )
-        };
-        let edits = vec![edit];
-        let mut source_targets = Vec::new();
-        let mut legacy_patches = Vec::new();
-        let numbering_origins = (self.format() == Format::Rtf)
-            .then(|| super::rtf_structure::ListOriginIndex::new(&input));
-        if ordered {
-            let structure = self.projection().list_structure();
-            if let Some((list, index)) = structure.lists.iter().find_map(|list| {
-                list.items
-                    .iter()
-                    .position(|item| item.paragraph_ids.contains(&block.id))
-                    .map(|index| (list, index))
-            }) {
-                for item in &list.items[index + 1..] {
-                    let body_at =
-                        super::rich_text::list_item_source_point(self.projection(), item)?;
-
-                    if self.format() == Format::Rtf {
-                        let origin = numbering_origins
-                            .as_ref()
-                            .and_then(|index| index.at(body_at))
-                            .ok_or(DocumentError::AmbiguousProjection)?;
-                        if let Some(patches) = super::rtf_structure::renumber_legacy_patches(
-                            &input,
-                            origin,
-                            item.ordinal.saturating_add(1),
-                        ) {
-                            legacy_patches.extend(patches);
-                            continue;
-                        }
-                        let spans = item
-                            .paragraph_ids
-                            .iter()
-                            .flat_map(|id| {
-                                self.projection()
-                                    .blocks()
-                                    .iter()
-                                    .filter(move |block| block.id == *id)
-                            })
-                            .flat_map(|block| self.projection().provenance_for_region(&block.range))
-                            .filter(|span| !span.source.is_empty())
-                            .collect::<Vec<_>>();
-                        let source =
-                            if let (Some(first), Some(last)) = (spans.first(), spans.last()) {
-                                first.source.start..last.source.end
-                            } else {
-                                body_at..body_at
-                            };
-                        source_targets.push((
-                            source,
-                            Some(super::ListStyle::Numbered),
-                            item.ordinal.saturating_add(1),
-                            Some(item.ordinal),
-                        ));
-                    }
-                }
-            }
-        }
-        let mut syntax_patches = vec![(range, syntax)];
-        if self.format() == Format::Rtf {
-            if let Some(selector) = super::rtf_structure::modern_selector_at(&input, source_at) {
-                if let Some(boundary) = self
-                    .projection()
-                    .provenance_for_region(&(block.range.end..block.range.end + 1))
-                    .into_iter()
-                    .find(|span| !span.source.is_empty())
-                {
-                    syntax_patches.push((boundary.source.end..boundary.source.end, selector));
-                }
-            }
-        }
-        syntax_patches.extend(legacy_patches);
-        if !source_targets.is_empty() {
-            syntax_patches.extend(super::rtf::list_patches(
-                &input,
-                &source_targets,
-                self.projection(),
-            )?);
-        }
-        syntax_patches.sort_by_key(|(range, _)| (range.start, range.end));
-        let mut merged: Vec<(Range<usize>, String)> = Vec::new();
-        for (range, syntax) in syntax_patches {
-            if let Some((_, previous)) = merged
-                .last_mut()
-                .filter(|(previous, _)| previous.is_empty() && *previous == range)
-            {
-                previous.push_str(&syntax);
-            } else {
-                merged.push((range, syntax));
-            }
-        }
-        let patches = merged
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.state()
-                    .encoding
-                    .encode_fragment(&syntax)
-                    .map(|bytes| SourcePatch::primary(range, bytes))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.prepare_text_edits_with_patches(edits, Some(patches))
-    }
-
-    fn prepare_rtf_next_paragraph_enter(
-        &self,
-        at: usize,
-        block: &super::Block,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if self.format() != Format::Rtf {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        }
-        let next = self
-            .projection()
-            .style_sheet()
-            .block_style(&block.style)
-            .and_then(|style| style.next_paragraph_style.clone())
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let decoded = self.state().encoding.decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        let native = super::rtf_styles::read(&input);
-        let number = super::rtf_styles::handle(&native, &next, false)
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let source_at = self
-            .projection()
-            .source_insertion_point(at, false)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let sample = if at > block.range.start { at - 1 } else { at };
-        let mut direct = CharacterProperties::default();
-        for span in self
-            .projection()
-            .style_spans_for_region(&(sample..sample + 1))
-        {
-            if let StyleApplication::Direct(properties) = span.application {
-                super::rich_text::overlay(&mut direct, &properties);
-            }
-        }
-        let mut syntax_patches =
-            super::rtf::character_patches(&input, &(usize::MAX - 1..usize::MAX), &direct)?;
-        syntax_patches.pop();
-        let (_, prefix) = syntax_patches
-            .pop()
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let paragraph = super::rtf_styles::paragraph_controls(&block.direct_paragraph)?;
-        let control = prefix.trim_start_matches('{').trim_end();
-        syntax_patches.push((
-            source_at..source_at,
-            format!("\\par\\s{number}{control}{paragraph} "),
-        ));
-        let patches = syntax_patches
-            .into_iter()
-            .map(|(range, syntax)| {
-                self.state()
-                    .encoding
-                    .encode_fragment(&syntax)
-                    .map(|replacement| SourcePatch::primary(range, replacement))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let prepared =
-            self.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], Some(patches))?;
-        if let PreparedPublication::State(candidate) = &prepared.publication {
-            if !candidate
-                .projection
-                .blocks_for_region(&(at + 1..at + 1))
-                .iter()
-                .any(|block| block.range.start == at + 1 && block.style == next)
-            {
-                return Err(DocumentError::UnsupportedFormatting.into());
-            }
-        }
-        Ok(prepared)
+        Err(DocumentError::UnsupportedFormatting.into())
     }
 
     fn prepare_semantic_style(
@@ -4554,18 +3296,6 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
 
-        if self.format().is_rich_text() {
-            let properties = rich_semantic_properties(style, enabled)?;
-            if super::rich_text::character_edit_verified(
-                self.projection(),
-                self.projection(),
-                &range,
-                &properties,
-            ) {
-                return Ok(self.no_op_prepared());
-            }
-            return self.prepare_rich_character_properties(range, properties);
-        }
         if self.state().format == Format::MarkdownSource {
             let edits = self.markdown_source_style_edits(&range, style, enabled)?;
             let added = edits
@@ -4674,17 +3404,6 @@ impl Document {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<(), ModelTransactionError> {
-        if self.format().is_rich_text() {
-            rich_semantic_properties(style, enabled)?;
-            // The same contributor coverage used by execution, including
-            // indivisible entities, without decoding source or preparing an edit.
-            let mut contributors = range.clone();
-            for edit in style_contributors::boundary_materializations(self, &range)? {
-                contributors.start = contributors.start.min(edit.range.start);
-                contributors.end = contributors.end.max(edit.range.end);
-            }
-            return self.rich_character_source_ranges(&contributors).map(|_| ());
-        }
 
         if self.state().format == Format::MarkdownSource {
             return self
@@ -4762,214 +3481,6 @@ impl Document {
         ])
     }
 
-    fn rich_character_source_ranges(
-        &self,
-        range: &Range<usize>,
-    ) -> Result<Vec<Range<usize>>, ModelTransactionError> {
-        self.validate_range(range)?;
-        let mut sources: Vec<Range<usize>> = Vec::new();
-        let mut position = range.start;
-        for span in self.projection().provenance_for_region(range) {
-            if span.formatted.start != position
-                || span.formatted.end > range.end
-                || span.source.is_empty()
-            {
-                return Err(DocumentError::AmbiguousProjection.into());
-            }
-            position = span.formatted.end;
-            if self
-                .projection()
-                .text_tree()
-                .slice(span.formatted.clone())
-                .map_err(DocumentError::FormattedTextStorage)?
-                == "\n"
-            {
-                continue;
-            }
-            if let Some(last) = sources
-                .last_mut()
-                .filter(|last| last.end == span.source.start)
-            {
-                last.end = span.source.end;
-            } else {
-                sources.push(span.source);
-            }
-        }
-        if position != range.end {
-            return Err(DocumentError::AmbiguousProjection.into());
-        }
-        Ok(sources)
-    }
-
-    fn rich_character_source_patches(
-        &self,
-        range: &Range<usize>,
-        properties: &CharacterProperties,
-    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
-        let sources = self.rich_character_source_ranges(range)?;
-        let decoded = if super::rtf::character_properties_need_tables(properties) {
-            self.encoding().decode(&self.source_bytes())?
-        } else {
-            self.encoding().decode_region(&[], 0)?
-        };
-        let normalized = normalize(&decoded, self.file_format());
-        let mut syntax_patches = Vec::new();
-        for source_range in sources {
-            let mut authored = properties.clone();
-            if authored.font_families.is_some()
-                && authored.weight.is_some()
-                && authored.bold.is_none()
-            {
-                let at = self
-                    .projection()
-                    .provenance_for_region(range)
-                    .iter()
-                    .find(|span| span.source.start == source_range.start)
-                    .map(|span| span.formatted.start)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                if super::rich_text::resolved_character_at(self.projection(), at)
-                    .ok_or(DocumentError::UnsupportedFormatting)?
-                    .bold
-                {
-                    authored.bold = Some(true);
-                }
-            }
-            let local = super::rtf::character_patches(&normalized, &source_range, &authored)?;
-            for patch in local {
-                if !syntax_patches.contains(&patch) {
-                    syntax_patches.push(patch);
-                }
-            }
-        }
-        let mut coalesced: Vec<(Range<usize>, String)> = Vec::new();
-        for (range, syntax) in syntax_patches {
-            if range.is_empty() {
-                if let Some((_, existing)) = coalesced.iter_mut().find(|(prior, _)| *prior == range)
-                {
-                    existing.push_str(&syntax);
-                    continue;
-                }
-            }
-            coalesced.push((range, syntax));
-        }
-        coalesced
-            .into_iter()
-            .map(|(range, syntax)| {
-                Ok(SourcePatch::primary(
-                    range,
-                    self.state().encoding.encode_fragment(&syntax)?,
-                ))
-            })
-            .collect()
-    }
-
-    fn prepare_rich_character_properties(
-        &self,
-        range: Range<usize>,
-        properties: CharacterProperties,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        self.validate_range(&range)?;
-        if range.is_empty() || properties == CharacterProperties::default() {
-            return Ok(self.no_op_prepared());
-        }
-        if let Some(prepared) = self
-            .prepare_with_materialized_style_boundaries(&range, |scratch| {
-                scratch.prepare_rich_character_properties(range.clone(), properties.clone())
-            })?
-        {
-            return Ok(prepared);
-        }
-        let after_revision = Revision(self.next_revision);
-
-        let mut source_patches = self.rich_character_source_patches(&range, &properties)?;
-        validate_source_patches(&mut source_patches)?;
-        let source = apply_source_patches(&self.state().source, &source_patches)?;
-        let unchanged = self
-            .projection()
-            .text_tree()
-            .slice(range.clone())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        let edits = [TextEdit::new(range.clone(), unchanged)];
-        let local = self.build_rich_local_text_edit_candidate(
-            &source,
-            after_revision,
-            self.projection().text_tree(),
-            FormattedTextSpliceStats::default(),
-            &edits,
-            &source_patches,
-            (self.format() == Format::Rtf).then_some(&properties),
-        )?;
-        let local = local.filter(|built| {
-            super::rich_text::character_edit_verified_in_region(
-                self.projection(),
-                &built.state.projection,
-                &range,
-                &properties,
-                &range,
-            )
-        });
-        let regional = local.is_some();
-        let (candidate, work, next_id) = if let Some(built) = local {
-            (built.state, built.work, built.next_projected_block_id)
-        } else {
-            let candidate = self.build_verified_candidate(
-                source,
-                self.file_format(),
-                self.state().file_format_origin,
-                after_revision,
-                CandidateVerification {
-                    expected_text: self.text().to_owned(),
-                    expected_hard_breaks: None,
-                    mismatch_error: DocumentError::VerificationFailed,
-                },
-            )?;
-            let work = ProjectionWorkStatistics::full(&candidate);
-            (candidate, work, self.next_projected_block_id)
-        };
-        let verified = if regional {
-            super::rich_text::character_edit_verified_in_region(
-                self.projection(),
-                &candidate.projection,
-                &range,
-                &properties,
-                &range,
-            )
-        } else {
-            super::rich_text::character_edit_verified(
-                self.projection(),
-                &candidate.projection,
-                &range,
-                &properties,
-            )
-        };
-        if !verified {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        let map = PositionMap::for_text_snapshots(
-            self.id,
-            self.revision(),
-            after_revision,
-            self.projection(),
-            &candidate.projection,
-            Vec::new(),
-        )?;
-        Ok(self.prepared(
-            after_revision,
-            ModelChangeSummary {
-                kind: ModelChangeKind::SemanticStyle,
-                source_patches,
-                formatted_splices: Vec::new(),
-                projection_work: work,
-                style_change: None,
-                conversion_warnings: Vec::new(),
-            },
-            map,
-            None,
-            next_id,
-            PreparedPublication::State(candidate),
-        ))
-    }
-
     /// Return the minimal source patches for an authorized Markdown semantic
     /// style edit. `None` is an already-satisfied or empty no-op.
     fn semantic_style_source_patches(
@@ -4982,12 +3493,7 @@ impl Document {
         if range.is_empty() {
             return Ok(None);
         }
-        if self.format().is_rich_text() {
-            let properties = rich_semantic_properties(style, enabled)?;
-            return self
-                .rich_character_source_patches(range, &properties)
-                .map(Some);
-        }
+
         if self.state().format != Format::Markdown {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -5120,9 +3626,7 @@ impl Document {
         range: Range<usize>,
         replacement: String,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if self.format() == Format::Rtf {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        }
+
         self.source_point(range.start)?;
         self.source_point(range.end)?;
         if range.start > range.end {
@@ -5252,109 +3756,22 @@ impl Document {
         ))
     }
 
-    fn prepare_format(
-        &self,
-        target: Format,
-        operation: super::FormatOperation,
+    fn prepare_markdown_source_change(
+        &self, source: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let target = if operation == super::FormatOperation::Convert {
-            target.wysiwyg()
-        } else {
-            target
-        };
-        if operation == super::FormatOperation::Convert && target == Format::Rtf {
+        if !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
-        if target == self.state().format {
-            return Ok(self.no_op_prepared());
-        }
+        let target = if source { Format::MarkdownSource } else { Format::Markdown };
+        if target == self.format() { return Ok(self.no_op_prepared()); }
         let revision = Revision(self.next_revision);
-        let mut conversion_warnings = Vec::new();
-        let mut conversion_correspondence = None;
-        let source_patches;
-        let (source, decoded) = if operation == super::FormatOperation::Convert
-            && self.format().wysiwyg() != target
-        {
-            let conversion = super::conversion::convert(self, target)?;
-            conversion_correspondence = Some(encoded_conversion_correspondence(
-                &conversion.source,
-                &conversion.source_correspondence,
-                self.encoding(),
-                self.file_format(),
-                if self.state().has_bom {
-                    self.encoding().bom_bytes().len()
-                } else {
-                    0
-                },
-            ));
-            conversion_warnings = conversion.warnings;
-            let spelling = conversion
-                .source
-                .replace('\n', self.file_format().spelling());
-            let mut bytes = if self.state().has_bom {
-                self.encoding().bom_bytes().to_vec()
-            } else {
-                Vec::new()
-            };
-            let authored = if self.encoding() == super::Encoding::Latin1 {
-                let count = spelling.chars().filter(|c| *c as u32 > 255).count();
-                if count > 0 {
-                    conversion_warnings.push(super::ConversionWarning::UnrepresentableCharacters {
-                        encoding: self.encoding(),
-                        count,
-                    });
-                }
-                spelling
-                    .chars()
-                    .map(|c| if c as u32 > 255 { '?' } else { c })
-                    .collect::<String>()
-            } else {
-                spelling
-            };
-            bytes.extend(self.encoding().encode_fragment(&authored)?);
-            source_patches = vec![SourcePatch::primary(
-                0..self.state().source.len(),
-                bytes.clone(),
-            )];
-            (
-                apply_source_patches(&self.state().source, &source_patches)?,
-                self.encoding().decode(&bytes)?,
-            )
-        } else {
-            source_patches = Vec::new();
-            (
-                self.state().source.clone(),
-                self.state().encoding.decode(&self.state().source.bytes())?,
-            )
-        };
         let mut candidate = build_state_from_decoded(
-            source,
-            decoded,
-            target,
-            self.state().file_format,
-            self.state().file_format_origin,
-            self.state().line_ending_evidence,
-            revision,
+            self.state().source.clone(),
+            self.encoding().decode(&self.source_bytes())?,
+            target, self.file_format(), self.state().file_format_origin,
+            self.state().line_ending_evidence, revision,
         )?;
-        let edits = if let Some(correspondence) = conversion_correspondence {
-            // Serialization supplies content correspondence even when it
-            // rewrites every source byte. Match that provenance rather than
-            // treating every cursor, mark and viewport anchor as deleted.
-            let mut edits = reprojection_edits_matching_sources(
-                self.projection(),
-                &candidate.projection,
-                |range| correspondence.get(&(range.start, range.end)).copied(),
-            );
-            // A serializer's synthetic separators can lack physical source
-            // correspondence. Equal gaps between its retained content are
-            // nevertheless unchanged logical text, not authored replacements.
-            // Replacing a newline with itself would move an AfterInsertion
-            // caret at paragraph end into the following paragraph.
-            edits.retain(|edit| self.text()[edit.range.clone()] != edit.replacement);
-            edits
-        } else {
-            source_backed_reprojection_edits(self.projection(), &candidate.projection)
-        };
+        let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
         candidate
             .projection
             .install_persistent_text_edits(self.projection(), &edits)
@@ -5390,11 +3807,11 @@ impl Document {
             revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::SourceMetadata,
-                source_patches,
+                source_patches: Vec::new(),
                 formatted_splices,
                 projection_work: work,
                 style_change: None,
-                conversion_warnings,
+                conversion_warnings: Vec::new(),
             },
             map,
             None,
@@ -5511,9 +3928,7 @@ impl Document {
         &self,
         target: FileFormat,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if self.format() == Format::Rtf {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        }
+
         if target == self.state().file_format {
             return Ok(self.no_op_prepared());
         }
@@ -5707,12 +4122,7 @@ impl Document {
                 .install_unchanged_text_storage(self.projection())
                 .map_err(DocumentError::FormattedTextStorage)?;
             if preserves_current_hard_lines {
-                if self.format().has_rich_source() {
-                    candidate
-                        .projection
-                        .install_source_block_ids(self.projection())
-                        .map_err(super::block_identity_document_error)?;
-                } else {
+                {
                     candidate
                         .projection
                         .install_unchanged_block_ids(self.projection())
@@ -5846,14 +4256,13 @@ impl Document {
         )? {
             return Ok(candidate);
         }
-        if let Some(candidate) = self.build_rich_local_text_edit_candidate(
+        if let Some(candidate) = self.build_markdown_structured_local_candidate(
             &source,
             revision,
             target_text,
             text_splice_work,
             edits,
             source_patches,
-            None,
         )? {
             return Ok(candidate);
         }
@@ -6205,10 +4614,9 @@ impl Document {
         })
     }
 
-    /// Verify an ordinary RTF or Markdown code/list edit in its affected
-    /// paragraph. Canonical text retains existing semantic style; balanced RTF
-    /// property groups validate their inserted syntax before regional splicing.
-    fn build_rich_local_text_edit_candidate(
+    /// Verify a Markdown code/list edit in its affected paragraph while
+    /// preserving the existing semantic style.
+    fn build_markdown_structured_local_candidate(
         &self,
         source: &super::source::SourceSnapshot,
         revision: Revision,
@@ -6216,7 +4624,6 @@ impl Document {
         text_work: FormattedTextSpliceStats,
         edits: &[TextEdit],
         patches: &[SourcePatch],
-        rtf_character_properties: Option<&CharacterProperties>,
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
         if self.markdown_edit_needs_reference_context(edits) {
             return Ok(None);
@@ -6238,74 +4645,10 @@ impl Document {
         {
             return Ok(None);
         }
-        let rtf_wrapper = self.format() == Format::Rtf
-            && rtf_character_properties.is_some_and(|properties| {
-                !super::rtf::character_properties_need_tables(properties)
-            })
-            && edits.len() == 1
-            && patches.len() == 2;
-        if !self.format().is_wysiwyg() || edits.is_empty() || patches.is_empty() {
+        if self.format() != Format::Markdown || edits.len() != 1 || patches.len() != 1 {
             return Ok(None);
         }
-
-        let combined = edits.len() != 1 || patches.len() != 1;
-        let combined_edit;
-        let combined_patch;
-        let (edit, patch) = if combined {
-            if !rtf_wrapper
-                || edits
-                    .windows(2)
-                    .any(|pair| pair[1].range.start.saturating_sub(pair[0].range.end) > 1024)
-                || patches
-                    .windows(2)
-                    .any(|pair| pair[1].range.start.saturating_sub(pair[0].range.end) > 4096)
-            {
-                return Ok(None);
-            }
-            let old_range = edits.first().unwrap().range.start..edits.last().unwrap().range.end;
-            let new_end = edits.iter().fold(old_range.end, |end, edit| {
-                end - edit.range.len() + edit.replacement.len()
-            });
-            let replacement = target_text
-                .slice(old_range.start..new_end)
-                .map_err(DocumentError::FormattedTextStorage)?;
-            combined_edit = TextEdit::new(old_range, replacement);
-            let source_range =
-                patches.first().unwrap().range.start..patches.last().unwrap().range.end;
-            let source_end =
-                rebase_source_boundary(source_range.end, patches, Association::AfterInsertion)?;
-            combined_patch = SourcePatch::primary(
-                source_range.clone(),
-                source
-                    .bytes_in(source_range.start..source_end)
-                    .ok_or(DocumentError::VerificationFailed)?,
-            );
-            // This hull is a parser window only. The transaction retains its
-            // separate minimal source patches and logical edit maps, including
-            // supporting whitespace changes outside the user's selection.
-            (&combined_edit, &combined_patch)
-        } else {
-            (&edits[0], &patches[0])
-        };
-
-        let mut rtf_boundary_context_bytes = 0;
-        if self.format() == Format::Rtf && !edit.range.is_empty() && edit.replacement.is_empty() {
-            let end = patch
-                .range
-                .end
-                .saturating_add(64)
-                .min(self.source_byte_len());
-            let bytes = self
-                .state()
-                .source
-                .bytes_in(patch.range.end..end)
-                .ok_or(DocumentError::VerificationFailed)?;
-            rtf_boundary_context_bytes = bytes.len();
-            let decoded = self.encoding().decode_region(&bytes, patch.range.end)?;
-            if super::rtf::deletion_needs_group_reparse(&normalize(&decoded, self.file_format())) {
-                return Ok(None);
-            }
-        }
+        let (edit, patch) = (&edits[0], &patches[0]);
         let markdown_code = self.format() == Format::Markdown;
         let markdown_list = markdown_code
             && self
@@ -6337,26 +4680,7 @@ impl Document {
         // prove that the removed bytes preserve parser state. Require one
         // uninterrupted visible source run covering exactly the replaced
         // formatted extent before inheriting any old character context.
-        if combined {
-            let original = self
-                .state()
-                .source
-                .bytes_in(patch.range.clone())
-                .ok_or(DocumentError::VerificationFailed)?;
-            let decoded = self
-                .encoding()
-                .decode_region(&original, patch.range.start)?;
-            if rtf_wrapper
-                && (decoded.text != edit.replacement
-                    || !decoded.text.is_ascii()
-                    || decoded.text.contains(['\\', '{', '}']))
-            {
-                return Ok(None);
-            }
-            if decoded.text.contains(['\r', '\n']) {
-                return Ok(None);
-            }
-        } else if edit.range.is_empty() {
+        if edit.range.is_empty() {
             if !patch.range.is_empty() {
                 return Ok(None);
             }
@@ -6381,18 +4705,14 @@ impl Document {
         // Context inheritance is valid only for ordinary escaped text. List
         // and paragraph intents may produce identical text while changing the
         // enclosing state, and must pass through a structural reparse.
-        let canonical = if markdown_code {
-            edit.replacement.clone()
-        } else {
-            super::rtf::escape(&edit.replacement)
-        };
+        let canonical = edit.replacement.clone();
         let Ok(canonical_bytes) = self.state().encoding.encode_fragment(&canonical) else {
             // A prose character reference may be representable even though
             // its decoded text is not. This literal-fragment fast path cannot
             // prove that edit; let ordinary source parsing verify it instead.
             return Ok(None);
         };
-        if patch.replacement != canonical_bytes && !rtf_wrapper {
+        if patch.replacement != canonical_bytes {
             return Ok(None);
         }
 
@@ -6506,8 +4826,6 @@ impl Document {
         let mut provenance;
         let decoded_bytes;
 
-        let mut rtf_generated_styles = Vec::new();
-
         {
             let (parsed_provenance, parsed_bytes) = {
                 let decoded = self
@@ -6515,39 +4833,14 @@ impl Document {
                     .encoding
                     .decode_region(&patch.replacement, patch.range.start)?;
                 let normalized = normalize(&decoded, self.state().file_format);
-                let parsed = if markdown_code {
-                    super::projection::project_plain(
-                        &normalized,
-                        revision,
-                        patch.range.start,
-                        patch.range.start + patch.replacement.len(),
-                    )
-                } else {
-                    super::rtf::project(
-                        &normalized,
-                        revision,
-                        patch.range.start,
-                        patch.range.start + patch.replacement.len(),
-                    )
-                };
+                let parsed = super::projection::project_plain(
+                    &normalized, revision, patch.range.start,
+                    patch.range.start + patch.replacement.len(),
+                );
                 if parsed.text() != edit.replacement {
                     return Ok(None);
                 }
-                if rtf_wrapper {
-                    // The generated balanced group changes only these sparse
-                    // declarations. Keep inherited named/direct layers beneath
-                    // the parsed control words, and verify the resolved result.
-                    rtf_generated_styles = parsed
-                        .style_spans_for_region(&(0..edit.replacement.len()))
-                        .into_iter()
-                        .filter(|span| matches!(span.application, StyleApplication::Direct(_)))
-                        .map(|mut span| {
-                            span.range = span.range.start + edit.range.start - old_line.start
-                                ..span.range.end + edit.range.start - old_line.start;
-                            span
-                        })
-                        .collect();
-                }
+
                 (parsed.provenance().to_vec(), patch.replacement.len())
             };
             provenance = Vec::new();
@@ -6582,7 +4875,7 @@ impl Document {
                 provenance.push(span);
             }
             provenance.sort_by_key(|span| span.formatted.start);
-            decoded_bytes = parsed_bytes + old_patch_bytes.len() + rtf_boundary_context_bytes;
+            decoded_bytes = parsed_bytes + old_patch_bytes.len();
         }
 
         let sampled_at = if edit.range.is_empty() {
@@ -6601,29 +4894,12 @@ impl Document {
             edit.range.start
         };
 
-        let mut insertion_styles = old_styles
+        let insertion_styles = old_styles
             .iter()
             .filter(|span| span.range.contains(&sampled_at))
             .map(|span| span.application.clone())
             .collect::<Vec<_>>();
-        if rtf_wrapper {
-            let mut inherited = CharacterProperties::default();
-            insertion_styles.retain(|application| {
-                if let StyleApplication::Direct(properties) = application {
-                    inherited.overlay(properties);
-                    false
-                } else {
-                    true
-                }
-            });
-            for span in &mut rtf_generated_styles {
-                if let StyleApplication::Direct(properties) = &mut span.application {
-                    let mut combined = inherited.clone();
-                    combined.overlay(properties);
-                    *properties = combined;
-                }
-            }
-        }
+
         let mut styles = Vec::new();
         for span in old_styles {
             let prefix_end = edit.range.start;
@@ -6653,7 +4929,7 @@ impl Document {
                 });
             }
         }
-        styles.extend(rtf_generated_styles);
+
         styles.sort_by_key(|span| span.range.start);
         let mut merged: Vec<StyleSpan> = Vec::new();
         for span in styles {
@@ -7291,8 +5567,7 @@ impl Document {
         {
             return Ok(None);
         }
-        // Stateful RTF parsing cannot restart at a physical source line.
-        if edits.is_empty() || self.format().is_rich_text() {
+        if edits.is_empty() {
             return Ok(None);
         }
         // Markdown Source rows are regional source rows: the regional proof
@@ -7628,13 +5903,6 @@ impl Document {
     }
 }
 
-fn style_block_target_range(target: StyleBlockTarget, whole_document: TextRange) -> TextRange {
-    match target {
-        StyleBlockTarget::DocumentRoot => whole_document,
-        StyleBlockTarget::Paragraphs(range) => range,
-    }
-}
-
 fn invalid_style_property_target(
     property: StyleProperty,
     target: StylePropertyTarget,
@@ -7708,17 +5976,6 @@ fn validate_projection_style_configuration(
         }
     }
     validate_percentage_font_contexts(projection, style_sheet, document_style, None)
-}
-
-fn percentage_style_edit_range(intent: &PersistedStyleIntent) -> Option<Range<usize>> {
-    match intent {
-        PersistedStyleIntent::AssignCharacterStyle { range, .. }
-        | PersistedStyleIntent::AssignBlockStyle {
-            target: StyleBlockTarget::Paragraphs(range),
-            ..
-        } => Some(range.start().offset()..range.end().offset()),
-        _ => None,
-    }
 }
 
 /// Only extreme point sizes can overflow or underflow an allowed percentage.
@@ -8042,28 +6299,6 @@ fn preferred_markdown_style_marker(style: SemanticInlineStyle) -> &'static str {
     markdown_style_markers(style)[0]
 }
 
-/// Verify the whole projected style collection after changing source syntax.
-/// Checking only for presence/absence of the target would allow removing one
-/// delimiter pair to reinterpret adjacent Markdown as a different style.
-fn rich_semantic_properties(
-    style: SemanticInlineStyle,
-    enabled: bool,
-) -> Result<CharacterProperties, DocumentError> {
-    let mut properties = CharacterProperties::default();
-    match style {
-        SemanticInlineStyle::Strong => properties.bold = Some(enabled),
-        SemanticInlineStyle::Emphasis => {
-            properties.slant = Some(if enabled {
-                super::FontSlant::Italic
-            } else {
-                super::FontSlant::Upright
-            })
-        }
-        SemanticInlineStyle::Code => return Err(DocumentError::UnsupportedFormatting),
-    }
-    Ok(properties)
-}
-
 fn semantic_style_edit_was_exactly_projected(
     before: &[StyleSpan],
     after: &[StyleSpan],
@@ -8328,9 +6563,7 @@ fn structured_payload_syntax(
     file_format: FileFormat,
     encoding: super::Encoding,
 ) -> String {
-    if format == Format::Rtf {
-        return super::rtf::escape(payload.text());
-    }
+
     let escape_markdown = format == Format::Markdown && (!in_code || payload.text().contains('`'));
     let mut syntax = String::with_capacity(payload.text().len());
     let mut start = 0usize;
@@ -8405,43 +6638,6 @@ fn source_backed_reprojection_edits(
     after: &FormattedDocument,
 ) -> Vec<TextEdit> {
     source_backed_reprojection_edits_with_patches(before, after, &[])
-}
-
-/// Translate the serializer's normalized UTF-8 extents into the exact physical
-/// bytes authored by `prepare_format`. Work is linear in this explicitly
-/// requested whole-artifact conversion, including UTF-16, BOM and CRLF spelling.
-fn encoded_conversion_correspondence(
-    source: &str,
-    correspondence: &[(Range<usize>, Range<usize>)],
-    encoding: super::Encoding,
-    file_format: FileFormat,
-    bom_len: usize,
-) -> std::collections::HashMap<(usize, usize), (usize, usize)> {
-    let mut cuts = std::collections::HashMap::new();
-    let mut physical = bom_len;
-    for (offset, character) in source.char_indices() {
-        cuts.insert(offset, physical);
-        let encoded_len = |ch: char| match encoding {
-            super::Encoding::Utf8 => ch.len_utf8(),
-            super::Encoding::Latin1 => 1,
-            super::Encoding::Utf16Le | super::Encoding::Utf16Be => ch.len_utf16() * 2,
-        };
-        physical += if character == '\n' {
-            file_format.spelling().chars().map(encoded_len).sum()
-        } else {
-            encoded_len(character)
-        };
-    }
-    cuts.insert(source.len(), physical);
-    correspondence
-        .iter()
-        .filter_map(|(old, new)| {
-            Some((
-                (old.start, old.end),
-                (*cuts.get(&new.start)?, *cuts.get(&new.end)?),
-            ))
-        })
-        .collect()
 }
 
 fn source_backed_reprojection_edits_with_patches(
@@ -8812,17 +7008,16 @@ mod prepared_group_reuse_tests {
     use super::*;
 
     fn request(document: &Document) -> ModelRequest {
-        ModelRequest::SetFormat {
+        ModelRequest::SetMarkdownSource {
             document: document.id(),
             revision: document.revision(),
-            target: Format::Markdown,
-            operation: super::super::FormatOperation::Reinterpret,
+            source: false,
         }
     }
 
     #[test]
     fn closed_group_reuse_is_explicit_and_other_preconditions_remain_strict() {
-        let mut document = Document::new("__word__");
+        let mut document = Document::from_bytes(b"__word__".to_vec(), super::super::Encoding::Utf8, Format::MarkdownSource).unwrap();
         document.begin_edit_group();
         document.insert(0, "X").unwrap();
         let prepared = document.prepare_model_request(request(&document)).unwrap();
@@ -8897,58 +7092,6 @@ mod prepared_cursor_tests {
             Document::new("e").prepared_text_point(&prepared, 0),
             Err(DocumentError::WrongDocument)
         );
-    }
-}
-
-#[cfg(test)]
-mod rich_reverse_patch_tests {
-    use super::*;
-    use crate::document::{Encoding, FontSlant};
-    use crate::layout::DocumentLayoutStyles;
-
-    #[test]
-    fn inverse_patch_removing_a_style_wrapper_reprojects_restored_context() {
-        for (format, original, removed) in [(
-            Format::Rtf,
-            r"{\rtf1 {\i a}{\i b}rd}{\*\unknown keep}",
-            r"{\i b}",
-        )] {
-            let mut document =
-                Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-            let start = original.find(removed).unwrap();
-            let prepared = document
-                .prepare_text_edits_with_patches(
-                    vec![TextEdit::new(1..2, "o")],
-                    Some(vec![SourcePatch::primary(
-                        start..start + removed.len(),
-                        b"o".to_vec(),
-                    )]),
-                )
-                .unwrap();
-            document.commit_model_transaction(prepared).unwrap();
-            assert_eq!(document.text(), "aord");
-            let fresh =
-                Document::from_bytes(document.source_bytes(), Encoding::Utf8, format).unwrap();
-            for at in 0..4 {
-                let actual =
-                    DocumentLayoutStyles::character_at(document.projection(), at, false).unwrap();
-                let expected =
-                    DocumentLayoutStyles::character_at(fresh.projection(), at, false).unwrap();
-                assert_eq!(actual, expected, "{format:?} at {at}");
-            }
-            assert_eq!(
-                DocumentLayoutStyles::character_at(document.projection(), 1, false)
-                    .unwrap()
-                    .slant,
-                FontSlant::Upright
-            );
-            document
-                .set_semantic_style(1..2, SemanticInlineStyle::Emphasis, true)
-                .unwrap();
-            assert!(document.undo());
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), original.as_bytes());
-        }
     }
 }
 

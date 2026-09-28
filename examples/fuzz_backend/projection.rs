@@ -16,7 +16,6 @@ enum SourceFormat {
     Plain,
     Markdown,
     MarkdownSource,
-    Rtf,
 }
 impl SourceFormat {
     fn core(self) -> Format {
@@ -24,7 +23,6 @@ impl SourceFormat {
             Self::Plain => Format::PlainText,
             Self::Markdown => Format::Markdown,
             Self::MarkdownSource => Format::MarkdownSource,
-            Self::Rtf => Format::Rtf,
         }
     }
 }
@@ -250,11 +248,10 @@ impl Oracle {
                             },
                             enabled: *enabled,
                         },
-                        Action::NoOpFormat => ModelRequest::SetFormat {
-                            operation: viem_core::FormatOperation::Reinterpret,
+                        Action::NoOpFormat => ModelRequest::SetMarkdownSource {
                             document: document.id(),
                             revision,
-                            target: document.format(),
+                            source: document.format().is_source_view(),
                         },
                         _ => unreachable!(),
                     };
@@ -409,8 +406,6 @@ fn source_visible_replacement_intention(document: &Document, action: &Action) ->
     expected.splice(first.source.start..last.source.end, replacement);
     Some(expected)
 }
-
-
 
 fn expected_rejection(error: &ModelTransactionError) -> bool {
     matches!(
@@ -606,7 +601,8 @@ fn generate(oracle: &Oracle, rng: &mut Rng, index: usize) -> Action {
     match rng.usize(16) {
         0 => Action::Undo,
         1 => Action::Redo,
-        2 => Action::NoOpFormat,
+        2 if document.format().is_markdown() => Action::NoOpFormat,
+        2 => Action::Check,
         3 => Action::Check,
         kind => {
             let mut boundaries = document
@@ -615,7 +611,7 @@ fn generate(oracle: &Oracle, rng: &mut Rng, index: usize) -> Action {
                 .map(|(offset, _)| offset)
                 .collect::<Vec<_>>();
             boundaries.push(document.text().len());
-            if kind == 4 && document.format() != Format::Rtf {
+            if kind == 4 {
                 let bytes = document.source_bytes();
                 boundaries = match document.encoding() {
                     Encoding::Utf16Le | Encoding::Utf16Be => (0..=bytes.len()).step_by(2).collect(),
@@ -665,7 +661,7 @@ fn generate(oracle: &Oracle, rng: &mut Rng, index: usize) -> Action {
                 "\r",
             ];
             let text = choices[rng.usize(choices.len())].to_owned();
-            if kind == 4 && document.format() != Format::Rtf {
+            if kind == 4 {
                 Action::SourceReplace { start, end, text }
             } else {
                 Action::Replace { start, end, text }
@@ -697,22 +693,6 @@ fn fixture(rng: &mut Rng) -> Action {
         (
             Markdown,
             "Malformed *one **two_ [link](unfinished\n\n`code\n",
-        ),
-        (
-            Rtf,
-            r"{\rtf1\ansi First {\b bold} and {\i italic}.\par Tail.}",
-        ),
-        (
-            Rtf,
-            r"{\rtf1{\fonttbl{\f0 Helvetica;}}{\colortbl;\red128\green30\blue60;}\f0\fs28 Text {\cf1 colored}\line more\par Tail}",
-        ),
-        (
-            Rtf,
-            r"{\rtf1{\stylesheet{\s0 Normal;}{\s1\sbasedon0\b Heading1;}{\*\cs2\i Accent;}}\s1 Title\par\s0 Body {\cs2 accent}\par Tail}",
-        ),
-        (
-            Rtf,
-            r"{\rtf1\uc1 \u233? {\b word}\par {\*\unknown opaque {nested}} tail",
         ),
     ];
     let (format, source) = fixtures[rng.usize(fixtures.len())];

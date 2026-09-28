@@ -47,10 +47,9 @@ internal sealed unsafe class CoreDocument : IDisposable
     {
         ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN_SOURCE,
         ".html" or ".htm" or ".xhtml" => VIEM_FORMAT_CODE,
-        ".rtf" => VIEM_FORMAT_RTF,
         _ => VIEM_FORMAT_PLAIN_TEXT
     };
-    public static string FormatName(uint format) => format switch { 1 => "Text", 2 => "Markdown", 4 => "RTF", 5 => "Markdown Source", 7 => "Code", _ => "Text" };
+    public static string FormatName(uint format) => format switch { 1 => "Text", 2 => "Markdown", 5 => "Markdown Source", 7 => "Code", _ => "Text" };
     public byte[] Source(ulong revision) => Copy((p, n, r) => viem_core_copy_source_bytes(Handle, revision, p, n, r));
     public string FormattedText() { ulong revision = State.document_revision; return Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_formatted_utf8(Handle, revision, p, n, r))); }
     public string FormattedRange(ulong start, ulong end)

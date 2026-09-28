@@ -1,7 +1,6 @@
 //! Line-oriented Ex commands sharing the document's hard-line and style APIs.
 use super::*;
 use crate::command::ex::ExAlignment;
-use crate::document::{ParagraphAlignment, StyleProperty, StylePropertyValue};
 
 pub(super) fn prepare(
     document: &Document,
@@ -155,24 +154,7 @@ pub(super) fn prepare(
                 context.current_line,
                 document.line_count(),
             )?;
-            if document.format().is_rich_text() {
-                if width.is_some() {
-                    return Err(ExExecuteError::UnsupportedCommand("Column widths and indents apply only in literal text views; rich text alignment uses the paragraph width".into()));
-                }
-                let alignment = match alignment {
-                    ExAlignment::Left => ParagraphAlignment::Start,
-                    ExAlignment::Right => ParagraphAlignment::End,
-                    ExAlignment::Center => ParagraphAlignment::Center,
-                };
-                plan.mutation = ExMutation::Model(ModelRequest::EditDirectProperty {
-                    document: document.id(),
-                    revision: document.revision(),
-                    range: hard_line_text_range(document, lines)?,
-                    property: StyleProperty::ParagraphAlignment,
-                    value: Some(StylePropertyValue::ParagraphAlignment(alignment)),
-                });
-                stage_line_edits(document, context.current_line, Vec::new(), plan)?;
-            } else if document.format().is_wysiwyg() {
+            if document.format().is_wysiwyg() {
                 return Err(ExExecuteError::UnsupportedCommand("Paragraph alignment is not supported in formatted Markdown; switch to Markdown Source for whitespace alignment".into()));
             } else {
                 let default = if *alignment == ExAlignment::Left {

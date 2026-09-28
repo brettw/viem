@@ -86,12 +86,9 @@ impl CommandInterpreter {
     }
     pub fn set_line_mode(
         &mut self,
-        document: &Document,
+        _document: &Document,
         mode: LineMode,
     ) -> Result<(), DocumentError> {
-        if mode == LineMode::PhysicalSource && document.format() == crate::document::Format::Rtf {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
         self.line_mode = mode;
         self.physical_cursor = None;
         self.clear_pending();

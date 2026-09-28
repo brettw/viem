@@ -7,7 +7,7 @@ import XCTest
 final class EVStyleColorWellTests: XCTestCase {
     func testOpeningNativePanelShowsCustomColorWithoutEditingOrAddingUndo() throws {
         let (backend, surface, editor, window) = try makeEditor()
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let original = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]
         let custom = EVStyleColor(red: 0.12345679, green: 0.25, blue: 0.5, alpha: 0.4)
         XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(custom)))
@@ -31,7 +31,7 @@ final class EVStyleColorWellTests: XCTestCase {
 
     func testNativePanelSelectionCommitsOnceAndReopeningShowsCommittedColor() throws {
         let (backend, surface, editor, window) = try makeEditor()
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let before = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterForeground]
         XCTAssertFalse(surface.canUndo)
         let well = try colorWell("Text color", in: editor.view)
@@ -57,7 +57,7 @@ final class EVStyleColorWellTests: XCTestCase {
 
     func testSwitchingFromTextToBackgroundColorSeedsCurrentColorWithoutEditingText() throws {
         let (backend, surface, editor, window) = try makeEditor()
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let foreground = EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1)
         let background = EVStyleColor(red: 0, green: 0.5, blue: 0.25, alpha: 0.5)
         XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(foreground)))
@@ -79,35 +79,9 @@ final class EVStyleColorWellTests: XCTestCase {
         XCTAssertEqual(definition.properties[.characterBackground]?.declared, .color(chosen))
     }
 
-    func testRTFPanelNormalizesColorAndOffersTransparentBackground() throws {
-        let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.rtfType, source: #"{\rtf1 Text}"#)
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
-        let well = try colorWell("Background color", in: editor.view)
-        try openColorPanel(well)
-        XCTAssertTrue(NSColorPanel.shared.showsAlpha)
-
-        NSColorPanel.shared.color = NSColor(srgbRed: 0.75, green: 0.25, blue: 0.125, alpha: 0.4)
-
-        let expected = EVStyleColor(red: 191 / 255, green: 64 / 255, blue: 32 / 255, alpha: 1)
-        try assertColor(well.color, equals: expected)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBackground]?.declared, .color(expected))
-        well.dismissColorControls()
-        try openColorPanel(well)
-        try assertColor(NSColorPanel.shared.color, equals: expected)
-
-        NSColorPanel.shared.color = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0)
-
-        let transparent = EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterBackground]?.declared, .color(transparent))
-        XCTAssertEqual(editor.inspection.diagnostic, "")
-        well.dismissColorControls()
-        try openColorPanel(well)
-        try assertColor(NSColorPanel.shared.color, equals: transparent)
-    }
-
     func testFirstClickOnInheritedWellEnablesOverrideAndOpensNativePanel() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType, source: "# Heading\n\nBody")
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
         let well = try colorWell("Background color", in: editor.view)
@@ -134,7 +108,7 @@ final class EVStyleColorWellTests: XCTestCase {
 
     func testStyleAndReadOnlyTransitionsDisconnectNativePanel() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType, source: "# Heading\n\nBody")
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let well = try colorWell("Text color", in: editor.view)
         try openColorPanel(well)
 
@@ -170,7 +144,7 @@ final class EVStyleColorWellTests: XCTestCase {
     func testNewCodeBlockBackgroundStartsOpaqueAndPreservesChosenAlpha() throws {
         let (backend, surface, editor, window) = try makeEditor(typeName: EVDocument.markdownType,
             source: "```\nCode block\n```")
-        defer { closeColorPanel(); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
         editor.selectStyle(key)
         editor.selectTab(.block)
@@ -242,8 +216,10 @@ final class EVStyleColorWellTests: XCTestCase {
         XCTAssertEqual(rgb.blueComponent, CGFloat(expected.blue), accuracy: 0.000001, file: file, line: line)
         XCTAssertEqual(rgb.alphaComponent, CGFloat(expected.alpha), accuracy: 0.000001, file: file, line: line)
     }
-    private func closeColorPanel() {
-        EVStyleColorWell.deactivatePanelOwner()
+    private func closeColorPanel(in root: NSView? = nil) {
+        if let root {
+            descendants(of: root).compactMap { $0 as? EVStyleColorWell }.forEach { $0.dismissColorControls() }
+        }
         NSColorPanel.shared.setTarget(nil)
         NSColorPanel.shared.setAction(nil)
         NSColorPanel.shared.orderOut(nil)

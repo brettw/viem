@@ -740,7 +740,7 @@ impl Document {
             if self.format() == Format::Markdown {
                 scratch.prepare_markdown_list_split(at, true)?
             } else {
-                scratch.prepare_rich_list_enter_with_empty_policy(at, false)?
+                scratch.prepare_structural_list_enter(at)?
             }
         } else if self.format() == Format::Markdown
             && (block.style.0 == "Block quote" || block.quote_depth > 0)

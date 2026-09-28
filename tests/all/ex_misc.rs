@@ -4,7 +4,7 @@ use viem_core::command::ex_execute::{
     HardLineRange,
 };
 use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
-use viem_core::document::{Document, Encoding, FileFormat, Format, ParagraphAlignment};
+use viem_core::document::{Document, Encoding, FileFormat, Format};
 
 fn run(doc: &mut Document, context: &ExExecutionContext, input: &str) -> ExOutcome {
     execute_ex(
@@ -135,46 +135,7 @@ fn alignment_uses_logical_columns_and_preserves_terminators_and_undo() {
     run(&mut doc, &ExExecutionContext::default(), ":%left 1");
     assert_eq!(doc.text(), " one\n 界\n");
 }
-#[test]
-fn rich_alignment_changes_paragraph_properties_without_padding_or_style_loss() {
-    for (format, text) in [
-        (Format::Rtf, "{\\rtf1 one\\par two}"),
-    ] {
-        let mut doc =
-            Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let source = doc.source_bytes();
-        let logical = doc.text().to_owned();
-        execute_ex(
-            &mut doc,
-            &mut ExExecutionState::default(),
-            &ExExecutionContext::default(),
-            &parse_ex(":%center").unwrap(),
-            &(),
-        )
-        .unwrap_or_else(|error| panic!("{format:?}: {error:?}"));
-        assert_eq!(doc.text(), logical);
-        assert!(doc
-            .projection()
-            .blocks()
-            .iter()
-            .any(|block| block.direct_paragraph.alignment == Some(ParagraphAlignment::Center)));
-        assert!(doc.undo());
-        assert_eq!(doc.source_bytes(), source);
-        assert!(!doc.undo());
-    }
-    let mut markdown =
-        Document::from_bytes(b"one\n\ntwo".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-    let before = markdown.source_bytes();
-    assert!(execute_ex(
-        &mut markdown,
-        &mut ExExecutionState::default(),
-        &ExExecutionContext::default(),
-        &parse_ex(":center").unwrap(),
-        &()
-    )
-    .is_err());
-    assert_eq!(markdown.source_bytes(), before);
-}
+
 #[test]
 fn delmarks_removes_only_named_marks_and_only_preserves_force_in_host_request() {
     let mut doc = Document::new("one\ntwo");
@@ -316,90 +277,4 @@ fn alignment_preserves_current_line_uses_default_for_zero_and_clears_blank_left_
         doc.text().split('\n').next(),
         Some(format!("{}one", " ".repeat(38)).as_str())
     );
-}
-#[test]
-fn rich_alignment_handles_empty_paragraphs_and_retains_character_scopes() {
-    for (format, source) in [
-        (Format::Rtf, r"{\rtf1 }"),
-        (Format::Rtf, r"{\rtf1 {\b one}\par {\i two}}"),
-    ] {
-        let mut doc =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let text = doc.text().to_owned();
-        let styles = doc.projection().style_spans().to_vec();
-        execute_ex(
-            &mut doc,
-            &mut ExExecutionState::default(),
-            &ExExecutionContext::default(),
-            &parse_ex(":%center").unwrap(),
-            &(),
-        )
-        .unwrap_or_else(|error| panic!("{format:?} {source:?}: {error:?}"));
-        assert_eq!(doc.text(), text);
-        assert_eq!(doc.projection().style_spans(), styles);
-        assert!(doc
-            .projection()
-            .blocks()
-            .iter()
-            .all(|block| block.direct_paragraph.alignment == Some(ParagraphAlignment::Center)));
-        assert!(doc.undo());
-        assert_eq!(doc.source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
-fn empty_rich_alignment_survives_typing_and_does_not_change_other_paragraphs() {
-    for (format, source) in [
-        (Format::Rtf, r"{\rtf1 \par other}"),
-        (Format::Rtf, r"{\rtf1 {\b }\par other}"),
-    ] {
-        let mut doc =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let before_other = doc.projection().blocks()[1].direct_paragraph.clone();
-        let before_character = doc.projection().blocks()[0]
-            .direct_default_character
-            .clone();
-        run(&mut doc, &ExExecutionContext::default(), ":1center");
-        assert_eq!(
-            doc.projection().blocks()[0].direct_paragraph.alignment,
-            Some(ParagraphAlignment::Center),
-            "{source}"
-        );
-        assert_eq!(
-            doc.projection().blocks()[0].direct_default_character,
-            before_character,
-            "{source}"
-        );
-        assert_eq!(
-            doc.projection().blocks()[1].direct_paragraph,
-            before_other,
-            "{source}"
-        );
-        doc.insert(0, "typed").unwrap();
-        assert_eq!(doc.text(), "typed\nother", "{source}");
-        assert_eq!(
-            doc.projection().blocks()[0].direct_paragraph.alignment,
-            Some(ParagraphAlignment::Center),
-            "{source}"
-        );
-        assert_eq!(
-            doc.projection().blocks()[1].direct_paragraph,
-            before_other,
-            "{source}"
-        );
-        assert!(doc.undo());
-        assert!(doc.undo());
-        assert_eq!(doc.source_bytes(), source.as_bytes());
-    }
-    for (format, source) in [ (Format::Rtf, r"{\rtf1 }")] {
-        let mut doc =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        run(&mut doc, &ExExecutionContext::default(), ":center");
-        doc.insert(0, "typed").unwrap();
-        assert_eq!(
-            doc.projection().blocks()[0].direct_paragraph.alignment,
-            Some(ParagraphAlignment::Center)
-        );
-        assert_eq!(doc.text(), "typed");
-    }
 }

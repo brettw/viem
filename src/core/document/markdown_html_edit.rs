@@ -190,8 +190,7 @@ impl Document {
             if scratch.text() != &self.text()[start..end] {
                 return Ok(None);
             }
-            let converted = super::super::conversion::convert(&scratch, Format::Markdown)?
-                .source
+            let converted = super::super::markdown_serialization::markdown_document(scratch.projection())
                 .replace('\n', self.file_format().spelling());
             let mut replacement = self.encoding().encode_fragment(&converted)?;
             let ending = self

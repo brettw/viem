@@ -11,7 +11,6 @@ fn main() {
         "markdown" => Format::Markdown,
         "markdown_source" => Format::MarkdownSource,
         "code" => Format::Code,
-        "rtf" => Format::Rtf,
         other => panic!("unknown format {other}"),
     };
     let document = Document::from_bytes(value["source"].as_str().unwrap().as_bytes().to_vec(), Encoding::Utf8, format).unwrap();

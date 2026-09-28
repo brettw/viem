@@ -8,7 +8,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     func testBaseParagraphNextStyleIsFixedAcrossGeneratedAndNativeStyles() throws {
         for (type, source, headingID) in [
             ("public.markdown", "Text", "Heading1"),
-            (EVDocument.rtfType, #"{\rtf1{\stylesheet{\s0\snext5 Normal;}{\s5\sbasedon0 Heading;}}\s0 Text}"#, "RtfP5"),
         ] {
             let configuration = isolatedConfiguration()
             let backend = EVCoreDocumentBackend(configuration: configuration)
@@ -54,7 +53,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     func testEveryBaseParagraphOverrideIsLockedWhileValuesRemainEditable() throws {
         for (type, source) in [
             ("public.markdown", "Text"),
-            (EVDocument.rtfType, #"{\rtf1\deff3{\fonttbl{\f3 Georgia;}}{\stylesheet{\s0 Normal;}}\s0 Text}"#),
         ] {
             let configuration = isolatedConfiguration()
             let backend = EVCoreDocumentBackend(configuration: configuration)
@@ -69,11 +67,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
             let snapshot = try backend.styleSheetSnapshot()
             let root = try XCTUnwrap(snapshot.definition(for: .baseParagraph))
             XCTAssertNil(root.properties[.characterBackground]?.declared)
-            if type == EVDocument.rtfType {
-                XCTAssertNil(root.properties[.characterSize]?.declared,
-                             "The native root fixture must exercise sparse declarations")
-                XCTAssertEqual(root.properties[.characterSize]?.effective, .float(12))
-            }
 
             try assertOverridesLockedAndValuesEditable(in: editor)
             XCTAssertEqual(try backend.styleSheetSnapshot(), snapshot)

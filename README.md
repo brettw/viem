@@ -13,7 +13,6 @@ It has several presentation modes.
 - Text (for plain text files)
 - Code (for source code)
 - Markdown source and WYSIWYG
-- RTF
 
 ### Code editing
 

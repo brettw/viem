@@ -11,7 +11,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("text".utf8), typeName: EVDocument.plainTextType)
+        try backend.read(source: Data("text".utf8), typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
@@ -28,15 +28,11 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         for item in [paragraph, character, edit] {
             item.target = controller.documentContentController
         }
-        for (command, enabled) in [
-            (EVMenuCommand.reinterpretAsText, false), (.reinterpretAsCode, false),
-            (.reinterpretAsMarkdown, true),
-            (.reinterpretAsText, false), (.reinterpretAsMarkdown, true),
-        ] {
-            surface.perform(menuCommand: command, sender: nil)
+        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
+            surface.perform(statusOption: .format(format))
             styles.update()
-            XCTAssertEqual(paragraph.isEnabled, enabled, "\(command)")
-            XCTAssertEqual(character.isEnabled, enabled, "\(command)")
+            XCTAssertTrue(paragraph.isEnabled, "\(format)")
+            XCTAssertTrue(character.isEnabled, "\(format)")
             XCTAssertTrue(edit.isEnabled, "Styles remain editable through the inspector")
         }
         withExtendedLifetime((builder, owner, controller)) {}

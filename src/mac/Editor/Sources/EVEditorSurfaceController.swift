@@ -398,7 +398,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if isViewLoaded {
                 editorView.applyPresentation()
             }
-            EVTypographyPanels.shared.documentDidRefresh(self)
             if selectionChanged {
                 NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: self)
             }
@@ -621,7 +620,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             switch statusOption {
             case let .lineMode(mode): try session.setLineMode(mode)
             case let .format(format):
-                _ = try session.setFormat(format, expected: expected)
+                guard format == .markdown || format == .markdownSource else { return }
+                _ = try session.setMarkdownSource(format == .markdownSource, expected: expected)
             }
         }
     }
@@ -631,14 +631,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if isViewLoaded, editorView.statusBar?.performCommandOutputAction(menuCommand) == true { return }
         dismissCommandOutput()
         guard let session else { return }
-        if let change = menuCommand.formatChange {
-            guard presentation(for: menuCommand).isEnabled else { return }
-            let expected = documentState
-            performInput {
-                _ = try session.setFormat(change.format, operation: change.operation, expected: expected)
-            }
-            return
-        }
         switch menuCommand {
         case .editStyles:
             EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
@@ -651,7 +643,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if backend.sourceFormat == .code {
             if (300..<400).contains(menuCommand.rawValue) { return }
         }
-        if performAdditionalFormatCommand(menuCommand) { return }
         switch menuCommand {
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             performHeadingShortcut(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
@@ -755,27 +746,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
         case .bold:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_STRONG), session: session)
-        case .showFonts:
-            EVTypographyPanels.shared.showFonts(for: self)
-        case .showColors, .textColor, .highlightColor:
-            EVTypographyPanels.shared.showColors(for: self, highlight: menuCommand == .highlightColor)
         case .italic:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS), session: session)
-        case .underline, .strikethrough:
-            let property: EVStyleProperty = menuCommand == .underline ? .characterUnderline : .characterStrikethrough
+        case .strikethrough:
             performInput {
-                let state = try session.decorationState(property)
-                _ = try session.editDirectProperty(property,
-                    value: .boolean(state != UInt32(VIEM_SEMANTIC_STYLE_STATE_ON)),
+                let state = try session.strikethroughState()
+                _ = try session.setStrikethrough(state != UInt32(VIEM_SEMANTIC_STYLE_STATE_ON),
                     expected: session.listSelection())
-            }
-        case .alignStart, .alignCenter, .alignEnd,
-             .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
-             .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            if canEditParagraphFormatting,
-               menuCommand != .directionAutomatic || canUseAutomaticParagraphDirection,
-               let (property, value) = directParagraphEdit(for: menuCommand) {
-                performInput { _ = try session.editDirectProperty(property, value: value, expected: session.listSelection()) }
             }
         case .editStyles:
             break // Routed above for both document and global Code styles.
@@ -793,8 +770,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // document and must not be submitted as one.
             return
         default:
-            // Source-backed rich formatting is disabled for the current plain
-            // text adapter; unsupported menu items validate disabled below.
             NSSound.beep()
         }
     }
@@ -803,20 +778,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if isViewLoaded, let presentation = editorView.statusBar?.commandOutputPresentation(for: menuCommand) {
             return presentation
         }
-        if let change = menuCommand.formatChange {
-            return EVMenuItemPresentation(
-                isEnabled: session != nil && ((backend.sourceFormat == .code || change.format == .code)
-                    ? backend.sourceFormat != change.format
-                    : !backend.sourceFormat.hasSameSerialization(as: change.format))
-            )
-        }
         if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
             if [.editStyles, .reloadStyleSheet].contains(menuCommand) {
                 return .enabled
             }
             return .disabled
         }
-        if let formatPresentation = additionalFormatPresentation(menuCommand) { return formatPresentation }
         return switch menuCommand {
         case .paragraphStyles, .characterStyles:
             EVMenuItemPresentation(isEnabled: session != nil && backend.sourceFormat != .plainText)
@@ -867,7 +834,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_MAC))
         case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
             EVMenuItemPresentation(
-                isEnabled: backend.sourceFormat != .rtf,
+                isEnabled: true,
                 state: documentState.encoding == encodingValue(menuCommand) ? .on : .off
             )
         case .showInvisibleCharacters:
@@ -894,26 +861,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 UInt32(VIEM_SEMANTIC_STYLE_STRONG),
                 session: session
             )
-        case .showFonts, .showColors, .textColor, .highlightColor:
-            EVMenuItemPresentation(isEnabled: canInspectTypography)
-        case .openTypeFeatures:
-            EVMenuItemPresentation(isEnabled: canEditTypography)
         case .italic:
             semanticStyleMenuPresentation(
                 UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS),
                 session: session
             )
-        case .underline, .strikethrough:
-            if canEditTypography, let session,
-               let state = try? session.decorationState(menuCommand == .underline ? .characterUnderline : .characterStrikethrough) {
+        case .strikethrough:
+            if [.markdown, .markdownSource].contains(backend.sourceFormat), let session,
+               let state = try? session.strikethroughState() {
                 EVMenuItemPresentation(isEnabled: true,
                     state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
                         : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
             } else { .disabled }
-        case .alignStart, .alignCenter, .alignEnd,
-             .directionAutomatic, .directionLeftToRight, .directionRightToLeft,
-             .lineSpacingNormal, .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            paragraphFormattingPresentation(menuCommand)
         case .reloadStyleSheet:
             .enabled
         case .editStyles:
@@ -927,22 +886,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     var hasSelection: Bool { EVSelectionModes.hasSelection(viewPresentation.mode) }
     var isTextSelectionMode: Bool { EVSelectionModes.isTextSelection(viewPresentation.mode) }
-
-    func directParagraphEdit(for command: EVMenuCommand) -> (EVStyleProperty, EVStyleValue?)? {
-        switch command {
-        case .alignStart: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START)))
-        case .alignCenter: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER)))
-        case .alignEnd: (.paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)))
-        case .directionAutomatic: (.paragraphBaseDirection, .writingDirection(0))
-        case .directionLeftToRight: (.paragraphBaseDirection, .writingDirection(1))
-        case .directionRightToLeft: (.paragraphBaseDirection, .writingDirection(2))
-        case .lineSpacingNormal: (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0)))
-        case .lineSpacingSingle, .lineSpacingOneAndHalf, .lineSpacingDouble:
-            (.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER),
-                value: command == .lineSpacingSingle ? 1 : command == .lineSpacingOneAndHalf ? 1.5 : 2)))
-        default: nil
-        }
-    }
 
     var isVisualBlockMode: Bool {
         viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
@@ -1165,7 +1108,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         performInput {
             let fragments = try ranges.map {
                 let fragment = try backend.clipboardFragment(in: $0, snapshot: snapshot)
-                guard fragment.sourceExact || !fragment.sourceText.isEmpty || fragment.plainText.isEmpty else {
+                guard !fragment.sourceText.isEmpty || fragment.plainText.isEmpty else {
                     throw EVCoreFrontendError.core(operation: "Selection has no exact source fragment", status: UInt32(VIEM_STATUS_AMBIGUOUS_PROJECTION))
                 }
                 return fragment.sourceText
@@ -1397,7 +1340,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func fileFormatPresentation(_ target: UInt32) -> EVMenuItemPresentation {
         EVMenuItemPresentation(
-            isEnabled: backend.sourceFormat != .rtf,
+            isEnabled: true,
             state: documentState.file_format == target ? .on : .off
         )
     }

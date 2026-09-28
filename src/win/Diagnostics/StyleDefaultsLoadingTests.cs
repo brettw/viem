@@ -59,14 +59,14 @@ internal static class StyleDefaultsLoadingTests
         Check(savedStyle["futureDefinition"]!.GetValue<int>() == 7 && savedStyle["character"]!["futureProperty"]!.GetValue<string>() == "retained"
             && savedStyle["character"]!["open_type_features"]!.AsObject().Count == 0,
             "theme style saving retains extensions but removes cleared feature-map declarations");
-        var rtfStyles = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_RTF))!;
-        var customStyle = rtfStyles["character_styles"]!.AsArray()[0]!.DeepClone();
+        var codeStyles = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE))!;
+        var customStyle = codeStyles["character_styles"]!.AsArray()[0]!.DeepClone();
         customStyle["id"] = "Theme test style"; customStyle["name"] = "Theme test style";
-        rtfStyles["character_styles"]!.AsArray().Add(customStyle);
-        preferences.SaveThemeStyles(VIEM_FORMAT_RTF, Encoding.UTF8.GetBytes(rtfStyles.ToJsonString()));
-        rtfStyles["character_styles"]!.AsArray().Remove(customStyle);
-        preferences.SaveThemeStyles(VIEM_FORMAT_RTF, Encoding.UTF8.GetBytes(rtfStyles.ToJsonString()));
-        Check(!Read(customPath)["styles"]!["rtf"]!["character_styles"]!.AsArray().Any(entry => entry!["id"]!.GetValue<string>() == "Theme test style"),
+        codeStyles["character_styles"]!.AsArray().Add(customStyle);
+        preferences.SaveThemeStyles(VIEM_FORMAT_CODE, Encoding.UTF8.GetBytes(codeStyles.ToJsonString()));
+        codeStyles["character_styles"]!.AsArray().Remove(customStyle);
+        preferences.SaveThemeStyles(VIEM_FORMAT_CODE, Encoding.UTF8.GetBytes(codeStyles.ToJsonString()));
+        Check(!Read(customPath)["styles"]!["code"]!["character_styles"]!.AsArray().Any(entry => entry!["id"]!.GetValue<string>() == "Theme test style"),
             "saving a theme after deleting a style does not restore its old definition");
         string externalPath = Path.Combine(preferences.ThemesDirectory, ".External"); File.WriteAllBytes(externalPath, midnight);
         string namedDefaultPath = Path.Combine(preferences.ThemesDirectory, "Default.json"); File.WriteAllBytes(namedDefaultPath, midnight);
@@ -137,14 +137,7 @@ internal static class StyleDefaultsLoadingTests
                 "theme style changes apply to open documents without source or revision changes");
             view.Undo(); Check(document.Source(document.State.document_revision).SequenceEqual(source) && !document.IsDirty,
                 "theme changes preserve the existing source undo record and saved baseline");
-            using var rtf = new CoreDocument("{\\rtf1{\\stylesheet{\\s0\\b Paragraph;}}\\s0 Authored}"u8.ToArray(), format: VIEM_FORMAT_RTF);
-            preferences.AttachThemeDocument(rtf);
-            var rtfView = await window.AddPane(rtf).Ready;
-            byte[] authored = rtf.Source(rtf.State.document_revision);
-            preferences.SelectTheme("Paper");
-            Check(rtf.Source(rtf.State.document_revision).SequenceEqual(authored) && !rtf.IsDirty
-                && rtfView.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value >= 700,
-                "changing themes preserves source-authored RTF styles");
+
         }
         finally {
             window.Close(); App.Instance.Windows.Remove(window);

@@ -19,12 +19,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case encodingUTF16LE
     case encodingUTF16BE
 
-    case convertToText = 130
-    case convertToMarkdown
-    case reinterpretAsText = 133
-    case reinterpretAsMarkdown
-    case reinterpretAsCode = 136
-
     case undo = 200
     case redo
     case cut
@@ -50,45 +44,17 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
 
     case copySource = 250
 
-    case showFonts = 300
-    case bold
+    case bold = 301
     case italic
-    case underline
-    case strikethrough
-    case defaultLigatures = 307
-    case allLigatures
-    case noLigatures
-    case superscript = 312
-    case subscriptText
-    case openTypeFeatures = 316
-    case showColors
-    case textColor
-    case highlightColor
-    case defaultParagraphStyle
+    case strikethrough = 304
+    case defaultParagraphStyle = 320
     case characterStyles
     case baseParagraphStyle
     case paragraphStyles
     case editStyles
-    case alignStart
-    case alignCenter
-    case alignEnd
-    case directionAutomatic
-    case directionLeftToRight
-    case directionRightToLeft
-    case increaseIndent
+    case increaseIndent = 331
     case decreaseIndent
-    case paragraphSpacing
-    case lineSpacingNormal
-    case lineSpacingSingle
-    case lineSpacingOneAndHalf
-    case lineSpacingDouble
-    case lineSpacingCustom
-    case copyStyle
-    case pasteStyle
-    case clearDirectCharacterFormatting
-    case clearDirectParagraphFormatting
-    case clearAllDirectFormatting
-    case bulletedList
+    case bulletedList = 344
     case numberedList
     case removeList
     case reloadStyleSheet
@@ -107,17 +73,6 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case actualSize
     case newWindowForDocument
     case flowParagraphs
-
-    public var formatChange: (format: EVSourceFormat, operation: EVFormatOperation)? {
-        switch self {
-        case .convertToText: (.plainText, .convert)
-        case .convertToMarkdown: (.markdown, .convert)
-        case .reinterpretAsText: (.plainText, .reinterpret)
-        case .reinterpretAsMarkdown: (.markdown, .reinterpret)
-        case .reinterpretAsCode: (.code, .reinterpret)
-        default: nil
-        }
-    }
 
     /// Standard text actions must reach native field editors first. The custom
     /// document view implements the same selectors using core intentions.

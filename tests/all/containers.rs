@@ -112,32 +112,6 @@ fn ordinary_edits_keep_container_paths_and_projection_work_local() {
 }
 
 #[test]
-fn rtf_nested_lists_use_portable_owners_and_preserve_authored_absolute_indents() {
-    let source = concat!(
-        r"{\rtf1{\*\listtable{\list{\listlevel\levelnfc0\levelstartat1{\leveltext\'02\'00.;}{\levelnumbers\'01;}\li720}",
-        r"{\listlevel\levelnfc23\levelstartat1{\leveltext\'01\u8226?;}{\levelnumbers;}\li1440}\listid1}}",
-        r"{\*\listoverridetable{\listoverride\listid1\listoverridecount0\ls1}}",
-        r"\pard\ls1\ilvl0 Parent\par\pard\ls1\ilvl1 Child\par\pard\ls1\ilvl0 Tail}");
-    let mut doc = open(source, Format::Rtf);
-    assert_eq!(path(&doc, 0), [ContainerKind::List { ordered: true }, ContainerKind::ListItem]);
-    assert_eq!(path(&doc, 1), [ContainerKind::List { ordered: true }, ContainerKind::ListItem,
-        ContainerKind::List { ordered: false }, ContainerKind::ListItem]);
-    assert_eq!(doc.projection().blocks()[0].direct_paragraph.leading_indent, Some(36.));
-    assert_eq!(doc.projection().blocks()[1].direct_paragraph.leading_indent, Some(72.));
-    for member in doc.projection().blocks()[1].containers.iter().filter(|member| matches!(member.container.kind, ContainerKind::List { .. })) {
-        assert_eq!(member.container.direct_formatting.as_ref().unwrap().direct_paragraph.padding_left, Some(0.));
-    }
-    let before = doc.projection().container_structure();
-    doc.insert(8, "X").unwrap();
-    assert_eq!(doc.projection().container_structure().containers[0].attributes.id, before.containers[0].attributes.id);
-    assert!(doc.undo());
-    assert_eq!(doc.source_bytes(), source.as_bytes());
-    assert_eq!(doc.projection().container_structure(), before);
-    let legacy = open(r"{\rtf1{\*\pn\pnlvlblt}One\par Two}", Format::Rtf);
-    assert!(legacy.projection().blocks()[0].containers[0].container.direct_formatting.is_none());
-}
-
-#[test]
 fn changing_a_container_kind_never_aliases_a_surviving_sibling_owner() {
     let mut doc = open("> - first\n>\n>   continued\n> - tail", Format::MarkdownSource);
     let quote = doc.projection().blocks()[0].containers[0].container.id;
