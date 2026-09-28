@@ -45,7 +45,7 @@ final class EVMarkdownSwitchIntegrationTests: XCTestCase {
             backend.resetFormattedAccessCounters()
             let refreshes = surface.presentationRefreshCount
             let start = ContinuousClock.now
-            surface.perform(statusOption: .format(format))
+            surface.formattingToolbar.formattedView.performClick(nil)
             let elapsed = start.duration(to: .now)
             print("Markdown switch \(source.count) bytes → \(format.displayName): \(elapsed)")
 

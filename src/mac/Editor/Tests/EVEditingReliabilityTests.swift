@@ -228,17 +228,17 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testFormatPickerAndEncodingMenuPreserveSourceAndHistory() throws {
+    func testFormattedViewToggleAndEncodingMenuPreserveSourceAndHistory() throws {
         let source = "## Heading\n__bold__ café\n"
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
-        surface.perform(statusOption: .format(.markdownSource))
-        XCTAssertEqual(surface.statusBarState.format, "Markdown Source")
+        XCTAssertEqual(surface.formattingToolbar.formattedView.state, .off)
+        XCTAssertEqual(backend.sourceFormat, .markdownSource)
         XCTAssertEqual(surface.formattedText, source)
-        surface.perform(statusOption: .format(.markdown))
-        XCTAssertEqual(surface.statusBarState.format, "Markdown WYSIWYG")
+        surface.formattingToolbar.formattedView.performClick(nil)
+        XCTAssertEqual(backend.sourceFormat, .markdown)
         XCTAssertEqual(surface.formattedText, "Heading\nbold café")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
         surface.perform(menuCommand: .encodingUTF16LE, sender: nil)
@@ -247,13 +247,13 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(surface.statusBarState.format, "Markdown Source")
+        XCTAssertEqual(backend.sourceFormat, .markdownSource)
         XCTAssertEqual(surface.formattedText, source)
         XCTAssertEqual(surface.statusBarState.message, "")
     }
 
     @MainActor
-    func testFormatPickerKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
+    func testFormattedViewToggleKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
         let source = (0..<180).map { "## Heading \($0)\n\nText **café العربية** α\($0) end." }.joined(separator: "\n\n")
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
@@ -262,7 +262,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
         surface.viewDidLayout()
         let session = try XCTUnwrap(surface.session)
-        surface.perform(statusOption: .format(.markdownSource))
+        surface.formattingToolbar.formattedView.performClick(nil)
         surface.performInput {
             _ = try session.sendText("/العربية")
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
@@ -286,7 +286,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         let topOccurrence = try firstVisibleOccurrence()
         XCTAssertGreaterThan(topOccurrence, 70)
         for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
-            surface.perform(statusOption: .format(format))
+            surface.formattingToolbar.formattedView.performClick(nil)
             let text = try backend.formattedText()
             let offsets = occurrenceOffsets(text)
             XCTAssertEqual(offsets.count, 180)

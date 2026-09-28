@@ -452,10 +452,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    var formatLabel: String {
-        sourceFormat.displayName
-    }
-
     var lineEndingLabel: String {
         switch currentDocumentState.file_format {
         case UInt32(VIEM_FILE_FORMAT_DOS): "CRLF"

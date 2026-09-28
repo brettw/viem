@@ -4177,7 +4177,7 @@ they create no undo unit, touch no register, and are not repeated by `.`.
 
 Each pane owns one status line along its bottom edge. Its contents are:
 
-- a left group with the mode, the source-format popup, and any message; and
+- a left group with the mode and any message; and
 - a right-aligned caret position widget: the line-mode icon and the line and
   column, which is also the control that toggles the line mode.
 
@@ -4517,8 +4517,8 @@ The document title bar has an upper-right formatting-toolbar toggle, drawn as
 a monochrome thin outline of a horizontal rectangle containing three square
 buttons. Its on state uses the native neutral button fill without an accent
 highlight; its off state is transparent against the title-bar background.
-Both toggle and toolbar are absent in Text and Code. Other formats,
-including Source views, show both by default. Toolbar visibility is remembered
+Both toggle and toolbar are absent in Text and Code. Markdown Source and
+Markdown WYSIWYG show both by default. Toolbar visibility is remembered
 independently per format in `formattingToolbar` in `config.json`; switching
 formats or focused panes restores that format's choice. macOS implements this
 with native title-bar accessories that share the title bar's appearance.
@@ -4529,7 +4529,15 @@ Left to right, the toolbar contains Paragraph and Character style selectors;
 Bold, Italic, Strikethrough, character Code; then Bulleted List, Numbered List,
 Code Block; then Indent and Unindent. Groups have spacing between them. Unsupported
 format controls are omitted. Supported actions may be temporarily unavailable for a selection.
-Narrow windows keep the controls accessible through horizontal scrolling.
+The right edge contains a **Formatted view** toggle with a fixed monochrome
+document-outline-and-**Aa** icon and tooltip **Formatted view (WYSIWYG)**.
+On means Markdown WYSIWYG; off means Markdown Source. Its pressed state follows
+the active document, including undo/redo and changes from another view. It uses
+the existing source-preserving Markdown switch and returns focus to the editor.
+A flexible gap separates it from the other controls when space permits.
+Narrow windows keep the toggle visible while the other controls remain
+accessible through horizontal scrolling. The status line has no format popup
+or format label in any document format.
 
 Selectors reflect the current named styles (or Mixed), and use the same exact
 catalogue identities and assignment actions as Style menus. Formatting buttons
@@ -6621,13 +6629,12 @@ decision in this file or an architecture decision record first:
 
 ## Format controls, Markdown authoring, and lists
 
-The status bar exposes a native popup between Markdown Source and Markdown
-WYSIWYG, with a small vertical triangle and hover highlight. Text and Code show
-a noninteractive format label. Encoding and line endings appear only in their
-File submenus. A Markdown view choice is a checked core transaction shared by
-the buffer's views and reversible with undo. Completing the selection returns
-keyboard focus to the document as soon as the popup closes. Switching views
-preserves source bytes.
+The formatting toolbar's Formatted view toggle switches between Markdown Source
+and Markdown WYSIWYG. The status bar has no format annotation in any format.
+Encoding and line endings appear only in their File submenus. A Markdown view
+choice is a checked core transaction shared by the buffer's views and reversible
+with undo. Toggling returns keyboard focus to the document and preserves source
+bytes.
 Mode/format changes preserve each view's insertion cursor and visible text as
 closely as possible. Unchanged source provenance carries text anchors into
 the new projection. Hidden or removed

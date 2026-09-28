@@ -38,7 +38,7 @@ internal sealed partial class EditorWindow
     {
         if (closed) return;
         uint format = ActivePane?.Document.State.format ?? VIEM_FORMAT_PLAIN_TEXT;
-        bool available = format != VIEM_FORMAT_PLAIN_TEXT && format != VIEM_FORMAT_CODE;
+        bool available = format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
         bool visible = available && preferences.ShowFormattingToolbar(format);
         toolbarToggle.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;

@@ -8,7 +8,6 @@ public enum EVLineMode: UInt32, Equatable, Sendable {
 
 public enum EVStatusBarOption: Equatable, Sendable {
   case lineMode(EVLineMode)
-  case format(EVSourceFormat)
 }
 
 /// The active `:`, `/`, or `?` command line. It is rendered inside the status
@@ -45,7 +44,6 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var mode: String
   public var message: String
   public var location: String
-  public var format: String
   public var lineMode: EVLineMode
   public var locationIsFragment: Bool
   /// While this is set, the command line replaces the status line's left
@@ -63,7 +61,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     mode: String = "NORMAL",
     message: String = "",
     location: String = "Ln 1, Col 1",
-    format: String = "Plain Text",
     lineMode: EVLineMode = .visual,
     locationIsFragment: Bool = false,
     commandLine: EVStatusCommandLine? = nil,
@@ -74,7 +71,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.mode = mode
     self.message = message
     self.location = location
-    self.format = format
     self.lineMode = lineMode
     self.commandLine = commandLine
     self.commandOutput = commandOutput

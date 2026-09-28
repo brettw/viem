@@ -22,7 +22,7 @@ struct EVDocumentFormatIntegrationTests {
             #expect(try backend.formattedText() == formatted)
             #expect(try backend.serializedSource(typeName: "public.plain-text") == source)
             #expect(backend.encodingLabel == encodingLabel)
-            #expect(backend.formatLabel == "Plain Text")
+            #expect(backend.sourceFormat == .plainText)
             #expect(backend.lineEndingLabel == "CRLF")
         }
     }
@@ -37,7 +37,7 @@ struct EVDocumentFormatIntegrationTests {
         #expect(try backend.formattedText() == "café\nThis is bold.")
         #expect(try backend.serializedSource(typeName: "net.daringfireball.markdown") == source)
         #expect(backend.encodingLabel == "UTF-8")
-        #expect(backend.formatLabel == "Markdown WYSIWYG")
+        #expect(backend.sourceFormat == .markdown)
         #expect(backend.lineEndingLabel == "CRLF")
     }
 

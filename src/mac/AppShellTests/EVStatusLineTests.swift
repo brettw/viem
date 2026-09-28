@@ -49,6 +49,8 @@ final class EVStatusLineTests: XCTestCase {
 
   func testCaretPositionIsRightAlignedAndEverythingElseIsLeftAligned() throws {
     let bar = makeBar()
+    bar.apply(EVStatusBarState(mode: "NORMAL", message: "Saved", location: "Ln 12, Col 34"))
+    bar.layoutSubtreeIfNeeded()
     let inset = EVStatusBarView.contentInset
     let location = try locationWidget(bar)
     let mode = try modeLabel(bar)
@@ -60,12 +62,11 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertEqual(locationFrame.maxX, bar.bounds.maxX - inset, accuracy: 0.5)
     XCTAssertEqual(modeFrame.minX, inset, accuracy: 0.5)
     XCTAssertLessThan(modeFrame.maxX, locationFrame.minX)
-    // The format popup is part of the left group, not the right edge.
-    let format = try XCTUnwrap(
-      descendants(bar).first { ($0.accessibilityLabel() ?? "").hasPrefix("Format:") })
-    let formatFrame = format.convert(format.bounds, to: bar)
-    XCTAssertLessThan(formatFrame.maxX, locationFrame.minX)
-    XCTAssertGreaterThan(formatFrame.minX, modeFrame.minX)
+    let message = try XCTUnwrap(
+      descendants(bar).compactMap { $0 as? NSTextField }.first { $0.stringValue == "Saved" })
+    let messageFrame = message.convert(message.bounds, to: bar)
+    XCTAssertLessThan(messageFrame.maxX, locationFrame.minX)
+    XCTAssertGreaterThan(messageFrame.minX, modeFrame.maxX)
   }
 
   func testACommandLineReplacesTheLeftGroupAndKeepsTheCaretWidget() throws {

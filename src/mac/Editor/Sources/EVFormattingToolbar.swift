@@ -8,7 +8,7 @@ extension EVEditorSurfaceController: EVFormattingToolbarProviding {
   public func refreshFormattingToolbar() { formattingToolbar.refresh() }
 }
 
-/// A presentation of the editor's existing style catalogue and menu commands.
+/// A presentation of the editor's existing style catalogue and document actions.
 /// No selection, document formatting, or undo history is owned by these controls.
 @MainActor
 final class EVFormattingToolbarView: NSView, NSMenuDelegate {
@@ -18,6 +18,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private(set) var commandButtons: [EVMenuCommand: NSButton] = [:]
   let characterCode = NSButton()
   let codeBlock = NSButton()
+  let formattedView = NSButton()
   private let scroll = NSScrollView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()
@@ -78,18 +79,22 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     scroll.autohidesScrollers = true
     scroll.scrollerStyle = .overlay
     scroll.documentView = row
-    scroll.frame = bounds
-    scroll.autoresizingMask = [.width, .height]
     addSubview(scroll)
+    configure(formattedView, title: "Formatted view", toggle: true)
+    formattedView.image = Self.formattedViewImage()
+    formattedView.allowsMixedState = false
+    formattedView.toolTip = "Formatted view (WYSIWYG)"
+    formattedView.action = #selector(toggleFormattedView(_:))
+    addSubview(formattedView)
     refresh()
     needsLayout = true
   }
 
   required init?(coder: NSCoder) { nil }
 
-  private func configure(_ button: NSButton, title: String, symbol: String, toggle: Bool) {
+  private func configure(_ button: NSButton, title: String, symbol: String? = nil, toggle: Bool) {
     button.title = title
-    button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+    button.image = symbol.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: title) }
     button.imagePosition = .imageOnly
     button.bezelStyle = .accessoryBarAction
     button.controlSize = .small
@@ -114,11 +119,45 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   override func layout() {
     super.layout()
+    formattedView.frame = NSRect(x: max(0, bounds.width - 37), y: (bounds.height - 26) / 2,
+                                 width: 27, height: 26)
+    // Keep the view toggle accessible while the formatting controls scroll.
+    scroll.frame = NSRect(x: 0, y: 0, width: max(0, formattedView.frame.minX - 12), height: bounds.height)
     row.frame = NSRect(x: 0, y: 0, width: row.fittingSize.width, height: bounds.height)
+  }
+
+  private static func formattedViewImage() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+      NSColor.black.setStroke()
+      let page = NSBezierPath()
+      page.move(to: NSPoint(x: 2.5, y: 1.5))
+      page.line(to: NSPoint(x: 15.5, y: 1.5))
+      page.line(to: NSPoint(x: 15.5, y: 12))
+      page.line(to: NSPoint(x: 11, y: 16.5))
+      page.line(to: NSPoint(x: 2.5, y: 16.5))
+      page.close()
+      page.move(to: NSPoint(x: 11, y: 16.5))
+      page.line(to: NSPoint(x: 11, y: 12))
+      page.line(to: NSPoint(x: 15.5, y: 12))
+      page.lineWidth = 1
+      page.stroke()
+      let paragraph = NSMutableParagraphStyle()
+      paragraph.alignment = .center
+      ("Aa" as NSString).draw(in: NSRect(x: 3, y: 3, width: 12, height: 10), withAttributes: [
+        .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
+        .foregroundColor: NSColor.black,
+        .paragraphStyle: paragraph,
+      ])
+      return true
+    }
+    image.isTemplate = true
+    return image
   }
 
   func refresh() {
     guard let surface else { return }
+    formattedView.state = surface.backend.sourceFormat == .markdown ? .on : .off
+    formattedView.isEnabled = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
     let selected = try? surface.session?.selectedNamedStyles()
     let selection = try? surface.session?.listSelection()
     if styleSnapshot?.identity != selected?.identity || styleSnapshot == nil {
@@ -221,6 +260,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }
   @objc func toggleCodeBlock(_ sender: NSButton) { toggleStyle(role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender) }
+  @objc func toggleFormattedView(_ sender: NSButton) {
+    guard let surface else { return }
+    let editorWindow = window
+    surface.setFormattedView(surface.backend.sourceFormat != .markdown)
+    refresh()
+    // The target mode may remember a hidden toolbar and detach this view.
+    editorWindow?.makeFirstResponder(surface.editorView)
+  }
 
   private func toggleStyle(role: EVStyleMenuRole, id: String, fallback: String, sender: NSButton) {
     guard let surface, let catalogue = surface.currentStyleMenuCatalogue() else { return }
