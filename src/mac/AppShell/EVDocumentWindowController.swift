@@ -43,9 +43,10 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var sourceDepth: UInt32 = 0
   private var sourceCommandCount = 0
   private let placement: EVDocumentWindowPlacement
+  private let configuration: EVConfigurationStore
   private var initialWindowFrame: NSRect?
   private lazy var formattingToolbar = EVFormattingToolbarChrome(
-    window: window!, configuration: .shared)
+    window: window!, configuration: configuration)
 
   /// Injectable I/O boundary for launch and argument-list opens.
   var argumentDocumentOpener: ((URL, String?, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
@@ -55,9 +56,12 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     return documentContentController.geometry(in: documentContentController.view)
   }
 
-  public init(document: EVDocument, editorSurface: any EVEditorSurface, placement: EVDocumentWindowPlacement? = nil) {
+  public init(document: EVDocument, editorSurface: any EVEditorSurface, placement: EVDocumentWindowPlacement? = nil,
+              configuration: EVConfigurationStore? = nil) {
+    let configuration = configuration ?? .shared
+    self.configuration = configuration
     self.placement = placement ?? .shared
-    let firstPane = EVDocumentContentViewController(editorSurface: editorSurface)
+    let firstPane = EVDocumentContentViewController(editorSurface: editorSurface, configuration: configuration)
     firstPane.document = document
     if let owner = Self.instances.compactMap(\.value).first(where: {
       !$0.isClosed && $0.paneContainer.panes.contains(where: { $0.document === document })
@@ -1136,7 +1140,8 @@ extension EVDocumentWindowController {
         let type = documentType(for: url, fallback: fallback)
         try document.read(
           from: Data(),
-          ofType: EVDocument.defaultOpeningType(for: url, nativeType: type)
+          ofType: EVDocument.defaultOpeningType(for: url, nativeType: type,
+            markdownFormattedView: document.editorBackend.prefersMarkdownFormattedView)
         )
         document.fileURL = EVDocumentIdentity.canonicalURL(url)
         document.fileType = type
@@ -1226,7 +1231,7 @@ extension EVDocumentWindowController {
 
   fileprivate func makePane(document: EVDocument) -> EVDocumentContentViewController {
     let surface = document.editorBackend.makeEditorSurface()
-    let pane = EVDocumentContentViewController(editorSurface: surface)
+    let pane = EVDocumentContentViewController(editorSurface: surface, configuration: configuration)
     pane.document = document
     let previous = documentContentController
     pane.argumentList = previous.argumentList
@@ -1382,12 +1387,15 @@ final class EVDocumentContentViewController: NSViewController,
   var argumentIndex: Int?
 
   let editorSurface: any EVEditorSurface
+  private let configuration: EVConfigurationStore
   private let statusBar = EVStatusBarView()
   private var showsStatusBar: Bool
 
-  init(editorSurface: any EVEditorSurface) {
+  init(editorSurface: any EVEditorSurface, configuration: EVConfigurationStore? = nil) {
+    let configuration = configuration ?? .shared
+    self.configuration = configuration
     self.editorSurface = editorSurface
-    showsStatusBar = EVConfigurationStore.shared.showStatusBar
+    showsStatusBar = configuration.showStatusBar
     super.init(nibName: nil, bundle: nil)
 
     editorSurface.statusBarStateDidChange = { [weak self] state in
@@ -1514,7 +1522,7 @@ final class EVDocumentContentViewController: NSViewController,
       && editorSurface.statusBarState.commandOutput == nil
       && !editorSurface.statusBarState.requiresInteraction
     layoutContent()
-    try? EVConfigurationStore.shared.setShowStatusBar(showsStatusBar)
+    try? configuration.setShowStatusBar(showsStatusBar)
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

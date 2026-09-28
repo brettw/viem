@@ -365,6 +365,7 @@ public protocol EVDocumentBackend: AnyObject {
   var persistenceStateDidChange: ((EVDocumentPersistenceState) -> Void)? { get set }
   var persistenceState: EVDocumentPersistenceState { get }
   var sourceFormat: EVSourceFormat { get }
+  var prefersMarkdownFormattedView: Bool { get }
 
   func makeEditorSurface() -> any EVEditorSurface
   func read(source: Data, typeName: String) throws
@@ -380,6 +381,7 @@ public protocol EVDocumentBackend: AnyObject {
 }
 
 extension EVDocumentBackend {
+  public var prefersMarkdownFormattedView: Bool { false }
   public func updateFilename(_ filename: String) {}
   public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
     try read(source: source, typeName: typeName)

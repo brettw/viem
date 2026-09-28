@@ -6,10 +6,12 @@ import XCTest
 
 @MainActor final class EVNativeExFileTests: XCTestCase {
     private func fixture() throws -> (URL, EVCoreDocumentBackend, EVDocument, EVDocumentWindowController) {
-        EVFrontendRegistry.install { EVCoreDocumentBackend() }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-ex-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let backend = EVCoreDocumentBackend()
+        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("profile"))
+        EVFrontendRegistry.install { EVCoreDocumentBackend(configuration: configuration) }
+        addTeardownBlock { @MainActor in EVFrontendRegistry.install { EVCoreDocumentBackend() } }
+        let backend = EVCoreDocumentBackend(configuration: configuration)
         let document = EVDocument(editorBackend: backend)
         try document.read(from: Data("# raw **source**\r\n".utf8), ofType: EVDocument.markdownType)
         document.fileURL = directory.appendingPathComponent("original.md")
@@ -24,6 +26,28 @@ import XCTest
             window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID, documentRevision: state.documentRevision, force: force, path: path, hardLineRange: range, readAfterLine: after)]) { continuation.resume(returning: $0) }
         }
     }
+    func testNewMarkdownExOpensUsePreferenceButCurrentFileReloadKeepsItsView() async throws {
+        let (directory, backend, document, window) = try fixture()
+        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+        let configuration = backend.configuration
+        try configuration.setMarkdownFormattedView(false)
+        let original = try XCTUnwrap(document.fileURL)
+        try Data("# Reloaded".utf8).write(to: original)
+        _ = try await perform(window, backend: backend, kind: .edit).get()
+        XCTAssertEqual(backend.sourceFormat, .markdown, "Reload retains this document's formatted view")
+        XCTAssertFalse(configuration.markdownFormattedView, "Reload does not change another document's newer choice")
+
+        for enabled in [true, false] {
+            try configuration.setMarkdownFormattedView(enabled)
+            let target = directory.appendingPathComponent("target-\(enabled).md")
+            let activeBackend = try XCTUnwrap(window.activeDocument?.editorBackend as? EVCoreDocumentBackend)
+            _ = try await perform(window, backend: activeBackend, kind: .edit, path: target.path).get()
+            let opened = try XCTUnwrap(window.activeDocument)
+            XCTAssertEqual(opened.editorBackend.sourceFormat, enabled ? .markdown : .markdownSource)
+            XCTAssertFalse(opened.editorBackend.persistenceState.isDirty)
+        }
+    }
+
     func testAlternateWritePreservesBytesBindingDirtyStateAndRejectsOverwriteAndReadOnly() async throws {
         let (directory, backend, document, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }

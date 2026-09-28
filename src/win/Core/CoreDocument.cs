@@ -23,13 +23,15 @@ internal sealed unsafe class CoreDocument : IDisposable
     }
     public bool IsDirty => (State.flags & VIEM_DOCUMENT_STATE_IS_DIRTY) != 0;
     public bool IsReadOnly => (State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) != 0;
-    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0)
+    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0, bool markdownFormattedView = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.create");
         if (viem_core_abi_version() != VIEM_CORE_ABI_VERSION) throw new InvalidOperationException("Rebuild Viem and its Rust library together: the ABI versions differ.");
         FilePath = path;
         var options = New<ViemDocumentOptions>();
         options.format = format ?? FormatForPath(path);
+        if (format == null && options.format == VIEM_FORMAT_MARKDOWN_SOURCE && markdownFormattedView)
+            options.format = VIEM_FORMAT_MARKDOWN;
         options.encoding = encoding; options.file_format = fileFormat;
         ulong handle = 0, revision = 0;
         fixed (byte* bytes = source) Check(viem_core_create(bytes, (ulong)source.Length, &options, &handle, &revision), "Open document");

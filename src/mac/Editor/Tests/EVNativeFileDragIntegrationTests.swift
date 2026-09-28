@@ -46,7 +46,9 @@ final class EVNativeFileDragIntegrationTests: XCTestCase {
     }
 
     private func loadedDocument(_ url: URL, type: String) throws -> (EVDocument, EVCoreDocumentBackend) {
-        let backend = EVCoreDocumentBackend()
+        let profile = FileManager.default.temporaryDirectory.appendingPathComponent("viem-drag-profile-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: profile) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: profile))
         let document = EVDocument(editorBackend: backend)
         try document.read(from: url, ofType: type)
         document.fileURL = url

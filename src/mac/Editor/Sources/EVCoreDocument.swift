@@ -74,6 +74,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         Self.sourceFormat(from: currentDocumentState)
     }
 
+    public var prefersMarkdownFormattedView: Bool { configuration.markdownFormattedView }
+
     private(set) var core: ViemCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
@@ -787,9 +789,27 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func installDocumentState(_ state: ViemDocumentStateV1) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
+        let previousFormat = sourceFormat
+        let nextFormat = Self.sourceFormat(from: state)
+        let changedMarkdownView = !isStylePreview
+            && currentDocumentState.document_id != 0
+            && currentDocumentState.document_id == state.document_id
+            && previousFormat != nextFormat
+            && [.markdown, .markdownSource].contains(previousFormat)
+            && [.markdown, .markdownSource].contains(nextFormat)
         let changedFamily = currentDocumentState.document_id == state.document_id
-            && sourceFormat.defaultStyleName != Self.sourceFormat(from: state).defaultStyleName
+            && previousFormat.defaultStyleName != nextFormat.defaultStyleName
         currentDocumentState = state
+        // Record actual transitions (including undo/redo), never attachment,
+        // reopening, recovery, or an unchanged background presentation refresh.
+        if changedMarkdownView {
+            do { try configuration.setMarkdownFormattedView(nextFormat == .markdown) }
+            catch {
+                let warning = "Could not remember Markdown view. \(error.localizedDescription)"
+                configurationWarning = warning
+                for surface in surfaces.compactMap(\.value) { surface.showDocumentMessage(warning) }
+            }
+        }
         if changedFamily { applyThemeStyles(changedNames: [sourceFormat.defaultStyleName]) }
         let newPersistence = Self.persistenceState(from: state)
         if oldPersistence != newPersistence {

@@ -230,7 +230,9 @@ final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
     func testFormattedViewToggleAndEncodingMenuPreserveSourceAndHistory() throws {
         let source = "## Heading\n__bold__ café\n"
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
@@ -255,7 +257,9 @@ final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
     func testFormattedViewToggleKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
         let source = (0..<180).map { "## Heading \($0)\n\nText **café العربية** α\($0) end." }.joined(separator: "\n\n")
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

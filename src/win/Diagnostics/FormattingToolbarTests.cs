@@ -191,6 +191,7 @@ internal static class FormattingToolbarTests
             Check(window.Panes.All(p => p.LastError == null), "toolbar scenarios leave no presentation errors");
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }
+        await MarkdownViewPreferenceTests.Run(preferences.DirectoryPath);
         await Performance(preferences);
     }
 

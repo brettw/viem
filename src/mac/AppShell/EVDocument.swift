@@ -227,7 +227,13 @@ public final class EVDocument: NSDocument {
                 try self.editorBackend.restoreRecovery(snapshot)
                 recovered = true
             case .readOnly, .editAnyway:
-                let openingType = Self.defaultOpeningType(for: target, nativeType: typeName)
+                var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
+                    markdownFormattedView: self.editorBackend.prefersMarkdownFormattedView)
+                if let currentURL = self.fileURL, EVDocumentIdentity.sameFile(currentURL, target),
+                   [.markdown, .markdownSource].contains(self.editorBackend.sourceFormat) {
+                    openingType = self.editorBackend.sourceFormat == .markdown
+                        ? Self.markdownType : Self.markdownSourceType
+                }
                 try self.editorBackend.read(source: original.get(), typeName: openingType,
                     filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
                 recovered = false
@@ -753,17 +759,19 @@ public final class EVDocument: NSDocument {
         sourceFormat(forTypeName: typeName) == nil ? plainTextType : typeName
     }
 
-    /// Native types identify the bytes on disk. For formats with two Viem
-    /// presentations, a file open starts in the source-visible variant.
-    static func defaultOpeningType(for url: URL, nativeType typeName: String) -> String {
-        switch url.pathExtension.lowercased() {
+    /// Native types identify the bytes on disk. New Markdown documents use the
+    /// last chosen presentation; explicit backend reads and recovery keep theirs.
+    static func defaultOpeningType(for url: URL, nativeType typeName: String,
+                                   markdownFormattedView: Bool = false) -> String {
+        let markdownOpeningType = markdownFormattedView ? markdownType : markdownSourceType
+        return switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":
-            markdownSourceType
+            markdownOpeningType
         case "html", "htm", "xhtml":
             codeType
         default:
             switch sourceFormat(forTypeName: typeName) {
-            case .some(.markdown): markdownSourceType
+            case .some(.markdown), .some(.markdownSource): markdownOpeningType
             case .some(.code): codeType
             default: readableType(for: typeName)
             }

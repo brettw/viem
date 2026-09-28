@@ -1209,7 +1209,12 @@ Windows Heading 6 remains menu-only because Control-6 belongs to Vim Control-^.
 
 The toolbar is absent in Text/Code and remembers visibility per Markdown format.
 Its Formatted view toggle uses source-preserving Markdown switching, stays
-reachable in narrow windows, and follows shared changes/history. The status line
+reachable in narrow windows, and follows shared changes/history. Remember the
+last successful Markdown view choice across launches, including undo/redo of a
+view switch. Newly opened Markdown documents use that choice; without a saved
+choice, Formatted view is off. Text/Code documents and passive refreshes do not
+change the choice, and existing or recovered documents retain their own view.
+The status line
 has no format popup/label; its caret widget remains right-aligned beside prompts/
 output. Flow Source Paragraphs is initially-off Markdown Source layout only,
 never a text-coordinate, serialization, or history change.

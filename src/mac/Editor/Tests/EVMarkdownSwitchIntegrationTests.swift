@@ -33,7 +33,9 @@ final class EVMarkdownSwitchIntegrationTests: XCTestCase {
         } else {
             source = Data(fixture.utf8)
         }
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-markdown-switch-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         try backend.read(source: source, typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

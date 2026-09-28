@@ -89,7 +89,11 @@ fullscreen bounds do not replace the saved normal frame.
   theme style inspector. Its x²/x₂ buttons share one inheritance checkbox.
 - Markdown's right-aligned **Formatted view** toolbar toggle switches between
   Source and WYSIWYG while retaining source bytes. Its document/Aa icon is pressed
-  for WYSIWYG and unpressed for Source. The status bar shows mode and messages on
+  for WYSIWYG and unpressed for Source. The last choice is saved as
+  `editing.markdownFormattedView` in `config.json` and used for subsequent Markdown
+  opens, including Ex commands. With no saved choice, Markdown opens in Source.
+  Existing documents and recovered sessions retain their view.
+  The status bar shows mode and messages on
   the left and cursor position on the right. General format conversion and
   reinterpretation are no longer offered.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.

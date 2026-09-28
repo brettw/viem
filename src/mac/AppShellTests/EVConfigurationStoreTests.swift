@@ -42,6 +42,35 @@ final class EVConfigurationStoreTests: XCTestCase {
     let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
     XCTAssertEqual(reopened.theme, .midnight); XCTAssertTrue(reopened.smartQuotes)
   }
+  func testMarkdownFormattedViewDefaultsOffAndPersistsWithoutLosingOtherPreferences() throws {
+    let (directory, legacy) = try fixture()
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertFalse(store.markdownFormattedView)
+    try store.setSmartQuotes(true)
+    try store.setMarkdownFormattedView(true)
+    let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertTrue(reopened.markdownFormattedView)
+    XCTAssertTrue(reopened.smartQuotes)
+    try reopened.setMarkdownFormattedView(false)
+    XCTAssertFalse(EVConfigurationStore(directory: directory, legacyDefaults: legacy).markdownFormattedView)
+    let object = try XCTUnwrap(JSONSerialization.jsonObject(with:
+      Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any])
+    XCTAssertEqual((object["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool, false)
+  }
+  func testInvalidMarkdownFormattedViewValuesAreRejectedWithoutOverwriting() throws {
+    for value in ["1", "0", "\"true\"", "null", "[]"] {
+      let (directory, legacy) = try fixture()
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let file = directory.appendingPathComponent("config.json")
+      let before = Data(#"{"version":1,"editing":{"markdownFormattedView":\#(value)}}"#.utf8)
+      try before.write(to: file)
+      let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+      XCTAssertFalse(store.markdownFormattedView)
+      XCTAssertNotNil(store.lastError)
+      XCTAssertThrowsError(try store.setMarkdownFormattedView(true))
+      XCTAssertEqual(try Data(contentsOf: file), before)
+    }
+  }
   func testInvalidVersionValuesAndMalformedJSONAreNeverOverwritten() throws {
     for text in [#"{"version":2}"#, #"{"version":true}"#, #"{"version":1,"editing":{"smartQuotes":1}}"#, "{broken"] {
       let (directory, legacy) = try fixture()
