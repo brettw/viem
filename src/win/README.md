@@ -94,8 +94,12 @@ fullscreen bounds do not replace the saved normal frame.
   opens, including Ex commands. With no saved choice, Markdown opens in Source.
   Existing documents and recovered sessions retain their view.
   The status bar shows mode and messages on
-  the left and cursor position on the right. General format conversion and
-  reinterpretation are no longer offered.
+  the left and cursor position on the right.
+- View starts with Plain text, Markdown, and Code mode overrides. Code lists Auto
+  followed by the bundled languages in case-insensitive alphabetical order.
+  Auto shows the detected language, keeps Markdown in literal Code, and uses
+  Plain text when no language is detected. Checkmarks reflect the current mode
+  and language choice. Mode switches preserve source bytes and the bound filename.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
 - File > Export… writes a styled HTML copy through the shared core exporter.
   Markdown exports formatted content and Code exports syntax-highlighted text.

@@ -1,6 +1,6 @@
 # Portable language detection profile
 
-Profile version 2 uses decoded normalized text and never executes Vimscript,
+Profile version 2 uses decoded normalized physical source and never executes Vimscript,
 filetype autocommands, shell commands, regular expressions, or package callbacks.
 An explicit language (including None) precedes modelines, user filename rules,
 bundled filename rules with content disambiguation, shebangs, and finally content
@@ -30,7 +30,9 @@ canonicalized after selection. No regex dialect or arbitrary native callback is
 part of this interface.
 
 The detector reads at most 64 KiB total, from complete first/last-five lines
-inside fixed 32 KiB head/tail windows. It uses line indexes and bounded slices;
+inside fixed 32 KiB head/tail windows. Core samples physical source windows and
+also caps decoded UTF-8 at 64 KiB, so Markdown presentation cannot change the
+samples. It uses line indexes and bounded slices;
 it skips a giant or truncated line. Modelines, shebangs and registered content
 rules reuse these samples. Content rules share one compiled finite automaton
 pass; they do not reread or join document ranges. A full-capacity adversarial

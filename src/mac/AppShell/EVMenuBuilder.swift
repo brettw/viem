@@ -18,6 +18,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private let styleMenuProvider: @MainActor () -> (any EVStyleMenuProviding)?
     private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
     private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
+    private let documentModeProvider: @MainActor () -> (any EVDocumentModeMenuProviding)?
+    private var viewMenu: NSMenu?
+    private var codeModeMenu: NSMenu?
+    private var codeModeItem: NSMenuItem?
+    private var modeItems: [NSMenuItem] = []
     private var themeMenu: NSMenu?
     let themeActions: EVThemeActions
     private var trackingMenus = Set<ObjectIdentifier>()
@@ -28,13 +33,21 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             EVConfigurationStore.shared.recentDocumentURLs
         },
         styleMenuProvider: (@MainActor () -> (any EVStyleMenuProviding)?)? = nil,
-        themeStore: EVThemeStore? = nil
+        themeStore: EVThemeStore? = nil,
+        documentModeProvider: (@MainActor () -> (any EVDocumentModeMenuProviding)?)? = nil
     ) {
         self.owner = owner
         self.themeActions = EVThemeActions(store: themeStore ?? .shared)
         self.recentDocumentURLs = recentDocumentURLs
         self.styleMenuProvider = styleMenuProvider ?? {
             EVMenuBuilder.focusedStyleMenuProvider()
+        }
+        self.documentModeProvider = documentModeProvider ?? {
+            let windows = [NSApplication.shared.keyWindow, NSApplication.shared.mainWindow].compactMap { $0 }
+                + NSApplication.shared.orderedWindows
+            return windows.compactMap {
+                ($0.windowController as? EVDocumentWindowController)?.editorSurface as? any EVDocumentModeMenuProviding
+            }.first
         }
         super.init()
     }
@@ -71,6 +84,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // AppKit may request validation again while a mouse is held down.
         // Keep the tracked NSMenuItem objects and their geometry stable.
         guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
+        if menu === viewMenu || menu === codeModeMenu { updateDocumentModes(); return }
         if menu === themeMenu { rebuildThemeMenu(menu); return }
         if let role = styleMenuRoles[ObjectIdentifier(menu)] {
             rebuildStyleMenu(menu, role: role)
@@ -312,6 +326,26 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     private func makeViewMenu() -> NSMenu {
         let menu = NSMenu(title: "View")
+        modeItems.removeAll()
+        viewMenu = menu
+        menu.delegate = self
+        menu.showsStateColumn = true
+        menu.addItem(documentModeItem("Plain text", choice: .plainText))
+        menu.addItem(documentModeItem("Markdown", choice: .markdown))
+        let code = NSMenu(title: "Code")
+        code.delegate = self
+        code.showsStateColumn = true
+        codeModeMenu = code
+        code.addItem(documentModeItem("Auto (Plain Text)", choice: .automatic))
+        code.addItem(.separator())
+        for language in EVCodeLanguage.all {
+            code.addItem(documentModeItem(language.name, choice: .code(language.id)))
+        }
+        let codeItem = submenuItem("Code", submenu: code)
+        codeModeItem = codeItem
+        menu.addItem(codeItem)
+        menu.addItem(.separator())
+        updateDocumentModes()
         menu.addItem(responderItem(
             "Show Status Bar",
             action: #selector(EVDocumentContentViewController.toggleStatusBar(_:))
@@ -332,6 +366,41 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             modifiers: [.command, .control]
         ))
         return menu
+    }
+
+    private func documentModeItem(_ title: String, choice: EVDocumentModeChoice) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(selectDocumentMode(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = EVDocumentModeMenuAction(choice)
+        modeItems.append(item)
+        return item
+    }
+
+    private func updateDocumentModes() {
+        let state = documentModeProvider()?.currentDocumentMode()
+        codeModeItem?.state = state?.format == "code" ? .on : .off
+        codeModeItem?.isEnabled = state != nil
+        for item in modeItems {
+            guard let action = item.representedObject as? EVDocumentModeMenuAction else { continue }
+            action.expected = state
+            item.isEnabled = state != nil
+            let selected: Bool
+            switch action.choice {
+            case .plainText: selected = state?.format == "plainText"
+            case .markdown: selected = state?.format == "markdown"
+            case .automatic:
+                selected = state?.automatic == true
+                item.title = "Auto (\(state?.detectedName ?? "Plain Text"))"
+            case let .code(id): selected = state?.format == "code" && state?.automatic == false && state?.language == id
+            }
+            item.state = selected ? .on : .off
+        }
+    }
+
+    @objc private func selectDocumentMode(_ item: NSMenuItem) {
+        guard let action = item.representedObject as? EVDocumentModeMenuAction,
+              let expected = action.expected else { return }
+        documentModeProvider()?.selectDocumentMode(action.choice, expected: expected)
     }
 
     private func makeWindowMenu(for application: NSApplication) -> NSMenu {
@@ -654,5 +723,12 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             item.keyEquivalentModifierMask = modifiers
         }
         return item
+    }
+}
+
+extension EVMenuBuilder: NSMenuItemValidation {
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if let action = menuItem.representedObject as? EVDocumentModeMenuAction { return action.expected != nil }
+        return true
     }
 }

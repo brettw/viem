@@ -357,6 +357,12 @@ pub enum CoreEvent {
         revision: Revision,
         source: bool,
     },
+    SetDocumentMode {
+        document: DocumentId,
+        revision: Revision,
+        mode: DocumentMode,
+        formatted_markdown: bool,
+    },
     SetEncoding {
         document: DocumentId,
         revision: Revision,
@@ -905,6 +911,8 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 
 /// Serial composition root for one buffer and its attached views.
 mod syntax;
+mod document_mode;
+pub use document_mode::{DocumentMode, DocumentModeState};
 mod whitespace;
 
 pub struct Core<P: TextMeasurementProvider> {
@@ -4377,7 +4385,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view existence checked before native file-format change")
             .commands
             .capture_history_restoration(&self.document)?;
-        let capture_anchors = if matches!(request, ModelRequest::SetMarkdownSource { .. }) {
+        let capture_anchors = if matches!(request, ModelRequest::SetMarkdownSource { .. } | ModelRequest::SetViewFormat { .. }) {
             CommandInterpreter::capture_format_position_anchors
         } else {
             CommandInterpreter::capture_position_anchors
@@ -5034,6 +5042,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                         source,
                     },
                 );
+            }
+            CoreEvent::SetDocumentMode { document, revision, mode, formatted_markdown } => {
+                return self.set_document_mode(view_id, document, revision, mode, formatted_markdown);
             }
             CoreEvent::SetEncoding {
                 document,
@@ -6077,6 +6088,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::SetStrikethrough { .. }
             | CoreEvent::SetFileFormat { .. }
             | CoreEvent::SetMarkdownSource { .. }
+            | CoreEvent::SetDocumentMode { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
             | CoreEvent::IndentList { .. }

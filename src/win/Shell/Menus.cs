@@ -92,7 +92,8 @@ internal sealed partial class EditorWindow
         RefreshThemeMenu();
         Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
         wrapItem = Toggle("Word Wrap", b => View?.Wrap(b));
-        Top("View", "V", Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
+        BuildDocumentModeMenu();
+        Top("View", "V", plainMode, markdownMode, codeMode, Separator(), Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
             Toggle("Flow Source Paragraphs", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
             Separator(), ActionItem("Zoom In", () => View?.StepZoom(true)), ActionItem("Zoom Out", () => View?.StepZoom(false)), ActionItem("Actual Size", () => View?.Zoom(1)),
             Separator(), ActionItem("Full Screen", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
@@ -111,6 +112,7 @@ internal sealed partial class EditorWindow
         menusDirty = false;
         using var measurement = Diagnostics.InputPerformance.Measure("menus");
         RefreshStyleMenus();
+        RefreshDocumentModeMenu();
         foreach (var (item, enabled) in validation) { try { item.IsEnabled = enabled(); } catch { item.IsEnabled = false; } }
         foreach (var (item, checkedValue) in checks) { try { item.IsChecked = checkedValue(); } catch { } }
         if (View == null || undoItem == null) return;

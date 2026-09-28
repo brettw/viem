@@ -91,6 +91,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertNil(try submenu("File", of: main).item(withTitle: "Convert to"))
         XCTAssertNil(try submenu("File", of: main).item(withTitle: "Reinterpret as"))
         XCTAssertEqual(tokens(in: try submenu("View", of: main)), [
+            "Plain text", "Markdown", "Code", "-",
             "Show Status Bar", "-", "Word Wrap",
             "Flow Source Paragraphs", "Show Invisible Characters", "-", "Zoom In", "Zoom Out", "Actual Size",
             "-", "Enter Full Screen",

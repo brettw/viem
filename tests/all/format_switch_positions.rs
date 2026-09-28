@@ -1,17 +1,22 @@
 use viem_core::command::{InputEvent, Key, Mode};
 use viem_core::document::{BoundaryAffinity, Encoding, Format, HistoryNavigationRequest};
 use viem_core::layout::MockTextMeasurementProvider;
-use viem_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::{Core, CoreEvent, Document, DocumentMode, ViewId};
 
 type Editor = Core<MockTextMeasurementProvider>;
 
 fn switch(core: &mut Editor, view: ViewId, target: Format) {
     core.handle(
         view,
-        CoreEvent::SetMarkdownSource {
+        CoreEvent::SetDocumentMode {
             document: core.document().id(),
             revision: core.document().revision(),
-            source: target == Format::MarkdownSource,
+            mode: match target {
+                Format::PlainText => DocumentMode::PlainText,
+                Format::Code => DocumentMode::Code("rust".into()),
+                _ => DocumentMode::Markdown,
+            },
+            formatted_markdown: target == Format::Markdown,
         },
     )
     .unwrap();
@@ -33,10 +38,14 @@ fn place(core: &mut Editor, view: ViewId, offset: usize) {
 #[test]
 fn conversion_preserves_insert_carets_in_repeated_unicode_content_and_history() {
     for from in [
+        Format::PlainText,
+        Format::Code,
         Format::Markdown,
         Format::MarkdownSource,
     ] {
         for to in [
+            Format::PlainText,
+            Format::Code,
             Format::Markdown,
             Format::MarkdownSource,
         ] {
@@ -147,6 +156,8 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
         .unwrap();
     }
     for format in [
+        Format::PlainText,
+        Format::Code,
         Format::MarkdownSource,
         Format::Markdown,
     ] {

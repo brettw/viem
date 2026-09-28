@@ -19,8 +19,9 @@ a Vimscript runtime, and pixel-for-pixel gVim emulation are outside scope.
 Text, Code, and Markdown are the source formats. Code is literal text with
 optional syntax highlighting; HTML files use Code. Only Markdown has Source and
 WYSIWYG views. Switching those views preserves source bytes, encoding, BOM, line
-endings, anchors, and undo restoration. There is no general format conversion or
-reinterpretation and no HTML editing mode. Every opening path must admit
+endings, anchors, and undo restoration. View mode overrides also reproject the
+same source without converting it. There is no format-conversion or HTML editing
+mode. Every opening path must admit
 unrecognized files, including extensionless files and dotfiles, through the
 lossless Text fallback; native file filters must not reject them first.
 Recognized and explicitly selected formats retain their precedence.
@@ -450,6 +451,17 @@ explicit redetection and relevant filename changes, never on ordinary edits,
 scrolling or highlighting completion. Markers are data, not executable Vimscript
 or arbitrary option settings. See the [detection profile](src/core/document/syntax/detection/PROFILE.md)
 for bounded sampling, supported marker syntax and registered rules.
+
+View offers per-document Plain text, Markdown, and Code overrides above its
+other controls. Code contains Auto, a separator, and every supported language
+sorted case-insensitively by display name. Check the actual top-level mode and
+the chosen Auto/language entry; reserve check space in unchecked rows. Check the
+Code submenu itself where native controls support it. Auto includes its detected
+language in the label, independent of any forced language. Code > Auto keeps
+detected Markdown in literal Code with Markdown highlighting. Without a detected
+language it uses Plain text and reads Auto (Plain Text). Opening still uses the
+existing format detection; choosing Markdown uses the remembered formatted view.
+Detection uses physical source, including when the current view hides markup.
 
 Use the pinned bundled Vim runtime, with confined includes and no installed-Vim,
 network or user-selectable-directory dependency. Native packages verify it and
@@ -1004,10 +1016,8 @@ frontends only choose the destination and write the portable core's bytes.
 Save As writes a separate destination and adopts it only after success; it
 must preserve the previous file's name and bytes. No format switch or native
 rename/move action may rename/delete the original. Ordinary Save preserves its
-filename/extension. Format changes remain in memory until a write; changing
-serialization family requires Save As and forbids every write entry point from
-overwriting the original. Text/Code share a family, as do Markdown/Markdown
-Source. Successful Save As establishes the new format baseline.
+filename/extension. View mode changes preserve physical source and do not require
+Save As; subsequent edits save to the same bound file.
 
 Reject symbolic-link and case-only destination aliases that would overwrite
 the original; distinct hard-link names require replacement preserving the
