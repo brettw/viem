@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Repeat the pinned allocator/process fixtures in fresh serial processes.
+"""Run the allocator/process fixtures in fresh serial processes.
 
 Build first: cargo build --release --offline --example large_file_memory
-The original JSON is an immutable baseline. Output must use another path.
+See docs/performance.md for measurement scope and optional regression limits.
 """
 import argparse
 import hashlib
@@ -13,7 +13,21 @@ import subprocess
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-BASELINE = ROOT / 'docs/large-file-memory-measurements.json'
+PINNED_LIMITS = ROOT / 'scripts/fixtures/large-file-memory-limits.json'
+METHOD = ('fresh serial release subprocess per case; Rust global allocator '
+          'requested sizes; macOS TASK_VM_INFO self sampling; '
+          'no syntax providers or native UI')
+CASES = [
+    ['plain', 'lines', 1048576, 'document'],
+    ['plain', 'lines', 4194304, 'document'],
+    ['plain', 'lines', 16777216, 'document'],
+    ['plain', 'short', 2000000, 'document'],
+    ['plain', 'long', 1048576, 'document'],
+    ['plain', 'lines', 4194304, 'views'],
+    ['code', 'lines', 4194304, 'views'],
+    ['plain', 'lines', 4194304, 'flat'],
+    ['plain', 'lines', 104857600, 'open'],
+]
 
 
 def main():
@@ -24,10 +38,12 @@ def main():
     parser.add_argument('--supplemental', action='store_true')
     parser.add_argument('--limits', type=pathlib.Path)
     args = parser.parse_args()
-    if args.output.resolve() == BASELINE.resolve():
-        parser.error('preserve the original baseline; choose a different output')
-    original = json.loads(BASELINE.read_text())
-    cases = [case['arguments'] for case in original['results']]
+    protected_inputs = {pathlib.Path(__file__).resolve(), PINNED_LIMITS.resolve()}
+    if args.limits:
+        protected_inputs.add(args.limits.resolve())
+    if args.output.resolve() in protected_inputs:
+        parser.error('output must not replace the benchmark script or a limits file')
+    cases = CASES
     if args.supplemental:
         cases = [
             ['plain', 'lines', 104857600, 'exercise'],
@@ -56,7 +72,7 @@ def main():
         'probe_sha256': hashlib.sha256((ROOT / 'examples/large_file_memory.rs').read_bytes()).hexdigest(),
         'compiler': subprocess.check_output(['rustc', '--version'], text=True).strip(),
         'os': platform.platform(),
-        'method': original['method'],
+        'method': METHOD,
         'supplemental': args.supplemental,
         'results': [],
     }

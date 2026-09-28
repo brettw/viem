@@ -47,7 +47,6 @@ HTML tags. Such repairs are explicit source patches in the same undo transaction
 Unedited source is not regenerated.
 
 The loadable feature tour is [docs/markdown_demo.md](docs/markdown_demo.md).
-The styled box-model tour is [docs/block_containers_demo.html](docs/block_containers_demo.html).
 Regression coverage includes `tests/all/markdown_gfm.rs` and the existing
 Markdown source, caret, deletion, replacement, formatting and layout audits.
 

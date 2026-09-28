@@ -198,8 +198,9 @@ document and layout phases plus JIT CPU time; overlapping scopes are not additiv
 style defaults into each isolated test profile, leaving the original untouched.
 Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
-The [Release startup measurements](../../docs/windows-release-startup-performance.md)
-record the before/after timings, remaining phases and validation limits.
+Keep local measurement output under `target/windows-validation`; record the
+build, settings, document bytes and viewport when comparing runs. See the
+[measurement guide](../../docs/performance.md) for scope and interpretation.
 
 Regenerate `Assets/Viem.ico` with `python src/win/tools/build_icon.py` when the
 existing iconset changes. The script only packages those PNGs into an ICO;

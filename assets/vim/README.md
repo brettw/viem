@@ -9,9 +9,9 @@ a color scheme but no syntax files at import time.
 `manifest.json` pins the exact imported bytes with SHA-256 hashes. Its source
 path records provenance only; builds never read from that installation or
 download syntax files. Git attributes disable text conversion for these files,
-including on Windows. This snapshot is the same runtime used by the existing
-`docs/vim-syntax-audit.md` compatibility audit; distribution does not imply that
-every file is supported by Viem's bounded native compiler.
+including on Windows. The [native compiler profile](../../src/core/document/syntax/vim/PROFILE.md)
+documents compatibility and current audit procedures; distribution does not
+imply that every file is supported by Viem's bounded native compiler.
 
 ## Build and update
 
@@ -21,7 +21,7 @@ with its standard library is required by the packaging verifier. Windows builds
 and publishes the same assets to `Resources/vim` beside the executable, using
 `scripts/vim-runtime.py package` to replace only that subtree and verify both
 copies. This also runs for direct MSBuild builds and publishing without a build;
-see `docs/windows-vim-runtime-followup.md` for validation.
+see [Windows development](../../src/win/README.md) for validation.
 
 To intentionally replace the snapshot from an installed Vim runtime:
 

@@ -222,9 +222,22 @@ bytes, and dosini's used 19,991 instructions and 1,663 bytes, unchanged across
 all three document sizes. Million-line middle/end results remain explicitly
 provisional when the finite exact-priming allowance expires.
 
-## Installed-runtime audit
+## Runtime compatibility audit
 
-See [the runtime audit](../../../../../docs/vim-syntax-audit.md) for the
-reproducible directory audit, before/after results, and remaining limitations.
-The pinned `make.vim` additionally has byte-for-byte native comparisons and
-10,000/1,000,000-line edit/repair/repaint tests with fixed work ceilings.
+Regenerate diagnostics for the bundled runtime from the repository root:
+
+```sh
+cargo run --release --offline --example audit_vim_syntax -- \
+  assets/vim/runtime/syntax > target/vim-syntax-audit.json
+```
+
+An optional final argument filters relative filenames. The audit reports the
+first active compiler failure per file under default setup, without a document
+filename or prefix. Independently compiled helper fragments may lack their
+owner's context. Compilation success does not establish highlighting equivalence;
+use the native Vim differential fixtures for execution parity.
+
+Setup expressions requiring total line count, the final line, or arbitrary
+document reads remain unsupported. Extending that context requires dependency
+tracking so unrelated edits do not trigger recompilation; do not substitute
+guessed counts or empty text for unavailable context.
