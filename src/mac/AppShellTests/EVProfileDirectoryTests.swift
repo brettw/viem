@@ -31,7 +31,7 @@ final class EVProfileDirectoryTests: XCTestCase {
       environment: ["VIEM_CONFIG_DIR": alternate.path], homeDirectory: home)
     XCTAssertEqual(configuration.directory.path, alternate.path)
     try configuration.setSmartQuotes(true)
-    try configuration.saveCodeStyleSheet(Data(#"{"version":2}"#.utf8))
+    try configuration.saveCodeStyleSheet(Data(#"{"version":3}"#.utf8))
     XCTAssertTrue(FileManager.default.fileExists(atPath: alternate.appendingPathComponent("config.json").path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(configuration.selectedThemeURL).path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".viem").path))

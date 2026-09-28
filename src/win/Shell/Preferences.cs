@@ -102,15 +102,10 @@ internal sealed partial class Preferences
     {
         if (value["selectedTheme"] is JsonNode selectedTheme) _ = selectedTheme.GetValue<string>();
         if (value["selectedThemeFile"] is JsonNode selectedThemeFile) _ = selectedThemeFile.GetValue<string>();
-        foreach (string section in new[] { "theme", "view", "editing", "appearance", "code", "windows", "formattingToolbar" })
+        foreach (string section in new[] { "view", "editing", "appearance", "code", "windows", "formattingToolbar" })
             if (value.ContainsKey(section) && value[section] is not JsonObject) throw new InvalidDataException(section + " must be an object.");
         void Number(JsonNode? node, double min, double max, string name, bool integral = false)
         { if (node == null) return; double n = node.GetValue<double>(); if (!double.IsFinite(n) || n < min || n > max || (integral && n != Math.Truncate(n))) throw new InvalidDataException("Invalid " + name + "."); }
-        foreach (string color in new[] { "foreground", "background", "statusForeground", "statusBackground", "caret", "selection" })
-            if (value["theme"]?[color] is JsonNode node)
-            { if (node is not JsonObject rgb) throw new InvalidDataException("Invalid theme color."); foreach (string c in new[] { "red", "green", "blue", "alpha" }) { if (rgb[c] == null) throw new InvalidDataException("Incomplete theme color."); Number(rgb[c], 0, 1, color); } }
-        Number(value["theme"]?["statusFontSize"], 8, 32, "status font size");
-        if (value["theme"]?["statusFontFamily"] is JsonNode family && (family.GetValue<string>().Length is 0 or >= 256)) throw new InvalidDataException("Invalid status font family.");
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
         foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
         if (value["editing"] is JsonObject editing && editing.ContainsKey("markdownFormattedView"))

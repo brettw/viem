@@ -248,6 +248,21 @@ mod tests {
         }
     }
     #[test]
+    fn themes_require_the_current_code_stylesheet_version() {
+        let bytes = default_json(0).unwrap();
+        let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["styles"]["code"]["version"], 3);
+        validate_json(&bytes).unwrap();
+        for version in [1, 2] {
+            value["styles"]["code"]["version"] = version.into();
+            assert_eq!(
+                validate_json(&serde_json::to_vec(&value).unwrap()).unwrap_err(),
+                "Unsupported Code stylesheet"
+            );
+        }
+    }
+
+    #[test]
     fn names_are_portable_and_reserved_names_are_rejected() {
         for name in [
             "Default", "default", "CON", "con.json", "LPT9", "", ".", "...", "a.", "a ", "a/b",

@@ -16,11 +16,6 @@ pub fn snapshot() -> Arc<StyleSheet> {
 }
 
 pub fn default_sheet() -> StyleSheet {
-    default_sheet_with_capture_aliases(false)
-}
-
-fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
-
     let mut sheet = StyleSheet::default();
     sheet
         .block_styles
@@ -180,23 +175,6 @@ fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
         ),
     ];
     for (root, names, (red, green, blue)) in families {
-        if legacy_aliases {
-            for name in *names {
-                let id = StyleId(format!("syntax:{name}"));
-                sheet.character_styles.insert(id.clone(), CharacterStyle {
-                    id: id.clone(),
-                    based_on: (name != root).then(|| StyleId(format!("syntax:{}", legacy_parent(name, root, names)))),
-                    properties: CharacterProperties {
-                        foreground: (name == root).then_some(Color {
-                            red: *red as f32 / 255., green: *green as f32 / 255., blue: *blue as f32 / 255., alpha: 1.,
-                        }),
-                        ..Default::default()
-                    },
-                });
-                sheet.character_metadata.insert(id, StyleDefinitionMetadata::generated(*name));
-            }
-            continue;
-        }
         // Canonical captures and Vim groups share one definition. Add missing
         // intermediate capture prefixes so dotted inheritance is always direct.
         let mut canonical = BTreeSet::new();
@@ -236,7 +214,7 @@ fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
     }
     // `@none` is Neovim's explicit reset: it wins over an enclosing capture,
     // such as a string around a C# interpolation, and shows default text.
-    let empty: &[&str] = if legacy_aliases { &["@embedded", "@spell"] } else { &["Embedded", "Spell", "None"] };
+    let empty: &[&str] = &["Embedded", "Spell", "None"];
     for &name in empty {
         let id = StyleId(format!("syntax:{name}"));
         sheet.character_styles.insert(
@@ -251,67 +229,35 @@ fn default_sheet_with_capture_aliases(legacy_aliases: bool) -> StyleSheet {
             .character_metadata
             .insert(id, StyleDefinitionMetadata::generated(name));
     }
-    if !legacy_aliases {
-        // Neovim's markup captures, used by the JSX queries for text inside
-        // elements such as `<h1>` or `<em>`. They carry typographic meaning
-        // rather than a color.
-        let bold = CharacterProperties { bold: Some(true), ..Default::default() };
-        let markup: [(&str, CharacterProperties); 16] = [
-            ("Markup", Default::default()),
-            ("Markup.heading", bold.clone()),
-            ("Markup.heading.1", Default::default()),
-            ("Markup.heading.2", Default::default()),
-            ("Markup.heading.3", Default::default()),
-            ("Markup.heading.4", Default::default()),
-            ("Markup.heading.5", Default::default()),
-            ("Markup.heading.6", Default::default()),
-            ("Markup.strong", bold),
-            ("Markup.italic", CharacterProperties { slant: Some(FontSlant::Italic), ..Default::default() }),
-            ("Markup.underline", CharacterProperties { underline: Some(true), ..Default::default() }),
-            ("Markup.strikethrough", CharacterProperties { strikethrough: Some(true), ..Default::default() }),
-            ("Markup.raw", Default::default()),
-            ("Markup.link", Default::default()),
-            ("Markup.link.label", Default::default()),
-            ("Markup.link.url", CharacterProperties { underline: Some(true), ..Default::default() }),
-        ];
-        for (name, properties) in markup {
-            let id = StyleId(format!("syntax:{name}"));
-            let based_on = name.rsplit_once('.').map(|(parent, _)| StyleId(format!("syntax:{parent}")));
-            sheet.character_styles.insert(id.clone(), CharacterStyle { id: id.clone(), based_on, properties });
-            sheet.character_metadata.insert(id, StyleDefinitionMetadata::generated(name));
-        }
+    // Neovim's markup captures, used by the JSX queries for text inside
+    // elements such as `<h1>` or `<em>`. They carry typographic meaning
+    // rather than a color.
+    let bold = CharacterProperties { bold: Some(true), ..Default::default() };
+    let markup: [(&str, CharacterProperties); 16] = [
+        ("Markup", Default::default()),
+        ("Markup.heading", bold.clone()),
+        ("Markup.heading.1", Default::default()),
+        ("Markup.heading.2", Default::default()),
+        ("Markup.heading.3", Default::default()),
+        ("Markup.heading.4", Default::default()),
+        ("Markup.heading.5", Default::default()),
+        ("Markup.heading.6", Default::default()),
+        ("Markup.strong", bold),
+        ("Markup.italic", CharacterProperties { slant: Some(FontSlant::Italic), ..Default::default() }),
+        ("Markup.underline", CharacterProperties { underline: Some(true), ..Default::default() }),
+        ("Markup.strikethrough", CharacterProperties { strikethrough: Some(true), ..Default::default() }),
+        ("Markup.raw", Default::default()),
+        ("Markup.link", Default::default()),
+        ("Markup.link.label", Default::default()),
+        ("Markup.link.url", CharacterProperties { underline: Some(true), ..Default::default() }),
+    ];
+    for (name, properties) in markup {
+        let id = StyleId(format!("syntax:{name}"));
+        let based_on = name.rsplit_once('.').map(|(parent, _)| StyleId(format!("syntax:{parent}")));
+        sheet.character_styles.insert(id.clone(), CharacterStyle { id: id.clone(), based_on, properties });
+        sheet.character_metadata.insert(id, StyleDefinitionMetadata::generated(name));
     }
     sheet
-}
-
-// Only used to interpret persisted version-2 declarations against their exact
-// historical defaults before migration; never used in current style lookup.
-fn legacy_parent<'a>(name: &'a str, root: &'a str, names: &[&str]) -> &'a str {
-    let mut prefix = name;
-    while let Some((parent, _)) = prefix.rsplit_once('.') {
-        if names.contains(&parent) { return parent; }
-        prefix = parent;
-    }
-    match name {
-        "@keyword" => "Keyword",
-        "@conditional" => "Conditional",
-        "@repeat" => "Repeat",
-        "@label" => "Label",
-        "@exception" => "Exception",
-        "@include" => "Include",
-        "@preproc" => "PreProc",
-        "Include" | "Define" | "Macro" | "PreCondit" => "PreProc",
-        "@character" => "Character",
-        "@escape" => "SpecialChar",
-        "@storageclass" => "StorageClass",
-        "@number" => "Number",
-        "@boolean" => "Boolean",
-        "@float" => "Float",
-        "Float" => "Number",
-        "@operator" => "Operator",
-        "@delimiter" | "@punctuation.delimiter" | "@punctuation.bracket" | "@punctuation.special" => "Delimiter",
-        _ => root,
-    }
 }
 
 /// Provider normalization, not fuzzy style lookup. Preserve everything after
@@ -486,223 +432,6 @@ struct File {
     suppressed_character_ids: BTreeSet<StyleId>,
 }
 
-/// Version 2 stored Tree-sitter aliases as distinct styles. Version 3 uses the
-/// canonical style directly. Keep custom declarations and redirect persistent
-/// parent/suppression IDs together. If both old definitions were customized,
-/// the former capture layer wins each declared property, matching its previous
-/// cascade. An explicitly detached/reparented capture replaces that cascade.
-fn migrate_v2(mut file: File) -> Result<File, String> {
-    fn canonical_id(id: &StyleId) -> StyleId {
-        match id.0.strip_prefix("syntax:@") {
-            Some(capture) => StyleId(format!("syntax:{}", canonical_capture_name(capture))),
-            None => id.clone(),
-        }
-    }
-
-    let defaults = default_sheet();
-    let old_defaults = default_sheet_with_capture_aliases(true);
-    let mut old = old_defaults.clone();
-    for id in &file.suppressed_character_ids {
-        old.character_styles.remove(id);
-        old.character_metadata.remove(id);
-    }
-    let mut seen = BTreeSet::new();
-    for entry in &file.character_styles {
-        if !seen.insert(entry.style.id.clone()) {
-            return Err("Duplicate style ID".into());
-        }
-        old.character_styles.insert(entry.style.id.clone(), entry.style.clone());
-        old.character_metadata.insert(entry.style.id.clone(), StyleDefinitionMetadata::generated(entry.name.clone()));
-    }
-    // Validate before collapsing aliases: valid old deletions may have removed
-    // either side of a pair, and invalid cycles must not disappear in migration.
-    validate(&old)?;
-    // Reparenting an old capture independently of its Vim definition can make
-    // contraction cyclic (capture -> Notes -> Vim definition). Preserve that
-    // original parent's named appearance and keep its old incoming edges aimed
-    // at this separate identity. Renamed displaced definitions are retained too.
-    let mut preserve = BTreeSet::new();
-    let mut redirect_parents = BTreeSet::new();
-    for (old_id, style) in &old.character_styles {
-        let id = canonical_id(old_id);
-        if old_id == &id || !old.character_styles.contains_key(&id) {
-            continue;
-        }
-        if style.based_on.as_ref() != Some(&id) {
-            preserve.insert(id.clone());
-            redirect_parents.insert(id.clone());
-        }
-        let base_name = &old.character_metadata[&id].display_name;
-        let capture_name = &old.character_metadata[old_id].display_name;
-        let default_name = defaults.character_metadata.get(&id).map(|m| m.display_name.as_str());
-        if default_name != Some(base_name.as_str()) && base_name != &canonical_capture_name(capture_name) {
-            preserve.insert(id.clone());
-            redirect_parents.insert(id);
-        }
-    }
-    let mut used_ids: BTreeSet<_> = old.character_styles.keys().cloned()
-        .chain(old.character_styles.keys().map(canonical_id)).collect();
-    let mut preserved = BTreeMap::new();
-    for id in preserve {
-        let mut serial = 0;
-        let preserved_id = loop {
-            let candidate = StyleId(format!("migrated-code:{serial}"));
-            if used_ids.insert(candidate.clone()) { break candidate; }
-            serial += 1;
-        };
-        let entry = CharacterEntry {
-            name: old.character_metadata[&id].display_name.clone(),
-            style: CharacterStyle {
-                id: preserved_id,
-                based_on: None,
-                properties: old.named_character_declarations(Some(&id))
-                    .map_err(|error| format!("{error:?}"))?,
-            },
-        };
-        preserved.insert(id, entry);
-    }
-    let migrated_parent = |id: &StyleId| {
-        if redirect_parents.contains(id) {
-            preserved[id].style.id.clone()
-        } else {
-            canonical_id(id)
-        }
-    };
-    file.character_styles = old.character_styles.values().map(|style| CharacterEntry {
-        name: old.character_metadata[&style.id].display_name.clone(),
-        style: style.clone(),
-    }).collect();
-    // Stable ordering keeps the old capture layer above its Vim definition.
-    file.character_styles
-        .sort_by_key(|entry| entry.style.id.0.starts_with("syntax:@"));
-    let mut entries: BTreeMap<StyleId, CharacterEntry> = BTreeMap::new();
-    let mut normalized_names = BTreeSet::new();
-    let mut original_parents = BTreeMap::new();
-    let mut new_default_parents = BTreeSet::new();
-    for mut entry in file.character_styles {
-        let old_id = entry.style.id.clone();
-        let id = canonical_id(&old_id);
-        original_parents.insert(id.clone(), entry.style.based_on.as_ref().map(migrated_parent));
-        let collapsed_parent = old_id != id && entry.style.based_on.as_ref() == Some(&id);
-        entry.style.id = id.clone();
-        if collapsed_parent {
-            // The alias used to inherit the very style it now names. Preserve
-            // that definition's declarations and its (possibly edited) parent.
-            let base = entries
-                .get(&id)
-                .map(|entry| &entry.style)
-                .or_else(|| defaults.character_styles.get(&id));
-            if let Some(base) = base {
-                let mut properties = base.properties.clone();
-                properties.overlay(&entry.style.properties);
-                entry.style.properties = properties;
-                entry.style.based_on = base.based_on.clone();
-            } else {
-                entry.style.based_on = None;
-            }
-        } else if old_id != id
-            && old_defaults.character_styles.get(&old_id).is_some_and(|default| default.based_on == entry.style.based_on)
-        {
-            // Newly explicit dotted intermediate defaults replace only the old
-            // default parent; authored reparenting remains an override.
-            entry.style.based_on = defaults.character_styles.get(&id)
-                .and_then(|style| style.based_on.clone())
-                .or_else(|| entry.style.based_on.as_ref().map(migrated_parent));
-            if entry.style.based_on != original_parents[&id] {
-                new_default_parents.insert(id.clone());
-            }
-        } else {
-            entry.style.based_on = entry.style.based_on.as_ref().map(migrated_parent);
-        }
-        if entry.name.starts_with('@') {
-            entry.name = canonical_capture_name(&entry.name);
-            normalized_names.insert(id.clone());
-        } else {
-            normalized_names.remove(&id);
-        }
-        entries.insert(id, entry);
-    }
-    // Intermediate defaults such as Text and Punctuation did not exist in v2.
-    // Reuse an already authored exact name instead of introducing a duplicate
-    // or making Text.uri inherit a second, hidden Text definition.
-    let old_default_ids: BTreeSet<_> = old_defaults.character_styles.keys().map(canonical_id).collect();
-    let mut intermediate_parents = BTreeMap::new();
-    for (id, style) in &defaults.character_styles {
-        if entries.contains_key(id) || old_default_ids.contains(id) {
-            continue;
-        }
-        let name = &defaults.character_metadata[id].display_name;
-        if let Some(existing) = entries.values().find(|entry| &entry.name == name) {
-            intermediate_parents.insert(id.clone(), existing.style.id.clone());
-        } else {
-            entries.insert(id.clone(), CharacterEntry { name: name.clone(), style: style.clone() });
-        }
-    }
-    let mut parent_changes = Vec::new();
-    for (id, entry) in &entries {
-        let Some(parent) = entry.style.based_on.as_ref() else {
-            continue;
-        };
-        if !intermediate_parents.contains_key(parent) && !new_default_parents.contains(id) {
-            continue;
-        }
-        let parent = intermediate_parents.get(parent).unwrap_or(parent);
-        let mut current = Some(parent);
-        let mut seen = BTreeSet::new();
-        let mut cyclic = false;
-        while let Some(candidate) = current {
-            if candidate == id || !seen.insert(candidate) {
-                cyclic = true;
-                break;
-            }
-            current = entries.get(candidate).and_then(|entry| entry.style.based_on.as_ref())
-                .map(|next| intermediate_parents.get(next).unwrap_or(next));
-        }
-        // An authored Text may already descend from the old @text.uri. Keep
-        // that child's previous parent rather than turning the new default
-        // intermediate relationship into a cycle through the authored style.
-        let parent = if cyclic { original_parents[id].clone() } else { Some(parent.clone()) };
-        parent_changes.push((id.clone(), parent));
-    }
-    for (id, parent) in parent_changes {
-        entries.get_mut(&id).unwrap().style.based_on = parent;
-    }
-    fn unique_name(entries: &BTreeMap<StyleId, CharacterEntry>, name: &str, reason: &str) -> String {
-        let mut serial = 1;
-        loop {
-            let candidate = if serial == 1 { format!("{name} ({reason})") }
-                else { format!("{name} ({reason} {serial})") };
-            if entries.values().all(|entry| entry.name != candidate) { return candidate; }
-            serial += 1;
-        }
-    }
-    for mut entry in preserved.into_values() {
-        if entries.values().any(|current| current.name == entry.name) {
-            entry.name = unique_name(&entries, &entry.name, "previous definition");
-        }
-        entries.insert(entry.style.id.clone(), entry);
-    }
-    // An existing custom exact name takes precedence over a newly normalized
-    // capture name. Retain both identities/appearances with a distinct name for
-    // the former capture; current providers use the custom canonical definition.
-    for id in &normalized_names {
-        let name = &entries[id].name;
-        let conflicts = entries.iter().any(|(other_id, other)| other_id != id && other.name == *name
-            && (!normalized_names.contains(other_id) || other_id < id));
-        if conflicts {
-            let name = unique_name(&entries, name, "previous capture");
-            entries.get_mut(id).unwrap().name = name;
-        }
-    }
-    // Suppressing one side of a collapsed pair cannot suppress the surviving
-    // definition. Both providers now intentionally share its canonical name.
-    file.suppressed_character_ids = defaults.character_styles.keys()
-        .filter(|id| !entries.contains_key(*id)).cloned().collect();
-    file.character_styles = entries.into_values().collect();
-    file.version = 3;
-    Ok(file)
-}
-
 fn validate(sheet: &StyleSheet) -> Result<(), String> {
     let internal = StyleId::incremental_match();
     if !sheet.character_styles.get(&internal).is_some_and(|style| style.based_on.is_none())
@@ -810,10 +539,9 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
     let mut sheet = default_sheet();
     if !bytes.is_empty() {
         let file: File = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
-        if !matches!(file.version, 2 | 3) || file.character_styles.len() > 4096 {
+        if file.version != 3 || file.character_styles.len() > 4096 {
             return Err("Unsupported Code stylesheet".into());
         }
-        let file = if file.version == 2 { migrate_v2(file)? } else { file };
         for id in file.suppressed_character_ids {
             sheet.character_styles.remove(&id);
             sheet.character_metadata.remove(&id);

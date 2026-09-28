@@ -131,25 +131,71 @@ final class EVThemeCatalogueTests: XCTestCase {
     XCTAssertEqual(EVConfigurationStore(directory: directory).availableThemeNames, ["Midnight"])
   }
 
-  func testLegacyAppearanceAndStyleFilesBecomeOneImportedTheme() throws {
+  func testLegacyAppearanceAndStyleFilesAreIgnoredWithoutCreatingATheme() throws {
     let directory = directory()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     let appearance = try JSONSerialization.jsonObject(with: JSONEncoder().encode(EVTheme.paper))
-    try JSONSerialization.data(withJSONObject: ["version": 1, "theme": appearance, "editing": ["smartQuotes": true]])
-      .write(to: directory.appendingPathComponent("config.json"))
-    let style = Data(#"{"version":1,"block_styles":[],"character_styles":[],"future":42}"#.utf8)
-    let legacy = directory.appendingPathComponent("markdown_style.json")
-    try style.write(to: legacy)
+    let config = try JSONSerialization.data(withJSONObject: ["version": 1, "theme": appearance, "editing": ["smartQuotes": true]])
+    let configURL = directory.appendingPathComponent("config.json")
+    try config.write(to: configURL)
+    var legacyFiles: [URL: Data] = [:]
+    for name in ["text", "markdown", "code"] {
+      let style = try JSONSerialization.data(withJSONObject: ["version": name == "code" ? 2 : 1,
+        "block_styles": [], "character_styles": [], "future": 42])
+      let file = directory.appendingPathComponent("\(name)_style.json")
+      try style.write(to: file)
+      legacyFiles[file] = style
+    }
+
     let store = EVConfigurationStore(directory: directory)
     XCTAssertNil(store.lastError)
-    XCTAssertEqual(store.currentThemeName, "Imported")
-    XCTAssertEqual(store.theme, .paper)
+    XCTAssertNil(store.currentThemeName)
+    XCTAssertEqual(store.theme, .midnight)
     XCTAssertTrue(store.smartQuotes)
-    XCTAssertEqual(try Data(contentsOf: legacy), style)
-    XCTAssertNil(try object(directory.appendingPathComponent("config.json"))["theme"])
-    let imported = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.styleDefaults(named: "markdown"))) as? [String: Any])
-    XCTAssertEqual(imported["future"] as? Int, 42)
-    XCTAssertEqual(EVConfigurationStore(directory: directory).availableThemeNames, ["Imported"])
+    XCTAssertTrue(store.availableThemeNames.isEmpty)
+    let builtinStyles = try XCTUnwrap(EVThemeFile.builtin()["styles"] as? [String: Any])
+    for name in ["text", "markdown", "code"] {
+      let expected = try JSONSerialization.data(withJSONObject: XCTUnwrap(builtinStyles[name]), options: [.sortedKeys])
+      XCTAssertEqual(try store.styleDefaults(named: name), expected)
+    }
+    XCTAssertEqual(try Data(contentsOf: configURL), config)
+    for (file, data) in legacyFiles { XCTAssertEqual(try Data(contentsOf: file), data) }
+    let reopened = EVConfigurationStore(directory: directory)
+    XCTAssertNil(reopened.currentThemeName)
+    XCTAssertTrue(reopened.availableThemeNames.isEmpty)
+  }
+
+  func testMalformedLegacySettingsDoNotBlockCurrentThemeOrPreferenceUpdates() throws {
+    let directory = directory()
+    let themes = directory.appendingPathComponent("themes")
+    try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
+    let themeURL = themes.appendingPathComponent("Current.json")
+    let theme = try EVThemeFile.encode(EVThemeFile.builtin(paper: true))
+    try theme.write(to: themeURL)
+    let configURL = directory.appendingPathComponent("config.json")
+    try Data(#"{"version":1,"theme":"obsolete","selectedTheme":"Current","selectedThemeFile":"Current.json"}"#.utf8)
+      .write(to: configURL)
+    let invalid = Data("{invalid".utf8)
+    for name in ["text", "markdown", "code"] {
+      try invalid.write(to: directory.appendingPathComponent("\(name)_style.json"))
+    }
+
+    let store = EVConfigurationStore(directory: directory)
+    XCTAssertNil(store.lastError)
+    XCTAssertEqual(store.currentThemeName, "Current")
+    XCTAssertEqual(store.theme, .paper)
+    XCTAssertEqual(store.availableThemeNames, ["Current"])
+    try store.setSmartQuotes(true)
+    try store.selectTheme(named: "Current")
+    let reopened = EVConfigurationStore(directory: directory)
+    XCTAssertNil(reopened.lastError)
+    XCTAssertTrue(reopened.smartQuotes)
+    XCTAssertEqual(reopened.theme, .paper)
+    XCTAssertEqual(try object(configURL)["theme"] as? String, "obsolete")
+    XCTAssertEqual(try Data(contentsOf: themeURL), theme)
+    for name in ["text", "markdown", "code"] {
+      XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("\(name)_style.json")), invalid)
+    }
   }
 
   func testIndependentThemeWritesPreserveOtherSectionsAndFailedWriteDoesNotPublish() throws {

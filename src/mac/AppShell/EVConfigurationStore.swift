@@ -57,10 +57,6 @@ public final class EVConfigurationStore {
         root = try Self.readObject(Data(contentsOf: file))
         try Self.validate(root)
       } else {
-        if let data = legacy?.data(forKey: "EVApplicationTheme.v1"),
-           let theme = try? JSONDecoder().decode(EVTheme.self, from: data), theme.isValid {
-          root["theme"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(theme))
-        }
         if let value = legacy?.object(forKey: "EVEditing.SmartQuotes.v1") as? Bool {
           root["editing"] = ["smartQuotes": value]
         }
@@ -69,7 +65,7 @@ public final class EVConfigurationStore {
         }
         if root.count > 1 {
           try write(root, to: file)
-          ["EVApplicationTheme.v1", "EVEditing.SmartQuotes.v1", "EVShowStatusBar"].forEach {
+          ["EVEditing.SmartQuotes.v1", "EVShowStatusBar"].forEach {
             legacy?.removeObject(forKey: $0)
           }
         }
@@ -310,9 +306,8 @@ public final class EVConfigurationStore {
     guard name == "code" else { try validateVersion(object); return }
     guard let version = object["version"] as? NSNumber,
           CFGetTypeID(version) != CFBooleanGetTypeID(),
-          [2, 3].contains(version.intValue),
-          version.doubleValue == Double(version.intValue)
-    else { throw invalid("Unsupported Code stylesheet version; expected 2 or 3") }
+          version.intValue == 3, version.doubleValue == 3
+    else { throw invalid("Unsupported Code stylesheet version; expected 3") }
   }
   static func validate(_ object: [String: Any]) throws {
     try validateVersion(object)
@@ -332,11 +327,6 @@ public final class EVConfigurationStore {
             paths.allSatisfy(isValidRecentDocumentPath) else {
         throw invalid("Recent documents must be an array of at most 10 absolute paths, each at most 16 KiB")
       }
-    }
-    if let value = object["theme"] {
-      let data = try JSONSerialization.data(withJSONObject: value)
-      let theme = try JSONDecoder().decode(EVTheme.self, from: data)
-      guard theme.isValid else { throw invalid("Invalid theme values") }
     }
     if let raw = object["view"] {
       guard let fields = raw as? [String: Any] else { throw invalid("Invalid View settings") }

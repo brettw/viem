@@ -44,8 +44,7 @@ internal sealed partial class Preferences
         try
         {
             bool fresh = !hadConfiguration && ThemeNames.Length == 0;
-            bool legacy = !root.ContainsKey("selectedTheme") && (root["theme"] is JsonObject || new[] { "text", "markdown", "code" }.Any(key => File.Exists(Path.Combine(DirectoryPath, key + "_style.json"))));
-            if (fresh && !legacy && writable)
+            if (fresh && writable)
             {
                 foreach (string name in new[] { "Paper", "Midnight" })
                 {
@@ -54,28 +53,6 @@ internal sealed partial class Preferences
                     CoreThemes.Validate(bytes); AtomicWrite(ThemePath(name), bytes);
                 }
                 Update(candidate => SetThemeSelection(candidate, "Midnight", ThemePath("Midnight")), notify: false);
-            }
-            else if (legacy && writable)
-            {
-                var imported = DefaultTheme();
-                if (root["theme"] is JsonObject colors) Merge(imported["theme"]!.AsObject(), colors);
-                foreach (string key in new[] { "text", "markdown", "code" })
-                {
-                    string path = Path.Combine(DirectoryPath, key + "_style.json");
-                    if (!File.Exists(path)) continue;
-                    try
-                    {
-                        var candidate = (JsonObject)imported.DeepClone();
-                        candidate["styles"]![key] = JsonNode.Parse(File.ReadAllBytes(path));
-                        CoreThemes.Validate(ThemeBytes(candidate)); imported = candidate;
-                    }
-                    catch (Exception error) { ThemeWarning(path + ": " + error.Message + " Using built-in styles for this format."); }
-                }
-                CoreThemes.Validate(ThemeBytes(imported));
-                string name = "Imported"; int suffix = 2;
-                while (ThemeNames.Contains(name, StringComparer.OrdinalIgnoreCase)) name = "Imported" + suffix++;
-                AtomicWrite(ThemePath(name), ThemeBytes(imported));
-                Update(candidate => SetThemeSelection(candidate, name, ThemePath(name)), notify: false);
             }
             if (root["selectedTheme"] is JsonValue selection)
             {
@@ -155,7 +132,6 @@ internal sealed partial class Preferences
     }
     private static void SetThemeSelection(JsonObject configuration, string? name, string? path)
     {
-        configuration.Remove("theme");
         configuration["selectedTheme"] = name;
         configuration["selectedThemeFile"] = path == null ? null : System.IO.Path.GetFileName(path);
     }

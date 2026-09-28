@@ -11,13 +11,17 @@ final class EVConfigurationStoreTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); defaults.removePersistentDomain(forName: name) }
     return (directory, defaults)
   }
-  func testLegacyMigrationThenJSONIsTheOnlyAuthority() throws {
+  func testLegacyPreferencesMigrateWhileTheLegacyThemeIsIgnored() throws {
     let (directory, legacy) = try fixture()
-    legacy.set(try JSONEncoder().encode(EVTheme.midnight), forKey: "EVApplicationTheme.v1")
+    let legacyTheme = try JSONEncoder().encode(EVTheme.paper)
+    legacy.set(legacyTheme, forKey: "EVApplicationTheme.v1")
     legacy.set(true, forKey: "EVEditing.SmartQuotes.v1")
     legacy.set(false, forKey: "EVShowStatusBar")
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
     XCTAssertEqual(store.theme, .midnight); XCTAssertTrue(store.smartQuotes); XCTAssertFalse(store.showStatusBar)
+    XCTAssertEqual(store.currentThemeName, "Midnight")
+    XCTAssertEqual(store.availableThemeNames, ["Midnight", "Paper"])
+    XCTAssertEqual(legacy.data(forKey: "EVApplicationTheme.v1"), legacyTheme)
     XCTAssertNil(legacy.object(forKey: "EVEditing.SmartQuotes.v1"))
     legacy.set(false, forKey: "EVEditing.SmartQuotes.v1")
     let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
