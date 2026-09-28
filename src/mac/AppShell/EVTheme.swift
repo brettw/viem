@@ -1,7 +1,7 @@
 import AppKit
 
 /// Application appearance uses portable sRGB values, independently of a
-/// document's source-backed style sheet.
+/// document's style sheet.
 public struct EVThemeColor: Codable, Equatable, Sendable {
   public var red: Double
   public var green: Double

@@ -113,13 +113,11 @@ struct EVStyleCapabilities: OptionSet, Equatable {
 }
 
 enum EVStyleOrigin: UInt32, Equatable {
-    case sourceBacked = 1
     case generatedConfiguration = 2
     case syntheticReadOnly = 3
 
     var displayName: String {
         switch self {
-        case .sourceBacked: "source-backed"
         case .generatedConfiguration: "generated configuration"
         case .syntheticReadOnly: "synthetic read-only"
         }
@@ -459,14 +457,6 @@ extension EVCoreDocumentBackend {
 
 @MainActor
 extension EVCoreViewSession {
-    @discardableResult
-    func setDirectCharacterProperties(_ values: [(EVStyleProperty, EVStyleValue)],
-                                      expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        let outcome = try EVCoreStyleBridge.applyDirectCharacterBatch(core: document.core, view: viewID,
-            values: values, selection: selection)
-        finishStyleEdit(outcome)
-        return outcome
-    }
     func beginStyleEditGroup(expected: EVStyleSheetIdentity) throws -> EVStyleEditGroup {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         return try EVCoreStyleBridge.beginGroup(
@@ -492,24 +482,6 @@ extension EVCoreViewSession {
         )
         finishStyleEdit(outcome)
         return outcome
-    }
-
-    @discardableResult
-    func editDirectProperty(_ property: EVStyleProperty, value: EVStyleValue?,
-                            expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        let outcome = try EVCoreStyleBridge.applyDirect(core: document.core, view: viewID,
-            property: property, value: value, selection: selection)
-        finishStyleEdit(outcome)
-        return outcome
-    }
-
-    func decorationState(_ property: EVStyleProperty) throws -> UInt32 {
-        var state: UInt32 = 0
-        let status = viem_core_view_decoration_state(document.core, viewID, property.rawValue, &state)
-        guard status == UInt32(VIEM_STATUS_OK) else {
-            throw EVCoreFrontendError.core(operation: "Read decoration state", status: status)
-        }
-        return state
     }
 
     @discardableResult
@@ -897,66 +869,6 @@ enum EVCoreStyleBridge {
             ))
         }
         return EVStyleSheetSnapshot(identity: EVStyleSheetIdentity(info.identity), definitions: decodedDefinitions)
-    }
-
-    static func applyDirect(core: ViemCoreHandle, view: ViemViewId,
-                            property: EVStyleProperty, value: EVStyleValue?,
-                            selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        let mutation: EVStyleMutation = value.map { .setDeclaration(property, $0) } ?? .clearDeclaration(property)
-        // Reuse the typed property's arena encoding; no named-style identity is
-        // sent to the direct-edit endpoint.
-        let encoded = EncodedMutation(key: .baseParagraph,
-            expected: EVStyleSheetIdentity(documentID: selection.document_id,
-                documentRevision: selection.document_revision, styleSheetRevision: 0), mutation: mutation)
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        let status = encoded.withRequest { encoded in
-            var request = ViemDirectStyleEditV1()
-            request.struct_size = UInt32(MemoryLayout<ViemDirectStyleEditV1>.size)
-            request.operation = encoded.operation
-            request.property = encoded.property
-            request.value = encoded.value
-            request.expected_selection = selection
-            return viem_core_view_edit_direct_style(core, view, &request, &outcome)
-        }
-        guard status == UInt32(VIEM_STATUS_OK) else {
-            throw EVCoreFrontendError.core(operation: "Change direct formatting", status: status)
-        }
-        return outcome
-    }
-
-    static func applyDirectCharacterBatch(core: ViemCoreHandle, view: ViemViewId,
-                                         values: [(EVStyleProperty, EVStyleValue)],
-                                         selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        let identity = EVStyleSheetIdentity(documentID: selection.document_id,
-            documentRevision: selection.document_revision, styleSheetRevision: 0)
-        let encoded = values.map { EncodedMutation(key: .defaultParagraph, expected: identity,
-            mutation: .setDeclaration($0.0, $0.1)) }
-        var requests: [ViemDirectStyleEditV1] = []
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
-        // Nested arenas remain alive until the single batched call returns.
-        func withArenas(_ index: Int) -> UInt32 {
-            if index == encoded.count {
-                return requests.withUnsafeBufferPointer { requests in
-                    viem_core_view_edit_direct_character_batch(core, view,
-                        requests.baseAddress, UInt64(requests.count), &outcome)
-                }
-            }
-            return encoded[index].withRequest { item in
-                var request = ViemDirectStyleEditV1()
-                request.struct_size = UInt32(MemoryLayout<ViemDirectStyleEditV1>.size)
-                request.operation = item.operation; request.property = item.property
-                request.value = item.value; request.expected_selection = selection
-                requests.append(request)
-                return withArenas(index + 1)
-            }
-        }
-        let status = withArenas(0)
-        guard status == UInt32(VIEM_STATUS_OK) else {
-            throw EVCoreFrontendError.core(operation: "Change text typography", status: status)
-        }
-        return outcome
     }
 
     struct EncodedMutation {

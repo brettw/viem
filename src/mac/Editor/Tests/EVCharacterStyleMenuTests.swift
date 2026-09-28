@@ -1,8 +1,10 @@
 import AppKit
 import CViemCore
+import CoreText
 import ViemAppShell
 import XCTest
 @testable import ViemEditor
+@testable import ViemCoreTextProvider
 
 @MainActor final class EVCharacterStyleMenuTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
@@ -39,14 +41,6 @@ import XCTest
     private func selectedStyle(_ range: NSRange, view: EVEditorSurfaceController, session: EVCoreViewSession) throws -> EVStyleID? {
         view.editorView.setAccessibilitySelectedTextRange(range)
         return try session.selectedNamedStyles().character
-    }
-
-    private func customStyle(backend: EVCoreDocumentBackend, session: EVCoreViewSession) throws -> EVStyleKey {
-        let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "RtfC1"))
-        _ = try session.createStyle(key, name: "Accent", identity: backend.styleSheetSnapshot().identity)
-        _ = try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
-            mutation: .setDeclaration(.characterSize, .float(22)))
-        return key
     }
 
     private func assertReopenedStyle(_ saved: Data, type: String, range: NSRange, id: String?) throws {
@@ -89,34 +83,6 @@ import XCTest
                 XCTAssertNil(view.commandOutput)
             }
         }
-    }
-
-    func testCustomStyleAtInsertCaretPersistsDefinitionAndTypedAssignment() throws {
-        let type = EVDocument.rtfType
-        let (backend, view, session) = try surface(#"{\rtf1{\pard base}}"#, type: type)
-        let key = try customStyle(backend: backend, session: session)
-        try keys("A", view: view, session: session)
-        let before = try backend.serializedSource(typeName: type)
-        let revision = try backend.revision()
-        try choose(key.id.rawValue, in: view)
-        XCTAssertEqual(try backend.serializedSource(typeName: type), before)
-        XCTAssertEqual(try backend.revision(), revision)
-        view.editorView.insertText("é", replacementRange: NSRange(location: NSNotFound, length: 0))
-        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        view.refreshPresentation()
-        XCTAssertEqual(try backend.formattedText(), "baseé")
-        let range = NSRange(location: 4, length: 1)
-        XCTAssertEqual(try selectedStyle(range, view: view, session: session), key.id)
-        let saved = try backend.serializedSource(typeName: type)
-        try assertReopenedStyle(saved, type: type, range: range, id: key.id.rawValue)
-        let reopened = EVCoreDocumentBackend()
-        try reopened.read(source: saved, typeName: type)
-        XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: key)?.properties[.characterSize]?.declared, .float(22))
-        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        view.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: type), before)
-        view.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: type), saved)
     }
 
     func testChoosingDefaultParagraphStopsPendingNamedStyle() throws {
@@ -167,17 +133,32 @@ import XCTest
                                            (NSRange(location: 5, length: 5), CGFloat(20), heading)] {
                 _ = try selectedStyle(range, view: view, session: session)
                 try choose("Code", in: view)
-                let typography = try session.selectedTypography()
-                XCTAssertEqual(typography.fontFamily, "Courier")
-                XCTAssertEqual(typography.size, size)
-                XCTAssertEqual(typography.foreground, green)
+                let cluster = try XCTUnwrap(session.layoutExport().clusters.first {
+                    $0.text_start == UInt64(range.location)
+                })
+                XCTAssertEqual(session.provider.renderRegistry.resolvedFontFamily(
+                    identifier: cluster.render_run.identifier,
+                    metricsGeneration: cluster.render_run.metrics_generation), "Courier")
+                XCTAssertEqual(CTFontGetSize(try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
+                    identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation))), size)
+                let paint = try session.layoutPaintExport()
+                let foreground = try XCTUnwrap(view.editorView.resolvedTextPaint(for: cluster, paint: paint)
+                    .foreground.usingColorSpace(.sRGB))
+                XCTAssertEqual(Float(foreground.redComponent), green.red, accuracy: 0.001)
+                XCTAssertEqual(Float(foreground.greenComponent), green.green, accuracy: 0.001)
+                XCTAssertEqual(Float(foreground.blueComponent), green.blue, accuracy: 0.001)
                 XCTAssertEqual(view.currentStyleEditorKey(), code)
                 try choose("", in: view)
                 XCTAssertNil(try session.selectedNamedStyles().character)
                 XCTAssertEqual(view.currentStyleEditorKey(), paragraph)
-                let inherited = try session.selectedTypography()
-                XCTAssertEqual(inherited.fontFamily, "Times New Roman")
-                XCTAssertEqual(inherited.size, size)
+                let inherited = try XCTUnwrap(session.layoutExport().clusters.first {
+                    $0.text_start == UInt64(range.location)
+                })
+                XCTAssertEqual(session.provider.renderRegistry.resolvedFontFamily(
+                    identifier: inherited.render_run.identifier,
+                    metricsGeneration: inherited.render_run.metrics_generation), "Times New Roman")
+                XCTAssertEqual(CTFontGetSize(try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
+                    identifier: inherited.render_run.identifier, metricsGeneration: inherited.render_run.metrics_generation))), size)
             }
         }
     }
@@ -225,10 +206,8 @@ import XCTest
     func testCharacterStyleSpansParagraphsAndLeavesOutsideTextUnassigned() throws {
         for (source, type, id) in [
             ("one\n\ntwo\n\nthree", EVDocument.markdownType, "Code"),
-            (#"{\rtf1{\pard one}{\*\comment between}\par {\pard two}\par {\pard three}{\*\comment keep}}"#, EVDocument.rtfType, "RtfC1"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
-            if id == "RtfC1" { _ = try customStyle(backend: backend, session: session) }
             let before = try backend.serializedSource(typeName: type)
             let range = NSRange(location: 1, length: 8)
             _ = try selectedStyle(range, view: view, session: session)
@@ -242,10 +221,6 @@ import XCTest
             _ = try selectedStyle(NSRange(location: 0, length: 13), view: view, session: session)
             XCTAssertTrue(try session.selectedNamedStyles().characterMixed)
             XCTAssertTrue(try XCTUnwrap(view.currentStyleMenuCatalogue()).entries.filter { $0.role == .character }.allSatisfy { $0.presentation.state == .off })
-            if type == EVDocument.rtfType {
-                XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("between"))
-                XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("keep"))
-            }
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
             view.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), before)

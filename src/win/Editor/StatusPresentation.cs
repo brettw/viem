@@ -61,6 +61,7 @@ internal sealed partial class EditorPane
         foreach (var width in new[] { GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star) })
             normalStatus.ColumnDefinitions.Add(new() { Width = width });
         normalStatus.Children.Add(mode); normalStatus.Children.Add(format); SetColumn(format, 1);
+        normalStatus.Children.Add(formatLabel); SetColumn(formatLabel, 1);
         normalStatus.Children.Add(message); SetColumn(message, 2);
         status.Children.Add(normalStatus); status.Children.Add(prompt); status.Children.Add(commandOutput);
         location.Margin = new(0, 0, StatusInset, 0); status.Children.Add(location); SetColumn(location, 1);

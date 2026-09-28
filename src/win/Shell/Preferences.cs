@@ -43,7 +43,7 @@ internal sealed partial class Preferences
     private static string ToolbarFormatKey(uint format) => format switch {
         Native.VIEM_FORMAT_MARKDOWN => "markdown", Native.VIEM_FORMAT_MARKDOWN_SOURCE => "markdownSource",
 
-        Native.VIEM_FORMAT_RTF => "rtf", Native.VIEM_FORMAT_CODE => "code", _ => "plainText"
+        Native.VIEM_FORMAT_CODE => "code", _ => "plainText"
     };
     public bool ShowFormattingToolbar(uint format) => Get("formattingToolbar", ToolbarFormatKey(format), true);
     public void SetFormattingToolbar(uint format, bool visible) => Set("formattingToolbar", ToolbarFormatKey(format), visible);
@@ -114,7 +114,7 @@ internal sealed partial class Preferences
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
         foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
         if (value["formattingToolbar"] is JsonObject toolbar)
-            foreach (string key in new[] { "plainText", "code", "markdown", "markdownSource", "rtf" })
+            foreach (string key in new[] { "plainText", "code", "markdown", "markdownSource" })
                 if (toolbar[key] is JsonNode visible) _ = visible.GetValue<bool>();
         if (value["windows"] is JsonObject windows && windows.ContainsKey("documentFrame") && WindowFrame.Read(windows["documentFrame"]) == null)
             throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");

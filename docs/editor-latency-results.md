@@ -1,5 +1,10 @@
 # Large-document editing and scrolling latency
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Historical validation: HTML editing modes referenced below have since been
 removed. HTML files now open in Code.
 

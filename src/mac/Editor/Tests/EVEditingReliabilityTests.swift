@@ -101,33 +101,8 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testNativeRTFListEnterRenumbersFollowingItems() throws {
-        let source = #"{\rtf1{\*\listtable{\list\listid42{\listlevel\levelnfc0\levelstartat3{\leveltext\'02\'00.;}}}}{\*\listoverridetable{\listoverride\listid42\listoverridecount0\ls1}}\pard\ls1\ilvl0 First\par\pard\ls1\ilvl0 Second\par\pard Tail}"#
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let client: NSTextInputClient = surface.editorView
-        let implicit = NSRange(location: NSNotFound, length: 0)
-        client.insertText("A", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-        for character in "Added" {
-            client.insertText(String(character), replacementRange: implicit)
-            XCTAssertEqual(surface.statusBarState.message, "", "Typing \(character)")
-        }
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-        XCTAssertEqual(surface.formattedText, "First\nAdded\nSecond\nTail")
-        let layout = try XCTUnwrap(surface.layoutSnapshot)
-        XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "3.4.5.")
-        client.insertText("u", replacementRange: implicit)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
-    }
-
-    @MainActor
-    func testNativeRichFormattingMenusUseEffectiveStateAndPreserveSourceOnUndo() throws {
-        for (type, source) in [
-            (EVDocument.rtfType, #"{\rtf1{\b Words}{\*\opaque keep}}"#),
-        ] {
+    func testMarkdownFormattingMenusUseEffectiveStateAndPreserveSourceOnUndo() throws {
+        for (type, source) in [(EVDocument.markdownType, "**Words**")] {
             let backend = EVCoreDocumentBackend()
             try backend.read(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -140,7 +115,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             surface.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
             XCTAssertEqual(try backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY), 0)
-            for command in [EVMenuCommand.underline, .strikethrough] {
+            for command in [EVMenuCommand.strikethrough] {
                 surface.perform(menuCommand: .selectAll, sender: nil)
                 XCTAssertTrue(surface.presentation(for: command).isEnabled)
                 surface.perform(menuCommand: command, sender: nil)
@@ -151,12 +126,6 @@ final class EVEditingReliabilityTests: XCTestCase {
                 surface.perform(menuCommand: .undo, sender: nil)
                 XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
             }
-            surface.perform(menuCommand: .alignCenter, sender: nil)
-            XCTAssertEqual(surface.statusBarState.message, "", type)
-            XCTAssertNotEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-            surface.perform(menuCommand: .undo, sender: nil)
-            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-            XCTAssertEqual(try backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY), 0)
         }
     }
 
@@ -166,7 +135,6 @@ final class EVEditingReliabilityTests: XCTestCase {
             (EVDocument.plainTextType, "first line\nsecond line"),
             (EVDocument.markdownType, "**first** line\nsecond line"),
             (EVDocument.markdownSourceType, "**first** line\nsecond line"),
-            (EVDocument.rtfType, #"{\rtf1{\fonttbl{\f0 Helvetica;}}\f0 {\b first} line\par second line}"#),
         ] {
             let backend = EVCoreDocumentBackend()
             try backend.read(source: Data(source.utf8), typeName: type)
@@ -189,33 +157,6 @@ final class EVEditingReliabilityTests: XCTestCase {
                 XCTAssertEqual(surface.formattedText, original, type)
                 XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
             }
-        }
-    }
-
-    @MainActor
-    func testNativeRichListEnterBeforeFollowingStyledParagraph() throws {
-        for (type, source) in [
-            (EVDocument.rtfType, #"{\rtf1 First\par {\b Following} text}"#),
-        ] {
-            let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: type)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            surface.loadViewIfNeeded()
-            let session = try XCTUnwrap(surface.session)
-            let client: NSTextInputClient = surface.editorView
-            let implicit = NSRange(location: NSNotFound, length: 0)
-            surface.perform(menuCommand: .numberedList, sender: nil)
-            client.insertText("A", replacementRange: implicit)
-            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-            client.insertText("Second", replacementRange: implicit)
-            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-            XCTAssertEqual(surface.formattedText, "First\nSecond\nFollowing text", type)
-            let layout = try XCTUnwrap(surface.layoutSnapshot)
-            XCTAssertEqual(String(decoding: layout.decorationLabels, as: UTF8.self), "1.2.", type)
-            XCTAssertEqual(surface.statusBarState.message, "")
-            surface.perform(menuCommand: .undo, sender: nil)
-            surface.perform(menuCommand: .undo, sender: nil)
-            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
         }
     }
 
@@ -290,7 +231,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testFormatPickerAndEncodingMenuPreserveSourceAndHistory() throws {
         let source = "## Heading\n__bold__ café\n"
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.perform(statusOption: .format(.markdownSource))

@@ -133,16 +133,15 @@ internal static class FrontendSmokeTests
             Check(doc.FormattedText() == "日本pha beta", "Select IME commits over the selected range rather than at its active caret");
             view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "one undo restores a Select IME replacement");
         });
-        Scenario("{\\rtf1 alpha beta}", VIEM_FORMAT_RTF, (doc, view) => {
+        Scenario("alpha beta", VIEM_FORMAT_MARKDOWN, (doc, view) => {
             view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key,cmd");
             byte[] before = doc.Source(doc.State.document_revision);
             view.SelectFromCommand("viw");
             Check(view.IsTextSelection && view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == 5
                 && doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before),
                 "native text-object selection remains a command sequence when selectmode includes cmd");
-            Check(view.CanFormatCharacter, "rich character controls enable for Select mode");
-            view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT);
-            Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUPERSCRIPT, "formatting applies to Select mode without replacing its text");
+            view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG);
+            Check(view.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON, "formatting applies to Select mode without replacing its text");
             view.Undo(); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "Select formatting retains one-step undo");
             view.Ex("set noautoselect selectmode=mouse"); view.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_MOUSE);
             Check(view.IsTextSelection, "native double-click selection uses the mouse option");
@@ -173,7 +172,7 @@ internal static class FrontendSmokeTests
             Check(layout.Clusters.Any(c => (c.bidi_level & 1) != 0), "DirectWrite bidi levels");
             Check(layout.PaintRuns.Length > 0 || view.Styles().Styles.Length > 1, "stylesheet export");
             view.Zoom(1.25f); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "zoom is presentation-only");
-            view.Format(VIEM_FORMAT_MARKDOWN_SOURCE); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "source-view switch preserves source bytes");
+            view.SetMarkdownSource(true); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "source-view switch preserves source bytes");
         });
         Scenario("# Heading\n\nHello **office** and مرحبا 👩‍💻.\n", 2, (doc, view) => {
             var layout = view.Layout();
@@ -217,51 +216,6 @@ internal static class FrontendSmokeTests
             Check(view.Provider.ShapedCharacters > beforeReturn, "paging refreshes cached geometry after font metrics change");
             Check(view.Provider.GlyphBoundsQueries > beforeBounds, "glyph-ink queries are recomputed after font metrics change");
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Markdown paging preserves source bytes");
-        });
-        Scenario("{\\rtf1 Text}", VIEM_FORMAT_RTF, (doc, view) => {
-            view.Command("i"); view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); view.Text("Bold "); view.Key(VIEM_KEY_ESCAPE);
-            Check(doc.FormattedText().Contains("Bold Text"), "RTF typing style");
-            using (var reopened = new CoreDocument(doc.Source(doc.State.document_revision), format: VIEM_FORMAT_RTF))
-            using (var reopenedView = new CoreView(reopened, device, dispatcher, 700, 400))
-            { reopenedView.Command("ggviw"); Check(reopenedView.SemanticStyle(VIEM_SEMANTIC_STYLE_STRONG).state == VIEM_SEMANTIC_STYLE_STATE_ON, "RTF style survives reopening"); }
-            view.Undo(); Check(doc.FormattedText() == "Text", "formatted undo");
-            string id = view.CreateStyle(2, "Test Character"); var style = view.Styles().Styles.Single(s => s.Id == id);
-            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, CoreView.Enum(VIEM_STYLE_VALUE_UNSIGNED, 650));
-            Check(view.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 650, "typed font weight declaration");
-            view.Command("ggviw"); view.AssignStyle(2, id);
-            string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, 4));
-            Check(ClipboardFormats.Html(fragment).Contains("font-weight:650"), "HTML clipboard preserves character style");
-        });
-        Scenario("{\\rtf1\\pard\\qc\\sl360\\slmult1\\li240 one\\line two\\par\\pard three}", VIEM_FORMAT_RTF, (doc, view) => {
-            string text = doc.FormattedText(); string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(text)));
-            string html = ClipboardFormats.Html(fragment);
-            var imported = ClipboardFormats.Import(html, VIEM_CLIPBOARD_FORMAT_HTML);
-            Check(imported.Text == text, "HTML clipboard preserves paragraph and hard-break boundaries");
-            Check(html.Contains("text-align:center") && html.Contains("line-height:1.5") && html.Contains("margin-inline-start:12pt"), "HTML clipboard preserves paragraph declarations");
-            using var actual = JsonDocument.Parse(imported.Fragment); using var expected = JsonDocument.Parse(fragment);
-            Check(actual.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle() == expected.RootElement.GetProperty("character_runs")[0].GetProperty("size").GetSingle(), "HTML clipboard preserves point sizes");
-        });
-        Scenario("{\\rtf1 x{\\super 2} H{\\sub 2}O}", VIEM_FORMAT_RTF, (doc, view) => {
-            string fragment = Encoding.UTF8.GetString(view.ClipboardJson(0, (ulong)Encoding.UTF8.GetByteCount(doc.FormattedText())));
-            string html = ClipboardFormats.Html(fragment);
-            Check(html.Contains("<sup>") && html.Contains("<sub>"), "Windows HTML clipboard writes semantic script tags");
-            var imported = ClipboardFormats.Import(html, VIEM_CLIPBOARD_FORMAT_HTML);
-            using var actual = JsonDocument.Parse(imported.Fragment);
-            Check(actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Superscript")
-                && actual.RootElement.GetProperty("character_runs").EnumerateArray().Any(run => run.GetProperty("script_position").GetString() == "Subscript"), "script clipboard data survives HTML reopening");
-        });
-        Scenario("{\\rtf1 " + string.Join("\\par ", Enumerable.Repeat("Wide words with superscript and subscript.", 25_000)) + "}", VIEM_FORMAT_RTF, (doc, view) => {
-            var normal = view.Layout(); long shaped = view.Provider.ShapedCharacters;
-            view.Command("ggviw"); view.ToggleScript(VIEM_SCRIPT_POSITION_SUPERSCRIPT);
-            var superscript = view.Layout();
-            Check(!CoreView.SameLayout(normal.Info.identity, superscript.Info.identity)
-                && superscript.Clusters[0].advance < normal.Clusters[0].advance, "superscript invalidates metrics and DirectWrite reduces glyph size");
-            Check(view.Provider.ShapedCharacters - shaped < 40_000 && superscript.Info.coverage_hard_line_end < 25_000,
-                "script changes reshape a bounded region of a large document");
-            view.ToggleScript(VIEM_SCRIPT_POSITION_SUBSCRIPT);
-            Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUBSCRIPT, "subscript replaces superscript in direct formatting");
-            view.Undo(); Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_SUPERSCRIPT, "undo restores the prior script position");
-            view.Undo(); Check(view.Typography().Info.script_position == VIEM_SCRIPT_POSITION_NORMAL, "undo restores normal script and cached geometry");
         });
         Scenario("\talpha  \n", 1, (doc, view) => {
             var before = doc.Source(doc.State.document_revision);

@@ -63,9 +63,6 @@ internal sealed partial class StyleWindow
                 if (percentage && IsBase) throw new ArgumentException("Base Paragraph font size must use points.");
                 float points = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
                 if (!percentage) {
-                    // RTF's absolute \fs control can store only half-points.
-                    if (view.Document.State.format == VIEM_FORMAT_RTF)
-                        points = Math.Max(.5f, (float)Math.Round(points * 2d, MidpointRounding.AwayFromZero) / 2);
                     view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(points));
                     return;
                 }

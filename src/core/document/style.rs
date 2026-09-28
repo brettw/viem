@@ -80,7 +80,6 @@ impl StyleId {
 /// document derives whether it is editable from this core-owned value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StyleDefinitionOrigin {
-    SourceBacked,
     GeneratedConfiguration,
     SyntheticReadOnly,
 }
@@ -433,8 +432,8 @@ impl StyleDefinitionEdit {
 
 /// Explicit operations on the generated/application configuration layer.
 /// These create immutable, undoable configuration states while leaving source
-/// bytes untouched. Source-backed edits use adapter-capability-checked
-/// persisted intentions, and synthetic definitions remain read-only.
+/// bytes untouched. Content style assignments use Markdown syntax, and
+/// synthetic definitions remain read-only.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ConfigurationStyleIntent {
     EditDefinition(StyleDefinitionEdit),
@@ -456,18 +455,12 @@ pub struct StyleSheet {
     /// Session configuration identity; not a persisted style declaration.
     pub(crate) theme_generation: u64,
     pub base_paragraph: StyleId,
-    /// Format-defined fallback values, below application defaults and source declarations.
-    intrinsic_character_defaults: CharacterProperties,
     block_styles: BTreeMap<StyleId, BlockStyle>,
     character_styles: BTreeMap<StyleId, CharacterStyle>,
     block_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
     character_metadata: BTreeMap<StyleId, StyleDefinitionMetadata>,
     deleted_configuration_blocks: BTreeSet<StyleId>,
     deleted_configuration_characters: BTreeSet<StyleId>,
-    deleted_source_blocks: BTreeSet<StyleId>,
-    source_defined_blocks: BTreeSet<StyleId>,
-    source_defined_characters: BTreeSet<StyleId>,
-    source_character_defaults: BTreeMap<StyleId, CharacterProperties>,
     // Settings-file seeds and assignment provenance. These are not cascade
     // layers: the editable maps above contain the complete own declarations.
     default_blocks: BTreeMap<StyleId, BlockStyle>,
@@ -493,7 +486,7 @@ impl StyleSheet {
             id(&value.id) + value.based_on.as_ref().map_or(0, id)
                 + value.next_paragraph_style.as_ref().map_or(0, id) + value.character.owned_heap_bytes()
         }
-        let mut bytes = id(&self.base_paragraph) + self.intrinsic_character_defaults.owned_heap_bytes();
+        let mut bytes = id(&self.base_paragraph);
         for map in [&self.block_styles, &self.default_blocks] {
             bytes += style_map_heap_bytes(map.len(), std::mem::size_of::<(StyleId, BlockStyle)>())
                 + map.iter().map(|(key, value)| id(key) + block(value)).sum::<usize>();
@@ -507,29 +500,25 @@ impl StyleSheet {
                 + map.iter().map(|(key, value)| id(key) + value.display_name.capacity() + 16).sum::<usize>();
         }
         for set in [&self.deleted_configuration_blocks, &self.deleted_configuration_characters,
-                    &self.deleted_source_blocks, &self.source_defined_blocks, &self.source_defined_characters,
                     &self.implicit_characters] {
             bytes += style_map_heap_bytes(set.len(), std::mem::size_of::<StyleId>())
                 + set.iter().map(id).sum::<usize>();
         }
-        bytes + style_map_heap_bytes(self.source_character_defaults.len(), std::mem::size_of::<(StyleId, CharacterProperties)>())
-            + self.source_character_defaults.iter().map(|(key, value)| id(key) + value.owned_heap_bytes()).sum::<usize>()
+        bytes
     }
 }
 
-// Imported-definition tracking is parser provenance, not a semantic declaration.
+// Style equality compares semantic definitions and configuration state.
 impl PartialEq for StyleSheet {
     fn eq(&self, other: &Self) -> bool {
         self.revision == other.revision
             && self.base_paragraph == other.base_paragraph
-            && self.intrinsic_character_defaults == other.intrinsic_character_defaults
             && self.block_styles == other.block_styles
             && self.character_styles == other.character_styles
             && self.block_metadata == other.block_metadata
             && self.character_metadata == other.character_metadata
             && self.deleted_configuration_blocks == other.deleted_configuration_blocks
             && self.deleted_configuration_characters == other.deleted_configuration_characters
-            && self.deleted_source_blocks == other.deleted_source_blocks
             && self.default_blocks == other.default_blocks
             && self.default_characters == other.default_characters
             && self.implicit_characters == other.implicit_characters
@@ -718,17 +707,12 @@ impl Default for StyleSheet {
         let mut sheet = Self {
             revision: StyleSheetRevision(1),
             base_paragraph: paragraph,
-            intrinsic_character_defaults: CharacterProperties::default(),
             block_styles,
             character_styles,
             block_metadata,
             character_metadata,
             deleted_configuration_blocks: BTreeSet::new(),
             deleted_configuration_characters: BTreeSet::new(),
-            deleted_source_blocks: BTreeSet::new(),
-            source_defined_blocks: BTreeSet::new(),
-            source_defined_characters: BTreeSet::new(),
-            source_character_defaults: BTreeMap::new(),
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
             implicit_characters: BTreeSet::new(),
@@ -950,7 +934,7 @@ pub struct ResolvedParagraphStyle {
 
 /// A schema property whose resolved value participates in style dependency
 /// tracking.  The key deliberately names the normalized property rather than
-/// a source-format spelling such as a CSS property or RTF control word.
+/// a source-format spelling such as a CSS property.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub enum StyleProperty {
     CanvasBackground,
@@ -1414,7 +1398,7 @@ impl StyleSheet {
     }
 
     /// Prose paragraphs use half-em block margins, collapsed by the block layout.
-    /// Plain text and RTF retain their adapter-specific defaults.
+    /// Literal formats retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
         let mut sheet = Self::default();
         if format.is_markdown() {
@@ -1454,12 +1438,8 @@ impl StyleSheet {
     }
 
     /// Select a structural family without manufacturing definitions for deep
-    /// nesting. Authored legacy list definitions retain their original role.
+    /// nesting.
     pub fn list_style_id(&self, ordered: bool, zero_based_level: u8) -> StyleId {
-        let legacy = StyleId(format!("List{}", u16::from(zero_based_level) + 1));
-        if self.source_defined_blocks.contains(&legacy) {
-            return legacy;
-        }
         StyleId(format!(
             "{}{}",
             if ordered {
@@ -1484,7 +1464,6 @@ impl StyleSheet {
             let id = StyleId(format!("List{level}"));
             if self.block_styles.contains_key(&id)
                 || self.deleted_configuration_blocks.contains(&id)
-                || self.deleted_source_blocks.contains(&id)
             {
                 continue;
             }
@@ -1509,12 +1488,7 @@ impl StyleSheet {
                 id,
                 StyleDefinitionMetadata {
                     display_name: format!("List Level {level}"),
-                    origin: self
-                        .block_style_metadata(&self.base_paragraph)
-                        .filter(|metadata| metadata.origin == StyleDefinitionOrigin::SourceBacked)
-                        .map_or(StyleDefinitionOrigin::GeneratedConfiguration, |metadata| {
-                            metadata.origin
-                        }),
+                    origin: StyleDefinitionOrigin::GeneratedConfiguration,
                 },
             );
         }
@@ -1552,36 +1526,12 @@ impl StyleSheet {
         id: &StyleId,
         edit: &StyleDefinitionFieldEdit,
     ) -> Result<StyleDefinitionEdit, StyleError> {
-        self.prepare_definition_field_edit(
-            namespace,
-            id,
-            edit,
-            StyleDefinitionOrigin::GeneratedConfiguration,
-        )
-    }
-
-    pub(crate) fn prepare_source_field_edit(
-        &self,
-        namespace: StyleNamespace,
-        id: &StyleId,
-        edit: &StyleDefinitionFieldEdit,
-    ) -> Result<StyleDefinitionEdit, StyleError> {
-        self.prepare_definition_field_edit(namespace, id, edit, StyleDefinitionOrigin::SourceBacked)
-    }
-
-    fn prepare_definition_field_edit(
-        &self,
-        namespace: StyleNamespace,
-        id: &StyleId,
-        edit: &StyleDefinitionFieldEdit,
-        required_origin: StyleDefinitionOrigin,
-    ) -> Result<StyleDefinitionEdit, StyleError> {
         let metadata = match namespace {
             StyleNamespace::Block => self.block_style_metadata(id),
             StyleNamespace::Character => self.character_style_metadata(id),
         }
         .ok_or_else(|| StyleError::UnknownStyle(id.clone()))?;
-        if metadata.origin != required_origin {
+        if metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration {
             return Err(StyleError::DefinitionNotGeneratedConfiguration {
                 style: id.clone(),
                 origin: metadata.origin,
@@ -1653,32 +1603,6 @@ impl StyleSheet {
                 }
                 StyleDefinitionEdit::InsertCharacter { style, .. } => {
                     self.deleted_configuration_characters.remove(&style.id);
-                }
-                _ => {}
-            }
-        }
-        Ok(changed)
-    }
-
-    pub(crate) fn apply_source_edit(
-        &mut self,
-        edit: &StyleDefinitionEdit,
-        revision: StyleSheetRevision,
-        has_assignment: bool,
-    ) -> Result<bool, StyleError> {
-        let changed = self.apply_definition_edit(
-            edit,
-            revision,
-            has_assignment,
-            StyleDefinitionOrigin::SourceBacked,
-        )?;
-        if changed {
-            match edit {
-                StyleDefinitionEdit::DeleteBlock(id) if Self::builtin_block(id) => {
-                    self.deleted_source_blocks.insert(id.clone());
-                }
-                StyleDefinitionEdit::InsertBlock { style, .. } => {
-                    self.deleted_source_blocks.remove(&style.id);
                 }
                 _ => {}
             }
@@ -1835,111 +1759,10 @@ impl StyleSheet {
         Ok(true)
     }
 
-    /// Import a complete native definition graph before validating references,
-    /// so source order never controls parent/next-style resolution.
-    pub(crate) fn install_source_definitions(
-        &mut self,
-        definitions: &[StyleDefinitionEdit],
-    ) -> Result<(), StyleError> {
-        let mut candidate = self.clone();
-        for definition in definitions {
-            match definition {
-                StyleDefinitionEdit::InsertBlock { style, metadata } => {
-                    validate_definition_metadata(&style.id, metadata)?;
-                    let mut style = style.clone();
-                    if style.id == candidate.base_paragraph
-                        && metadata.origin == StyleDefinitionOrigin::SourceBacked
-                    {
-                        // The editor root always continues with itself. Native
-                        // next-style controls remain untouched in source bytes.
-                        style.next_paragraph_style = None;
-                    }
-                    candidate
-                        .block_styles
-                        .insert(style.id.clone(), style.clone());
-                    candidate
-                        .block_metadata
-                        .insert(style.id.clone(), metadata.clone());
-                    candidate.deleted_source_blocks.remove(&style.id);
-                    if metadata.origin == StyleDefinitionOrigin::SourceBacked {
-                        candidate.source_defined_blocks.insert(style.id.clone());
-                    }
-                }
-                StyleDefinitionEdit::InsertCharacter { style, metadata } => {
-                    if style.id.is_internal() && style.based_on.is_some() {
-                        return Err(StyleError::InvalidDefinitionMetadata(style.id.clone()));
-                    }
-                    if metadata.origin == StyleDefinitionOrigin::SourceBacked {
-                        candidate.source_defined_characters.insert(style.id.clone());
-                    }
-                    validate_definition_metadata(&style.id, metadata)?;
-                    candidate
-                        .character_styles
-                        .insert(style.id.clone(), style.clone());
-                    candidate
-                        .character_metadata
-                        .insert(style.id.clone(), metadata.clone());
-                }
-                StyleDefinitionEdit::DeleteBlock(id) => {
-                    if id == &candidate.base_paragraph {
-                        return Err(StyleError::CannotRemoveBaseStyle(id.clone()));
-                    }
-                    candidate.block_styles.remove(id);
-                    candidate.block_metadata.remove(id);
-                    candidate.deleted_source_blocks.insert(id.clone());
-                }
-                _ => {
-                    return Err(StyleError::InvalidDefinitionMetadata(
-                        definition.style_id().clone(),
-                    ))
-                }
-            }
-        }
-        for style in candidate.block_styles.values() {
-            if style.id == candidate.base_paragraph && matches!(style.character.size, Some(FontSize::Percentage(_))) {
-                return Err(invalid_style_value(&style.id, StyleProperty::CharacterSize));
-            }
-            validate_character_properties(&style.id, &style.character)?;
-            validate_block_properties(style)?;
-            if style.id != candidate.base_paragraph {
-                candidate.validate_block_parent(style)?;
-            }
-            candidate.validate_next_paragraph_style(style)?;
-        }
-        for style in candidate.character_styles.values() {
-            validate_character_properties(&style.id, &style.properties)?;
-            if let Some(parent) = &style.based_on {
-                if !candidate.character_styles.contains_key(parent) {
-                    return Err(StyleError::UnknownStyle(parent.clone()));
-                }
-            }
-        }
-        candidate.validate_block_cycles()?;
-        candidate.validate_character_cycles()?;
-        *self = candidate;
-        Ok(())
-    }
-
-    pub(crate) fn builtin_block(id: &StyleId) -> bool {
-        id.is_internal_list()
-            || matches!(id.0.as_str(), "Block quote" | "Code Block" | "Bulleted List" | "Numbered List" | "List item")
-            || ["Heading", "List"].into_iter().any(|prefix| {
-                id.0.strip_prefix(prefix)
-                    .and_then(|value| value.parse::<u16>().ok())
-                    .is_some_and(|level| {
-                        (1..=if prefix == "Heading" { 6 } else { 256 }).contains(&level)
-                            && id.0 == format!("{prefix}{level}")
-                    })
-            })
-    }
-    pub(crate) fn deleted_source_blocks(&self) -> impl Iterator<Item = &StyleId> {
-        self.deleted_source_blocks.iter()
-    }
-
-    /// A source-backed deletion removes references in the same transaction.
+    /// Deleting a definition removes references in the same transaction.
     /// Children inherit from the deleted style's parent; following-paragraph
     /// references use its declared successor or Base Paragraph.
-    pub(crate) fn rebase_source_references_for_delete(
+    pub(crate) fn rebase_definition_references_for_delete(
         &mut self,
         edit: &StyleDefinitionEdit,
         revision: StyleSheetRevision,
@@ -2057,13 +1880,6 @@ impl StyleSheet {
             block_dependents,
             character_dependents,
         }
-    }
-
-    /// Insert a style defined by application or generated configuration. Source
-    /// adapters may retain malformed native definitions separately, but the
-    /// normalized sheet never accepts a cycle or an inapplicable declaration.
-    pub(crate) fn set_intrinsic_character_defaults(&mut self, properties: CharacterProperties) {
-        self.intrinsic_character_defaults = properties;
     }
 
     pub fn insert_block_style(
@@ -2188,7 +2004,6 @@ impl StyleSheet {
         }
         let chain = self.document_chain(assigned)?;
         let mut resolved = ResolvedDocumentStyle::default();
-        apply_character_properties(&mut resolved.character, &self.intrinsic_character_defaults);
         for style in chain {
             apply_document_properties(&mut resolved, &style.block);
             apply_character_properties(&mut resolved.character, &style.character);
@@ -2218,7 +2033,6 @@ impl StyleSheet {
 
         let chain = self.document_chain(assigned)?;
         let mut value = ResolvedDocumentStyle::default();
-        apply_character_properties(&mut value.character, &self.intrinsic_character_defaults);
         let mut contributions = emergency_contributions(
             CANVAS_STYLE_PROPERTIES
                 .into_iter()
@@ -2360,15 +2174,13 @@ impl StyleSheet {
         if role == BlockRole::Document { return Err(StyleError::IncompatibleBlockRole { style: paragraph_style.clone(), role, parent_role: BlockRole::Paragraph }); }
         let paragraph_chain = self.block_chain(paragraph_style, role)?;
         let mut resolved = ResolvedParagraphStyle::default();
-        apply_character_properties(&mut resolved.character, &self.intrinsic_character_defaults);
 
         for style in document_chain {
             apply_character_properties(&mut resolved.character, &style.character);
         }
         apply_character_properties(&mut resolved.character, &document.direct_default_character);
         apply_character_properties(&mut resolved.character, container_character);
-        let mut parent_font_size = self.intrinsic_character_defaults.size
-            .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
+        let mut parent_font_size = DEFAULT_FONT_SIZE;
         for style in paragraph_chain {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
@@ -2444,7 +2256,6 @@ impl StyleSheet {
         if role == BlockRole::Document { return Err(StyleError::IncompatibleBlockRole { style: paragraph_style.clone(), role, parent_role: BlockRole::Paragraph }); }
         let paragraph_chain = self.block_chain(paragraph_style, role)?;
         let mut value = ResolvedParagraphStyle::default();
-        apply_character_properties(&mut value.character, &self.intrinsic_character_defaults);
         let mut contributions = emergency_contributions(
             PARAGRAPH_STYLE_PROPERTIES
                 .into_iter()
@@ -2472,8 +2283,7 @@ impl StyleSheet {
         );
         apply_character_properties(&mut value.character, container_character);
         record_character_winners(&mut contributions, container_character, StyleContributionOrigin::DirectParagraphCharacter);
-        let mut parent_font_size = self.intrinsic_character_defaults.size
-            .map_or(DEFAULT_FONT_SIZE, |size| size.resolve(DEFAULT_FONT_SIZE));
+        let mut parent_font_size = DEFAULT_FONT_SIZE;
         for style in paragraph_chain {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
@@ -2779,8 +2589,7 @@ impl StyleSheet {
                 self.validate_block_parent(style)?;
             }
             self.validate_next_paragraph_style(style)?;
-            let mut size = self.intrinsic_character_defaults.size
-                .map_or(DEFAULT_FONT_SIZE, |value| value.resolve(DEFAULT_FONT_SIZE));
+            let mut size = DEFAULT_FONT_SIZE;
             for parent in self.block_chain(&style.id, style.role)? {
                 if let Some(value) = parent.character.size { size = value.resolve(size); }
                 if !size.is_finite() || size <= 0.0 {
@@ -3029,17 +2838,6 @@ sparse_property_operations! {
     background => BlockBackground(Color),
     alignment => ParagraphAlignment(ParagraphAlignment),
     base_direction => ParagraphBaseDirection(WritingDirection),
-}
-
-pub(super) fn validate_direct_character_properties(
-    id: &StyleId,
-    properties: &CharacterProperties,
-) -> Result<(), StyleError> {
-    validate_character_properties(id, properties)?;
-    if matches!(properties.size, Some(FontSize::Percentage(_))) {
-        return Err(invalid_style_value(id, StyleProperty::CharacterSize));
-    }
-    Ok(())
 }
 
 pub(super) fn validate_character_properties(
@@ -3565,7 +3363,7 @@ mod tests {
         assert_eq!(DEFAULT_FONT_FAMILY, expected);
         for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
             crate::document::Format::MarkdownSource,
-             crate::document::Format::Rtf] {
+] {
             let sheet = StyleSheet::for_format(format);
             assert_eq!(sheet.block_style(&sheet.base_paragraph).unwrap().character.font_families,
                 Some(vec![expected.to_owned()]), "{format:?}");
@@ -3603,14 +3401,14 @@ mod tests {
     #[test]
     fn generated_field_edits_derive_authority_from_definition_metadata() {
         let mut sheet = StyleSheet::default();
-        let source_id = StyleId::from("source-token-17");
-        let source_style = paragraph_style(&source_id.0, &sheet.base_paragraph);
+        let computed_id = StyleId::from("computed-block-17");
+        let computed_style = paragraph_style(&computed_id.0, &sheet.base_paragraph);
         sheet
             .insert_block_style(
-                source_style,
+                computed_style,
                 StyleDefinitionMetadata {
-                    display_name: "Imported Body".to_owned(),
-                    origin: StyleDefinitionOrigin::SourceBacked,
+                    display_name: "Computed Body".to_owned(),
+                    origin: StyleDefinitionOrigin::SyntheticReadOnly,
                 },
             )
             .unwrap();
@@ -3633,15 +3431,15 @@ mod tests {
         assert_eq!(
             sheet.prepare_generated_field_edit(
                 StyleNamespace::Block,
-                &source_id,
+                &computed_id,
                 &StyleDefinitionFieldEdit::SetDeclaration {
                     property: StyleProperty::BlockMarginBottom,
                     value: StylePropertyValue::Float(8.0),
                 },
             ),
             Err(StyleError::DefinitionNotGeneratedConfiguration {
-                style: source_id,
-                origin: StyleDefinitionOrigin::SourceBacked,
+                style: computed_id,
+                origin: StyleDefinitionOrigin::SyntheticReadOnly,
             })
         );
         assert_eq!(

@@ -141,7 +141,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         self.configuration = configuration
         isStylePreview = true
         typeName = Self.openingType(for: themeStyleFormat)
-        source = themeStyleFormat == .rtf ? Data("{\\rtf1 }".utf8) : Data()
+        source = Data()
         try createCore(publishDiagnostics: false)
         if let json = try configuration.styleDefaults(named: themeStyleFormat.defaultStyleName) {
             let result = EVCoreStyleDefaults.initialize(core: core,
@@ -196,11 +196,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         surfaces.removeAll { $0.value == nil }
         surfaces.append(WeakSurface(surface))
         return surface
-    }
-
-    func alternateStyleEditorSurface(excluding closingSurface: EVEditorSurfaceController) -> EVEditorSurfaceController? {
-        surfaces.removeAll { $0.value == nil }
-        return surfaces.compactMap(\.value).first { $0 !== closingSurface && $0.session != nil }
     }
 
     public func read(source: Data, typeName: String) throws {
@@ -825,7 +820,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             throw EVDocumentSerializationError.unsupportedWritableType(typeName)
         }
         guard requestedFormat.hasSameSerialization(as: currentFormat) else {
-            throw EVDocumentSerializationError.formatConversionUnavailable(
+            throw EVDocumentSerializationError.unsupportedSerializationFormat(
                 current: currentFormat,
                 requested: requestedFormat
             )
@@ -836,7 +831,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         switch state.format {
         case UInt32(VIEM_FORMAT_MARKDOWN): .markdown
         case UInt32(VIEM_FORMAT_MARKDOWN_SOURCE): .markdownSource
-        case UInt32(VIEM_FORMAT_RTF): .rtf
         case UInt32(VIEM_FORMAT_CODE): .code
         default: .plainText
         }
@@ -848,8 +842,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             UInt32(VIEM_FORMAT_MARKDOWN)
         case .markdownSource:
             UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
-        case .rtf:
-            UInt32(VIEM_FORMAT_RTF)
         case .code:
             UInt32(VIEM_FORMAT_CODE)
         case .plainText, nil:
@@ -1142,12 +1134,10 @@ final class EVCoreViewSession {
     }
 
     func currentFontEnWidth() throws -> CGFloat {
-        var info = ViemTypographyInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemTypographyInfoV1>.size)
-        let status = viem_core_view_typography_export(document.core, viewID,
-            try document.revision(), &info, nil, 0, nil, 0)
-        if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Resolve caret font") }
-        return CGFloat(info.size) / 2
+        var width: Float = 0
+        try checked(viem_core_view_font_en_width(document.core, viewID,
+            try document.revision(), &width), operation: "Resolve caret font")
+        return CGFloat(width)
     }
 
     @discardableResult
@@ -1175,6 +1165,22 @@ final class EVCoreViewSession {
         return try performCoreOperation("Change editor zoom") { outcome in
             viem_core_view_set_scale(document.core, viewID, Float(scale), outcome)
         }
+    }
+
+    @discardableResult
+    func setStrikethrough(_ enabled: Bool,
+                         expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var selection = selection
+        return try performCoreOperation("Change strikethrough") { outcome in
+            viem_core_view_set_strikethrough(document.core, viewID, &selection, enabled ? 1 : 0, outcome)
+        }
+    }
+
+    func strikethroughState() throws -> UInt32 {
+        var state: UInt32 = 0
+        try checked(viem_core_view_strikethrough_state(document.core, viewID, &state),
+                    operation: "Read strikethrough state")
+        return state
     }
 
     func semanticStylePresentation(
@@ -1298,48 +1304,6 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func createStyle(_ key: EVStyleKey, name: String, parent: EVStyleID? = nil, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
-        var request = ViemCreateStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
-        request.namespace = key.namespace.rawValue
-        request.identity = identity.abiValue
-        let idBytes = Array(key.id.rawValue.utf8)
-        let nameBytes = Array(name.utf8)
-        let parentBytes = Array((parent?.rawValue ?? "").utf8)
-        return try performCoreOperation("Create named style") { outcome in
-            idBytes.withUnsafeBufferPointer { id in
-                nameBytes.withUnsafeBufferPointer { name in
-                    request.style_id.data = id.baseAddress
-                    request.style_id.length = UInt64(id.count)
-                    request.display_name.data = name.baseAddress
-                    request.display_name.length = UInt64(name.count)
-                    return parentBytes.withUnsafeBufferPointer { parent in
-                        request.parent_id.data = parent.baseAddress
-                        request.parent_id.length = UInt64(parent.count)
-                        return viem_core_view_create_style(document.core, viewID, &request, outcome)
-                    }
-                }
-            }
-        }
-    }
-
-    @discardableResult
-    func deleteStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity) throws -> ViemCoreOutcomeV1 {
-        var request = ViemDeleteStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemDeleteStyleV1>.size)
-        request.namespace = key.namespace.rawValue
-        request.identity = identity.abiValue
-        let bytes = Array(key.id.rawValue.utf8)
-        return try performCoreOperation("Delete named style") { outcome in
-            bytes.withUnsafeBufferPointer { buffer in
-                request.style_id.data = buffer.baseAddress
-                request.style_id.length = UInt64(buffer.count)
-                return viem_core_view_delete_style(document.core, viewID, &request, outcome)
-            }
-        }
-    }
-
-    @discardableResult
     func assignStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity,
                      expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         var request = ViemAssignStyleV1()
@@ -1369,25 +1333,15 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setFormat(_ format: EVSourceFormat, operation: EVFormatOperation = .reinterpret,
-                   expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetFormatV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetFormatV1>.size)
-        request.format = switch format {
-        case .plainText: UInt32(VIEM_FORMAT_PLAIN_TEXT)
-        case .markdown: UInt32(VIEM_FORMAT_MARKDOWN)
-        case .markdownSource: UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
-        case .rtf: UInt32(VIEM_FORMAT_RTF)
-        case .code: UInt32(VIEM_FORMAT_CODE)
-        }
-        request.operation = switch operation {
-        case .reinterpret: UInt32(VIEM_FORMAT_OPERATION_REINTERPRET)
-        case .convert: UInt32(VIEM_FORMAT_OPERATION_CONVERT)
-        }
+    func setMarkdownSource(_ source: Bool,
+                           expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetMarkdownSourceV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetMarkdownSourceV1>.size)
+        request.source = source ? 1 : 0
         request.document_id = state.document_id
         request.document_revision = state.document_revision
-        return try performHostEffectTurn("Change document format") { outcome, effects in
-            viem_core_view_set_format_with_effects(document.core, viewID, &request, outcome, effects)
+        return try performHostEffectTurn("Change Markdown presentation") { outcome, effects in
+            viem_core_view_set_markdown_source_with_effects(document.core, viewID, &request, outcome, effects)
         }
     }
 

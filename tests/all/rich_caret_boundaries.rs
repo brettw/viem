@@ -10,13 +10,7 @@ fn document(format: Format, source: &str) -> Document {
 #[test]
 fn every_visible_rich_caret_boundary_accepts_typing_with_either_affinity() {
     let fixtures = [
-        (Format::Rtf, r"{\rtf1{\b {\i }}}"),
-        (Format::Rtf, r"{\rtf1{\b A}{\i }\par B}"),
-        (Format::Rtf, r"{\rtf1{\pict\pngblip keep}}"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\field{\*\fldinst HYPERLINK keep}{\fldrslt X}}}",
-        ),
+
         (Format::Markdown, "```\n\n```"),
         (Format::Markdown, "> ```\n> \n> ```"),
         (Format::Markdown, "- ```\n  A\n  ```"),
@@ -179,50 +173,6 @@ fn markdown_code_body_edge_payloads_preserve_their_hidden_container_syntax() {
 }
 
 #[test]
-fn atomic_objects_own_only_their_complete_source_construct() {
-    for (format, source, expected) in [
-        (
-            Format::Rtf,
-            r"{\rtf1 A{\pict\pngblip keep}B}",
-            r"{\rtf1 AXB}",
-        ),
-        (
-            Format::Rtf,
-            r"{\rtf1 A{\field{\*\fldinst keep}{\fldrslt X}}B}",
-            r"{\rtf1 AXB}",
-        ),
-    ] {
-        for replacement in ["X", ""] {
-            let mut doc = document(format, source);
-            let at = doc.text().find('\u{fffc}').unwrap();
-            let mut text = doc.text().to_owned();
-            text.replace_range(at..at + '\u{fffc}'.len_utf8(), replacement);
-            doc.replace(at..at + '\u{fffc}'.len_utf8(), replacement)
-                .unwrap();
-            assert_eq!(doc.text(), text);
-            assert_eq!(
-                doc.source_bytes(),
-                expected.replace('X', replacement).as_bytes()
-            );
-            assert!(doc.undo());
-            assert_eq!(doc.source_bytes(), source.as_bytes());
-        }
-    }
-}
-
-#[test]
-fn typing_after_unclosed_objects_materializes_only_missing_closing_syntax() {
-    for (format, source, expected) in [(Format::Rtf, r"{\rtf1{\pict keep", r"{\rtf1{\pict keep}X")]
-    {
-        let mut doc = document(format, source);
-        let at = doc.text().len();
-        doc.replace(at..at, "X").unwrap();
-        assert_eq!(doc.text(), "\u{fffc}X");
-        assert_eq!(doc.source_bytes(), expected.as_bytes());
-    }
-}
-
-#[test]
 fn empty_code_bodies_preserve_existing_line_endings_and_literal_delimiters() {
     for (source, expected) in [
         ("```\n\n```", "```\nX\n```"),
@@ -254,7 +204,7 @@ fn empty_code_bodies_preserve_existing_line_endings_and_literal_delimiters() {
 #[test]
 fn empty_insertions_leave_unfinished_source_constructs_byte_exact() {
     for (format, source) in [
-        (Format::Rtf, r"{\rtf1{\pict keep"),
+
         (Format::Markdown, "```"),
         (Format::Markdown, "```\n```"),
     ] {

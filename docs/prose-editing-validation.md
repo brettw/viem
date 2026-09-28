@@ -1,5 +1,10 @@
 # Prose editing and paragraph-flow validation
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 This change adds `:sort`, structural prose flow, the View menu's **Flow Source
 Paragraphs** option, HTML trailing blank lines, and inline-formatting exit.
 
@@ -92,7 +97,7 @@ The user's running editor is not restarted or used for testing.
 ## Deliberate scope
 
 Sorting supports plain/source rows and source-preserving Markdown paragraphs
-and balanced HTML paragraph siblings. RTF and ambiguous rich owners fail
+and balanced HTML paragraph siblings. Ambiguous rich owners fail
 without flattening the document. Floating-point and locale-dependent sorting
 are not supported. The supported sort flags and source paragraph-flow policy
 are specified in `AGENTS.md`.

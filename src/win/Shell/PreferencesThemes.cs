@@ -44,7 +44,7 @@ internal sealed partial class Preferences
         try
         {
             bool fresh = !hadConfiguration && ThemeNames.Length == 0;
-            bool legacy = !root.ContainsKey("selectedTheme") && (root["theme"] is JsonObject || new[] { "text", "markdown", "rtf", "code" }.Any(key => File.Exists(Path.Combine(DirectoryPath, key + "_style.json"))));
+            bool legacy = !root.ContainsKey("selectedTheme") && (root["theme"] is JsonObject || new[] { "text", "markdown", "code" }.Any(key => File.Exists(Path.Combine(DirectoryPath, key + "_style.json"))));
             if (fresh && !legacy && writable)
             {
                 foreach (string name in new[] { "Paper", "Midnight" })
@@ -59,7 +59,7 @@ internal sealed partial class Preferences
             {
                 var imported = DefaultTheme();
                 if (root["theme"] is JsonObject colors) Merge(imported["theme"]!.AsObject(), colors);
-                foreach (string key in new[] { "text", "markdown", "rtf", "code" })
+                foreach (string key in new[] { "text", "markdown", "code" })
                 {
                     string path = Path.Combine(DirectoryPath, key + "_style.json");
                     if (!File.Exists(path)) continue;
@@ -90,7 +90,7 @@ internal sealed partial class Preferences
         catch (Exception error) { activeTheme = DefaultTheme(); SelectedTheme = null; SelectedThemePath = null; ThemeWarning(error.Message + " Using Default."); }
     }
     public static string StyleFamily(uint format) => format switch {
-        VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE => "markdown", VIEM_FORMAT_RTF => "rtf", VIEM_FORMAT_CODE => "code", _ => "text"
+        VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE => "markdown", VIEM_FORMAT_CODE => "code", _ => "text"
     };
     public byte[] ThemeStyleDefaults(uint format)
     {

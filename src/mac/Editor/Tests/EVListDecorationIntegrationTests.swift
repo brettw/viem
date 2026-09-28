@@ -41,7 +41,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         snapshot = try session.layoutExport()
         XCTAssertEqual(snapshot.decorations[0].font_size, 24.5, accuracy: 0.001)
         XCTAssertGreaterThan(snapshot.decorations[0].advance, first.advance)
-        _ = try session.setFormat(.markdownSource, expected: backend.documentState())
+        _ = try session.setMarkdownSource(true, expected: backend.documentState())
         XCTAssertTrue(try session.layoutExport().decorations.isEmpty)
         XCTAssertEqual(try backend.formattedText(), source)
         _ = try session.undo()

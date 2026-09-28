@@ -25,7 +25,7 @@ final class EVThemeCatalogueTests: XCTestCase {
     for name in ["Paper", "Midnight"] {
       let file = try object(store.themesDirectory.appendingPathComponent(name + ".json"))
       let styles = try XCTUnwrap(file["styles"] as? [String: Any])
-      XCTAssertEqual(Set(styles.keys), Set(["text", "markdown", "rtf", "code"]))
+      XCTAssertEqual(Set(styles.keys), Set(["text", "markdown", "code"]))
     }
   }
 

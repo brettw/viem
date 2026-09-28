@@ -82,11 +82,9 @@ impl CommandInterpreter {
         if text == value.text {
             return Ok(value.clone());
         }
-        if !document.format().is_rich_text()
-            && document.encoding().encode_fragment(&text).is_err()
+        if document.encoding().encode_fragment(&text).is_err()
         {
-            // RTF can escape generated Unicode; raw source and
-            // plain/Markdown prose must remain in the document's encoding.
+            // Generated prose must remain in the document's encoding.
             return Ok(value.clone());
         }
         // Quote substitutions preserve scalars and line-break meaning, but

@@ -232,20 +232,6 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testRTFDisablesGenericEncodingAndLineEndingMenuChoices() throws {
-        let backend = EVCoreDocumentBackend()
-        let source = Data("{\\rtf1 word}".utf8)
-        try backend.read(source: source, typeName: EVDocument.rtfType)
-        let pair = try makeSurface(backend)
-        for command in [EVMenuCommand.encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE,
-                        .lineEndingUnix, .lineEndingWindows, .lineEndingClassicMac] {
-            XCTAssertFalse(pair.surface.presentation(for: command).isEnabled)
-        }
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), source)
-        XCTAssertFalse(pair.surface.canUndo)
-    }
-
-    @MainActor
     func testRejectedLineEndingConversionChangesNeitherBytesStateNorHistory() throws {
         let backend = EVCoreDocumentBackend()
         // In unix mode the CR is literal content. Converting to classic-Mac
@@ -808,12 +794,10 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testUnsupportedFontColorAndHostEffectItemsValidateDisabled() throws {
+    func testUnsupportedFormattingAndHostEffectItemsValidateDisabled() throws {
         let (_, surface, _) = try makeSurface("text")
         for command in [
-            EVMenuCommand.showFonts,
-            .showColors,
-            .bold,
+            EVMenuCommand.bold,
             .italic,
             .printDocument,
         ] {

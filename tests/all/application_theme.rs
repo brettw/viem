@@ -7,7 +7,7 @@ fn unspecified_colors_remain_theme_defaults_without_rewriting_any_format() {
     for (format, source) in [
         (Format::PlainText, "words"),
         (Format::Markdown, "**words**"),
-        (Format::Rtf, r"{\rtf1 words}"),
+
     ] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -20,30 +20,6 @@ fn unspecified_colors_remain_theme_defaults_without_rewriting_any_format() {
             .paint_runs
             .iter()
             .all(|run| run.paint.foreground_is_default));
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
-fn explicit_black_is_distinct_from_theme_default() {
-    for (format, source) in [
-        (
-            Format::Rtf,
-            r"{\rtf1{\colortbl;\red0\green0\blue0;}\cf1 words}",
-        ),
-    ] {
-        let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let mut core = Core::new(document);
-        let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 100.0);
-        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
-        assert!(
-            snapshot
-                .paint_runs
-                .iter()
-                .any(|run| !run.paint.foreground_is_default),
-            "{format:?}"
-        );
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }

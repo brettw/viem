@@ -118,7 +118,7 @@ final class EVCodePreferencesTests: XCTestCase {
     let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.codeStyleSheet())) as? [String: Any])
     XCTAssertEqual((object["character_styles"] as? [[String: Any]])?.count, 0)
     XCTAssertEqual(object["suppressed_character_ids"] as? [String], ["syntax:Todo"])
-    XCTAssertThrowsError(try configuration.saveStyleDefaults(linked, named: "rtf"))
+    XCTAssertThrowsError(try configuration.saveStyleDefaults(linked, named: "markdown"))
   }
 
   func testUnsupportedCodeStyleVersionsStayOnDiskUntilExplicitRestore() throws {

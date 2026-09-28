@@ -86,16 +86,16 @@ fn large_open_reports_one_linear_decode_pass() {
 }
 
 #[test]
-fn format_reinterpretation_accounts_for_one_candidate_decode() {
+fn markdown_view_switch_accounts_for_one_candidate_decode() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
         let source = encode_with_bom("# alpha\n\nbeta", encoding);
-        let document = Document::from_bytes(source, encoding, Format::PlainText).unwrap();
+        let document = Document::from_bytes(source, encoding, Format::MarkdownSource).unwrap();
         let prepared = document
-            .prepare_model_request(ModelRequest::SetFormat {
+            .prepare_model_request(ModelRequest::SetMarkdownSource {
                 document: document.id(),
                 revision: document.revision(),
-                target: Format::Markdown,
-                operation: viem_core::document::FormatOperation::Reinterpret,
+                source: false,
+
             })
             .unwrap();
         let summary = prepared.summary();

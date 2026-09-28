@@ -23,7 +23,6 @@ struct Export {
     source_format: u32,
     encoding: u32,
     file_format: u32,
-    source_exact: bool,
     source_plain_text: String,
     #[serde(default)]
     inline_source_bytes: Vec<u8>,
@@ -79,7 +78,6 @@ impl ClipboardFragment {
             source_format: 1,
             encoding: 1,
             file_format: 1,
-            source_exact: true,
             inline_source_bytes: Vec::new(),
             embedded_source_bytes: Vec::new(),
             character_runs,
@@ -314,7 +312,6 @@ impl Export {
         let format = match self.source_format {
             1 => Format::PlainText,
             2 => Format::Markdown,
-            4 => Format::Rtf,
             5 => Format::MarkdownSource,
             7 => Format::Code,
             _ => return Err(DocumentError::UnsupportedFormatting),
@@ -365,19 +362,6 @@ impl Document {
             selected_source(self, &range, true, source).unwrap_or_default()
         };
         let source_text = self.encoding().decode(&source_bytes)?.text;
-        let source_exact = Document::from_bytes_with_file_format(
-            source_bytes.clone(),
-            self.encoding(),
-            self.format(),
-            self.file_format(),
-        )
-        .is_ok_and(|source| {
-            source.text() == captured.text()
-                && source
-                    .projection()
-                    .hard_breaks_for_region(&(0..source.text().len()))
-                    == captured.break_offsets()
-        });
         let inline_source_bytes = if is_rich && !captured.text().contains('\n') {
             selected_source(self, &range, false, source).unwrap_or_default()
         } else {
@@ -404,7 +388,6 @@ impl Document {
             source_format: match self.format() {
                 Format::PlainText => 1,
                 Format::Markdown => 2,
-                Format::Rtf => 4,
                 Format::MarkdownSource => 5,
                 Format::Code => 7,
             },
@@ -419,7 +402,6 @@ impl Document {
                 FileFormat::Dos => 2,
                 FileFormat::Mac => 3,
             },
-            source_exact,
             inline_source_bytes,
             embedded_source_bytes: if is_rich {
                 selected_source(self, &range, true, source).unwrap_or_default()
@@ -447,7 +429,6 @@ impl Document {
             serde_json::from_str(self.clipboard_fragment_with_source(0..0, &source)?.json())
                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
         export.register_kind = 3;
-        export.source_exact = false;
         export.plain_text.clear();
         export.source_text.clear();
         export.source_bytes.clear();
@@ -580,7 +561,7 @@ impl Document {
                 .text_tree()
                 .slice(range)
                 .map_err(DocumentError::FormattedTextStorage)?;
-            let syntax = super::super::rtf::escape(&text);
+            let syntax = self.escape_markdown_source_text(insertion, &text)?;
             self.encoding().encode_fragment(&syntax)
         };
         let prefix = preserved(source_edit.range.start..range.start)?;
@@ -625,18 +606,6 @@ impl Document {
                     Some(patches),
                 )
                 .and_then(|prepared| {
-                    if whole {
-                        Ok(prepared)
-                    } else {
-                        self.isolate_clipboard_character_styles(
-                            prepared,
-                            &export,
-                            range.clone(),
-                            &bytes(candidate)?,
-                        )
-                    }
-                })
-                .and_then(|prepared| {
                     verify_styles(prepared, &export, range.clone(), whole, self.projection())
                 });
             match prepared {
@@ -667,14 +636,7 @@ impl Document {
             scratch.commit_model_transaction(prepared)?;
             Ok(())
         };
-        if self.format().is_rich_text() && self.source_byte_len() == 0 {
-            // RTF font/color tables need a root header even for an empty file.
-            let header = scratch.prepare_source_only_patches(vec![SourcePatch::primary(
-                0..0,
-                self.encoding().encode_fragment("{\\rtf1 }")?,
-            )])?;
-            publish(&mut scratch, header, &mut sources)?;
-        }
+
         let payload = super::super::FormattedTextPayload::new(
             &scratch.hard_line_snapshot(),
             export.source_plain_text.clone(),
@@ -686,44 +648,7 @@ impl Document {
             payload,
         )])?;
         publish(&mut scratch, inserted, &mut sources)?;
-        if self.format().is_rich_text() {
-            for run in &export.paragraph_runs {
-                let start = replaced.start
-                    + run["start"]
-                        .as_u64()
-                        .ok_or(DocumentError::UnsupportedFormatting)?
-                        as usize;
-                let end = replaced.start
-                    + run["end"]
-                        .as_u64()
-                        .ok_or(DocumentError::UnsupportedFormatting)?
-                        as usize;
-                // A partial paragraph inherits the destination paragraph's
-                // geometry; complete pasted paragraphs retain theirs.
-                if !scratch
-                    .projection()
-                    .blocks_for_region(&(start..end))
-                    .iter()
-                    .any(|block| block.range == (start..end))
-                {
-                    continue;
-                }
-                let mut values = run.clone();
-                if values["base_direction"] == "Natural" {
-                    values["base_direction"] = values["resolved_direction"].clone();
-                }
-                let properties: BlockProperties = serde_json::from_value(values)
-                    .map_err(|_| DocumentError::UnsupportedFormatting)?;
-                let target = StyleBlockTarget::Paragraphs(TextRange::new(
-                    scratch.text_point(start)?,
-                    scratch.text_point(end)?,
-                )?);
-                let styled = scratch.prepare_rich_block_properties(
-                    PersistedStyleIntent::SetDirectBlockProperties { target, properties },
-                )?;
-                publish(&mut scratch, styled, &mut sources)?;
-            }
-        }
+
         let mut markdown_runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
         for run in &export.character_runs {
             let start = replaced.start
@@ -747,10 +672,7 @@ impl Document {
             }
             let properties: CharacterProperties =
                 serde_json::from_value(values).map_err(|_| DocumentError::UnsupportedFormatting)?;
-            if self.format().is_rich_text() {
-                let styled = scratch.prepare_rich_character_properties(start..end, properties)?;
-                publish(&mut scratch, styled, &mut sources)?;
-            } else {
+            {
                 let semantic = CharacterProperties {
                     bold: Some(
                         properties.bold == Some(true)
@@ -786,7 +708,7 @@ impl Document {
             {
                 continue;
             }
-            let syntax = super::super::conversion::markdown_character_fragment(
+            let syntax = super::super::markdown_serialization::markdown_character_fragment(
                 scratch.projection(),
                 range.clone(),
                 &properties,
@@ -807,106 +729,6 @@ impl Document {
         )
     }
 
-    /// A balanced inline fragment can inherit different character defaults in
-    /// its destination paragraph. Preserve its independently reproducible
-    /// appearance with local declarations, using the normal formatting adapter.
-    /// Missing source style definitions are still rejected by verification.
-    fn isolate_clipboard_character_styles(
-        &self,
-        prepared: PreparedModelTransaction,
-        export: &Export,
-        replaced: Range<usize>,
-        candidate: &[u8],
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if !self.format().is_rich_text() {
-            return Ok(prepared);
-        }
-        let PreparedPublication::State(state) = &prepared.publication else {
-            return Ok(prepared);
-        };
-        let inserted = replaced.start..replaced.start + export.source_plain_text.len();
-        let (actual, _) = style_runs(&state.projection, &inserted)?;
-        if styles_match(&export.character_runs, &actual) {
-            return Ok(prepared);
-        }
-        let standalone = Document::from_bytes_with_file_format(
-            candidate.to_vec(),
-            self.encoding(),
-            self.format(),
-            self.file_format(),
-        )?;
-        let (independent, _) = style_runs(standalone.projection(), &(0..standalone.text().len()))?;
-        if standalone.text() != export.source_plain_text
-            || !styles_match(&export.character_runs, &independent)
-        {
-            return Ok(prepared);
-        }
-        let mut scratch = self.scratch_document();
-        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
-        for patch in prepared.summary.source_patches.iter().rev() {
-            sources.splice(patch.range(), patch.replacement());
-        }
-        let inserted = scratch.prepare_text_edits_with_patches(
-            vec![TextEdit::new(replaced.clone(), &export.source_plain_text)],
-            Some(prepared.summary.source_patches),
-        )?;
-        scratch.commit_model_transaction(inserted)?;
-        for expected in &export.character_runs {
-            for current in &actual {
-                let start = expected["start"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .max(current["start"].as_u64().unwrap_or(0))
-                    as usize;
-                let end = expected["end"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    .min(current["end"].as_u64().unwrap_or(0)) as usize;
-                if start >= end {
-                    continue;
-                }
-                let properties = |run: &Value| -> Result<CharacterProperties, DocumentError> {
-                    let mut values = run.clone();
-                    values["weight"] = values["base_weight"].clone();
-                    if values["foreground_is_default"] == true {
-                        values["foreground"] = Value::Null;
-                    }
-                    serde_json::from_value(values).map_err(|_| DocumentError::UnsupportedFormatting)
-                };
-                let mut authored = properties(expected)?;
-                let current = properties(current)?;
-                for property in authored.declared_properties() {
-                    if !authored.changed_properties(&current).contains(&property) {
-                        super::super::style::clear_character_property(
-                            &StyleId::from("Clipboard"),
-                            &mut authored,
-                            property,
-                        )?;
-                    }
-                }
-                // A CSS face weight also controls conventional bold; retain
-                // copied emphasis when changing the inherited paragraph face.
-                if authored.weight.is_some() && authored.bold.is_none() {
-                    authored.bold = expected["bold"].as_bool();
-                }
-                if authored.declared_properties().is_empty() {
-                    continue;
-                }
-                let styled = scratch.prepare_rich_character_properties(
-                    replaced.start + start..replaced.start + end,
-                    authored,
-                )?;
-                for patch in styled.summary.source_patches.iter().rev() {
-                    sources.splice(patch.range(), patch.replacement());
-                }
-                scratch.commit_model_transaction(styled)?;
-            }
-        }
-        self.prepare_text_edits_with_patches(
-            vec![TextEdit::new(replaced, &export.source_plain_text)],
-            Some(sources.source_patches()),
-        )
-    }
 }
 
 fn source_hull(document: &Document, range: &Range<usize>) -> Result<Range<usize>, DocumentError> {
@@ -945,9 +767,7 @@ fn selected_source(
         return Ok(Vec::new());
     }
     let hull = source_hull(document, range)?;
-    if document.format() == Format::Rtf {
-        return rtf_fragment(document, source, hull);
-    }
+
     if document.format() != Format::Markdown {
         return Ok(source[hull].to_vec());
     }
@@ -1235,85 +1055,6 @@ fn verify_styles(
     Ok(prepared)
 }
 
-fn rtf_fragment(
-    document: &Document,
-    source: &[u8],
-    hull: Range<usize>,
-) -> Result<Vec<u8>, DocumentError> {
-    use super::super::rtf::Kind;
-    let decoded = document.encoding().decode(source)?;
-    let input = super::super::line_endings::normalize(&decoded, document.file_format());
-    let builder = super::super::rich_text::Builder::new(&input, Revision(0));
-    let tokens = super::super::rtf::tokenize(&input);
-    let mut stack: Vec<(usize, Vec<Range<usize>>)> = Vec::new();
-    let mut tables = Vec::new();
-    for (index, token) in tokens.iter().enumerate() {
-        let raw = builder.source_range(token.range.clone());
-        if raw.end > hull.start {
-            break;
-        }
-        match &token.kind {
-            Kind::Open => stack.push((index, vec![raw])),
-            Kind::Close => {
-                if let Some((open, _)) = stack.pop() {
-                    if tokens[open+1..index].iter().take(2).any(|token| matches!(&token.kind, Kind::Control(name,_) if matches!(name.as_str(),"fonttbl"|"colortbl"|"stylesheet"|"listtable"|"listoverridetable"))) {
-                    tables.push(builder.source_range(tokens[open].range.start..token.range.end));
-                }
-                }
-            }
-            Kind::Control(name, _)
-                if !matches!(
-                    name.as_str(),
-                    "u" | "par"
-                        | "line"
-                        | "tab"
-                        | "emdash"
-                        | "endash"
-                        | "bullet"
-                        | "lquote"
-                        | "rquote"
-                        | "ldblquote"
-                        | "rdblquote"
-                        | "bin"
-                ) && !super::super::rtf::non_body(name) =>
-            {
-                if let Some((_, pieces)) = stack.last_mut() {
-                    pieces.push(raw);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut output = Vec::new();
-    for (level, (_, pieces)) in stack.iter().enumerate() {
-        for piece in pieces {
-            output.extend_from_slice(&source[piece.clone()]);
-        }
-        if level == 0 {
-            for table in &tables {
-                output.extend_from_slice(&source[table.clone()]);
-            }
-        }
-    }
-    if stack.is_empty() {
-        output.extend_from_slice(b"{\\rtf1 ");
-    }
-    output.extend_from_slice(&source[hull.clone()]);
-    let mut depth = stack.len().max(1);
-    for token in &tokens {
-        let raw = builder.source_range(token.range.clone());
-        if hull.start <= raw.start && raw.end <= hull.end {
-            match token.kind {
-                Kind::Open => depth += 1,
-                Kind::Close => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-    output.extend(std::iter::repeat(b'}').take(depth));
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::super::Encoding;
@@ -1353,10 +1094,7 @@ mod tests {
                 Format::Markdown,
                 b"# Title\n\n__bold__ and `code`\n".as_slice(),
             ),
-            (
-                Format::Rtf,
-                br"{\rtf1\ansi {\b Bold} and \i italic\i0\par tail}".as_slice(),
-            ),
+
         ] {
             let original = open(source, format);
             let fragment = original
@@ -1364,7 +1102,6 @@ mod tests {
                 .unwrap();
             let value: Export = serde_json::from_str(fragment.json()).unwrap();
             assert_eq!(value.source_bytes, source);
-            assert!(value.source_exact, "{format:?}: {:?}", value.source_text);
             let imported = ClipboardFragment::from_json(fragment.json(), original.text()).unwrap();
             let mut pasted = paste_empty(&imported, &value, format);
             assert_eq!(pasted.source_bytes(), source);
@@ -1380,25 +1117,9 @@ mod tests {
         let original = open(b"before __bold text__ after", Format::Markdown);
         let (fragment, value) = export(&original, "old");
         assert_eq!(value.source_text, "__old__");
-        assert!(value.source_exact);
         assert_eq!(value.character_runs[0]["bold"], true);
         let pasted = paste_empty(&fragment, &value, Format::Markdown);
         assert_eq!(pasted.source_bytes(), b"__old__");
-    }
-
-    #[test]
-    fn partial_rtf_carries_group_controls_and_font_table() {
-        let original = open(
-            br"{\rtf1\ansi{\fonttbl{\f0 Helvetica;}}\f0 before {\b Bold text} after}",
-            Format::Rtf,
-        );
-        let (fragment, value) = export(&original, "old");
-        assert!(value.source_exact, "{:?}", value.source_text);
-        assert!(value.source_text.contains("\\fonttbl"));
-        assert!(value.source_text.contains("\\b old"));
-        let pasted = paste_empty(&fragment, &value, Format::Rtf);
-        assert_eq!(pasted.text(), "old");
-        assert_eq!(pasted.source_bytes(), value.source_bytes);
     }
 
     #[test]
@@ -1410,10 +1131,7 @@ mod tests {
         assert!(empty_value.source_segments.is_empty());
         for (format, source) in [
             (Format::Markdown, "__ab__ outside-one\n\n__cd__ outside-two"),
-            (
-                Format::Rtf,
-                r"{\rtf1{\b ab} outside-one\line {\b cd} outside-two}",
-            ),
+
         ] {
             let original = open(source.as_bytes(), format);
             let second = original.text().find("cd").unwrap();
@@ -1430,7 +1148,6 @@ mod tests {
                 assert_eq!(segment.row, index);
                 assert_eq!(segment.start, index * 3);
                 assert_eq!(segment.end, index * 3 + 2);
-                assert!(segment.fragment.source_exact, "{format:?}");
                 assert_eq!(segment.fragment.character_runs[0]["bold"], true);
                 let own_fragment =
                     ClipboardFragment(Arc::from(serde_json::to_string(&segment.fragment).unwrap()));
@@ -1482,21 +1199,6 @@ mod tests {
         assert!(ClipboardFragment::from_json(fragment.json(), &text).is_ok());
         assert!(fragment.can_insert_rich_source(Format::Markdown, &text));
         assert!(!fragment.can_insert_rich_source(Format::PlainText, &text));
-    }
-
-    #[test]
-    fn normalized_html_unrepresentable_style_returns_no_rich_transaction() {
-        let (fragment, text) = ClipboardFragment::from_html_utf8(
-            b"<p><span style='font-family:Arial,sans-serif'>fallback</span></p>",
-        )
-        .unwrap();
-        let initial = br"{\rtf1 }";
-        let document = open(initial, Format::Rtf);
-        assert!(document
-            .prepare_clipboard_fragment(0..0, &fragment, &text)
-            .unwrap()
-            .is_none());
-        assert_eq!(document.source_bytes(), initial);
     }
 
     #[test]

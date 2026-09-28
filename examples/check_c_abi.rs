@@ -61,17 +61,12 @@ fn probe_source() -> String {
 #include "viem_core.h"
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
-_Static_assert(sizeof(ViemSetFormatV1) == {set_format_size}, "format operation size");
-_Static_assert(offsetof(ViemSetFormatV1, operation) == {set_format_operation}, "format operation offset");
-_Static_assert(offsetof(ViemSetFormatV1, document_id) == {set_format_document}, "format document offset");
-_Static_assert(VIEM_FORMAT_OPERATION_REINTERPRET == {reinterpret}u, "reinterpret operation");
-_Static_assert(VIEM_FORMAT_OPERATION_CONVERT == {convert}u, "convert operation");
-_Static_assert(sizeof(ViemDirectStyleEditV1) == {direct_style_edit}, "direct style size");
-_Static_assert(_Alignof(ViemDirectStyleEditV1) == {direct_style_align}, "direct style alignment");
-_Static_assert(offsetof(ViemDirectStyleEditV1, expected_selection) == {direct_style_selection}, "direct style selection offset");
-_Static_assert(offsetof(ViemDirectStyleEditV1, value) == {direct_style_value}, "direct style value offset");
-static ViemStatus (*direct_style)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_style;
-static ViemStatus (*decoration_state)(ViemCoreHandle, ViemViewId, uint32_t, uint32_t *) = viem_core_view_decoration_state;
+_Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
+_Static_assert(offsetof(ViemSetMarkdownSourceV1, source) == {set_markdown_source}, "format operation offset");
+_Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_document}, "format document offset");
+static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
+static ViemStatus (*strikethrough_state)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_strikethrough_state;
+static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint8_t, ViemCoreOutcomeV1 *) = viem_core_view_set_strikethrough;
 static ViemStatus (*style_defaults)(ViemCoreHandle, uint64_t, const uint8_t *, uint64_t, ViemStyleDefaultsDiagnosticCallback, void *) = viem_core_initialize_style_defaults;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 == 3u,
@@ -270,15 +265,9 @@ _Static_assert(offsetof(ViemEffectBatchInfoV1, ex_mark_count) ==
 _Static_assert(sizeof(ViemResolvedTextStyleV1) == {style}, "style");
 _Static_assert(offsetof(ViemResolvedTextStyleV1, script_position) == {style_script}, "script position offset");
 _Static_assert(_Generic(((ViemResolvedTextStyleV1 *)0)->script_position, uint32_t: 1, default: 0), "script position is an enum integer");
-_Static_assert(sizeof(ViemTypographyInfoV1) == {typography_info}, "typography info size");
-_Static_assert(offsetof(ViemTypographyInfoV1, script_position) == {typography_script}, "typography script offset");
-_Static_assert(offsetof(ViemTypographyInfoV1, background) == {typography_background}, "typography background offset");
 _Static_assert(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION == {script_property}, "script property tag");
 _Static_assert(VIEM_STYLE_VALUE_SCRIPT_POSITION == {script_value}, "script value tag");
 _Static_assert(VIEM_STYLE_VALUE_PERCENTAGE == {percentage_value}, "percentage value tag");
-static ViemStatus (*direct_properties)(ViemCoreHandle, ViemViewId, const ViemDirectStyleEditV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_edit_direct_properties;
-static ViemStatus (*copy_formatting)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemStyleSheetInfoV1 *, ViemStylePropertyV1 *, uint64_t, ViemStyleValueItemV1 *, uint64_t, uint8_t *, uint64_t) = viem_core_view_copy_formatting;
-static ViemStatus (*typography_export)(ViemCoreHandle, ViemViewId, uint64_t, ViemTypographyInfoV1 *, uint8_t *, uint64_t, ViemOpenTypeFeatureV1 *, uint64_t) = viem_core_view_typography_export;
 _Static_assert(sizeof(ViemShapeStyleRunV1) == {style_run}, "style run");
 _Static_assert(sizeof(ViemShapedClusterV1) == {cluster}, "cluster");
 _Static_assert(sizeof(ViemShapingDiagnosticV1) == {diagnostic}, "diagnostic");
@@ -540,10 +529,6 @@ static void typecheck(void) {{
       viem_core_view_edit_style;
   ViemStatus (*assign_style)(ViemCoreHandle, ViemViewId,
       const ViemAssignStyleV1 *, ViemCoreOutcomeV1 *) = viem_core_view_assign_style;
-  ViemStatus (*create_style)(ViemCoreHandle, ViemViewId,
-      const ViemCreateStyleV1 *, ViemCoreOutcomeV1 *) = viem_core_view_create_style;
-  ViemStatus (*delete_style)(ViemCoreHandle, ViemViewId,
-      const ViemDeleteStyleV1 *, ViemCoreOutcomeV1 *) = viem_core_view_delete_style;
   ViemStatus (*begin_style_group)(ViemCoreHandle, ViemViewId,
       const ViemStyleSheetIdentityV1 *, ViemStyleEditGroupV1 *) =
       viem_core_view_begin_style_edit_group;
@@ -620,7 +605,6 @@ static void typecheck(void) {{
   (void)release_html_export; (void)import_clipboard;
   (void)edit_style; (void)begin_style_group; (void)edit_style_in_group;
   (void)assign_style;
-  (void)create_style; (void)delete_style;
   (void)end_style_group;
 
   (void)send_key_with_host_context;
@@ -637,15 +621,9 @@ static void typecheck(void) {{
         selection_line = VIEM_MODE_SELECTION_LINE,
         selection_block = VIEM_MODE_SELECTION_BLOCK,
         autoselect = VIEM_EX_OPTION_AUTOSELECT,
-        set_format_size = std::mem::size_of::<ViemSetFormatV1>(),
-        set_format_operation = std::mem::offset_of!(ViemSetFormatV1, operation),
-        set_format_document = std::mem::offset_of!(ViemSetFormatV1, document_id),
-        reinterpret = VIEM_FORMAT_OPERATION_REINTERPRET,
-        convert = VIEM_FORMAT_OPERATION_CONVERT,
-        direct_style_edit = std::mem::size_of::<ViemDirectStyleEditV1>(),
-        direct_style_align = std::mem::align_of::<ViemDirectStyleEditV1>(),
-        direct_style_selection = std::mem::offset_of!(ViemDirectStyleEditV1, expected_selection),
-        direct_style_value = std::mem::offset_of!(ViemDirectStyleEditV1, value),
+        set_markdown_size = std::mem::size_of::<ViemSetMarkdownSourceV1>(),
+        set_markdown_source = std::mem::offset_of!(ViemSetMarkdownSourceV1, source),
+        set_markdown_document = std::mem::offset_of!(ViemSetMarkdownSourceV1, document_id),
         document_options = std::mem::size_of::<ViemDocumentOptions>(),
         document_state = std::mem::size_of::<ViemDocumentStateV1>(),
         formatted_identity = std::mem::size_of::<ViemFormattedSnapshotIdentityV1>(),
@@ -673,9 +651,6 @@ static void typecheck(void) {{
         effect_batch_mark_count = std::mem::offset_of!(ViemEffectBatchInfoV1, ex_mark_count),
         style = std::mem::size_of::<ViemResolvedTextStyleV1>(),
         style_script = std::mem::offset_of!(ViemResolvedTextStyleV1, script_position),
-        typography_info = std::mem::size_of::<ViemTypographyInfoV1>(),
-        typography_script = std::mem::offset_of!(ViemTypographyInfoV1, script_position),
-        typography_background = std::mem::offset_of!(ViemTypographyInfoV1, background),
         script_property = VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION,
         script_value = VIEM_STYLE_VALUE_SCRIPT_POSITION,
         percentage_value = VIEM_STYLE_VALUE_PERCENTAGE,

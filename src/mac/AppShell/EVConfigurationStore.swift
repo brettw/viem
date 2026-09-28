@@ -447,7 +447,6 @@ extension EVSourceFormat {
     switch self {
     case .plainText: "text"
     case .markdown, .markdownSource: "markdown"
-    case .rtf: "rtf"
     case .code: "code"
     }
   }

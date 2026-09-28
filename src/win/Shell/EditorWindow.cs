@@ -40,7 +40,7 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
-        formattingToolbar = new(preferences);
+        formattingToolbar = new();
         ConfigureFormattingToolbar();
         menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
@@ -70,7 +70,6 @@ internal sealed partial class EditorWindow : Window
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
             settingsWindow?.Close();
-            fontPanel?.Close(); foreach (var panel in colorPanels.Values.ToArray()) panel.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
             foreach (var pane in Panes) pane.Dispose(); Panes.Clear();
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
@@ -271,7 +270,7 @@ internal sealed partial class EditorWindow : Window
         {
             var picker = new FileSavePicker { SuggestedFileName = doc.Name == "Untitled" ? "Untitled" : Path.GetFileNameWithoutExtension(doc.Name) };
             string extension = doc.State.format switch {
-                2 or 5 => ".md", 4 => ".rtf",
+                2 or 5 => ".md",
                 VIEM_FORMAT_CODE when Path.GetExtension(doc.FilePath) is { Length: > 0 } codeExtension => codeExtension,
                 _ => ".txt"
             };

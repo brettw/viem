@@ -8,7 +8,7 @@ fn open(source: &str, format: Format) -> Document {
 fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_changes() {
     let large = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
     for (format, source) in [(Format::PlainText, "Text"), (Format::Markdown, "Text"),
-        (Format::MarkdownSource, "Text"), (Format::Rtf, "{\\rtf1 Text}")] {
+        (Format::MarkdownSource, "Text")] {
         let mut document = open(source, format);
         document.insert(0, "New ").unwrap();
         let source = document.source_bytes();
@@ -43,22 +43,6 @@ fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_cha
 }
 
 #[test]
-fn live_theme_preserves_source_owned_rtf_styles_and_rejects_invalid_json_atomically() {
-    let mut document = open("{\\rtf1{\\stylesheet{\\s1\\fs48 Heading;}}\\s1 Title}", Format::Rtf);
-    let source = document.source_bytes();
-    let style = document.projection().blocks().first().unwrap().style.clone();
-    let definition = document.projection().style_sheet().block_style(&style).unwrap().clone();
-    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
-    assert_eq!(document.projection().style_sheet().block_style(&style), Some(&definition));
-    let sheet = document.export_style_defaults().unwrap();
-    let history = document.history_status();
-    assert!(document.replace_style_defaults(br#"{"version":99}"#).is_err());
-    assert_eq!(document.export_style_defaults().unwrap(), sheet);
-    assert_eq!(document.history_status(), history);
-    assert_eq!(document.source_bytes(), source);
-}
-
-#[test]
 fn live_theme_replaces_custom_catalogue_and_current_generated_styles_remain_editable() {
     let mut document = open("Text", Format::PlainText);
     document.replace_style_defaults(br#"{"version":1,"character_styles":[{"id":"Old Theme","name":"Old Theme","properties":{"bold":true}}]}"#).unwrap();
@@ -73,42 +57,6 @@ fn live_theme_replaces_custom_catalogue_and_current_generated_styles_remain_edit
         CharacterProperties::default());
 }
 
-#[test]
-fn rtf_theme_custom_definitions_round_trip_through_defaults_and_live_installation() {
-    let settings = br#"{"version":1,"block_styles":[{"id":"RtfP7","name":"Theme Paragraph","based_on":"Paragraph","role":"Paragraph","character":{"size":19},"block":{}}],"character_styles":[{"id":"RtfC8","name":"Theme Character","properties":{"bold":true}}]}"#;
-    let mut inspector = open("{\\rtf1 Text}", Format::Rtf);
-    inspector.initialize_style_defaults(settings).unwrap();
-    let exported = inspector.export_style_defaults().unwrap();
-    let mut document = open("{\\rtf1 Existing}", Format::Rtf);
-    document.insert(0, "Edited ").unwrap();
-    let before = document.source_bytes();
-    document.replace_style_defaults(&exported).unwrap();
-    let sheet = document.projection().style_sheet();
-    assert_eq!(sheet.block_style(&"RtfP7".into()).unwrap().character.size, Some(FontSize::Points(19.)));
-    assert_eq!(sheet.character_style(&"RtfC8".into()).unwrap().properties.bold, Some(true));
-    assert_eq!(document.source_bytes(), before);
-}
-
-#[test]
-fn undo_keeps_source_style_dependencies_authoritative_over_new_theme_relationships() {
-    let source = "{\\rtf1{\\stylesheet{\\s1\\sbasedon2 Child;}{\\s2 Parent;}}\\s1 Text}";
-    let mut document = open(source, Format::Rtf);
-    let original = document.export_style_defaults().unwrap();
-    document.insert(0, "New ").unwrap();
-    // This valid theme reverses the source's parent relationship. Source
-    // definitions must remain authoritative when older snapshots are selected.
-    document.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"RtfP1","name":"Child","role":"Paragraph","based_on":"Paragraph","block":{},"character":{}},{"id":"RtfP2","name":"Parent","role":"Paragraph","based_on":"RtfP1","block":{},"character":{}}]}"#).unwrap();
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-    assert_eq!(document.text(), "Text");
-    let before: serde_json::Value = serde_json::from_slice(&original).unwrap();
-    let after: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
-    for id in ["RtfP1", "RtfP2"] {
-        let definition = |value: &serde_json::Value| value["block_styles"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap().clone();
-        assert_eq!(definition(&before), definition(&after));
-    }
-    viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
-}
 fn lists(document: &Document) -> Vec<String> {
     document
         .projection()
@@ -268,72 +216,6 @@ fn saved_character_percentage_inheritance_keeps_each_valid_declaration() {
 }
 
 #[test]
-fn native_defaults_do_not_replace_authored_font_requests() {
-    for (format, source) in [
-        (
-            Format::Rtf,
-            r"{\rtf1\ansi\deff0{\fonttbl{\f0 SF Pro;}}\f0 Text}",
-        ),
-    ] {
-        let document = open(source, format);
-        let style = viem_core::layout::DocumentLayoutStyles::semantic_character_at(
-            document.projection(),
-            0,
-            false,
-        )
-        .unwrap();
-        assert_eq!(style.font_families, ["SF Pro"], "{format:?}");
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
-fn rich_default_list_paragraph_styles_are_assignable_source_backed_and_undoable() {
-    for (format, source) in [
-        (Format::Rtf, r"{\rtf1 Words{\*\unknown keep}}"),
-    ] {
-        for level in 1..=3 {
-            let mut document = open(source, format);
-            document
-                .apply_model_request(ModelRequest::AssignNamedStyle {
-                    document: document.id(),
-                    revision: document.revision(),
-                    range: 0..0,
-                    namespace: StyleNamespace::Block,
-                    style: StyleId(format!("BulletedList{level}")),
-                })
-                .unwrap();
-            assert_eq!(document.text(), "Words");
-            let saved = String::from_utf8(document.source_bytes()).unwrap();
-            let reopened = open(&saved, format);
-            let id = &reopened.projection().blocks()[0].style;
-            assert_eq!(
-                reopened
-                    .projection()
-                    .style_sheet()
-                    .block_style(id)
-                    .unwrap()
-                    .block
-                    .leading_indent,
-                Some(0.0)
-            );
-            assert_eq!(
-                reopened
-                    .projection()
-                    .style_sheet()
-                    .block_style_metadata(id)
-                    .unwrap()
-                    .origin,
-                StyleDefinitionOrigin::SourceBacked
-            );
-            assert!(saved.contains("keep"));
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-        }
-    }
-}
-
-#[test]
 fn defaults_define_two_four_level_families_independent_of_used_depth() {
     let expected = [
         "BulletedList1",
@@ -349,7 +231,6 @@ fn defaults_define_two_four_level_families_independent_of_used_depth() {
         Format::PlainText,
         Format::Markdown,
         Format::MarkdownSource,
-        Format::Rtf,
     ] {
         assert_eq!(lists(&open("", format)), expected, "{format:?}");
     }
@@ -357,15 +238,13 @@ fn defaults_define_two_four_level_families_independent_of_used_depth() {
         .map(|depth| format!("{}- Text", "  ".repeat(depth)))
         .collect::<Vec<_>>()
         .join("\n");
-    for (format, source) in [(Format::Markdown, markdown),] {
-        let document = open(&source, format);
-        assert_eq!(lists(&document), expected);
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert_eq!(
-            document.projection().blocks().last().unwrap().style,
-            StyleId::from("BulletedList4")
-        );
-    }
+    let document = open(&markdown, Format::Markdown);
+    assert_eq!(lists(&document), expected);
+    assert_eq!(document.source_bytes(), markdown.as_bytes());
+    assert_eq!(
+        document.projection().blocks().last().unwrap().style,
+        StyleId::from("BulletedList4")
+    );
 }
 
 #[test]
@@ -387,27 +266,17 @@ fn editing_list_depth_reuses_fourth_style_and_undo_restores_source() {
 
 fn clear_definition(document: &mut Document, id: &StyleId, character: bool) {
     let sheet = document.projection().style_sheet();
-    let (edit, origin) = if character {
+    let edit = if character {
         let mut style = sheet.character_style(id).unwrap().clone();
         style.properties = CharacterProperties::default();
-        (
-            StyleDefinitionEdit::UpdateCharacter(style),
-            sheet.character_style_metadata(id).unwrap().origin,
-        )
+        StyleDefinitionEdit::UpdateCharacter(style)
     } else {
         let mut style = sheet.block_style(id).unwrap().clone();
         style.character = CharacterProperties::default();
         style.block = BlockProperties::default();
-        (
-            StyleDefinitionEdit::UpdateBlock(style),
-            sheet.block_style_metadata(id).unwrap().origin,
-        )
+        StyleDefinitionEdit::UpdateBlock(style)
     };
-    let intent = if origin == StyleDefinitionOrigin::GeneratedConfiguration {
-        StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(edit))
-    } else {
-        StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition { origin, edit })
-    };
+    let intent = StyleModelIntent::Configuration(ConfigurationStyleIntent::EditDefinition(edit));
     document
         .apply_style_request(StyleModelRequest::new(
             document.id(),
@@ -455,7 +324,6 @@ fn loading_defaults_keeps_all_builtin_declarations_visible() {
     for format in [
         Format::PlainText,
         Format::Markdown,
-        Format::Rtf,
     ] {
         let mut document = open("", format);
         let before = document.projection().style_sheet().clone();

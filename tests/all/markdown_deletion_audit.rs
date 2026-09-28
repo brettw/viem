@@ -333,29 +333,3 @@ fn disjoint_deletions_that_empty_one_code_span_commit_atomically() {
     assert_eq!(document.source_bytes(), original);
     assert!(!document.undo());
 }
-
-#[test]
-fn rich_text_deletions_cover_inline_scopes_entities_objects_and_paragraphs() {
-    for (format, source) in [
-        (Format::Rtf, "{\\rtf1\\ansi a {\\b b} c\\par d {\\i e}}"),
-    ] {
-        let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        for start in 0..document.text().len() {
-            for end in start + 1..=document.text().len() {
-                if document.text_point(start).is_err() || document.text_point(end).is_err() {
-                    continue;
-                }
-                document
-                    .prepare_model_request(ModelRequest::ApplyTextEdits {
-                        document: document.id(),
-                        revision: document.revision(),
-                        edits: vec![TextEdit::new(start..end, "")],
-                    })
-                    .unwrap_or_else(|error| {
-                        panic!("{format:?} {source:?} {start}..{end}: {error:?}")
-                    });
-            }
-        }
-    }
-}

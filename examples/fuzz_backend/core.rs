@@ -48,9 +48,9 @@ enum Action {
         left: f32,
         top: f32,
     },
-    Format {
+    MarkdownSource {
         view: usize,
-        format: String,
+        source: bool,
     },
     Place {
         view: usize,
@@ -74,7 +74,6 @@ fn format(name: &str) -> Result<Format, String> {
         "markdown" => Format::Markdown,
         "markdown_source" => Format::MarkdownSource,
         "code" => Format::Code,
-        "rtf" => Format::Rtf,
         _ => return Err(format!("invalid format {name}")),
     })
 }
@@ -111,7 +110,6 @@ fn initial(rng: &mut Rng) -> Action {
         ("plain","e\u{301} 👩\u{200d}💻 🇨🇦 العربية עברית 中文\n\tTabs\0NUL\n"),
         ("markdown","# Heading\n\nA **bold** paragraph with _emphasis_.\ncontinued prose.\n\n1. First item\n   continued\n2. Second\n\n```rust\nfn main() {}\n\n```\n\nEnd."),
         ("markdown_source","- first\n  continuation\n- second\n\n> quote\n\nA [link](https://example.test).\n"),
-        ("rtf","{\\rtf1\\ansi First {\\b bold} paragraph.\\par second\\line continued\\par }"),
         ("markdown",""),("plain",""),
     ];
     let (format, source) = cases[rng.usize(cases.len())];
@@ -240,17 +238,14 @@ fn generate(
             });
         }
         11 => {
-            let name = match core.document().format() {
-                Format::Markdown => "markdown_source",
-                Format::MarkdownSource => "markdown",
-                Format::Rtf => "rtf",
-                Format::PlainText => "plain",
-                Format::Code => "code",
-            };
-            queue.push_back(Action::Format {
-                view,
-                format: name.into(),
-            });
+            if core.document().format().is_markdown() {
+                queue.push_back(Action::MarkdownSource {
+                    view,
+                    source: !core.document().format().is_source_view(),
+                });
+            } else {
+                queue.push_back(Action::Reopen);
+            }
         }
         12 => {
             let mut boundaries = core
@@ -522,13 +517,12 @@ pub fn run(
                     }),
                     true,
                 ),
-                Action::Format { view, format: kind } => (
+                Action::MarkdownSource { view, source } => (
                     *view,
-                    Some(CoreEvent::SetFormat {
-                        operation: viem_core::FormatOperation::Reinterpret,
+                    Some(CoreEvent::SetMarkdownSource {
                         document: core.document().id(),
                         revision: core.document().revision(),
-                        target: format(kind)?,
+                        source: *source,
                     }),
                     true,
                 ),

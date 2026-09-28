@@ -55,7 +55,7 @@ enum EVThemeFile {
 }
 
 extension EVConfigurationStore {
-  static let styleNames = ["text", "markdown", "rtf", "code"]
+  static let styleNames = ["text", "markdown", "code"]
 
   public var themesDirectory: URL { directory.appendingPathComponent("themes", isDirectory: true) }
   public var currentThemeName: String? { activeThemeName }

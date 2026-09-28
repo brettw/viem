@@ -5,7 +5,7 @@ fn structural_batches_keep_empty_insertions_before_same_start_replacements() {
     use viem_core::document::TextEdit;
     for (format, source) in [
         (Format::Markdown, "A\n\nB\n\nC"),
-        (Format::Rtf, r"{\rtf1\ansi A\par B\par C}"),
+
     ] {
         for (edits, expected) in [
             (

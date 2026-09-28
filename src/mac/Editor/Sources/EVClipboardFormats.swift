@@ -12,7 +12,6 @@ struct EVClipboardFragment: Decodable {
     let hardBreaks: [Int]
     let isRich: Bool
     let sourceText: String
-    let sourceExact: Bool
     let characterRuns: [CharacterRun]
     let paragraphRuns: [ParagraphRun]
 

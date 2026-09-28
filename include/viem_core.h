@@ -75,7 +75,6 @@ typedef uint32_t ViemStatus;
 
 #define VIEM_FORMAT_PLAIN_TEXT 1u
 #define VIEM_FORMAT_MARKDOWN 2u
-#define VIEM_FORMAT_RTF 4u
 #define VIEM_FORMAT_MARKDOWN_SOURCE 5u
 #define VIEM_FORMAT_CODE 7u
 
@@ -960,7 +959,6 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_ROLE_LIST_ITEM 6u
 
 
-#define VIEM_STYLE_ORIGIN_SOURCE_BACKED 1u
 #define VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION 2u
 #define VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY 3u
 
@@ -1060,7 +1058,6 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_EFFECTIVE_PRESENT (1u << 1)
 #define VIEM_STYLE_PROPERTY_CONTRIBUTOR_HAS_STYLE (1u << 2)
 /* Selection-format snapshots only: selected runs disagree on this property. */
-#define VIEM_STYLE_PROPERTY_MIXED (1u << 3)
 
 #define VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY 1u
 #define VIEM_STYLE_CONTRIBUTOR_BLOCK_STYLE 2u
@@ -1709,19 +1706,6 @@ typedef struct ViemSetSemanticStyleV1 {
   ViemLogicalSelectionIdentityV1 expected_selection;
 } ViemSetSemanticStyleV1;
 
-/* One checked direct property edit. Uses SET_DECLARATION/CLEAR_DECLARATION;
- * character properties require a linear Visual selection, paragraph properties
- * also accept the current paragraph from viem_core_view_list_selection. */
-typedef struct ViemDirectStyleEditV1 {
-  uint32_t struct_size;
-  uint32_t operation;
-  uint32_t property;
-  uint32_t reserved;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-  ViemStyleEditValueV1 value;
-} ViemDirectStyleEditV1;
-#define VIEM_DIRECT_STYLE_EDIT_V1_SIZE ((uint32_t)sizeof(ViemDirectStyleEditV1))
-
 #define VIEM_SET_SEMANTIC_STYLE_V1_SIZE \
   ((uint32_t)sizeof(ViemSetSemanticStyleV1))
 
@@ -1749,20 +1733,14 @@ typedef struct ViemSetFileFormatV1 {
 #define VIEM_SET_FILE_FORMAT_V1_SIZE \
   ((uint32_t)sizeof(ViemSetFileFormatV1))
 
-#define VIEM_FORMAT_OPERATION_REINTERPRET 0u
-#define VIEM_FORMAT_OPERATION_CONVERT 1u
-
-/* Reinterpret preserves source bytes; Convert serializes formatted content.
- * Both use exact document identity. reserved must be zero. */
-typedef struct ViemSetFormatV1 {
+/* Switch between Markdown Source and WYSIWYG without changing source bytes. */
+typedef struct ViemSetMarkdownSourceV1 {
   uint32_t struct_size;
-  uint32_t format;
-  uint32_t operation;
-  uint32_t reserved;
+  uint32_t source;
   uint64_t document_id;
   uint64_t document_revision;
-} ViemSetFormatV1;
-#define VIEM_SET_FORMAT_V1_SIZE ((uint32_t)sizeof(ViemSetFormatV1))
+} ViemSetMarkdownSourceV1;
+#define VIEM_SET_MARKDOWN_SOURCE_V1_SIZE ((uint32_t)sizeof(ViemSetMarkdownSourceV1))
 
 typedef struct ViemSetEncodingV1 {
   uint32_t struct_size;
@@ -1811,8 +1789,8 @@ typedef struct ViemAssignStyleV1 {
 } ViemAssignStyleV1;
 #define VIEM_ASSIGN_STYLE_V1_SIZE ((uint32_t)sizeof(ViemAssignStyleV1))
 
-/* New sparse source-backed definition. Empty parent uses the namespace base;
- * empty next style leaves it absent. RTF IDs use RtfP<N>/RtfC<N> native handles. */
+/* New sparse Code style definition. Empty parent uses the namespace base;
+ * empty next style leaves it absent. */
 typedef struct ViemCreateStyleV1 {
   uint32_t struct_size;
   uint32_t namespace;
@@ -2402,7 +2380,7 @@ ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, 
 
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
-/* View-local command policy; physical source lines are unsupported for RTF. */
+/* View-local visual or physical source-line command policy. */
 /* Markdown flows structurally; Markdown Source defaults off per view.
    Setter is supported for Markdown Source only. */
 ViemStatus viem_core_view_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
@@ -2442,13 +2420,6 @@ ViemStatus viem_core_view_set_paragraph_style(
 ViemStatus viem_core_view_assign_style(
     ViemCoreHandle handle, ViemViewId view,
     const ViemAssignStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_create_style(
-    ViemCoreHandle handle, ViemViewId view,
-    const ViemCreateStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_delete_style(
-    ViemCoreHandle handle, ViemViewId view,
-    const ViemDeleteStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
-
 /*
  * Begin one exact frontend-owned style gesture. Only one may be active in a
  * core. An empty group creates no history entry. Any ordinary coordinator
@@ -2481,56 +2452,17 @@ ViemStatus viem_core_view_end_style_edit_group(
     ViemCoreHandle core, ViemViewId view,
     const ViemStyleEditGroupV1 *group);
 
-ViemStatus viem_core_view_edit_direct_style(ViemCoreHandle handle, ViemViewId view,
-    const ViemDirectStyleEditV1 *request, ViemCoreOutcomeV1 *out_outcome);
-/* Atomically sets 1..32 distinct character properties on one exact selection.
-   Every request must use SET_DECLARATION and the same expected selection. */
-/* Atomic character/paragraph set-or-clear batch with one verified transaction. */
-ViemStatus viem_core_view_edit_direct_properties(
-    ViemCoreHandle core, ViemViewId view,
-    const ViemDirectStyleEditV1 *requests, uint64_t count,
+/* Set Markdown strikethrough at an exact selection or typing caret. */
+ViemStatus viem_core_view_set_strikethrough(ViemCoreHandle core, ViemViewId view,
+    const ViemLogicalSelectionIdentityV1 *expected_selection, uint8_t enabled,
     ViemCoreOutcomeV1 *out_outcome);
-/* Effective caret/selection formatting. Two-pass, snapshot/selection checked.
- * Property values use the existing value-item/string arenas. No definitions or
- * dependencies are emitted. An absent optional property has effective NONE. */
-ViemStatus viem_core_view_copy_formatting(
-    ViemCoreHandle core, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected_selection,
-    ViemStyleSheetInfoV1 *out_info,
-    ViemStylePropertyV1 *out_properties, uint64_t property_capacity,
-    ViemStyleValueItemV1 *out_items, uint64_t item_capacity,
-    uint8_t *out_strings, uint64_t string_capacity);
+/* Unscaled caret en width for the exact document revision, including empty lines. */
+ViemStatus viem_core_view_font_en_width(ViemCoreHandle core, ViemViewId view,
+    uint64_t expected_revision, float *out_width);
 
-ViemStatus viem_core_view_edit_direct_character_batch(ViemCoreHandle handle, ViemViewId view,
-    const ViemDirectStyleEditV1 *requests, uint64_t count, ViemCoreOutcomeV1 *out_outcome);
-/* Returns the semantic Off/On/Mixed constants for underline/strike. */
-typedef struct ViemTypographyInfoV1 {
-  uint32_t struct_size;
-  /* bit0 semantic bold; bit1 mixed; bit2 theme-default foreground; bit3 mixed script. */
-  uint32_t flags;
-  uint64_t document_id;
-  uint64_t document_revision;
-  uint64_t font_family_bytes;
-  uint64_t feature_count;
-  float size;
-  uint32_t weight;
-  uint32_t base_weight;
-  uint32_t slant;
-  ViemRgbaV1 foreground;
-  uint32_t script_position;
-  uint32_t has_background;
-  ViemRgbaV1 background;
-} ViemTypographyInfoV1;
-
-/* Zero-capacity query returns BufferTooSmall with exact sizes. All buffers
-   must be disjoint; no array payload is copied until both capacities fit. */
-ViemStatus viem_core_view_typography_export(
-    ViemCoreHandle core, ViemViewId view, uint64_t expected_revision,
-    ViemTypographyInfoV1 *info, uint8_t *family, uint64_t family_capacity,
-    ViemOpenTypeFeatureV1 *features, uint64_t feature_capacity);
-
-ViemStatus viem_core_view_decoration_state(ViemCoreHandle handle, ViemViewId view,
-    uint32_t property, uint32_t *out_state);
+/* Returns the semantic Off/On/Mixed constants for strikethrough. */
+ViemStatus viem_core_view_strikethrough_state(ViemCoreHandle core, ViemViewId view,
+    uint32_t *out_state);
 
 ViemStatus viem_core_copy_source_bytes(ViemCoreHandle core,
                                        uint64_t expected_revision,
@@ -2604,7 +2536,7 @@ ViemStatus viem_core_initialize_style_defaults(ViemCoreHandle core, uint64_t exp
 ViemStatus viem_core_replace_style_defaults(ViemCoreHandle core, uint64_t expected_revision, const uint8_t *json, uint64_t length, ViemStyleDefaultsDiagnosticCallback diagnostic, void *context);
 ViemStatus viem_core_export_style_defaults(ViemCoreHandle core, uint64_t expected_revision, uint8_t *output, uint64_t capacity, uint64_t *required);
 
-/* Portable aggregate theme v1: appearance plus optional text/markdown/rtf v1
+/* Portable aggregate theme v1: appearance plus optional text/markdown v1
  * and code v3 style sheets. Validation is atomic and never installs styles.
  * Omitted sheets use built-in defaults. Input is bounded to 20 MiB. Default
  * export emits every sheet, uses the ordinary two-pass/disjoint output contract,
@@ -2630,7 +2562,7 @@ ViemStatus viem_core_view_edit_command_line(ViemCoreHandle core, ViemViewId view
     uint64_t start, uint64_t end, const uint8_t *utf8, uint64_t length,
     ViemCoreOutcomeV1 *out_outcome);
 
-ViemStatus viem_core_view_set_format_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetFormatV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+ViemStatus viem_core_view_set_markdown_source_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetMarkdownSourceV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
 ViemStatus viem_core_view_set_encoding_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetEncodingV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
 ViemStatus viem_core_copy_hard_line_source_bytes(ViemCoreHandle core, uint64_t document, uint64_t revision, uint64_t first_line, uint64_t end_line, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
 
@@ -2640,7 +2572,6 @@ ViemStatus viem_core_copy_hard_line_source_bytes(ViemCoreHandle core, uint64_t d
  * encoding. Only is_rich payloads should be published as private/rich types. */
 /* Passive rich clipboard import, independent of document source formats. */
 #define VIEM_CLIPBOARD_FORMAT_HTML 1u
-#define VIEM_CLIPBOARD_FORMAT_RTF 2u
 ViemStatus viem_import_clipboard_json(uint32_t format, const uint8_t *source,
     uint64_t source_length, uint8_t *output, uint64_t output_capacity,
     uint64_t *out_required);

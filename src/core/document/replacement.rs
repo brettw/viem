@@ -169,19 +169,6 @@ impl PatchComposition {
 }
 
 impl Document {
-    #[cfg(test)]
-    pub(crate) fn prepare_recorded_replacement(
-        &self,
-        cursor: usize,
-        target: usize,
-        input: &str,
-        values: &[(StyleProperty, StylePropertyValue)],
-        affinity: BoundaryAffinity,
-    ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
-        self.prepare_recorded_replacement_with_typing_style(
-            cursor, target, input, None, values, affinity,
-        )
-    }
 
     pub(crate) fn prepare_recorded_replacement_with_typing_style(
         &self,
@@ -356,70 +343,4 @@ fn map_after(
         .value()
         .map(|point| point.offset())
         .ok_or(DocumentError::AmbiguousProjection.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::document::{Encoding, FontSlant};
-
-    #[test]
-    fn recorded_replacement_rejects_stale_restore_without_touching_source() {
-        let mut document =
-            Document::from_bytes(br"{\rtf1 word}".to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
-        let (prepared, records) = document
-            .prepare_recorded_replacement(
-                0,
-                0,
-                "a",
-                &[(
-                    StyleProperty::CharacterSlant,
-                    StylePropertyValue::FontSlant(FontSlant::Italic),
-                )],
-                BoundaryAffinity::Downstream,
-            )
-            .unwrap();
-        document.commit_model_transaction(prepared).unwrap();
-        document.insert(4, "x").unwrap();
-        let bytes = document.source_bytes();
-        assert!(matches!(
-            document.restore_recorded_replacement(&records[0].restoration),
-            Err(ModelTransactionError::StaleRevision { .. })
-        ));
-        assert_eq!(document.source_bytes(), bytes);
-    }
-    #[test]
-    fn recorded_replacement_keeps_projection_work_local_in_large_document() {
-        let mut source = format!("{{\\rtf1 {}", r"line\par ".repeat(10_000));
-        source.push_str(r"{\i word}}");
-        let document =
-            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Rtf).unwrap();
-        let at = document.projection().text_tree().byte_len() - 4;
-        let (prepared, _) = document
-            .prepare_recorded_replacement(
-                at,
-                at,
-                "a",
-                &[(
-                    StyleProperty::CharacterSlant,
-                    StylePropertyValue::FontSlant(FontSlant::Italic),
-                )],
-                BoundaryAffinity::Downstream,
-            )
-            .unwrap();
-        assert_eq!(prepared.summary().source_patches().len(), 1);
-        assert!(prepared.summary().source_patches()[0].replacement().len() <= 32);
-        assert!(
-            prepared.summary().projection_work().projected_hard_lines() <= 2,
-            "{:?}",
-            prepared.summary().projection_work()
-        );
-        assert_eq!(
-            prepared
-                .summary()
-                .projection_work()
-                .full_text_bytes_materialized(),
-            0
-        );
-    }
 }

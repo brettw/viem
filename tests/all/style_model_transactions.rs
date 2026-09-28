@@ -2,7 +2,7 @@ use viem_core::document::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle,
     ConfigurationStyleIntent, Document, Encoding, FileFormat, Format, ModelChangeKind,
     ModelTransactionError, PersistedStyleIntent, PipelineCapabilityDecision, PipelineEditIntent,
-    StyleBlockTarget, StyleDefinitionEdit, StyleDefinitionMetadata, StyleDefinitionOrigin,
+    StyleDefinitionEdit, StyleDefinitionMetadata,
     StyleError, StyleId, StyleInvalidationEffect, StyleModelIntent, StyleModelRequest,
     StyleProperty, StyleTransactionError, TextEdit, TextRange, UnsupportedEditReason,
 };
@@ -527,18 +527,6 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
                 },
                 UnsupportedEditReason::FormatHasNoNamedStyleStorage,
             ),
-            (
-                PipelineEditIntent::SetDirectProperty {
-                    property: StyleProperty::CharacterWeight,
-                },
-                UnsupportedEditReason::FormatHasNoDirectPropertyStorage,
-            ),
-            (
-                PipelineEditIntent::EditBlockStyleDefinition {
-                    style: StyleId::from("Paragraph"),
-                },
-                UnsupportedEditReason::FormatHasNoEditableStyleDefinitions,
-            ),
         ] {
             if format != Format::PlainText
                 && (matches!(&intent, PipelineEditIntent::AssignBlockStyle { style } if style.0 == "Paragraph")
@@ -601,77 +589,6 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
             }) if reason == expected
         ));
     }
-}
-
-#[test]
-fn style_definition_origin_requires_the_correct_authority() {
-    let mut document = Document::new("plain");
-    let edit = StyleDefinitionEdit::UpdateBlock(
-        document
-            .projection()
-            .style_sheet()
-            .block_style(&StyleId::from("Heading2"))
-            .unwrap()
-            .clone(),
-    );
-    let generated = request(
-        &document,
-        StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-            origin: StyleDefinitionOrigin::GeneratedConfiguration,
-            edit: edit.clone(),
-        }),
-    );
-    assert!(matches!(
-        document.apply_style_request(generated),
-        Err(ModelTransactionError::Style(
-            StyleTransactionError::ConfigurationIntentRequired(id)
-        )) if id == StyleId::from("Heading2")
-    ));
-
-    let synthetic = request(
-        &document,
-        StyleModelIntent::Persisted(PersistedStyleIntent::EditStyleDefinition {
-            origin: StyleDefinitionOrigin::SyntheticReadOnly,
-            edit,
-        }),
-    );
-    assert!(matches!(
-        document.apply_style_request(synthetic),
-        Err(ModelTransactionError::Style(
-            StyleTransactionError::DefinitionReadOnly(id)
-        )) if id == StyleId::from("Heading2")
-    ));
-}
-
-#[test]
-fn future_persisted_block_and_direct_intentions_are_typed_even_when_rejected() {
-    let mut document = Document::new("one\ntwo");
-    let range = whole_document(&document);
-    for intent in [
-        PersistedStyleIntent::AssignBlockStyle {
-            target: StyleBlockTarget::DocumentRoot,
-            style: StyleId::from("Document"),
-        },
-        PersistedStyleIntent::SetDirectBlockProperties {
-            target: StyleBlockTarget::Paragraphs(range),
-            properties: BlockProperties {
-                margin_bottom: Some(4.0),
-                ..BlockProperties::default()
-            },
-        },
-        PersistedStyleIntent::ClearDirectCharacterProperties {
-            range,
-            properties: BTreeSet::from([StyleProperty::CharacterWeight]),
-        },
-    ] {
-        assert!(matches!(
-            document.apply_style_request(request(&document, StyleModelIntent::Persisted(intent),)),
-            Err(ModelTransactionError::Style(
-                StyleTransactionError::Unsupported { .. }
-            ))
-        ));
-    }
-    assert_eq!(document.text(), "one\ntwo");
 }
 
 #[test]

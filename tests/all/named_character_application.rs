@@ -33,17 +33,7 @@ fn named(document: &Document, at: usize) -> StyleId {
         .last()
         .unwrap_or_else(|| "".into())
 }
-fn unchanged_bytes(before: &[u8], after: &[u8], patches: &[SourcePatch]) {
-    let mut old = 0;
-    let mut new = 0;
-    for patch in patches {
-        let length = patch.range().start - old;
-        assert_eq!(&before[old..old + length], &after[new..new + length]);
-        old = patch.range().end;
-        new += length + patch.replacement().len();
-    }
-    assert_eq!(&before[old..], &after[new..]);
-}
+
 
 #[test]
 fn markdown_code_assignment_splits_blocks_and_clears_nested_emphasis() {
@@ -159,43 +149,6 @@ fn default_paragraph_clears_inline_code_without_changing_code_paragraphs() {
     assert!(!document.projection().style_spans().iter().any(|span| matches!(span.application, StyleApplication::Named(_))));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), b"`inline`\n\n```\nblock\n```");
-}
-
-#[test]
-fn style_choice_clears_all_inline_traits_and_preserves_paragraph_defaults_and_neighbors() {
-    use viem_core::layout::DocumentLayoutStyles;
-    for (format, source, chosen) in [
-        (Format::Rtf,
-         r"{\rtf1{\colortbl;\red51\green102\blue153;\red255\green0\blue0;}{\stylesheet{\s1\fs40\cf1 Heading;}{\*\cs2\i Accent;}}\s1 {\fs60\cf2\highlight2\b\i\ul\strike\super\expndtw40\rtlch\lang1036 word}{\*\opaque keep}}",
-         "RtfC2"),
-    ] {
-        for style in [chosen, ""] {
-            let mut document = open(source.as_bytes(), format);
-            let expected = document.typing_named_style_at(1, BoundaryAffinity::Downstream, &style.into()).unwrap();
-            assert_eq!(expected.size, 20.0);
-            assert!(!expected.bold);
-            assert_eq!(expected.script_position, ScriptPosition::Normal);
-            assert!(expected.background.is_none());
-            let before = document.source_bytes();
-            let left = DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false).unwrap();
-            let right = DocumentLayoutStyles::semantic_character_at(document.projection(), 3, false).unwrap();
-            let changed = assign(&mut document, 1..3, style).unwrap_or_else(|error| panic!("{format:?} {style}: {error:?}"));
-            let after = document.source_bytes();
-            unchanged_bytes(&before, &after, changed.summary().source_patches());
-            let reopened = open(&after, format);
-            assert_eq!(reopened.text(), "word");
-            for at in [1, 2] {
-                assert_eq!(DocumentLayoutStyles::semantic_character_at(reopened.projection(), at, false).unwrap(), expected, "{format:?} {style}");
-            }
-            assert_eq!(DocumentLayoutStyles::semantic_character_at(reopened.projection(), 0, false).unwrap(), left);
-            assert_eq!(DocumentLayoutStyles::semantic_character_at(reopened.projection(), 3, false).unwrap(), right);
-            assert!(String::from_utf8_lossy(&after).contains("keep"));
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), before);
-            assert!(document.redo());
-            assert_eq!(document.source_bytes(), after);
-        }
-    }
 }
 
 #[test]

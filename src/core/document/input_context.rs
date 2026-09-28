@@ -303,33 +303,14 @@ impl Document {
             };
             at += self.encoding().encode_fragment(spelling)?.len();
         }
-        let rtf_visible = if source_format == Format::Rtf {
-            preview
-                .projection()
-                .provenance_for_region(&(0..preview.text().len()))
-                .into_iter()
-                .filter(|span| !span.formatted.is_empty())
-                .map(|span| (span.source.start, (span.source.end, span.formatted.start)))
-                .collect::<BTreeMap<_, _>>()
-        } else {
-            BTreeMap::new()
-        };
         rewrite_quotes_indexed(
             text,
             previous,
-            |offset, grapheme| {
+            |offset, _grapheme| {
                 let Some(source_at) = quote_sources.get(&offset).copied() else {
                     return Ok(QuoteContext::Syntax);
                 };
-                if source_format == Format::Rtf {
-                    let source_end = source_at + self.encoding().encode_fragment(grapheme)?.len();
-                    return rtf_visible
-                        .get(&source_at)
-                        .filter(|(end, _)| *end == source_end)
-                        .map_or(Ok(QuoteContext::Syntax), |(_, at)| {
-                            preview.quote_context(*at, BoundaryAffinity::Downstream)
-                        });
-                }
+
                 preview.quote_context(formatted(source_at)?, BoundaryAffinity::Downstream)
             },
             quote,

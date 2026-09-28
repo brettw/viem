@@ -109,8 +109,10 @@ internal sealed partial class EditorWindow
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
                     await Diagnostics.ScrollDrawingTests.Run(scrolled);
                     await ClosePane(scrolled);
-                    pane.View!.Command("i"); pane.View.Text("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"); pane.View.Key(VIEM_KEY_ESCAPE);
-                    pane.View.Format(VIEM_FORMAT_MARKDOWN);
+                    var priorPane = pane;
+                    pane = AddPane(NewDocument("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
+                    await pane.Ready;
+                    await ClosePane(priorPane, true);
                     await Task.Delay(400);
                     if (pane.LastError != null) throw pane.LastError;
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native editor draws without presentation errors");

@@ -1,5 +1,10 @@
 # Code quality review — September 2026
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Historical review: standalone HTML modes, stylesheet authoring, and their
 migration machinery were subsequently removed. HTML-specific policies and
 measurements below describe the earlier implementation.

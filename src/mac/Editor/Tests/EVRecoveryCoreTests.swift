@@ -35,7 +35,7 @@ final class EVRecoveryCoreTests: XCTestCase {
 
   func testReadOnlyIsBufferPolicyWithoutChangingSourceOrRevision() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("{\\rtf1\\ansi text}".utf8), typeName: EVDocument.rtfType)
+    try backend.read(source: Data("text".utf8), typeName: EVDocument.plainTextType)
     let before = try backend.recoverySnapshot()
     try backend.setReadOnly(true)
     XCTAssertTrue(backend.persistenceState.isReadOnly)

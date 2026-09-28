@@ -141,54 +141,6 @@ pub(super) fn mark_edges(blocks: &mut [Block]) {
     }
 }
 
-/// RTF carries list membership on paragraph records rather than source tags.
-/// Lift that semantic hierarchy into the same owner paths used by markup.
-pub(super) fn install_list_paths(blocks: &mut [Block]) {
-    struct Frame { level: u8, ordered: bool, ordinal: u64, list: Arc<ContainerAttributes>, item: Arc<ContainerAttributes> }
-    fn owner(kind: ContainerKind) -> Arc<ContainerAttributes> {
-        Arc::new(ContainerAttributes { id: provisional_identity(), kind, style: kind.default_style(), direct_formatting: None })
-    }
-    let mut stack: Vec<Frame> = Vec::new();
-    for block in blocks.iter_mut() {
-        let super::BlockKind::ListItem { ordered, ordinal, level, container_start, item_start, .. } = block.kind else { stack.clear(); continue; };
-        while stack.last().is_some_and(|frame| frame.level > level) { stack.pop(); }
-        let continues = stack.last().is_some_and(|frame| frame.level == level && frame.ordered == ordered
-            && !container_start && (!item_start || !ordered || frame.ordinal.saturating_add(1) == ordinal));
-        if !continues {
-            if stack.last().is_some_and(|frame| frame.level == level) { stack.pop(); }
-            stack.push(Frame { level, ordered, ordinal, list: owner(ContainerKind::List { ordered }), item: owner(ContainerKind::ListItem) });
-        } else if item_start {
-            let frame = stack.last_mut().unwrap(); frame.item = owner(ContainerKind::ListItem); frame.ordinal = ordinal;
-        }
-        block.containers = stack.iter().flat_map(|frame| [&frame.list, &frame.item]).map(|container|
-            ContainerMembership { container: container.clone(), starts_here: false, ends_here: false }).collect::<Vec<_>>().into();
-    }
-    // RTF list-level indents are absolute paragraph coordinates. Preserve
-    // those declarations without adding the generated list's default inset.
-    let native_indents: BTreeSet<_> = blocks.iter().filter(|block|
-        block.direct_paragraph.leading_indent.is_some() || block.direct_paragraph.trailing_indent.is_some())
-        .flat_map(|block| block.containers.iter().filter(|member| matches!(member.container.kind, ContainerKind::List { .. }))
-            .map(|member| member.container.id)).collect();
-    let mut owners = BTreeMap::new();
-    for block in blocks.iter_mut() {
-        if !block.containers.iter().any(|member| native_indents.contains(&member.container.id)) { continue; }
-        block.containers = block.containers.iter().map(|member| {
-            let mut member = member.clone();
-            if native_indents.contains(&member.container.id) {
-                member.container = owners.entry(member.container.id).or_insert_with(|| {
-                    let mut owner = (*member.container).clone();
-                    owner.direct_formatting = BlockDirectFormatting::shared(super::BlockProperties {
-                        padding_left: Some(0.), padding_right: Some(0.), ..Default::default()
-                    }, super::CharacterProperties::default());
-                    Arc::new(owner)
-                }).clone();
-            }
-            member
-        }).collect::<Vec<_>>().into();
-    }
-    mark_edges(blocks);
-}
-
 impl FormattedDocument {
     /// Materialize a structural tree for inspection. Layout uses each
     /// paragraph's bounded container path and does not call this full query.

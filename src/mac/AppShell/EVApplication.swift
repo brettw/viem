@@ -372,8 +372,6 @@ final class EVApplicationDelegate: NSObject,
             EVDocument.markdownType
         case "html", "htm", "xhtml":
             EVDocument.codeType
-        case "rtf":
-            EVDocument.rtfType
         default:
             EVDocument.plainTextType
         }

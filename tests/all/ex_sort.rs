@@ -258,29 +258,6 @@ fn markdown_rich_paragraphs_keep_delimiters_and_styles() {
 }
 
 #[test]
-fn rich_ambiguous_context_rejects_without_flattening() {
-    for (format, text) in [
-        (Format::Rtf, r"{\rtf1\b Z\par\i A}"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\fonttbl{\f0 Times;}}{\pard\b Z\par}{\pard\i A\par}}",
-        ),
-    ] {
-        let mut doc = source(text, format);
-        let bytes = doc.source_bytes();
-        assert!(execute_ex(
-            &mut doc,
-            &mut ExExecutionState::default(),
-            &ExExecutionContext::default(),
-            &parse_ex(":sort").unwrap(),
-            &()
-        )
-        .is_err());
-        assert_eq!(doc.source_bytes(), bytes);
-        assert!(!doc.undo());
-    }
-}
-#[test]
 fn document_reorder_rejects_duplicate_or_outside_origins() {
     let doc = Document::new("z\na");
     for order in [vec![0, 0], vec![2], vec![]] {
@@ -355,7 +332,6 @@ fn sorted_line_identity_keeps_anchor_and_large_document_history() {
     assert!(doc.undo());
     assert_eq!(doc.text(), before);
 }
-
 
 #[test]
 fn numeric_overflow_saturates_and_pattern_resource_failure_is_atomic() {

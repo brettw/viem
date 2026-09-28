@@ -18,20 +18,15 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private(set) var commandButtons: [EVMenuCommand: NSButton] = [:]
   let characterCode = NSButton()
   let codeBlock = NSButton()
-  let foreground = EVStyleColorWell()
-  let background = EVStyleColorWell()
   private let scroll = NSScrollView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()
-  private let colorGroup = NSStackView()
   private let blockGroup = NSStackView()
   private let indentGroup = NSStackView()
   private var catalogue: EVStyleMenuCatalogue?
   private var styleSnapshot: EVStyleSheetSnapshot?
   private var paragraphEntries: [String] = []
   private var characterEntries: [String] = []
-  private var applyingColor = false
-  private var colorSelection: ViemLogicalSelectionIdentityV1?
   private var trackingMenus = Set<ObjectIdentifier>()
 
   init(surface: EVEditorSurfaceController) {
@@ -57,7 +52,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       popup.menu?.delegate = self
       row.addArrangedSubview(popup)
     }
-    for group in [characterGroup, colorGroup, blockGroup, indentGroup] {
+    for group in [characterGroup, blockGroup, indentGroup] {
       group.orientation = .horizontal
       group.alignment = .centerY
       group.spacing = 2
@@ -65,35 +60,11 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     }
     for (command, title, symbol) in [
       (EVMenuCommand.bold, "Bold", "bold"), (.italic, "Italic", "italic"),
-      (.underline, "Underline", "underline"), (.strikethrough, "Strikethrough", "strikethrough")
+      (.strikethrough, "Strikethrough", "strikethrough")
     ] { add(command, title: title, symbol: symbol, to: characterGroup) }
     configure(characterCode, title: "Code (Character)", symbol: "chevron.left.forwardslash.chevron.right", toggle: true)
     characterCode.action = #selector(toggleCharacterCode(_:))
     characterGroup.addArrangedSubview(characterCode)
-    add(.superscript, title: "Superscript", symbol: "textformat.superscript", to: characterGroup)
-    add(.subscriptText, title: "Subscript", symbol: "textformat.subscript", to: characterGroup)
-    for (well, title, property) in [(foreground, "Text Color", EVStyleProperty.characterForeground),
-                                    (background, "Background Color", EVStyleProperty.characterBackground)] {
-      well.tag = Int(property.rawValue)
-      well.toolTip = title
-      well.setAccessibilityLabel(title)
-      well.target = self
-      well.action = #selector(changeColor(_:))
-      well.widthAnchor.constraint(equalToConstant: 30).isActive = true
-      well.heightAnchor.constraint(equalToConstant: 18).isActive = true
-      let icon = NSImageView(image: NSImage(
-        systemSymbolName: property == .characterForeground ? "textformat" : "highlighter",
-        accessibilityDescription: title) ?? NSImage())
-      icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-      icon.setAccessibilityHidden(true)
-      icon.heightAnchor.constraint(equalToConstant: 12).isActive = true
-      let control = NSStackView(views: [icon, well])
-      control.orientation = .vertical
-      control.alignment = .centerX
-      control.spacing = 1
-      colorGroup.addArrangedSubview(control)
-    }
-    colorGroup.spacing = 8
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
     configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
@@ -146,15 +117,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     row.frame = NSRect(x: 0, y: 0, width: row.fittingSize.width, height: bounds.height)
   }
 
-  override func viewDidMoveToWindow() {
-    super.viewDidMoveToWindow()
-    if window == nil {
-      foreground.dismissColorControls()
-      background.dismissColorControls()
-      colorSelection = nil
-    }
-  }
-
   func refresh() {
     guard let surface else { return }
     let selected = try? surface.session?.selectedNamedStyles()
@@ -171,9 +133,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       refresh(paragraphStyle, role: .paragraph)
       refresh(characterStyle, role: .character)
     }
-    // Rich direct properties come from the same format capability used by
-    // native typography panels; Markdown has only its fixed inline vocabulary.
-    let rich = surface.canInspectTypography
     for (command, button) in commandButtons {
       let presentation: EVMenuItemPresentation
       switch command {
@@ -187,26 +146,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       }
       if button.state != presentation.state { button.state = presentation.state }
       if button.isEnabled != presentation.isEnabled { button.isEnabled = presentation.isEnabled }
-      setHidden([.underline, .strikethrough, .superscript, .subscriptText].contains(command) && !rich, for: button)
     }
     refreshCode(characterCode, role: .character, id: "Code", catalogue: next)
     refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
-    setHidden(!rich, for: colorGroup)
-    colorSelection = rich ? selection : nil
-    if rich, let style = try? surface.session?.selectedTypography() {
-      let wasApplyingColor = applyingColor
-      applyingColor = true
-      defer { applyingColor = wasApplyingColor }
-      let textColor = style.foreground?.appKitColor ?? EVThemeStore.shared.theme.foreground.color
-      let fillColor = style.background?.appKitColor ?? .clear
-      if foreground.color != textColor { foreground.color = textColor }
-      if background.color != fillColor { background.color = fillColor }
-    }
-    let canEditColor = rich && surface.canEditTypography
-    for well in [foreground, background] {
-      if well.isEnabled != canEditColor { well.isEnabled = canEditColor }
-      well.supportsAlpha = true
-    }
   }
 
   private func setHidden(_ hidden: Bool, for view: NSView) {
@@ -287,23 +229,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       entry.presentation.isEnabled else { refresh(); return }
     surface.perform(styleMenuAction: action(for: entry, in: catalogue), sender: sender)
     finishAction()
-  }
-
-  @objc func changeColor(_ sender: NSColorWell) {
-    guard !applyingColor, let surface, surface.canEditTypography, let session = surface.session,
-      let selection = colorSelection, let rgb = sender.color.usingColorSpace(.sRGB),
-      let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
-    let color = EVStyleColor(red: Float(rgb.redComponent), green: Float(rgb.greenComponent),
-      blue: Float(rgb.blueComponent), alpha: Float(rgb.alphaComponent))
-      .normalizedForNativePicker(format: surface.backend.sourceFormat)
-    if let current = try? session.selectedFormatting(), !current.mixed.contains(property),
-       current[property] == .color(color) { return }
-    applyingColor = true
-    defer { applyingColor = false }
-    surface.performInput {
-      _ = try session.editDirectProperty(property, value: .color(color), expected: selection)
-    }
-    refresh()
   }
 
   private func finishAction() {

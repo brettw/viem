@@ -6,18 +6,12 @@ use viem_core::{Core, CoreEvent, Document, ViewId};
 type Editor = Core<MockTextMeasurementProvider>;
 
 fn switch(core: &mut Editor, view: ViewId, target: Format) {
-    let operation = if core.document().format().wysiwyg() == target.wysiwyg() {
-        viem_core::FormatOperation::Reinterpret
-    } else {
-        viem_core::FormatOperation::Convert
-    };
     core.handle(
         view,
-        CoreEvent::SetFormat {
-            operation,
+        CoreEvent::SetMarkdownSource {
             document: core.document().id(),
             revision: core.document().revision(),
-            target,
+            source: target == Format::MarkdownSource,
         },
     )
     .unwrap();
@@ -45,7 +39,6 @@ fn conversion_preserves_insert_carets_in_repeated_unicode_content_and_history() 
         for to in [
             Format::Markdown,
             Format::MarkdownSource,
-            Format::PlainText,
         ] {
             for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
                 let markdown = "# Before\n\nA **café & 👩‍💻 العربية** tail.\n\n# Middle\n\nA **café & 👩‍💻 العربية** tail.\n\n# After\n\nA **café & 👩‍💻 العربية** tail.";
@@ -156,7 +149,6 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
     for format in [
         Format::MarkdownSource,
         Format::Markdown,
-        Format::PlainText,
     ] {
         switch(&mut core, views[0], format);
         for (view, paragraph) in views.into_iter().zip([150, 450]) {

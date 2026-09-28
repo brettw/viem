@@ -248,7 +248,7 @@ fn rich_register_paste_preserves_bold_and_code_while_transforming_prose() {
 fn replace_backspace_restores_text_and_style_after_quote_width_changes() {
     for (format, source) in [
         (Format::PlainText, "éabcd"),
-        (Format::Rtf, r"{\rtf1{\b \u233?}abcd}"),
+
     ] {
         let (mut document, mut commands) = fixture(format, source);
         let original_styles = [0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap());
@@ -257,7 +257,7 @@ fn replace_backspace_restores_text_and_style_after_quote_width_changes() {
         key(&mut commands, &mut document, Key::Backspace);
         assert_eq!(document.text(), "éabcd");
         assert_eq!([0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(document.projection(), at, false).unwrap()), original_styles);
-        if !format.is_rich_text() { assert_eq!(document.source_bytes(), source.as_bytes()); }
+        assert_eq!(document.source_bytes(), source.as_bytes());
         assert_eq!(commands.cursor(), 0);
         key(&mut commands, &mut document, Key::Char('\''));
         key(&mut commands, &mut document, Key::Escape);

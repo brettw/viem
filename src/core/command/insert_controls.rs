@@ -27,8 +27,8 @@ mod tests {
     #[test]
     fn replace_word_and_line_restore_unicode_and_styles_then_repeat_and_undo() {
         for control in ['w', 'u'] {
-            for format in [Format::PlainText, Format::Code, Format::Rtf] {
-                let source = if format == Format::Rtf { r"{\rtf1{\b ab}cdef}" } else { "abcdef" };
+            for format in [Format::PlainText, Format::Code] {
+                let source = "abcdef";
                 let mut d = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
                 let original_styles = [0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(d.projection(), at, false).unwrap());
                 let mut c = CommandInterpreter::new();
@@ -37,7 +37,7 @@ mod tests {
                 assert_eq!(key(&mut c, &mut d, Key::Ctrl(control)).status, CommandStatus::Complete);
                 assert_eq!(d.text(), "abcdef", "{format:?} Ctrl-{control}");
                 assert_eq!([0, 2].map(|at| crate::layout::DocumentLayoutStyles::semantic_character_at(d.projection(), at, false).unwrap()), original_styles);
-                if !format.is_rich_text() { assert_eq!(d.source_bytes(), source.as_bytes()); }
+                assert_eq!(d.source_bytes(), source.as_bytes());
                 assert_eq!(c.cursor(), 0);
                 keys(&mut c, &mut d, "Z");
                 key(&mut c, &mut d, Key::Escape);
@@ -247,19 +247,7 @@ mod tests {
         assert_eq!(d.text(), "abcdef");
     }
 
-    #[test]
-    fn copied_character_ignores_mixed_font_metrics_and_wrap_width() {
-        let source = br"{\rtf1\ansi\fs96 iii\fs16 W\par xxxx}";
-        for width in [25., 400.] {
-            let document = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
-            let mut core = Core::new(document);
-            let view = core.add_view(MockTextMeasurementProvider::new(), width, 200.);
-            for input in "G0llli".chars().map(Key::Char).chain([Key::Ctrl('y'), Key::Escape]) {
-                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(input))).unwrap();
-            }
-            assert_eq!(core.document().text(), "iiiW\nxxxWx", "wrap width {width}");
-        }
-    }
+
 
     #[test]
     fn core_replace_delete_uses_restoration_instead_of_the_flat_delete_plan() {

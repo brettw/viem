@@ -43,7 +43,6 @@ import XCTest
         for (source, type, before, after) in [
             ("αβ👩‍💻xy", EVDocument.markdownType, "αβ👩‍💻xy", "αβ\n👩‍💻xy"),
             ("# αβ👩‍💻xy", EVDocument.markdownType, "αβ👩‍💻xy", "αβ\n👩‍💻xy"),
-            ("{\\rtf1 abcd}", EVDocument.rtfType, "abcd", "ab\ncd"),
         ] {
             for route in 0..<4 {
                 let (backend, view, session) = try surface(source, type: type)
@@ -95,7 +94,6 @@ import XCTest
     func testNativeOpenAboveAndBelowUseTheHeadingFollowingStyle() throws {
         for (source, type) in [
             ("# Title", EVDocument.markdownType),
-            ("{\\rtf1{\\stylesheet{\\s0 Normal;}{\\s5\\sbasedon0\\snext0 Heading 1;}}\\s5 Title}", EVDocument.rtfType),
         ] {
             for (command, text) in [("o", "Title\nbody"), ("O", "body\nTitle")] {
                 let (backend, view, session) = try surface(source, type: type)

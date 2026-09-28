@@ -23,7 +23,7 @@ fn time_repository_markdown_switches() {
     ] {
         let start = Instant::now();
         document
-            .set_format(format, viem_core::document::FormatOperation::Reinterpret)
+            .set_markdown_source(format == Format::MarkdownSource)
             .unwrap();
         eprintln!(
             "SWITCH {format:?} {:?}, {} text bytes, {} blocks",
@@ -59,11 +59,11 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
             )
             .unwrap();
         let prepared = document
-            .prepare_model_request(ModelRequest::SetFormat {
+            .prepare_model_request(ModelRequest::SetMarkdownSource {
                 document: document.id(),
                 revision: document.revision(),
-                target: format,
-                operation: viem_core::document::FormatOperation::Reinterpret,
+                source: format == Format::MarkdownSource,
+
             })
             .unwrap();
         assert!(prepared.summary().source_patches().is_empty());
@@ -89,18 +89,12 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
     document.insert(at, "Authored ").unwrap();
     let edited_source = document.source_bytes();
     document
-        .set_format(
-            Format::MarkdownSource,
-            viem_core::document::FormatOperation::Reinterpret,
-        )
+        .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
         .unwrap();
     assert!(document.text().contains("Authored Continuation 1499"));
     assert_eq!(document.source_bytes(), edited_source);
     document
-        .set_format(
-            Format::Markdown,
-            viem_core::document::FormatOperation::Reinterpret,
-        )
+        .set_markdown_source(Format::Markdown == Format::MarkdownSource)
         .unwrap();
     assert!(document.text().contains("Authored Continuation 1499"));
     for _ in 0..3 {
@@ -133,17 +127,11 @@ fn same_source_mode_switch_keeps_encoding_and_grapheme_boundaries() {
         let mut document =
             Document::from_bytes(bytes.clone(), encoding, Format::MarkdownSource).unwrap();
         document
-            .set_format(
-                Format::Markdown,
-                viem_core::document::FormatOperation::Reinterpret,
-            )
+            .set_markdown_source(Format::Markdown == Format::MarkdownSource)
             .unwrap();
         assert_eq!(document.text(), "café\ntail and text");
         document
-            .set_format(
-                Format::MarkdownSource,
-                viem_core::document::FormatOperation::Reinterpret,
-            )
+            .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
             .unwrap();
         assert_eq!(document.text(), "# café\n__tail__ and text\n");
         assert_eq!(document.source_bytes(), bytes);

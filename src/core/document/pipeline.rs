@@ -9,8 +9,8 @@
 
 use super::{
     Document, DocumentError, DocumentId, Encoding, FileFormat, Format, HardLineSnapshot,
-    PositionDomain, PositionError, Revision, SemanticInlineStyle, StyleId, StyleProperty,
-    StyleSheetRevision, TextRange,
+    PositionDomain, PositionError, Revision, SemanticInlineStyle, StyleId, StyleSheetRevision,
+    TextRange,
 };
 use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
@@ -101,17 +101,8 @@ pub enum PipelineEditIntent {
     AssignCharacterStyle {
         style: StyleId,
     },
-    SetDirectProperty {
-        property: StyleProperty,
-    },
-    ClearDirectProperty {
-        property: StyleProperty,
-    },
-    EditBlockStyleDefinition {
-        style: StyleId,
-    },
-    EditCharacterStyleDefinition {
-        style: StyleId,
+    SetStrikethrough {
+        enabled: bool,
     },
     EditConfigurationBlockStyleDefinition {
         style: StyleId,
@@ -130,8 +121,6 @@ pub enum PipelineEditIntent {
 pub enum UnsupportedEditReason {
     PlainTextHasNoRichStyleStorage,
     FormatHasNoNamedStyleStorage,
-    FormatHasNoDirectPropertyStorage,
-    FormatHasNoEditableStyleDefinitions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -485,13 +474,12 @@ impl TransformationPipelineSnapshot {
             },
             TransformationStageRole::EncodingProjection => match intent {
                 PipelineEditIntent::ReplaceText { replacement } => {
-                    if self.configuration.format.is_rich_text() {
-                        // The format emits exact Unicode escapes before this
-                        // encoding stage sees newly authored syntax.
-                        return StageEditDisposition::PassThrough;
-                    }
                     let literal = self.markdown_literal_replacement_text(range, replacement);
-                    match self.configuration.encoding.encode_fragment(literal.as_deref().unwrap_or(replacement)) {
+                    match self
+                        .configuration
+                        .encoding
+                        .encode_fragment(literal.as_deref().unwrap_or(replacement))
+                    {
                         Ok(_) => StageEditDisposition::Translated,
                         Err(DocumentError::UnrepresentableCharacter {
                             encoding,
@@ -518,7 +506,11 @@ impl TransformationPipelineSnapshot {
     /// Mirror the Markdown translator's line-local source-run distribution.
     /// Prose segments become character references before encoding; only code
     /// segments still require their literal characters to be representable.
-    fn markdown_literal_replacement_text(&self, range: TextRange, replacement: &str) -> Option<String> {
+    fn markdown_literal_replacement_text(
+        &self,
+        range: TextRange,
+        replacement: &str,
+    ) -> Option<String> {
         if self.configuration.encoding != Encoding::Latin1
             || replacement.chars().all(|ch| ch as u32 <= 0xff)
         {
@@ -536,11 +528,18 @@ impl TransformationPipelineSnapshot {
                     let take = if index == last {
                         graphemes.len() - at
                     } else {
-                        projection.text_tree().slice(run.formatted.clone()).ok()?
-                            .graphemes(true).count().min(graphemes.len() - at)
+                        projection
+                            .text_tree()
+                            .slice(run.formatted.clone())
+                            .ok()?
+                            .graphemes(true)
+                            .count()
+                            .min(graphemes.len() - at)
                     };
                     if projection.markdown_replacement_begins_in_code(&run.formatted) {
-                        for grapheme in &graphemes[at..at + take] { literal.push_str(grapheme); }
+                        for grapheme in &graphemes[at..at + take] {
+                            literal.push_str(grapheme);
+                        }
                     }
                     at += take;
                 }
@@ -555,17 +554,6 @@ impl TransformationPipelineSnapshot {
     }
 
     fn format_stage_disposition(&self, intent: &PipelineEditIntent) -> StageEditDisposition {
-        if self.configuration.format == Format::Rtf
-            && matches!(
-                intent,
-                PipelineEditIntent::AssignBlockStyle { .. }
-                    | PipelineEditIntent::AssignCharacterStyle { .. }
-                    | PipelineEditIntent::EditBlockStyleDefinition { .. }
-                    | PipelineEditIntent::EditCharacterStyleDefinition { .. }
-            )
-        {
-            return StageEditDisposition::Translated;
-        }
         match intent {
             PipelineEditIntent::ReplaceText { .. } | PipelineEditIntent::InsertHardBreak => {
                 StageEditDisposition::Translated
@@ -577,11 +565,9 @@ impl TransformationPipelineSnapshot {
             | PipelineEditIntent::ConfigureDocumentDefaultCharacter => {
                 StageEditDisposition::PassThrough
             }
-            PipelineEditIntent::SetSemanticInlineStyle { style, .. } => {
-                if self.configuration.format.is_markdown()
-                    || (self.configuration.format.has_rich_source()
-                        && *style != SemanticInlineStyle::Code)
-                {
+            PipelineEditIntent::SetSemanticInlineStyle { .. }
+            | PipelineEditIntent::SetStrikethrough { .. } => {
+                if self.configuration.format.is_markdown() {
                     StageEditDisposition::Translated
                 } else {
                     StageEditDisposition::Unsupported(
@@ -589,28 +575,23 @@ impl TransformationPipelineSnapshot {
                     )
                 }
             }
-            PipelineEditIntent::AssignBlockStyle { .. }
-            | PipelineEditIntent::AssignCharacterStyle { .. }
-            | PipelineEditIntent::EditBlockStyleDefinition { .. }
-            | PipelineEditIntent::EditCharacterStyleDefinition { .. }
-                if self.configuration.format.has_rich_source() =>
-            {
-                StageEditDisposition::Translated
-            }
             PipelineEditIntent::AssignBlockStyle { style }
                 if self.configuration.format.is_markdown()
                     && (matches!(style.0.as_str(), "Paragraph" | "Block quote" | "Code Block")
-                    || style
-                        .0
-                        .strip_prefix("Heading")
-                        .and_then(|level| level.parse::<u8>().ok())
-                        .is_some_and(|level| (1..=6).contains(&level))) =>
+                        || style
+                            .0
+                            .strip_prefix("Heading")
+                            .and_then(|level| level.parse::<u8>().ok())
+                            .is_some_and(|level| (1..=6).contains(&level))) =>
             {
                 StageEditDisposition::Translated
             }
             PipelineEditIntent::AssignCharacterStyle { style }
                 if self.configuration.format.is_markdown()
-                    && matches!(style.0.as_str(), "Code" | "") => StageEditDisposition::Translated,
+                    && matches!(style.0.as_str(), "Code" | "") =>
+            {
+                StageEditDisposition::Translated
+            }
             PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
                 if self.configuration.format == Format::PlainText {
@@ -619,30 +600,6 @@ impl TransformationPipelineSnapshot {
                     UnsupportedEditReason::FormatHasNoNamedStyleStorage
                 },
             ),
-            PipelineEditIntent::SetDirectProperty { .. }
-            | PipelineEditIntent::ClearDirectProperty { .. }
-                if self.configuration.format.has_rich_source() =>
-            {
-                StageEditDisposition::Translated
-            }
-            PipelineEditIntent::SetDirectProperty { .. }
-            | PipelineEditIntent::ClearDirectProperty { .. } => StageEditDisposition::Unsupported(
-                if self.configuration.format == Format::PlainText {
-                    UnsupportedEditReason::PlainTextHasNoRichStyleStorage
-                } else {
-                    UnsupportedEditReason::FormatHasNoDirectPropertyStorage
-                },
-            ),
-            PipelineEditIntent::EditBlockStyleDefinition { .. }
-            | PipelineEditIntent::EditCharacterStyleDefinition { .. } => {
-                StageEditDisposition::Unsupported(
-                    if self.configuration.format == Format::PlainText {
-                        UnsupportedEditReason::PlainTextHasNoRichStyleStorage
-                    } else {
-                        UnsupportedEditReason::FormatHasNoEditableStyleDefinitions
-                    },
-                )
-            }
         }
     }
 }
@@ -687,8 +644,6 @@ impl Document {
                         Format::Code => "builtin.code",
                         Format::Markdown => "builtin.markdown",
                         Format::MarkdownSource => "builtin.markdown-source",
-
-                        Format::Rtf => "builtin.rtf",
                     },
                     version: 1,
                 },
@@ -710,10 +665,6 @@ impl Document {
             ),
         ]
         .into_iter()
-        .filter(|(_, role, _)| {
-            self.format() != Format::Rtf
-                || *role != TransformationStageRole::LineEndingInterpretation
-        })
         .map(
             |(identity, role, configuration)| TransformationStageSnapshot {
                 identity,
@@ -732,7 +683,8 @@ impl Document {
             configuration,
             stages,
             hard_lines: self.hard_line_snapshot(),
-            markdown_projection: (self.format() == Format::Markdown).then(|| self.projection().clone()),
+            markdown_projection: (self.format() == Format::Markdown)
+                .then(|| self.projection().clone()),
         }
     }
 }
@@ -904,7 +856,13 @@ mod tests {
     fn latin1_markdown_capabilities_distinguish_escaped_prose_and_literal_code() {
         for (format, source, selected, replacement, supported) in [
             (Format::Markdown, "**prose**", 0..5, "中", true),
-            (Format::Markdown, "[link](https://example.test/)", 0..4, "中", true),
+            (
+                Format::Markdown,
+                "[link](https://example.test/)",
+                0..4,
+                "中",
+                true,
+            ),
             (Format::Markdown, "", 0..0, "中", true),
             (Format::Markdown, "`code`", 0..4, "中", false),
             (Format::Markdown, "```\ncode\n```", 0..4, "中", false),
@@ -913,23 +871,58 @@ mod tests {
             (Format::MarkdownSource, "**prose**", 2..7, "中", false),
             (Format::PlainText, "prose", 0..5, "中", false),
         ] {
-            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Latin1, format).unwrap();
-            let range = TextRange::new(document.text_point(selected.start).unwrap(), document.text_point(selected.end).unwrap()).unwrap();
+            let mut document =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Latin1, format).unwrap();
+            let range = TextRange::new(
+                document.text_point(selected.start).unwrap(),
+                document.text_point(selected.end).unwrap(),
+            )
+            .unwrap();
             let snapshot = document.transformation_pipeline_snapshot();
-            let report = snapshot.capabilities(range, &PipelineEditIntent::ReplaceText {
-                replacement: replacement.to_owned(),
-            }).unwrap();
-            assert_eq!(report.decision == PipelineCapabilityDecision::Supported, supported, "{format:?} {source} {replacement}: {:?}", report.decision);
+            let report = snapshot
+                .capabilities(
+                    range,
+                    &PipelineEditIntent::ReplaceText {
+                        replacement: replacement.to_owned(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                report.decision == PipelineCapabilityDecision::Supported,
+                supported,
+                "{format:?} {source} {replacement}: {:?}",
+                report.decision
+            );
             if !supported {
-                assert!(matches!(report.decision, PipelineCapabilityDecision::NeedsPolicy {
-                    request: PipelinePolicyRequest::UnrepresentableCharacter { encoding: Encoding::Latin1, character: '中' }, ..
-                }));
+                assert!(matches!(
+                    report.decision,
+                    PipelineCapabilityDecision::NeedsPolicy {
+                        request: PipelinePolicyRequest::UnrepresentableCharacter {
+                            encoding: Encoding::Latin1,
+                            character: '中'
+                        },
+                        ..
+                    }
+                ));
             }
-            assert_eq!(document.replace(selected, replacement).is_ok(), supported, "{format:?} {source} {replacement}");
+            assert_eq!(
+                document.replace(selected, replacement).is_ok(),
+                supported,
+                "{format:?} {source} {replacement}"
+            );
             // The original context stays valid after a supported edit.
-            assert_eq!(snapshot.capabilities(range, &PipelineEditIntent::ReplaceText {
-                replacement: replacement.to_owned(),
-            }).unwrap().decision, report.decision);
+            assert_eq!(
+                snapshot
+                    .capabilities(
+                        range,
+                        &PipelineEditIntent::ReplaceText {
+                            replacement: replacement.to_owned(),
+                        }
+                    )
+                    .unwrap()
+                    .decision,
+                report.decision
+            );
         }
     }
 
@@ -1048,5 +1041,39 @@ mod tests {
         assert!(hard_line_change[1]
             .reasons
             .contains(&PipelineInvalidationReason::HardLineInterpretationMayChange));
+    }
+}
+
+#[cfg(test)]
+mod strikethrough_capability_tests {
+    use super::*;
+
+    #[test]
+    fn strikethrough_is_advertised_only_for_markdown() {
+        for format in [
+            Format::Markdown,
+            Format::MarkdownSource,
+            Format::PlainText,
+            Format::Code,
+        ] {
+            let document = Document::from_bytes(b"word".to_vec(), Encoding::Utf8, format).unwrap();
+            let pipeline = document.transformation_pipeline_snapshot();
+            let range = TextRange::new(
+                document.text_point(0).unwrap(),
+                document.text_point(4).unwrap(),
+            )
+            .unwrap();
+            for enabled in [true, false] {
+                let intent = PipelineEditIntent::SetStrikethrough { enabled };
+                assert_eq!(
+                    matches!(
+                        pipeline.capabilities(range, &intent).unwrap().decision,
+                        PipelineCapabilityDecision::Supported
+                    ),
+                    format.is_markdown(),
+                    "{format:?}: {intent:?}"
+                );
+            }
+        }
     }
 }

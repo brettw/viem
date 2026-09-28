@@ -15,10 +15,7 @@ final class EVProseQualityTests: XCTestCase {
         EVDocument.markdownType,
         "**First** words with café and emoji 👩🏽‍💻.\n\nSecond paragraph.\n\nTail."
       ),
-      (
-        EVDocument.rtfType,
-        #"{\rtf1 {\b First} words with caf\u233? and more.\par Second paragraph.\par Tail.}"#
-      ),
+
     ]
     for (type, source) in fixtures {
       for command in ["gg0dw", "gg0ciw", "G0o", "gg0viw~", "ggyyGp"] {
@@ -61,7 +58,6 @@ final class EVProseQualityTests: XCTestCase {
         EVDocument.markdownSourceType,
         "A **word** and more prose.\nA continuation.\n\nLast paragraph."
       ),
-      (EVDocument.rtfType, #"{\rtf1 A {\b word} and more prose.\par Last paragraph.}"#),
     ]
     for (type, source) in fixtures {
       var phase = "open"

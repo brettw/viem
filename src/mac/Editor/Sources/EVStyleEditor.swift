@@ -322,6 +322,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     private weak var document: EVEditorSurfaceController?
     private var settingsSession: (any EVStyleSettingsSession)?
+    private var codeSettingsSession: EVCodeStyleSession? { settingsSession as? EVCodeStyleSession }
     private var hasTarget: Bool { document != nil || settingsSession != nil }
     override var undoManager: UndoManager? { settingsSession?.undoManager ?? super.undoManager }
     private var snapshot: EVStyleSheetSnapshot?
@@ -336,7 +337,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private weak var activeStyleEditSession: EVCoreViewSession?
 
     private let stylePopup = NSPopUpButton()
-    private let newStylePopup = NSPopUpButton(frame: .zero, pullsDown: true)
+    private let newStyleButton = NSButton(title: "New", target: nil, action: nil)
     private let deleteStyleButton = NSButton()
     private let restoreDefaultsButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
     private let nameField = NSTextField()
@@ -413,12 +414,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         stylePopup.setAccessibilityLabel("Style")
         stylePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        newStylePopup.addItems(withTitles: ["New", "New Paragraph Style", "New Character Style"])
-        newStylePopup.target = self
-        newStylePopup.action = #selector(newStylePressed(_:))
-        newStylePopup.setAccessibilityLabel("Create style")
-        newStylePopup.widthAnchor.constraint(equalToConstant: 66).isActive = true
-        newStylePopup.setContentCompressionResistancePriority(.required, for: .horizontal)
+        newStyleButton.bezelStyle = .rounded
+        newStyleButton.target = self
+        newStyleButton.action = #selector(newStylePressed(_:))
+        newStyleButton.setAccessibilityLabel("Create syntax style")
+        newStyleButton.widthAnchor.constraint(equalToConstant: 66).isActive = true
+        newStyleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
         deleteStyleButton.title = "Delete"
         deleteStyleButton.bezelStyle = .rounded
         deleteStyleButton.target = self
@@ -426,7 +427,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         deleteStyleButton.setAccessibilityLabel("Delete selected style")
         deleteStyleButton.widthAnchor.constraint(equalToConstant: 64).isActive = true
         deleteStyleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let stylePicker = NSStackView(views: [stylePopup, newStylePopup, deleteStyleButton])
+        let stylePicker = NSStackView(views: [stylePopup, newStyleButton, deleteStyleButton])
         stylePicker.orientation = .horizontal
         stylePicker.alignment = .centerY
         stylePicker.distribution = .fill
@@ -636,77 +637,35 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     @discardableResult
-    func createStyle(kind: EVStyleKind) -> Bool {
-        if let settingsSession {
-            let code = settingsSession.sourceFormat == .code
-            guard (code && kind == .character) || (settingsSession.sourceFormat == .rtf && (kind == .character || kind == .paragraph)) else { return false }
-            return changeStyleCatalogue {
-                let latest = try settingsSession.snapshot()
-                var id = UUID().uuidString.lowercased()
-                if !code {
-                    var index = 1
-                    let ids = Set(latest.definitions.map { $0.key.id.rawValue })
-                    while ids.contains("RtfP\(index)") || ids.contains("RtfC\(index)") { index += 1 }
-                    id = "\(kind == .character ? "RtfC" : "RtfP")\(index)"
-                }
-                let key = EVStyleKey(namespace: kind == .character ? .character : .block, id: EVStyleID(rawValue: id))
-                let baseName = code ? "New Syntax Style" : "New \(kind.displayName) Style"
-                var name = baseName
-                var suffix = 2
-                while latest.definitions.contains(where: { $0.name == name }) {
-                    name = "\(baseName) \(suffix)"
-                    suffix += 1
-                }
-                try settingsSession.create(key: key, name: name, expected: latest.identity)
-                self.selectedStyleKey = key
-            }
-        }
-        guard let document, let session = document.session,
-              document.backend.sourceFormat == .rtf,
-              kind == .paragraph || kind == .character else { return false }
+    func createSyntaxStyle() -> Bool {
+        guard let settingsSession = codeSettingsSession else { return false }
         return changeStyleCatalogue {
-            let latest = try document.backend.styleSheetSnapshot()
-            let prefix = kind == .paragraph ? "RtfP" : "RtfC"
-            let handles = Set(latest.definitions.compactMap { definition -> UInt32? in
-                let id = definition.key.id.rawValue
-                guard id.hasPrefix("RtfP") || id.hasPrefix("RtfC") else { return nil }
-                return UInt32(id.dropFirst(4))
-            })
-            var handle: UInt32 = 1
-            while handles.contains(handle) { handle += 1 }
-            let id = "\(prefix)\(handle)"
-            let key = EVStyleKey(namespace: kind == .character ? .character : .block,
-                                 id: EVStyleID(rawValue: id))
-            let baseName = "New \(kind.displayName) Style"
+            let latest = try settingsSession.snapshot()
+            let key = EVStyleKey(namespace: .character,
+                                 id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
+            let baseName = "New Syntax Style"
             var name = baseName
             var suffix = 2
             while latest.definitions.contains(where: { $0.name == name }) {
                 name = "\(baseName) \(suffix)"
                 suffix += 1
             }
-            _ = try session.createStyle(key, name: name, identity: latest.identity)
+            try settingsSession.create(key: key, name: name, expected: latest.identity)
             self.selectedStyleKey = key
         }
     }
 
     @discardableResult
     func deleteSelectedStyle() -> Bool {
-        if let settingsSession {
-            guard [.code, .rtf].contains(settingsSession.sourceFormat),
-                  selectedDefinition?.capabilities.contains(.delete) == true else { return false }
+        if let settingsSession = codeSettingsSession {
+            guard selectedDefinition?.capabilities.contains(.delete) == true else { return false }
             return changeStyleCatalogue {
                 let latest = try settingsSession.snapshot()
                 try settingsSession.delete(key: self.selectedStyleKey, expected: latest.identity)
                 self.selectedStyleKey = .baseParagraph
             }
         }
-        guard let document, let session = document.session,
-              selectedDefinition?.capabilities.contains(.delete) == true else { return false }
-        return changeStyleCatalogue {
-            let latest = try document.backend.styleSheetSnapshot()
-            _ = try session.deleteStyle(self.selectedStyleKey, identity: latest.identity)
-            self.selectedStyleKey = .baseParagraph
-        }
+        return false
     }
 
     private func changeStyleCatalogue(_ action: () throws -> Void) -> Bool {
@@ -859,10 +818,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         if let settingsSession { view.window?.title = "Theme Styles — \(settingsSession.configuration.currentThemeName ?? "Default")" }
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
-        newStylePopup.isEnabled = settingsSession.map { [.code, .rtf].contains($0.sourceFormat) } == true || (document.map { $0.backend.sourceFormat == .rtf } ?? false)
-        newStylePopup.item(at: 1)?.isHidden = settingsSession?.sourceFormat == .code
-        deleteStyleButton.isEnabled = definition.capabilities.contains(.delete)
-            && (settingsSession == nil || settingsSession.map { [.code, .rtf].contains($0.sourceFormat) } == true)
+        newStyleButton.isHidden = codeSettingsSession == nil
+        newStyleButton.isEnabled = codeSettingsSession != nil
+        deleteStyleButton.isHidden = codeSettingsSession == nil
+        deleteStyleButton.isEnabled = codeSettingsSession != nil && definition.capabilities.contains(.delete)
         nameField.stringValue = definition.name
         nameDraftIsInvalid = false
         nameField.backgroundColor = .textBackgroundColor
@@ -898,7 +857,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
             return value
         }()
-        compactControls.configure(definition, theme: themeStore.theme, sourceFormat: settingsSession?.sourceFormat ?? document?.backend.sourceFormat ?? .plainText, documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
+        compactControls.configure(definition, theme: themeStore.theme, documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
         nextStyleRow.configure(
             selected: definition.flags.isBase ? nil
                 : definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
@@ -1157,7 +1116,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         defer { isUpdatingUI = false }
         stylePopup.removeAllItems()
         stylePopup.isEnabled = false
-        newStylePopup.isEnabled = false
+        newStyleButton.isEnabled = false
         deleteStyleButton.isEnabled = false
         nameDraftIsInvalid = false
         nameField.stringValue = ""
@@ -1190,7 +1149,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         isUpdatingUI = true
         defer { isUpdatingUI = false }
         stylePopup.isEnabled = false
-        newStylePopup.isEnabled = false
+        newStyleButton.isEnabled = false
         deleteStyleButton.isEnabled = false
         nameField.isEnabled = false
         basedOnPopup.isEnabled = false
@@ -1324,13 +1283,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         selectStyle(key)
     }
 
-    @objc private func newStylePressed(_ sender: NSPopUpButton) {
-        let kind: EVStyleKind = sender.indexOfSelectedItem == 2 ? .character : .paragraph
-        if createStyle(kind: kind) { view.window?.makeFirstResponder(nameField) }
+    @objc private func newStylePressed(_ sender: NSButton) {
+        if createSyntaxStyle() { view.window?.makeFirstResponder(nameField) }
     }
 
     @objc private func restoreCodeDefaults(_ sender: Any?) {
-        guard let settingsSession else { return }
+        guard let settingsSession = codeSettingsSession else { return }
         _ = changeStyleCatalogue { try settingsSession.restoreDefaults() }
     }
 

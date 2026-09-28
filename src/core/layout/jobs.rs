@@ -2715,12 +2715,18 @@ mod tests {
         );
     }
 
+
+
     #[test]
     fn exact_line_spacing_preserves_final_row_extent_in_every_layout_path() {
-        let document = Document::from_bytes(
-            br"{\rtf1\ansi\fs40\sl-160\slmult0\sb0\sa0 first\line second\line last}".to_vec(),
-            crate::document::Encoding::Utf8, crate::document::Format::Rtf,
-        ).unwrap();
+        let mut document = Document::from_bytes(b"first<br>second<br>last".to_vec(), crate::document::Encoding::Utf8, crate::document::Format::Markdown).unwrap();
+        let mut defaults: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+        let paragraph = defaults["block_styles"].as_array_mut().unwrap().iter_mut().find(|style| style["id"] == "Paragraph").unwrap();
+        paragraph["character"]["size"] = serde_json::json!(20.0);
+        paragraph["block"]["line_spacing"] = serde_json::json!({"Exact": 8.0});
+        paragraph["block"]["margin_top"] = serde_json::json!(0.0);
+        paragraph["block"]["margin_bottom"] = serde_json::json!(0.0);
+        assert!(document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap().is_empty());
         assert_eq!(document.line_count(), 3);
         for regional in [false, true] {
             for wrap in [false, true] {

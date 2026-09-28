@@ -7,10 +7,42 @@ import XCTest
 
 @MainActor
 final class EVPendingTypingStyleTests: XCTestCase {
+  func testCommandFormattingShortcutsWorkWithoutMenuItemsAndRespectFocus() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      for (key, command) in [("b", EVMenuCommand.bold), ("i", .italic)] {
+        let source = Data("word".utf8)
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: source, typeName: type)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = surface
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(surface.editorView))
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 4))
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+          windowNumber: window.windowNumber, context: nil, characters: key,
+          charactersIgnoringModifiers: key, isARepeat: false, keyCode: key == "b" ? 11 : 34))
+        XCTAssertTrue(surface.editorView.performKeyEquivalent(with: event), type)
+        XCTAssertEqual(surface.presentation(for: command).state, .on, type)
+        XCTAssertNotEqual(try backend.serializedSource(typeName: type), source, type)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), source, type)
+
+        let field = NSTextField(string: "style name")
+        surface.view.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        XCTAssertFalse(surface.editorView.performKeyEquivalent(with: event), type)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), source, type)
+      }
+    }
+  }
+
   func testOptionItalicKeepsSourceCleanUntilTypedContentAndUndoIsExact() throws {
     for (type, source) in [
       (EVDocument.markdownType, "word"), (EVDocument.markdownSourceType, "word"),
-      (EVDocument.rtfType, #"{\rtf1 word{\*\opaque keep}}"#),
     ] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: type)
@@ -40,32 +72,4 @@ final class EVPendingTypingStyleTests: XCTestCase {
     }
   }
 
-  func testRTFBoldAndParagraphStyleMenuApplyAtCurrentParagraph() throws {
-    let source = #"{\rtf1 First\par Second{\*\opaque keep}}"#
-    let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
-    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-    surface.loadViewIfNeeded()
-    let session = try XCTUnwrap(surface.session)
-    surface.performInput { _ = try session.sendText("Gi") }
-    let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-    let action = EVStyleMenuAction(
-      kind: .assign, role: .paragraph, stableID: "Heading2", documentID: catalogue.documentID,
-      documentRevision: catalogue.documentRevision, styleSheetRevision: catalogue.styleSheetRevision
-    )
-    surface.perform(styleMenuAction: action, sender: nil)
-    XCTAssertEqual(surface.statusBarState.message, "")
-    XCTAssertEqual(surface.formattedText, "First\nSecond")
-    let named = try session.selectedNamedStyles()
-    let sheet = try backend.styleSheetSnapshot()
-    let assigned = try XCTUnwrap(
-      named.paragraph.flatMap { sheet.definition(namespace: .block, id: $0) })
-    XCTAssertEqual(assigned.name, "Heading 2")
-    surface.perform(menuCommand: .bold, sender: nil)
-    XCTAssertEqual(surface.presentation(for: .bold).state, .on)
-    surface.editorView.insertText(
-      "Added", replacementRange: NSRange(location: NSNotFound, length: 0))
-    XCTAssertEqual(surface.statusBarState.message, "")
-    XCTAssertTrue(surface.formattedText.contains("Added"))
-  }
 }

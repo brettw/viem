@@ -47,7 +47,7 @@ fn plain_clipboard_line_endings_become_semantic_breaks_in_each_format() {
         (Format::Code, "AB"),
         (Format::MarkdownSource, "AB"),
         (Format::Markdown, "AB"),
-        (Format::Rtf, r"{\rtf1 AB}"),
+
     ] {
         for ending in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
             let mut document = Document::from_bytes_with_file_format(

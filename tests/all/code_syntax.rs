@@ -5,7 +5,7 @@ use viem_core::command::clipboard::{
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
 use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
 use viem_core::document::{
-    Encoding, FileFormat, Format, FormatOperation, ModelRequest, ProjectionWorkScope,
+    Encoding, FileFormat, Format, ModelRequest, ProjectionWorkScope,
     SemanticInlineStyle, TextEdit,
 };
 use viem_core::layout::MockTextMeasurementProvider;
@@ -112,7 +112,7 @@ fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
 }
 
 #[test]
-fn code_is_literal_and_reinterpretation_preserves_bytes_and_history() {
+fn code_is_literal_and_preserves_source_bytes() {
     for encoding in [
         Encoding::Utf8,
         Encoding::Utf16Le,
@@ -139,19 +139,7 @@ fn code_is_literal_and_reinterpretation_preserves_bytes_and_history() {
             .set_semantic_style(0..1, SemanticInlineStyle::Strong, true)
             .is_err());
         assert_eq!(document.revision(), initial_revision);
-        document
-            .set_format(Format::Markdown, FormatOperation::Reinterpret)
-            .unwrap();
-        assert_eq!(document.source_bytes(), bytes);
-        assert!(document.undo());
-        assert_eq!(document.format(), Format::Code);
-        assert_eq!(document.source_bytes(), bytes);
-        document
-            .set_format(Format::PlainText, FormatOperation::Reinterpret)
-            .unwrap();
-        assert_eq!(document.text(), text.replace("\r\n", "\n"));
-        assert!(document.undo());
-        assert_eq!(document.format(), Format::Code);
+
     }
 }
 

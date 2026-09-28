@@ -226,7 +226,7 @@ impl<'a> Builder<'a> {
         self.retain_empty_boundary(source.end, style);
     }
     fn current_block(&self, start: usize) -> Block {
-        let mut style = self
+        let style = self
             .paragraph_style
             .clone()
             .unwrap_or_else(|| match &self.kind {
@@ -236,13 +236,7 @@ impl<'a> Builder<'a> {
                 }
                 _ => "Paragraph".into(),
             });
-        if self
-            .style_sheet
-            .deleted_source_blocks()
-            .any(|id| id == &style)
-        {
-            style = self.style_sheet.base_paragraph.clone();
-        }
+
         let mut block = Block::new(
             0,
             start..self.text.len(),
@@ -317,38 +311,7 @@ pub(super) fn text_source_range(
     {
         return Ok(anchor.source.clone());
     }
-    let decoded = document.encoding().decode(&document.source_bytes())?;
-    let normalized = super::line_endings::normalize(&decoded, document.file_format());
-    let at = match document.format() {
-        super::Format::Rtf => super::rtf::empty_insertion_point(&normalized)
-            .or_else(|| document.source_bytes().is_empty().then_some(0)),
-        _ => None,
-    }
-    .ok_or(DocumentError::AmbiguousProjection)?;
-    Ok(at..at)
-}
-
-/// A structural list action identifies its source container from actual body
-/// provenance. Empty items use their innermost editable anchor; decoration
-/// never contributes a competing source boundary to the formatted model.
-pub(super) fn list_item_source_point(
-    projection: &FormattedDocument,
-    item: &super::ListItemNode,
-) -> Result<usize, DocumentError> {
-    let block = projection
-        .blocks()
-        .iter()
-        .find(|block| block.id == item.paragraph_id)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    block_source_point(projection, block)
-}
-
-pub(super) fn block_source_point(
-    projection: &FormattedDocument,
-    block: &Block,
-) -> Result<usize, DocumentError> {
-    super::source_edit::insertion_point(projection, block.range.start, None)
-        .ok_or(DocumentError::AmbiguousProjection)
+    Err(DocumentError::AmbiguousProjection)
 }
 
 /// A visible selection is editable only when all its source bytes are visible,
@@ -363,198 +326,6 @@ pub(super) fn editable_source_range(
 
 pub(super) fn overlay(target: &mut CharacterProperties, source: &CharacterProperties) {
     target.overlay(source);
-}
-
-/// Validate every affected and unaffected style interval, independent of span
-/// splitting/coalescing performed by the parser. Source syntax changes may
-/// alter span segmentation, but must not alter unrelated effective properties.
-pub(super) fn character_edit_verified(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    selected: &Range<usize>,
-    properties: &CharacterProperties,
-) -> bool {
-    if std::ptr::eq(before, after) {
-        return character_edit_verified_in_region(before, after, selected, properties, selected);
-    }
-    character_edit_verified_with_queries(before, after, selected, properties, |_, _| {})
-}
-
-/// Outside a verified regional splice, the old immutable style records and
-/// parser exit context are retained. Validate the changed region only.
-pub(super) fn character_edit_verified_in_region(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    selected: &Range<usize>,
-    properties: &CharacterProperties,
-    region: &Range<usize>,
-) -> bool {
-    verify_character_region(before, after, selected, properties, region, |_, _| {})
-}
-
-fn character_edit_verified_with_queries(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    selected: &Range<usize>,
-    properties: &CharacterProperties,
-    observe_queries: impl FnMut(usize, usize),
-) -> bool {
-    verify_character_region(
-        before,
-        after,
-        selected,
-        properties,
-        &(0..before.text_tree().byte_len()),
-        observe_queries,
-    )
-}
-
-fn verify_character_region(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    selected: &Range<usize>,
-    properties: &CharacterProperties,
-    region: &Range<usize>,
-    mut observe_queries: impl FnMut(usize, usize),
-) -> bool {
-    let mut boundaries = vec![region.start, region.end];
-    for at in [selected.start, selected.end] {
-        if region.contains(&at) {
-            boundaries.push(at);
-        }
-    }
-    for at in before.hard_breaks_for_region(region) {
-        boundaries.extend([at, at + 1]);
-    }
-    for span in before
-        .style_spans_for_region(region)
-        .iter()
-        .chain(after.style_spans_for_region(region).iter())
-    {
-        boundaries.extend([
-            span.range.start.max(region.start),
-            span.range.end.min(region.end),
-        ]);
-    }
-    boundaries.retain(|at| region.start <= *at && *at <= region.end);
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    let mut at = |document: &FormattedDocument,
-                  offset,
-                  override_properties: Option<&CharacterProperties>| {
-        let blocks = document.blocks_for_region(&(offset..offset));
-        let spans = document.style_spans_touching(&(offset..offset));
-        observe_queries(blocks.len(), spans.len());
-        let block = blocks.iter().find(|block| block.range.contains(&offset))?;
-        let mut direct = CharacterProperties::default();
-        let mut link_defaults = CharacterProperties::default();
-        let mut named = None;
-        for span in spans.iter().filter(|span| span.range.contains(&offset)) {
-            match &span.application {
-                StyleApplication::Direct(layer) => overlay(&mut direct, layer),
-                StyleApplication::Named(style) => named = Some(style),
-                StyleApplication::Automatic(id) if id.0 == "Link" => {
-                    overlay(
-                        &mut link_defaults,
-                        &document
-                            .style_sheet()
-                            .automatic_character_properties(id)
-                            .ok()?,
-                    );
-                }
-                StyleApplication::Semantic(_) | StyleApplication::Automatic(_) => return None,
-            }
-        }
-        if let Some(properties) = override_properties {
-            let mut properties = properties.clone();
-            // A face selection changes its base weight while retaining the
-            // independently authored emphasis at each affected run.
-            if properties.font_families.is_some()
-                && properties.weight.is_some()
-                && properties.bold.is_none()
-            {
-                properties.bold = Some(resolved_character_at(document, offset)?.bold);
-            }
-            overlay(&mut direct, &properties);
-        }
-        let mut defaults = block.direct_default_character.clone();
-        defaults.merge_declarations(&link_defaults);
-        document
-            .style_sheet()
-            .resolve_assigned_paragraph_style(
-                document.document_style(),
-                &block.style,
-                &block.direct_paragraph,
-                &defaults,
-                named,
-                &direct,
-            )
-            .ok()
-            .map(|resolved| resolved.character)
-    };
-    boundaries.windows(2).all(|pair| {
-        if before.text_tree().slice(pair[0]..pair[1]).as_deref() == Ok("\n") {
-            return true;
-        }
-        let override_properties =
-            (selected.start <= pair[0] && pair[1] <= selected.end).then_some(properties);
-        let expected = at(before, pair[0], override_properties);
-        expected.is_some() && expected == at(after, pair[0], None)
-    })
-}
-
-pub(super) fn overlay_block(target: &mut BlockProperties, source: &BlockProperties) {
-    target.merge_declarations(source);
-}
-
-pub(super) fn character_clear_verified(
-    before: &FormattedDocument,
-    after: &FormattedDocument,
-    range: &Range<usize>,
-    clear: &std::collections::BTreeSet<super::StyleProperty>,
-) -> bool {
-    let mut boundaries = vec![0, before.text().len(), range.start, range.end];
-    for span in before.style_spans().iter().chain(after.style_spans()) {
-        boundaries.extend([span.range.start, span.range.end]);
-    }
-    boundaries.sort_unstable();
-    boundaries.dedup();
-    let at = |document: &FormattedDocument, offset| {
-        let mut direct = CharacterProperties::default();
-        let mut named = None;
-        for span in document
-            .style_spans()
-            .iter()
-            .filter(|span| span.range.contains(&offset))
-        {
-            match &span.application {
-                StyleApplication::Direct(properties) => overlay(&mut direct, properties),
-                StyleApplication::Named(id) => named = Some(id.clone()),
-                _ => {}
-            }
-        }
-        (direct, named)
-    };
-    boundaries.windows(2).all(|pair| {
-        if before.text().get(pair[0]..pair[1]) == Some("\n") {
-            return true;
-        }
-        let (mut expected, named) = at(before, pair[0]);
-        if range.start <= pair[0] && pair[1] <= range.end {
-            for property in clear {
-                if super::style::clear_character_property(
-                    &"Direct".into(),
-                    &mut expected,
-                    *property,
-                )
-                .is_err()
-                {
-                    return false;
-                }
-            }
-        }
-        (expected, named) == at(after, pair[0])
-    })
 }
 
 pub(super) fn resolved_character_at(
@@ -626,70 +397,4 @@ pub(super) fn text_source_runs(
         .map(|run| run.source)
         .collect::<Vec<_>>();
     Ok(runs)
-}
-
-#[cfg(test)]
-mod character_verification_tests {
-    use super::*;
-    use crate::document::Encoding;
-
-    #[test]
-    fn complete_character_verification_uses_bounded_context_queries_in_large_documents() {
-        let paragraphs = 10_000;
-        let source = "<p><span style='color:#123456'>A</span>B</p>".repeat(paragraphs);
-        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
-        let normalized =
-            super::super::line_endings::normalize(&decoded, super::super::FileFormat::Unix);
-        let before = super::super::html::project_fragment(
-            &normalized,
-            super::super::Revision(0),
-            0,
-            source.len(),
-        );
-        let mut block_records = 0;
-        let mut style_records = 0;
-        assert!(character_edit_verified_with_queries(
-            &before,
-            &before,
-            &(0..0),
-            &CharacterProperties::default(),
-            |blocks, styles| {
-                block_records += blocks;
-                style_records += styles;
-            },
-        ));
-        // Each complete-document interval needs only its adjacent paragraph
-        // and style runs, regardless of all the other paragraphs in the file.
-        assert!(
-            block_records <= paragraphs * 8,
-            "{block_records} block records"
-        );
-        assert!(
-            style_records <= paragraphs * 8,
-            "{style_records} style records"
-        );
-        assert!(block_records >= paragraphs * 2);
-        assert!(style_records >= paragraphs);
-
-        let mut changed = source;
-        let at = changed.rfind("#123456").unwrap();
-        changed.replace_range(at..at + 7, "#654321");
-        let decoded = Encoding::Utf8.decode(changed.as_bytes()).unwrap();
-        let normalized =
-            super::super::line_endings::normalize(&decoded, super::super::FileFormat::Unix);
-        let after = super::super::html::project_fragment(
-            &normalized,
-            super::super::Revision(0),
-            0,
-            changed.len(),
-        );
-        // A late, unselected style change must still be rejected: indexing
-        // accelerates complete verification rather than narrowing its scope.
-        assert!(!character_edit_verified(
-            &before,
-            &after,
-            &(0..1),
-            &CharacterProperties::default(),
-        ));
-    }
 }

@@ -133,38 +133,6 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   }
 
   @MainActor
-  func testBlockCaretRetainsItalicInkFromNeighboringCharactersAfterResizeAndMetricsChange() throws {
-    let backend = EVCoreDocumentBackend()
-    let source = #"{\rtf1\ansi\deff0{\fonttbl{\f0 Times New Roman;}{\f1 Courier New;}{\f2 Georgia;}}{\pard \f2 \fs112 {\i fifty riffraff}}}"#
-    try backend.read(source: Data(source.utf8), typeName: EVDocument.rtfType)
-    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-    surface.loadViewIfNeeded()
-    let session = try XCTUnwrap(surface.session)
-    for width in [700, 280, 600] {
-      surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 180)
-      surface.viewDidLayout()
-      _ = try session.resize(width: CGFloat(width), height: 180)
-      _ = session.provider.invalidateMetrics()
-      surface.refreshPresentation()
-      let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-      let first = try XCTUnwrap(snapshot.clusters.first { $0.text_start == 0 })
-      let second = try XCTUnwrap(snapshot.clusters.first { $0.text_start == 1 })
-      let rect = surface.editorView.viewRect(second.typographic_bounds)
-      XCTAssertGreaterThan(surface.editorView.viewRect(first.ink_bounds).maxX, rect.minX,
-                           "This fixture must have an italic overhang entering the next caret cell")
-      let redraw = surface.editorView.caretRedrawClusters(in: rect, snapshot: snapshot)
-      let damage = surface.editorView.drawingClusters(in: rect, snapshot: snapshot)
-      XCTAssertTrue(damage.contains { $0.text_start == 0 }, "Paint culling must retain neighboring ink")
-      XCTAssertTrue(redraw.contains { $0.text_start == 0 }, "The block must restore the previous f's overhang")
-      XCTAssertTrue(redraw.contains { $0.text_start == 1 }, "The block must restore its own i")
-      XCTAssertTrue(redraw.allSatisfy {
-        $0.render_run.metrics_generation == session.provider.metricsGeneration
-      })
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
-    }
-  }
-
-  @MainActor
   func testCaretInkLookupRemainsViewportBoundedInLargeDocument() throws {
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data(String(repeating: "fifty riffraff\n", count: 20_000).utf8),

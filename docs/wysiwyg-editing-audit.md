@@ -1,5 +1,10 @@
 # WYSIWYG editing rules and error audit
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Ordinary deletion and replacement are defined in visible text coordinates.
 Hidden markup is the adapter's responsibility; it must not make a valid text
 selection undeletable. The source transaction still verifies its projected

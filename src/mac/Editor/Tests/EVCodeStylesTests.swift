@@ -76,7 +76,7 @@ final class EVCodeStylesTests: XCTestCase {
         let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "Keyword" })
         editor.selectStyle(keyword.key)
         XCTAssertTrue(editor.renameForTesting("KEYword"), editor.inspection.diagnostic)
-        XCTAssertTrue(editor.createStyle(kind: .character), editor.inspection.diagnostic)
+        XCTAssertTrue(editor.createSyntaxStyle(), editor.inspection.diagnostic)
         let custom = try XCTUnwrap(editor.inspection.selectedStyleKey)
         XCTAssertFalse(editor.renameForTesting("KEYword"), "Exact duplicate names must be rejected")
         XCTAssertTrue(editor.renameForTesting("Keyword"), editor.inspection.diagnostic)
@@ -89,7 +89,6 @@ final class EVCodeStylesTests: XCTestCase {
         // A live Code buffer may regenerate the name implicitly; the saved file
         // must not resurrect the built-in or the deleted custom definition.
         XCTAssertFalse(loaded.definitions.contains { $0.name == "Keyword" && !$0.flags.contains(.implicit) })
-        XCTAssertFalse(editor.createStyle(kind: .paragraph))
     }
 
     func testPersistenceFailureRestoresPublishedDefinitionAndDoesNotAddUndo() throws {

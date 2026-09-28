@@ -86,7 +86,7 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
-        (Format::Rtf, "{\\rtf1 word}{\\*\\unknown keep}", 0),
+
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -105,7 +105,7 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
         assert_eq!(core.document().revision(), before, "{format:?}");
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(
-            core.selected_typography(view).unwrap().0.slant
+            core.selected_character_style(view).unwrap().slant
                 != viem_core::document::FontSlant::Upright
         );
         let out = core
@@ -142,7 +142,7 @@ fn escape_and_pointer_cancel_pending_without_source_changes() {
     core.handle(view, key(Key::Escape)).unwrap();
     assert_eq!(core.document().source_bytes(), b"word");
     core.handle(view, key(Key::Char('i'))).unwrap();
-    assert!(!core.selected_typography(view).unwrap().0.bold);
+    assert!(!core.selected_character_style(view).unwrap().bold);
     toggle(&mut core, view, SemanticInlineStyle::Strong, true);
     core.handle(
         view,
@@ -154,14 +154,14 @@ fn escape_and_pointer_cancel_pending_without_source_changes() {
         },
     )
     .unwrap();
-    assert!(!core.selected_typography(view).unwrap().0.bold);
+    assert!(!core.selected_character_style(view).unwrap().bold);
 }
 #[test]
 fn typing_can_disable_existing_style_and_continue_inherited_run() {
     for (format, source, at) in [
         (Format::Markdown, "**word**", 2),
         (Format::MarkdownSource, "**word**", 4),
-        (Format::Rtf, "{\\rtf1 {\\b word}}", 2),
+
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -209,10 +209,9 @@ fn combined_bold_italic_repeats_and_is_one_insert_undo() {
     for format in [
         Format::Markdown,
         Format::MarkdownSource,
-        Format::Rtf,
-    ] {
+        ] {
         let source = match format {
-            Format::Rtf => "{\\rtf1 x}",
+
             _ => "x",
         };
         let (mut core, view) = fixture(format, source);
@@ -257,22 +256,14 @@ fn combined_bold_italic_repeats_and_is_one_insert_undo() {
     }
 }
 #[test]
-fn unsupported_pending_properties_and_stale_targets_leave_state_unchanged() {
-    use viem_core::document::{StyleProperty, StylePropertyValue};
+fn stale_formatting_targets_leave_state_unchanged() {
     let (mut core, view) = fixture(Format::Markdown, "word");
     core.handle(view, key(Key::Char('i'))).unwrap();
     let stale = core.list_selection_identity(view).unwrap();
-    assert!(core
-        .handle(
-            view,
-            CoreEvent::EditDirectProperty {
-                expected: stale.clone(),
-                property: StyleProperty::CharacterSize,
-                value: Some(StylePropertyValue::Float(18.))
-            }
-        )
-        .is_err());
     core.handle(view, key(Key::Right)).unwrap();
+    assert!(core.handle(view, CoreEvent::SetStrikethrough {
+        expected: stale.clone(), enabled: true,
+    }).is_err());
     assert!(core
         .handle(
             view,
@@ -284,7 +275,7 @@ fn unsupported_pending_properties_and_stale_targets_leave_state_unchanged() {
         )
         .is_err());
     assert_eq!(core.document().source_bytes(), b"word");
-    assert!(!core.selected_typography(view).unwrap().0.bold);
+    assert!(!core.selected_character_style(view).unwrap().bold);
 
 }
 #[test]
@@ -294,14 +285,14 @@ fn pending_state_is_view_local_and_external_reprojection_cancels_it() {
     core.handle(view, key(Key::Char('i'))).unwrap();
     toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
     assert_eq!(
-        core.selected_typography(other).unwrap().0.slant,
+        core.selected_character_style(other).unwrap().slant,
         viem_core::document::FontSlant::Upright
     );
     core.handle(other, key(Key::Char('i'))).unwrap();
     core.handle(other, CoreEvent::Input(InputEvent::Text("a".into())))
         .unwrap();
     assert_eq!(
-        core.selected_typography(view).unwrap().0.slant,
+        core.selected_character_style(view).unwrap().slant,
         viem_core::document::FontSlant::Upright
     );
 }
@@ -361,56 +352,7 @@ fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_
         prepared.summary().projection_work()
     );
 }
-#[test]
-fn direct_typing_properties_are_atomic_and_visible_in_pending_presentation() {
-    use viem_core::document::{Color, StyleProperty as P, StylePropertyValue as V};
-    for (format, source) in [
-        (Format::Rtf, "{\\rtf1 word}"),
-    ] {
-        let (mut core, view) = fixture(format, source);
-        core.handle(view, key(Key::Char('i'))).unwrap();
-        let values = vec![
-            (P::CharacterUnderline, V::Boolean(true)),
-            (P::CharacterSize, V::Float(18.)),
-            (
-                P::CharacterForeground,
-                V::Color(Color {
-                    red: 1.,
-                    green: 0.,
-                    blue: 0.,
-                    alpha: 1.,
-                }),
-            ),
-        ];
-        let expected = core.list_selection_identity(view).unwrap();
-        core.handle(
-            view,
-            CoreEvent::SetDirectCharacterProperties { expected, values },
-        )
-        .unwrap();
-        let pending = core.selected_typography(view).unwrap().0;
-        assert!(pending.underline);
-        assert_eq!(pending.size, 18.);
-        assert_eq!(pending.foreground.red, 1.);
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-        core.handle(view, CoreEvent::Input(InputEvent::Text("é".into())))
-            .unwrap();
-        let caret = core.command_state(view).unwrap().cursor();
-        let style =
-            DocumentLayoutStyles::semantic_character_at(core.document().projection(), caret, true)
-                .unwrap();
-        assert!(style.underline);
-        assert_eq!(style.size, 18.);
-        assert_eq!(style.foreground.red, 1.);
-        core.handle(view, key(Key::Escape)).unwrap();
-        core.handle(
-            view,
-            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-        )
-        .unwrap();
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
+
 #[test]
 fn pending_style_insertion_keeps_extended_graphemes_indivisible() {
     let (mut core, view) = fixture(Format::Markdown, "a");
@@ -469,51 +411,5 @@ fn markdown_typing_uses_canonical_asterisks_and_keeps_nested_intraword_styles() 
             );
             assert!(!core.document().source_bytes().contains(&b'_'));
         }
-    }
-}
-#[test]
-fn rtf_scalar_typing_keeps_group_depth_bounded_and_undo_exact() {
-    for (source, count) in [
-        ("{\\rtf1}", 1000),
-        ("{\\rtf1{\\b}}", 16),
-        ("{\\rtf1\\uc0 word}", 16),
-    ] {
-        let (mut core, view) = fixture(Format::Rtf, source);
-        core.handle(view, key(Key::Char('i'))).unwrap();
-        toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
-        let original = core.document().text().to_owned();
-        for _ in 0..count {
-            for text in ["a", "é"] {
-                core.handle(view, CoreEvent::Input(InputEvent::Text(text.into())))
-                    .unwrap();
-            }
-        }
-        assert_eq!(
-            core.document().text(),
-            format!("{}{original}", "aé".repeat(count))
-        );
-        let caret = core.command_state(view).unwrap().cursor();
-        let active =
-            DocumentLayoutStyles::character_at(core.document().projection(), caret, true).unwrap();
-        assert_ne!(active.slant, viem_core::document::FontSlant::Upright);
-        let serialized = String::from_utf8(core.document().source_bytes()).unwrap();
-        let mut depth = 0;
-        let mut max = 0;
-        for ch in serialized.chars() {
-            if ch == '{' {
-                depth += 1;
-                max = max.max(depth);
-            } else if ch == '}' {
-                depth -= 1;
-            }
-        }
-        assert!(max <= 5, "depth{max}: {serialized}");
-        core.handle(view, key(Key::Escape)).unwrap();
-        core.handle(
-            view,
-            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-        )
-        .unwrap();
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }

@@ -87,7 +87,7 @@ fn backspace_recognizes_nested_list_and_code_bodies_after_arrow_navigation() {
 #[test]
 fn backspace_at_inline_scope_start_deletes_the_preceding_grapheme() {
     for (format, source, expected) in [
-        (Format::Rtf, r"{\rtf1 A{\b B}C}", "BC"),
+
         (Format::Markdown, "A**B**C", "BC"),
     ] {
         let mut doc = open(format, source);
@@ -128,7 +128,7 @@ fn forward_delete_merges_nested_blocks_using_the_preceding_paragraph() {
 fn deletion_at_document_outer_boundaries_is_a_byte_exact_noop() {
     for (format, source) in [
         (Format::Markdown, "**A**\n\n"),
-        (Format::Rtf, r"{\rtf1{\b A}\par}"),
+
     ] {
         let mut doc = open(format, source);
         let revision = doc.revision();

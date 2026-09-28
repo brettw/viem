@@ -2,7 +2,7 @@
 //! stages never publish history. Their local patch lists are composed against
 //! the original source, then verified and committed as one model transaction.
 use super::*;
-use crate::document::{Color, FontSlant, StylePropertyValue};
+use crate::document::{FontSlant, StylePropertyValue};
 
 use super::replacement::PatchComposition;
 
@@ -27,13 +27,8 @@ impl Document {
         let sheet = self.projection().style_sheet();
         if style.is_internal()
             || (!style.0.is_empty() && sheet.character_style(style).is_none())
-            || !match self.format() {
-                Format::Rtf => style.0.is_empty() || style.0.starts_with("RtfC"),
-                Format::Markdown | Format::MarkdownSource => {
-                    style.0 == "Code" || style.0.is_empty()
-                }
-                _ => false,
-            }
+            || !self.format().is_markdown()
+            || !(style.0 == "Code" || style.0.is_empty())
         {
             return Err(DocumentError::UnsupportedFormatting);
         }
@@ -203,31 +198,23 @@ impl Document {
         &self,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<CharacterProperties, DocumentError> {
+        if !self.format().is_markdown() {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
         let mut properties = CharacterProperties::default();
         for (property, value) in values {
-            super::super::style::set_character_property(
-                &StyleId::from("Typing"),
-                &mut properties,
-                *property,
-                value,
-            )
-            .map_err(|_| DocumentError::UnsupportedFormatting)?;
-        }
-        super::super::style::validate_direct_character_properties(
-            &StyleId::from("Typing"),
-            &properties,
-        )
-        .map_err(|_| DocumentError::UnsupportedFormatting)?;
-        match self.format() {
-            Format::Rtf => {}
-            Format::Markdown | Format::MarkdownSource
-                if values.iter().all(|(p, _)| {
-                    matches!(
-                        p,
-                        StyleProperty::CharacterBold | StyleProperty::CharacterSlant
-                    )
-                }) => {}
-            _ => return Err(DocumentError::UnsupportedFormatting),
+            match (property, value) {
+                (StyleProperty::CharacterBold, StylePropertyValue::Boolean(enabled)) => {
+                    properties.bold = Some(*enabled);
+                }
+                (StyleProperty::CharacterSlant, StylePropertyValue::FontSlant(slant)) => {
+                    properties.slant = Some(*slant);
+                }
+                (StyleProperty::CharacterStrikethrough, StylePropertyValue::Boolean(enabled)) => {
+                    properties.strikethrough = Some(*enabled);
+                }
+                _ => return Err(DocumentError::UnsupportedFormatting),
+            }
         }
         Ok(properties)
     }
@@ -247,50 +234,22 @@ impl Document {
         } else {
             at
         };
-        if self.format().is_markdown() {
-            let spans = self
-                .projection()
-                .style_spans_for_region(&(sample..sample + 1));
-            let has = |style| {
-                spans.iter().any(|s| {
-                    s.range.contains(&sample) && s.application == StyleApplication::Semantic(style)
-                })
-            };
-            return p
-                .bold
-                .map_or(true, |b| b == has(SemanticInlineStyle::Strong))
-                && p.slant.map_or(true, |s| {
-                    (s != FontSlant::Upright) == has(SemanticInlineStyle::Emphasis)
-                });
-        }
-        let Some(current) =
-            super::super::rich_text::resolved_character_at(self.projection(), sample)
-        else {
-            return false;
+        let spans = self
+            .projection()
+            .style_spans_for_region(&(sample..sample + 1));
+        let has = |application| {
+            spans
+                .iter()
+                .any(|span| span.range.contains(&sample) && span.application == application)
         };
-        macro_rules! matches {
-            ($field:ident) => {
-                p.$field.as_ref().map_or(true, |v| v == &current.$field)
-            };
-        }
-        matches!(font_families)
-            && p.size.map_or(true, |value| std::matches!(value, crate::document::FontSize::Points(size) if size == current.size))
-            && p.weight.map_or(true, |v| v == current.base_weight)
-            && matches!(bold)
-            && matches!(slant)
-            && matches!(foreground)
-            && p.background.map_or(true, |v| {
-                Some(v) == current.background || v.alpha == 0.0 && current.background.is_none()
-            })
-            && matches!(underline)
-            && matches!(strikethrough)
-            && p.language
-                .as_ref()
-                .map_or(true, |v| Some(v) == current.language.as_ref())
-            && matches!(direction)
-            && matches!(open_type_features)
-            && matches!(letter_spacing)
-            && matches!(script_position)
+        p.bold.is_none_or(|enabled| {
+            enabled == has(StyleApplication::Semantic(SemanticInlineStyle::Strong))
+        }) && p.slant.is_none_or(|slant| {
+            (slant != FontSlant::Upright)
+                == has(StyleApplication::Semantic(SemanticInlineStyle::Emphasis))
+        }) && p.strikethrough.is_none_or(|enabled| {
+            enabled == has(StyleApplication::Automatic("Strikethrough".into()))
+        })
     }
 
     pub(super) fn prepare_typing_markdown_style(
@@ -299,12 +258,30 @@ impl Document {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.prepare_typing_markdown_application(range, Some(style), enabled)
+    }
+
+    pub(super) fn prepare_typing_markdown_application(
+        &self,
+        range: Range<usize>,
+        style: Option<SemanticInlineStyle>,
+        enabled: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let application = style.map_or_else(
+            || StyleApplication::Automatic("Strikethrough".into()),
+            StyleApplication::Semantic,
+        );
+        let markers = style.map_or(&["~~", "~"][..], markdown_style_markers);
+        let removal = |content: &Range<usize>| match style {
+            Some(style) => self.markdown_style_removal_patches(content, style),
+            None => self.markdown_strike_removal_patches(content),
+        };
         let containing = self
             .projection()
             .style_spans_for_region(&range)
             .into_iter()
             .find(|span| {
-                span.application == StyleApplication::Semantic(style)
+                span.application == application
                     && span.range.start <= range.start
                     && span.range.end >= range.end
             });
@@ -343,10 +320,12 @@ impl Document {
             }
         }
         let mut patches = Vec::new();
-        let (html_open, html_close) = if style == SemanticInlineStyle::Strong {
+        let (html_open, html_close) = if style == Some(SemanticInlineStyle::Strong) {
             ("<strong>", "</strong>")
-        } else {
+        } else if style.is_some() {
             ("<em>", "</em>")
+        } else {
+            ("<del>", "</del>")
         };
         let mut fallback = if enabled {
             vec![
@@ -367,10 +346,7 @@ impl Document {
                 .projection()
                 .style_spans_for_region(&(range.start.saturating_sub(1)..range.start))
                 .into_iter()
-                .find(|span| {
-                    span.application == StyleApplication::Semantic(style)
-                        && span.range.end == range.start
-                });
+                .find(|span| span.application == application && span.range.end == range.start);
             if let Some(previous) = preceding {
                 let content = self
                     .projection()
@@ -382,7 +358,7 @@ impl Document {
                         .source
                         .bytes_in(content.clone())
                         .ok_or(DocumentError::AmbiguousProjection)?;
-                    let marker = markdown_style_markers(style)
+                    let marker = markers
                         .iter()
                         .map(|m| self.encoding().encode_fragment(m))
                         .collect::<Result<Vec<_>, _>>()?
@@ -391,7 +367,7 @@ impl Document {
                         .ok_or(DocumentError::UnsupportedFormatting)?;
                     content.end - marker.len()..content.end
                 } else {
-                    self.markdown_style_removal_patches(&content, style)?[1].range()
+                    removal(&content)?[1].range()
                 };
                 // A touching formatted run can still live inside a link or
                 // another source scope. Moving its closing delimiter across
@@ -427,10 +403,12 @@ impl Document {
                 .text_tree()
                 .slice(range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            let marker = if style == SemanticInlineStyle::Strong {
+            let marker = if style == Some(SemanticInlineStyle::Strong) {
                 "**"
-            } else {
+            } else if style.is_some() {
                 "*"
+            } else {
+                "~~"
             };
             if selected.contains(marker) {
                 return Err(DocumentError::UnsupportedFormatting.into());
@@ -453,31 +431,32 @@ impl Document {
                     .source
                     .bytes_in(full.clone())
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                let marker = markdown_style_markers(style)
+                let marker = markers
                     .iter()
                     .map(|m| self.encoding().encode_fragment(m))
                     .collect::<Result<Vec<_>, _>>()?
                     .into_iter()
                     .find(|m| bytes.starts_with(m) && bytes.ends_with(m))
                     .ok_or(DocumentError::UnsupportedFormatting)?;
-                let paired = self
-                    .projection()
-                    .style_spans_for_region(&span.range)
-                    .iter()
-                    .any(|other| {
-                        other.range == span.range
-                            && other.application
-                                == StyleApplication::Semantic(
-                                    if style == SemanticInlineStyle::Strong {
-                                        SemanticInlineStyle::Emphasis
-                                    } else {
-                                        SemanticInlineStyle::Strong
-                                    },
-                                )
-                    });
+                let paired = style.is_some()
+                    && self
+                        .projection()
+                        .style_spans_for_region(&span.range)
+                        .iter()
+                        .any(|other| {
+                            other.range == span.range
+                                && other.application
+                                    == StyleApplication::Semantic(
+                                        if style == Some(SemanticInlineStyle::Strong) {
+                                            SemanticInlineStyle::Emphasis
+                                        } else {
+                                            SemanticInlineStyle::Strong
+                                        },
+                                    )
+                        });
                 let padding = if paired {
                     marker.len()
-                        / if style == SemanticInlineStyle::Strong {
+                        / if style == Some(SemanticInlineStyle::Strong) {
                             2
                         } else {
                             1
@@ -497,7 +476,7 @@ impl Document {
                     .projection()
                     .source_range(span.range.clone())
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                let removal = self.markdown_style_removal_patches(&content, style)?;
+                let removal = removal(&content)?;
                 let opening = removal[0].range();
                 let closing = removal[1].range();
                 let marker = self
@@ -507,6 +486,8 @@ impl Document {
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 (content, opening, closing, marker)
             };
+            source.start = source.start.max(content.start);
+            source.end = source.end.min(content.end);
             if source.start == content.start {
                 fallback.push(SourcePatch::primary(opening.clone(), Vec::new()));
             } else {
@@ -626,52 +607,7 @@ impl Document {
                     (P::CharacterBold, V::Boolean(c.bold)),
                     (P::CharacterSlant, V::FontSlant(c.slant)),
                 ];
-                if self.format().is_rich_text() {
-                    result.splice(
-                        0..0,
-                        [
-                            (
-                                P::CharacterFontFamilies,
-                                V::FontFamilies(c.font_families.clone()),
-                            ),
-                            (P::CharacterSize, V::Float(c.size)),
-                            (P::CharacterWeight, V::FontWeight(c.base_weight)),
-                        ],
-                    );
-                    result.extend([
-                        (P::CharacterUnderline, V::Boolean(c.underline)),
-                        (P::CharacterStrikethrough, V::Boolean(c.strikethrough)),
-                        (P::CharacterDirection, V::WritingDirection(c.direction)),
-                        (
-                            P::CharacterOpenTypeFeatures,
-                            V::OpenTypeFeatures(c.open_type_features.clone()),
-                        ),
-                        (P::CharacterLetterSpacing, V::Float(c.letter_spacing)),
-                        (
-                            P::CharacterScriptPosition,
-                            V::ScriptPosition(c.script_position),
-                        ),
-                    ]);
-                    if !c.foreground_is_default {
-                        result.push((P::CharacterForeground, V::Color(c.foreground)));
-                    }
-                    // A cleared character highlight must override a surviving
-                    // paragraph's highlight. Transparent and absent are
-                    // visually equivalent; context matching avoids writing a
-                    // redundant override when no highlight survives.
-                    result.push((
-                        P::CharacterBackground,
-                        V::Color(c.background.unwrap_or(Color {
-                            red: 0.0,
-                            green: 0.0,
-                            blue: 0.0,
-                            alpha: 0.0,
-                        })),
-                    ));
-                    if let Some(v) = &c.language {
-                        result.push((P::CharacterLanguage, V::Text(v.clone())));
-                    }
-                }
+
                 result.retain(|(property, _)| {
                     !values.iter().any(|(explicit, _)| explicit == property)
                 });
@@ -689,11 +625,7 @@ impl Document {
         self.validate_typing_payload(&edit)?;
         let properties = self.validate_typing_properties(values)?;
         let mut at = edit.range.start;
-        if named.is_none()
-            && inherited.is_none()
-            && self.format().is_markdown()
-            && edit.payload.text().trim().is_empty()
-        {
+        if named.is_none() && inherited.is_none() && edit.payload.text().trim().is_empty() {
             let caret = at + edit.payload.text().len();
             return Ok((self.prepare_formatted_payload_edits(vec![edit])?, caret, at));
         }
@@ -776,11 +708,10 @@ impl Document {
         if structural.is_none()
             && (edit.range.is_empty() || single_replacement)
             && context_matches
-            && (inherited.is_none())
-            && inherited.is_none_or(|context| context.paragraph.matches(self, at))
+            && inherited.is_none()
         {
             // Replacing one already-matching grapheme retains its existing
-            // source-backed style, so no redundant wrapper/table edit is needed.
+            // source syntax, so no redundant wrapper edit is needed.
             let old_end = edit.range.end;
             let prepared = self.prepare_formatted_payload_edits(vec![edit])?;
             let caret = {
@@ -960,65 +891,6 @@ impl Document {
                     &mut formatted,
                 )?;
             }
-            if self.format().is_rich_text() {
-                let current = scratch
-                    .projection()
-                    .blocks_for_region(&(selection.start..selection.start))
-                    .into_iter()
-                    .find(|block| {
-                        block.range.contains(&selection.start)
-                            || block.range.start == selection.start
-                    })
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let clear = current
-                    .direct_paragraph
-                    .declared_properties()
-                    .difference(&paragraph.direct.declared_properties())
-                    .copied()
-                    .collect::<BTreeSet<_>>();
-                if !clear.is_empty() {
-                    let target = TextRange::new(
-                        scratch.text_point(selection.start)?,
-                        scratch.text_point(selection.start)?,
-                    )?;
-                    let prepared = scratch.prepare_persisted_style_intent(
-                        PersistedStyleIntent::ClearDirectBlockProperties {
-                            target: StyleBlockTarget::Paragraphs(target),
-                            properties: clear,
-                        },
-                    )?;
-                    apply(
-                        &mut scratch,
-                        prepared,
-                        &mut selection,
-                        &mut caret,
-                        &mut sources,
-                        &mut formatted,
-                    )?;
-                }
-                if current.direct_paragraph != paragraph.direct
-                    && !paragraph.direct.declared_properties().is_empty()
-                {
-                    let target = TextRange::new(
-                        scratch.text_point(selection.start)?,
-                        scratch.text_point(selection.start)?,
-                    )?;
-                    let prepared = scratch.prepare_persisted_style_intent(
-                        PersistedStyleIntent::SetDirectBlockProperties {
-                            target: StyleBlockTarget::Paragraphs(target),
-                            properties: paragraph.direct.clone(),
-                        },
-                    )?;
-                    apply(
-                        &mut scratch,
-                        prepared,
-                        &mut selection,
-                        &mut caret,
-                        &mut sources,
-                        &mut formatted,
-                    )?;
-                }
-            }
         }
         if let Some(style) = named {
             let prepared =
@@ -1032,53 +904,29 @@ impl Document {
                 &mut formatted,
             )?;
         }
-        if self.format().is_markdown() {
-            for (style, enabled) in [
-                (
-                    SemanticInlineStyle::Emphasis,
-                    properties.slant.map(|s| s != FontSlant::Upright),
-                ),
-                (SemanticInlineStyle::Strong, properties.bold),
-            ] {
-                if let Some(enabled) = enabled {
-                    let prepared =
-                        scratch.prepare_typing_markdown_style(selection.clone(), style, enabled)?;
-                    apply(
-                        &mut scratch,
-                        prepared,
-                        &mut selection,
-                        &mut caret,
-                        &mut sources,
-                        &mut formatted,
-                    )?;
-                }
+        for (style, enabled) in [
+            (
+                Some(SemanticInlineStyle::Emphasis),
+                properties.slant.map(|s| s != FontSlant::Upright),
+            ),
+            (Some(SemanticInlineStyle::Strong), properties.bold),
+            (None, properties.strikethrough),
+        ] {
+            if let Some(enabled) = enabled {
+                let prepared = scratch.prepare_typing_markdown_application(
+                    selection.clone(),
+                    style,
+                    enabled,
+                )?;
+                apply(
+                    &mut scratch,
+                    prepared,
+                    &mut selection,
+                    &mut caret,
+                    &mut sources,
+                    &mut formatted,
+                )?;
             }
-        } else if !scratch.typing_context_matches(caret, BoundaryAffinity::Upstream, &properties) {
-            let changed_values = values
-                .iter()
-                .filter(|value| {
-                    let property = scratch
-                        .validate_typing_properties(std::slice::from_ref(value))
-                        .expect("the complete sparse declaration was validated");
-                    !scratch.typing_context_matches(caret, BoundaryAffinity::Upstream, &property)
-                })
-                .cloned()
-                .collect();
-            let prepared =
-                scratch.prepare_model_request(ModelRequest::SetDirectCharacterProperties {
-                    document: scratch.id(),
-                    revision: scratch.revision(),
-                    range: selection.clone(),
-                    values: changed_values,
-                })?;
-            apply(
-                &mut scratch,
-                prepared,
-                &mut selection,
-                &mut caret,
-                &mut sources,
-                &mut formatted,
-            )?;
         }
         let patches = sources.source_patches();
         let edits = formatted.formatted_edits();

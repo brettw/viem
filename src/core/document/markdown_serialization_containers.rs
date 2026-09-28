@@ -1,7 +1,7 @@
-//! Preserve structural owners when an explicit format conversion serializes
-//! paragraph leaves. Source correspondence remains owned by ConversionWriter.
+//! Preserve structural owners while spelling normalized content as Markdown.
 use super::*;
 use crate::document::{Block, ContainerIdentity, ContainerKind, ContainerMembership};
+use std::collections::BTreeMap;
 
 fn same_prefix(left: &[ContainerMembership], right: &[ContainerMembership]) -> usize {
     left.iter()
@@ -64,14 +64,9 @@ pub(in crate::document) fn numbering(blocks: &[Block]) -> BTreeMap<ContainerIden
     numbers
 }
 
-pub(super) fn write(
-    document: &FormattedDocument,
-    blocks: &[Block],
-    losses: &mut BTreeSet<ConversionLoss>,
-    output: &mut ConversionWriter,
-) {
+pub(super) fn write(document: &FormattedDocument, blocks: &[Block], output: &mut MarkdownWriter) {
     let numbers = numbering(blocks);
-    markdown(document, blocks, &numbers, losses, output);
+    markdown(document, blocks, &numbers, output);
 }
 
 fn prefix(
@@ -108,8 +103,7 @@ fn markdown(
     document: &FormattedDocument,
     blocks: &[Block],
     numbers: &BTreeMap<ContainerIdentity, (bool, u64)>,
-    losses: &mut BTreeSet<ConversionLoss>,
-    output: &mut ConversionWriter,
+    output: &mut MarkdownWriter,
 ) {
     for (index, block) in blocks.iter().enumerate() {
         let path = block.containers.as_ref();
@@ -136,12 +130,7 @@ fn markdown(
                 output.push('\n');
             }
         }
-        if block.direct_paragraph != Default::default()
-            || block.direct_default_character != Default::default()
-            || path.iter().any(|m| m.container.direct_formatting.is_some())
-        {
-            losses.insert(ConversionLoss::Styling);
-        }
+
         let opening = prefix(path, numbers, true);
         let continuation = prefix(path, numbers, false);
         output.push_str(&opening);
@@ -152,8 +141,7 @@ fn markdown(
             || block.style.0 == "Code Block"
         {
             let text = &document.text()[block.range.clone()];
-            let fence = "`"
-                .repeat(longest_run(&output.visible_text(text, block.range.start), '`').max(2) + 1);
+            let fence = "`".repeat(longest_run(&text, '`').max(2) + 1);
             output.push_str(&fence);
             output.push('\n');
             output.push_str(&continuation);
@@ -173,13 +161,7 @@ fn markdown(
                 output.push_str(&format!("{} ", "#".repeat(usize::from(level))));
             }
             output.line_prefix = MarkdownLinePrefix::Empty;
-            inline(
-                document,
-                block.range.clone(),
-                Format::Markdown,
-                losses,
-                output,
-            );
+            inline(document, block.range.clone(), output);
         }
     }
 }

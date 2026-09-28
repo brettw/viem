@@ -137,9 +137,7 @@ impl Document {
                 return Ok(Some(patches));
             }
         }
-        if self.format().is_rich_text() {
-            return Ok(None);
-        }
+
         let affinity = payload.and_then(|edit| edit.boundary_affinity);
         let source_range = if edit.range.is_empty() {
             let at = if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
@@ -205,7 +203,7 @@ impl Document {
                 Format::Markdown => self
                     .escape_markdown_source_text(source_range.start, &edit.replacement)?
                     .replace('\n', "\n\n"),
-                Format::Rtf => unreachable!("rich edits are translated as a batch"),
+
             };
             spell_logical_breaks(&syntax, self.file_format())
         };
@@ -323,9 +321,6 @@ impl Document {
             // These edits are already normalized against the complete batch.
             let patches = match scratch.structural_text_patches(&edit)? {
                 Some(patches) => Some(patches),
-                None if scratch.format().is_rich_text() => Some(
-                    super::super::source_edit::rich_text_patches(&scratch, &edit, None)?,
-                ),
                 None => None,
             };
             let prepared = scratch.prepare_text_edits_with_patches(vec![edit], patches)?;
@@ -399,36 +394,6 @@ impl Document {
                 Ok(None)
             };
         }
-        if !self.format().is_rich_text() {
-            return Ok(None);
-        }
-        if super::super::edit_boundary::merged_paragraphs(self, &edit.range).is_empty() {
-            return Ok(None);
-        }
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
-        if self.format() == Format::Rtf {
-            if let Some(patches) = super::super::rtf_structure::joining_patches(self, &input, edit)?
-            {
-                return Ok(Some(patches));
-            }
-        }
-        let patches = if edit.replacement.is_empty() {
-            super::super::rtf_structure::deletion_patches(self, &input, &edit.range, false)?
-        } else {
-            None
-        };
-        patches
-            .map(|patches| {
-                patches
-                    .into_iter()
-                    .map(|(range, syntax)| {
-                        self.encoding()
-                            .encode_fragment(&syntax)
-                            .map(|bytes| SourcePatch::primary(range, bytes))
-                    })
-                    .collect()
-            })
-            .transpose()
+        Ok(None)
     }
 }

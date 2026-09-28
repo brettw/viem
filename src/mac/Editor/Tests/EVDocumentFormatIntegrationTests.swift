@@ -79,7 +79,7 @@ struct EVDocumentFormatIntegrationTests {
             let backend = EVCoreDocumentBackend()
             try backend.read(source: source, typeName: sourceType)
             let revision = backend.currentDocumentState.document_revision
-            let expectedError = EVDocumentSerializationError.formatConversionUnavailable(
+            let expectedError = EVDocumentSerializationError.unsupportedSerializationFormat(
                 current: sourceFormat,
                 requested: requestedFormat
             )

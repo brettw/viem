@@ -95,39 +95,6 @@ fn mac_literal_cr_rejects_an_entire_batch_or_structured_payload_before_commit() 
 }
 
 #[test]
-fn rtf_literal_cr_survives_reopen_in_every_line_ending_mode_and_encoding() {
-    for encoding in ENCODINGS {
-        for endings in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
-            let format = Format::Rtf;
-            // RTF owns its byte grammar and code-page/Unicode decoding;
-            // the generic encoding hint does not encode its syntax.
-            let original = bytes("{\\rtf1 AB}", Encoding::Latin1);
-            let mut document =
-                Document::from_bytes_with_file_format(original.clone(), encoding, format, endings)
-                    .unwrap();
-            assert_eq!(document.text(), "AB");
-            document.insert(1, "\r").unwrap();
-            assert_eq!(
-                document.text(),
-                "A\rB",
-                "{format:?}/{encoding:?}/{endings:?}"
-            );
-            let reopened = Document::from_bytes_with_file_format(
-                document.source_bytes(),
-                encoding,
-                format,
-                endings,
-            )
-            .unwrap();
-            assert_eq!(reopened.text(), "A\rB");
-            assert_eq!(reopened.line_count(), 1);
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), original);
-        }
-    }
-}
-
-#[test]
 fn unix_and_dos_keep_representable_literal_cr_in_literal_source_adapters() {
     for encoding in ENCODINGS {
         for endings in [FileFormat::Unix, FileFormat::Dos] {

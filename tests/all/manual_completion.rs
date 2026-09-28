@@ -410,7 +410,7 @@ fn counts_dot_and_macro_replay_use_the_accepted_payload() {
 fn rich_previews_preserve_source_and_acceptance_inherits_destination_style() {
     for (format, source) in [
         (Format::Markdown, "alphabet\n\n*al*"),
-        (Format::Rtf, r"{\rtf1 alphabet\par {\i al}}"),
+
     ] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();

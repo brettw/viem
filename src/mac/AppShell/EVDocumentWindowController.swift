@@ -948,8 +948,7 @@ extension EVDocumentWindowController {
       completion(.failure(EVDocumentHostError.invalidPath(request.path ?? ""))); return
     }
     do {
-      try document.validatePreservedOriginal(at: destination)
-      let sourceFormat = document.editorBackend.sourceFormat
+      try document.validateDestinationAlias(at: destination)
       let snapshot: EVDocumentSaveSnapshot
       if let range = request.hardLineRange {
         snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType, hardLineRange: range)
@@ -969,7 +968,7 @@ extension EVDocumentWindowController {
           do {
             try result.get()
             if writesCurrent || adoptBinding { document.recordRecentDocument(target) }
-            if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target, format: sourceFormat) }
+            if writesCurrent || adoptBinding { document.recordFileBaseline(snapshot.data, at: target) }
             if adoptBinding {
               document.fileURL = target
               document.configureRecovery(for: target)
@@ -1277,7 +1276,6 @@ extension EVDocumentWindowController {
     switch url.pathExtension.lowercased() {
     case "md", "markdown", "mdown": EVDocument.markdownType
     case "html", "htm", "xhtml": EVDocument.codeType
-    case "rtf": EVDocument.rtfType
     case "txt", "text": EVDocument.plainTextType
     default: fallback ?? EVDocument.plainTextType
     }

@@ -28,11 +28,7 @@ fn styles(document: &Document) -> Vec<String> {
 fn opening_above_and_below_uses_the_originating_heading_following_style() {
     for (format, source, heading) in [
         (Format::Markdown, "# Title", "Heading1"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext0\b Heading 1;}}\s5 Title}",
-            "RtfP5",
-        ),
+
     ] {
         for (key, expected, expected_styles) in [
             ('o', "Title\nbody", vec![heading, "Paragraph"]),
@@ -90,7 +86,7 @@ fn list_open_retains_item_style_including_empty_items() {
     for (format, source) in [
         (Format::Markdown, "- item"),
         (Format::Markdown, "- "),
-        (Format::Rtf, r"{\rtf1{\*\pn\pnlvlblt{\pntxtb\bullet}}item}"),
+
     ] {
         for key in ['o', 'O'] {
             let mut document = open(source, format);
@@ -122,16 +118,11 @@ fn list_open_retains_item_style_including_empty_items() {
 fn counted_open_and_dot_evaluate_each_new_paragraph_style_and_share_undo() {
     for (format, source, title, following) in [
         (Format::Markdown, "# Title", "Heading1", "Heading2"),
-        (
-            Format::Rtf,
-            r"{\rtf1{\stylesheet{\s0 Normal;}{\s5\sbasedon0\snext7 Heading 1;}{\s7\sbasedon0\snext0 Body;}}\s5 Title}",
-            "RtfP5",
-            "RtfP7",
-        ),
+
     ] {
         for key in ['o', 'O'] {
             let mut document = open(source, format);
-            if format != Format::Rtf {
+            {
                 let mut style = document
                     .projection()
                     .style_sheet()

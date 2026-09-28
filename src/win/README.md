@@ -83,11 +83,13 @@ fullscreen bounds do not replace the saved normal frame.
 - Ctrl+Q retains Visual Block and literal-next input.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed variants such as Light or Bold.
-- Format opens persistent WinUI font and color panels. Their values follow
-  the chosen pane's caret after a 150 ms idle delay; edits apply to rich-text
-  selections or Insert/Replace typing styles. Superscript and Subscript are
-  exclusive top-level actions. The style inspector's x²/x₂ buttons share one
-  inheritance checkbox; numeric baseline offsets are not supported.
+- The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
+  there is no Format menu. Fonts, colors,
+  script position, and paragraph properties remain available in the independent
+  theme style inspector. Its x²/x₂ buttons share one inheritance checkbox.
+- Markdown's status selector switches between Source and WYSIWYG while retaining
+  source bytes. Text and Code display a format label; general format conversion
+  and reinterpretation are no longer offered.
 - Ctrl+S / Ctrl+Shift+S save / save as, outside literal-next input.
 - File > Export… writes a styled HTML copy through the shared core exporter.
   Markdown exports formatted content and Code exports syntax-highlighted text.
@@ -100,7 +102,7 @@ fullscreen bounds do not replace the saved normal frame.
   preserve vi's Ctrl+6 / Ctrl+^.
 - Other vi control bindings remain available. Use the menus for native actions
   whose usual Windows shortcuts conflict with vi, including bold, italic,
-  underline, find and select all. AltGr and IME text go through native input.
+  find and select all. AltGr and IME text go through native input.
 
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings
@@ -108,8 +110,7 @@ use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,
 never autosaves over the original source, and retains crash leftovers for review.
 
-The main Settings window has no Code category. From a Code view, F8 or Format >
-Style > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
+The main Settings window has no Code category. From a Code view, F8 or Style > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
 style inspector. Filename associations remain supported through
 `code.filenameAssociations` in `config.json`, and syntax load/compiler messages
 remain available through the existing diagnostics mechanisms. Vim syntax always
@@ -120,7 +121,7 @@ survive and resource paths are never saved.
 The normative list of known Mac differences is in the **Windows frontend
 requirements** section of [`AGENTS.md`](../../AGENTS.md). In particular,
 printing, AppKit text services and Versions, full document accessibility,
-advanced typography controls and outgoing RTF are not claimed as implemented.
+per-font OpenType discovery are not claimed as implemented.
 
 ## Code boundaries and validation
 
@@ -153,7 +154,7 @@ Use `-NoRustBuild` to reuse the Rust DLL while still exercising MSBuild packagin
 It checks native WinUI keyboard focus, text and command-key routing, status-line
 prompt painting and command output (including hidden bars and scrolled documents), vi editing,
 F8/inspector focus, compact controls, font variants and inheritance,
-Format actions, exclusive script controls, persistent font/color panels and
+toolbar formatting actions, exclusive script controls, style font/color controls and
 coalesced caret synchronization,
 Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,

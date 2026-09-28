@@ -1,8 +1,13 @@
 # Editable source range audit
 
+> Historical audit: references to HTML/RTF editing and general format conversion
+> describe retired implementations. Current editable formats are Text, Code,
+> and Markdown; only Markdown Source/WYSIWYG switching remains.
+
+
 Historical audit: standalone HTML editing modes and their named helpers were
 removed in September 2026. HTML-specific examples below describe the former
-implementation; the shared boundary rules continue to apply to Markdown and RTF.
+implementation; the shared boundary rules continue to apply to Markdown.
 
 This audit covers the `DocumentError::AmbiguousProjection` producers in the
 portable core and their macOS presentation. Function names and line numbers in

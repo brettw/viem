@@ -55,29 +55,6 @@ fn visual_row_end_delete_counts_repeat_and_exact_undo() {
 }
 
 #[test]
-fn mode_is_view_local_and_rtf_rejects_physical() {
-    let (mut core, first) = editor(Document::new("abc\ndef"), 50.0);
-    let second = core.add_view(MockTextMeasurementProvider::new(), 50.0, 200.0);
-    core.handle(first, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    assert_eq!(
-        core.command_state(second).unwrap().line_mode(),
-        LineMode::Visual
-    );
-    let (mut rich, view) = editor(
-        Document::from_bytes(br"{\rtf1 Text}".to_vec(), Encoding::Utf8, Format::Rtf).unwrap(),
-        50.0,
-    );
-    assert!(rich
-        .handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .is_err());
-    assert_eq!(
-        rich.command_state(view).unwrap().line_mode(),
-        LineMode::Visual
-    );
-}
-
-#[test]
 fn code_views_default_to_physical_source_lines() {
     for (format, expected) in [
         (Format::Code, LineMode::PhysicalSource),
@@ -173,32 +150,6 @@ fn location_and_width_changes_keep_large_document_layout_local() {
 }
 
 #[test]
-fn physical_columns_indent_and_format_switch_policy() {
-    let (mut core, view) = editor(Document::new("abcde\nx\nabcde"), 90.0);
-    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
-        .unwrap();
-    keys(&mut core, view, "lljj");
-    assert_eq!(core.line_location(view).unwrap().column, 3);
-    keys(&mut core, view, "gg2>>");
-    assert_eq!(core.document().text(), "    abcde\n    x\nabcde");
-    keys(&mut core, view, "u");
-    assert_eq!(core.document().text(), "abcde\nx\nabcde");
-    core.handle(
-        view,
-        CoreEvent::SetFormat {
-            operation: viem_core::FormatOperation::Reinterpret,
-            document: core.document().id(),
-            revision: core.document().revision(),
-            target: Format::Rtf,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        core.command_state(view).unwrap().line_mode(),
-        LineMode::Visual
-    );
-}
-#[test]
 fn width_change_invalidates_visual_command_rows_but_not_source_lines() {
     let original = "ab cd ef gh ij kl mn op qr st uv wx yz";
     let (mut core, view) = editor(Document::new(original), 100.0);
@@ -225,28 +176,6 @@ fn width_change_invalidates_visual_command_rows_but_not_source_lines() {
     assert_eq!(core.command_state(view).unwrap().cursor(), original.len() - 1);
 }
 
-#[test]
-fn visual_row_delete_keeps_list_marker_when_item_continues_and_handles_nested_formatting() {
-    for (format, source) in [
-        (
-            Format::Rtf,
-            r"{\rtf1{\*\unknown keep}{\pn\pnlvlblt}{\b abcdefgh ijklmno} pqrst uvwxyz\par}",
-        ),
-    ] {
-        let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let (mut core, view) = editor(document, 180.0);
-        let original = core.document().text().to_owned();
-        let row = core.layout(view).unwrap().snapshot().unwrap().rows[0]
-            .text_range
-            .clone();
-        assert!(row.end < original.len(), "{format:?} row must wrap");
-        keys(&mut core, view, "dd");
-        assert_eq!(core.document().text(), &original[row.end..], "{format:?}");
-        keys(&mut core, view, "u");
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
 #[test]
 fn visual_line_selection_and_insert_placements_follow_row_boundaries() {
     let original = "abcdefgh ijklmnop qrstuvwxyz\nTail";
@@ -304,23 +233,7 @@ fn counted_visual_line_uses_the_selected_domain() {
     assert_eq!(core.document().text(), original);
 
 }
-#[test]
-fn change_complete_rich_line_keeps_following_paragraph_and_one_undo() {
-    for (format, source) in [
-        (Format::Rtf, r"{\rtf1{\b one}\par two}"),
-    ] {
-        let document =
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let (mut core, view) = editor(document, 300.0);
-        keys(&mut core, view, "cc");
-        core.handle(view, CoreEvent::Input(InputEvent::Text("New".into())))
-            .unwrap();
-        key(&mut core, view, Key::Escape);
-        assert_eq!(core.document().text(), "New\ntwo", "{format:?}");
-        keys(&mut core, view, "u");
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
+
 #[test]
 fn first_nonblank_operator_preserves_leading_indent() {
     for mode in [LineMode::Visual, LineMode::PhysicalSource] {

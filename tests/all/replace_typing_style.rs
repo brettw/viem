@@ -59,9 +59,9 @@ fn start(
     .unwrap();
     (core, view)
 }
-fn fixtures() -> [(Format, &'static str, usize); 3] {
+fn fixtures() -> [(Format, &'static str, usize); 2] {
     [
-        (Format::Rtf, r"{\rtf1 word}{\*\unknown keep}", 0),
+
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
     ]
@@ -181,33 +181,7 @@ fn replace_restoration_survives_pending_style_changes_without_overwriting_previo
         );
     }
 }
-#[test]
-fn exact_replace_restoration_preserves_encoded_bytes_and_source_trivia() {
-    for encoding in [Encoding::Utf16Le, Encoding::Utf16Be, Encoding::Latin1] {
-        for (format, source, at) in fixtures() {
-            // RTF owns its byte-oriented grammar; UTF-16 transport is not an editable RTF encoding.
-            if format == Format::Rtf && encoding != Encoding::Latin1 {
-                continue;
-            }
-            let bytes: Vec<u8> = match encoding {
-                Encoding::Utf16Le => source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-                Encoding::Utf16Be => source.encode_utf16().flat_map(u16::to_be_bytes).collect(),
-                _ => source.as_bytes().to_vec(),
-            };
-            let (mut core, view) = start(format, bytes.clone(), encoding, at);
-            style(&mut core, view, SemanticInlineStyle::Emphasis, true);
-            core.handle(view, CoreEvent::Input(InputEvent::text("éa")))
-                .unwrap_or_else(|error| panic!("{format:?} {encoding:?}: {error:?}"));
-            key(&mut core, view, Key::Backspace);
-            key(&mut core, view, Key::Backspace);
-            assert_eq!(
-                core.document().source_bytes(),
-                bytes,
-                "{format:?} {encoding:?}"
-            );
-        }
-    }
-}
+
 #[test]
 fn pointer_and_external_edits_invalidate_recorded_replace_frontiers() {
     let source = "word";
@@ -235,28 +209,7 @@ fn pointer_and_external_edits_invalidate_recorded_replace_frontiers() {
     key(&mut core, view, Key::Backspace);
     assert!(!core.document().text().contains('w'));
 }
-#[test]
-fn inherited_styled_replace_restoration_keeps_large_document_layout_local() {
-    let mut source = r"{\rtf1 ".to_owned() + &r"line\par ".repeat(10_000);
-    source.push_str(r"{\i word}}");
-    let document =
-        Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Rtf).unwrap();
-    let at = document.projection().text_tree().byte_len() - 4;
-    let (mut core, view) = start(Format::Rtf, source.as_bytes().to_vec(), Encoding::Utf8, at);
-    let first_id = core.document().projection().hard_line_id(0);
-    style(&mut core, view, SemanticInlineStyle::Emphasis, true);
-    key(&mut core, view, Key::Char('a'));
-    assert_eq!(core.document().projection().hard_line_id(0), first_id);
-    assert!(
-        DocumentLayoutStyles::character_at(core.document().projection(), at, false)
-            .unwrap()
-            .slant
-            != viem_core::document::FontSlant::Upright
-    );
-    key(&mut core, view, Key::Backspace);
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-    assert_eq!(core.document().projection().hard_line_id(0), first_id);
-}
+
 #[test]
 fn styled_replace_counts_backspace_and_dot_keep_one_undo_unit() {
     for (format, source, at) in fixtures() {

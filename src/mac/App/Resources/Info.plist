@@ -63,22 +63,6 @@
 			<string>ViemAppShell.EVDocument</string>
 		</dict>
 		<dict>
-			<key>CFBundleTypeExtensions</key>
-			<array>
-				<string>rtf</string>
-			</array>
-			<key>CFBundleTypeName</key>
-			<string>RTF</string>
-			<key>CFBundleTypeRole</key>
-			<string>Editor</string>
-			<key>LSItemContentTypes</key>
-			<array>
-				<string>public.rtf</string>
-			</array>
-			<key>NSDocumentClass</key>
-			<string>ViemAppShell.EVDocument</string>
-		</dict>
-		<dict>
 			<key>CFBundleTypeName</key>
 			<string>Other Files (Text)</string>
 			<key>CFBundleTypeRole</key>

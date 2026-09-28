@@ -8,7 +8,7 @@ import XCTest
 final class EVFormattingToolbarTests: XCTestCase {
   private func surface(_ source: String, type: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.rtfType)
+    try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 300)
@@ -146,10 +146,10 @@ final class EVFormattingToolbarTests: XCTestCase {
     let toolbar = surface.formattingToolbar
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
     toolbar.refresh()
-    XCTAssertTrue(toolbar.foreground.isHiddenOrHasHiddenAncestor)
-    for command: EVMenuCommand in [.underline, .strikethrough, .superscript, .subscriptText] {
-      XCTAssertTrue(try XCTUnwrap(toolbar.commandButtons[command]).isHidden)
-    }
+    XCTAssertEqual(Set(toolbar.commandButtons.keys), Set([
+      .bold, .italic, .strikethrough, .bulletedList, .numberedList, .increaseIndent, .decreaseIndent
+    ]))
+    XCTAssertFalse(try XCTUnwrap(toolbar.commandButtons[.strikethrough]).isHidden)
     let bold = try XCTUnwrap(toolbar.commandButtons[.bold])
     toolbar.performCommand(bold)
     XCTAssertNil(surface.commandOutput)
@@ -180,37 +180,6 @@ final class EVFormattingToolbarTests: XCTestCase {
     toolbar.performCommand(bullets)
     XCTAssertNil(surface.commandOutput)
     XCTAssertEqual(bullets.state, .on)
-  }
-
-  func testColorsUseNativeWellsCommitOnceAndPreserveSelection() throws {
-    let source = #"{\rtf1{\pard Words}}"#
-    let (backend, surface) = try surface(source)
-    let toolbar = surface.formattingToolbar
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 80),
-      styleMask: [.titled], backing: .buffered, defer: false)
-    window.contentView = toolbar
-    defer {
-      toolbar.foreground.dismissColorControls()
-      toolbar.background.dismissColorControls()
-      NSColorPanel.shared.orderOut(nil)
-      window.orderOut(nil)
-    }
-    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
-    toolbar.refresh()
-    let before = try XCTUnwrap(surface.session).listSelection()
-    toolbar.foreground.showColorPanel()
-    XCTAssertFalse(surface.canUndo)
-    NSColorPanel.shared.color = NSColor(srgbRed: 0.25, green: 0.5, blue: 0.75, alpha: 1)
-    XCTAssertNil(surface.commandOutput)
-    let formatting = try XCTUnwrap(surface.session).selectedFormatting()
-    XCTAssertEqual(formatting[.characterForeground], .color(.init(red: 64 / 255, green: 128 / 255, blue: 191 / 255, alpha: 1)))
-    let after = try XCTUnwrap(surface.session).listSelection()
-    XCTAssertEqual(before.text_start, after.text_start)
-    XCTAssertEqual(before.text_end, after.text_end)
-    toolbar.foreground.dismissColorControls()
-    surface.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.rtfType), Data(source.utf8))
-    XCTAssertFalse(surface.canUndo)
   }
 
   func testWindowRefreshKeepsToolbarCurrentWithoutPollingAndFitsNarrowWindows() throws {

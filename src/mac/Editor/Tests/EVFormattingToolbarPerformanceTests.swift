@@ -8,9 +8,7 @@ import XCTest
 final class EVFormattingToolbarPerformanceTests: XCTestCase {
   func testLargeDocumentToolbarRefreshAndFormattingToggles() throws {
     let markdown = "# Heading\n\n- First item\n- Second item\n\n" + String(repeating: "A paragraph with **bold** and `code` text.\n\n", count: 4000)
-    let rtf = "{\\rtf1 First item\\par Second item\\par " + String(repeating: "A paragraph with {\\b bold} text.\\par ", count: 4000) + "}"
-    for (format, source) in [(EVDocument.markdownType, markdown), (EVDocument.markdownSourceType, markdown),
-                             (EVDocument.rtfType, rtf)] {
+    for (format, source) in [(EVDocument.markdownType, markdown), (EVDocument.markdownSourceType, markdown)] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: format)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

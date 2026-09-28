@@ -42,6 +42,7 @@ public final class EVStatusBarView: NSView {
   public var commandOutputDidDismiss: (() -> Void)?
   public var commandOutputDidReceiveKey: ((NSEvent) -> Void)?
   private let formatSelect = EVStatusSelect()
+  private let formatLabel = NSTextField(labelWithString: "")
   private let leftGroup = NSStackView()
   private let commandCaret = NSTextInsertionIndicator(frame: .zero)
   private let outputScroll = NSScrollView()
@@ -73,14 +74,14 @@ public final class EVStatusBarView: NSView {
 
     formatSelect.configure(
       label: "Format",
-      options: [EVSourceFormat.plainText, .code, .markdownSource, .markdown, .rtf].map {
+      options: [EVSourceFormat.markdownSource, .markdown].map {
         ($0.displayName, .format($0))
       }
     )
     formatSelect.didChoose = { [weak self] option in self?.optionDidChange?(option) }
     // Everything except the caret position widget is left-aligned; the widget
     // is always present and always at the trailing edge.
-    leftGroup.setViews([modeLabel, formatSelect, messageLabel], in: .leading)
+    leftGroup.setViews([modeLabel, formatSelect, formatLabel, messageLabel], in: .leading)
     leftGroup.orientation = .horizontal
     leftGroup.spacing = 14
     leftGroup.alignment = .centerY
@@ -167,6 +168,8 @@ public final class EVStatusBarView: NSView {
       string: currentState.location,
       attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
     formatSelect.applyTheme(theme)
+    formatLabel.font = theme.statusFont
+    formatLabel.textColor = theme.statusForeground.color
     outputTextView.font = commandFont
     outputTextView.textColor = theme.statusForeground.color
     outputTextView.insertionPointColor = .clear
@@ -392,16 +395,18 @@ public final class EVStatusBarView: NSView {
     messageLabel.stringValue = state.message
     locationLabel.title = state.location
     locationLabel.image = Self.lineIcon(state.lineMode)
-    locationLabel.isEnabled = state.format != EVSourceFormat.rtf.displayName
     locationLabel.toolTip =
-      state.format == EVSourceFormat.rtf.displayName
-      ? "Visual lines · RTF has no physical source lines"
-      : (state.lineMode == .visual
+      (state.lineMode == .visual
         ? "Visual lines · click for physical source lines"
         : "Physical source lines · click for visual lines")
     if state.locationIsFragment {
       locationLabel.toolTip = "Position shows hard line · visual row. Click to change line mode."
     }
+    let isMarkdown = [EVSourceFormat.markdown.displayName, EVSourceFormat.markdownSource.displayName].contains(state.format)
+    formatSelect.isHidden = !isMarkdown
+    formatLabel.isHidden = isMarkdown
+    formatLabel.stringValue = state.format
+    formatLabel.setAccessibilityLabel("Format: \(state.format)")
     formatSelect.selectItem(withTitle: state.format)
     formatSelect.invalidateIntrinsicContentSize()
 

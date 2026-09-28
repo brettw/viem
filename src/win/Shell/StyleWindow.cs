@@ -32,8 +32,7 @@ internal sealed partial class StyleWindow : Window
     private readonly ComboBox parent = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox next = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Button delete = new() { Content = "Delete", Width = 68 };
-    private readonly DropDownButton create = new() { Content = "New", Width = 72, VerticalAlignment = VerticalAlignment.Center };
-    private readonly MenuFlyoutItem createParagraph = new() { Text = "Paragraph style" };
+    private readonly Button create = new() { Content = "New", Width = 72, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button visitParent = NavigationButton();
     private readonly Button visitNext = NavigationButton();
     private readonly StackPanel character = new() { Spacing = 12 };
@@ -62,10 +61,7 @@ internal sealed partial class StyleWindow : Window
         choiceRow.Children.Add(stylePicker);
         Grid.SetColumn(create, 1); choiceRow.Children.Add(create); Grid.SetColumn(delete, 2); choiceRow.Children.Add(delete);
         stylePicker.VerticalAlignment = delete.VerticalAlignment = VerticalAlignment.Center;
-        var createMenu = new MenuFlyout();
-        foreach (var (title, space) in new[] { ("Paragraph style", 1u), ("Character style", 2u) })
-        { var item = space == 1 ? createParagraph : new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Try(() => { string id = view.CreateStyle(space, "New " + title); CancelCaretFollow(); Load(new(space, id)); }); createMenu.Items.Add(item); }
-        create.Flyout = createMenu;
+        create.Click += (_, _) => Try(() => { string id = view.CreateCodeStyle("New Character style"); CancelCaretFollow(); Load(new(VIEM_STYLE_NAMESPACE_CHARACTER, id)); });
         Field(properties, "Style", choiceRow); Field(properties, "Name", name); Field(properties, "Style type", kind); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
         Add(properties);
         Add(availability);
@@ -170,8 +166,7 @@ internal sealed partial class StyleWindow : Window
             availability.Text = preferences.SelectedTheme == null ? "Default changes last for this session. Create a theme to keep them." : "Changes are saved to “" + preferences.SelectedTheme + "”.";
             availability.Visibility = Visibility.Visible;
             restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
-            create.IsEnabled = view.UsesGlobalStyles || view.Document.State.format is VIEM_FORMAT_RTF;
-            createParagraph.Visibility = view.UsesGlobalStyles ? Visibility.Collapsed : Visibility.Visible;
+            create.IsEnabled = view.UsesGlobalStyles;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();

@@ -11,9 +11,9 @@ namespace Viem.Windows.Shell;
 // slot may be replaced or removed. The source file is never autosaved in place.
 internal sealed record RecoverySnapshot(byte[] source, string format, uint encoding, uint fileFormat, ulong documentID, ulong documentRevision)
 {
-    [System.Text.Json.Serialization.JsonIgnore] public uint Format => format switch { "markdown" => 2, "rtf" => 4, "markdownSource" => 5, "html" or "htmlSource" or "code" => 7, _ => 1 };
+    [System.Text.Json.Serialization.JsonIgnore] public uint Format => format switch { "markdown" => 2, "markdownSource" => 5, "html" or "htmlSource" or "code" => 7, _ => 1 };
     public static RecoverySnapshot Capture(CoreDocument doc)
-    { var s = doc.State; return new(doc.Source(s.document_revision), s.format switch { 2 => "markdown", 4 => "rtf", 5 => "markdownSource", 7 => "code", _ => "plainText" }, s.encoding, s.file_format, s.document_id, s.document_revision); }
+    { var s = doc.State; return new(doc.Source(s.document_revision), s.format switch { 2 => "markdown", 5 => "markdownSource", 7 => "code", _ => "plainText" }, s.encoding, s.file_format, s.document_id, s.document_revision); }
 }
 internal sealed record RecoveryRecord(int version, Guid owner, int processID, string host, string targetPath, double created, double updated, RecoverySnapshot? snapshot);
 internal sealed record RecoveryCandidate(string Path, RecoverySnapshot? Snapshot);

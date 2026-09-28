@@ -12,7 +12,7 @@ pub(super) fn rich_text_patches(
     edit: &super::TextEdit,
     affinity: Option<BoundaryAffinity>,
 ) -> Result<Vec<super::SourcePatch>, DocumentError> {
-    use super::{Format, SourcePatch};
+    use super::SourcePatch;
     let original = edit;
     let mut edit = complete_contributors(document.projection(), edit)?;
     let plan = overlapping_text_plan(document, &edit.range)?;
@@ -38,45 +38,10 @@ pub(super) fn rich_text_patches(
                 .ok_or(DocumentError::AmbiguousProjection)?;
             runs = vec![at..at];
         }
-        if document.format() == Format::Rtf {
-            let at = super::rtf::advance_past_fallback_scope(document, runs[0].start)?;
-            runs = vec![at..at];
-        }
+
     }
     let source_at = plan.as_ref().map_or(runs[0].start, |plan| plan.insertion);
-    let syntax = if document.format() == Format::Markdown {
-        document.escape_markdown_source_text(source_at, &edit.replacement)?
-    } else if document.source_byte_len() == 0 {
-        format!("{{\\rtf1\\ansi {}}}", super::rtf::escape(&edit.replacement))
-    } else {
-        super::rtf::escape_insertion(document, source_at, &edit.replacement)?
-    };
-    let syntax = if edit.range.is_empty() && !edit.replacement.is_empty() {
-        let closing = document
-            .projection()
-            .provenance_touching(&edit.range)
-            .into_iter()
-            .find(|span| {
-                span.formatted.end == edit.range.start
-                    && span.source.end == runs[0].start
-                    && document
-                        .projection()
-                        .text_tree()
-                        .slice(span.formatted.clone())
-                        .ok()
-                        .as_deref()
-                        == Some("\u{fffc}")
-            })
-            .map(|span| match document.format() {
-                Format::Rtf => super::rtf::opaque_closing_syntax(document, span.source),
-                _ => Ok(String::new()),
-            })
-            .transpose()?
-            .unwrap_or_default();
-        format!("{closing}{syntax}")
-    } else {
-        syntax
-    };
+    let syntax = document.escape_markdown_source_text(source_at, &edit.replacement)?;
     let replacement = document.encoding().encode_fragment(&syntax)?;
     let mut patches = Vec::new();
 
@@ -86,11 +51,7 @@ pub(super) fn rich_text_patches(
         let value = if Some(index) == insertion_run {
             replacement.clone()
         } else if index == last && !suffix.is_empty() {
-            let syntax = if document.format() == Format::Markdown {
-                document.escape_markdown_source_text(range.start, &suffix)?
-            } else {
-                super::rtf::escape_insertion(document, range.start, &suffix)?
-            };
+            let syntax = document.escape_markdown_source_text(range.start, &suffix)?;
             document.encoding().encode_fragment(&syntax)?
         } else {
             Vec::new()

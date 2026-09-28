@@ -222,13 +222,7 @@ impl Document {
         let target = targets(blocks, &range, unindent)?;
         let decoded = self.encoding().decode(&self.source_bytes())?;
         let input = normalize(&decoded, self.file_format());
-        let mut table_indents = BTreeMap::new();
-        let patches = match self.format() {
-            Format::Rtf => {
-                rtf_patches(self, &input, blocks, &target, unindent, &mut table_indents)?
-            }
-            _ => markdown_patches(self, &input, blocks, &target, unindent)?,
-        };
+        let patches = markdown_patches(self, &input, blocks, &target, unindent)?;
         let prepared = self.prepare_source_only_patches(patches)?;
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
@@ -257,21 +251,8 @@ impl Document {
                 BlockKind::ListItem { ordered, .. } => Some(ordered),
                 _ => None,
             };
-            let mut paragraph = before.direct_paragraph.clone();
-            if let Some((old, new)) = table_indents.get(&index) {
-                // Modern list tables own these two indentation defaults.
-                // Authored paragraph overrides continue to win unchanged.
-                if paragraph.leading_indent == old.leading_indent
-                    && after.direct_paragraph.leading_indent == new.leading_indent
-                {
-                    paragraph.leading_indent = new.leading_indent;
-                }
-                if paragraph.first_line_indent == old.first_line_indent
-                    && after.direct_paragraph.first_line_indent == new.first_line_indent
-                {
-                    paragraph.first_line_indent = new.first_line_indent;
-                }
-            }
+            let paragraph = before.direct_paragraph.clone();
+
             if before.range != after.range
                 || expected != level(after)
                 || ordered(before) != ordered(after)
@@ -518,128 +499,4 @@ fn markdown_patches(
         }
     }
     Ok(patches)
-}
-
-fn rtf_patches(
-    document: &Document,
-    input: &super::super::line_endings::NormalizedText,
-    blocks: &[Block],
-    target: &Targets,
-    unindent: bool,
-    table_indents: &mut BTreeMap<usize, (BlockProperties, BlockProperties)>,
-) -> Result<Vec<SourcePatch>, DocumentError> {
-    use super::super::rtf::{self, Kind};
-    let tokens = rtf::tokenize(input);
-    let tables = super::super::rtf_lists::ListTables::read(&tokens);
-    let converter = super::super::rich_text::Builder::new(input, Revision(0));
-    let mut state = (None, 0u8, false, true);
-    let mut stack = Vec::new();
-    let mut selectors = vec![(0, None)];
-    for token in &tokens {
-        match &token.kind {
-            Kind::Open => {
-                stack.push(state);
-                state.3 = true;
-            }
-            Kind::Close => state = stack.pop().unwrap_or((None, 0, false, true)),
-            Kind::Symbol('*') if state.3 => state.2 = true,
-            Kind::Control(name, number) => {
-                if state.3 && rtf::non_body(name) {
-                    state.2 = true;
-                }
-                state.3 = false;
-                if !state.2 {
-                    match name.as_str() {
-                        "ls" => state.0 = number.filter(|id| (1..=2000).contains(id)),
-                        "ilvl" => {
-                            state.1 =
-                                number.filter(|level| (0..9).contains(level)).unwrap_or(0) as u8
-                        }
-                        "pard" => {
-                            state.0 = None;
-                            state.1 = 0;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-        let selector = (!state.2)
-            .then_some(state.0.map(|id| (id, state.1)))
-            .flatten();
-        if selectors.last().unwrap().1 != selector {
-            selectors.push((converter.source_range(token.range.clone()).end, selector));
-        }
-    }
-    let selector_at = |at| {
-        selectors[selectors
-            .partition_point(|(position, _)| *position <= at)
-            .saturating_sub(1)]
-        .1
-    };
-    let mut inserts: BTreeMap<usize, String> = BTreeMap::new();
-    for index in target.first..target.end {
-        let block = &blocks[index];
-        let start = super::super::rich_text::block_source_point(document.projection(), block)?;
-        let (id, old_level) = selector_at(start).ok_or(DocumentError::UnsupportedFormatting)?;
-        let new_level = if unindent {
-            old_level.checked_sub(1)
-        } else {
-            old_level.checked_add(1)
-        }
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-        let old = tables
-            .level(id, old_level)
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let new = tables
-            .level(id, new_level)
-            .filter(|new| new.ordered == old.ordered)
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        if Some(old_level) != level(block) {
-            return Err(DocumentError::AmbiguousProjection);
-        }
-        let mut end = document
-            .projection()
-            .provenance_for_region(&block.range)
-            .iter()
-            .filter(|span| !span.source.is_empty())
-            .map(|span| span.source.end)
-            .max()
-            .unwrap_or(start);
-        // The existing paragraph delimiter belongs to the selected paragraph;
-        // its selector must resume only after that delimiter in external RTF.
-        if let Some(boundary) = document
-            .projection()
-            .provenance_for_region(&(block.range.end..block.range.end.saturating_add(1)))
-            .iter()
-            .find(|span| {
-                span.formatted.start == block.range.end
-                    && document.text().get(span.formatted.clone()) == Some("\n")
-            })
-        {
-            end = end.max(boundary.source.end);
-        }
-        let restore = selector_at(end).map_or_else(
-            || "\\ls0 ".to_owned(),
-            |(id, level)| format!("\\ls{id}\\ilvl{level} "),
-        );
-        inserts
-            .entry(start)
-            .or_default()
-            .push_str(&format!("\\ilvl{new_level} "));
-        if end != start || index + 1 < blocks.len() {
-            inserts.entry(end).or_default().push_str(&restore);
-        }
-        table_indents.insert(index, (old.paragraph.clone(), new.paragraph.clone()));
-    }
-    inserts
-        .into_iter()
-        .map(|(at, text)| {
-            Ok(SourcePatch::primary(
-                at..at,
-                document.encoding().encode_fragment(&text)?,
-            ))
-        })
-        .collect()
 }

@@ -26,7 +26,7 @@ impl CommandInterpreter {
     ) {
         self.typing_style = TypingStyle { named, values, inherited };
     }
-    /// Publish validated pending style after a native paragraph transaction,
+    /// Publish validated pending style after a native formatting transaction,
     /// retaining its place in the insert-session repeat program.
     pub(crate) fn install_typing_style(
         &mut self,
@@ -122,27 +122,6 @@ impl CommandInterpreter {
         }
         Ok(())
     }
-    pub fn clear_typing_property(&mut self, property: StyleProperty) {
-        self.typing_style.values.retain(|(p, _)| *p != property);
-        if let Some(session) = self.insert_session.as_mut() {
-            if let Some(program) = session.repeat_program.as_mut() {
-                program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
-            }
-        }
-    }
-    pub fn clear_typing_properties(&mut self) {
-        if self.typing_style.values.is_empty() {
-            return;
-        }
-        self.typing_style.values.clear();
-        if let Some(session) = self.insert_session.as_mut() {
-            if !session.replaying_program {
-                if let Some(program) = session.repeat_program.as_mut() {
-                    program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
-                }
-            }
-        }
-    }
     pub fn apply_typing_presentation(
         &self,
         document: &Document,
@@ -169,33 +148,8 @@ impl CommandInterpreter {
                         style.base_weight
                     };
                 }
-                (StyleProperty::CharacterFontFamilies, V::FontFamilies(v)) => {
-                    style.font_families = v.clone()
-                }
-                (StyleProperty::CharacterSize, V::Float(v)) => style.size = *v,
-                (StyleProperty::CharacterWeight, V::FontWeight(v)) => {
-                    style.base_weight = *v;
-                    style.weight = if style.bold {
-                        v.saturating_add(300).min(1000)
-                    } else {
-                        *v
-                    };
-                }
                 (StyleProperty::CharacterSlant, V::FontSlant(v)) => style.slant = *v,
-                (StyleProperty::CharacterForeground, V::Color(v)) => {
-                    style.foreground = *v;
-                    style.foreground_is_default = false;
-                }
-                (StyleProperty::CharacterBackground, V::Color(v)) => style.background = Some(*v),
-                (StyleProperty::CharacterUnderline, V::Boolean(v)) => style.underline = *v,
                 (StyleProperty::CharacterStrikethrough, V::Boolean(v)) => style.strikethrough = *v,
-                (StyleProperty::CharacterLanguage, V::Text(v)) => style.language = Some(v.clone()),
-                (StyleProperty::CharacterDirection, V::WritingDirection(v)) => style.direction = *v,
-                (StyleProperty::CharacterOpenTypeFeatures, V::OpenTypeFeatures(v)) => {
-                    style.open_type_features = v.clone()
-                }
-                (StyleProperty::CharacterLetterSpacing, V::Float(v)) => style.letter_spacing = *v,
-                (StyleProperty::CharacterScriptPosition, V::ScriptPosition(v)) => style.script_position = *v,
                 _ => {}
             }
         }

@@ -23,19 +23,7 @@ const CASES: &[(Format, &str)] = &[
     (Format::Markdown, "[a]: url\n\n[a] b"),
     (Format::Markdown, "| a | b |\n| - | - |\n| c | d |"),
     (Format::Markdown, "a **é👩‍💻** b"),
-    (Format::Rtf, "{\\rtf1 a {\\b b} c}"),
-    (Format::Rtf, "{\\rtf1 a\\line b\\par c}"),
-    (Format::Rtf, "{\\rtf1 a {\\*\\unknown keep}b}"),
-    (
-        Format::Rtf,
-        "{\\rtf1 a{\\field{\\*\\fldinst HYPERLINK url}{\\fldrslt b}}c}",
-    ),
-    (Format::Rtf, "{\\rtf1 a{\\pict\\pngblip 00}b}"),
-    (Format::Rtf, "{\\rtf1 a{\\object{\\*\\objdata 00}}b}"),
-    (Format::Rtf, "{\\rtf1 a\\tab b\\par c}"),
-    (Format::Rtf, "{\\rtf1 a\\u233?{\\b b}c}"),
-    (Format::Rtf, "{\\rtf1 a\\u-10179?\\u-8704?b}"),
-    (Format::Rtf, "{\\rtf1{\\b a\\par b}\\par c}"),
+
 ];
 
 #[test]

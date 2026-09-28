@@ -35,16 +35,6 @@ import XCTest
         }
     }
 
-    private func modernRTFList(ordered: Bool) -> String {
-        let levels = (1...4).map { level in
-            let label = ordered
-                ? "{\\leveltext\\'02\\'\(String(format: "%02x", level - 1)).;}{\\levelnumbers\\'01;}"
-                : "{\\leveltext\\'01\\u8226?;}{\\levelnumbers;}"
-            return "{\\listlevel\\levelnfc\(ordered ? 0 : 23)\\levelstartat1\(label)\\li\(640 * level)\\fi-200}"
-        }.joined()
-        return "{\\rtf1{\\*\\listtable{\\list\(levels)\\listid42}}{\\*\\listoverridetable{\\listoverride\\listid42\\listoverridecount0\\ls1}}\\pard\\ls1\\ilvl0 Alpha\\par Beta{\\*\\unknown keep}}"
-    }
-
     func testInternalListFamiliesRemainEditableAndOnlyCurrentStyleAppearsInMenu() throws {
         for (type, source) in [
             (EVDocument.markdownType, "- Parent\n  - Child\n\nOutside"),
@@ -79,8 +69,6 @@ import XCTest
     func testListIndentCommandsFollowCoreCapabilitiesAndRoundTripExactSource() throws {
         for (type, source, family) in [
             (EVDocument.markdownType, "- Alpha\n- Beta", "BulletedList"),
-            (EVDocument.rtfType, modernRTFList(ordered: false), "BulletedList"),
-            (EVDocument.rtfType, modernRTFList(ordered: true), "NumberedList"),
         ] {
             let (backend, view, session) = try surface(source, type: type)
             XCTAssertFalse(view.presentation(for: .increaseIndent).isEnabled)
@@ -117,13 +105,6 @@ import XCTest
         let (_, plain, _) = try surface("ordinary paragraph", type: "public.plain-text")
         XCTAssertFalse(plain.presentation(for: .increaseIndent).isEnabled)
         XCTAssertFalse(plain.presentation(for: .decreaseIndent).isEnabled)
-        let (legacyBackend, legacy, _) = try surface(#"{\rtf1{\*\pn\pnlvlblt}Alpha\par Beta}"#, type: EVDocument.rtfType)
-        legacy.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
-        let legacySource = try legacyBackend.serializedSource(typeName: EVDocument.rtfType)
-        XCTAssertFalse(legacy.presentation(for: .increaseIndent).isEnabled)
-        XCTAssertFalse(legacy.presentation(for: .decreaseIndent).isEnabled)
-        legacy.perform(menuCommand: .increaseIndent, sender: nil)
-        XCTAssertEqual(try legacyBackend.serializedSource(typeName: EVDocument.rtfType), legacySource)
         let (_, deepest, _) = try surface("- A\n  - B\n    - C\n      - D\n      - Deep", type: EVDocument.markdownType)
         deepest.editorView.setAccessibilitySelectedTextRange(NSRange(location: 8, length: 0))
         XCTAssertEqual(try currentListEntries(deepest).map(\.stableID), ["BulletedList4"])
