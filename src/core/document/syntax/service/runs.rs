@@ -206,19 +206,37 @@ impl RunStore {
         previous
     }
 
-    /// Drop the runs strictly inside the replaced old hull and shift the runs
-    /// after it by the hull's growth. Runs ending at the hull start are kept.
-    pub(super) fn shift_for_edit(&mut self, old_hull: &Range<usize>, new_hull: &Range<usize>) -> bool {
-        let indices = self.store.overlapping_index_span(old_hull);
-        let Some(items) = self.store.get_range(&indices) else {
-            return false;
-        };
-        let kept = items
-            .iter()
-            .filter(|item| item.range.end <= old_hull.start)
-            .cloned()
-            .collect::<Vec<_>>();
-        self.splice(indices, &items, kept, old_hull.end, new_hull.end)
+    /// Remap only affected runs, including the predecessor at the hull start
+    /// whose style an insertion can inherit. Shift the untouched suffix lazily.
+    /// `predecessor_start` is the preceding grapheme's start, not its last byte.
+    /// Return a hull covering the complete remapped runs so publication can
+    /// replace them without leaving fragments of the old presentation behind.
+    pub(super) fn rebase_for_edit(
+        &mut self,
+        old_hull: &Range<usize>,
+        new_hull: &Range<usize>,
+        predecessor_start: usize,
+        mut remap: impl FnMut(&SyntaxRun) -> Vec<SyntaxRun>,
+    ) -> Option<(Range<usize>, Range<usize>)> {
+        let query = predecessor_start..old_hull.end;
+        let indices = self.store.overlapping_index_span(&query);
+        let items = self.store.get_range(&indices)?;
+        let mut end = items.iter().map(|run| run.range.end).max().unwrap_or(old_hull.end).max(old_hull.end);
+        let mut new_end = new_hull.end.checked_add(end - old_hull.end)?;
+        let replacement: Vec<_> = items.iter().flat_map(&mut remap).collect();
+        // Raw captures can start inside an earlier grapheme owned by another
+        // run. Use their displayed starts so that owner's span stays outside
+        // the publication hull unless it was actually remapped here.
+        let start = replacement.iter().map(|run| run.range.start).min().unwrap_or(old_hull.start).min(old_hull.start);
+        // A scalar capture's displayed style can reach to its grapheme's end.
+        // Cover that normalized extent as well as the raw provider run.
+        let mapped_end = replacement.iter().map(|run| run.range.end).max().unwrap_or(new_end);
+        if mapped_end > new_end {
+            end = end.checked_add(mapped_end - new_end)?;
+            new_end = mapped_end;
+        }
+        self.splice(indices, &items, replacement, old_hull.end, new_hull.end)
+            .then_some((start..end, start..new_end))
     }
 
     /// Evict runs from the document start until the retained bytes fit the
@@ -313,20 +331,39 @@ mod tests {
     }
 
     #[test]
-    fn shift_drops_runs_inside_the_hull_and_moves_the_rest() {
+    fn rebase_maps_only_affected_runs_and_expands_publication_to_their_edges() {
         let mut store = RunStore::new(vec![run(0..10, "A"), run(10..20, "B"), run(20..30, "C")]);
-        // Insert three bytes at 15: B straddles the point and is dropped.
-        assert!(store.shift_for_edit(&(15..15), &(15..18)));
-        assert_eq!(store.runs(), vec![run(0..10, "A"), run(23..33, "C")]);
-        assert_eq!(store.names().map(|n| n.to_string()).collect::<Vec<_>>(), ["A", "C"]);
-        // Delete 2..28: A ends inside, C starts inside; both dropped.
-        assert!(store.shift_for_edit(&(2..28), &(2..2)));
-        assert_eq!(store.runs(), vec![]);
-        // A run ending exactly at the hull start stays; one starting at the
-        // hull end shifts.
+        let mut visited = Vec::new();
+        let hull = store.rebase_for_edit(&(15..15), &(15..18), 14, |item| {
+            visited.push(item.name.as_str().to_owned());
+            vec![item.with_range(10..23)]
+        });
+        assert_eq!(visited, ["B"]);
+        assert_eq!(hull, Some((10..20, 10..23)));
+        assert_eq!(store.runs(), vec![run(0..10, "A"), run(10..23, "B"), run(23..33, "C")]);
+        assert_eq!(store.bytes(), RunStore::new(store.runs()).bytes());
+        // Include the predecessor even when it ends exactly at the insertion.
         let mut store = RunStore::new(vec![run(0..10, "A"), run(10..20, "B")]);
-        assert!(store.shift_for_edit(&(10..10), &(10..12)));
-        assert_eq!(store.runs(), vec![run(0..10, "A"), run(12..22, "B")]);
+        assert_eq!(store.rebase_for_edit(&(10..10), &(10..12), 9, |item| vec![item.with_range(0..12)]),
+            Some((0..10, 0..12)));
+        assert_eq!(store.runs(), vec![run(0..12, "A"), run(12..22, "B")]);
+    }
+
+    #[test]
+    fn local_rebase_work_does_not_grow_with_unrelated_cached_runs() {
+        for count in [100, 20_000] {
+            let mut store = RunStore::new((0..count).map(|i| run(i * 10..i * 10 + 6, "A")).collect());
+            let mut visits = 0;
+            let hull = store.rebase_for_edit(&(5..5), &(5..7), 4, |item| {
+                visits += 1;
+                vec![item.with_range(0..8)]
+            });
+            assert_eq!(visits, 1);
+            assert_eq!(hull, Some((0..6, 0..8)));
+            assert_eq!(store.len(), count);
+            assert_eq!(store.runs_in(&(count * 10 - 8..count * 10)),
+                vec![run(count * 10 - 8..count * 10 - 2, "A")]);
+        }
     }
 
     #[test]

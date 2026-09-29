@@ -93,10 +93,8 @@ fn exact_maps_retain_surviving_text_across_insertions_deletions_and_disjoint_edi
     assert_eq!(
         service.runs(next.identity()),
         vec![
-            run(0..2, "Comment"),
-            run(4..5, "Comment"),
-            run(12..14, "Keyword"),
-            run(15..17, "Keyword")
+            run(0..5, "Comment"),
+            run(12..17, "Keyword")
         ]
     );
     let final_input = input(3, "red plain bue");
@@ -112,13 +110,69 @@ fn exact_maps_retain_surviving_text_across_insertions_deletions_and_disjoint_edi
     assert_eq!(
         service.runs(final_input.identity()),
         vec![
-            run(0..2, "Comment"),
-            run(2..3, "Comment"),
-            run(10..11, "Keyword"),
-            run(11..13, "Keyword")
+            run(0..3, "Comment"),
+            run(10..13, "Keyword")
         ]
     );
     assert!(service.runs(old.identity()).is_empty());
+}
+
+#[test]
+fn inserted_and_replacement_text_inherits_only_the_preceding_style() {
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    for local in [false, true] {
+        for (replaced, text, expected) in [
+            (0..0, "Xab cd", vec![run(1..3, "Comment"), run(4..6, "Keyword")]),
+            (1..1, "aXb cd", vec![run(0..3, "Comment"), run(4..6, "Keyword")]),
+            (2..2, "abX cd", vec![run(0..3, "Comment"), run(4..6, "Keyword")]),
+            (3..3, "ab Xcd", vec![run(0..2, "Comment"), run(4..6, "Keyword")]),
+            (5..5, "ab cdX", vec![run(0..2, "Comment"), run(3..6, "Keyword")]),
+            (1..4, "aXd", vec![run(0..2, "Comment"), run(2..3, "Keyword")]),
+            (1..5, "aX", vec![run(0..2, "Comment")]),
+            (0..5, "X", vec![]),
+            (1..4, "ad", vec![run(0..1, "Comment"), run(1..2, "Keyword")]),
+        ] {
+            let old = input(1, "ab cd");
+            let next = input(2, text);
+            let inserted = next.byte_len() + replaced.len() - old.byte_len();
+            let edits = map(&old, &next, vec![Splice::new(replaced.clone(), inserted).unwrap()]);
+            let mut service = seeded(&old, vec![run(0..2, "Comment"), run(3..5, "Keyword")]);
+            service.take_publication_delta();
+            service.rebase_input(next.clone(), Some(&edits),
+                local.then_some((replaced.clone(), replaced.start..replaced.start + inserted)));
+            assert_eq!(service.runs(next.identity()), expected, "{text:?}, local={local}");
+            assert!(service.cache.is_empty());
+            assert_eq!(service.runs.bytes(), RunStore::new(service.runs.runs()).bytes());
+            let delta = service.take_publication_delta();
+            assert_eq!(delta.unbounded, !local);
+            assert_eq!(service.statistics.requests, 0, "retention does not run a provider");
+        }
+    }
+}
+
+#[test]
+fn unicode_predecessor_and_repeated_pending_typing_keep_one_style_until_replaced() {
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    let mut current = input(1, "a\u{301}");
+    let mut service = seeded(&current, vec![run(0..1, "Comment"), run(1..3, "String")]);
+    for inserted in ["👩‍💻", "\n", "é", " tail"] {
+        let end = current.byte_len();
+        let next = SyntaxInputSnapshot::new(
+            SyntaxInputIdentity { revision: current.identity().revision + 1, ..current.identity() },
+            current.text_tree().splice(end..end, inserted).unwrap(),
+        );
+        let edits = map(&current, &next, vec![Splice::new(end..end, inserted.len()).unwrap()]);
+        service.take_publication_delta();
+        service.rebase_input(next.clone(), Some(&edits), Some((end..end, end..next.byte_len())));
+        assert_eq!(service.runs(next.identity()), vec![run(0..next.byte_len(), "Comment")]);
+        current = next;
+    }
+    let pending = result(&service, &current, 0..current.byte_len(), Vec::new(), Coverage::Missing);
+    publish(&mut service, pending, &current);
+    assert_eq!(service.runs(current.identity()), vec![run(0..current.byte_len(), "Comment")]);
+    let ready = result(&service, &current, 0..current.byte_len(), vec![run(0..3, "String")], Coverage::Exact);
+    assert!(publish(&mut service, ready, &current));
+    assert_eq!(service.runs(current.identity()), vec![run(0..3, "String")]);
 }
 
 #[test]
@@ -207,7 +261,7 @@ fn retention_requires_exact_document_revision_generation_and_unicode_boundaries(
     );
     assert_eq!(
         service.runs(next.identity()),
-        vec![run(0..3, "Comment"), run(4..8, "Keyword")],
+        vec![run(0..3, "Comment"), run(4..9, "Keyword")],
         "Retain the first scalar's displayed style for the whole grapheme"
     );
     let unrelated = SyntaxInputSnapshot::new(
@@ -294,4 +348,60 @@ fn current_results_and_retained_colors_share_one_run_memory_budget() {
     );
     assert_eq!(service.cache.len(), 1);
     assert!(service.retained_result_bytes() <= MAX_CACHED_RUN_BYTES);
+}
+
+#[test]
+fn local_publication_uses_displayed_grapheme_edges_without_dropping_or_duplicating_neighbors() {
+    use crate::document::{code_style, Document, Encoding, Format, StyleApplication};
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    for (source, captures, insertion, expected) in [
+        (
+            "a\u{301}bc",
+            vec![run(0..1, "Keyword"), run(1..5, "String")],
+            4,
+            vec![(0..3, "syntax:Keyword"), (3..6, "syntax:String")],
+        ),
+        (
+            "ab\u{301}c",
+            vec![run(0..2, "Keyword"), run(2..5, "String")],
+            1,
+            vec![(0..5, "syntax:Keyword"), (5..6, "syntax:String")],
+        ),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let sheet = Arc::new(code_style::default_sheet());
+        document.install_code_presentation(sheet.clone(), &captures);
+        let snapshot = |document: &Document| SyntaxInputSnapshot::new(
+            SyntaxInputIdentity {
+                document: document.id().0,
+                revision: document.revision().0,
+                generation: 1,
+            },
+            document.projection().text_tree().clone(),
+        );
+        let old = snapshot(&document);
+        let mut service = seeded(&old, captures);
+        service.take_publication_delta();
+        document.replace(insertion..insertion, "x").unwrap();
+        let next = snapshot(&document);
+        let map = document.code_presentation_change_map().unwrap().clone();
+        service.rebase_input(next.clone(), Some(&map),
+            Some((insertion..insertion, insertion..insertion + 1)));
+        let delta = service.take_publication_delta();
+        assert!(!delta.unbounded);
+        assert!(document.install_code_presentation_delta(sheet.clone(), service.run_store(), &delta),
+            "a local grapheme edge must not fall back to a full presentation rebuild");
+
+        let spans = |document: &Document| document.projection().style_spans().iter()
+            .filter_map(|span| match &span.application {
+                StyleApplication::Automatic(id) => Some((span.range.clone(), id.0.clone())),
+                _ => None,
+            }).collect::<Vec<_>>();
+        let expected = expected.into_iter().map(|(range, name)| (range, name.to_string())).collect::<Vec<_>>();
+        assert_eq!(spans(&document), expected,
+            "source={source:?}, insertion={insertion}: preserve the neighboring grapheme owner exactly once");
+        let mut fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Code).unwrap();
+        fresh.install_code_presentation(sheet, &service.runs(next.identity()));
+        assert_eq!(spans(&document), spans(&fresh), "local and fresh syntax projections must agree");
+    }
 }

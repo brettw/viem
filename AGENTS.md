@@ -505,6 +505,11 @@ languages leave parent highlighting intact; available children overlay parent
 runs, retaining parent runs in gaps. Test stale results, empty coverage, fallback,
 dependency repair, long lines and large-document locality.
 
+While edited Code awaits asynchronous highlighting, retain styles on surviving
+text and provisionally give new text the immediately preceding character's
+style. A missing/default predecessor stays default. This appearance is not
+provider coverage; current results, including empty coverage, replace it.
+
 ### Global Code styles
 
 Code uses one live application-wide stylesheet in the selected theme,

@@ -2,7 +2,7 @@
 //! are deliberately separate from provider coverage and its cache-hit policy.
 use super::{
     runs::{run_bytes, PublicationDelta, RunStore},
-    Coverage, SyntaxInputSnapshot, SyntaxResult, SyntaxService, MAX_CACHED_REGIONS,
+    Coverage, SyntaxInputSnapshot, SyntaxResult, SyntaxRun, SyntaxService, MAX_CACHED_REGIONS,
     MAX_CACHED_RUN_BYTES,
 };
 use crate::document::{DocumentId, PositionDomain, PositionMap, Revision, TextPoint, TextRange};
@@ -14,9 +14,9 @@ impl SyntaxService {
     /// remain bound to their original input and are still rejected if stale.
     ///
     /// `hull` is the exact formatted extent the transition replaced, before and
-    /// after, when the document recorded one. Runs outside it keep their text,
-    /// so the store drops the runs inside it and shifts the rest in one lazy
-    /// coordinate change instead of mapping every run.
+    /// after, when the document recorded one. Only affected runs need mapping;
+    /// the untouched suffix shifts in one lazy coordinate change. New text
+    /// inherits the preceding character's appearance until analysis replaces it.
     pub(crate) fn rebase_input(
         &mut self,
         input: SyntaxInputSnapshot,
@@ -28,6 +28,8 @@ impl SyntaxService {
         }
         match (&self.current_input, map) {
             (Some(old), Some(map)) if matches_transition(old, &input, map) => {
+                let replacements = map.replacements().filter(|(_, new)| !new.is_empty()).collect::<Vec<_>>();
+                let remap = |run: &SyntaxRun| retain_run(old, map, &replacements, run);
                 let shift = hull.filter(|(old_hull, new_hull)| {
                     old_hull.start == new_hull.start
                         && old_hull.end <= old.byte_len()
@@ -35,32 +37,25 @@ impl SyntaxService {
                         && old.byte_len() as i128 - old_hull.end as i128
                             == input.byte_len() as i128 - new_hull.end as i128
                 });
-                match shift {
-                    Some((old_hull, new_hull)) if self.runs.shift_for_edit(&old_hull, &new_hull) => {
-                        self.delta.note_hull(old_hull, new_hull);
+                match shift.and_then(|(old_hull, new_hull)| {
+                    let predecessor = if old_hull.start == 0 { 0 }
+                        else { old.text_tree().previous_grapheme_boundary(old_hull.start).ok()?? };
+                    self.runs.rebase_for_edit(&old_hull, &new_hull, predecessor, remap)
+                }) {
+                    Some((old_hull, new_hull)) => {
+                        self.delta.note_hull(old_hull, new_hull.clone());
+                        self.delta.note_replaced(new_hull);
                     }
                     _ => {
                         let mut retained = Vec::new();
                         let mut bytes: usize = 0;
                         for run in self.runs.runs() {
-                            let Some(range) = logical_range(old, run.range.clone()) else {
-                                continue;
-                            };
-                            let Ok(mapped) = map.map_text_range(range) else {
-                                continue;
-                            };
-                            let Some(mapped) = mapped.value() else {
-                                continue;
-                            };
-                            for range in mapped.segments() {
-                                if range.is_empty() {
-                                    continue;
-                                }
+                            for run in remap(&run) {
                                 let size = run_bytes(&run);
                                 if bytes.saturating_add(size) > MAX_CACHED_RUN_BYTES {
                                     break;
                                 }
-                                retained.push(run.with_range(range.start().offset()..range.end().offset()));
+                                retained.push(run);
                                 bytes += size;
                             }
                         }
@@ -77,6 +72,7 @@ impl SyntaxService {
         self.cache.clear();
         self.current = Some(input.identity());
         self.current_input = Some(input);
+        self.bound_presentation_cache();
     }
 
     /// Install a completed result's runs over its declared coverage. Returns
@@ -109,6 +105,34 @@ impl SyntaxService {
             self.delta.note_replaced(removed);
         }
     }
+}
+
+fn retain_run(
+    old: &SyntaxInputSnapshot,
+    map: &PositionMap,
+    replacements: &[(Range<usize>, Range<usize>)],
+    run: &SyntaxRun,
+) -> Vec<SyntaxRun> {
+    let Some(range) = logical_range(old, run.range.clone()) else { return Vec::new() };
+    let Ok(mapped) = map.map_text_range(range) else { return Vec::new() };
+    let Some(mapped) = mapped.value() else { return Vec::new() };
+    let mut ranges = mapped.segments().iter()
+        .map(|range| range.start().offset()..range.end().offset()).collect::<Vec<_>>();
+    // A style owns insertions at its end, but not at its start. In particular,
+    // BOF and an unstyled predecessor must not borrow a following token's style.
+    ranges.extend(replacements.iter()
+        .filter(|(replaced, _)| range.start().offset() < replaced.start && replaced.start <= range.end().offset())
+        .map(|(_, inserted)| inserted.clone()));
+    ranges.sort_by_key(|range| range.start);
+    let mut retained: Vec<SyntaxRun> = Vec::new();
+    for range in ranges.into_iter().filter(|range| !range.is_empty()) {
+        if let Some(previous) = retained.last_mut().filter(|previous| previous.range.end >= range.start) {
+            previous.range.end = previous.range.end.max(range.end);
+        } else {
+            retained.push(run.with_range(range));
+        }
+    }
+    retained
 }
 
 fn matches_transition(
