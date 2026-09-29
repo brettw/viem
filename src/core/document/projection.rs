@@ -3272,7 +3272,8 @@ impl FormattedDocument {
                     replacement.push(span.with_range(region.end..span.range.end));
                 }
             }
-            replacement.extend(runs_in(region).iter().filter_map(|run| self.automatic_span(&names, run)));
+            replacement.extend(runs_in(region).iter().filter_map(|run| self.automatic_span(&names, run))
+                .filter(|span| span.range.start < region.end && region.start < span.range.end));
             let Some(next) = styles.splice(indices, replacement, 0, 0, &mut stats) else { return false };
             styles = next;
         }

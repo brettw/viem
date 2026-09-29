@@ -1296,6 +1296,22 @@ impl PositionMap {
         self.target_len
     }
 
+    /// Old/new extents not connected by surviving content, in document order.
+    /// Composed maps report aggregate replacements, not intermediate edits.
+    /// This walks only the compacted change boundaries, never document text.
+    pub(crate) fn replacements(&self) -> impl Iterator<Item = (Range<usize>, Range<usize>)> + '_ {
+        self.forward.surviving_content.iter()
+            .map(|piece| (piece.source.clone(), piece.target_start))
+            .chain(std::iter::once((self.source_len..self.source_len, self.target_len)))
+            .scan((0, 0), |(source_end, target_end), (source, target_start)| {
+                let replaced = (*source_end..source.start, *target_end..target_start);
+                *target_end = target_start + source.len();
+                *source_end = source.end;
+                Some(replaced)
+            })
+            .filter(|(old, new)| !old.is_empty() || !new.is_empty())
+    }
+
     #[cfg(test)]
     fn compiled_segment_count(&self) -> usize {
         self.forward
@@ -2691,6 +2707,28 @@ mod tests {
         let set = mapped.value().unwrap();
         assert_eq!(offsets(set), vec![1..2, 4..5]);
         assert!(matches!(mapped, MappingOutcome::Moved(_)));
+    }
+
+    #[test]
+    fn replacement_extents_cover_disjoint_edits_composition_and_inversion() {
+        let first = PositionMap::for_text(DocumentId(9), Revision(0), Revision(1),
+            "abcdef", "XabYefZ", vec![Splice::new(0..0, 1).unwrap(),
+                Splice::new(2..4, 1).unwrap(), Splice::new(6..6, 1).unwrap()]).unwrap();
+        let expected = vec![(0..0, 0..1), (2..4, 3..4), (6..6, 6..7)];
+        assert_eq!(first.replacements().collect::<Vec<_>>(), expected);
+        assert_eq!(first.inverted().unwrap().replacements().collect::<Vec<_>>(),
+            expected.into_iter().map(|(old, new)| (new, old)).collect::<Vec<_>>());
+        let next = PositionMap::for_text(DocumentId(9), Revision(1), Revision(2),
+            "XabYefZ", "XabQQef", vec![Splice::new(3..4, 2).unwrap(), Splice::new(6..7, 0).unwrap()]).unwrap();
+        assert_eq!(first.then(&next).unwrap().replacements().collect::<Vec<_>>(),
+            vec![(0..0, 0..1), (2..4, 3..5)]);
+        for (old, new) in [("", ""), ("", "text"), ("text", ""), ("text", "new")] {
+            let map = PositionMap::for_text(DocumentId(9), Revision(0), Revision(1), old, new,
+                vec![Splice::new(0..old.len(), new.len()).unwrap()]).unwrap();
+            let expected = if old.is_empty() && new.is_empty() { vec![] }
+                else { vec![(0..old.len(), 0..new.len())] };
+            assert_eq!(map.replacements().collect::<Vec<_>>(), expected);
+        }
     }
 
     #[test]

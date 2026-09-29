@@ -74,6 +74,15 @@ internal static class VimRuntimeTests
             else Check(painted, filename + " receives syntax paint: " + document.SyntaxDiagnostics);
             Check(document.State.document_revision == revision && !document.IsDirty
                 && document.Source(revision).AsSpan().SequenceEqual(source), filename + " highlighting preserves revision, bytes and clean state");
+            if (filename == "sample.cc")
+            {
+                view.Command("A"); view.Text("é");
+                var layout = view.Layout();
+                Check(layout.PaintRuns.Any(run => run.text_start <= tokenLength && run.text_end >= tokenLength + 2
+                    && (run.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0),
+                    "C++ comment typing inherits syntax paint in the first native layout");
+                view.Key(VIEM_KEY_ESCAPE); view.Undo();
+            }
             view.Command("i"); view.Text("x"); view.Key(VIEM_KEY_ESCAPE);
             Check(document.IsDirty, filename + " remains editable");
             view.Undo();
@@ -92,6 +101,7 @@ internal static class VimRuntimeTests
             await Paint("sources.list", "bookworm\n# vim: ft=debsources\n", 8);
         }
         await Paint("sample.rs", "fn main() { let value = 42; }\n", 2);
+        await Paint("sample.cc", "// comment\nint main() { return 0; }\n", 10);
     }
 }
 #endif
