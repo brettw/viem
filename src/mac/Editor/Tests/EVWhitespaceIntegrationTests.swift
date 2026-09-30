@@ -315,7 +315,7 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         let (backend, surface, preferences) = try fixture("x ", type: EVDocument.codeType)
         let codeStyle = try EVCodeStyleSession(configuration: backend.configuration)
         let declarations: [(EVStyleProperty, EVStyleValue)] = [
-            (.characterScriptPosition, .scriptPosition(1)), (.characterLetterSpacing, .float(3)),
+            (.characterLetterSpacing, .float(3)),
             (.characterLanguage, .string("ar")), (.characterDirection, .writingDirection(2))
         ]
         for (property, value) in declarations {
@@ -330,8 +330,6 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         let registry = try XCTUnwrap(surface.session).provider.renderRegistry
         let inherited = try XCTUnwrap(registry.textAttributes(identifier: cluster.render_run.identifier,
             metricsGeneration: cluster.render_run.metrics_generation))
-        XCTAssertEqual(inherited.scriptPosition, 1)
-        XCTAssertEqual(inherited.scriptOffset, inherited.scriptBaseSize / 3)
         XCTAssertEqual(inherited.letterSpacing, 3)
         XCTAssertEqual(inherited.language, "ar")
         XCTAssertEqual(inherited.writingDirection, .rightToLeft)
@@ -339,20 +337,19 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
             inherited: inherited, scale: 2), inherited, "Inherited attributes are already scaled")
 
         var explicit = EVVisibleWhitespaceStyle.defaultStyle
-        explicit.scriptPosition = .normal
         explicit.letterSpacing = 0
         explicit.language = "en"
         explicit.direction = .natural
         let resolved = EVEditorView.whitespaceTextAttributes(explicit, inherited: inherited, scale: 2)
-        XCTAssertEqual(resolved, CoreTextRenderAttributes(scriptBaseSize: inherited.scriptBaseSize, language: "en"))
+        XCTAssertEqual(resolved, CoreTextRenderAttributes(language: "en"))
         let inheritedInk = try markerInkCentroid(snapshot, surface: surface)
         var options = preferences.whitespacePresentation
         options.visibleWhitespace.style = explicit
         XCTAssertTrue(preferences.setWhitespacePresentation(options))
         let overridden = try XCTUnwrap(surface.layoutSnapshot)
         let overriddenInk = try markerInkCentroid(overridden, surface: surface)
-        XCTAssertGreaterThan(abs(inheritedInk.y - overriddenInk.y), 1,
-            "Inherited superscript must move the marker ink")
+        XCTAssertGreaterThan(abs(inheritedInk.x - overriddenInk.x), 0.1,
+            "Tracking and direction overrides must change marker ink")
         XCTAssertEqual(geometry(overridden), geometry(snapshot))
         XCTAssertEqual(overridden.whitespace.markers, snapshot.whitespace.markers)
         XCTAssertEqual(try backend.formattedText(), "x ")

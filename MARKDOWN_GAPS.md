@@ -1,6 +1,6 @@
 # Markdown compatibility with GitHub
 
-Updated September 26, 2026. The target is GitHub's rendering of repository
+Updated September 29, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
 from deferred work. It does not claim complete GFM conformance.
@@ -79,14 +79,15 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 7. **Surplus blank separators.** Viem deliberately retains editable empty
    paragraphs from repeated separator pairs. Do not collapse them to GitHub's
    presentation.
+8. **Unsupported inline HTML.** `<sub>` and `<sup>` retain literal source syntax.
 
 ## P3 — unchanged and not implemented in this pass
 
-8. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
+9. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
    titles, icons and treatments remain unsupported.
-9. **Math and diagrams.** Math expressions stay literal; Mermaid and other
+10. **Math and diagrams.** Math expressions stay literal; Mermaid and other
    diagram fences remain code.
-10. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Heading
+11. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Heading
    anchors/table-of-contents navigation, repository mentions, issue links and
    commit links are separate future work.
 

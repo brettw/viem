@@ -6,7 +6,7 @@ use super::line_endings::NormalizedText;
 use super::rich_text::Builder;
 use super::{
     BlockKind, BlockProperties, CharacterProperties, Color, FontSlant, FormattedDocument,
-    LineSpacing, ParagraphAlignment, Revision, ScriptPosition, WritingDirection,
+    LineSpacing, ParagraphAlignment, Revision, WritingDirection,
 };
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -755,8 +755,6 @@ fn project_tokens(
                     "b" | "strong" => frame.character.bold = Some(true),
                     "i" | "em" => frame.character.slant = Some(FontSlant::Italic),
                     "u" => frame.character.underline = Some(true),
-                    "sup" => frame.character.script_position = Some(ScriptPosition::Superscript),
-                    "sub" => frame.character.script_position = Some(ScriptPosition::Subscript),
                     "s" | "strike" | "del" => frame.character.strikethrough = Some(true),
                     "ol" => {
                         frame.list_counter = tag
@@ -1759,16 +1757,6 @@ pub(super) fn apply_css(
                     character.letter_spacing = Some(n);
                 }
             }
-            "vertical-align" => {
-                if let Some(position) = match lower.as_str() {
-                    "super" => Some(ScriptPosition::Superscript),
-                    "sub" => Some(ScriptPosition::Subscript),
-                    "baseline" => Some(ScriptPosition::Normal),
-                    _ => None,
-                } {
-                    character.script_position = Some(position);
-                }
-            }
             "direction" => {
                 if let Some(d) =
                     direction(&lower).filter(|direction| *direction != WritingDirection::Natural)
@@ -1979,16 +1967,6 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
     }
     if let Some(spacing) = properties.letter_spacing {
         declarations.push(format!("letter-spacing: {spacing}pt"));
-    }
-    if let Some(position) = properties.script_position {
-        declarations.push(format!(
-            "vertical-align: {}",
-            match position {
-                ScriptPosition::Normal => "baseline",
-                ScriptPosition::Superscript => "super",
-                ScriptPosition::Subscript => "sub",
-            }
-        ));
     }
     declarations.join("; ")
 }

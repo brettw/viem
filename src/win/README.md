@@ -84,9 +84,9 @@ fullscreen bounds do not replace the saved normal frame.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed variants such as Light or Bold.
 - The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
-  there is no Format menu. Fonts, colors,
-  script position, and paragraph properties remain available in the independent
-  theme style inspector. Its x²/x₂ buttons share one inheritance checkbox.
+  there is no Format menu. Fonts, colors, and paragraph properties remain
+  available in the independent theme style inspector. Its title identifies the
+  Code, Markdown, or Plain Text stylesheet and the selected theme.
 - Markdown's right-aligned **Formatted view** toolbar toggle switches between
   Source and WYSIWYG while retaining source bytes. Its document/Aa icon is pressed
   for WYSIWYG and unpressed for Source. The last choice is saved as

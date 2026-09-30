@@ -284,7 +284,7 @@ public enum EVFontCatalog {
     "cpsp": "Capital Spacing",
     "onum": "Oldstyle Figures", "lnum": "Lining Figures", "pnum": "Proportional Figures",
     "tnum": "Tabular Figures", "frac": "Fractions", "afrc": "Alternative Fractions",
-    "zero": "Slashed Zero", "ordn": "Ordinals", "sups": "Superscript", "subs": "Subscript",
+    "zero": "Slashed Zero", "ordn": "Ordinals",
     "sinf": "Scientific Inferiors", "swsh": "Swash", "cswh": "Contextual Swash",
     "salt": "Stylistic Alternates", "titl": "Titling Alternates", "hist": "Historical Forms",
   ]

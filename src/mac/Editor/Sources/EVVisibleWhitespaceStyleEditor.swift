@@ -136,7 +136,6 @@ private extension EVVisibleWhitespaceStyle {
             case .characterDirection: direction = nil
             case .characterOpenTypeFeatures: openTypeFeatures = nil
             case .characterLetterSpacing: letterSpacing = nil
-            case .characterScriptPosition: scriptPosition = nil
             default: break
             }
             return
@@ -158,7 +157,6 @@ private extension EVVisibleWhitespaceStyle {
             for item in v { features[item.tag] = item.setting }
             openTypeFeatures = features
         case let (.characterLetterSpacing, .float(v)): letterSpacing = v
-        case let (.characterScriptPosition, .scriptPosition(v)) where v <= 2: scriptPosition = [.normal, .superscript, .subscriptPosition][Int(v)]
         default: throw EVStyleBridgeError.core(status: UInt32(VIEM_STATUS_INVALID_STYLE_VALUE))
         }
     }
@@ -179,7 +177,6 @@ private extension EVVisibleWhitespaceStyle {
         declared[.characterDirection] = direction.map { .writingDirection($0 == .natural ? 0 : $0 == .leftToRight ? 1 : 2) }
         declared[.characterOpenTypeFeatures] = openTypeFeatures.map { .openTypeFeatures($0.sorted { $0.key < $1.key }.map { EVOpenTypeFeature(tag: $0.key, setting: $0.value) }) }
         declared[.characterLetterSpacing] = letterSpacing.map(EVStyleValue.float)
-        declared[.characterScriptPosition] = scriptPosition.map { .scriptPosition($0 == .normal ? 0 : $0 == .superscript ? 1 : 2) }
         let properties = Dictionary(uniqueKeysWithValues: EVStyleProperty.characterProperties.map { property in
             (property, EVResolvedStyleProperty(property: property, declared: declared[property], effective: declared[property],
                 contributorKind: UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY), contributor: declared[property] == nil ? nil : key, dependencies: []))

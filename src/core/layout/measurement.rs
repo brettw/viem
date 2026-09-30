@@ -5,7 +5,7 @@
 //! work without giving it ownership of document or view state.
 
 pub use crate::document::{BoundaryAffinity, FontSlant};
-use crate::document::{DocumentId, Revision, ScriptPosition, DEFAULT_FONT_FAMILY};
+use crate::document::{DocumentId, Revision, DEFAULT_FONT_FAMILY};
 use std::ops::Range;
 
 /// Identity for all font-resolution and measurement inputs owned by a provider.
@@ -75,8 +75,6 @@ pub struct ResolvedTextStyle {
     /// document's requested face rather than reducing both to a boolean.
     pub slant: FontSlant,
     pub letter_spacing: f32,
-    /// Semantic script placement; providers scale and position its glyphs.
-    pub script_position: ScriptPosition,
     pub language: Option<String>,
     pub script: Option<String>,
     pub direction: TextDirection,
@@ -92,7 +90,6 @@ impl Default for ResolvedTextStyle {
             relative_bold: false,
             slant: FontSlant::Upright,
             letter_spacing: 0.0,
-            script_position: ScriptPosition::Normal,
             language: None,
             script: None,
             direction: TextDirection::Auto,

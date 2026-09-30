@@ -278,27 +278,6 @@ internal static class StyleAndSettingsTests
             declare.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
             Check(inspector.Error.Length == 0 && inspector.FontFamilyControl.IsEnabled
                 && inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES), "an inherited font family can be enabled with the native declaration checkbox");
-            var scriptDeclaration = Children<CheckBox>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Superscript / Subscript");
-            var superscript = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Superscript");
-            var subscript = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.CharacterPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Subscript");
-            Check(!superscript.IsEnabled && !subscript.IsEnabled && scriptDeclaration.IsChecked == false,
-                "one inherited declaration checkbox controls both script buttons");
-            scriptDeclaration.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
-            superscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
-            Check(superscript.IsChecked == true && subscript.IsChecked == false
-                && inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_SUPERSCRIPT,
-                "native x² button declares superscript");
-            subscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
-            Check(superscript.IsChecked == false && subscript.IsChecked == true
-                && inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_SUBSCRIPT,
-                "native x₂ button clears superscript and declares subscript");
-            subscript.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
-            Check(superscript.IsChecked == false && subscript.IsChecked == false
-                && inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Value(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION).enum_value == VIEM_SCRIPT_POSITION_NORMAL,
-                "toggling the active script button off explicitly restores normal text");
-            scriptDeclaration.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
-            Check(!inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION)
-                && !Children<TextBlock>(inspector.CharacterPanel).Any(t => t.Text == "Baseline"), "clearing the shared checkbox restores inheritance and the numeric baseline field is removed");
             inspector.ThemeView.EditStyleFont(style, ["viem-missing-font", "serif"], null); inspector.RefreshForTesting(); await Task.Delay(100);
             Check(inspector.FontFamilyControl.Text == "viem-missing-font" && inspector.FontVariantControl.SelectedItem == null,
                 "unavailable document fonts remain visible without selecting a substitute variant");

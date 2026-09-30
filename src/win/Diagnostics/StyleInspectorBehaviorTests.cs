@@ -138,7 +138,7 @@ internal static class StyleInspectorBehaviorTests
             Check(inspector.AppWindow.ClientSize == preparedSize && shownSizes.All(size => size == preparedSize), "opening the inspector does not resize through intermediate visible layouts");
             Check(Math.Abs(inspector.RootControl.XamlRoot.Size.Height - inspector.RootControl.ActualHeight) < 2,
                 $"initial caret-style inspector fits its rendered content (desired={inspector.RootControl.DesiredSize.Height}, actual={inspector.RootControl.ActualHeight}, client={inspector.RootControl.XamlRoot.Size.Height}, scale={inspector.RootControl.XamlRoot.RasterizationScale})");
-            Check(Selected(inspector).Id == "Code", "Styles opens the current named character style immediately");
+            Check(Selected(inspector).Id == "Code" && inspector.Title == "Theme styles — Markdown — " + preferences.ThemeDisplayName, "Markdown Styles opens the current named character style immediately");
             Check(!inspector.CaretFollowScheduled, "opening Styles does not schedule an idle timer");
             byte[] source = document.Source(document.State.document_revision);
             int queries = inspector.CaretStyleQueries, loads = inspector.StyleLoads;
@@ -192,7 +192,7 @@ internal static class StyleInspectorBehaviorTests
             await Task.Delay(200);
             Check(Math.Abs(codeInspector.RootControl.XamlRoot.Size.Height - codeInspector.RootControl.ActualHeight) < 2,
                 $"initial Code inspector fits its rendered content (desired={codeInspector.RootControl.DesiredSize.Height}, actual={codeInspector.RootControl.ActualHeight}, client={codeInspector.RootControl.XamlRoot.Size.Height}, scale={codeInspector.RootControl.XamlRoot.RasterizationScale})");
-            Check(Selected(codeInspector).Namespace == 2 && codeInspector.Title == "Theme Styles — " + preferences.ThemeDisplayName, "Code Styles opens the retained syntax style under the caret");
+            Check(Selected(codeInspector).Namespace == 2 && codeInspector.Title == "Theme styles — Code — " + preferences.ThemeDisplayName, "Code Styles opens the retained syntax style under the caret");
             Move(codeView, 2); await Task.Delay(1100);
             Check((Selected(codeInspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0, "Code whitespace follows Base Paragraph within the global sheet");
         }
@@ -373,6 +373,7 @@ internal static class StyleInspectorBehaviorTests
             preferences.AttachThemeDocument(second);
             using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
             inspector.Retarget(other);
+            Check(inspector.Title == "Theme styles — Plain Text — " + preferences.ThemeDisplayName, "retargeting identifies the Plain Text stylesheet");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
             Check(!second.IsDirty && !document.IsDirty && HasColor(other, Microsoft.UI.Colors.Red) && HasColor(view, Microsoft.UI.Colors.Red),

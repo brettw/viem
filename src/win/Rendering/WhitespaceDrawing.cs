@@ -15,7 +15,7 @@ namespace Viem.Windows.Rendering;
 
 internal sealed unsafe partial class DirectWriteProvider
 {
-    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, uint Script, string Language, string Features)
+    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features)
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
@@ -28,7 +28,7 @@ internal sealed unsafe partial class DirectWriteProvider
             }
             var resolved = ResolveFont(style);
             return new(resolved.Family, resolved.Stretch, style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
-                style.script_position, style.has_language != 0 ? Text(style.language) : "", features);
+                style.has_language != 0 ? Text(style.language) : "", features);
         }
     }
 
@@ -73,15 +73,11 @@ internal sealed unsafe partial class DirectWriteProvider
                     Family = family, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
                     Slant = Value("slant")?.GetString() switch { "Upright" => FontStyle.Normal, "Italic" => FontStyle.Italic, "Oblique" => FontStyle.Oblique, _ => inherited.Slant },
                     Spacing = Value("letter_spacing") is JsonElement spacing ? spacing.GetSingle() * viewport.scale : inherited.Spacing,
-                    Script = Value("script_position")?.GetString() switch {
-                        "Normal" => VIEM_SCRIPT_POSITION_NORMAL, "Superscript" => VIEM_SCRIPT_POSITION_SUPERSCRIPT,
-                        "Subscript" => VIEM_SCRIPT_POSITION_SUBSCRIPT, _ => inherited.Script
-                    },
                     Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features
                 };
                 if (!layouts.TryGetValue((font, marker.Text), out var layout))
                 {
-                    using var format = new CanvasTextFormat { FontFamily = font.Family, FontStretch = font.Stretch, FontSize = ScriptSize(font.Size, font.Script), FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
+                    using var format = new CanvasTextFormat { FontFamily = font.Family, FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
                         Direction = Value("direction")?.GetString() == "RightToLeft" ? CanvasTextDirection.RightToLeftThenTopToBottom : CanvasTextDirection.LeftToRightThenTopToBottom };
                     layout = new CanvasTextLayout(device, marker.Text, format, 1, 10000);
                     layouts.Add((font, marker.Text), layout);
@@ -102,7 +98,7 @@ internal sealed unsafe partial class DirectWriteProvider
                 var previous = drawing.Transform;
                 try
                 {
-                    drawing.Transform = Matrix3x2.CreateScale(fit) * Matrix3x2.CreateTranslation((float)slot.X - (float)bounds.X * fit, baseline - (metrics.Baseline + ScriptOffset(font.Size, font.Script)) * fit) * previous;
+                    drawing.Transform = Matrix3x2.CreateScale(fit) * Matrix3x2.CreateTranslation((float)slot.X - (float)bounds.X * fit, baseline - metrics.Baseline * fit) * previous;
                     var color = Value("foreground") is JsonElement specified ? ColorValue(specified) : cluster.text_end > cluster.text_start ? foreground(cluster.text_start) : fallback;
                     drawing.DrawTextLayout(layout, 0, 0, color);
                 }

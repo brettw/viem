@@ -147,7 +147,7 @@ The third uses underscores.
 
 ## Passive HTML and comments
 
-Inline HTML supports <b>bold</b>, <em>emphasis</em>, <del>deleted text</del>, <code>code</code>, <kbd>keyboard text</kbd>, H<sub>2</sub>O, and x<sup>2</sup>.
+Inline HTML supports <b>bold</b>, <em>emphasis</em>, <del>deleted text</del>, <code>code</code>, <kbd>keyboard text</kbd>, and <u>underlined text</u>.
 
 A visible <!-- inline comment --> uses the Comment character style.
 

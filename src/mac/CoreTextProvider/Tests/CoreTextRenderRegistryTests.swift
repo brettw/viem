@@ -11,7 +11,7 @@ struct CoreTextRenderRegistryTests {
   func markerFontPreservesResolvedSizeAndTraits() throws {
     let registry = CoreTextRenderRegistry(generation: 1)
     let font = CTFontCreateWithName("TimesNewRomanPS-BoldItalicMT" as CFString, 27, nil)
-    let attributes = CoreTextRenderAttributes(scriptPosition: 1, scriptBaseSize: 12, letterSpacing: 2,
+    let attributes = CoreTextRenderAttributes(letterSpacing: 2,
       language: "ar", writingDirection: .rightToLeft)
     #expect(registry.install(.init(signature: [9], batches: [.init(font: font,
       strokeWidth: 0, glyphs: [CGGlyph(0)], positions: [.zero])], isColorGlyph: false,

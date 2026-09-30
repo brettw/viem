@@ -909,7 +909,6 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
     replace_some!(direction);
     replace_some!(open_type_features);
     replace_some!(letter_spacing);
-    replace_some!(script_position);
 }
 
 fn shaping_style(
@@ -936,7 +935,6 @@ fn shaping_style(
         relative_bold: character.bold,
         slant: character.slant,
         letter_spacing: character.letter_spacing,
-        script_position: character.script_position,
         language: character.language.clone(),
         script: None,
         direction: match character.direction {

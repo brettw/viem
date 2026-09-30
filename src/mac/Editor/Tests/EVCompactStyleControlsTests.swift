@@ -136,37 +136,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(checkbox.state, .off)
     }
 
-    func testScriptButtonsShareOneOverrideAndAreExclusive() throws {
-        let (backend, surface, editor, _) = try makeEditor()
-        defer { withExtendedLifetime(surface) {} }
-        let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
-        editor.selectStyle(heading)
-        let superscript = try control(NSButton.self, label: "Superscript", in: editor.view)
-        let subscriptButton = try control(NSButton.self, label: "Subscript", in: editor.view)
-        let override = try control(NSButton.self, label: "Override script position", in: editor.view)
-        XCTAssertEqual(superscript.title, "x²")
-        XCTAssertEqual(subscriptButton.title, "x₂")
-        XCTAssertEqual(override.state, .off)
-        XCTAssertFalse(superscript.isEnabled)
-        XCTAssertFalse(subscriptButton.isEnabled)
-        override.performClick(nil)
-        superscript.performClick(nil)
-        XCTAssertEqual(superscript.state, .on)
-        XCTAssertEqual(subscriptButton.state, .off)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterScriptPosition]?.declared, .scriptPosition(1))
-        subscriptButton.performClick(nil)
-        XCTAssertEqual(superscript.state, .off)
-        XCTAssertEqual(subscriptButton.state, .on)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterScriptPosition]?.declared, .scriptPosition(2))
-        subscriptButton.performClick(nil)
-        XCTAssertEqual(subscriptButton.state, .off)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterScriptPosition]?.declared, .scriptPosition(0))
-        override.performClick(nil)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterScriptPosition]?.declared)
-        XCTAssertFalse(superscript.isEnabled)
-        XCTAssertFalse(subscriptButton.isEnabled)
-    }
-
     func testInheritedFieldsAreEmptyUntilOverrideAndUncheckingRestoresInheritance() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }

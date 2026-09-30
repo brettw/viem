@@ -641,7 +641,6 @@ typedef struct ViemResolvedTextStyleV1 {
   float size;
   float weight;
   float letter_spacing;
-  uint32_t script_position;
   const ViemUtf8Slice *font_families;
   uint64_t font_family_count;
   ViemUtf8Slice language;
@@ -1017,7 +1016,6 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION 23u
 #define VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES 24u
 #define VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING 25u
-#define VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION 26u
 #define VIEM_STYLE_PROPERTY_CHARACTER_BOLD 27u
 #define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT 28u
 #define VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT 29u
@@ -1048,14 +1046,9 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES 9u
 #define VIEM_STYLE_VALUE_LINE_SPACING 10u
 #define VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT 11u
-#define VIEM_STYLE_VALUE_SCRIPT_POSITION 12u
 /* Named-style CharacterSize declarations only: enum_value is an integer 10..1000;
  * number is zero. Effective CharacterSize values remain FLOAT points. */
 #define VIEM_STYLE_VALUE_PERCENTAGE 13u
-
-#define VIEM_SCRIPT_POSITION_NORMAL 0u
-#define VIEM_SCRIPT_POSITION_SUPERSCRIPT 1u
-#define VIEM_SCRIPT_POSITION_SUBSCRIPT 2u
 
 #define VIEM_STYLE_VALUE_ITEM_STRING 1u
 #define VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE 2u

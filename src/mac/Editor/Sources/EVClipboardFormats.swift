@@ -36,7 +36,6 @@ struct EVClipboardFragment: Decodable {
         let direction: String
         let openTypeFeatures: [String: UInt32]
         let letterSpacing: Double
-        let scriptPosition: String
     }
 
     struct ParagraphRun: Decodable {
@@ -129,7 +128,6 @@ struct EVClipboardFragment: Decodable {
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font as NSFont,
                 .foregroundColor: run.foregroundIsDefault ? EVThemeStore.shared.theme.foreground.color : run.foreground.native,
-                .superscript: run.scriptPosition == "Superscript" ? 1 : run.scriptPosition == "Subscript" ? -1 : 0,
             ]
             attributes.merge(letterSpacingAttributes(CGFloat(run.letterSpacing))) { _, value in value }
             // AppKit's RTF writer drops tracking. Nonzero kern preserves its

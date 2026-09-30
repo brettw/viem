@@ -14,6 +14,13 @@ protocol EVStyleSettingsSession: AnyObject {
     func edit(key: EVStyleKey, expected: EVStyleSheetIdentity, mutation: EVStyleMutation) throws
 }
 
+extension EVStyleSettingsSession {
+    var windowTitle: String {
+        let family = sourceFormat == .code ? "Code" : sourceFormat == .plainText ? "Plain Text" : "Markdown"
+        return "Theme styles — \(family) — \(configuration.currentThemeName ?? "Default")"
+    }
+}
+
 extension Notification.Name {
     static let viemThemeStyleSessionDidChange = Notification.Name("com.viem.theme-style-session.did-change")
 }

@@ -58,8 +58,6 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
   public var direction: Direction?
   public var openTypeFeatures: [String: UInt32]?
   public var letterSpacing: Float?
-  public enum ScriptPosition: String, Codable, Sendable { case normal = "Normal", superscript = "Superscript", subscriptPosition = "Subscript" }
-  public var scriptPosition: ScriptPosition?
 
   public init() {}
 
@@ -81,12 +79,12 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
       && (letterSpacing?.isFinite ?? true)
   }
 
-  public static let propertyNames = ["font_families", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing", "script_position"]
+  public static let propertyNames = ["font_families", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing"]
 
   private enum CodingKeys: String, CodingKey {
     case fontFamilies = "font_families", size, weight, bold, slant, foreground, background
     case underline, strikethrough, language, direction, openTypeFeatures = "open_type_features"
-    case letterSpacing = "letter_spacing", scriptPosition = "script_position"
+    case letterSpacing = "letter_spacing"
   }
 }
 
