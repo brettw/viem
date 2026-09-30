@@ -10,11 +10,7 @@ extension Notification.Name {
 @MainActor
 public final class EVEditorSurfaceController: NSViewController, EVEditorSurface, EVDocumentHostAttachable {
     public var viewController: NSViewController { self }
-    /// The laid-out advance of the first visual row, which the host's window
-    /// height commands count in.
-    public var visualRowHeight: CGFloat? {
-        layoutSnapshot?.rows.first.map { CGFloat($0.line_advance) }.flatMap { $0 > 0 ? $0 : nil }
-    }
+    public var defaultLineHeight: CGFloat? { try? session?.defaultLineHeight() }
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     lazy var formattingToolbar = EVFormattingToolbarView(surface: self)

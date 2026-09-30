@@ -13142,6 +13142,33 @@ pub unsafe extern "C" fn viem_core_view_line_mode(
         Ok(())
     })
 }
+/// Read the zoomed Base Paragraph unit for native pane height commands.
+/// # Safety
+/// out_height must identify one aligned writable f32.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_default_line_height(
+    handle: ViemCoreHandle, view: ViemViewId, out_height: *mut f32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if out_height.is_null() || (out_height as usize) % align_of::<f32>() != 0 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let height = with_core(handle, |core| {
+            let scale = core.viewport_state(ViewId(view)).map_err(core_status)?.scale();
+            let document = core.document();
+            let code_sheet;
+            let sheet = if document.format().is_code() {
+                code_sheet = crate::document::code_style::snapshot();
+                &code_sheet
+            } else { document.projection().style_sheet() };
+            sheet.default_line_height().map(|height| height * scale)
+                .map_err(|_| ViemStatus::CoreFailure)
+        })?;
+        unsafe { out_height.write(height); }
+        Ok(())
+    })
+}
+
 /// Set a view's line-command domain.
 /// # Safety
 /// out_outcome must identify one aligned writable outcome.

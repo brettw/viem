@@ -449,7 +449,10 @@ extension EVDocumentWindowController {
             installedNewPane = true
           } else {
             paneContainer.focusPane(at: paneCount - 1)
-            addPane(document: opened)
+            do { try addPane(document: opened) } catch {
+              closeIfUnrepresented(opened)
+              finish(.failure(error)); return
+            }
             targetPane = documentContentController
           }
           targetController = self
@@ -487,8 +490,7 @@ extension EVDocumentWindowController {
   }
 
   private func launchPaneCapacity() -> Int {
-    let row = max(1, editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight)
-    let minimum = row + documentContentController.statusBarHeight + 1
+    let minimum = EVStatusBarView.preferredHeight
     return max(1, Int((window?.contentLayoutRect.height ?? 680) / minimum))
   }
 
@@ -689,11 +691,12 @@ extension EVDocumentWindowController {
       split(document, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
     case .newPane:
       do {
+        try paneContainer.requireSplitRoom()
         let next = EVDocument()
         try next.read(from: Data(), ofType: EVDocument.plainTextType)
         next.fileType = EVDocument.plainTextType
         NSDocumentController.shared.addDocument(next)
-        addPane(document: next, initialHeightRows: request.initialHeightRows)
+        try addPane(document: next, initialHeightRows: request.initialHeightRows)
         completion(.success(nil))
       } catch {
         completion(.failure(error))
@@ -1121,8 +1124,12 @@ extension EVDocumentWindowController {
     _ source: EVDocument, path: String?, initialHeightRows: Int? = nil,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
+    let sourcePane = documentContentController
+    let expected = source.editorBackend.persistenceState
+    do { try paneContainer.requireSplitRoom(in: sourcePane) } catch { completion(.failure(error)); return }
     guard let path else {
-      addPane(document: source, initialHeightRows: initialHeightRows)
+      do { try addPane(document: source, initialHeightRows: initialHeightRows, splitting: sourcePane) }
+      catch { completion(.failure(error)); return }
       completion(.success(nil))
       return
     }
@@ -1132,8 +1139,18 @@ extension EVDocumentWindowController {
     }
     openPaneDocument(url, fallback: source.fileType) { [weak self] opened, error in
       if let opened {
-        self?.addPane(document: opened, initialHeightRows: initialHeightRows)
-        completion(.success(nil))
+        guard let self else { completion(.failure(EVDocumentHostError.staleRequest)); return }
+        do {
+          guard sourcePane.document === source,
+            source.editorBackend.persistenceState.documentID == expected.documentID,
+            source.editorBackend.persistenceState.documentRevision == expected.documentRevision
+          else { throw EVDocumentHostError.staleRequest }
+          try self.addPane(document: opened, initialHeightRows: initialHeightRows, splitting: sourcePane)
+          completion(.success(nil))
+        } catch {
+          self.closeIfUnrepresented(opened)
+          completion(.failure(error))
+        }
       } else {
         completion(.failure(error ?? EVDocumentHostError.unsupportedRequest))
       }
@@ -1255,8 +1272,9 @@ extension EVDocumentWindowController {
     return pane
   }
 
-  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil) {
-    paneContainer.insert(makePane(document: document))
+  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil) throws {
+    try paneContainer.requireSplitRoom(in: source)
+    try paneContainer.insert(makePane(document: document), splitting: source)
     if let rows = initialHeightRows {
       paneContainer.perform(.setHeight(rows: rows))
     }
@@ -1401,7 +1419,8 @@ final class EVDocumentContentViewController: NSViewController,
 
   let editorSurface: any EVEditorSurface
   private let configuration: EVConfigurationStore
-  private let statusBar = EVStatusBarView()
+  let statusBar = EVStatusBarView()
+  var statusBarHeightDidChange: (() -> Void)?
   private var showsStatusBar: Bool
 
   init(editorSurface: any EVEditorSurface, configuration: EVConfigurationStore? = nil) {
@@ -1424,11 +1443,15 @@ final class EVDocumentContentViewController: NSViewController,
       if self.statusBar.isHidden == needed {
         self.statusBar.isHidden = !needed
         self.layoutContent()
+        self.statusBarHeightDidChange?()
       }
       (self.viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
         .updateActiveDocumentChrome()
     }
-    statusBar.preferredHeightDidChange = { [weak self] in self?.layoutContent() }
+    statusBar.preferredHeightDidChange = { [weak self] in
+      self?.layoutContent()
+      self?.statusBarHeightDidChange?()
+    }
     statusBar.optionDidChange = { [weak self] option in
       guard let self else { return }
       self.editorSurface.perform(statusOption: option)
@@ -1539,6 +1562,7 @@ final class EVDocumentContentViewController: NSViewController,
       && editorSurface.statusBarState.commandOutput == nil
       && !editorSurface.statusBarState.requiresInteraction
     layoutContent()
+    statusBarHeightDidChange?()
     try? configuration.setShowStatusBar(showsStatusBar)
   }
 

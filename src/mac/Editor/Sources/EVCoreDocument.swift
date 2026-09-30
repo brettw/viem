@@ -1130,6 +1130,12 @@ final class EVCoreViewSession {
         return EVLineMode(rawValue: value) ?? .visual
     }
 
+    func defaultLineHeight() throws -> CGFloat {
+        var height: Float = 0
+        try checked(viem_core_view_default_line_height(document.core, viewID, &height), operation: "Read default line height")
+        return CGFloat(height)
+    }
+
     func setLineMode(_ mode: EVLineMode) throws {
         _ = try performCoreOperation("Change line mode") { outcome in
             viem_core_view_set_line_mode(document.core, viewID, mode.rawValue, outcome)

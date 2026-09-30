@@ -35,6 +35,51 @@ final class EVWindowInputTests: XCTestCase {
         surface.editorView.insertText(text, replacementRange: noReplacement)
     }
 
+    func testHeightUnitUsesBaseParagraphSpacingRatherThanMixedFontsAndIncludesZoom() throws {
+        for typeName in [EVDocument.plainTextType, EVDocument.markdownType] {
+            let backend = EVCoreDocumentBackend()
+            try backend.read(source: Data("# Large title\n\nBody".utf8), typeName: typeName)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            surface.loadViewIfNeeded()
+            let session = try XCTUnwrap(surface.session)
+            func edit(_ key: EVStyleKey, _ mutation: EVStyleMutation) throws {
+                _ = try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity, mutation: mutation)
+                surface.refreshPresentation()
+            }
+            try edit(.baseParagraph, .setDeclaration(.characterSize, .float(20)))
+            try edit(.baseParagraph, .setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: 1.5))))
+            if typeName == EVDocument.markdownType {
+                try edit(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")), .setDeclaration(.characterSize, .float(80)))
+            }
+            XCTAssertEqual(try XCTUnwrap(surface.defaultLineHeight), 30, accuracy: 0.001)
+            _ = try session.setScale(2)
+            surface.refreshPresentation()
+            XCTAssertEqual(try XCTUnwrap(surface.defaultLineHeight), 60, accuracy: 0.001)
+            XCTAssertEqual(try backend.serializedSource(typeName: typeName), Data("# Large title\n\nBody".utf8))
+        }
+    }
+
+    func testCodeHeightUnitUsesTheCurrentCodeSheetAndViewZoom() throws {
+        let original = try EVCodeStyleSession.exportGlobalJSON()
+        defer {
+            _ = original.withUnsafeBytes { bytes in
+                viem_code_replace_style_json(bytes.bindMemory(to: UInt8.self).baseAddress, UInt64(bytes.count))
+            }
+        }
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data("code".utf8), typeName: EVDocument.codeType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let session = try XCTUnwrap(surface.session)
+        for mutation in [EVStyleMutation.setDeclaration(.characterSize, .float(24)),
+            .setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: 1.5)))] {
+            try EVCoreStyleBridge.applyCodeStyle(key: .baseParagraph, expected: EVCoreStyleBridge.copyStyleSheet(core: nil).identity, mutation: mutation)
+        }
+        XCTAssertEqual(try XCTUnwrap(surface.defaultLineHeight), 36, accuracy: 0.001)
+        _ = try session.setScale(2)
+        XCTAssertEqual(try XCTUnwrap(surface.defaultLineHeight), 72, accuracy: 0.001)
+    }
+
     func testCountedSplitAndNewPaneKeepTheirBufferAndSetEditorHeightInRows() throws {
         let (backend, document, window) = try fixture()
         defer { window.close(); document.close() }
@@ -47,7 +92,7 @@ final class EVWindowInputTests: XCTestCase {
         let split = try surface(window)
         XCTAssertTrue(split.backend === backend)
         XCTAssertFalse(split === original)
-        XCTAssertEqual(split.editorView.bounds.height, 6 * (try XCTUnwrap(split.visualRowHeight)), accuracy: 2)
+        XCTAssertEqual(split.editorView.bounds.height, 6 * (try XCTUnwrap(split.defaultLineHeight)), accuracy: 2)
         XCTAssertEqual(original.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
 
         type("iX", in: split)
@@ -64,7 +109,7 @@ final class EVWindowInputTests: XCTestCase {
         XCTAssertFalse(fresh.backend === backend)
         XCTAssertEqual(try fresh.backend.formattedText(), "")
         XCTAssertEqual(try backend.formattedText(), "Xfirst line\nsecond line\nthird")
-        XCTAssertEqual(fresh.editorView.bounds.height, 5 * (try XCTUnwrap(fresh.visualRowHeight)), accuracy: 2)
+        XCTAssertEqual(fresh.editorView.bounds.height, 5 * (try XCTUnwrap(fresh.defaultLineHeight)), accuracy: 2)
     }
 
     func testWindowControlAliasesCountsAndCancelSurviveNativeRouting() throws {
@@ -91,7 +136,7 @@ final class EVWindowInputTests: XCTestCase {
         try control("w", in: split)
         type("4", in: split)
         try control("_", in: split)
-        XCTAssertEqual(split.editorView.bounds.height, 4 * (try XCTUnwrap(split.visualRowHeight)), accuracy: 2)
+        XCTAssertEqual(split.editorView.bounds.height, 4 * (try XCTUnwrap(split.defaultLineHeight)), accuracy: 2)
         try control("w", in: split)
         type("2", in: split)
         try control("c", in: split)
@@ -100,6 +145,27 @@ final class EVWindowInputTests: XCTestCase {
         try control("w", in: split)
         type("1w", in: split)
         XCTAssertTrue(window.editorSurface === original)
+    }
+
+    func testSplittingACollapsedPaneReportsNoRoomWithoutChangingTheBuffer() throws {
+        let (backend, document, window) = try fixture()
+        defer { window.close(); document.close() }
+        let original = try surface(window)
+        try control("w", in: original)
+        type("s", in: original)
+        let collapsed = try surface(window)
+        try control("w", in: collapsed)
+        type("100000-", in: collapsed)
+        XCTAssertEqual(collapsed.editorView.bounds.height, 0, accuracy: 1)
+        let before = backend.persistenceState
+        try control("w", in: collapsed)
+        type("s", in: collapsed)
+        XCTAssertEqual(window.paneCount, 2)
+        XCTAssertTrue(window.editorSurface === collapsed)
+        XCTAssertEqual(collapsed.commandOutput, "No room to split the current view.")
+        XCTAssertEqual(backend.persistenceState.documentRevision, before.documentRevision)
+        XCTAssertEqual(backend.persistenceState.isDirty, before.isDirty)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data("first line\nsecond line\nthird".utf8))
     }
 
     func testVisualBlockWindowPrefixKeepsSelectionAndColonOpensItsRange() throws {

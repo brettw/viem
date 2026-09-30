@@ -29,6 +29,20 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   static let commandAreaGap: CGFloat = 5
 
   public var preferredHeightDidChange: (() -> Void)?
+  /// Top-to-bottom window delta; nil for the fixed bottom status bar.
+  var dragDidMove: ((CGFloat) -> Void)? {
+    didSet { resizeGesture.isEnabled = dragDidMove != nil }
+  }
+  private lazy var resizeGesture: NSPanGestureRecognizer = {
+    let gesture = NSPanGestureRecognizer(target: self, action: #selector(resizePanes(_:)))
+    gesture.buttonMask = 1
+    // A failed pan delivers the ordinary click to the original control,
+    // including the eye button. A recognized pan consumes that click.
+    gesture.delaysPrimaryMouseButtonEvents = true
+    gesture.isEnabled = false
+    return gesture
+  }()
+  private var lastDragTranslation: CGFloat = 0
   private var themeObserver: NSObjectProtocol?
   private var heightConstraint: NSLayoutConstraint!
   private var currentState = EVStatusBarState()
@@ -69,6 +83,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     translatesAutoresizingMaskIntoConstraints = false
     setAccessibilityRole(.group)
     setAccessibilityLabel("Editor status")
+    addGestureRecognizer(resizeGesture)
 
     let separator = NSBox()
     separator.boxType = .separator
@@ -219,6 +234,19 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
 
   @objc private func toggleLineMode() {
     optionDidChange?(.lineMode(currentState.lineMode == .visual ? .physicalSource : .visual))
+  }
+
+  @objc private func resizePanes(_ gesture: NSPanGestureRecognizer) {
+    switch gesture.state {
+    case .began, .changed:
+      if gesture.state == .began { lastDragTranslation = 0 }
+      let translation = -gesture.translation(in: nil).y
+      let delta = translation - lastDragTranslation
+      lastDragTranslation = translation // Discard blocked overshoot at an edge.
+      dragDidMove?(delta)
+    default:
+      lastDragTranslation = 0
+    }
   }
 
   @objc private func dismissCommandOutput(_ sender: Any?) { commandOutputDidDismiss?() }

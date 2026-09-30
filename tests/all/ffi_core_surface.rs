@@ -1703,6 +1703,32 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
 }
 
 #[test]
+fn default_line_height_is_view_local_and_does_not_measure_visible_text() {
+    let source = format!("# Heading\n\n{}", "Body\n\n".repeat(20_000));
+    let core = create_core(source.as_bytes(), ViemDocumentOptions {
+        format: VIEM_FORMAT_MARKDOWN, ..ViemDocumentOptions::default()
+    });
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, &mut *context);
+    let calls = context.shape_calls;
+    let mut height = -1.0;
+    assert_eq!(unsafe { viem_core_view_default_line_height(core.handle, view, &mut height) }, ViemStatus::Ok);
+    assert!(height > 0.0);
+    let original = height;
+    assert_eq!(context.shape_calls, calls, "the query performs no font measurement or layout");
+    assert_eq!(unsafe { viem_core_view_set_scale(core.handle, view, 1.5, &mut outcome) }, ViemStatus::Ok);
+    let scaled_calls = context.shape_calls;
+    assert_eq!(unsafe { viem_core_view_default_line_height(core.handle, view, &mut height) }, ViemStatus::Ok);
+    assert_eq!(height, original * 1.5);
+    assert_eq!(context.shape_calls, scaled_calls);
+    assert_eq!(unsafe { viem_core_view_default_line_height(core.handle, view, std::ptr::null_mut()) }, ViemStatus::InvalidArgument);
+    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
+    height = -1.0;
+    assert_eq!(unsafe { viem_core_view_default_line_height(core.handle, view, &mut height) }, ViemStatus::InvalidView);
+    assert_eq!(height, -1.0, "failure leaves the result untouched");
+}
+
+#[test]
 fn typed_view_options_are_local_or_shared_and_fail_atomically() {
     let core = create_core(
         b"a\rb\n",
