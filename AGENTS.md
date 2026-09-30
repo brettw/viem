@@ -1360,6 +1360,12 @@ generation. Missing visual stops never enlarge a logical edit's grapheme range.
   extent for wheel, keyboard and scrollbars. Estimates are not authoritative
   clamps. Repeated endpoint paging is stationary; explicit scrolling must not
   be undone by a subsequent generic caret reveal.
+- Cursor movement and active search matches reveal horizontal overflow in both
+  wrapping modes. Cursor movement minimally reveals the complete cursor cell.
+  Search centers the cursor, then shifts as little as possible to fit the match's
+  first visual row. Oversized matches put the cursor just inside the leading
+  viewport edge to show as much of that row as possible. Reveal must retain exact
+  visible geometry on sparse long lines without materializing the whole line.
 - Preserve a text anchor and fractional row offset through reflow, projection
   changes and height refinement. Typing and asynchronous syntax/layout completion
   preserve the editing row's screen baseline while it fits; clipping permits

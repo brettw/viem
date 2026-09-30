@@ -1,5 +1,8 @@
 //! Width-independent shaping and per-view unpaginated layout.
 
+// Leave room for the native insertion indicator at a zero-margin line end.
+pub(crate) const CARET_REVEAL_WIDTH: f32 = 2.0;
+
 mod composition;
 mod block_box;
 mod direction;

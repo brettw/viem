@@ -61,6 +61,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         history_navigation: false,
                         ex_outcome: None,
                         clipboard_writes: Vec::new(),
+                        revealed_search_match: None,
                     }),
                     document_changed: false,
                     position_map: None,

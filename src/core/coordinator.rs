@@ -2128,7 +2128,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             if !viewport.has_horizontal_focus() {
                 let view = &self.views[&view_id];
                 let position = view.commands.visual_position();
-                let offset = position.map_or(view.commands.cursor(), |position| position.text_offset);
+                let offset = view.search_preview_destination(&self.document)
+                    .unwrap_or_else(|| position.map_or(view.commands.cursor(), |position| position.text_offset));
                 let desired_x = view.commands.desired_x().or_else(|| {
                     view.layout.snapshot()?.logical_endpoint_geometry(offset, view.commands.boundary_affinity()).ok().map(|geometry| geometry.rect.x)
                 });
@@ -2354,7 +2355,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
             let before = self.layout_provider_requirements(view_id)?;
-            let result = self.materialize_immediate_viewport_once(view_id, intent);
+            let result = self.materialize_immediate_viewport_once(view_id, intent)
+                .and_then(|()| self.materialize_revealed_horizontal_viewport(view_id));
             if result.is_ok() || attempt == 2 {
                 return result;
             }
@@ -2366,6 +2368,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
         }
         unreachable!("bounded layout retry always returns")
+    }
+
+    /// Revealing a caret can leave the old horizontal band on giant rows.
+    /// Refill only the resulting viewport, preserving the published target.
+    fn materialize_revealed_horizontal_viewport(&mut self, view_id: ViewId) -> Result<(), CoreError> {
+        let layout = &self.views[&view_id].layout;
+        let (left, top) = (layout.viewport_left(), layout.viewport_top());
+        if layout.snapshot().is_some_and(|snapshot| !snapshot.covers_horizontal_viewport(left, layout.width())) {
+            self.materialize_requested_viewport(view_id, left, top)?;
+        }
+        Ok(())
     }
 
     fn materialize_immediate_viewport_once(
@@ -4456,6 +4469,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 history_navigation: false,
                 ex_outcome: Some(ex),
                 clipboard_writes: Vec::new(),
+                revealed_search_match: None,
             })
         };
         self.publish_select_typing(view_id, pending_typing);
@@ -4699,6 +4713,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     history_navigation: false,
                     ex_outcome: None,
                     clipboard_writes: Vec::new(),
+                    revealed_search_match: None,
                 }),
                 document_changed: false,
                 position_map: None,
@@ -4834,6 +4849,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 history_navigation: true,
                 ex_outcome: None,
                 clipboard_writes: Vec::new(),
+                revealed_search_match: None,
             }),
             document_changed: changed,
             position_map: Some(map),
@@ -4918,6 +4934,35 @@ impl<P: TextMeasurementProvider> Core<P> {
             Ok(changed) => outcome.layout_changed |= changed,
             Err(error) => self.record_presentation_error(view_id, error),
         }
+        let revealed_match = outcome.command.as_ref()
+            .and_then(|command| command.revealed_search_match.clone())
+            .filter(|range| !outcome.document_changed && range.start == self.views[&view_id].commands.cursor());
+        let reveal = (|| -> Result<(), CoreError> {
+            if let Some(range) = revealed_match {
+                if self.views[&view_id].layout.snapshot()
+                    .is_some_and(|snapshot| snapshot.has_horizontal_materialization())
+                {
+                    // A fitting match can extend beyond the centered viewport
+                    // into a gap in an old sparse band. Cover one viewport width
+                    // on either side of the cursor before classifying the match.
+                    let view = self.views.get_mut(&view_id).expect("validated view");
+                    viewport::reveal_search_match(&mut view.layout, range.start..range.start)?;
+                    let layout = &view.layout;
+                    let (left, top, width) = (layout.viewport_left(), layout.viewport_top(), layout.width());
+                    if layout.snapshot().is_some_and(|snapshot| {
+                        !snapshot.covers_horizontal_viewport(left - width / 2.0, width * 2.0)
+                    }) {
+                        self.materialize_requested_viewport(view_id, left, top)?;
+                    }
+                }
+                let view = self.views.get_mut(&view_id).expect("validated view");
+                viewport::reveal_search_match(&mut view.layout, range)?;
+                update_viewport_anchor(&self.document, view);
+                outcome.layout_changed = true;
+            }
+            self.materialize_revealed_horizontal_viewport(view_id)
+        })();
+        if let Err(error) = reveal { self.record_presentation_error(view_id, error); }
         Ok(outcome)
     }
 
@@ -5453,7 +5498,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 ) {
                     return Err(CoreError::NoVisualSelection);
                 }
-                let (before_top, before_layout) = {
+                let (before_top, before_left, before_layout) = {
                     let layout = &self
                         .views
                         .get(&view_id)
@@ -5461,6 +5506,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .layout;
                     (
                         layout.viewport_top(),
+                        layout.viewport_left(),
                         layout.snapshot().map(|snapshot| snapshot.revision),
                     )
                 };
@@ -5475,6 +5521,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     document_changed: false,
                     position_map: None,
                     layout_changed: layout.viewport_top() != before_top
+                        || layout.viewport_left() != before_left
                         || layout.snapshot().map(|snapshot| snapshot.revision) != before_layout,
                     composition_changes: Vec::new(),
                 })
@@ -5761,7 +5808,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     planned_presentation.as_ref().is_some_and(|requests| {
                         requests.contains(&CommandPresentationRequest::Relayout)
                     }) || (was_visual_block && target_view.commands.visual_block().is_none());
-                let command_requests_reveal = (!viewport_command || changed) && planned_presentation
+                let command_requests_reveal = command.revealed_search_match.is_some() || (!viewport_command || changed) && planned_presentation
                     .as_ref()
                     .map_or(changed || cursor_moved, |requests| {
                         requests.contains(&CommandPresentationRequest::RevealCaret)
@@ -6042,7 +6089,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .views
                             .get_mut(&view_id)
                             .expect("invoking view remains attached during serial dispatch");
-                        viewport::reveal_caret_row(view)
+                        viewport::reveal_caret_row(&self.document, view)
                     };
                     match reveal {
                         Ok(()) => {

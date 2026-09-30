@@ -299,6 +299,19 @@ pub(super) fn search_destination_with_navigation(
     options: SearchOptions,
     navigation: &[SearchDirection],
 ) -> Result<Option<usize>, String> {
+    search_match_with_navigation(lines, origin, direction, pattern, count, options, navigation)
+        .map(|matched| matched.map(|range| range.start))
+}
+
+pub(super) fn search_match_with_navigation(
+    lines: &HardLineSnapshot,
+    origin: usize,
+    direction: SearchDirection,
+    pattern: &str,
+    count: usize,
+    options: SearchOptions,
+    navigation: &[SearchDirection],
+) -> Result<Option<Range<usize>>, String> {
     search_match_sequence(
         lines,
         origin,
@@ -310,7 +323,6 @@ pub(super) fn search_destination_with_navigation(
         navigation,
         None,
     )
-    .map(|matched| matched.map(|range| range.start))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -460,6 +472,46 @@ mod tests {
             .search_presentation(document)
             .incremental_match
             .unwrap()
+    }
+
+    #[test]
+    fn committed_search_returns_the_exact_match_for_reveal_without_incremental_search() {
+        let (mut document, mut commands) = setup("zero needle end needle", "");
+        let found = keys(&mut commands, &mut document, "/needle<CR>");
+        assert_eq!(found.revealed_search_match, Some(5..11));
+        let next = keys(&mut commands, &mut document, "n");
+        assert_eq!(next.revealed_search_match, Some(16..22));
+        let previous = keys(&mut commands, &mut document, "N");
+        assert_eq!(previous.revealed_search_match, Some(5..11));
+        let missing = keys(&mut commands, &mut document, "/absent<CR>");
+        assert!(missing.revealed_search_match.is_none());
+    }
+
+    #[test]
+    fn wrapped_search_returns_its_match_even_when_the_cursor_does_not_move() {
+        let (mut document, mut commands) = setup("needle", "");
+        let found = keys(&mut commands, &mut document, "/needle<CR>");
+        assert!(!found.cursor_moved);
+        assert_eq!(found.revealed_search_match, Some(0..6));
+    }
+
+    #[test]
+    fn compound_outputs_retain_only_a_still_current_search_match() {
+        let mut output = CommandOutput {
+            revealed_search_match: Some(5..11),
+            ..CommandOutput::complete()
+        };
+        output.merge(CommandOutput::complete());
+        assert_eq!(output.revealed_search_match, Some(5..11));
+        output.merge(CommandOutput { cursor_moved: true, ..CommandOutput::complete() });
+        assert!(output.revealed_search_match.is_none());
+        output.merge(CommandOutput {
+            revealed_search_match: Some(16..22),
+            ..CommandOutput::complete()
+        });
+        assert_eq!(output.revealed_search_match, Some(16..22));
+        output.merge(CommandOutput { document_changed: true, ..CommandOutput::complete() });
+        assert!(output.revealed_search_match.is_none());
     }
 
     #[test]

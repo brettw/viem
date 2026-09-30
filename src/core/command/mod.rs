@@ -31,7 +31,7 @@ pub use whitespace::VisibleWhitespaceSetting;
 pub mod search_regex;
 pub mod search_presentation;
 pub use search_presentation::{SearchPresentation, SearchPresentationKey, IncrementalSearchPreview};
-use search_presentation::search_destination_with_navigation;
+use search_presentation::{search_destination_with_navigation, search_match_with_navigation};
 pub mod text_object;
 pub mod visual_block;
 pub mod window;
@@ -273,6 +273,9 @@ pub struct CommandOutput {
     /// restoration anchors instead of treating the invoking cursor as an
     /// ordinary post-edit position.
     pub history_navigation: bool,
+    /// The exact match accepted by an ordinary search navigation in this
+    /// command. Presentation can reveal it without repeating the search.
+    pub revealed_search_match: Option<Range<usize>>,
     /// Present after a successfully committed Ex command. This carries typed
     /// host requests plus the exact side effects committed by the controller.
     /// Internal continuations such as `:normal` are consumed before this
@@ -503,6 +506,7 @@ impl CommandOutput {
             document_changed: false,
             mode_changed: false,
             history_navigation: false,
+            revealed_search_match: None,
             ex_outcome: None,
             clipboard_writes: Vec::new(),
         }
@@ -536,6 +540,7 @@ impl CommandOutput {
             document_changed,
             mode_changed,
             history_navigation,
+            revealed_search_match,
             ex_outcome,
             mut clipboard_writes,
         } = next;
@@ -543,6 +548,9 @@ impl CommandOutput {
         self.document_changed |= document_changed;
         self.mode_changed |= mode_changed;
         self.history_navigation |= history_navigation;
+        if revealed_search_match.is_some() || cursor_moved || document_changed {
+            self.revealed_search_match = revealed_search_match;
+        }
         self.status = status;
         if let Some(next_outcome) = ex_outcome {
             match self.ex_outcome.as_mut() {
@@ -12751,6 +12759,7 @@ impl CommandInterpreter {
                 outcome.navigation,
                 Some(ExNavigation::HistoryRestoration)
             ),
+            revealed_search_match: None,
             ex_outcome: Some(outcome),
             clipboard_writes: Vec::new(),
         }
@@ -13734,14 +13743,15 @@ impl CommandInterpreter {
         count: usize, navigation: &[SearchDirection],
     ) -> CommandOutput {
         let old = self.cursor;
-        match search_destination_with_navigation(
+        match search_match_with_navigation(
             &document.hard_line_snapshot(), old, direction, pattern, count, self.search_options, navigation,
         ) {
-            Ok(Some(destination)) => {
+            Ok(Some(matched_range)) => {
                 self.search_highlight_suppressed = false;
-                self.cursor = destination;
+                self.cursor = matched_range.start;
                 CommandOutput {
-                    cursor_moved: destination != old,
+                    cursor_moved: self.cursor != old,
+                    revealed_search_match: Some(matched_range),
                     ..CommandOutput::complete()
                 }
             }

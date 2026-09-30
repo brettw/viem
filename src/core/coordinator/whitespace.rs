@@ -379,6 +379,12 @@ mod tests {
                 expected
                     .handle(expected_id, CoreEvent::SetWrap(wrap))
                     .unwrap();
+                // Completion now reveals horizontal overflow as its caret
+                // advances. Compare the same viewport of the fresh document.
+                let presented = core.presentation_layout(id).unwrap();
+                expected.handle(expected_id, CoreEvent::SetViewportOrigin {
+                    left: presented.viewport_left(), top: Some(presented.viewport_top()),
+                }).unwrap();
                 let markers = core.whitespace_markers(id).unwrap();
                 assert_eq!(
                     markers,

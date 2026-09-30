@@ -104,5 +104,48 @@ pub(super) fn reveal_viewport_top(row: &VisualRow, current: f32, height: f32, in
     }
 }
 
+/// Minimum horizontal reveal, independent of wrapping. Oversized targets
+/// expose their logical start, including a right-to-left leading edge.
+pub(super) fn reveal_viewport_left(
+    bounds: Range<f32>, start: f32, current: f32, width: f32, insets: EdgeInsets,
+) -> f32 {
+    let target_width = bounds.end - bounds.start;
+    // Give fitting text priority over oversized margins, as vertical reveal
+    // does for tall rows. Oversized matches reserve room for their first cell.
+    let budget = (width - target_width.min(width).max(1.0)).max(0.0);
+    let margins = insets.left + insets.right;
+    let factor = if margins > budget { budget / margins } else { 1.0 };
+    let left = insets.left * factor;
+    let right = width - insets.right * factor;
+    if target_width > width {
+        if start >= bounds.end {
+            start - right
+        } else {
+            start - left
+        }
+    } else if bounds.start < current + left {
+        bounds.start - left
+    } else if bounds.end > current + right {
+        bounds.end - right
+    } else {
+        current
+    }
+}
+
+/// Center a search cursor, then project that origin into the range that fits
+/// the first match row. If it cannot fit, expose the logical leading edge and
+/// as much following text as possible, with room for the thin cursor itself.
+pub(super) fn reveal_search_viewport_left(
+    bounds: Range<f32>, cursor: f32, width: f32, right_to_left: bool, complete: bool,
+) -> f32 {
+    if complete && bounds.end - bounds.start <= width {
+        (cursor - width / 2.0).clamp(bounds.end - width, bounds.start)
+    } else if right_to_left {
+        cursor + super::CARET_REVEAL_WIDTH - width
+    } else {
+        cursor
+    }
+}
+
 #[cfg(test)]
 mod tests;

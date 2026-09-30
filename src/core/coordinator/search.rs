@@ -45,15 +45,15 @@ pub(super) struct SearchViewState {
 
 impl<P: TextMeasurementProvider> View<P> {
     pub(super) fn search_preview_destination(&self, document: &Document) -> Option<usize> {
+        self.search_preview_range(document).map(|range| range.start)
+    }
+
+    pub(super) fn search_preview_range(&self, document: &Document) -> Option<Range<usize>> {
         if self.search.key.as_ref() != Some(&self.commands.search_presentation_key(document)) {
             return None;
         }
-        self.search
-            .presentation
-            .as_ref()?
-            .incremental_match
-            .as_ref()
-            .map(|matched| matched.destination)
+        self.search.presentation.as_ref()?.incremental_match.as_ref()
+            .map(|matched| matched.matched_range.clone())
     }
 }
 
@@ -94,7 +94,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .presentation
             .as_ref()
             .and_then(|presentation| presentation.incremental_match.as_ref())
-            .map(|matched| matched.destination);
+            .map(|matched| matched.matched_range.clone());
         let mut restore = None;
         if query_changed {
             let presentation = self.views[&view_id]
@@ -146,7 +146,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             view.search.key = Some(key);
             view.search.presentation = Some(presentation);
         }
-        let preview = self.views[&view_id].search_preview_destination(&self.document);
+        let preview = self.views[&view_id].search_preview_range(&self.document);
         let mut changed = false;
         if preview != old_preview && preview.is_some() {
             self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
@@ -318,7 +318,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         view.search.style_revision = Some(style_revision);
         if ranges_changed || (style_changed && (had_matches || has_matches)) {
             cancel_active_layout_work(view);
-            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
+            // Newly revealed matches may acquire different metrics from the
+            // highlight style. Apply visibility to that final geometry too.
+            let intent = if preview != old_preview && preview.is_some() {
+                ImmediateLayoutIntent::RevealCaret
+            } else {
+                ImmediateLayoutIntent::PreserveViewport
+            };
+            self.materialize_immediate_viewport(view_id, intent)?;
             self.rematerialize_active_composition(view_id, false)?;
             changed = true;
         }
