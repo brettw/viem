@@ -86,7 +86,7 @@ final class EVStylePropertyLayoutTests: XCTestCase {
         let em = NSFont.systemFontSize
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            for (width, height) in [(CGFloat(700), CGFloat(620)), (1000, 820)] {
+            for (width, height) in [(CGFloat(700), CGFloat(545)), (1000, 820)] {
                 window.setContentSize(NSSize(width: width, height: height))
                 editor.view.layoutSubtreeIfNeeded()
                 let bold = try control(NSButton.self, label: "Bold", in: editor.view)
@@ -123,7 +123,7 @@ final class EVStylePropertyLayoutTests: XCTestCase {
     func testMinimumSizeShowsCompleteCaptionsAndUnitsOnBothTabs() throws {
         let (_, surface, editor, window) = try makeEditor()
         defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
-        window.setContentSize(NSSize(width: 700, height: 620))
+        window.setContentSize(NSSize(width: 700, height: 545))
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
             for tab in [EVStyleEditorTab.character, .paragraph, .block] {
@@ -189,7 +189,7 @@ final class EVStylePropertyLayoutTests: XCTestCase {
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)
         editor.retarget(document: surface, styleKey: heading)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 575),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.contentViewController = editor
         window.makeKeyAndOrderFront(nil)

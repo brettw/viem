@@ -7,6 +7,48 @@ import XCTest
 
 @MainActor
 final class EVPointerSelectionTests: XCTestCase {
+  func testSingleClickPreservesModeAndFollowingCommandOrTextInput() throws {
+    let source = "before chosen after"
+    for (command, mode) in [
+      ("", UInt32(VIEM_MODE_NORMAL)),
+      ("i", UInt32(VIEM_MODE_INSERT)),
+      ("R", UInt32(VIEM_MODE_REPLACE)),
+    ] {
+      let (backend, surface, window) = try makeSurface(source, width: 600)
+      defer { withExtendedLifetime(window) {} }
+      let session = try XCTUnwrap(surface.session)
+      if !command.isEmpty {
+        surface.performInput { _ = try session.sendText(command) }
+      }
+      let point = try click(surface, at: 7, count: 1)
+      surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: point))
+      XCTAssertEqual(surface.viewPresentation.mode, mode)
+      XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+      XCTAssertTrue(surface.selectedUTF8Ranges().isEmpty)
+      XCTAssertEqual(
+        try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+      XCTAssertFalse(backend.persistenceState.isDirty)
+
+      if mode == UInt32(VIEM_MODE_NORMAL) {
+        let event = try XCTUnwrap(NSEvent.keyEvent(
+          with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+          windowNumber: window.windowNumber, context: nil, characters: "l",
+          charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37))
+        surface.editorView.keyDown(with: event)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 8)
+        XCTAssertEqual(try backend.formattedText(), source)
+      } else {
+        surface.editorView.insertText(
+          "X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 8)
+        XCTAssertEqual(
+          try backend.formattedText(),
+          mode == UInt32(VIEM_MODE_INSERT) ? "before Xchosen after" : "before Xhosen after")
+      }
+      XCTAssertEqual(surface.viewPresentation.mode, mode)
+    }
+  }
+
   func testOffscreenDragKeepsItsAnchorAndVisibleSelectionAcrossLongDocuments() throws {
     var checkout = URL(fileURLWithPath: #filePath)
     for _ in 0..<5 { checkout.deleteLastPathComponent() }
@@ -147,7 +189,8 @@ final class EVPointerSelectionTests: XCTestCase {
     return (backend, surface, window)
   }
 
-  private func click(_ surface: EVEditorSurfaceController, at offset: UInt64, count: Int) throws {
+  @discardableResult
+  private func click(_ surface: EVEditorSurfaceController, at offset: UInt64, count: Int) throws -> NSPoint {
     surface.refreshPresentation()
     let session = try XCTUnwrap(surface.session)
     let snapshot = try XCTUnwrap(surface.layoutSnapshot)
@@ -163,6 +206,7 @@ final class EVPointerSelectionTests: XCTestCase {
         windowNumber: surface.editorView.window?.windowNumber ?? 0, context: nil, eventNumber: 1,
         clickCount: count, pressure: 1))
     surface.editorView.mouseDown(with: event)
+    return local
   }
 
   private func pointerEvent(_ surface: EVEditorSurfaceController, type: NSEvent.EventType,

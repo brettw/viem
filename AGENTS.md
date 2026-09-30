@@ -1213,8 +1213,9 @@ clips; scrolled content continues through them. Include the last row's full ink
 and natural height before bottom scroll padding, even under exact line spacing.
 If row plus margins cannot fit, prioritize making the row visible.
 
-`startup.viem` is optional UTF-8 configuration, loaded once per profile/startup
-after JSON preferences and never rewritten by Settings. Missing files are silent;
+`startup.viem` is UTF-8 configuration, loaded once per profile/startup
+after JSON preferences and never rewritten by Settings. Startup creates an empty
+file and its profile directory if missing, without overwriting existing files;
 invalid lines report path/line and do not block later valid commands. Accept BOM
 and CRLF; bound input to 1 MiB. It supports configuration Ex commands and mappings,
 not edits, file/window actions, or Vimscript. Reject `fileformat` assignments
@@ -1277,6 +1278,10 @@ document source; Code retains global ownership. The inspector title identifies
 the active stylesheet family (Code, Markdown, or Plain Text) and theme. Use native
 role-sensitive controls and real resolved/shaped preview, without a private
 editable stylesheet.
+The inspector customizes the available styles without creating, renaming, or
+deleting styles. Its title supplies family/theme context; omit routine save-status
+and availability guidance, retain actionable errors, and fit the window height
+to the remaining controls.
 [`docs/Word style.png`](<docs/Word style.png>) is a density/composition reference,
 not a template/automatic-update/Apply/OK/Cancel workflow.
 

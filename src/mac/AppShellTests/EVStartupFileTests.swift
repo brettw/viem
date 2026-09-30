@@ -12,13 +12,15 @@ final class EVStartupFileTests: XCTestCase {
     return directory
   }
 
-  func testMissingStartupFileIsEmptyAndDoesNotCreateTheProfile() throws {
-    let directory = try profile(create: false)
-    let startup = EVStartupFile.load(directory: directory)
-    XCTAssertEqual(startup.url, directory.appendingPathComponent("startup.viem"))
-    XCTAssertEqual(startup.text, "")
-    XCTAssertEqual(startup.diagnostics, [])
-    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+  func testMissingStartupFileIsCreatedEmptyInNewAndExistingProfiles() throws {
+    for create in [false, true] {
+      let directory = try profile(create: create)
+      let startup = EVStartupFile.load(directory: directory)
+      XCTAssertEqual(startup.url, directory.appendingPathComponent("startup.viem"))
+      XCTAssertEqual(startup.text, "")
+      XCTAssertEqual(startup.diagnostics, [])
+      XCTAssertEqual(try Data(contentsOf: startup.url), Data())
+    }
   }
 
   func testUTF8BOMIsRemovedAndAllOtherContentsRemainUnchanged() throws {

@@ -59,7 +59,6 @@ internal sealed partial class StyleWindow
             {
                 bool refresh = refreshAfterFollowing;
                 refreshAfterFollowing = false;
-                if (!CommitPendingName()) return;
                 var latest = view.Styles();
                 var key = CurrentCaretStyle(latest);
                 var fallback = latest.Styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)?.Key;
@@ -92,12 +91,6 @@ internal sealed partial class StyleWindow
         // the inspector stable during picking and load fresh definitions on close.
         if (openColorPickers.Count > 0) { refreshAfterColorPopup = true; return; }
         Load(selected?.Key);
-    }
-    private bool CommitPendingName()
-    {
-        if (selected == null || name.IsReadOnly || name.Text == selected.Name) return true;
-        Try(() => view.EditStyleString(selected, VIEM_STYLE_EDIT_SET_DISPLAY_NAME, 0, name.Text));
-        return error.Visibility != Microsoft.UI.Xaml.Visibility.Visible;
     }
     private static bool SelectionChanged(ViemViewPresentationV1 previous, ViemViewPresentationV1 next)
     {

@@ -1,7 +1,7 @@
 # Native selection and remaining gaps
 
 Viem defaults to `autoselect`, with Vim's `keymodel` and `selectmode` empty.
-Mouse and Shift+navigation enter **SELECTION**: typing replaces the selected
+Mouse selection gestures and Shift+navigation enter **SELECTION**: typing replaces the selected
 text, Delete/Backspace enter Insert, and plain Left/Right collapse to the
 corresponding edge. A selection started with `v`, `V`, or Ctrl-V keeps Vim Visual
 behavior when extended with Shift+navigation or a pointer gesture.
@@ -18,6 +18,9 @@ Put `set` commands in `startup.viem` to retain them across launches.
 
 ## Deliberate behavior differences
 
+- A plain mouse click repositions the caret without leaving Normal, Insert, or
+  Replace mode. On Windows, stationary pointer events and small click jitter
+  do not start a selection; dragging begins after four layout units of movement.
 - Native selections are half-open insertion boundaries; Vim selections retain
   inclusive endpoints. Shift-Right at offset zero selects one character natively,
   but two with Vim `startsel`.

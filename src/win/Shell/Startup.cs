@@ -55,6 +55,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1"
@@ -69,6 +70,8 @@ internal sealed partial class EditorWindow
                             Environment.Exit(0);
                             return;
                         }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1")
+                            await Diagnostics.SelectionInputTests.RunPointerPlacement(pane);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
                             await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1")

@@ -128,7 +128,7 @@ internal sealed partial class EditorPane
             if (dragged) { status.ReleasePointerCapture(e.Pointer); e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (e.OriginalSource == status) { statusPointer = null; statusDragging = false; }
+            if (e.OriginalSource is Grid source && source == status) { statusPointer = null; statusDragging = false; }
         };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         commandOutput.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });

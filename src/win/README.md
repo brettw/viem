@@ -118,6 +118,7 @@ fullscreen bounds do not replace the saved normal frame.
   find and select all. AltGr and IME text go through native input.
 
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
+On launch, Viem creates an empty `startup.viem` there if it is missing.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings
 use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,
@@ -154,6 +155,8 @@ per-font OpenType discovery are not claimed as implemented.
   core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
+Set `VIEM_TEST_POINTER_ONLY=1` to run just native click mode preservation, click
+jitter, subsequent keyboard input, and drag-selection checks.
 Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
 visibility, selection/undo, formatted-view switching, overflow, and large-document latency checks.
 The toolbar uses the active pane's core selection, the shared style catalogue,

@@ -110,13 +110,13 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         window.contentViewController = editor
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            for (width, height) in [(CGFloat(700), CGFloat(620)), (1000, 820)] {
+            for (width, height) in [(CGFloat(700), CGFloat(545)), (1000, 820)] {
                 window.setContentSize(NSSize(width: width, height: height))
                 editor.view.layoutSubtreeIfNeeded()
                 let allViews = descendants(of: editor.view)
                 for (title, accessibilityLabel) in [
-                    ("Style", "Style"), ("Name", "Style name"),
-                    ("Style type", "Style type"), ("Based on", "Based on style"),
+                    ("Style", "Style"),
+                    ("Based on", "Based on style"),
                     ("Next paragraph", "Following paragraph style"),
                 ] {
                     let label = try XCTUnwrap(allViews.compactMap { $0 as? NSTextField }
@@ -140,8 +140,8 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
                     XCTAssertGreaterThanOrEqual(buttonRect.minX, popupRect.maxX)
                     XCTAssertLessThanOrEqual(buttonRect.minX - popupRect.maxX, 10)
                     XCTAssertEqual(buttonRect.midY, popupRect.midY, accuracy: 1)
-                    let name = try XCTUnwrap(allViews.first { $0.accessibilityLabel() == "Style name" })
-                    XCTAssertEqual(buttonRect.maxX, alignmentRect(of: name, in: editor.view).maxX, accuracy: 1,
+                    let style = try XCTUnwrap(allViews.first { $0.accessibilityLabel() == "Style" })
+                    XCTAssertEqual(buttonRect.maxX, alignmentRect(of: style, in: editor.view).maxX, accuracy: 1,
                                    "The popup and button should fill the header's control column")
                     XCTAssertNotNil(button.image)
                 }

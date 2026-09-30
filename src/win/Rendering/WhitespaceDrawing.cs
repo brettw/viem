@@ -57,7 +57,7 @@ internal sealed unsafe partial class DirectWriteProvider
                     cluster = contributors[Math.Max(0, lower - 1)];
                 }
                 var inherited = resources.TryGetValue(cluster.render_run.identifier, out var resource) ? resource.MarkerFont
-                    : new MarkerFont("Segoe UI", FontStretch.Normal, Math.Max(1, row.ascent + row.descent), 400, FontStyle.Normal, 0, 0, "", "{}");
+                    : new MarkerFont("Segoe UI", FontStretch.Normal, Math.Max(1, row.ascent + row.descent), 400, FontStyle.Normal, 0, "", "{}");
                 string family = inherited.Family;
                 var stretch = inherited.Stretch;
                 if (Value("font_families") is JsonElement names)

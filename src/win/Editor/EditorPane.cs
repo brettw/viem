@@ -56,7 +56,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private ViemViewPresentationV1 presentation;
     private ViemViewportStateV1 viewport;
     private Rect caretRect;
-    private Point dragPoint;
+    private Point dragPoint, pointerPress;
+    private uint? pressedPointer;
     private Task inputQueue = Task.CompletedTask;
     public event Action<EditorPane>? Focused;
     internal Exception? LastError { get; private set; }
@@ -96,9 +97,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
         });
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
-        Canvas.PointerMoved += (_, e) => { if (dragging && View != null) { var p = dragPoint = e.GetCurrentPoint(Canvas).Position; Run(() => View.Place((float)Math.Clamp(p.X, 0, Canvas.ActualWidth), (float)Math.Clamp(p.Y, 0, Canvas.ActualHeight), true)); } };
-        Canvas.PointerReleased += (_, e) => { dragging = false; Canvas.ReleasePointerCapture(e.Pointer); };
-        Canvas.PointerCaptureLost += (_, _) => dragging = false;
+        Canvas.PointerMoved += OnPointerMoved;
+        Canvas.PointerReleased += (_, e) => {
+            if (pressedPointer != e.Pointer.PointerId) return;
+            pressedPointer = null; dragging = false; Canvas.ReleasePointerCapture(e.Pointer);
+        };
+        Canvas.PointerCaptureLost += (_, e) => {
+            if (pressedPointer == e.Pointer.PointerId) { pressedPointer = null; dragging = false; }
+        };
         Canvas.DoubleTapped += (_, e) => Run(() => {
             uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL;
             var p = e.GetPosition(Canvas); View?.Key(VIEM_KEY_ESCAPE); View?.Place((float)p.X, (float)p.Y);
@@ -348,7 +354,28 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissCommandOutput(false);
         FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
         Run(() => View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift)));
-        dragPoint = point; dragging = true; Canvas.CapturePointer(e.Pointer); e.Handled = true; ResetBlink();
+        pointerPress = dragPoint = point; pressedPointer = e.Pointer.PointerId; dragging = false;
+        if (!Canvas.CapturePointer(e.Pointer)) pressedPointer = null;
+        e.Handled = true; ResetBlink();
+    }
+    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (pressedPointer != e.Pointer.PointerId || View == null) return;
+        var point = e.GetCurrentPoint(Canvas);
+        if (!point.Properties.IsLeftButtonPressed)
+        {
+            pressedPointer = null; dragging = false; Canvas.ReleasePointerCapture(e.Pointer); return;
+        }
+        dragPoint = point.Position;
+        if (!dragging)
+        {
+            // WinUI can report movement at the press point. Match the pane-bar
+            // drag threshold so a click or small jitter keeps the editing mode.
+            if (Math.Abs(dragPoint.X - pointerPress.X) < 4 && Math.Abs(dragPoint.Y - pointerPress.Y) < 4) return;
+            dragging = true;
+        }
+        Run(() => View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true));
+        e.Handled = true;
     }
     internal ScrollBar VerticalScrollControl => vertical;
     internal ScrollBar HorizontalScrollControl => horizontal;

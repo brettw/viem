@@ -57,10 +57,39 @@ internal sealed partial class StyleWindow
     }
     private static TextBlock Unit(string text) => new() { Text = text, FontSize = 11, Opacity = .65, VerticalAlignment = VerticalAlignment.Center };
     private static FontIcon Icon(string glyph) => new() { Glyph = glyph, FontSize = 16, Opacity = .7, VerticalAlignment = VerticalAlignment.Center, Width = 18 };
+    private static NumberBox NumberEditor(double width, double min, double max)
+    {
+        var number = new NumberBox {
+            Width = width, Minimum = min, Maximum = max,
+            SmallChange = 1, LargeChange = 10,
+            SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
+        };
+        number.Loaded += (_, _) => {
+            // The Paragraph and Block tabs start collapsed, delaying templates.
+            number.ApplyTemplate();
+            ConfigureNumberEditor(number);
+        };
+        return number;
+    }
+    private static void ConfigureNumberEditor(DependencyObject root)
+    {
+        if (root is TextBox { Name: "InputBox" } input) {
+            input.TextAlignment = TextAlignment.Right;
+            input.ApplyTemplate();
+        }
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is Button { Name: "DeleteButton" } clear) {
+                // WinUI animates Visibility on focus and sets Width to Height.
+                // Constrain its footprint so compact fields retain room for digits.
+                clear.MinWidth = 0; clear.MaxWidth = 0; clear.IsHitTestVisible = false;
+            } else ConfigureNumberEditor(child);
+        }
+    }
     private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true,
         string? icon = null, double? width = null, double? groupWidth = null)
     {
-        var value = new NumberBox { Width = width ?? (caption ? 104 : 82), Minimum = min, Maximum = max, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var value = NumberEditor(width ?? (caption ? 104 : 82), min, max);
         AutomationProperties.SetName(value, label);
         var body = Inline(value, Unit("pt"));
         if (icon != null) body.Children.Insert(0, Icon(icon));
@@ -136,7 +165,7 @@ internal sealed partial class StyleWindow
         Number(row, "Start indent", VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, icon: "\uE8A0"); Number(row, "End indent", VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, icon: "\uE89F"); Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
         row = Row(paragraph);
         var spacing = new ComboBox { ItemsSource = new[] { "Normal", "Multiple", "At least", "Exact" }, Width = 112, MinWidth = 0 };
-        var amount = new NumberBox { Minimum = .01, Maximum = 1000, Width = 60, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+        var amount = NumberEditor(60, .01, 1000);
         var amountUnit = Unit("");
         AutomationProperties.SetName(spacing, "Line spacing"); AutomationProperties.SetName(amount, "Line spacing amount");
         AutomationProperties.SetName(amountUnit, "Line spacing units");
