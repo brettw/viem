@@ -1,6 +1,7 @@
 #if DEBUG
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
+using Viem.Windows.Interop;
 using Viem.Windows.Shell;
 using Windows.Foundation;
 using Windows.System;

@@ -45,6 +45,12 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
         XCTAssertFalse(editor.inspection.hasDocument)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
+        let controls = descendants(of: editor.view)
+        for label in ["Style name", "Create syntax style", "Delete selected style"] {
+            XCTAssertFalse(controls.contains { $0.accessibilityLabel() == label })
+        }
+        let status = try XCTUnwrap(controls.first { $0.accessibilityLabel() == "Style editing status" })
+        XCTAssertTrue(status.isHidden)
         let initial = try session.snapshot()
         let originalSize = initial.definition(for: .baseParagraph)?.properties[.characterSize]?.declared
         editor.beginContinuousStyleEditForTesting()
@@ -70,17 +76,15 @@ final class EVCodeStylesTests: XCTestCase {
     func testNamesAreExactAndDeletionAndRenamePersistWithoutResurrectingBuiltins() throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
-        let editor = EVStyleEditorViewController()
-        editor.retarget(settingsSession: session)
         let initial = try session.snapshot()
         let keyword = try XCTUnwrap(initial.definitions.first { $0.name == "Keyword" })
-        editor.selectStyle(keyword.key)
-        XCTAssertTrue(editor.renameForTesting("KEYword"), editor.inspection.diagnostic)
-        XCTAssertTrue(editor.createSyntaxStyle(), editor.inspection.diagnostic)
-        let custom = try XCTUnwrap(editor.inspection.selectedStyleKey)
-        XCTAssertFalse(editor.renameForTesting("KEYword"), "Exact duplicate names must be rejected")
-        XCTAssertTrue(editor.renameForTesting("Keyword"), editor.inspection.diagnostic)
-        XCTAssertTrue(editor.deleteSelectedStyle(), editor.inspection.diagnostic)
+        try session.edit(key: keyword.key, expected: initial.identity, mutation: .setDisplayName("KEYword"))
+        let custom = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
+        try session.create(key: custom, name: "Custom", expected: session.snapshot().identity)
+        XCTAssertThrowsError(try session.edit(key: custom, expected: session.snapshot().identity,
+            mutation: .setDisplayName("KEYword")), "Exact duplicate names must be rejected")
+        try session.edit(key: custom, expected: session.snapshot().identity, mutation: .setDisplayName("Keyword"))
+        try session.delete(key: custom, expected: session.snapshot().identity)
         let saved = try XCTUnwrap(configuration.codeStyleSheet())
         XCTAssertEqual(saved.withUnsafeBytes { viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count)) }, UInt32(VIEM_STATUS_OK))
         let loaded = try session.snapshot()
@@ -329,5 +333,9 @@ final class EVCodeStylesTests: XCTestCase {
         await withCheckedContinuation { continuation in
             EVCodeStyleSession.reloadStyleSheet { continuation.resume(returning: $0) }
         }
+    }
+
+    private func descendants(of view: NSView) -> [NSView] {
+        view.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 }

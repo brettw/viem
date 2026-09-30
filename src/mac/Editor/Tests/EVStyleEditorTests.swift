@@ -93,7 +93,6 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 6)
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
-        XCTAssertTrue(editor.inspection.nameEditable)
 
         let picker = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
             .first { $0.accessibilityLabel() == "Style" })
@@ -102,6 +101,13 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertFalse(picker.itemTitles.contains("Default Paragraph"))
         XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Language" })
         XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Resolved style summary" })
+        for label in ["Style name", "Create syntax style", "Delete selected style"] {
+            XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == label })
+        }
+        let status = try XCTUnwrap(descendants(of: editor.view).first {
+            $0.accessibilityLabel() == "Style editing status"
+        })
+        XCTAssertTrue(status.isHidden)
     }
 
     @MainActor
@@ -232,13 +238,18 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testDisplayNameAndFollowingStyleCommitWithoutChangingStableSelection() throws {
+    func testExternalDisplayNameAndFollowingStyleCommitPreserveStableSelection() throws {
         let (backend, surface, editor) = try makeEditor(
             source: "# Heading",
             style: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         )
         defer { withExtendedLifetime(surface) {} }
-        XCTAssertTrue(editor.renameForTesting("Chapter Heading"))
+        let session = try XCTUnwrap(surface.session)
+        _ = try session.editStyle(
+            key: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")),
+            expected: backend.styleSheetSnapshot().identity,
+            mutation: .setDisplayName("Chapter Heading")
+        )
         XCTAssertEqual(editor.inspection.selectedStyleID, EVStyleID(rawValue: "Heading1"))
         XCTAssertEqual(
             try backend.styleSheetSnapshot()
@@ -276,26 +287,6 @@ final class EVStyleEditorTests: XCTestCase {
                 .definition(namespace: .block, id: EVStyleID(rawValue: "Heading1"))?
                 .properties[.characterSize]?.declared,
             .float(30)
-        )
-    }
-
-    @MainActor
-    func testInvalidNameDraftDoesNotCommit() throws {
-        let (backend, surface, editor) = try makeEditor(
-            source: "# Heading",
-            style: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
-        )
-        defer { withExtendedLifetime(surface) {} }
-        let before = try backend.documentState().document_revision
-
-        editor.enterNameDraftForTesting("   ")
-
-        XCTAssertTrue(editor.inspection.hasInvalidDraft)
-        XCTAssertEqual(try backend.documentState().document_revision, before)
-        XCTAssertEqual(
-            try backend.styleSheetSnapshot()
-                .definition(namespace: .block, id: EVStyleID(rawValue: "Heading1"))?.name,
-            "Heading 1"
         )
     }
 

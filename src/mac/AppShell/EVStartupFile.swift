@@ -16,10 +16,17 @@ public struct EVStartupFile: Equatable, Sendable {
       // A profile path may be a symlink, FIFO, or device. Open nonblocking and
       // validate the opened descriptor, avoiding both FIFO startup hangs and a
       // path-stat/open race while still allowing symlinks to ordinary files.
-      let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+      var descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+      if descriptor < 0 && errno == ENOENT {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        // Exclusive creation preserves a file installed by another process.
+        descriptor = Darwin.open(url.path, O_RDONLY | O_CREAT | O_EXCL | O_NONBLOCK | O_CLOEXEC, 0o666)
+        if descriptor < 0 && errno == EEXIST {
+          descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        }
+      }
       guard descriptor >= 0 else {
         let code = errno
-        if code == ENOENT { return Self(url: url, text: "", diagnostics: []) }
         throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
       }
       let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)

@@ -30,6 +30,8 @@ internal static class InputRoutingTests
     [StructLayout(LayoutKind.Sequential)] private struct NativeInput { public uint Type; public MouseInput Mouse; }
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, NativeInput[] inputs, int size);
 
+    [DllImport("user32.dll")] internal static extern uint GetDoubleClickTime();
+
     internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect)
     {
         element.Focus(FocusState.Programmatic);
@@ -55,7 +57,7 @@ internal static class InputRoutingTests
             // Only drive a real pointer while both the foreground window and
             // every point in the drag belong to this isolated test process.
             if (!Owned(GetForegroundWindow()) || !Owned(WindowFromPoint(point)))
-                throw new InvalidOperationException("The pointer test target is not owned by the test application.");
+                throw new InvalidOperationException($"The pointer test target is not owned by the test application (foreground={Owned(GetForegroundWindow())}, point={Owned(WindowFromPoint(point))}, x={point.X}, y={point.Y}, bounds={bounds}, fractions={fractions[0]}).");
             NativeInput[] input = [new() { Mouse = new() {
                 X = (int)Math.Round((point.X - GetSystemMetrics(76)) * 65535d / (GetSystemMetrics(78) - 1)),
                 Y = (int)Math.Round((point.Y - GetSystemMetrics(77)) * 65535d / (GetSystemMetrics(79) - 1)),

@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using static Viem.Windows.Interop.Native;
 
@@ -8,14 +9,24 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class StyleWindow
 {
-    private readonly NumberBox fontSize = new() {
-        Width = 82, Minimum = 1, Maximum = 256,
-        SmallChange = 1, LargeChange = 10,
-        SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact,
-    };
-    private readonly ComboBox fontSizeUnit = new() {
+    private readonly NumberBox fontSize = NumberEditor(82, 1, 256);
+    private readonly ComboBox fontSizeUnit = new FontSizeUnitPicker() {
         Width = 52, MinWidth = 0, Padding = new Thickness(4, 0, 4, 0),
     };
+
+    private sealed class FontSizeUnitPicker : ComboBox
+    {
+        protected override void OnApplyTemplate()
+        {
+            base.OnApplyTemplate();
+            if (GetTemplateChild("DropDownGlyph") is FrameworkElement glyph
+                && VisualTreeHelper.GetParent(glyph) is Grid layout) {
+                // WinUI reserves 38 px for the arrow; short units need more of this 52 px control.
+                layout.ColumnDefinitions[Grid.GetColumn(glyph)].Width = new GridLength(24);
+                glyph.Margin = new Thickness(0, 0, 6, 0);
+            }
+        }
+    }
 
     private void BuildFontSize(Panel row)
     {

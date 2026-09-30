@@ -12,8 +12,64 @@ internal static class SelectionInputTests
 {
     private static void Check(bool value, string name)
     { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    internal static async Task RunPointerPlacement(EditorPane pane)
+    {
+        var view = pane.View!;
+        var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
+        const string original = "alpha beta\nsecond line";
+        view.Ex("set autoselect keymodel= selectmode=");
+        view.Command("i"); view.Text(original); view.Key(VIEM_KEY_ESCAPE);
+        window.Activate(); pane.FocusEditor();
+        try
+        {
+            global::Windows.Foundation.Point PointAt(ulong offset)
+            {
+                var layout = view.Layout(); var viewport = view.Viewport;
+                var cluster = layout.Clusters.First(c => c.text_start == offset);
+                var row = layout.Rows.First(r => r.row_index == cluster.row_index);
+                return new((cluster.x + cluster.advance * .1 - viewport.left) / pane.Canvas.ActualWidth,
+                    (row.baseline - viewport.top - 3) / pane.Canvas.ActualHeight);
+            }
+            foreach (var (command, mode, label) in new[] {
+                ("", VIEM_MODE_NORMAL, "Normal"), ("i", VIEM_MODE_INSERT, "Insert"), ("R", VIEM_MODE_REPLACE, "Replace") })
+            foreach (bool jitter in new[] { false, true })
+            {
+                view.Key(VIEM_KEY_ESCAPE);
+                view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, pane.Document.State.document_revision);
+                view.Command(command);
+                // Separate clicks so Windows does not recognize a double-tap.
+                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                var point = PointAt(6);
+                var points = jitter ? new[] { point,
+                    new global::Windows.Foundation.Point(point.X + 1 / pane.Canvas.ActualWidth, point.Y + 1 / pane.Canvas.ActualHeight), point }
+                    : new[] { point };
+                // Drag emits a move at the press point even for a single point.
+                await InputRoutingTests.Drag(window, pane.Canvas, points, _ => { });
+                Check(view.Presentation.mode == mode && view.Presentation.cursor_utf8_offset == 6 && !view.HasSelection,
+                    $"native click {(jitter ? "with jitter " : "")}preserves {label} mode and places the caret");
+                Check(pane.Document.FormattedText() == original, $"native {label} click preserves source bytes");
+                await InputRoutingTests.Text(mode == VIEM_MODE_NORMAL ? "h" : "Z");
+                string expected = mode == VIEM_MODE_INSERT ? "alpha Zbeta\nsecond line"
+                    : mode == VIEM_MODE_REPLACE ? "alpha Zeta\nsecond line" : original;
+                Check(view.Presentation.mode == mode && pane.Document.FormattedText() == expected
+                    && (mode != VIEM_MODE_NORMAL || view.Presentation.cursor_utf8_offset == 5),
+                    $"native input after a {label} click retains its command or typing behavior");
+                if (mode != VIEM_MODE_NORMAL) view.Undo();
+            }
+            view.Key(VIEM_KEY_ESCAPE);
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(0), PointAt(6), PointAt(3) }, _ => { });
+            var selection = view.LogicalSelection();
+            Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER && selection.text_start == 0 && selection.text_end == 3,
+                "native dragging beyond the click threshold preserves its anchor while reversing");
+            Check(pane.Document.FormattedText() == original && pane.LastError == null,
+                "native pointer placement and dragging preserve source without routing errors");
+        }
+        finally { view.Key(VIEM_KEY_ESCAPE); view.Ex("%d"); pane.FocusEditor(); }
+    }
     internal static async Task Run(EditorPane pane)
     {
+        await RunPointerPlacement(pane);
         var view = pane.View!;
         var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
         const string original = "alpha beta\nsecond line\nthird";

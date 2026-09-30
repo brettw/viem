@@ -27,7 +27,18 @@ internal sealed partial class Preferences
         catch (Exception e) { Error = path + ": " + e.Message; writable = false; }
         InitializeThemes(File.Exists(path));
         string startup = Path.Combine(DirectoryPath, "startup.viem");
-        try { if (File.Exists(startup)) { if (new FileInfo(startup).Length > 1_048_576) throw new InvalidDataException("File is larger than 1 MiB."); StartupCommands = File.ReadAllBytes(startup); _ = new System.Text.UTF8Encoding(false, true).GetString(StartupCommands); } }
+        try
+        {
+            if (!File.Exists(startup))
+            {
+                Directory.CreateDirectory(DirectoryPath);
+                try { using var file = new FileStream(startup, FileMode.CreateNew, FileAccess.Write, FileShare.Read); }
+                catch (IOException) when (File.Exists(startup)) { } // Another process created it first.
+            }
+            if (new FileInfo(startup).Length > 1_048_576) throw new InvalidDataException("File is larger than 1 MiB.");
+            StartupCommands = File.ReadAllBytes(startup);
+            _ = new System.Text.UTF8Encoding(false, true).GetString(StartupCommands);
+        }
         catch (Exception e) { Error = startup + ": " + e.Message; StartupCommands = []; }
     }
     private static JsonObject Read(string path)

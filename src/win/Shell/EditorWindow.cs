@@ -571,7 +571,7 @@ internal sealed partial class EditorWindow : Window
                 double line = pane.View?.DefaultLineHeight ?? 16;
                 double currentText = Math.Max(0, pane.ActualHeight - pane.StatusBarHeight);
                 double height = command == VIEM_WINDOW_SET_HEIGHT ? (count == 0 ? double.MaxValue : count * line)
-                    : currentText + (command == VIEM_WINDOW_GROW ? 1 : -1) * Math.Max(1, count) * line;
+                    : currentText + (command == VIEM_WINDOW_GROW ? 1d : -1d) * Math.Max(1, count) * line;
                 paneGrid.ResizePane(pane, height); break;
         }
         if (Panes.Contains(target)) { SetActive(target); target.FocusEditor(); }

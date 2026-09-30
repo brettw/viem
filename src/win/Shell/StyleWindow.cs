@@ -27,12 +27,8 @@ internal sealed partial class StyleWindow : Window
     private const int ClientWidth = 680;
     private readonly StackPanel root = new() { Padding = new(24, 16, 24, 14), Spacing = 6, Width = ClientWidth, VerticalAlignment = VerticalAlignment.Top };
     private readonly ComboBox stylePicker = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox name = new();
-    private readonly TextBlock kind = new() { VerticalAlignment = VerticalAlignment.Center, Opacity = .65 };
     private readonly ComboBox parent = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox next = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly Button delete = new() { Content = "Delete", Width = 68 };
-    private readonly Button create = new() { Content = "New", Width = 72, VerticalAlignment = VerticalAlignment.Center };
     private readonly Button visitParent = NavigationButton();
     private readonly Button visitNext = NavigationButton();
     private readonly StackPanel character = new() { Spacing = 12 };
@@ -56,15 +52,9 @@ internal sealed partial class StyleWindow : Window
         WindowSizing.Appearance(this, preferences.Midnight);
         var properties = new Grid { RowSpacing = 5, ColumnSpacing = 10, Margin = new(12, 0, 12, 4) };
         properties.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); properties.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        var choiceRow = new Grid { ColumnSpacing = 6 };
-        choiceRow.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); choiceRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); choiceRow.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        choiceRow.Children.Add(stylePicker);
-        Grid.SetColumn(create, 1); choiceRow.Children.Add(create); Grid.SetColumn(delete, 2); choiceRow.Children.Add(delete);
-        stylePicker.VerticalAlignment = delete.VerticalAlignment = VerticalAlignment.Center;
-        create.Click += (_, _) => Try(() => { string id = view.CreateCodeStyle("New Character style"); CancelCaretFollow(); Load(new(VIEM_STYLE_NAMESPACE_CHARACTER, id)); });
-        Field(properties, "Style", choiceRow); Field(properties, "Name", name); Field(properties, "Style type", kind); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
+        stylePicker.VerticalAlignment = VerticalAlignment.Center;
+        Field(properties, "Style", stylePicker); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
         Add(properties);
-        Add(availability);
         Add(Separator());
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Spacing = 2 };
         tabs.Children.Add(characterTab); tabs.Children.Add(paragraphTab); tabs.Children.Add(blockTab); Add(tabs);
@@ -83,10 +73,8 @@ internal sealed partial class StyleWindow : Window
         visitParent.Click += (_, _) => Navigate(new(selected.Namespace, selected.Parent));
         visitNext.Click += (_, _) => Navigate(new(1, selected.Next));
         stylePicker.SelectionChanged += (_, _) => { if (!loading && stylePicker.SelectedItem is StyleDefinition style) Navigate(style.Key); };
-        name.LostFocus += (_, _) => { if (!loading && name.Text != selected.Name) Try(() => view.EditStyleString(selected, VIEM_STYLE_EDIT_SET_DISPLAY_NAME, 0, name.Text)); };
         parent.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = parent.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_PARENT : VIEM_STYLE_EDIT_SET_PARENT, 0, id); }); };
         next.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = next.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE : VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, id); }); };
-        delete.Click += (_, _) => Try(() => { view.DeleteStyle(selected); Load(); });
         AttachView(followCaret);
         preferences.Changed += ThemeChanged; preferences.ThemesChanged += SelectedThemeChanged;
         AppWindow.Closing += (_, args) => {
@@ -96,7 +84,6 @@ internal sealed partial class StyleWindow : Window
         Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; preferences.ThemesChanged -= SelectedThemeChanged; view.Dispose(); styleDocument.Dispose(); blockPreview?.Dispose(); blockPreview = null; preview.RemoveFromVisualTree(); };
         Load(followCaret: followCaret);
     }
-    private readonly TextBlock availability = new() { FontSize = 12, Opacity = .65, TextWrapping = TextWrapping.Wrap };
     private readonly ToggleButton characterTab = new() { Content = "Character", FontSize = 13, Width = 130, Padding = new(12, 3, 12, 3) };
     private readonly ToggleButton paragraphTab = new() { Content = "Paragraph", FontSize = 13, Width = 130, Padding = new(12, 3, 12, 3) };
     private readonly ToggleButton blockTab = new() { Content = "Block", FontSize = 13, Width = 130, Padding = new(12, 3, 12, 3) };
@@ -110,7 +97,6 @@ internal sealed partial class StyleWindow : Window
     internal void Retarget(CoreView nextView)
     {
         DismissColorPickers();
-        if (!CommitPendingName()) return;
         DetachView();
         documentView = nextView; CreateThemeSession(); AttachView(true);
         Load(followCaret: true);
@@ -128,7 +114,6 @@ internal sealed partial class StyleWindow : Window
     {
         if (key.Id.Length == 0) return;
         DismissColorPickers();
-        if (!CommitPendingName()) return;
         CancelCaretFollow();
         if (key != selected.Key) Load(key);
     }
@@ -163,10 +148,7 @@ internal sealed partial class StyleWindow : Window
             StyleLoads++;
 #endif
             Title = ThemeStyleTitle;
-            availability.Text = preferences.SelectedTheme == null ? "Default changes last for this session. Create a theme to keep them." : "Changes are saved to “" + preferences.SelectedTheme + "”.";
-            availability.Visibility = Visibility.Visible;
             restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
-            create.IsEnabled = view.UsesGlobalStyles;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();
@@ -183,10 +165,8 @@ internal sealed partial class StyleWindow : Window
                 catalogue.AddRange(group);
             }
             stylePicker.ItemsSource = catalogue; stylePicker.SelectedItem = selected;
-            name.Text = selected.Name; name.IsReadOnly = !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME); kind.Text = selected.Namespace == 2 ? "Character" : selected.Native.role >= VIEM_STYLE_ROLE_QUOTE ? "Container" : "Paragraph";
             var parents = new object[] { selected.Namespace == 2 ? "Default Paragraph" : "None" }.Concat(styles.Where(s => s.Namespace == selected.Namespace && (s.Native.role == selected.Native.role || (selected.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)) && !IsDescendant(s))).ToArray(); parent.ItemsSource = parents; parent.SelectedItem = parents.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Parent) ?? parents[0]; parent.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
             var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray(); next.ItemsSource = following; next.SelectedItem = following.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Next) ?? following[0]; next.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE);
-            delete.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_DELETE);
             UpdateNavigation(visitParent, new(selected.Namespace, selected.Parent), "parent style"); UpdateNavigation(visitNext, new(1, selected.Next), "next paragraph style");
             paragraphTab.IsEnabled = selected.Namespace == 1;
             if (!paragraphTab.IsEnabled) SelectTab(false);
@@ -199,7 +179,7 @@ internal sealed partial class StyleWindow : Window
             if (selected.Namespace != 1 || !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(block, false);
             // Measure the populated controls before the first Activate. Resizing
             // from SizeChanged exposed successive startup layouts and flashes.
-            // Later loads resize only when guidance/error rows change the size.
+            // Later loads resize only when an error changes the content height.
             root.Measure(new global::Windows.Foundation.Size(ClientWidth, double.PositiveInfinity));
             if (!AppWindow.IsVisible)
             {
