@@ -916,7 +916,7 @@ impl Default for SearchOptions {
     fn default() -> Self {
         Self {
             hlsearch: false,
-            incsearch: false,
+            incsearch: true,
             ignorecase: false,
             smartcase: false,
             wrapscan: true,

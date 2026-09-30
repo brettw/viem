@@ -2,7 +2,7 @@
 //! batches; only the current viewport's matches occupy retained memory.
 use super::*;
 use crate::command::search_regex::{scanner::RegexScanner, CompiledRegex, RegexLimits};
-use crate::command::{SearchPresentation, SearchPresentationKey};
+use crate::command::{RevealedSearchMatch, SearchPresentation, SearchPresentationKey};
 use std::ops::Range;
 
 const SEARCH_BATCH_BYTES: usize = 8_192;
@@ -16,6 +16,11 @@ struct ScanKey {
     pattern: String,
     insensitive: bool,
     scope: Range<usize>,
+}
+
+struct KnownSearchMatch {
+    key: ScanKey,
+    range: Range<usize>,
 }
 
 struct PreviewViewport {
@@ -37,6 +42,8 @@ pub(super) struct SearchViewState {
     scanner: Option<RegexScanner>,
     region: Option<Range<usize>>,
     matches: Vec<Range<usize>>,
+    /// The exact navigation result is independent of viewport scan progress.
+    revealed_match: Option<KnownSearchMatch>,
     style_revision: Option<StyleSheetRevision>,
     metrics_overlay: bool,
     viewport: Option<PreviewViewport>,
@@ -80,6 +87,14 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// One cooperative presentation turn. It never edits source, history,
     /// registers, the authoritative cursor, or the current Visual selection.
     pub fn poll_search(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.poll_search_with_match(view_id, None)
+    }
+
+    pub(super) fn poll_search_with_match(
+        &mut self,
+        view_id: ViewId,
+        revealed_match: Option<RevealedSearchMatch>,
+    ) -> Result<bool, CoreError> {
         let key = self
             .views
             .get(&view_id)
@@ -195,6 +210,31 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .unwrap_or(0..self.document.projection().text_tree().byte_len()),
                     })
             });
+        {
+            let state = &mut self.views.get_mut(&view_id).unwrap().search;
+            if state.revealed_match.as_ref().is_some_and(|matched| {
+                matched.key.document != self.document.id()
+                    || matched.key.revision != self.document.revision()
+            }) {
+                state.revealed_match = None;
+            }
+            if let Some(matched) = revealed_match {
+                if let Ok(insensitive) = matched.options.case_insensitive(&matched.pattern) {
+                    // Keep the query that produced this range. Later steps of
+                    // a compound command may have changed the active query.
+                    state.revealed_match = Some(KnownSearchMatch {
+                        key: ScanKey {
+                            document: matched.document,
+                            revision: matched.revision,
+                            pattern: matched.pattern,
+                            insensitive,
+                            scope: 0..self.document.projection().text_tree().byte_len(),
+                        },
+                        range: matched.range,
+                    });
+                }
+            }
+        }
         let visible = visible_range(&self.views[&view_id]);
         let reset = self.views[&view_id].search.scan_key != scan_key
             || (scan_key.is_some()
@@ -259,6 +299,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             .matches
             .iter()
             .cloned()
+            .chain(
+                state.revealed_match.iter()
+                    .filter(|matched| Some(&matched.key) == scan_key.as_ref())
+                    .map(|matched| matched.range.clone()),
+            )
             .chain(
                 presentation
                     .incremental_match
@@ -467,6 +512,124 @@ mod tests {
     }
 
     #[test]
+    fn default_incremental_search_paints_all_matches_only_until_enter_or_escape() {
+        for ending in [Key::Enter, Key::Escape] {
+            let (mut core, view) = setup("foo bar foo");
+            let source = core.document.source_bytes();
+            let revision = core.document.revision();
+            let history = core.document.history_status();
+            type_text(&mut core, view, "/foo");
+            finish(&mut core, view);
+            let presentation = core
+                .command_state(view)
+                .unwrap()
+                .search_presentation(&core.document);
+            assert!(presentation.options.incsearch);
+            assert!(!presentation.options.hlsearch);
+            assert!(has_background(&core, view, 0));
+            assert!(has_background(&core, view, 8));
+            assert!(!has_background(&core, view, 4));
+            assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+            key(&mut core, view, ending);
+            finish(&mut core, view);
+            assert!(!has_background(&core, view, 0));
+            assert!(!has_background(&core, view, 8));
+            assert!(
+                !core
+                    .command_state(view)
+                    .unwrap()
+                    .search_presentation(&core.document)
+                    .options
+                    .hlsearch
+            );
+            assert_eq!(core.document.source_bytes(), source);
+            assert_eq!(core.document.revision(), revision);
+            assert_eq!(core.document.history_status(), history);
+        }
+    }
+
+    #[test]
+    fn incremental_search_restores_saved_highlights_or_suppression_on_cancel() {
+        for suppressed in [false, true] {
+            for ending in [Key::Enter, Key::Escape] {
+                let accepted = ending == Key::Enter;
+                let (mut core, view) = setup("old new old new");
+                command(&mut core, view, ":set hls");
+                command(&mut core, view, "/old");
+                if suppressed {
+                    command(&mut core, view, ":noh");
+                }
+                type_text(&mut core, view, "/new");
+                finish(&mut core, view);
+                for at in [4, 12] {
+                    assert!(has_background(&core, view, at));
+                }
+                for at in [0, 8] {
+                    assert!(!has_background(&core, view, at));
+                }
+                key(&mut core, view, ending);
+                finish(&mut core, view);
+                for at in [0, 8] {
+                    assert_eq!(has_background(&core, view, at), !accepted && !suppressed);
+                }
+                for at in [4, 12] {
+                    assert_eq!(has_background(&core, view, at), accepted);
+                }
+                let presentation = core
+                    .command_state(view)
+                    .unwrap()
+                    .search_presentation(&core.document);
+                assert!(presentation.options.hlsearch);
+                assert!(!presentation.incremental_active);
+                assert_eq!(
+                    presentation.pattern.as_deref(),
+                    Some(if accepted { "new" } else { "old" })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn noincsearch_preserves_persistent_highlights_until_the_search_is_accepted() {
+        for persistent in [false, true] {
+            let (mut core, view) = setup("old new old new");
+            command(
+                &mut core,
+                view,
+                if persistent {
+                    ":set hls nois"
+                } else {
+                    ":set nohls nois"
+                },
+            );
+            command(&mut core, view, "/old");
+            type_text(&mut core, view, "/new");
+            finish(&mut core, view);
+            let presentation = core
+                .command_state(view)
+                .unwrap()
+                .search_presentation(&core.document);
+            assert!(!presentation.incremental_active);
+            assert!(presentation.incremental_match.is_none());
+            assert_eq!(core.command_state(view).unwrap().cursor(), 8);
+            for at in [0, 8] {
+                assert_eq!(has_background(&core, view, at), persistent);
+            }
+            for at in [4, 12] {
+                assert!(!has_background(&core, view, at));
+            }
+            key(&mut core, view, Key::Enter);
+            finish(&mut core, view);
+            for at in [0, 8] {
+                assert!(!has_background(&core, view, at));
+            }
+            for at in [4, 12] {
+                assert_eq!(has_background(&core, view, at), persistent);
+            }
+        }
+    }
+
+    #[test]
     fn highlight_state_is_shared_but_not_persisted_or_undoable() {
         let (mut core, first) = setup("foo bar foo");
         let second = core.add_view(MockTextMeasurementProvider::default(), 300.0, 100.0);
@@ -561,6 +724,127 @@ mod tests {
             .document
             .projection()
             .compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn distant_committed_matches_paint_before_scanning_after_enter_repeat_and_scroll() {
+        let gap = "a\n".repeat(40_000);
+        let text = format!("{gap}needle\n{gap}needle\n{gap}needle");
+        let first = gap.len();
+        let second = first + 7 + gap.len();
+        let third = second + 7 + gap.len();
+        for incremental in [false, true] {
+            let (mut core, view) = setup(&text);
+            command(
+                &mut core,
+                view,
+                if incremental { ":set hls is" } else { ":set hls nois" },
+            );
+            command(&mut core, view, "/needle");
+            assert_eq!(core.command_state(view).unwrap().cursor(), first);
+            assert!(core.search_work_pending(view).unwrap());
+            assert!(has_background(&core, view, first));
+            assert!(has_background(&core, view, first + 5));
+
+            key(&mut core, view, Key::Char('n'));
+            assert_eq!(core.command_state(view).unwrap().cursor(), second);
+            assert!(core.search_work_pending(view).unwrap());
+            assert!(has_background(&core, view, second));
+            assert!(has_background(&core, view, second + 5));
+
+            command(&mut core, view, "/");
+            assert_eq!(core.command_state(view).unwrap().cursor(), third);
+            for _ in 0..3 {
+                assert!(core.search_work_pending(view).unwrap());
+                assert!(has_background(&core, view, third));
+                assert!(has_background(&core, view, third + 5));
+                core.poll_search(view).unwrap();
+            }
+            let top = core.viewport_state(view).unwrap().top();
+            core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(0.0) })
+                .unwrap();
+            core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(top) })
+                .unwrap();
+            assert!(core.search_work_pending(view).unwrap());
+            assert!(has_background(&core, view, third));
+            assert!(!core.document.projection().compatibility_text_is_materialized());
+        }
+    }
+
+    #[test]
+    fn immediate_match_respects_query_suppression_cancel_and_document_revision() {
+        let prefix = "a\n".repeat(40_000);
+        let first = prefix.len();
+        let other = first + 7;
+        let (mut core, view) = setup(&format!("{prefix}needle other"));
+        command(&mut core, view, ":set hls");
+        command(&mut core, view, "/needle");
+        assert!(has_background(&core, view, first));
+
+        type_text(&mut core, view, "/other");
+        assert!(has_background(&core, view, other));
+        assert!(!has_background(&core, view, first));
+        key(&mut core, view, Key::Escape);
+        assert!(core.search_work_pending(view).unwrap());
+        assert!(has_background(&core, view, first));
+        assert!(!has_background(&core, view, other));
+
+        command(&mut core, view, ":noh");
+        assert!(!has_background(&core, view, first));
+        command(&mut core, view, "/");
+        assert!(has_background(&core, view, first));
+        command(&mut core, view, ":set nohls");
+        assert!(!has_background(&core, view, first));
+        command(&mut core, view, ":set hls");
+        assert!(core.search_work_pending(view).unwrap());
+        assert!(has_background(&core, view, first));
+
+        command(&mut core, view, "/other");
+        assert!(core.search_work_pending(view).unwrap());
+        assert!(has_background(&core, view, other));
+        assert!(!has_background(&core, view, first));
+        type_text(&mut core, view, "/[");
+        assert!(!has_background(&core, view, other));
+        key(&mut core, view, Key::Escape);
+        assert!(has_background(&core, view, other));
+        key(&mut core, view, Key::Char('x'));
+        assert!(!has_background(&core, view, other));
+    }
+
+    #[test]
+    fn distant_incremental_match_paints_synchronously_without_persistent_highlights() {
+        let prefix = "a\n".repeat(40_000);
+        let at = prefix.len();
+        let (mut core, view) = setup(&format!("{prefix}needle"));
+        type_text(&mut core, view, "/needle");
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        assert!(has_background(&core, view, at));
+        for _ in 0..2 {
+            assert!(core.search_work_pending(view).unwrap());
+            core.poll_search(view).unwrap();
+            assert!(has_background(&core, view, at));
+        }
+        key(&mut core, view, Key::Enter);
+        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+        assert!(!has_background(&core, view, at));
+    }
+
+    #[test]
+    fn compound_search_results_keep_the_query_that_produced_their_highlight() {
+        let prefix = "a\n".repeat(40_000);
+        let at = prefix.len();
+        for (suffix, highlighted) in [
+            (":set hls<CR>", true),
+            (":set noic<CR>", false),
+            ("/missing<CR>", false),
+        ] {
+            let (mut core, view) = setup(&format!("{prefix}NEEDLE"));
+            command(&mut core, view, ":set hls ic nois");
+            command(&mut core, view, &format!(":nnoremap Q /needle<CR>{suffix}"));
+            key(&mut core, view, Key::Char('Q'));
+            assert_eq!(core.command_state(view).unwrap().cursor(), at);
+            assert_eq!(has_background(&core, view, at), highlighted, "{suffix}");
+        }
     }
 
     #[test]
