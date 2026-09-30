@@ -4928,17 +4928,21 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
         let mut outcome = self.handle_without_search_presentation(view_id, event)?;
+        let revealed_match = outcome.command.as_ref()
+            .and_then(|command| command.revealed_search_match.clone())
+            .filter(|matched| !outcome.document_changed
+                && matched.document == self.document.id()
+                && matched.revision == self.document.revision()
+                && matched.range.start == self.views[&view_id].commands.cursor());
         // Search is disposable presentation work. A failed bounded query or
         // shaper cannot turn a committed edit into a failed command.
-        match self.poll_search(view_id) {
+        match self.poll_search_with_match(view_id, revealed_match.clone()) {
             Ok(changed) => outcome.layout_changed |= changed,
             Err(error) => self.record_presentation_error(view_id, error),
         }
-        let revealed_match = outcome.command.as_ref()
-            .and_then(|command| command.revealed_search_match.clone())
-            .filter(|range| !outcome.document_changed && range.start == self.views[&view_id].commands.cursor());
         let reveal = (|| -> Result<(), CoreError> {
-            if let Some(range) = revealed_match {
+            if let Some(matched) = revealed_match {
+                let range = matched.range;
                 if self.views[&view_id].layout.snapshot()
                     .is_some_and(|snapshot| snapshot.has_horizontal_materialization())
                 {

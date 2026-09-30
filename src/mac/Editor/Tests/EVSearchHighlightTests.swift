@@ -63,6 +63,16 @@ final class EVSearchHighlightTests: XCTestCase {
         }
     }
 
+    private func assertMatchPaint(
+        at offsets: [UInt64], highlighted: Bool, in surface: EVEditorSurfaceController,
+        file: StaticString = #filePath, line: UInt = #line
+    ) throws {
+        for offset in offsets {
+            XCTAssertEqual(try hasMatchPaint(at: offset, in: surface), highlighted,
+                "Search paint at byte \(offset)", file: file, line: line)
+        }
+    }
+
     func testSubmittedSearchPublishesExactPaintWithoutChangingDocumentHistory() throws {
         let (backend, surface) = try fixture("hit gap hit")
         let before = try backend.recoverySnapshot()
@@ -84,6 +94,93 @@ final class EVSearchHighlightTests: XCTestCase {
             _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
         }
         XCTAssertEqual(surface.commandOutput, "hlsearch\nincsearch")
+    }
+
+    func testIncrementalSearchDefaultsToOnWithoutStartupOverride() throws {
+        let (_, surface) = try fixture("hit gap hit", settings: "")
+        type(":set is?", into: surface)
+        surface.performInput {
+            _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
+        }
+        XCTAssertEqual(surface.commandOutput, "incsearch")
+    }
+
+    func testIncrementalSearchPaintsEveryCurrentMatchWithoutPersistentHighlights() throws {
+        for accept in [false, true] {
+            // Leave incsearch unspecified to exercise its default through the native path.
+            let (backend, surface) = try fixture("hit hat hit hat", settings: "set nohlsearch")
+            let before = try backend.recoverySnapshot()
+            type("/h", into: surface)
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 4, 8, 12], highlighted: true, in: surface)
+            try assertMatchPaint(at: [3, 7, 11], highlighted: false, in: surface)
+
+            type("it", into: surface)
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 8], highlighted: true, in: surface)
+            try assertMatchPaint(at: [4, 12], highlighted: false, in: surface)
+
+            if accept {
+                surface.performInput {
+                    _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
+                }
+            } else {
+                surface.editorView.cancelOperation(nil)
+            }
+            try finishSearch(surface)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+            try assertMatchPaint(at: [0, 4, 8, 12], highlighted: false, in: surface)
+            XCTAssertEqual(try backend.recoverySnapshot(), before)
+            XCTAssertFalse(backend.persistenceState.isDirty)
+            XCTAssertFalse(surface.canUndo)
+        }
+    }
+
+    func testIncrementalSearchRestoresPersistentPatternOnCancelAndCommitsItOnAccept() throws {
+        for accept in [false, true] {
+            let (_, surface) = try fixture("hit hat hit hat")
+            try submit("/hit", in: surface)
+            try assertMatchPaint(at: [0, 8], highlighted: true, in: surface)
+            type("/hat", into: surface)
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 8], highlighted: false, in: surface)
+            try assertMatchPaint(at: [4, 12], highlighted: true, in: surface)
+
+            if accept {
+                surface.performInput {
+                    _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
+                }
+            } else {
+                surface.editorView.cancelOperation(nil)
+            }
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 8], highlighted: !accept, in: surface)
+            try assertMatchPaint(at: [4, 12], highlighted: accept, in: surface)
+        }
+    }
+
+    func testIncrementalSearchTemporarilyOverridesHighlightSuppression() throws {
+        for accept in [false, true] {
+            let (_, surface) = try fixture("hit hat hit hat")
+            try submit("/hit", in: surface)
+            try submit(":nohlsearch", in: surface)
+            try assertMatchPaint(at: [0, 4, 8, 12], highlighted: false, in: surface)
+            type("/hat", into: surface)
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 8], highlighted: false, in: surface)
+            try assertMatchPaint(at: [4, 12], highlighted: true, in: surface)
+
+            if accept {
+                surface.performInput {
+                    _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
+                }
+            } else {
+                surface.editorView.cancelOperation(nil)
+            }
+            try finishSearch(surface)
+            try assertMatchPaint(at: [0, 8], highlighted: false, in: surface)
+            try assertMatchPaint(at: [4, 12], highlighted: accept, in: surface)
+        }
     }
 
     func testSharedSearchOptionsRefreshInactivePaneWithoutMovingItsCursor() throws {
@@ -155,10 +252,17 @@ final class EVSearchHighlightTests: XCTestCase {
     func testRunLoopFinishesSearchWithoutAdditionalInput() async throws {
         let source = String(repeating: "a\n", count: 20_000) + "needle"
         let (backend, surface) = try fixture(source, settings: "set hlsearch noincsearch")
+        let originalViewportTop = surface.viewportState.top
         type("/needle", into: surface)
         surface.performInput {
             _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER))
         }
+        // The current match must paint in the input turn, before the background
+        // scanner has reached this distant viewport or the run loop can poll it.
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 40_000)
+        XCTAssertGreaterThan(surface.viewportState.top, originalViewportTop)
+        XCTAssertTrue(try hasMatchPaint(at: 40_000, in: surface))
+        XCTAssertTrue(try XCTUnwrap(surface.session).searchWorkPending())
         XCTAssertTrue(surface.isSearchPolling)
         for _ in 0..<300 where surface.isSearchPolling {
             try await Task.sleep(nanoseconds: 10_000_000)

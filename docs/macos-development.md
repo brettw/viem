@@ -98,8 +98,11 @@ the `themes` directory, and `startup.viem` together; native code resolves it thr
 CRLF, and is limited to 1 MiB. Invalid lines report their path and line number
 without preventing later valid settings from loading.
 
-`hlsearch` highlights the saved search pattern; `incsearch` previews matches
-while typing a search. `:noh` clears saved-pattern highlights until the next
+`incsearch` is enabled by default and highlights all matches while typing a
+search, even when `hlsearch` is off. `set noincsearch` disables this preview.
+Accepting or cancelling restores normal `hlsearch` behavior: highlight the saved
+search pattern when enabled, or show no highlights when disabled. `hlsearch`
+defaults off. `:noh` clears saved-pattern highlights until the next
 search. Customize their internal **Incremental match** character style in the
 Style Editor; its explicit properties overlay the text's existing formatting.
 The default changes only the background, and the style is absent from style

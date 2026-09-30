@@ -706,11 +706,15 @@ empty matches, stale work and atomic reverse-edit failures.
 
 #### Search presentation
 
-`hlsearch` and `incsearch` are buffer-shared and default off. Incremental search
-also supports counted, Visual and operator searches; substitute previews matches
-within addressed hard lines, never replacement text. Preview reveals candidates
-without changing authoritative cursor/selection, pending origin, registers or
-history. Ctrl-G/T navigate candidates; prompt changes reset that navigation.
+`hlsearch` and `incsearch` are buffer-shared; `incsearch` defaults on and
+`hlsearch` defaults off. Incremental search temporarily highlights all matches
+of the current query without changing `hlsearch`. Accepting or cancelling the
+prompt returns to normal saved-pattern highlighting and suppression behavior.
+Incremental search also supports counted, Visual and operator searches; substitute
+previews highlight matches within addressed hard lines, never replacement text.
+Preview reveals candidates without changing authoritative cursor/selection,
+pending origin, registers or history. Ctrl-G/T navigate candidates; prompt
+changes reset that navigation.
 Enter accepts; Escape restores cursor, selection and viewport. Invalid, empty,
 unmatched or resource-limited preview commits nothing. `:nohlsearch` suppresses
 accepted-pattern highlighting until a later search or explicit option change,
@@ -725,6 +729,10 @@ Metrics declarations invalidate affected layout; paint-only changes reuse
 shaping. Matching/preview/invalidation remain portable, cooperative,
 snapshot-bound and viewport-budgeted, including multiline context. Test stale
 work, style invalidation and bounded large-document behavior.
+The exact current preview or accepted search match must paint synchronously
+when revealed, even while other visible matches are still being scanned. Keep
+that result bound to its document revision and query, and respect `hlsearch`
+and suppression after the prompt closes.
 
 ### Literal input, indentation and whitespace
 

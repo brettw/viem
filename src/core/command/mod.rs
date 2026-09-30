@@ -262,6 +262,18 @@ pub enum ExCommandError {
     Execute(ExExecuteError),
 }
 
+/// An accepted navigation match with the exact source and search policy that
+/// produced it. Later commands may change the active pattern or options without
+/// moving the cursor; presentation must not reinterpret this range under them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevealedSearchMatch {
+    pub document: DocumentId,
+    pub revision: Revision,
+    pub pattern: String,
+    pub options: search_regex::SearchOptions,
+    pub range: Range<usize>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommandOutput {
     pub status: CommandStatus,
@@ -275,7 +287,7 @@ pub struct CommandOutput {
     pub history_navigation: bool,
     /// The exact match accepted by an ordinary search navigation in this
     /// command. Presentation can reveal it without repeating the search.
-    pub revealed_search_match: Option<Range<usize>>,
+    pub revealed_search_match: Option<RevealedSearchMatch>,
     /// Present after a successfully committed Ex command. This carries typed
     /// host requests plus the exact side effects committed by the controller.
     /// Internal continuations such as `:normal` are consumed before this
@@ -13751,7 +13763,13 @@ impl CommandInterpreter {
                 self.cursor = matched_range.start;
                 CommandOutput {
                     cursor_moved: self.cursor != old,
-                    revealed_search_match: Some(matched_range),
+                    revealed_search_match: Some(RevealedSearchMatch {
+                        document: document.id(),
+                        revision: document.revision(),
+                        pattern: pattern.to_owned(),
+                        options: self.search_options,
+                        range: matched_range,
+                    }),
                     ..CommandOutput::complete()
                 }
             }

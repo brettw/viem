@@ -131,7 +131,9 @@ impl CommandInterpreter {
         };
         result.pattern = Some(query.pattern.clone());
         result.options = query.options;
-        result.highlight_all = query.options.hlsearch;
+        // Incremental highlighting is temporary presentation, not an option
+        // change. Leaving the prompt restores hlsearch and its suppression.
+        result.highlight_all = true;
         result.search_range = query.scope.clone();
         match search_match(document, self.cursor, &query, preview_limits()) {
             Ok(Some(matched_range)) => {
@@ -447,6 +449,7 @@ fn search_match_sequence(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::ex_execute::ExInfoRequest;
 
     fn setup(text: &str, settings: &str) -> (Document, CommandInterpreter) {
         let mut document = Document::new(text);
@@ -474,15 +477,41 @@ mod tests {
             .unwrap()
     }
 
+    fn accepted_match(
+        document: &Document,
+        pattern: &str,
+        options: SearchOptions,
+        range: Range<usize>,
+    ) -> RevealedSearchMatch {
+        RevealedSearchMatch {
+            document: document.id(),
+            revision: document.revision(),
+            pattern: pattern.into(),
+            options,
+            range,
+        }
+    }
+
     #[test]
     fn committed_search_returns_the_exact_match_for_reveal_without_incremental_search() {
-        let (mut document, mut commands) = setup("zero needle end needle", "");
+        let (mut document, mut commands) =
+            setup("zero NEEDLE end needle", "set noincsearch ignorecase");
+        let options = commands.search_options;
         let found = keys(&mut commands, &mut document, "/needle<CR>");
-        assert_eq!(found.revealed_search_match, Some(5..11));
+        assert_eq!(
+            found.revealed_search_match,
+            Some(accepted_match(&document, "needle", options, 5..11))
+        );
         let next = keys(&mut commands, &mut document, "n");
-        assert_eq!(next.revealed_search_match, Some(16..22));
+        assert_eq!(
+            next.revealed_search_match,
+            Some(accepted_match(&document, "needle", options, 16..22))
+        );
         let previous = keys(&mut commands, &mut document, "N");
-        assert_eq!(previous.revealed_search_match, Some(5..11));
+        assert_eq!(
+            previous.revealed_search_match,
+            Some(accepted_match(&document, "needle", options, 5..11))
+        );
         let missing = keys(&mut commands, &mut document, "/absent<CR>");
         assert!(missing.revealed_search_match.is_none());
     }
@@ -492,33 +521,52 @@ mod tests {
         let (mut document, mut commands) = setup("needle", "");
         let found = keys(&mut commands, &mut document, "/needle<CR>");
         assert!(!found.cursor_moved);
-        assert_eq!(found.revealed_search_match, Some(0..6));
+        assert_eq!(
+            found.revealed_search_match,
+            Some(accepted_match(&document, "needle", commands.search_options, 0..6))
+        );
     }
 
     #[test]
     fn compound_outputs_retain_only_a_still_current_search_match() {
+        let document = Document::new("zero needle end needle");
+        let found = accepted_match(&document, "needle", SearchOptions::default(), 5..11);
+        let next = accepted_match(&document, "needle", SearchOptions::default(), 16..22);
         let mut output = CommandOutput {
-            revealed_search_match: Some(5..11),
+            revealed_search_match: Some(found.clone()),
             ..CommandOutput::complete()
         };
         output.merge(CommandOutput::complete());
-        assert_eq!(output.revealed_search_match, Some(5..11));
+        assert_eq!(output.revealed_search_match, Some(found));
         output.merge(CommandOutput { cursor_moved: true, ..CommandOutput::complete() });
         assert!(output.revealed_search_match.is_none());
         output.merge(CommandOutput {
-            revealed_search_match: Some(16..22),
+            revealed_search_match: Some(next.clone()),
             ..CommandOutput::complete()
         });
-        assert_eq!(output.revealed_search_match, Some(16..22));
+        assert_eq!(output.revealed_search_match, Some(next));
         output.merge(CommandOutput { document_changed: true, ..CommandOutput::complete() });
         assert!(output.revealed_search_match.is_none());
     }
 
     #[test]
-    fn options_default_off_and_support_aliases_queries_toggles_resets_and_atomic_errors() {
+    fn compound_outputs_preserve_the_accepted_query_when_later_commands_change_search_state() {
+        let (mut document, mut commands) = setup("zero NEEDLE", "set ignorecase");
+        let expected = accepted_match(&document, "needle", commands.search_options, 5..11);
+        let mut output = keys(&mut commands, &mut document, "/needle<CR>");
+        output.merge(keys(&mut commands, &mut document, ":set noignorecase<CR>"));
+        assert!(!commands.search_options.ignorecase);
+        assert_eq!(output.revealed_search_match, Some(expected.clone()));
+        output.merge(keys(&mut commands, &mut document, "/absent<CR>"));
+        assert_eq!(commands.last_search.as_ref().unwrap().1, "absent");
+        assert_eq!(output.revealed_search_match, Some(expected));
+    }
+
+    #[test]
+    fn options_default_to_incremental_search_and_support_queries_toggles_resets_and_atomic_errors() {
         let (mut document, mut commands) = setup("one two", "");
         assert!(!commands.search_presentation(&document).options.hlsearch);
-        assert!(!commands.search_presentation(&document).options.incsearch);
+        assert!(commands.search_presentation(&document).options.incsearch);
         assert_eq!(
             keys(&mut commands, &mut document, ":set hls is<CR>").status,
             CommandStatus::Complete
@@ -544,6 +592,40 @@ mod tests {
             ":set hls is<CR>:set hls& is&<CR>",
         );
         assert_eq!(commands.search_options, SearchOptions::default());
+    }
+
+    #[test]
+    fn changed_options_list_noincsearch_and_reset_restores_the_enabled_default() {
+        let (mut document, mut commands) = setup("one two", "");
+        let listed_incsearch = |output: CommandOutput| {
+            output
+                .ex_outcome
+                .unwrap()
+                .frontend_requests
+                .into_iter()
+                .find_map(|request| match request {
+                    ExFrontendRequest::Info(ExInfoRequest::Options(options)) => options
+                        .into_iter()
+                        .find(|option| option.name == ExOptionName::IncSearch)
+                        .map(|option| option.value),
+                    _ => None,
+                })
+        };
+        assert_eq!(
+            listed_incsearch(keys(&mut commands, &mut document, ":set<CR>")),
+            None
+        );
+        keys(&mut commands, &mut document, ":set noincsearch<CR>");
+        assert_eq!(
+            listed_incsearch(keys(&mut commands, &mut document, ":set<CR>")),
+            Some(ExOptionValue::Boolean(false))
+        );
+        keys(&mut commands, &mut document, ":set is&<CR>");
+        assert!(commands.search_options.incsearch);
+        assert_eq!(
+            listed_incsearch(keys(&mut commands, &mut document, ":set<CR>")),
+            None
+        );
     }
 
     #[test]
@@ -707,10 +789,12 @@ mod tests {
 
     #[test]
     fn substitute_preview_obeys_range_escaping_flags_and_does_not_edit_source() {
-        let (mut document, mut commands) = setup("one\nONE\none", "set is hls");
+        let (mut document, mut commands) = setup("one\nONE\none", "");
         let source = document.source_bytes();
         keys(&mut commands, &mut document, ":2,3s/on");
         let state = commands.search_presentation(&document);
+        assert!(state.highlight_all);
+        assert!(!state.options.hlsearch);
         assert_eq!(state.search_range, Some(4..11));
         assert_eq!(state.incremental_match.unwrap().matched_range, 8..10);
         keys(&mut commands, &mut document, "e/x/i");
@@ -720,6 +804,7 @@ mod tests {
         keys(&mut commands, &mut document, "<CR>");
         assert_eq!(document.text(), "one\nx\nx");
         assert_eq!(commands.last_search.as_ref().unwrap().1, "one");
+        assert!(!commands.search_presentation(&document).highlight_all);
     }
 
     #[test]

@@ -2410,7 +2410,7 @@ fn prepare_set(
             }
             if values.visible_whitespace.listchars.is_some() { shown.push(display(ExOptionName::ListChars, ExOptionValue::String(values.visible_whitespace.listchars().into()))); }
             if values.search_options.hlsearch { shown.push(display(ExOptionName::HlSearch, ExOptionValue::Boolean(true))); }
-            if values.search_options.incsearch { shown.push(display(ExOptionName::IncSearch, ExOptionValue::Boolean(true))); }
+            if !values.search_options.incsearch { shown.push(display(ExOptionName::IncSearch, ExOptionValue::Boolean(false))); }
             if values.search_options.ignorecase {
                 shown.push(display(
                     ExOptionName::IgnoreCase,
@@ -2709,7 +2709,7 @@ fn apply_option_operation(
     match name.as_str() {
         "autoselect" => apply_boolean_option(scope, ExOptionName::AutoSelect, true, &operation.action, &mut values.selection_options.autoselect, plan),
         "hlsearch" | "hls" => apply_boolean_option(scope, ExOptionName::HlSearch, false, &operation.action, &mut values.search_options.hlsearch, plan),
-        "incsearch" | "is" => apply_boolean_option(scope, ExOptionName::IncSearch, false, &operation.action, &mut values.search_options.incsearch, plan),
+        "incsearch" | "is" => apply_boolean_option(scope, ExOptionName::IncSearch, true, &operation.action, &mut values.search_options.incsearch, plan),
         "ignorecase" | "ic" => apply_boolean_option(
             scope,
             ExOptionName::IgnoreCase,
