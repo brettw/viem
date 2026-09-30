@@ -14,9 +14,16 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         var statusBarState = EVStatusBarState()
         var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
         weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
+        var defaultLineHeight: CGFloat? { 20 }
+        var sourcedLines: [String] = []
+        var sourcedRequest: ((String) -> [EVDocumentHostRequest])?
 
         func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
         func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .disabled }
+        func executeSourcedLine(_ text: String, depth _: UInt32) throws -> [EVDocumentHostRequest] {
+            sourcedLines.append(text)
+            return sourcedRequest?(text) ?? []
+        }
     }
 
     private final class Backend: EVDocumentBackend {
@@ -482,6 +489,249 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(closes, 0)
         controller.close()
         XCTAssertEqual(closes, 0)
+    }
+
+    func testDirectoryEditPreservesForceAndOnlyReplacesAfterSelection() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let selected = try registeredDocument(at: directory.appendingPathComponent("extensionless"))
+        defer { selected.close() }
+        for force in [false, true] {
+            let backend = Backend(data: Data("unsaved source".utf8))
+            let (original, controller) = makeController(backend: backend)
+            defer { controller.openFilePanelPresenter = nil; controller.close() }
+            controller.openFilePanelPresenter = { panel, window, choose in
+                XCTAssertEqual(panel.directoryURL?.standardizedFileURL, directory.standardizedFileURL)
+                XCTAssertTrue(window === controller.window)
+                XCTAssertFalse(panel.allowsMultipleSelection)
+                XCTAssertTrue(panel.canChooseFiles)
+                XCTAssertFalse(panel.canChooseDirectories)
+                XCTAssertTrue(panel.allowsOtherFileTypes)
+                XCTAssertTrue(controller.activeDocument === original)
+                choose(selected.fileURL)
+            }
+            var result: Result<String?, Error>?
+            controller.perform(documentHostRequests: [EVDocumentHostRequest(
+                kind: .edit, documentID: backend.persistenceState.documentID,
+                documentRevision: backend.persistenceState.documentRevision,
+                force: force, path: directory.path)]) { result = $0 }
+            if force {
+                _ = try XCTUnwrap(result).get()
+                XCTAssertTrue(controller.activeDocument === selected)
+            } else {
+                XCTAssertThrowsError(try XCTUnwrap(result).get()) {
+                    XCTAssertEqual($0 as? EVDocumentHostError, .documentModified)
+                }
+                XCTAssertTrue(controller.activeDocument === original)
+                XCTAssertEqual(backend.serializedData, Data("unsaved source".utf8))
+            }
+            XCTAssertEqual(controller.paneCount, 1)
+        }
+    }
+
+    func testDirectoryOpenKeepsOriginalPaneWhenFocusChanges() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for kind in [EVDocumentHostRequest.Kind.edit, .split] {
+            let selected = try registeredDocument(at: directory.appendingPathComponent("\(kind).txt"))
+            defer { selected.close() }
+            let backend = Backend(data: Data("source".utf8), dirty: false)
+            let (original, controller) = makeController(backend: backend)
+            controller.showWindow(nil)
+            controller.window?.setContentSize(EVDocumentWindowController.initialContentSize)
+            defer { controller.openFilePanelPresenter = nil; controller.close() }
+            var splitResult: Result<String?, Error>?
+            controller.perform(documentHostRequests: [request(.split, backend: backend)]) { splitResult = $0 }
+            _ = try XCTUnwrap(splitResult).get()
+            controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
+            let origin = controller.editorSurface
+            controller.openFilePanelPresenter = { _, _, choose in
+                controller.perform(windowRequests: [.focusBottom], from: origin)
+                XCTAssertFalse(controller.editorSurface === origin)
+                choose(selected.fileURL)
+            }
+            var result: Result<String?, Error>?
+            controller.perform(documentHostRequests: [EVDocumentHostRequest(
+                kind: kind, documentID: backend.persistenceState.documentID,
+                documentRevision: backend.persistenceState.documentRevision,
+                path: directory.path, initialHeightRows: kind == .split ? 4 : nil)]) { result = $0 }
+            _ = try XCTUnwrap(result).get()
+            XCTAssertTrue(controller.activeDocument === selected)
+            XCTAssertEqual(controller.paneCount, kind == .split ? 3 : 2)
+            if kind == .split {
+                XCTAssertEqual(controller.editorSurface.viewController.view.bounds.height, 80, accuracy: 2)
+                controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
+                XCTAssertTrue(controller.editorSurface === origin)
+                controller.perform(windowRequests: [.focusDown(count: 1)], from: controller.editorSurface)
+                XCTAssertTrue(controller.activeDocument === selected)
+            } else {
+                controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
+                XCTAssertTrue(controller.activeDocument === selected)
+            }
+            controller.perform(windowRequests: [.focusBottom], from: controller.editorSurface)
+            XCTAssertTrue(controller.activeDocument === original)
+        }
+    }
+
+    func testDirectoryCapitalEditOpensSelectedFileInNewWindow() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let selected = try registeredDocument(at: directory.appendingPathComponent("selected.txt"))
+        defer { selected.close() }
+        let backend = Backend(data: Data("unsaved".utf8))
+        let (original, controller) = makeController(backend: backend)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        controller.openFilePanelPresenter = { _, _, choose in
+            XCTAssertTrue(selected.windowControllers.isEmpty)
+            choose(selected.fileURL)
+        }
+        var result: Result<String?, Error>?
+        controller.perform(documentHostRequests: [EVDocumentHostRequest(
+            kind: .editNewWindow, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision,
+            path: directory.path)]) { result = $0 }
+        _ = try XCTUnwrap(result).get()
+        XCTAssertEqual(selected.windowControllers.count, 1)
+        XCTAssertTrue(selected.windowControllers.first?.window?.isVisible ?? false)
+        XCTAssertTrue(controller.activeDocument === original)
+        XCTAssertEqual(controller.paneCount, 1)
+        XCTAssertTrue(backend.persistenceState.isDirty)
+    }
+
+    func testDirectorySelectionRejectsChangedTargetAndClosedWindow() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let selected = try registeredDocument(at: directory.appendingPathComponent("selected.txt"))
+        defer { selected.close() }
+        for kind in [EVDocumentHostRequest.Kind.edit, .split, .editNewWindow] {
+            for change in ["revision", "binding", "dirty", "closed"] {
+                let backend = Backend(data: Data("source".utf8), dirty: false)
+                let (original, controller) = makeController(backend: backend)
+                defer { controller.openFilePanelPresenter = nil; controller.close() }
+                controller.openFilePanelPresenter = { _, _, choose in
+                    switch change {
+                    case "revision": backend.persistenceState.documentRevision += 1
+                    case "binding": original.fileURL = directory.appendingPathComponent("renamed.txt")
+                    case "dirty": backend.persistenceState.isDirty = true
+                    default: controller.close()
+                    }
+                    choose(selected.fileURL)
+                }
+                assertFailure(.staleRequest, from: controller, request: EVDocumentHostRequest(
+                    kind: kind, documentID: backend.persistenceState.documentID,
+                    documentRevision: backend.persistenceState.documentRevision,
+                    path: directory.path))
+                XCTAssertEqual(controller.paneCount, 1)
+                XCTAssertTrue(controller.activeDocument === original)
+                XCTAssertTrue(selected.windowControllers.isEmpty)
+            }
+        }
+    }
+
+    func testDirectoryCancellationIsSilentAndStopsQueuedCommands() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for kind in [EVDocumentHostRequest.Kind.edit, .split, .editNewWindow] {
+            let backend = Backend(data: Data("unsaved".utf8))
+            let (original, controller) = makeController(backend: backend)
+            defer { controller.openFilePanelPresenter = nil; controller.close() }
+            let state = backend.persistenceState
+            controller.openFilePanelPresenter = { _, _, choose in choose(nil) }
+            var result: Result<String?, Error>?
+            controller.perform(documentHostRequests: [
+                EVDocumentHostRequest(kind: kind, documentID: state.documentID,
+                    documentRevision: state.documentRevision, path: directory.path),
+                request(.split, backend: backend)
+            ]) { result = $0 }
+            XCTAssertNil(try XCTUnwrap(result).get())
+            XCTAssertTrue(controller.activeDocument === original)
+            XCTAssertEqual(controller.paneCount, 1)
+            XCTAssertEqual(backend.persistenceState, state)
+        }
+    }
+
+    func testDirectoryCancellationStopsSourceBeforeNextLine() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appendingPathComponent("commands.viem")
+        try Data("pick\nnext".utf8).write(to: script)
+        let backend = Backend(data: Data("source".utf8), dirty: false)
+        let (original, controller) = makeController(backend: backend)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        let surface = try XCTUnwrap(controller.editorSurface as? Surface)
+        surface.sourcedRequest = { _ in [EVDocumentHostRequest(
+            kind: .split, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision, path: directory.path)] }
+        controller.openFilePanelPresenter = { _, _, choose in choose(nil) }
+        var result: Result<String?, Error>?
+        controller.perform(documentHostRequests: [EVDocumentHostRequest(
+            kind: .source, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision,
+            path: script.path)]) { result = $0 }
+        XCTAssertNil(try XCTUnwrap(result).get())
+        XCTAssertEqual(surface.sourcedLines, ["pick"])
+        XCTAssertTrue(controller.activeDocument === original)
+        XCTAssertEqual(controller.paneCount, 1)
+    }
+
+    func testDirectoryPathsResolveDotRelativeHomeAndSymlinkBeforePicker() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let alias = directory.appendingPathComponent("alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: directory)
+        let previousDirectory = FileManager.default.currentDirectoryPath
+        defer { _ = FileManager.default.changeCurrentDirectoryPath(previousDirectory) }
+        XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(directory.path))
+        let backend = Backend(data: Data(), dirty: false)
+        let (_, controller) = makeController(backend: backend)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        for (path, expected) in [(".", directory), ("alias/.", directory), ("~", URL(fileURLWithPath: NSHomeDirectory()))] {
+            var presented = false
+            controller.openFilePanelPresenter = { panel, _, choose in
+                presented = true
+                XCTAssertTrue(panel.directoryURL.map { EVDocumentIdentity.sameFile($0, expected) } ?? false)
+                choose(nil)
+            }
+            var result: Result<String?, Error>?
+            controller.perform(documentHostRequests: [EVDocumentHostRequest(
+                kind: .edit, documentID: backend.persistenceState.documentID,
+                documentRevision: backend.persistenceState.documentRevision, path: path)]) { result = $0 }
+            XCTAssertNil(try XCTUnwrap(result).get())
+            XCTAssertTrue(presented, path)
+        }
+    }
+
+    func testExplicitFilePathOpensWithoutDirectoryPicker() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let selected = try registeredDocument(at: directory.appendingPathComponent(".dotfile"))
+        defer { selected.close() }
+        let backend = Backend(data: Data(), dirty: false)
+        let (_, controller) = makeController(backend: backend)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        controller.openFilePanelPresenter = { _, _, choose in
+            XCTFail("An explicit file path must bypass the directory picker")
+            choose(nil)
+        }
+        var result: Result<String?, Error>?
+        controller.perform(documentHostRequests: [EVDocumentHostRequest(
+            kind: .edit, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision,
+            path: selected.fileURL?.path)]) { result = $0 }
+        _ = try XCTUnwrap(result).get()
+        XCTAssertTrue(controller.activeDocument === selected)
+        XCTAssertEqual(controller.paneCount, 1)
+    }
+
+    private func registeredDocument(at url: URL) throws -> EVDocument {
+        try Data("selected file".utf8).write(to: url)
+        let backend = Backend(data: Data("selected file".utf8), dirty: false, documentID: 99)
+        let document = EVDocument(editorBackend: backend)
+        document.fileURL = url
+        document.fileType = EVDocument.plainTextType
+        document.recordRecentDocument = { _ in }
+        NSDocumentController.shared.addDocument(document)
+        return document
     }
 
     private func makeController(
