@@ -1402,6 +1402,14 @@ impl LayoutSnapshot {
             || row.clusters.last().is_some_and(|cluster| x >= cluster.x + cluster.advance)
     }
 
+    pub(crate) fn covers_horizontal_viewport(&self, left: f32, width: f32) -> bool {
+        self.horizontal_materialization.as_ref().is_none_or(|sparse| {
+            sparse.rows.iter().all(|(_, _, bands)| {
+                bands.iter().any(|band| band.start <= left && left + width <= band.end)
+            })
+        })
+    }
+
     pub fn has_horizontal_materialization(&self) -> bool {
         self.horizontal_materialization.is_some()
     }
@@ -2179,6 +2187,16 @@ impl ViewLayout {
     /// Shared reveal policy also used when preparing a relative long-line slice.
     pub(crate) fn reveal_viewport_top(&self, row: &VisualRow, current: f32) -> f32 {
         super::scroll::reveal_viewport_top(row, current, self.height, self.insets)
+    }
+
+    pub(crate) fn reveal_viewport_left(&self, bounds: std::ops::Range<f32>, start: f32) -> f32 {
+        super::scroll::reveal_viewport_left(bounds, start, self.viewport_left, self.width, self.insets)
+    }
+
+    pub(crate) fn reveal_search_viewport_left(
+        &self, bounds: std::ops::Range<f32>, cursor: f32, right_to_left: bool, complete: bool,
+    ) -> f32 {
+        super::scroll::reveal_search_viewport_left(bounds, cursor, self.width, right_to_left, complete)
     }
 
     /// Horizontal presentation offset in document layout coordinates.
@@ -3095,7 +3113,12 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
         .fold(row.paragraph_content_x, f32::max);
     let paragraph_box_right = row.paragraph_content_x + row.paragraph_content_width;
     let trailing_canvas = (viewport_width - paragraph_box_right).max(0.0);
-    viewport_width.max(positioned_right + trailing_canvas)
+    // Existing right padding already accommodates a thin caret. Reserve
+    // extra reach only when it extends beyond that padding, so normally
+    // wrapped rows do not acquire a spurious horizontal scrollbar.
+    let caret_right = row.carets.iter().map(|caret| caret.x + super::CARET_REVEAL_WIDTH)
+        .fold(0.0, f32::max);
+    viewport_width.max(positioned_right + trailing_canvas).max(caret_right)
 }
 
 fn snapshot_hard_line_count(snapshot: &LayoutSnapshot) -> usize {

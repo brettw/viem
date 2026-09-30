@@ -122,29 +122,27 @@ pub(super) fn reveal_anchored_row<P: TextMeasurementProvider>(
 ) -> Result<(), LayoutError> {
     let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
     let geometry = anchor_geometry(snapshot, anchor)?;
-    reveal_layout_row_at(&mut view.layout, anchor.anchor.offset(), geometry.point.affinity)
+    let row = &snapshot.rows[geometry.row_index];
+    let top = view.layout.reveal_viewport_top(row, view.layout.viewport_top());
+    view.layout.set_viewport_top(top)
 }
 
 pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
+    document: &Document,
     view: &mut View<P>,
 ) -> Result<(), LayoutError> {
-    let position = view.commands.visual_position().unwrap_or_else(|| {
-        crate::command::layout_motion::VisualPosition {
-            text_offset: view.commands.cursor(),
-            affinity: view.commands.boundary_affinity(),
-        }
-    });
-    reveal_layout_row_at(&mut view.layout, position.text_offset, position.affinity)
+    let target = view.commands.caret_target(document);
+    reveal_layout_range(&mut view.layout, target.range(), target.affinity())
 }
 
 pub(super) fn reveal_presentation_caret_row<P: TextMeasurementProvider>(
     document: &Document,
     view: &mut View<P>,
 ) -> Result<(), LayoutError> {
-    if let Some(offset) = view.search_preview_destination(document) {
-        reveal_layout_row_at(&mut view.layout, offset, BoundaryAffinity::Downstream)
+    if let Some(range) = view.search_preview_range(document) {
+        reveal_search_match(&mut view.layout, range)
     } else {
-        reveal_caret_row(view)
+        reveal_caret_row(document, view)
     }
 }
 
@@ -156,6 +154,35 @@ pub(super) fn reveal_layout_row_at(
     offset: usize,
     affinity: BoundaryAffinity,
 ) -> Result<(), LayoutError> {
+    reveal_layout_range(layout, offset..offset, affinity)
+}
+
+/// Search starts with the logical cursor centered, then shifts only enough
+/// to fit the match's first visual row. Oversized matches expose their start.
+pub(super) fn reveal_search_match(
+    layout: &mut ViewLayout,
+    range: std::ops::Range<usize>,
+) -> Result<(), LayoutError> {
+    reveal_range(layout, range, BoundaryAffinity::Downstream, true)
+}
+
+fn reveal_layout_range(
+    layout: &mut ViewLayout,
+    range: std::ops::Range<usize>,
+    affinity: BoundaryAffinity,
+) -> Result<(), LayoutError> {
+    reveal_range(layout, range, affinity, false)
+}
+
+/// Read only materialized clusters, including indivisible shaping/regex
+/// endpoints. Ordinary cursor movement keeps the minimum-reveal policy.
+fn reveal_range(
+    layout: &mut ViewLayout,
+    range: std::ops::Range<usize>,
+    affinity: BoundaryAffinity,
+    center_search: bool,
+) -> Result<(), LayoutError> {
+    let offset = range.start;
     let snapshot = layout.snapshot().ok_or(LayoutError::NoRows)?;
     let geometry = snapshot.logical_endpoint_geometry(offset, affinity).or_else(|_| {
         snapshot.logical_endpoint_geometry(offset, match affinity {
@@ -164,8 +191,56 @@ pub(super) fn reveal_layout_row_at(
         })
     })?;
     let row = &snapshot.rows[geometry.row_index];
-    let requested = layout.reveal_viewport_top(row, layout.viewport_top());
-    layout.set_viewport_top(requested)
+    let top = layout.reveal_viewport_top(row, layout.viewport_top());
+    let cursor_bounds = geometry.rect.x..geometry.rect.x + geometry.rect.width.max(crate::layout::CARET_REVEAL_WIDTH);
+    let mut bounds = cursor_bounds.clone();
+    let first_row_end = range.end.min(row.text_range.end);
+    let mut covered_bytes = 0;
+    let right_to_left = row.clusters.iter()
+        .find(|cluster| cluster.text_range.contains(&range.start))
+        .is_some_and(|cluster| cluster.bidi_level % 2 == 1);
+    if !range.is_empty() {
+        let mut selected = row.clusters.iter().filter(|cluster| {
+            cluster.text_range.start < range.end && range.start < cluster.text_range.end
+        });
+        if let Some(first) = selected.next() {
+            let mut cluster_bounds = |cluster: &crate::layout::PositionedCluster| {
+                // Shaped clusters partition logical text, even when their
+                // visual order is reversed. Count coverage to detect gaps in
+                // sparse snapshots; isolated end probes do not fill them.
+                covered_bytes += cluster.text_range.end.min(first_row_end)
+                    .saturating_sub(cluster.text_range.start.max(range.start));
+                cluster.x.min(cluster.typographic_bounds.x)
+                    ..(cluster.x + cluster.advance).max(cluster.typographic_bounds.x + cluster.typographic_bounds.width)
+            };
+            bounds = cluster_bounds(first);
+            for cluster in selected {
+                let next = cluster_bounds(cluster);
+                bounds.start = bounds.start.min(next.start);
+                bounds.end = bounds.end.max(next.end);
+            }
+        }
+    }
+    let left = if center_search {
+        // An indivisible cluster has no caret stop at the logical endpoint.
+        // Its fallback rectangle is visual; use the logical leading edge.
+        let cursor = geometry.rect.x + if geometry.is_cluster_fallback && right_to_left {
+            geometry.rect.width
+        } else {
+            0.0
+        };
+        bounds.start = bounds.start.min(cursor_bounds.start);
+        bounds.end = bounds.end.max(cursor_bounds.end).max(cursor + crate::layout::CARET_REVEAL_WIDTH);
+        let complete = !snapshot.has_horizontal_materialization()
+            || covered_bytes == first_row_end.saturating_sub(range.start);
+        layout.reveal_search_viewport_left(bounds, cursor, right_to_left, complete)
+    } else {
+        layout.reveal_viewport_left(bounds, geometry.rect.x)
+    };
+    // Vertical movement changes the visible-row horizontal extent. Clamp x
+    // only after y has reached the target row.
+    layout.set_viewport_top(top)?;
+    layout.set_viewport_left(left)
 }
 
 /// Preserve coverage above an editing row at the start of a long paragraph.

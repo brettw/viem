@@ -50,7 +50,7 @@ internal sealed partial class EditorWindow
                 try {
                     if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
-                        || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") is "1" or "horizontal"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
@@ -92,11 +92,15 @@ internal sealed partial class EditorWindow
                             await Diagnostics.ListInteractionTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1")
                             await Diagnostics.StyleAndSettingsTests.RunSettings(pane, this, preferences);
-                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "1")
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") is "1" or "horizontal")
                         {
-                            var scrollPane = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
+                            bool horizontal = Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") == "horizontal";
+                            var scrollPane = AddPane(NewDocument(
+                                horizontal ? Diagnostics.HorizontalScrollTests.Fixture : Diagnostics.ScrollDrawingTests.Fixture,
+                                format: horizontal ? VIEM_FORMAT_PLAIN_TEXT : VIEM_FORMAT_MARKDOWN));
                             await ClosePane(pane);
-                            await Diagnostics.ScrollDrawingTests.Run(scrollPane);
+                            if (horizontal) await Diagnostics.HorizontalScrollTests.Run(scrollPane);
+                            else await Diagnostics.ScrollDrawingTests.Run(scrollPane);
                         }
                         else
                             await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
@@ -121,6 +125,9 @@ internal sealed partial class EditorWindow
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
                     await Diagnostics.ScrollDrawingTests.Run(scrolled);
                     await ClosePane(scrolled);
+                    var horizontalScroll = AddPane(NewDocument(Diagnostics.HorizontalScrollTests.Fixture, format: VIEM_FORMAT_PLAIN_TEXT));
+                    await Diagnostics.HorizontalScrollTests.Run(horizontalScroll);
+                    await ClosePane(horizontalScroll);
                     var priorPane = pane;
                     pane = AddPane(NewDocument("# Viem for Windows\n\nA modal editor for writing.\n\nThe same Rust core, with native Windows controls.\n\nUnicode: café · 日本語 · مرحبا · 👩‍💻\n"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
                     await pane.Ready;

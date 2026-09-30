@@ -351,6 +351,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         dragPoint = point; dragging = true; Canvas.CapturePointer(e.Pointer); e.Handled = true; ResetBlink();
     }
     internal ScrollBar VerticalScrollControl => vertical;
+    internal ScrollBar HorizontalScrollControl => horizontal;
+    internal Rect CaretRectangle => caretRect;
 
     internal void ScrollVerticallyFromScrollbar(double value)
     {
@@ -387,7 +389,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             scrollUpdating = true;
             vertical.Maximum = viewport.maximum_top; vertical.ViewportSize = Math.Max(1, snapshot.Info.viewport_height); vertical.LargeChange = Math.Max(1, snapshot.Info.viewport_height * .9); vertical.Value = viewport.top;
             horizontal.Maximum = viewport.maximum_left; horizontal.ViewportSize = Math.Max(1, Canvas.ActualWidth); horizontal.Value = viewport.left;
-            horizontal.Visibility = (viewport.flags & VIEM_VIEWPORT_STATE_WRAP) == 0 && viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
+            horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
             caretRect = CalculateCaret();
             using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info);

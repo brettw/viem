@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 mod scroll_endpoints;
+mod horizontal_reveal;
 
 const LINE: &str = "let value = 42; // comment\n";
 
@@ -718,7 +719,7 @@ fn oversized_bottom_margin_yields_room_for_a_row_and_tall_rows_do_not_oscillate(
         }
         let top = layout.viewport_top();
         for _ in 0..4 {
-            reveal_caret_row(core.views.get_mut(&view).unwrap()).unwrap();
+            reveal_caret_row(&core.document, core.views.get_mut(&view).unwrap()).unwrap();
             assert_eq!(core.layout(view).unwrap().viewport_top(), top);
         }
     }

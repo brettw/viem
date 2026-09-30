@@ -48,6 +48,24 @@ final class EVDocumentScrollbarsIntegrationTests: XCTestCase {
         XCTAssertNil(surface.commandOutput)
     }
 
+    func testWrappedUnbreakableLineKeepsHorizontalScrollerAvailable() throws {
+        let source = String(repeating: "W", count: 500)
+        let (backend, surface) = try makeSurface(source)
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.setWrap(true) }
+        let bars = surface.editorView.documentScrollbars
+        XCTAssertNotEqual(surface.viewportState.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP), 0)
+        XCTAssertTrue(bars.horizontalAvailable)
+        XCTAssertGreaterThan(bars.horizontalState.maximum, 0)
+        let caret = surface.viewPresentation.cursor_utf8_offset
+        let maximum = bars.horizontalState.maximum
+        bars.performScrollAction(axis: .horizontal, part: .knob, value: 0.5)
+        XCTAssertEqual(CGFloat(surface.viewportState.left), maximum / 2, accuracy: 0.1)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+        XCTAssertNil(surface.commandOutput)
+    }
+
     func testVerticalThumbAndPageActionsScrollWithoutMovingCaretOrEditing() throws {
         let source = (0..<400).map { "Paragraph \($0)" }.joined(separator: "\n")
         let (backend, surface) = try makeSurface(source)
