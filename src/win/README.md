@@ -122,6 +122,11 @@ Open dialog starts there, and the selected file replaces the originating pane,
 opens in a split, or opens in a new window respectively. Cancel leaves the
 existing documents and layout unchanged.
 
+Windows file commands and launch arguments expand `~`, `~/…`, and `~\…` to
+the current user's profile directory. This includes open, write, Save As,
+`:read`, `:source`, `:file`, and `:cd`. Other tildes are literal; use `./~` to
+refer to a file or directory actually named `~` in the working directory.
+
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
 On launch, Viem creates an empty `startup.viem` there if it is missing.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings

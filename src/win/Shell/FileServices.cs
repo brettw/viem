@@ -12,10 +12,13 @@ internal sealed partial class EditorWindow
 {
     private bool checkingFiles;
     private readonly Dictionary<CoreDocument, (long Length, long Time)> observedFiles = [];
-    private static string ResolvePath(string path)
+    private static string ResolvePath(string path, string? baseDirectory = null)
     {
-        if (path == "~" || path.StartsWith("~/") || path.StartsWith("~\\")) path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Length > 2 ? path[2..] : "");
-        return Path.GetFullPath(Environment.ExpandEnvironmentVariables(path));
+        // Tilde is a shell convention, so expand it before calling Windows path APIs.
+        if (path == "~" || path.StartsWith("~/") || path.StartsWith("~\\"))
+            path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Length > 2 ? path[2..].TrimStart('/', '\\') : "");
+        path = Environment.ExpandEnvironmentVariables(path);
+        return baseDirectory == null ? Path.GetFullPath(path) : Path.GetFullPath(path, baseDirectory);
     }
     private async Task NavigateArgument(EditorPane pane, FrontendRequest request)
     {
@@ -61,10 +64,10 @@ internal sealed partial class EditorWindow
         if (state.document_id != r.document_id || state.document_revision != r.document_revision) throw new InvalidOperationException("The document changed before this file command could run.");
         bool force = (r.flags & VIEM_EX_FRONTEND_FORCE) != 0;
         if (doc.IsReadOnly && !force) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
-        string? path = request.Text.Length == 0 ? null : ResolvePath(request.Text);
+        string? requestedPath = request.Text.Length == 0 ? null : request.Text;
         if ((r.flags & VIEM_EX_FRONTEND_HAS_RANGE) != 0)
         {
-            path ??= doc.FilePath;
+            string? path = requestedPath == null ? doc.FilePath : ResolvePath(requestedPath);
             if (path == null) throw new InvalidOperationException("A filename is required to write selected lines.");
             if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document != doc && p.Document.FilePath is string named && FileIdentity.Same(named, path))) throw new IOException("That file is already open in another document.");
             var (bytes, complete) = HardLineBytes(doc, r);
@@ -80,7 +83,7 @@ internal sealed partial class EditorWindow
             return true;
         }
         bool adopt = r.kind == VIEM_EX_FRONTEND_SAVE_AS || doc.FilePath == null;
-        return await Save(pane, r.kind == VIEM_EX_FRONTEND_SAVE_AS, path, force, adopt, native: false);
+        return await Save(pane, r.kind == VIEM_EX_FRONTEND_SAVE_AS, requestedPath, force, adopt, native: false);
     }
     private static unsafe (byte[] Bytes, bool Complete) HardLineBytes(CoreDocument doc, ViemExFrontendRequestV1 request)
     {

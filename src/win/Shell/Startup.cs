@@ -49,6 +49,7 @@ internal sealed partial class EditorWindow
             DispatcherQueue.TryEnqueue(async () => {
                 try {
                     if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_HOME_PATH_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_DIRECTORY_OPEN_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") is "1" or "horizontal"
@@ -71,6 +72,8 @@ internal sealed partial class EditorWindow
                             Environment.Exit(0);
                             return;
                         }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_HOME_PATH_ONLY") == "1")
+                            await Diagnostics.HomePathTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_DIRECTORY_OPEN_ONLY") == "1")
                             await Diagnostics.DirectoryOpenTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1")
@@ -128,6 +131,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                     await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                     await Diagnostics.DirectoryOpenTests.Run(preferences);
+                    await Diagnostics.HomePathTests.Run(preferences);
                     var scrolled = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
                     await Diagnostics.ScrollDrawingTests.Run(scrolled);
@@ -207,6 +211,9 @@ internal sealed partial class EditorWindow
         }
     }
     private Task invocationQueue = Task.CompletedTask;
+#if DEBUG
+    internal Task OpenArgumentsForTesting(OpenInvocation request) => OpenArguments(request);
+#endif
     internal void ReceiveInvocation(OpenInvocation request)
     {
         async Task Next(Task previous) { await previous; try { Activate(); await OpenArguments(request); ActivePane?.FocusEditor(); } catch (Exception error) { ActivePane?.Report(error); } }
@@ -217,7 +224,7 @@ internal sealed partial class EditorWindow
         var args = ParseArguments(request.Arguments);
         if (args.Error != null) throw new InvalidOperationException(args.Error);
         if (request.Arguments.Length == 0) return;
-        string[] paths = args.Filenames.Select(p => Path.GetFullPath(p, request.Directory)).ToArray();
+        string[] paths = args.Filenames.Select(p => ResolvePath(p, request.Directory)).ToArray();
         bool represented = paths.Length > 0 && App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document.FilePath is string file && FileIdentity.Same(file, paths[0]));
         bool blank = Panes.Count == 0 || (Panes.Count == 1 && ActivePane is { Document: var current } && current.FilePath == null && current.State.source_byte_count == 0 && !current.IsDirty && (current.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0);
         if (paths.Length > 0 && !represented && !blank)
