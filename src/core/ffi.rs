@@ -60,7 +60,7 @@ use crate::document::{
     DocumentError, DocumentId, DocumentStyleAssignment, Encoding, FileFormat, FileFormatOrigin,
     FontSize, FontSlant, Format, FormattedTextError, HardLineQueryError,
     HistorySemanticChangeKind, HistorySemanticSummary, LineSpacing, ModelTransactionError,
-    ParagraphAlignment, Revision, ScriptPosition,
+    ParagraphAlignment, Revision,
     SemanticInlineStyle, SourceArtifactDigest, StyleContribution, StyleContributionOrigin,
     StyleDefinitionFieldEdit, StyleDefinitionOrigin, StyleDependency, StyleError, StyleId,
     StyleNamespace, StyleProperty, StylePropertyValue, StyleSheetRevision, StyleTransactionError,
@@ -822,7 +822,6 @@ pub struct ViemResolvedTextStyleV1 {
     pub size: f32,
     pub weight: f32,
     pub letter_spacing: f32,
-    pub script_position: u32,
     pub font_families: *const ViemUtf8Slice,
     pub font_family_count: u64,
     pub language: ViemUtf8Slice,
@@ -1269,7 +1268,6 @@ pub const VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE: u32 = 22;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION: u32 = 23;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES: u32 = 24;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING: u32 = 25;
-pub const VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION: u32 = 26;
 pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT: u32 = 28;
 pub const VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT: u32 = 29;
 pub const VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP: u32 = 30;
@@ -1298,11 +1296,7 @@ pub const VIEM_STYLE_VALUE_WRITING_DIRECTION: u32 = 8;
 pub const VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES: u32 = 9;
 pub const VIEM_STYLE_VALUE_LINE_SPACING: u32 = 10;
 pub const VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT: u32 = 11;
-pub const VIEM_STYLE_VALUE_SCRIPT_POSITION: u32 = 12;
 pub const VIEM_STYLE_VALUE_PERCENTAGE: u32 = 13;
-pub const VIEM_SCRIPT_POSITION_NORMAL: u32 = 0;
-pub const VIEM_SCRIPT_POSITION_SUPERSCRIPT: u32 = 1;
-pub const VIEM_SCRIPT_POSITION_SUBSCRIPT: u32 = 2;
 
 pub const VIEM_STYLE_VALUE_ITEM_STRING: u32 = 1;
 pub const VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE: u32 = 2;
@@ -2793,7 +2787,6 @@ impl MarshalledStyle {
             size: style.size,
             weight: style.weight,
             letter_spacing: style.letter_spacing,
-            script_position: style.script_position as u32,
             font_families: slice_pointer(&font_families),
             font_family_count: font_families.len() as u64,
             language: style
@@ -5205,7 +5198,6 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
             VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES
         }
         StyleProperty::CharacterLetterSpacing => VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING,
-        StyleProperty::CharacterScriptPosition => VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION,
     }
 }
 
@@ -5243,10 +5235,6 @@ fn style_value_to_ffi(
         StylePropertyValue::Percentage(value) => {
             output.kind = VIEM_STYLE_VALUE_PERCENTAGE;
             output.enum_value = u32::from(*value);
-        }
-        StylePropertyValue::ScriptPosition(value) => {
-            output.kind = VIEM_STYLE_VALUE_SCRIPT_POSITION;
-            output.enum_value = *value as u32;
         }
         StylePropertyValue::FontWeight(value) => {
             output.kind = VIEM_STYLE_VALUE_UNSIGNED;
@@ -5379,9 +5367,6 @@ fn declared_character_property(
         StyleProperty::CharacterLetterSpacing => {
             properties.letter_spacing.map(StylePropertyValue::Float)
         }
-        StyleProperty::CharacterScriptPosition => {
-            properties.script_position.map(StylePropertyValue::ScriptPosition)
-        }
         _ => None,
     }
 }
@@ -5474,9 +5459,6 @@ fn effective_character_property(
         )),
         StyleProperty::CharacterLetterSpacing => {
             Some(StylePropertyValue::Float(properties.letter_spacing))
-        }
-        StyleProperty::CharacterScriptPosition => {
-            Some(StylePropertyValue::ScriptPosition(properties.script_position))
         }
         _ => None,
     }
@@ -6889,7 +6871,6 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
             Ok(StyleProperty::CharacterOpenTypeFeatures)
         }
         VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING => Ok(StyleProperty::CharacterLetterSpacing),
-        VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION => Ok(StyleProperty::CharacterScriptPosition),
         _ => Err(ViemStatus::InvalidStyleValue),
     }
 }
@@ -6993,17 +6974,6 @@ unsafe fn parse_style_property_value<O>(
                 }
                 _ => Err(invalid()),
             }
-        }
-        StyleProperty::CharacterScriptPosition => {
-            if value.kind != VIEM_STYLE_VALUE_SCRIPT_POSITION { return Err(invalid()); }
-            style_edit_value_has_no_array(value)?;
-            style_edit_value_has_no_text(value)?;
-            Ok(StylePropertyValue::ScriptPosition(match value.enum_value {
-                VIEM_SCRIPT_POSITION_NORMAL => ScriptPosition::Normal,
-                VIEM_SCRIPT_POSITION_SUPERSCRIPT => ScriptPosition::Superscript,
-                VIEM_SCRIPT_POSITION_SUBSCRIPT => ScriptPosition::Subscript,
-                _ => return Err(invalid()),
-            }))
         }
         StyleProperty::CharacterWeight => {
             if value.kind != VIEM_STYLE_VALUE_UNSIGNED {
@@ -11227,7 +11197,7 @@ mod tests {
             ViemStatus::Ok
         );
         assert_eq!(info.definition_count, 22);
-        assert_eq!(info.property_count, 768);
+        assert_eq!(info.property_count, 746);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();
@@ -11501,7 +11471,6 @@ mod tests {
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_LINE_SPACING));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT));
-        assert!(kinds.contains(&super::VIEM_STYLE_VALUE_SCRIPT_POSITION));
         assert!(kinds.contains(&super::VIEM_STYLE_VALUE_PERCENTAGE));
         assert!(export.value_items.iter().any(|item| {
             item.kind == super::VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE

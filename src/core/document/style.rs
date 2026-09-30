@@ -157,33 +157,6 @@ pub enum ParagraphAlignment {
     Center,
 }
 
-/// Semantic script placement. Font size remains the base size; shaping applies
-/// the common script scale and displacement once.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-#[repr(u32)]
-pub enum ScriptPosition {
-    #[default]
-    Normal = 0,
-    Superscript = 1,
-    Subscript = 2,
-}
-
-impl ScriptPosition {
-    pub fn font_scale(self) -> f32 {
-        match self {
-            Self::Normal => 1.0,
-            Self::Superscript | Self::Subscript => 0.7,
-        }
-    }
-    pub fn displacement(self, base_size: f32) -> f32 {
-        match self {
-            Self::Normal => 0.0,
-            Self::Superscript => base_size / 3.0,
-            Self::Subscript => -base_size / 5.0,
-        }
-    }
-}
-
 /// A sparse size declaration. Percentages are evaluated against the paragraph
 /// parent for block styles and the underlying text for named character styles.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -260,7 +233,6 @@ pub struct CharacterProperties {
     pub direction: Option<WritingDirection>,
     pub open_type_features: Option<BTreeMap<String, u32>>,
     pub letter_spacing: Option<f32>,
-    pub script_position: Option<ScriptPosition>,
 }
 
 impl CharacterProperties {
@@ -548,7 +520,6 @@ impl Default for StyleSheet {
                     direction: Some(WritingDirection::Natural),
                     open_type_features: Some(BTreeMap::new()),
                     letter_spacing: Some(0.0),
-                    script_position: Some(ScriptPosition::Normal),
                     ..CharacterProperties::default()
                 },
                 block: BlockProperties {
@@ -787,7 +758,6 @@ pub struct ResolvedCharacterStyle {
     pub direction: WritingDirection,
     pub open_type_features: BTreeMap<String, u32>,
     pub letter_spacing: f32,
-    pub script_position: ScriptPosition,
 }
 
 impl Default for ResolvedCharacterStyle {
@@ -813,7 +783,6 @@ impl Default for ResolvedCharacterStyle {
             direction: WritingDirection::Natural,
             open_type_features: BTreeMap::new(),
             letter_spacing: 0.0,
-            script_position: ScriptPosition::Normal,
         }
     }
 }
@@ -845,7 +814,6 @@ impl ResolvedCharacterStyle {
         compare!(direction, StyleProperty::CharacterDirection);
         compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
         compare!(letter_spacing, StyleProperty::CharacterLetterSpacing);
-        compare!(script_position, StyleProperty::CharacterScriptPosition);
         changed
     }
 }
@@ -978,7 +946,6 @@ pub enum StyleProperty {
     CharacterDirection,
     CharacterOpenTypeFeatures,
     CharacterLetterSpacing,
-    CharacterScriptPosition,
 }
 
 /// Namespace of one normalized style definition. IDs are unique only within
@@ -1004,7 +971,6 @@ pub enum StylePropertyValue {
     OpenTypeFeatures(BTreeMap<String, u32>),
     LineSpacing(LineSpacing),
     ParagraphAlignment(ParagraphAlignment),
-    ScriptPosition(ScriptPosition),
 }
 
 /// One field of an existing style definition. Each successful edit is a
@@ -1076,8 +1042,7 @@ impl StyleProperty {
             | Self::CharacterLanguage
             | Self::CharacterDirection
             | Self::CharacterOpenTypeFeatures
-            | Self::CharacterLetterSpacing
-            | Self::CharacterScriptPosition => StyleInvalidationEffect::Shaping,
+            | Self::CharacterLetterSpacing => StyleInvalidationEffect::Shaping,
         }
     }
 }
@@ -1120,7 +1085,7 @@ pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 23] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
+pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 13] = [
     StyleProperty::CharacterFontFamilies,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
@@ -1134,7 +1099,6 @@ pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterDirection,
     StyleProperty::CharacterOpenTypeFeatures,
     StyleProperty::CharacterLetterSpacing,
-    StyleProperty::CharacterScriptPosition,
 ];
 
 /// The normalized declaration layer which supplied a resolved property's
@@ -2793,7 +2757,6 @@ sparse_property_operations! {
     direction => CharacterDirection(WritingDirection),
     open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
     letter_spacing => CharacterLetterSpacing(Float),
-    script_position => CharacterScriptPosition(ScriptPosition),
 }
 
 pub(super) fn set_character_property(
@@ -3078,13 +3041,6 @@ fn record_character_winners(
             &origin,
         );
     }
-    if properties.script_position.is_some() {
-        record_winner(
-            contributions,
-            StyleProperty::CharacterScriptPosition,
-            &origin,
-        );
-    }
 }
 
 fn record_document_winners(
@@ -3230,9 +3186,6 @@ fn apply_character_properties(
     }
     if let Some(value) = properties.letter_spacing {
         resolved.letter_spacing = value;
-    }
-    if let Some(value) = properties.script_position {
-        resolved.script_position = value;
     }
 }
 
@@ -3894,7 +3847,7 @@ mod tests {
                 &direct_character,
             )
             .unwrap();
-        assert_eq!(traced.contributions().len(), 19);
+        assert_eq!(traced.contributions().len(), 18);
         assert_eq!(traced.value.padding_left, 12.0);
         assert_eq!(traced.value.padding_top, 7.0);
         assert_eq!(traced.value.character.size, 18.0);
@@ -4244,7 +4197,7 @@ mod tests {
                 ..BlockProperties::default()
             };
             let direct_character = CharacterProperties {
-                script_position: (next() & 1 != 0).then_some(if next() & 1 == 0 { ScriptPosition::Superscript } else { ScriptPosition::Subscript }),
+                letter_spacing: (next() & 1 != 0).then_some((next() % 4) as f32),
                 ..CharacterProperties::default()
             };
             let ordinary = sheet

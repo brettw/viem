@@ -113,7 +113,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         for (tab, labels) in [
             (EVStyleEditorTab.character, ["Font family", "Font face", "Fallback fonts", "Size", "Bold",
                 "Italic", "Underline", "Strikethrough", "Text color", "Background color", "Tracking",
-                "Superscript", "Subscript", "Character direction", "Adjust size", "Adjust tracking"]),
+                "Character direction", "Adjust size", "Adjust tracking"]),
             (EVStyleEditorTab.paragraph, ["Paragraph alignment", "Paragraph direction", "Start indent",
                 "End indent", "First line", "Line spacing kind",
                 "Adjust start indent", "Adjust end indent", "Adjust first line"]),

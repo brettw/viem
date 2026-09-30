@@ -75,7 +75,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             observeTargetWindow(of: document)
             let isNewWindow = prepareWindow()
             (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
-            controller?.window?.title = "Theme Styles — \(document.backend.configuration.currentThemeName ?? "Default")"
+            controller?.window?.title = session.windowTitle
             contentController?.retarget(settingsSession: session)
             contentController?.followCaretStyle(styleKey)
             followSelection(of: document, globalCode: false)
@@ -115,7 +115,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             stopObservingTargetWindow()
             let isNewWindow = prepareWindow()
             (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
-            controller?.window?.title = "Theme Styles — \(configuration.currentThemeName ?? "Default")"
+            controller?.window?.title = session.windowTitle
             contentController?.retarget(settingsSession: session)
             contentController?.selectStyle(selectedStyle)
             if let document {
@@ -815,7 +815,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         isUpdatingUI = true
         defer { isUpdatingUI = false }
 
-        if let settingsSession { view.window?.title = "Theme Styles — \(settingsSession.configuration.currentThemeName ?? "Default")" }
+        if let settingsSession { view.window?.title = settingsSession.windowTitle }
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
         newStyleButton.isHidden = codeSettingsSession == nil
@@ -1473,8 +1473,6 @@ private func format(_ value: EVStyleValue?) -> String {
     case let .color(color): colorHex(color)
     case let .string(value): value
     case let .stringList(values): values.isEmpty ? "None" : values.joined(separator: " → ")
-    case let .scriptPosition(value):
-        value == 1 ? "Superscript" : value == 2 ? "Subscript" : "Normal"
     case let .fontSlant(value):
         value == UInt32(VIEM_FONT_SLANT_ITALIC) ? "Italic" : (value == UInt32(VIEM_FONT_SLANT_OBLIQUE) ? "Oblique" : "Upright")
     case let .writingDirection(value):

@@ -281,9 +281,7 @@ fn export_links(
 fn character(shape: &ResolvedTextStyle, paint: &ResolvedTextPaint) -> CharacterProperties {
     CharacterProperties {
         font_families: Some(shape.font_families.clone()),
-        size: Some(FontSize::Points(
-            shape.size * shape.script_position.font_scale(),
-        )),
+        size: Some(FontSize::Points(shape.size)),
         weight: Some(shape.weight.round() as u16),
         slant: Some(shape.slant),
         foreground: Some(paint.foreground),
@@ -308,7 +306,6 @@ fn character(shape: &ResolvedTextStyle, paint: &ResolvedTextPaint) -> CharacterP
                 .collect(),
         ),
         letter_spacing: Some(shape.letter_spacing),
-        script_position: Some(super::ScriptPosition::Normal),
         language: shape.language.clone(),
         ..Default::default()
     }
@@ -600,11 +597,7 @@ fn write_runs(
         }
         output.push_str(&format!(
             "<span class=\"c{}\"{}>{}</span>",
-            classes.intern(format!(
-                "{}; vertical-align:{}pt",
-                super::html::character_css(&properties),
-                shape.script_position.displacement(shape.size)
-            )),
+            classes.intern(super::html::character_css(&properties)),
             language,
             escape(&document.text()[pair[0]..pair[1]])
         ));

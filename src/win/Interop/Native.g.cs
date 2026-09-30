@@ -273,7 +273,6 @@ internal unsafe struct ViemResolvedTextStyleV1
     public float @size;
     public float @weight;
     public float @letter_spacing;
-    public uint @script_position;
     public ViemUtf8Slice* @font_families;
     public ulong @font_family_count;
     public ViemUtf8Slice @language;
@@ -1559,7 +1558,6 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION = 23u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES = 24u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING = 25u;
-    public const uint VIEM_STYLE_PROPERTY_CHARACTER_SCRIPT_POSITION = 26u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_BOLD = 27u;
     public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT = 28u;
     public const uint VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT = 29u;
@@ -1588,11 +1586,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES = 9u;
     public const uint VIEM_STYLE_VALUE_LINE_SPACING = 10u;
     public const uint VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT = 11u;
-    public const uint VIEM_STYLE_VALUE_SCRIPT_POSITION = 12u;
     public const uint VIEM_STYLE_VALUE_PERCENTAGE = 13u;
-    public const uint VIEM_SCRIPT_POSITION_NORMAL = 0u;
-    public const uint VIEM_SCRIPT_POSITION_SUPERSCRIPT = 1u;
-    public const uint VIEM_SCRIPT_POSITION_SUBSCRIPT = 2u;
     public const uint VIEM_STYLE_VALUE_ITEM_STRING = 1u;
     public const uint VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE = 2u;
     public const uint VIEM_STYLE_LINE_SPACING_NORMAL = 1u;

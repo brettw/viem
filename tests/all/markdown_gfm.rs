@@ -57,6 +57,8 @@ fn gfm_block_recognition() {
 fn passive_html_and_comments() {
     for (source, expected) in [
         ("<b>bold</b> and <em>italic</em>", "bold and italic"),
+        ("x<sup>2</sup> H<sub>2</sub>O", "x<sup>2</sup> H<sub>2</sub>O"),
+        ("<div>x<sup>2</sup> H<sub>2</sub>O</div>", "x<sup>2</sup> H<sub>2</sub>O"),
         ("<div>\n*literal*\n</div>", "*literal*"),
         ("<div><p>one</p><p>two</p></div>", "one\ntwo"),
         ("before <!-- &amp; comment --> after", "before <!-- &amp; comment --> after"),

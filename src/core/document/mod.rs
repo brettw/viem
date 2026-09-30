@@ -126,7 +126,7 @@ pub use style::{
     BlockProperties, BlockRole, BlockStyle, CharacterProperties, CharacterStyle, Color,
     ConfigurationStyleIntent, DocumentStyleAssignment, FontSize, FontSlant, LineSpacing, ParagraphAlignment,
     ResolvedCharacterStyle, ResolvedDocumentStyle, ResolvedParagraphStyle, ResolvedStyle,
-    ScriptPosition, SemanticInlineStyle, StyleApplication, StyleContribution, StyleContributionOrigin,
+    SemanticInlineStyle, StyleApplication, StyleContribution, StyleContributionOrigin,
     StyleDefaultsError, StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata,
     StyleDefinitionOrigin, StyleDependency, StyleDependencyIndex, StyleError, StyleId,
     StyleInvalidationEffect, StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet,

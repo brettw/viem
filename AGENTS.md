@@ -1265,8 +1265,10 @@ candidate edits, reparse, or scan unrelated content; retain bounded local querie
 ### Inspector ownership and interaction
 
 The inspector edits independent theme definitions with its own undo, never
-document source; Code retains global ownership. Use native role-sensitive
-controls and real resolved/shaped preview, without a private editable stylesheet.
+document source; Code retains global ownership. The inspector title identifies
+the active stylesheet family (Code, Markdown, or Plain Text) and theme. Use native
+role-sensitive controls and real resolved/shaped preview, without a private
+editable stylesheet.
 [`docs/Word style.png`](<docs/Word style.png>) is a density/composition reference,
 not a template/automatic-update/Apply/OK/Cancel workflow.
 

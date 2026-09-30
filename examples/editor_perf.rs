@@ -155,7 +155,7 @@ fn html_fixture(size: usize) -> Vec<u8> {
                 "<p>Paragraph {p} of section {n}: <b>bold words</b> and <i>italic prose</i> with a \
                  <a href='https://example.test/{n}/{p}'>link to somewhere</a>, some <code>inline_code()</code>, \
                  <span style='color:#123456;font-size:15px'>styled span text</span>, an entity &amp; more, \
-                 <sup>superscript</sup> and ordinary trailing prose that wraps at the window width.</p>\n"
+                 <em>emphasis</em> and ordinary trailing prose that wraps at the window width.</p>\n"
             ));
         }
         out.push_str("<ul><li>first <b>item</b></li><li>second item<ul><li>nested</li></ul></li><li>third</li></ul>\n");

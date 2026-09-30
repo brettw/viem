@@ -4,7 +4,7 @@ use super::*;
 use crate::document::html::{self, TokenKind};
 
 fn allowed(name: &str) -> bool {
-    matches!(name, "a" | "abbr" | "b" | "bdi" | "bdo" | "blockquote" | "br" | "cite" | "code" | "del" | "details" | "div" | "dl" | "dt" | "dd" | "em" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "i" | "ins" | "kbd" | "li" | "mark" | "ol" | "p" | "pre" | "q" | "s" | "samp" | "small" | "span" | "strike" | "strong" | "sub" | "summary" | "sup" | "tt" | "u" | "ul" | "var" | "wbr")
+    matches!(name, "a" | "abbr" | "b" | "bdi" | "bdo" | "blockquote" | "br" | "cite" | "code" | "del" | "details" | "div" | "dl" | "dt" | "dd" | "em" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "i" | "ins" | "kbd" | "li" | "mark" | "ol" | "p" | "pre" | "q" | "s" | "samp" | "small" | "span" | "strike" | "strong" | "summary" | "tt" | "u" | "ul" | "var" | "wbr")
 }
 
 impl MarkdownBuilder<'_> {
@@ -30,7 +30,6 @@ impl MarkdownBuilder<'_> {
                 "code" | "kbd" | "samp" | "tt" => Some(StyleApplication::Named("Code".into())),
                 "del" | "s" | "strike" => Some(StyleApplication::Automatic("Strikethrough".into())),
                 "a" if tag.attribute("href").is_some() => Some(StyleApplication::Automatic("Link".into())),
-                "sub" | "sup" => Some(StyleApplication::Direct(CharacterProperties { script_position: Some(if tag.name == "sub" { super::super::ScriptPosition::Subscript } else { super::super::ScriptPosition::Superscript }), ..Default::default() })),
                 "u" | "ins" => Some(StyleApplication::Direct(CharacterProperties { underline: Some(true), ..Default::default() })),
                 _ => None,
             };

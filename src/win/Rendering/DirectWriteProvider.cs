@@ -210,7 +210,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var defaultFont = ResolveFont(request.default_style);
         using var format = new CanvasTextFormat
         {
-            FontFamily = defaultFont.Family, FontStretch = defaultFont.Stretch, FontSize = ScriptSize(request.default_style.size, request.default_style.script_position) * request.scale,
+            FontFamily = defaultFont.Family, FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
             FontStyle = Slant(request.default_style.slant), WordWrapping = CanvasWordWrapping.NoWrap,
             Direction = request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
@@ -239,9 +239,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
         var fragment = new Fragment(layout);
         var line = layout.LineMetrics[0];
-        float defaultOffset = ScriptOffset(request.default_style.size, request.default_style.script_position) * request.scale;
         var defaultMetrics = new ViemTextMetricsV1 {
-            ascent = Math.Max(0, line.Baseline + defaultOffset), descent = Math.Max(0, line.Height - line.Baseline - defaultOffset), leading = 0
+            ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0
         };
         var clusters = new List<ViemShapedClusterV1>();
         // The same glyph occurs on many lines. Keep exact native face/size/run
@@ -286,10 +285,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             int styleIndex = -1;
             for (ulong r = 0; r < request.style_run_count; r++)
                 if (request.style_runs[r].text_start <= (ulong)globalStart && request.style_runs[r].text_end > (ulong)globalStart) { style = request.style_runs[r].style; styleIndex = (int)r; }
-            float shift = ScriptOffset(style.size, style.script_position) * request.scale;
-            for (int p = 0; p < parts.Count; p++) parts[p] = parts[p] with { Offset = parts[p].Offset - new Vector2(0, shift) };
-            float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Metadata.Ascent * p.Size + shift);
-            float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Metadata.Descent * p.Size - shift);
+            float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Metadata.Ascent * p.Size);
+            float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Metadata.Descent * p.Size);
             float leading = parts.Count == 0 ? 0 : parts.Max(p => Math.Max(0, p.Metadata.LineGap * p.Size));
             var cluster = New<ViemShapedClusterV1>();
             cluster.text_start = (ulong)globalStart;
@@ -326,7 +323,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
                 Interlocked.Increment(ref fragment.References);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
-                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline + shift, cluster.ink_bounds, markerFont)))
+                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline, cluster.ink_bounds, markerFont)))
                     throw new InvalidOperationException("Duplicate glyph resource identity.");
                 responseResources.Add(id);
                 cluster.has_render_run = 1;
@@ -370,16 +367,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         return ("Segoe UI", FontStretch.Normal);
     }
     private static FontStyle Slant(uint slant) => slant switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
-    internal static float ScriptSize(float size, uint position) => position == VIEM_SCRIPT_POSITION_NORMAL ? size : size * .7f;
-    internal static float ScriptOffset(float size, uint position) => position switch {
-        VIEM_SCRIPT_POSITION_SUPERSCRIPT => size / 3, VIEM_SCRIPT_POSITION_SUBSCRIPT => -size / 5, _ => 0
-    };
     private static void ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
         layout.SetFontFamily(start, count, font.Family);
         layout.SetFontStretch(start, count, font.Stretch);
-        layout.SetFontSize(start, count, ScriptSize(style.size, style.script_position) * scale);
+        layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });
         layout.SetFontStyle(start, count, Slant(style.slant));
         layout.SetCharacterSpacing(start, count, 0, style.letter_spacing * scale, 0);

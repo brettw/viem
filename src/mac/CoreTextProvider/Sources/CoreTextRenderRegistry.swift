@@ -6,19 +6,12 @@ import Foundation
 /// Immutable shaping attributes that are separate from the resolved font.
 /// Values are in the same scaled layout units as the retained glyph data.
 public struct CoreTextRenderAttributes: Equatable {
-  public let scriptPosition: UInt32
-  public let scriptBaseSize: CGFloat
-  public var scriptOffset: CGFloat {
-    scriptPosition == 1 ? scriptBaseSize / 3 : scriptPosition == 2 ? -scriptBaseSize / 5 : 0
-  }
   public let letterSpacing: CGFloat
   public let language: String?
   public let writingDirection: NSWritingDirection
 
-  public init(scriptPosition: UInt32 = 0, scriptBaseSize: CGFloat = 14, letterSpacing: CGFloat = 0,
+  public init(letterSpacing: CGFloat = 0,
     language: String? = nil, writingDirection: NSWritingDirection = .natural) {
-    self.scriptPosition = scriptPosition
-    self.scriptBaseSize = scriptBaseSize
     self.letterSpacing = letterSpacing
     self.language = language
     self.writingDirection = writingDirection

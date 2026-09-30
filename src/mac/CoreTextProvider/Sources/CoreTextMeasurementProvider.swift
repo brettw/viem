@@ -379,7 +379,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     response.visual_order = arena.storeVisualOrder(order.map(UInt64.init))
     response.visual_order_count = UInt64(order.count)
     response.default_metrics =
-      metrics(for: defaultStyle.font, scriptOffset: defaultStyle.scriptOffset).ffi
+      metrics(for: defaultStyle.font).ffi
     response.diagnostics = arena.storeDiagnostics(ffiDiagnostics)
     response.diagnostic_count = UInt64(ffiDiagnostics.count)
     return response
@@ -448,9 +448,6 @@ private struct ResolvedStyle {
   let weight: CGFloat
   let slant: UInt32
   let letterSpacing: CGFloat
-  let scriptOffset: CGFloat
-  let scriptPosition: UInt32
-  let scriptBaseSize: CGFloat
   let language: String?
   let script: String?
   let direction: UInt32
@@ -463,7 +460,6 @@ private struct ResolvedStyle {
       source.size.isFinite, source.size > 0,
       source.weight.isFinite,
       source.letter_spacing.isFinite,
-      source.script_position <= 2,
       source.has_language <= 1,
       source.has_script <= 1,
       source.slant == UInt32(VIEM_FONT_SLANT_UPRIGHT)
@@ -506,13 +502,10 @@ private struct ResolvedStyle {
     }
 
     fontFamilies = families
-    scriptPosition = source.script_position
-    scriptBaseSize = CGFloat(source.size) * scale
-    size = scriptBaseSize * (scriptPosition == 0 ? 1 : 0.7)
+    size = CGFloat(source.size) * scale
     weight = CGFloat(source.weight)
     slant = source.slant
     letterSpacing = CGFloat(source.letter_spacing) * scale
-    scriptOffset = scriptPosition == 1 ? scriptBaseSize / 3 : scriptPosition == 2 ? -scriptBaseSize / 5 : 0
     language = source.has_language == 1 ? try decode(source.language) : nil
     script = source.has_script == 1 ? try decode(source.script) : nil
     direction = source.direction
@@ -536,7 +529,6 @@ private struct ResolvedStyle {
   var attributes: [NSAttributedString.Key: Any] {
     var result: [NSAttributedString.Key: Any] = [
       NSAttributedString.Key(kCTFontAttributeName as String): font,
-      NSAttributedString.Key(kCTBaselineOffsetAttributeName as String): scriptOffset,
     ]
     result.merge(letterSpacingAttributes(letterSpacing)) { _, value in value }
     if syntheticBold {
@@ -853,10 +845,10 @@ private struct Metrics {
   }
 }
 
-private func metrics(for font: CTFont, scriptOffset: CGFloat) -> Metrics {
+private func metrics(for font: CTFont) -> Metrics {
   Metrics(
-    ascent: CTFontGetAscent(font) + max(scriptOffset, 0),
-    descent: CTFontGetDescent(font) + max(-scriptOffset, 0),
+    ascent: CTFontGetAscent(font),
+    descent: CTFontGetDescent(font),
     leading: max(CTFontGetLeading(font), 0)
   )
 }
@@ -933,7 +925,7 @@ private func makeCluster(
   let allFonts = fonts.isEmpty ? [style.font] : fonts
   var clusterMetrics = Metrics(ascent: 0, descent: 0, leading: 0)
   for font in allFonts {
-    let candidate = metrics(for: font, scriptOffset: style.scriptOffset)
+    let candidate = metrics(for: font)
     clusterMetrics = Metrics(
       ascent: max(clusterMetrics.ascent, candidate.ascent),
       descent: max(clusterMetrics.descent, candidate.descent),
@@ -992,7 +984,6 @@ private func makeCluster(
   signature.append(UInt64(bidiLevel))
   // Identical whitespace glyphs can carry distinct marker inheritance even
   // when their shaping geometry is equal (for example, language alone).
-  signature.append(Float(style.scriptOffset).bitPattern)
   signature.append(Float(style.letterSpacing).bitPattern)
   signature.append(style.direction)
   signature.append(UInt8(style.language == nil ? 0 : 1))
@@ -1012,8 +1003,7 @@ private func makeCluster(
     signature: bytes,
     batches: grouped,
     isColorGlyph: allFonts.contains { CTFontGetSymbolicTraits($0).rawValue & (1 << 13) != 0 },
-    textAttributes: .init(scriptPosition: style.scriptPosition, scriptBaseSize: style.scriptBaseSize,
-      letterSpacing: style.letterSpacing, language: style.language,
+    textAttributes: .init(letterSpacing: style.letterSpacing, language: style.language,
       writingDirection: style.direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? .rightToLeft
         : style.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural)
   )

@@ -297,8 +297,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             || properties.language.is_some()
             || properties.direction.is_some()
             || properties.open_type_features.is_some()
-            || properties.letter_spacing.is_some()
-            || properties.script_position.is_some();
+            || properties.letter_spacing.is_some();
         let view = self.views.get_mut(&view_id).unwrap();
         let changes_metrics = metrics_overlay || view.search.metrics_overlay;
         view.search.metrics_overlay = metrics_overlay;

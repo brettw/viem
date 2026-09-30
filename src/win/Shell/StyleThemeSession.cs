@@ -9,6 +9,9 @@ internal sealed partial class StyleWindow
     private CoreView documentView = null!;
     private CoreDocument styleDocument = null!;
     private string sessionFamily = "";
+    private string ThemeStyleTitle => "Theme styles — " + (sessionFamily switch {
+        "code" => "Code", "markdown" => "Markdown", _ => "Plain Text"
+    }) + " — " + preferences.ThemeDisplayName;
     private string? sessionThemeName, sessionThemePath;
     private byte[] sessionThemeStyles = Array.Empty<byte>();
     private void CreateThemeSession()

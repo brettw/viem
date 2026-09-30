@@ -150,7 +150,6 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     case characterDirection = 23
     case characterOpenTypeFeatures = 24
     case characterLetterSpacing = 25
-    case characterScriptPosition = 26
     case characterBold = 27
     case blockMarginRight = 28
     case blockMarginLeft = 29
@@ -172,7 +171,7 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         .characterFontFamilies, .characterSize, .characterWeight, .characterSlant, .characterBold,
         .characterForeground, .characterBackground, .characterUnderline,
         .characterStrikethrough, .characterLanguage, .characterDirection,
-        .characterOpenTypeFeatures, .characterLetterSpacing, .characterScriptPosition,
+        .characterOpenTypeFeatures, .characterLetterSpacing,
     ]
 
     static let paragraphProperties: [Self] = [
@@ -223,7 +222,6 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         case .characterDirection: "Writing direction"
         case .characterOpenTypeFeatures: "OpenType features"
         case .characterLetterSpacing: "Letter spacing"
-        case .characterScriptPosition: "Script position"
         case .blockMarginRight: "Margin right"
         case .blockMarginLeft: "Margin left"
         case .blockPaddingTop: "Padding top"
@@ -279,7 +277,6 @@ enum EVStyleValue: Equatable {
     case color(EVStyleColor)
     case string(String)
     case stringList([String])
-    case scriptPosition(UInt32)
     case fontSlant(UInt32)
     case writingDirection(UInt32)
     case openTypeFeatures([EVOpenTypeFeature])
@@ -749,7 +746,6 @@ enum EVCoreStyleBridge {
                     }
                     return try text(items[index].string)
                 })
-            case UInt32(VIEM_STYLE_VALUE_SCRIPT_POSITION): return .scriptPosition(raw.enum_value)
             case UInt32(VIEM_STYLE_VALUE_FONT_SLANT): return .fontSlant(raw.enum_value)
             case UInt32(VIEM_STYLE_VALUE_WRITING_DIRECTION): return .writingDirection(raw.enum_value)
             case UInt32(VIEM_STYLE_VALUE_OPEN_TYPE_FEATURES):
@@ -1008,9 +1004,6 @@ enum EVCoreStyleBridge {
                             abiValue.kind = UInt32(VIEM_STYLE_VALUE_STRING_LIST)
                             abiValue.items = itemBuffer.baseAddress
                             abiValue.item_count = UInt64(itemBuffer.count)
-                        case let .scriptPosition(position):
-                            abiValue.kind = UInt32(VIEM_STYLE_VALUE_SCRIPT_POSITION)
-                            abiValue.enum_value = position
                         case let .fontSlant(slant):
                             abiValue.kind = UInt32(VIEM_STYLE_VALUE_FONT_SLANT)
                             abiValue.enum_value = slant

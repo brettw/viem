@@ -24,7 +24,7 @@ final class EVStyleEditorTests: XCTestCase {
         let originalWindow = try XCTUnwrap(coordinator.styleWindow)
 
         XCTAssertTrue(originalWindow is NSPanel)
-        XCTAssertEqual(originalWindow.title, "Theme Styles — \(firstBackend.configuration.currentThemeName ?? "Default")")
+        XCTAssertEqual(originalWindow.title, "Theme styles — Plain Text — \(firstBackend.configuration.currentThemeName ?? "Default")")
         XCTAssertTrue(originalWindow.styleMask.contains(.titled))
         XCTAssertTrue(originalWindow.styleMask.contains(.utilityWindow))
         XCTAssertTrue(originalWindow.styleMask.contains(.resizable))
@@ -37,9 +37,48 @@ final class EVStyleEditorTests: XCTestCase {
         coordinator.show(document: secondSurface, sender: nil)
 
         XCTAssertTrue(coordinator.styleWindow === originalWindow)
+        XCTAssertEqual(originalWindow.title, "Theme styles — Markdown — \(secondBackend.configuration.currentThemeName ?? "Default")")
         XCTAssertNil(coordinator.inspection?.targetDocumentIdentity)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
         XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, try secondBackend.documentState().document_id)
+    }
+
+    @MainActor
+    func testTitleFollowsStylesheetAndThemeChangesInTheOpenInspector() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-style-title-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try configuration.selectTheme(named: nil)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        let source = Data("# Heading".utf8)
+        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        let window = try XCTUnwrap(coordinator.styleWindow)
+        XCTAssertEqual(window.title, "Theme styles — Markdown — Default")
+        surface.setFormattedView(true)
+        XCTAssertEqual(window.title, "Theme styles — Markdown — Default")
+        try configuration.createTheme(named: "MyTheme")
+        XCTAssertEqual(window.title, "Theme styles — Markdown — MyTheme")
+
+        let choices: [(EVDocumentModeChoice, String)] = [
+            (.code("rust"), "Code"), (.plainText, "Plain Text"), (.markdown, "Markdown")
+        ]
+        for (choice, family) in choices {
+            surface.selectDocumentMode(choice, expected: try XCTUnwrap(surface.currentDocumentMode()))
+            XCTAssertTrue(coordinator.styleWindow === window)
+            XCTAssertEqual(window.title, "Theme styles — \(family) — MyTheme")
+        }
+        coordinator.showCode(configuration: configuration, sender: nil)
+        XCTAssertEqual(window.title, "Theme styles — Code — MyTheme")
+        try configuration.selectTheme(named: nil)
+        XCTAssertEqual(window.title, "Theme styles — Code — Default")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
     @MainActor
@@ -50,7 +89,7 @@ final class EVStyleEditorTests: XCTestCase {
 
         XCTAssertEqual(editor.inspection.styleCount, try backend.styleSheetSnapshot().definitions.count)
         XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
-        XCTAssertEqual(editor.inspection.characterPropertyCount, 14)
+        XCTAssertEqual(editor.inspection.characterPropertyCount, 13)
         XCTAssertEqual(editor.inspection.paragraphPropertyCount, 6)
         XCTAssertTrue(editor.inspection.paragraphTabEnabled)
         XCTAssertTrue(editor.inspection.mutationsEnabled)
