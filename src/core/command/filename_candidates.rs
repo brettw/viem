@@ -27,11 +27,14 @@ pub(super) fn candidates(
         .rfind(path::is_separator)
         .map_or(0, |index| index + 1);
     let (parent, prefix) = fragment.split_at(split);
-    let directory = if let Some(relative_home) = parent.strip_prefix("~/") {
+    let home_parent = parent
+        .strip_prefix('~')
+        .filter(|suffix| suffix.starts_with(path::is_separator));
+    let directory = if let Some(relative_home) = home_parent {
         let Some(home) = home else {
             return Ok(None);
         };
-        home.join(relative_home)
+        home.join(relative_home.trim_start_matches(path::is_separator))
     } else {
         cwd.join(parent)
     };
@@ -255,6 +258,33 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_paths_accept_backslashes_and_mixed_separators() {
+        let fixture = Fixture::new();
+        fixture.directory("Home/Private");
+        fixture.file("Home/Private/Journal.txt");
+        let home = fixture.0.join("Home");
+        for parent in [
+            "~\\Private\\",
+            "~\\Private/",
+            "~/Private\\",
+            "~\\\\Private\\",
+            "~//Private/",
+        ] {
+            let input = format!("e {parent}jo");
+            let found = candidates(&input, input.len(), &fixture.0, Some(&home))
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.values, [format!("{parent}Journal.txt")]);
+            assert_eq!(found.range, 2..input.len());
+            assert_eq!(
+                candidates(&input, input.len(), &fixture.0, None).unwrap(),
+                None
+            );
+        }
+    }
+
     #[test]
     fn replaces_the_entire_filename_prefix_without_consuming_the_caret_suffix() {
         let fixture = Fixture::new();
@@ -310,6 +340,30 @@ mod tests {
         fixture.file("~someone");
         assert_eq!(fixture.complete("e ~").values, ["./~/", "./~someone"]);
         assert_eq!(fixture.complete("e ./~/").values, ["./~/Nested/"]);
+    }
+
+    #[test]
+    fn home_expansion_preserves_explicit_relative_and_embedded_tildes() {
+        let fixture = Fixture::new();
+        for directory in ["~/Nested", "~someone/Nested", "Folder/~/Nested", "Home/Other"] {
+            fixture.directory(directory);
+        }
+        let home = fixture.0.join("Home");
+        for parent in ["./~/", "~someone/", "Folder/~/"] {
+            let input = format!("e {parent}ne");
+            let found = candidates(&input, input.len(), &fixture.0, Some(&home))
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.values, [format!("{parent}Nested/")]);
+        }
+        #[cfg(windows)]
+        for parent in [".\\~\\", "~someone\\", "Folder\\~\\"] {
+            let input = format!("e {parent}ne");
+            let found = candidates(&input, input.len(), &fixture.0, Some(&home))
+                .unwrap()
+                .unwrap();
+            assert_eq!(found.values, [format!("{parent}Nested/")]);
+        }
     }
 
     #[cfg(unix)]

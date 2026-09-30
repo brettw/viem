@@ -12,7 +12,7 @@ internal sealed partial class EditorWindow
         var document = pane.Document;
         var view = pane.View;
         if (view == null) return false;
-        string? path = explicitPath;
+        string? path = explicitPath == null ? null : ResolvePath(explicitPath);
         if (path == null)
         {
             string name = Path.GetFileNameWithoutExtension(document.Name);

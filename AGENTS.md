@@ -1458,6 +1458,9 @@ windows/dialogs; document typography and native system pickers are independent.
   original target, while external edits dismiss it without replaying queued
   values. Do not rebuild or resize active pickers on every color update.
 - Save core bytes through atomic replacement; review external-content conflicts.
+  Expand a leading `~`, `~/`, or `~\` in Windows file commands and launch paths
+  to the user's profile directory, consistently with filename completion. Other
+  tildes remain literal; `./~` explicitly names a local tilde file or directory.
   Recovery slots belong to their document/process and use the shared envelope;
   never remove foreign slots. Same-user launch forwarding must be bounded and
   retain the caller's working directory for relative paths.

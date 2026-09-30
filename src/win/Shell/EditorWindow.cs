@@ -373,7 +373,7 @@ internal sealed partial class EditorWindow : Window
     internal async Task<bool> Save(EditorPane pane, bool saveAs = false, string? explicitPath = null, bool force = false, bool adoptPath = true, bool native = true)
     {
         var doc = pane.Document;
-        string? path = explicitPath ?? (saveAs ? null : doc.FilePath);
+        string? path = explicitPath == null ? (saveAs ? null : doc.FilePath) : ResolvePath(explicitPath);
         if (path == null)
         {
             var picker = new FileSavePicker { SuggestedFileName = doc.Name == "Untitled" ? "Untitled" : Path.GetFileNameWithoutExtension(doc.Name) };
@@ -525,7 +525,7 @@ internal sealed partial class EditorWindow : Window
                         case VIEM_EX_FRONTEND_ONLY: await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1); break;
                         case VIEM_EX_FRONTEND_PWD: pane.SetMessage(Environment.CurrentDirectory); break;
                         case VIEM_EX_FRONTEND_CD:
-                            Environment.CurrentDirectory = Path.GetFullPath(request.Text);
+                            Environment.CurrentDirectory = ResolvePath(request.Text);
                             foreach (var openPane in App.Instance.Windows.SelectMany(w => w.Panes)) openPane.RefreshStatusFilePath();
                             pane.SetMessage(Environment.CurrentDirectory); break;
                         case VIEM_EX_FRONTEND_FILE: if (request.Text.Length > 0) await RenameDocument(pane, ResolvePath(request.Text)); UpdateTitle(); break;

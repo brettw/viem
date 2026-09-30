@@ -1,5 +1,6 @@
 //! Filename completion belongs to the prompt, never to document undo history.
 use super::*;
+#[cfg(not(windows))]
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -45,6 +46,11 @@ impl CommandLineBuffer {
             let Ok(cwd) = std::env::current_dir() else {
                 return;
             };
+            // Windows HOME can name a Unix-shell directory unrelated to the
+            // native user profile used when the frontend opens this path.
+            #[cfg(windows)]
+            let home = std::env::home_dir();
+            #[cfg(not(windows))]
             let home = std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
                 .map(PathBuf::from);
