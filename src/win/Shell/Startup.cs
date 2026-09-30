@@ -71,6 +71,8 @@ internal sealed partial class EditorWindow
                         }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
                             await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1")
+                            await Diagnostics.PaneLayoutTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1")
                             await TestReloadPositions();
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1")
@@ -128,6 +130,7 @@ internal sealed partial class EditorWindow
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("native editor draws without presentation errors");
                     await Diagnostics.WindowCapture.Save(Hwnd, pane.Canvas.Device, Diagnostics.FrontendSmokeTests.ReportPath + ".png");
                     await Diagnostics.PresentationTests.Run(pane, Menu, preferences, this);
+                    await Diagnostics.PaneLayoutTests.Run(preferences);
                     var second = AddPane(pane.Document);
                     await Task.Delay(250);
                     await Diagnostics.InputRoutingTests.FocusPane(second, "Split input ");
@@ -210,7 +213,7 @@ internal sealed partial class EditorWindow
         }
         App.Instance.Arguments.Clear(); App.Instance.Arguments.AddRange(paths);
         int split = args.SplitCount == 0 ? Math.Max(1, paths.Length) : args.SplitCount ?? 1;
-        split = Math.Clamp(split, 1, Math.Max(1, (int)paneGrid.ActualHeight / 60));
+        split = Math.Clamp(split, 1, Math.Max(1, (int)(paneGrid.ActualHeight / Math.Max(28, preferences.StatusFontSize + 12))));
         EditorPane? first = paths.Length == 0 ? ActivePane : null;
         foreach (string path in paths.Take(split))
         {
@@ -218,7 +221,7 @@ internal sealed partial class EditorWindow
             if (closed) return;
             first ??= App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, path));
         }
-        while (Panes.Count < split) { var added = AddPane(NewDocument()); first ??= added; }
+        while (Panes.Count < split) { RequireSplitRoom(); var added = SplitPane(ActivePane!, NewDocument()); first ??= added; }
         if (first != null)
         {
             foreach (var pane in Panes) await pane.Ready.WaitAsync(TimeSpan.FromSeconds(15));

@@ -3,10 +3,12 @@ import AppKit
 /// Only stacked panes are supported. Every child owns its status bar and a
 /// distinct core view; documents/backends can be shared across any children.
 @MainActor
-final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
+final class EVPaneContainer: NSViewController {
   private(set) var panes: [EVDocumentContentViewController]
   private var preferredIndex = 0
-  private let split = NSSplitView()
+  private let stack = EVPaneStackView()
+  private var heights: [CGFloat] = []
+  private var applyingLayout = false
 
   init(first: EVDocumentContentViewController) {
     panes = [first]
@@ -131,21 +133,15 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     reorder(to: next, keepingFocusOn: focused)
   }
 
-  /// Rebuild the split view's order, leaving each slot the height it had, and
+  /// Change the stack's order, leaving each slot the height it had, and
   /// keep the focused pane focused wherever it landed.
   private func reorder(
     to next: [EVDocumentContentViewController],
     keepingFocusOn focused: EVDocumentContentViewController
   ) {
     let heights = panes.map(\.view.frame.height)
-    // A split view keeps its own arranged list, so dropping the subview alone
-    // leaves the old order in place and re-adding it does nothing.
-    for pane in panes {
-      split.removeArrangedSubview(pane.view)
-      pane.view.removeFromSuperview()
-    }
     panes = next
-    for pane in panes { split.addArrangedSubview(pane.view) }
+    updateStatusDragging()
     applyHeights(heights)
     if let index = panes.firstIndex(where: { $0 === focused }) {
       preferredIndex = index
@@ -159,10 +155,9 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     for pane in panes where pane !== focused { remove(pane) }
   }
 
-  /// One visual row of the focused pane, used by the height commands. Falls
-  /// back to the status bar's height when no row has been laid out yet.
   private func activeRowHeight() -> CGFloat {
-    max(1, activePane.editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight)
+    let height = activePane.editorSurface.defaultLineHeight ?? 16
+    return height.isFinite && height > 0 ? height : 16
   }
 
   private func resizeActive(byRows rows: Int) {
@@ -190,7 +185,7 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     guard panes.count > 1 else { return }
     let current = activeIndex
     let minimums = minimumPaneHeights()
-    let total = max(0, split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1))
+    let total = max(0, stack.bounds.height)
     let othersMinimum = minimums.enumerated().reduce(CGFloat(0)) { result, entry in
       result + (entry.offset == current ? 0 : entry.element)
     }
@@ -231,121 +226,161 @@ final class EVPaneContainer: NSViewController, NSSplitViewDelegate {
     return order
   }
 
-  /// Keep one actual visual row and the visible status bar in every pane.
-  /// If the whole window cannot fit those minima, divide the available space
-  /// proportionally; height commands must still never create negative frames.
-  private func minimumPaneHeights() -> [CGFloat] {
-    let desired = panes.map { pane in
-      max(1, pane.editorSurface.visualRowHeight ?? EVStatusBarView.preferredHeight) + pane.statusBarHeight
-    }
-    let available = max(0, split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1))
-    let required = desired.reduce(0, +)
-    guard required > available else { return desired }
-    return desired.map { $0 * available / required }
+  /// A collapsed editor still leaves its entire status bar visible.
+  private func minimumPaneHeights() -> [CGFloat] { panes.map(\.statusBarHeight) }
+
+  func requireSplitRoom(in pane: EVDocumentContentViewController? = nil) throws {
+    loadViewIfNeeded()
+    layoutStack()
+    let source = pane ?? activePane
+    guard panes.contains(where: { $0 === source }),
+      source.view.frame.height - source.statusBarHeight >= EVStatusBarView.preferredHeight
+    else { throw EVDocumentHostError.noRoomToSplit }
   }
 
-  /// Lay out exact pane heights top to bottom. Divider positions are measured
-  /// from the split view's top edge.
-  private func applyHeights(_ heights: [CGFloat]) {
-    guard heights.count == panes.count, panes.count > 1 else {
-      split.adjustSubviews()
-      layoutPanes()
-      return
+  /// Each pointer delta acts on the grabbed bar alone, pushing neighbours only
+  /// when their editor gaps close. No pushed group survives a reversal.
+  func dragStatusBar(of pane: EVDocumentContentViewController, by delta: CGFloat) {
+    guard let index = panes.firstIndex(where: { $0 === pane }), index < panes.count - 1,
+      delta.isFinite, delta != 0 else { return }
+    layoutStack()
+    var next = heights
+    let minimums = minimumPaneHeights()
+    var remaining = abs(delta)
+    let donors = delta > 0 ? Array((index + 1)..<panes.count) : Array((0...index).reversed())
+    let receiver = delta > 0 ? index : index + 1
+    for donor in donors {
+      let change = min(remaining, max(0, next[donor] - minimums[donor]))
+      next[donor] -= change
+      next[receiver] += change
+      remaining -= change
+      if remaining <= 0 { break }
     }
-    // Re-added arranged subviews keep stale frames until the split view lays
-    // out, and divider positions only stick afterwards.
-    split.adjustSubviews()
-    split.layoutSubtreeIfNeeded()
-    var offset: CGFloat = 0
-    for index in 0 ..< (panes.count - 1) {
-      offset += heights[index]
-      split.setPosition(offset, ofDividerAt: index)
-      offset += split.dividerThickness
+    applyHeights(next)
+  }
+
+  private func updateStatusDragging() {
+    for (index, pane) in panes.enumerated() {
+      pane.statusBar.dragDidMove = index == panes.count - 1 ? nil : { [weak self, weak pane] delta in
+        guard let pane else { return }
+        self?.dragStatusBar(of: pane, by: delta)
+      }
+      pane.statusBarHeightDidChange = { [weak self] in self?.layoutStack() }
     }
-    split.layoutSubtreeIfNeeded()
-    layoutPanes()
+  }
+
+  private func applyHeights(_ next: [CGFloat]) {
+    heights = next
+    layoutStack()
   }
 
   override func loadView() {
-    split.isVertical = false
-    split.dividerStyle = .thin
-    split.delegate = self
-    split.autoresizingMask = [.width, .height]
-    view = split
+    stack.autoresizingMask = [.width, .height]
+    stack.didResize = { [weak self] in self?.layoutStack() }
+    view = stack
     for pane in panes {
       addChild(pane)
-      split.addArrangedSubview(pane.view)
+      stack.addSubview(pane.view)
     }
-    split.adjustSubviews()
+    updateStatusDragging()
+    distributeEvenly()
   }
 
-  func insert(_ pane: EVDocumentContentViewController) {
-    loadViewIfNeeded()
-    let insertion = (panes.firstIndex(where: { $0 === activePane }) ?? 0) + 1
+  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil) throws {
+    let source = source ?? activePane
+    try requireSplitRoom(in: source)
+    let current = panes.firstIndex(where: { $0 === source }) ?? 0
+    let insertion = current + 1
+    let textHeight = max(0, heights[current] - panes[current].statusBarHeight - pane.statusBarHeight) / 2
+    heights[current] = panes[current].statusBarHeight + textHeight
+    heights.insert(pane.statusBarHeight + textHeight, at: insertion)
     panes.insert(pane, at: insertion)
     addChild(pane)
-    split.insertArrangedSubview(pane.view, at: insertion)
+    stack.addSubview(pane.view)
     preferredIndex = insertion
-    distributeEvenly()
-    layoutPanes()
+    updateStatusDragging()
+    layoutStack()
     view.window?.makeFirstResponder(pane.editorSurface.viewController.view)
   }
 
   func remove(_ pane: EVDocumentContentViewController) {
     guard panes.count > 1, let index = panes.firstIndex(where: { $0 === pane }) else { return }
+    pane.statusBar.dragDidMove = nil
+    pane.statusBarHeightDidChange = nil
     pane.view.removeFromSuperview()
     pane.removeFromParent()
     panes.remove(at: index)
     if lastAccessedPane === pane { lastAccessedPane = nil }
     preferredIndex = min(index, panes.count - 1)
+    updateStatusDragging()
     distributeEvenly()
-    layoutPanes()
     view.window?.makeFirstResponder(activePane.editorSurface.viewController.view)
   }
 
   func replace(_ old: EVDocumentContentViewController, with next: EVDocumentContentViewController) {
     guard let index = panes.firstIndex(where: { $0 === old }) else { return }
-    let frame = old.view.frame
+    old.statusBar.dragDidMove = nil
+    old.statusBarHeightDidChange = nil
     old.view.removeFromSuperview()
     old.removeFromParent()
     panes[index] = next
     addChild(next)
-    split.insertArrangedSubview(next.view, at: index)
-    next.view.frame = frame
+    stack.addSubview(next.view)
     preferredIndex = index
-    split.adjustSubviews()
-    layoutPanes()
+    updateStatusDragging()
+    layoutStack()
     view.window?.makeFirstResponder(next.editorSurface.viewController.view)
   }
 
   func layoutPanes() { panes.forEach { $0.layoutContent() } }
+
   private func distributeEvenly() {
-    let height = max(
-      0,
-      (split.bounds.height - split.dividerThickness * CGFloat(panes.count - 1))
-        / CGFloat(panes.count))
-    for (index, pane) in panes.enumerated() {
-      pane.view.frame = NSRect(
-        x: 0, y: CGFloat(index) * (height + split.dividerThickness), width: split.bounds.width,
-        height: height)
-    }
-    split.adjustSubviews()
+    let minimums = minimumPaneHeights()
+    let gap = max(0, stack.bounds.height - minimums.reduce(0, +)) / CGFloat(panes.count)
+    heights = minimums.map { $0 + gap }
+    layoutStack()
   }
-  override func viewDidLayout() {
-    super.viewDidLayout()
+
+  private func layoutStack() {
+    guard isViewLoaded, !applyingLayout else { return }
+    applyingLayout = true
+    defer { applyingLayout = false }
+    let minimums = minimumPaneHeights()
+    let required = minimums.reduce(0, +)
+    if let window = view.window {
+      var minimumSize = window.contentMinSize
+      minimumSize.height = max(EVDocumentWindowController.minimumContentSize.height, required)
+      window.contentMinSize = minimumSize
+    }
+    // A programmatically undersized frame clips the stack rather than making
+    // the bars overlap. Native windows enforce the full chrome minimum above.
+    let total = max(required, stack.bounds.height)
+    if heights.count != panes.count { heights = minimums }
+    let gaps = zip(heights, minimums).map { max(0, $0 - $1) }
+    let gapTotal = gaps.reduce(0, +)
+    let available = total - required
+    if abs(heights.reduce(0, +) - total) > 0.001 || zip(heights, minimums).contains(where: { $0 < $1 }) {
+      heights = minimums.enumerated().map { index, minimum in
+        minimum + (gapTotal > 0 ? available * gaps[index] / gapTotal : available / CGFloat(panes.count))
+      }
+    }
+    var offset: CGFloat = 0
+    for (index, pane) in panes.enumerated() {
+      pane.view.frame = NSRect(x: 0, y: offset, width: stack.bounds.width, height: heights[index])
+      offset += heights[index]
+    }
     layoutPanes()
   }
-  func splitViewDidResizeSubviews(_ notification: Notification) { layoutPanes() }
-  func splitView(
-    _ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat,
-    ofSubviewAt dividerIndex: Int
-  ) -> CGFloat {
-    proposedMinimumPosition + minimumPaneHeights()[dividerIndex]
+
+  override func viewDidLayout() {
+    super.viewDidLayout()
+    layoutStack()
   }
-  func splitView(
-    _ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat,
-    ofSubviewAt dividerIndex: Int
-  ) -> CGFloat {
-    proposedMaximumPosition - minimumPaneHeights()[dividerIndex + 1]
-  }
+}
+
+@MainActor
+private final class EVPaneStackView: NSView {
+  var didResize: (() -> Void)?
+  override var isFlipped: Bool { true }
+  override func resizeSubviews(withOldSize oldSize: NSSize) { didResize?() }
 }

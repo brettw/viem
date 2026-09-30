@@ -28,6 +28,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public CoreDocument Document { get; private set; }
     public CoreView? View { get; private set; }
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
+    internal ulong? InitialHeightLines { get; set; }
     private readonly EditorWindow window;
     private readonly Preferences preferences;
     internal CanvasControl Canvas { get; } = new();

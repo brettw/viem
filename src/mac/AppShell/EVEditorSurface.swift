@@ -179,7 +179,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let force: Bool
   public let path: String?
   public let hardLineRange: ClosedRange<UInt64>?
-  /// Initial text-area height of a new pane, measured in its visual rows.
+  /// Initial text-area height of a new pane, measured in default paragraph lines.
   public let initialHeightRows: Int?
   public let argumentNavigation: EVArgumentNavigation?
   public let readAfterLine: UInt64?
@@ -261,6 +261,7 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
   case saveCancelledOrFailed
   case preparedWriteUnavailable
   case unsupportedRequest
+  case noRoomToSplit
 
   public var errorDescription: String? {
     switch self {
@@ -282,6 +283,8 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
       "The document was not saved."
     case .preparedWriteUnavailable:
       "This formatted line range cannot be written as exact source bytes. Use a full-document write."
+    case .noRoomToSplit:
+      "No room to split the current view."
     case .unsupportedRequest:
       "That document request is not supported by the native frontend."
     }
@@ -322,9 +325,9 @@ public protocol EVEditorSurface: AnyObject {
   var statusBarState: EVStatusBarState { get }
   var statusBarStateDidChange: ((EVStatusBarState) -> Void)? { get set }
 
-  /// Height of one laid-out visual row, the unit the `CTRL-W` height commands
-  /// count in. `nil` before this surface has any layout.
-  var visualRowHeight: CGFloat? { get }
+  /// Base Paragraph font size with line spacing and view zoom applied.
+  /// Independent of visible text, font metrics, and layout availability.
+  var defaultLineHeight: CGFloat? { get }
 
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
@@ -346,7 +349,7 @@ public protocol EVEditorSurface: AnyObject {
 }
 
 extension EVEditorSurface {
-  public var visualRowHeight: CGFloat? { nil }
+  public var defaultLineHeight: CGFloat? { nil }
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}

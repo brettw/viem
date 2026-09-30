@@ -4,7 +4,7 @@ import XCTest
 @testable import ViemAppShell
 
 /// `CTRL-W` window effects against real stacked panes: focus order, pane
-/// reordering, and heights measured in visual rows.
+/// reordering, and heights measured in default paragraph lines.
 @MainActor
 final class EVWindowCommandTests: XCTestCase {
   private final class EditorTestView: NSView {
@@ -20,7 +20,9 @@ final class EVWindowCommandTests: XCTestCase {
     var statusBarState = EVStatusBarState()
     var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     var rowHeight: CGFloat = 20
-    var visualRowHeight: CGFloat? { rowHeight }
+    var defaultLineHeight: CGFloat? { rowHeight }
+    var statusClicks = 0
+    func perform(statusOption _: EVStatusBarOption) { statusClicks += 1 }
     func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
     func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .enabled }
   }
@@ -208,51 +210,196 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertEqual(restored[0], start[0], accuracy: 2)
     send(.grow(rows: 10_000))
     let clamped = heights()
-    XCTAssertGreaterThan(clamped[1], 0, "a neighbour never vanishes")
+    XCTAssertEqual(clamped[1], 0, accuracy: 1, "only its status bar remains")
     XCTAssertLessThan(clamped[1], start[1])
     send(.equalizeHeights)
     let equal = heights()
     XCTAssertEqual(equal[0], equal[1], accuracy: 2)
   }
 
-  func testExtremeHeightCountsPreserveEachNeighboursOwnVisualRow() throws {
+  func testExtremeCountsAllowEditorsToCollapseWithoutOverlappingBars() throws {
     let (controller, backend, document) = try makeWindow(panes: 3)
     defer { document.close() }
     let order = stackedSurfaces(controller, backend)
     order[1].rowHeight = 130
     order[2].rowHeight = 170
     controller.perform(windowRequests: [.focusTop, .setHeight(rows: Int.max)], from: controller.editorSurface)
-    for surface in order {
-      XCTAssertGreaterThanOrEqual(surface.viewController.view.bounds.height + 1, surface.rowHeight)
-    }
+    XCTAssertEqual(order[1].viewController.view.bounds.height, 0, accuracy: 1)
+    XCTAssertEqual(order[2].viewController.view.bounds.height, 0, accuracy: 1)
     controller.perform(windowRequests: [.shrink(rows: Int.max)], from: controller.editorSurface)
-    XCTAssertEqual(order[0].viewController.view.bounds.height, order[0].rowHeight, accuracy: 1)
+    XCTAssertEqual(order[0].viewController.view.bounds.height, 0, accuracy: 1)
     controller.perform(windowRequests: [.grow(rows: Int.max)], from: controller.editorSurface)
-    for surface in order {
-      XCTAssertGreaterThanOrEqual(surface.viewController.view.bounds.height + 1, surface.rowHeight)
-    }
+    XCTAssertEqual(order[1].viewController.view.bounds.height, 0, accuracy: 1)
     controller.perform(windowRequests: [.focusDown(count: Int.max)], from: controller.editorSurface)
-    XCTAssertEqual(focusedIndex(controller, backend), 2, "a large count clamps without integer overflow")
+    XCTAssertEqual(focusedIndex(controller, backend), 2)
   }
 
-  func testHeightCommandsInAnUndersizedWindowKeepFiniteNonnegativeFrames() {
-    let surfaces = [Surface(), Surface(), Surface()]
-    let panes = surfaces.map { EVDocumentContentViewController(editorSurface: $0) }
-    let container = EVPaneContainer(first: panes[0])
+  private func stack(panes count: Int, height: CGFloat = 600) throws -> EVPaneContainer {
+    let container = EVPaneContainer(first: EVDocumentContentViewController(editorSurface: Surface()))
     container.loadViewIfNeeded()
-    container.view.frame = NSRect(x: 0, y: 0, width: 400, height: 40)
-    for pane in panes.dropFirst() { container.insert(pane) }
-    for request in [EVWindowRequest.setHeight(rows: Int.max), .shrink(rows: Int.max), .grow(rows: Int.max), .equalizeHeights] {
-      container.perform(request)
-      for pane in panes {
-        XCTAssertTrue(pane.view.frame.height.isFinite)
-        XCTAssertGreaterThanOrEqual(pane.view.frame.height, 0)
-        XCTAssertTrue(pane.editorSurface.viewController.view.bounds.height.isFinite)
-        XCTAssertGreaterThanOrEqual(pane.editorSurface.viewController.view.bounds.height, 0)
-      }
-      let height = panes.reduce(CGFloat(0)) { $0 + $1.view.frame.height }
-      XCTAssertLessThanOrEqual(height, container.view.bounds.height + 1)
+    container.view.frame = NSRect(x: 0, y: 0, width: 600, height: height)
+    for _ in 1..<count {
+      try container.insert(EVDocumentContentViewController(editorSurface: Surface()))
+      container.perform(.equalizeHeights)
     }
+    return container
+  }
+
+  private func barTops(_ container: EVPaneContainer) -> [CGFloat] {
+    container.panes.map { $0.view.frame.maxY - $0.statusBarHeight }
+  }
+
+  private func checkBars(_ container: EVPaneContainer, file: StaticString = #filePath, line: UInt = #line) {
+    let tops = barTops(container)
+    for index in 0..<tops.count - 1 {
+      XCTAssertLessThanOrEqual(tops[index] + container.panes[index].statusBarHeight, tops[index + 1] + 0.001, file: file, line: line)
+    }
+    XCTAssertEqual(tops.last! + container.panes.last!.statusBarHeight, container.view.bounds.height, accuracy: 0.001, file: file, line: line)
+  }
+
+  func testDragCollectsBarsAtBothEdgesAndReversesImmediately() throws {
+    let container = try stack(panes: 5)
+    let grabbed = container.panes[2]
+    let initial = barTops(container)
+    container.dragStatusBar(of: grabbed, by: 10_000)
+    let bottom = barTops(container)
+    XCTAssertEqual(bottom[0], initial[0], accuracy: 0.001)
+    XCTAssertEqual(bottom[1], initial[1], accuracy: 0.001)
+    XCTAssertEqual(bottom[2] + grabbed.statusBarHeight, bottom[3], accuracy: 0.001)
+    XCTAssertEqual(bottom[3] + container.panes[3].statusBarHeight, bottom[4], accuracy: 0.001)
+    container.dragStatusBar(of: grabbed, by: 200)
+    XCTAssertEqual(barTops(container), bottom)
+    container.dragStatusBar(of: grabbed, by: -12)
+    let reversed = barTops(container)
+    XCTAssertEqual(reversed[2], bottom[2] - 12, accuracy: 0.001)
+    XCTAssertEqual(reversed[3], bottom[3], accuracy: 0.001)
+    container.dragStatusBar(of: grabbed, by: -10_000)
+    let top = barTops(container)
+    XCTAssertEqual(top[0], 0, accuracy: 0.001)
+    XCTAssertEqual(top[0] + container.panes[0].statusBarHeight, top[1], accuracy: 0.001)
+    XCTAssertEqual(top[1] + container.panes[1].statusBarHeight, top[2], accuracy: 0.001)
+    XCTAssertEqual(top[3], bottom[3], accuracy: 0.001)
+    container.dragStatusBar(of: grabbed, by: -200)
+    container.dragStatusBar(of: grabbed, by: 12)
+    let downAgain = barTops(container)
+    XCTAssertEqual(downAgain[2], top[2] + 12, accuracy: 0.001)
+    XCTAssertEqual(Array(downAgain.prefix(2)), Array(top.prefix(2)))
+    checkBars(container)
+  }
+
+  func testBottomBarIsFixedAndSplitAdmissionUsesOnlyTheCurrentEditorGap() throws {
+    let container = try stack(panes: 3)
+    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    let start = barTops(container)
+    container.dragStatusBar(of: container.panes.last!, by: -300)
+    XCTAssertEqual(barTops(container), start)
+    container.focusPane(at: 0)
+    container.perform(.setHeight(rows: 1))
+    let panes = container.panes
+    XCTAssertThrowsError(try container.insert(EVDocumentContentViewController(editorSurface: Surface()))) { error in
+      XCTAssertEqual(error as? EVDocumentHostError, .noRoomToSplit)
+    }
+    XCTAssertEqual(container.panes.count, panes.count)
+    XCTAssertTrue(container.activePane === panes[0])
+    container.perform(.grow(rows: 1))
+    XCTAssertNoThrow(try container.requireSplitRoom())
+    checkBars(container)
+  }
+
+  func testExactlyOneBarOfRoomAllowsSplitAndTouchingBars() throws {
+    let bar = EVStatusBarView.preferredHeight
+    let container = try stack(panes: 1, height: bar * 2)
+    try container.insert(EVDocumentContentViewController(editorSurface: Surface()))
+    XCTAssertEqual(container.panes.count, 2)
+    XCTAssertEqual(container.panes[0].editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)
+    XCTAssertEqual(container.panes[1].editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)
+    checkBars(container)
+  }
+
+  func testWindowResizeKeepsCollapsedGapsAndFullBars() throws {
+    let container = try stack(panes: 5)
+    container.dragStatusBar(of: container.panes[0], by: 10_000)
+    container.view.frame.size.height = 350
+    checkBars(container)
+    for pane in container.panes.dropFirst() {
+      XCTAssertEqual(pane.editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)
+    }
+  }
+
+  func testReorderingMovesTheFixedBarRoleAndDraggingPreservesFocus() throws {
+    let container = try stack(panes: 4)
+    let oldBottom = container.panes.last!
+    container.focusPane(at: 1)
+    let focused = container.activePane
+    container.dragStatusBar(of: container.panes[0], by: 15)
+    XCTAssertTrue(container.activePane === focused)
+    container.perform(.rotateDown(count: 1))
+    XCTAssertTrue(container.panes[0] === oldBottom)
+    XCTAssertNotNil(oldBottom.statusBar.dragDidMove)
+    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    XCTAssertTrue(container.activePane === focused)
+    container.remove(container.panes.last!)
+    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    checkBars(container)
+  }
+
+  /// Drive the AppKit event path, including deferred button clicks. Queue the
+  /// complete gesture before dispatch because controls may run a tracking loop.
+  private func pointerGesture(window: NSWindow, points: [NSPoint]) throws {
+    let events = try points.enumerated().map { index, point in
+      try XCTUnwrap(NSEvent.mouseEvent(
+        with: index == 0 ? .leftMouseDown : index == points.count - 1 ? .leftMouseUp : .leftMouseDragged,
+        location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.02,
+        windowNumber: window.windowNumber, context: nil, eventNumber: index + 1, clickCount: 1, pressure: index == points.count - 1 ? 0 : 1))
+    }
+    for event in events { NSApplication.shared.postEvent(event, atStart: false) }
+    while let event = NSApplication.shared.nextEvent(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp],
+      until: Date(timeIntervalSinceNow: 0.1), inMode: .default, dequeue: true) {
+      window.sendEvent(event)
+    }
+    RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+  }
+
+  func testEyeClicksAndDragsUseTheNativeGesturePath() throws {
+    let container = try stack(panes: 3)
+    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    container.view.translatesAutoresizingMaskIntoConstraints = false
+    window.contentView = container.view
+    window.setContentSize(NSSize(width: 600, height: 600))
+    window.makeKeyAndOrderFront(nil)
+    defer { window.close() }
+    container.view.layoutSubtreeIfNeeded()
+    let first = container.panes[0]
+    let surface = try XCTUnwrap(first.editorSurface as? Surface)
+    let button = try XCTUnwrap(first.statusBar.subviews.compactMap { $0 as? NSButton }.first)
+    let eye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    let start = barTops(container)
+    XCTAssertGreaterThan(button.bounds.width, 0)
+    XCTAssertEqual(container.view.bounds.height, 600, accuracy: 1)
+    try pointerGesture(window: window, points: [eye, eye])
+    XCTAssertEqual(surface.statusClicks, 1, "a plain eye click toggles line mode")
+    try pointerGesture(window: window, points: [eye, NSPoint(x: eye.x, y: eye.y - 40), NSPoint(x: eye.x, y: eye.y - 40)])
+    XCTAssertEqual(surface.statusClicks, 1, "dragging the eye must consume its click")
+    XCTAssertEqual(barTops(container)[0] - start[0], 40, accuracy: 1)
+    let movedEye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+    try pointerGesture(window: window, points: [movedEye,
+      NSPoint(x: movedEye.x, y: movedEye.y - 800),
+      NSPoint(x: movedEye.x, y: movedEye.y - 850),
+      NSPoint(x: movedEye.x, y: movedEye.y - 838),
+      NSPoint(x: movedEye.x, y: movedEye.y - 838)])
+    let maximum = container.view.bounds.height - container.panes.reduce(CGFloat(0)) { $0 + $1.statusBarHeight }
+    XCTAssertEqual(barTops(container)[0], maximum - 12, accuracy: 1, "native dragging reverses immediately after overshooting the edge")
+    XCTAssertEqual(surface.statusClicks, 1)
+    let bottom = container.panes.last!
+    let bottomSurface = try XCTUnwrap(bottom.editorSurface as? Surface)
+    let bottomButton = try XCTUnwrap(bottom.statusBar.subviews.compactMap { $0 as? NSButton }.first)
+    let bottomEye = bottomButton.convert(NSPoint(x: bottomButton.bounds.midX, y: bottomButton.bounds.midY), to: nil)
+    let beforeBottom = barTops(container)
+    try pointerGesture(window: window, points: [bottomEye, bottomEye])
+    XCTAssertEqual(bottomSurface.statusClicks, 1)
+    XCTAssertEqual(barTops(container), beforeBottom)
+    checkBars(container)
   }
 
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {

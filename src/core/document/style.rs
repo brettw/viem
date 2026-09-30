@@ -2094,6 +2094,22 @@ impl StyleSheet {
         )
     }
 
+    /// The unscaled unit for native pane height commands, independent of text,
+    /// font metrics, wrapping, and source-authored paragraph overrides.
+    pub fn default_line_height(&self) -> Result<f32, StyleError> {
+        let paragraph = self.resolve_paragraph_style(
+            &self.base_paragraph, &self.base_paragraph, None,
+            &BlockProperties::default(), &CharacterProperties::default(),
+        )?;
+        let size = paragraph.character.size;
+        Ok(match paragraph.line_spacing {
+            LineSpacing::Normal => size,
+            LineSpacing::Multiplier(multiplier) => size * multiplier,
+            LineSpacing::AtLeast(minimum) => size.max(minimum),
+            LineSpacing::Exact(height) => height,
+        })
+    }
+
     /// Resolve the complete normalized cascade using the root and paragraph
     /// assignments stored by the formatted projection. The final character
     /// declarations are inline direct formatting, after an optional named
@@ -3326,6 +3342,22 @@ mod tests {
         let code = code::default_sheet();
         assert_eq!(code.block_style(&code.base_paragraph).unwrap().character.font_families,
             Some(vec!["monospace".into()]));
+    }
+
+    #[test]
+    fn pane_line_units_use_base_size_and_spacing_without_font_metrics() {
+        for format in [crate::document::Format::PlainText, crate::document::Format::Code,
+            crate::document::Format::Markdown, crate::document::Format::MarkdownSource] {
+            let mut sheet = StyleSheet::for_format(format);
+            let base = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
+            base.character.size = Some(FontSize::Points(20.0));
+            for (spacing, expected) in [(LineSpacing::Normal, 20.0),
+                (LineSpacing::Multiplier(1.5), 30.0), (LineSpacing::AtLeast(12.0), 20.0),
+                (LineSpacing::AtLeast(24.0), 24.0), (LineSpacing::Exact(12.0), 12.0)] {
+                sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap().block.line_spacing = Some(spacing);
+                assert_eq!(sheet.default_line_height().unwrap(), expected, "{format:?}: {spacing:?}");
+            }
+        }
     }
 
     #[test]

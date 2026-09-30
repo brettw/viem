@@ -173,6 +173,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void ParagraphFlow(bool value) => Apply(o => viem_core_view_set_paragraph_flow(Document.Handle, Id, value ? 1u : 0u, o));
     public bool ParagraphFlowEnabled { get { uint value = 0; Check(viem_core_view_paragraph_flow(Document.Handle, Id, &value), "Read paragraph flow"); return value != 0; } }
     public uint CurrentLineMode { get { uint value = 0; Check(viem_core_view_line_mode(Document.Handle, Id, &value), "Read line mode"); return value; } }
+    public float DefaultLineHeight { get { float height = 0; Check(viem_core_view_default_line_height(Document.Handle, Id, &height), "Read default line height"); return height; } }
     public void LineMode(uint value) => Apply(o => viem_core_view_set_line_mode(Document.Handle, Id, value, o));
     public void GoToLine(ulong value) => Apply(o => { var s = Document.State; return viem_core_view_go_to_line(Document.Handle, Id, s.document_id, s.document_revision, value, o); });
     public void Zoom(float scale) => Apply(o => viem_core_view_set_scale(Document.Handle, Id, scale, o));

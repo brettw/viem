@@ -1141,7 +1141,15 @@ Splits, including `:vsplit`, are **stacked only**. Views share document/history
 but own cursor, selection, viewport, wrapping, line mode, status, and scrollbar.
 Focus controls save/style/menu routing; final-view closure reviews unsaved changes.
 Window commands are core grammar with frontend geometry/focus, create no undo or
-register effects, and are not dot-repeatable. Side-by-side/tab-page-dependent
+register effects, and are not dot-repeatable. Height counts use Base Paragraph's
+font size with its line spacing and view zoom, independent of visible row metrics.
+Status bars are the stacked-pane drag handles, including their controls; a plain
+click retains the control's action. The bottom bar is fixed. Bars may touch but
+never overlap, and editor areas may collapse to zero. Dragging pushes bars met in
+the current direction; reversing releases previously pushed bars immediately,
+including after reaching an edge. Splitting requires room for one additional
+status bar in the current pane; otherwise report that there is no room to split.
+Side-by-side/tab-page-dependent
 commands are unsupported. Retain normal window geometry across launches,
 recover offscreen frames, cascade new windows, and preserve existing frames.
 

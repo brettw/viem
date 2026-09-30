@@ -22,7 +22,8 @@ internal sealed partial class EditorWindow : Window
     private readonly TextBlock titleText = new() { FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new(12, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
     private readonly ToggleButton menuToggle = new() { Width = 40, Height = 30, MinHeight = 0, Padding = new(0), BorderThickness = new(0), Content = new FontIcon { Glyph = "\uE700", FontSize = 14 } };
     internal MenuBar Menu { get; } = new();
-    private readonly Grid paneGrid = new();
+    private readonly PaneStackPanel paneGrid = new();
+    internal PaneStackPanel PaneStack => paneGrid;
     internal List<EditorPane> Panes { get; } = [];
     internal EditorPane? ActivePane { get; private set; }
     internal bool IsWindowActive { get; private set; } = true;
@@ -88,6 +89,8 @@ internal sealed partial class EditorWindow : Window
             root.Loaded += (_, _) => BeginFileLaunch();
         }
         else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
+        WindowSizing.TrackMinimumSize(this, () => new(480,
+            Math.Max(280, Panes.Sum(p => p.StatusBarHeight) + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
@@ -149,6 +152,7 @@ internal sealed partial class EditorWindow : Window
     }
     internal void PaneReady(EditorPane pane)
     {
+        ApplyInitialPaneHeight(pane);
         if (pane == ActivePane) pane.FocusEditor();
         UpdateTitle(); RefreshStyleMenus();
         var diagnostics = new List<string>();
@@ -158,7 +162,7 @@ internal sealed partial class EditorWindow : Window
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);
-    internal EditorPane AddPane(CoreDocument doc, int? position = null)
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         if (!savedSources.ContainsKey(doc))
@@ -173,7 +177,7 @@ internal sealed partial class EditorWindow : Window
         preferences.AttachThemeDocument(doc, initialize: false);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
-        Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(); SetActive(pane); return pane;
+        Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex); SetActive(pane); return pane;
     }
     private void SetActive(EditorPane pane)
     {
@@ -183,28 +187,34 @@ internal sealed partial class EditorWindow : Window
         foreach (var item in Panes) item.IsActive = item == pane;
         UpdateTitle(); RefreshStyleMenus();
     }
-    private void RebuildPanes()
+    private void RebuildPanes(int? splitIndex = null) => paneGrid.Rebuild(Panes, splitIndex);
+
+    internal void RequireSplitRoom(EditorPane? pane = null)
     {
-        paneGrid.Children.Clear(); paneGrid.RowDefinitions.Clear();
-        for (int i = 0; i < Panes.Count; i++)
-        {
-            if (i > 0)
-            {
-                int upper = paneGrid.RowDefinitions.Count - 1;
-                paneGrid.RowDefinitions.Add(new() { Height = new(5) });
-                var grip = new Thumb { Height = 5, Background = new SolidColorBrush(preferences.Theme.StatusBackground) };
-                AutomationProperties.SetName(grip, "Resize document panes"); Grid.SetRow(grip, paneGrid.RowDefinitions.Count - 1); paneGrid.Children.Add(grip);
-                grip.DragStarted += (_, _) => { foreach (var row in paneGrid.RowDefinitions.Where(r => r.Height.IsStar)) row.Height = new(row.ActualHeight, GridUnitType.Star); };
-                grip.DragDelta += (_, e) => {
-                    var above = paneGrid.RowDefinitions[upper]; var below = paneGrid.RowDefinitions[upper + 2];
-                    double change = Math.Clamp(e.VerticalChange, 80 - above.ActualHeight, below.ActualHeight - 80);
-                    above.Height = new(Math.Max(80, above.ActualHeight + change), GridUnitType.Star); below.Height = new(Math.Max(80, below.ActualHeight - change), GridUnitType.Star);
-                };
-            }
-            paneGrid.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star), MinHeight = 55 });
-            Grid.SetRow(Panes[i], paneGrid.RowDefinitions.Count - 1); paneGrid.Children.Add(Panes[i]);
-        }
+        pane ??= ActivePane;
+        paneGrid.UpdateLayout();
+        if (pane == null || !Panes.Contains(pane)
+            || pane.ActualHeight - pane.StatusBarHeight < Math.Max(28, preferences.StatusFontSize + 12))
+            throw new InvalidOperationException("No room to split the current view.");
     }
+
+    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null)
+    {
+        RequireSplitRoom(pane);
+        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane));
+        paneGrid.UpdateLayout();
+        added.InitialHeightLines = lines;
+        ApplyInitialPaneHeight(added);
+        return added;
+    }
+
+    private void ApplyInitialPaneHeight(EditorPane pane)
+    {
+        if (pane.View is not { } view || pane.InitialHeightLines is not { } lines || !Panes.Contains(pane)) return;
+        pane.InitialHeightLines = null;
+        paneGrid.ResizePane(pane, lines * (double)view.DefaultLineHeight);
+    }
+
     internal void UpdateTitle()
     {
         if (ActivePane == null || closed) return;
@@ -232,9 +242,12 @@ internal sealed partial class EditorWindow : Window
         if (File.Exists(path)) _ = await File.ReadAllBytesAsync(path);
         var window = NewWindow(null); await window.OpenPath(path);
     }
-    internal async Task OpenPath(string path, bool split = false, bool force = false)
+    internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
+        var splitSource = split ? ActivePane : null;
+        var splitState = splitSource?.Document.State;
+        if (split) RequireSplitRoom(splitSource);
         path = ResolvePath(path);
         (EditorWindow Window, EditorPane Pane) FindExisting() => App.Instance.Windows.Prepend(this).Distinct()
             .Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
@@ -293,11 +306,24 @@ internal sealed partial class EditorWindow : Window
             }
             else doc = ConfigureNewDocument(doc, source, path);
         }
+        if (split)
+        {
+            try {
+                if (splitSource == null || splitState is not { } expected
+                    || splitSource.Document.State.document_id != expected.document_id
+                    || splitSource.Document.State.document_revision != expected.document_revision)
+                    throw new InvalidOperationException("The split referred to an older document revision.");
+                RequireSplitRoom(splitSource);
+            }
+            catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
+        }
         if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
         if (readOnly) doc.SetReadOnly(true);
         int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
         if (!split && old != null && Panes.Contains(old)) RemovePane(old, false);
-        AddPane(doc, Math.Min(index, Panes.Count)); preferences.Remember(path);
+        if (split && splitSource != null) SplitPane(splitSource, doc, splitLines);
+        else AddPane(doc, Math.Min(index, Panes.Count));
+        preferences.Remember(path);
     }
     internal async Task<bool> Save(EditorPane pane, bool saveAs = false, string? explicitPath = null, bool force = false, bool adoptPath = true, bool native = true)
     {
@@ -427,8 +453,14 @@ internal sealed partial class EditorWindow : Window
                     if (pane.View == null || r.document_id != pane.Document.State.document_id) break;
                     switch (r.kind)
                     {
-                        case VIEM_EX_FRONTEND_SPLIT: if (request.Text.Length > 0) await OpenPath(request.Text, true, force); else AddPane(pane.Document, Panes.IndexOf(pane) + 1); break;
-                        case VIEM_EX_FRONTEND_NEW_PANE: AddPane(NewDocument(), Panes.IndexOf(pane) + 1); break;
+                        case VIEM_EX_FRONTEND_SPLIT:
+                            if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            else SplitPane(pane, pane.Document, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            break;
+                        case VIEM_EX_FRONTEND_NEW_PANE:
+                            RequireSplitRoom(pane);
+                            SplitPane(pane, NewDocument(), (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            break;
                         case VIEM_EX_FRONTEND_NEW: if (force || await ConfirmDiscard(pane)) { int i = Panes.IndexOf(pane); RemovePane(pane, false); AddPane(NewDocument(), i); } break;
                         case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(Path.GetFullPath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
                         case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW: NewWindow(null); break;
@@ -533,10 +565,14 @@ internal sealed partial class EditorWindow : Window
             case VIEM_WINDOW_MOVE_TO_BOTTOM: Panes.Remove(pane); Panes.Add(pane); RebuildPanes(); break;
             case VIEM_WINDOW_EXCHANGE: int other = (index + 1) % Panes.Count; (Panes[index], Panes[other]) = (Panes[other], Panes[index]); RebuildPanes(); break;
             case VIEM_WINDOW_CLOSE_OTHERS: foreach (var p in Panes.Where(p => p != pane).ToArray()) await ClosePane(p); break;
-            case VIEM_WINDOW_EQUALIZE_HEIGHTS: foreach (var row in paneGrid.RowDefinitions.Where(r => r.Height.IsStar)) row.Height = new(1, GridUnitType.Star); break;
+            case VIEM_WINDOW_EQUALIZE_HEIGHTS: paneGrid.Equalize(); break;
             case VIEM_WINDOW_GROW: case VIEM_WINDOW_SHRINK: case VIEM_WINDOW_SET_HEIGHT:
-                foreach (var row in paneGrid.RowDefinitions.Where(r => r.Height.IsStar)) row.Height = new(row.ActualHeight, GridUnitType.Star);
-                var current = paneGrid.RowDefinitions[Grid.GetRow(pane)]; current.Height = new(Math.Max(60, command == VIEM_WINDOW_SET_HEIGHT ? count * 22 : current.ActualHeight + (command == VIEM_WINDOW_GROW ? 1 : -1) * Math.Max(1, (long)count) * 22), GridUnitType.Star); break;
+                paneGrid.UpdateLayout();
+                double line = pane.View?.DefaultLineHeight ?? 16;
+                double currentText = Math.Max(0, pane.ActualHeight - pane.StatusBarHeight);
+                double height = command == VIEM_WINDOW_SET_HEIGHT ? (count == 0 ? double.MaxValue : count * line)
+                    : currentText + (command == VIEM_WINDOW_GROW ? 1 : -1) * Math.Max(1, count) * line;
+                paneGrid.ResizePane(pane, height); break;
         }
         if (Panes.Contains(target)) { SetActive(target); target.FocusEditor(); }
     }

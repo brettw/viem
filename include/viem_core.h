@@ -573,8 +573,8 @@ typedef struct ViemExFrontendRequestV1 {
   uint64_t option_count;
   uint64_t first_payload;
   uint64_t payload_count;
-  /* With VIEM_EX_FRONTEND_HAS_COUNT: window count/index, or initial row
-     height for SPLIT and NEW_PANE. */
+  /* With VIEM_EX_FRONTEND_HAS_COUNT: window count/index, or initial height
+     in default paragraph lines for SPLIT and NEW_PANE. */
   uint64_t window_count;
   /* VIEM_ARGUMENT_* command, count and optional initial line for ARGUMENT. */
   uint32_t argument_command;
@@ -2401,6 +2401,9 @@ ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, 
 ViemStatus viem_core_view_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t enabled, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t *out_mode);
+/* Base Paragraph font size with line spacing and this view's zoom applied.
+ * Does not perform layout or consult the visible text's styles/font metrics. */
+ViemStatus viem_core_view_default_line_height(ViemCoreHandle core, ViemViewId view, float *out_height);
 ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t mode, ViemCoreOutcomeV1 *out_outcome);
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */
 ViemStatus viem_core_view_set_smart_quotes(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
