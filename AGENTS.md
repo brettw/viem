@@ -1120,6 +1120,10 @@ splits copy then independently evolve it. Failed/stale opens leave it intact.
 prevent navigation. Alternate writes do not rebind or clear dirty state.
 
 `:edit` replaces the active pane; case-sensitive `:E` opens a native window.
+When an opening command's path resolves to a directory, show a native file-open
+dialog starting there. Open the selected file at the command's original
+destination, retaining force/split options; cancellation changes no buffers or
+windows. Revalidate the originating pane and document after the dialog.
 Only replacing a modified buffer's last view needs unsaved review/`!`; reloading
 that shared buffer always does. `:only` validates every planned closure before
 closing any, unless forced; surviving views preserve shared text. Each distinct

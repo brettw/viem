@@ -49,6 +49,7 @@ internal sealed partial class EditorWindow
             DispatcherQueue.TryEnqueue(async () => {
                 try {
                     if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_DIRECTORY_OPEN_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") is "1" or "horizontal"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
@@ -70,6 +71,8 @@ internal sealed partial class EditorWindow
                             Environment.Exit(0);
                             return;
                         }
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_DIRECTORY_OPEN_ONLY") == "1")
+                            await Diagnostics.DirectoryOpenTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1")
                             await Diagnostics.SelectionInputTests.RunPointerPlacement(pane);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
@@ -124,6 +127,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                     await Diagnostics.DocumentCloseReviewTests.Run(preferences);
+                    await Diagnostics.DirectoryOpenTests.Run(preferences);
                     var scrolled = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
                     await Diagnostics.CommandStatusTests.RunScrolled(scrolled);
                     await Diagnostics.ScrollDrawingTests.Run(scrolled);

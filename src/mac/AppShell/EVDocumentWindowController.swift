@@ -51,6 +51,9 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   /// Injectable I/O boundary for launch and argument-list opens.
   var argumentDocumentOpener: ((URL, String?, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
 
+  /// Tests can complete a configured panel without starting AppKit's modal loop.
+  var openFilePanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)?
+
   var currentGeometry: EVDocumentWindowGeometry? {
     guard let window, synchronizeContentFrame(of: window) != nil else { return nil }
     return documentContentController.geometry(in: documentContentController.view)
@@ -580,6 +583,10 @@ extension EVDocumentWindowController {
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     isPerformingDocumentHostEffect = false
+    if case .failure(let error) = result, (error as? CocoaError)?.code == .userCancelled {
+      completion(.success(nil))
+      return
+    }
     completion(result)
   }
 
@@ -617,6 +624,7 @@ extension EVDocumentWindowController {
 
   fileprivate func performDocumentHostRequest(
     _ request: EVDocumentHostRequest,
+    in targetPane: EVDocumentContentViewController? = nil,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     guard
@@ -633,6 +641,17 @@ extension EVDocumentWindowController {
     else {
       completion(.failure(EVDocumentHostError.staleRequest))
       return
+    }
+
+    let openingPane = targetPane ?? documentContentController
+    if [.edit, .editNewWindow, .split].contains(request.kind),
+      let path = request.path, let url = resolvedFileURL(path, relativeTo: nil)
+    {
+      var isDirectory: ObjCBool = false
+      if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+        chooseFile(in: url, document: document, pane: openingPane, request: request, completion: completion)
+        return
+      }
     }
 
     switch request.kind {
@@ -688,7 +707,7 @@ extension EVDocumentWindowController {
     case .checkTime:
       document.checkForExternalChangesAndReview(completion: completion)
     case .split:
-      split(document, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
+      split(document, in: openingPane, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
     case .newPane:
       do {
         try paneContainer.requireSplitRoom()
@@ -821,9 +840,14 @@ extension EVDocumentWindowController {
         completion(.failure(EVDocumentHostError.noDocumentURL))
         return
       }
-      let sourcePane = documentContentController
+      let sourcePane = openingPane
       openPaneDocument(destination, fallback: document.fileType) { opened, error in
         guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
+        guard self.canReplace(sourcePane, document: document, expected: persistence) else {
+          self.closeIfUnrepresented(opened)
+          completion(.failure(EVDocumentHostError.staleRequest))
+          return
+        }
         let controller = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface())
         controller.argumentDocumentOpener = self.argumentDocumentOpener
         controller.documentContentController.argumentList = sourcePane.argumentList
@@ -840,11 +864,11 @@ extension EVDocumentWindowController {
       let reloadsCurrent = request.path == nil || request.path.flatMap { resolvedFileURL($0, relativeTo: nil) }
         .map { url in document.fileURL.map { EVDocumentIdentity.sameFile($0, url) } ?? false } == true
       guard request.force || !persistence.isDirty
-        || (!reloadsCurrent && hasOtherView(of: document, excluding: documentContentController)) else {
+        || (!reloadsCurrent && hasOtherView(of: document, excluding: openingPane)) else {
         completion(.failure(EVDocumentHostError.documentModified))
         return
       }
-      edit(document, path: request.path, force: request.force, completion: completion)
+      edit(document, in: openingPane, path: request.path, force: request.force, completion: completion)
 
     case .new:
       guard
@@ -868,6 +892,50 @@ extension EVDocumentWindowController {
         }
       } catch {
         completion(.failure(error))
+      }
+    }
+  }
+
+  private func chooseFile(
+    in directory: URL, document: EVDocument, pane: EVDocumentContentViewController,
+    request: EVDocumentHostRequest,
+    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  ) {
+    let expected = document.editorBackend.persistenceState
+    let fileURL = document.fileURL
+    guard pane.document === document, let window, !isClosed else {
+      completion(.failure(EVDocumentHostError.staleRequest))
+      return
+    }
+    let panel = NSOpenPanel()
+    panel.directoryURL = directory
+    panel.allowsMultipleSelection = false
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsOtherFileTypes = true
+    let selected: @MainActor (URL?) -> Void = { [weak self] url in
+      guard let url else {
+        completion(.failure(CocoaError(.userCancelled)))
+        return
+      }
+      guard let self, self.canReplace(pane, document: document, expected: expected),
+        document.fileURL == fileURL,
+        document.editorBackend.persistenceState.isDirty == expected.isDirty
+      else {
+        completion(.failure(EVDocumentHostError.staleRequest))
+        return
+      }
+      // Resolve the panel selection through the original command, retaining
+      // its replacement/window/split destination, force flag, and split height.
+      let selectedRequest = EVDocumentHostRequest(
+        kind: request.kind, documentID: request.documentID, documentRevision: request.documentRevision,
+        force: request.force, path: url.path, initialHeightRows: request.initialHeightRows)
+      self.performDocumentHostRequest(selectedRequest, in: pane, completion: completion)
+    }
+    if let openFilePanelPresenter { openFilePanelPresenter(panel, window, selected) }
+    else {
+      panel.beginSheetModal(for: window) { response in
+        selected(response == .OK ? panel.url : nil)
       }
     }
   }
@@ -934,6 +1002,10 @@ extension EVDocumentWindowController {
               if navigates { targetPane = self.documentContentController }
               DispatchQueue.main.async { next(index + 1) }
             case .failure(let error):
+              if (error as? CocoaError)?.code == .userCancelled {
+                finish(.failure(error))
+                return
+              }
               finish(.failure(EVSourceCommandError(path: url.path, line: index + 1, message: error.localizedDescription)))
             }
           }
@@ -1121,10 +1193,10 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func split(
-    _ source: EVDocument, path: String?, initialHeightRows: Int? = nil,
+    _ source: EVDocument, in sourcePane: EVDocumentContentViewController,
+    path: String?, initialHeightRows: Int? = nil,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
-    let sourcePane = documentContentController
     let expected = source.editorBackend.persistenceState
     do { try paneContainer.requireSplitRoom(in: sourcePane) } catch { completion(.failure(error)); return }
     guard let path else {
@@ -1141,9 +1213,7 @@ extension EVDocumentWindowController {
       if let opened {
         guard let self else { completion(.failure(EVDocumentHostError.staleRequest)); return }
         do {
-          guard sourcePane.document === source,
-            source.editorBackend.persistenceState.documentID == expected.documentID,
-            source.editorBackend.persistenceState.documentRevision == expected.documentRevision
+          guard self.canReplace(sourcePane, document: source, expected: expected)
           else { throw EVDocumentHostError.staleRequest }
           try self.addPane(document: opened, initialHeightRows: initialHeightRows, splitting: sourcePane)
           completion(.success(nil))
@@ -1183,7 +1253,8 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func edit(
-    _ document: EVDocument, path: String?, force: Bool = false,
+    _ document: EVDocument, in pane: EVDocumentContentViewController,
+    path: String?, force: Bool = false,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     let url: URL
@@ -1207,7 +1278,6 @@ extension EVDocumentWindowController {
       } catch { completion(.failure(error)) }
       return
     }
-    let pane = documentContentController
     let state = document.editorBackend.persistenceState
     openPaneDocument(url, fallback: document.fileType) { [weak self] opened, error in
       if let opened, let self {
@@ -1257,11 +1327,11 @@ extension EVDocumentWindowController {
     document.close()
   }
 
-  fileprivate func makePane(document: EVDocument) -> EVDocumentContentViewController {
+  fileprivate func makePane(document: EVDocument, from source: EVDocumentContentViewController? = nil) -> EVDocumentContentViewController {
     let surface = document.editorBackend.makeEditorSurface()
     let pane = EVDocumentContentViewController(editorSurface: surface, configuration: configuration)
     pane.document = document
-    let previous = documentContentController
+    let previous = source ?? documentContentController
     pane.argumentList = previous.argumentList
     pane.argumentIndex = previous.argumentList?.index(of: previous.document?.fileURL,
       preferring: previous.argumentIndex) ?? previous.argumentIndex
@@ -1274,7 +1344,7 @@ extension EVDocumentWindowController {
 
   fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil) throws {
     try paneContainer.requireSplitRoom(in: source)
-    try paneContainer.insert(makePane(document: document), splitting: source)
+    try paneContainer.insert(makePane(document: document, from: source), splitting: source)
     if let rows = initialHeightRows {
       paneContainer.perform(.setHeight(rows: rows))
     }

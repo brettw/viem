@@ -117,6 +117,11 @@ fullscreen bounds do not replace the saved normal frame.
   whose usual Windows shortcuts conflict with vi, including bold, italic,
   find and select all. AltGr and IME text go through native input.
 
+Ex file-opening commands such as `:e`, `:sp`, and `:E` accept a directory: the
+Open dialog starts there, and the selected file replaces the originating pane,
+opens in a split, or opens in a new window respectively. Cancel leaves the
+existing documents and layout unchanged.
+
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
 On launch, Viem creates an empty `startup.viem` there if it is missing.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings

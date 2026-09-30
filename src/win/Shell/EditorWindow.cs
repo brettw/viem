@@ -39,6 +39,7 @@ internal sealed partial class EditorWindow : Window
     internal Func<CoreDocument, Task<ContentDialogResult>>? CloseReviewDecisionForTesting { get; set; }
     internal Task RequestCloseForTesting() => RequestClose();
     internal Func<Task>? BeforePublishOpenForTesting { get; set; }
+    internal Func<string, Task<string?>>? PickDirectoryFileForTesting { get; set; }
     internal bool HasSavedBaselineForTesting(CoreDocument document, byte[] source) =>
         savedSources.TryGetValue(document, out var baseline) && baseline.AsSpan().SequenceEqual(SHA256.HashData(source));
 #endif
@@ -223,7 +224,7 @@ internal sealed partial class EditorWindow : Window
         menusDirty = true;
         SynchronizeFormattingToolbar();
     }
-    private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }
+    private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (OperationCanceledException) { } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }
     internal async Task OpenDialog()
     {
         var picker = new FileOpenPicker(); WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd); picker.FileTypeFilter.Add("*");
@@ -242,28 +243,68 @@ internal sealed partial class EditorWindow : Window
         if (File.Exists(path)) _ = await File.ReadAllBytesAsync(path);
         var window = NewWindow(null); await window.OpenPath(path);
     }
-    internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null)
+    private async Task<string?> PickDirectoryFile(string directory)
+    {
+#if DEBUG
+        if (PickDirectoryFileForTesting is { } pick) return await pick(directory);
+#endif
+        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id) { SuggestedFolder = directory };
+        picker.FileTypeFilter.Add("*");
+        return (await picker.PickSingleFileAsync())?.Path;
+    }
+    internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
+        EditorPane? targetPane = null, bool newWindow = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
-        var splitSource = split ? ActivePane : null;
-        var splitState = splitSource?.Document.State;
+        var old = targetPane ?? ActivePane;
+        var expected = old?.Document.State;
+        string? originalPath = old?.Document.FilePath;
+        bool? originalDirty = old?.Document.IsDirty;
+        void ValidateTarget()
+        {
+            if (closed || (old != null && (!Panes.Contains(old) || old.Document.Handle == 0
+                || old.Document.State.document_id != expected!.Value.document_id
+                || old.Document.State.document_revision != expected.Value.document_revision
+                || old.Document.FilePath != originalPath || old.Document.IsDirty != originalDirty)))
+                throw new InvalidOperationException("The document changed while opening the file.");
+        }
+        void RequireReplacementAllowed()
+        {
+            if (!split && !newWindow && old != null && !force && old.Document.IsDirty
+                && App.Instance.Windows.SelectMany(w => w.Panes).Count(p => p.Document == old.Document) == 1)
+                throw new InvalidOperationException("E37: No write since last change (add ! to override).");
+        }
+        var splitSource = split ? old : null;
+        ValidateTarget();
         if (split) RequireSplitRoom(splitSource);
         path = ResolvePath(path);
+        bool pickedFile = Directory.Exists(path);
+        if (pickedFile)
+        {
+            path = await PickDirectoryFile(path) ?? throw new OperationCanceledException();
+            ValidateTarget();
+            path = ResolvePath(path);
+            if (!File.Exists(path)) throw new FileNotFoundException("The selected file could not be found.", path);
+            if (!split && !newWindow && old?.Document.FilePath is string current && FileIdentity.Same(current, path))
+            {
+                await Reload(old, force);
+                return;
+            }
+        }
         (EditorWindow Window, EditorPane Pane) FindExisting() => App.Instance.Windows.Prepend(this).Distinct()
             .Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
             .FirstOrDefault(x => x.Pane.Document.FilePath is string named && FileIdentity.Same(named, path));
         var existing = FindExisting();
         bool ShowExisting()
         {
-            if (existing.Pane == null || split) return false;
+            if (existing.Pane == null || split || newWindow || pickedFile) return false;
             existing.Window.Activate(); existing.Pane.FocusEditor(); preferences.Remember(path); return true;
         }
         if (ShowExisting()) return;
-        var old = ActivePane;
-        if (!split && old != null && !force && old.Document.IsDirty && App.Instance.Windows.SelectMany(w => w.Panes).Count(p => p.Document == old.Document) == 1) throw new InvalidOperationException("E37: No write since last change (add ! to override).");
+        RequireReplacementAllowed();
         byte[] bytes;
-        using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
-        if (closed) return;
+        using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = pickedFile || File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
+        ValidateTarget();
         existing = FindExisting();
         if (ShowExisting()) return;
         RecoverySnapshot? recovered = null; bool readOnly = false;
@@ -277,6 +318,7 @@ internal sealed partial class EditorWindow : Window
                 var content = new StackPanel { Spacing = 12 }; content.Children.Add(new TextBlock { Text = "Another editing session or recovery file exists for " + Path.GetFileName(path) + ". It will be left untouched.", TextWrapping = TextWrapping.Wrap }); content.Children.Add(choices);
                 var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = "Existing editing session", Content = content, PrimaryButtonText = "Open", CloseButtonText = "Cancel" };
                 if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+                ValidateTarget();
                 readOnly = choices.SelectedIndex == 0; if (choices.SelectedIndex == 2) recovered = snapshot;
             }
         }
@@ -292,7 +334,8 @@ internal sealed partial class EditorWindow : Window
 #if DEBUG
             if (BeforePublishOpenForTesting is { } beforePublish) await beforePublish();
 #endif
-            if (closed) { doc.Dispose(); return; }
+            try { ValidateTarget(); RequireReplacementAllowed(); }
+            catch { doc.Dispose(); throw; }
             // Another window may have published this file while its bytes or
             // private core were loading. Join that document before claiming
             // recovery ownership or exposing a second history for the file.
@@ -306,23 +349,25 @@ internal sealed partial class EditorWindow : Window
             }
             else doc = ConfigureNewDocument(doc, source, path);
         }
-        if (split)
-        {
-            try {
-                if (splitSource == null || splitState is not { } expected
-                    || splitSource.Document.State.document_id != expected.document_id
-                    || splitSource.Document.State.document_revision != expected.document_revision)
-                    throw new InvalidOperationException("The split referred to an older document revision.");
-                RequireSplitRoom(splitSource);
-            }
-            catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
-        }
+        try { ValidateTarget(); RequireReplacementAllowed(); if (split) RequireSplitRoom(splitSource); }
+        catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
         if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
         if (readOnly) doc.SetReadOnly(true);
-        int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
-        if (!split && old != null && Panes.Contains(old)) RemovePane(old, false);
-        if (split && splitSource != null) SplitPane(splitSource, doc, splitLines);
-        else AddPane(doc, Math.Min(index, Panes.Count));
+        if (newWindow)
+        {
+            var window = NewWindow(doc);
+            if (savedSources.TryGetValue(doc, out var baseline)) window.savedSources[doc] = baseline;
+            if (!Panes.Any(p => p.Document == doc)) savedSources.Remove(doc);
+            window.ActivePane!.RememberedArgument = old?.RememberedArgument ?? ulong.MaxValue;
+        }
+        else
+        {
+            int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
+            ulong argument = old?.RememberedArgument ?? ulong.MaxValue;
+            if (!split && old != null) RemovePane(old, false);
+            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines) : AddPane(doc, Math.Min(index, Panes.Count));
+            opened.RememberedArgument = argument;
+        }
         preferences.Remember(path);
     }
     internal async Task<bool> Save(EditorPane pane, bool saveAs = false, string? explicitPath = null, bool force = false, bool adoptPath = true, bool native = true)
@@ -454,7 +499,7 @@ internal sealed partial class EditorWindow : Window
                     switch (r.kind)
                     {
                         case VIEM_EX_FRONTEND_SPLIT:
-                            if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, targetPane: pane);
                             else SplitPane(pane, pane.Document, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
                             break;
                         case VIEM_EX_FRONTEND_NEW_PANE:
@@ -462,8 +507,11 @@ internal sealed partial class EditorWindow : Window
                             SplitPane(pane, NewDocument(), (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
                             break;
                         case VIEM_EX_FRONTEND_NEW: if (force || await ConfirmDiscard(pane)) { int i = Panes.IndexOf(pane); RemovePane(pane, false); AddPane(NewDocument(), i); } break;
-                        case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(Path.GetFullPath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
-                        case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW: NewWindow(null); break;
+                        case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(ResolvePath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force, targetPane: pane); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
+                        case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW:
+                            if (request.Text.Length > 0) await OpenPath(request.Text, targetPane: pane, newWindow: true);
+                            else NewWindow(null);
+                            break;
                         case VIEM_EX_FRONTEND_WRITE: case VIEM_EX_FRONTEND_SAVE_AS: await ExWrite(pane, request); break;
                         case VIEM_EX_FRONTEND_QUIT: await ClosePane(pane, force); break;
                         case VIEM_EX_FRONTEND_QUIT_ALL: foreach (var w in App.Instance.Windows.ToArray()) { if (force) { w.closing = true; w.Close(); } else await w.RequestClose(); } break;
@@ -507,6 +555,7 @@ internal sealed partial class EditorWindow : Window
                     }
                 }
             }
+            catch (OperationCanceledException) { if (sourceDepth > 0) throw; }
             catch (Exception e) { pane.Report(e); }
     }
     private async Task Reload(EditorPane pane, bool force = false)
