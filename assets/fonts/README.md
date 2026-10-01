@@ -5,10 +5,11 @@ packaging copies this directory to `Resources/fonts`, including the upstream
 licenses, copyright notices and documentation. Fonts remain app-local; Viem
 does not install them for other applications or embed file paths in saved styles.
 
-- `recursive/recursive-static-TTFs.ttc`: Recursive 1.085 from the supplied
-  Arrow Type desktop release, containing 64 static faces in the Mono/Sans and
-  Casual/Linear families. The original `LICENSE.txt` and `README.md` accompany
-  the collection.
+- `recursive/Recursive_VF_1.085.ttf`: the supplied Recursive 1.085 variable
+  TrueType font, with Monospace (`MONO`), Casual (`CASL`), Weight (`wght`),
+  Slant (`slnt`), and Cursive (`CRSV`) axes and 64 named instances. It replaces
+  the static collection. The original `LICENSE.txt` and `README.md` accompany
+  the font.
 - `flightline/*.ttf`: the 12 supplied Flightline Code faces (six weights with
   upright and italic variants). The original `OFL.txt`, `README.md` and
   `TRADEMARKS.md` retain the distribution's copyright and licensing information.
