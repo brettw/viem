@@ -30,7 +30,7 @@ impl Document {
         let (mut sheet, diagnostics) = self
             .projection()
             .style_sheet()
-            .replacing_default_json(json, self.projection())?;
+            .replacing_default_json(json, self.projection(), self.format())?;
         let generation = self
             .next_revision
             .max(sheet.revision.0)
@@ -72,7 +72,7 @@ impl Document {
         let Ok((mut sheet, _)) = state
             .projection
             .style_sheet()
-            .replacing_default_json(&configuration.json, &state.projection)
+            .replacing_default_json(&configuration.json, &state.projection, state.format)
         else {
             return;
         };

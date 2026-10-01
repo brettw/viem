@@ -210,7 +210,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var defaultFont = ResolveFont(request.default_style);
         using var format = new CanvasTextFormat
         {
-            FontFamily = defaultFont.Family, FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
+            FontFamily = FontCatalog.RenderingFamily(defaultFont.Family, request.default_style.weight, Slant(request.default_style.slant), defaultFont.Stretch),
+            FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
             FontStyle = Slant(request.default_style.slant), WordWrapping = CanvasWordWrapping.NoWrap,
             Direction = request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
@@ -370,7 +371,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private static void ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
-        layout.SetFontFamily(start, count, font.Family);
+        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, style.weight, Slant(style.slant), font.Stretch));
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });

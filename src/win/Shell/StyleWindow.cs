@@ -245,11 +245,12 @@ internal sealed partial class StyleWindow : Window
         string family = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
         var resolved = FontCatalog.Resolve(family) ?? (Family: "Segoe UI", Stretch: FontStretch.Normal);
         float size = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
-        using var format = new CanvasTextFormat { FontFamily = resolved.Family, FontStretch = resolved.Stretch, FontSize = size, WordWrapping = CanvasWordWrapping.Wrap };
         uint weight = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value;
         if (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0) weight = Math.Min(1000, weight + 300);
+        var slant = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
+        using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(resolved.Family, weight, slant, resolved.Stretch), FontStretch = resolved.Stretch, FontSize = size, WordWrapping = CanvasWordWrapping.Wrap };
         format.FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(weight, 1, 999) };
-        format.FontStyle = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
+        format.FontStyle = slant;
         format.HorizontalAlignment = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value switch { 2 => CanvasHorizontalAlignment.Right, 3 => CanvasHorizontalAlignment.Center, _ => CanvasHorizontalAlignment.Left };
         string sample = selected.Native.role >= VIEM_STYLE_ROLE_QUOTE
             ? "A first paragraph inside this container.\n\nA second paragraph shares its block box."

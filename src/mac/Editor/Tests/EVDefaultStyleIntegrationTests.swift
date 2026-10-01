@@ -1,11 +1,70 @@
 import AppKit
 import CViemCore
+import CoreText
 import ViemAppShell
+import ViemCoreTextProvider
 import XCTest
 @testable import ViemEditor
 
 @MainActor
 final class EVDefaultStyleIntegrationTests: XCTestCase {
+  func testMarkdownThemeRoundTripRestoresRenderedFontAndSurvivesResize() throws {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0..<5 { root.deleteLastPathComponent() }
+    let fontDirectory = root.appendingPathComponent("assets/fonts/recursive")
+    XCTAssertTrue(EVFontCatalog.registerBundledFonts(in: fontDirectory).isEmpty)
+    defer {
+      CTFontManagerUnregisterFontsForURL(fontDirectory.appendingPathComponent("recursive-static-TTFs.ttc") as CFURL, .process, nil)
+      EVFontCatalog.invalidate()
+    }
+    let config = try configuration()
+    try config.selectTheme(named: "Paper")
+    try config.createTheme(named: "Recursive")
+    let styles = try EVThemeStyleSession(configuration: config, format: .markdown)
+    try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
+      mutation: .setDeclaration(.characterFontFamilies, .stringList(["RecursiveSansLnrSt-Light"])))
+    try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
+      mutation: .setDeclaration(.characterSize, .float(16)))
+    let specimen = "# Heading\n\nWriting with [a link](https://example.com) and ~~struck text~~.\n\n<!-- Comment -->\n\n[reference][unknown]\n\n"
+    // Keep most of the document outside the viewport to exercise regional
+    // reflow while the automatically styled content remains visible.
+    let source = Data(String(repeating: specimen, count: 256).utf8)
+    try config.selectTheme(named: "Paper")
+    let backend = EVCoreDocumentBackend(configuration: config)
+    try backend.read(source: source, typeName: EVDocument.markdownType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    _ = try session.resize(width: 700, height: 180)
+    surface.refreshPresentation()
+    func renderedFont() throws -> String {
+      let cluster = try XCTUnwrap(surface.layoutSnapshot?.clusters.first { $0.text_start == 0 })
+      let font = try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
+        identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation))
+      return CTFontCopyFamilyName(font) as String
+    }
+    let originalFont = try renderedFont()
+    let original = try backend.recoverySnapshot()
+    for name in ["Recursive", "Paper", "Recursive", "Paper"] {
+      try config.selectTheme(named: name)
+      XCTAssertNil(backend.configurationWarning)
+      XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
+        .properties[.characterFontFamilies]?.effective,
+        .stringList([name == "Paper" ? "system-ui" : "RecursiveSansLnrSt-Light"]))
+      surface.refreshPresentation()
+      XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive Sans Linear Static")
+      for width: CGFloat in [420, 900, 700] {
+        _ = try session.resize(width: width, height: 180)
+        surface.refreshPresentation()
+        XCTAssertNil(surface.commandOutput, surface.statusBarState.message)
+        XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive Sans Linear Static")
+      }
+      XCTAssertEqual(try backend.recoverySnapshot(), original)
+      XCTAssertFalse(surface.canUndo)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+    }
+  }
+
   private func configuration() throws -> EVConfigurationStore {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-style-defaults-\(UUID().uuidString)")
     let suite = "viem-style-defaults-\(UUID().uuidString)"

@@ -5,6 +5,41 @@ fn open(source: &str, format: Format) -> Document {
 }
 
 #[test]
+fn theme_replacement_restores_markdown_defaults_and_automatic_styles() {
+    let source = "# Heading\n\n[a link](https://example.com) and ~~struck text~~\n\n<!-- Comment -->\n\n[reference][unknown]\n\n```\ncode\n```";
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut document = open(source, format);
+        let initial = document.projection().style_sheet().clone();
+        let revision = document.revision();
+        let history = document.history_status();
+        let customized = br#"{"version":1,"character_styles":[{"id":"Link","name":"Link","properties":{"underline":false}}]}"#;
+        for defaults in [customized.as_slice(), br#"{"version":1}"#.as_slice(), customized.as_slice(), br#"{"version":1}"#.as_slice()] {
+            document.replace_style_defaults(defaults).unwrap();
+            for id in ["Link", "Comment", "Markdown reference", "Strikethrough"] {
+                let actual = document.projection().style_sheet().character_style(&id.into()).unwrap();
+                if id == "Link" && defaults == customized {
+                    assert_eq!(actual.properties.underline, Some(false));
+                } else {
+                    assert_eq!(actual, initial.character_style(&id.into()).unwrap());
+                }
+            }
+            for id in ["Paragraph", "Code Block"] {
+                assert_eq!(document.projection().style_sheet().block_style(&id.into()), initial.block_style(&id.into()));
+            }
+            viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert_eq!(document.revision(), revision);
+            assert_eq!(document.history_status(), history);
+        }
+        document.insert(0, "New ").unwrap();
+        assert!(document.undo());
+        viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert_eq!(document.projection().style_sheet().character_style(&"Link".into()), initial.character_style(&"Link".into()));
+    }
+}
+
+#[test]
 fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_changes() {
     let large = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
     for (format, source) in [(Format::PlainText, "Text"), (Format::Markdown, "Text"),

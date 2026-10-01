@@ -58,6 +58,10 @@ cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
 # the core also carries an independent Midnight fallback for missing resources.
 mkdir -p "$resources_dir/themes"
 cp "$project_dir/assets/themes/"*.json "$resources_dir/themes/"
+# App-local fonts and their original license/attribution files. Replace the
+# owned subtree so removed faces cannot survive a rebuild.
+rm -rf "$resources_dir/fonts"
+cp -R "$project_dir/assets/fonts" "$resources_dir/fonts"
 # Replace this owned subtree so removed upstream files cannot survive a rebuild.
 # All files, including the original license and provenance manifest, are sealed
 # into the application signature. No installed Vim is needed at build/run time.

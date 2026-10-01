@@ -30,6 +30,36 @@ public struct EVOpenTypeFeature: Equatable, Sendable {
 /// Native discovery only. Documents retain names and normalized properties,
 /// never Core Text descriptors or objects.
 public enum EVFontCatalog {
+  /// Register packaged files before constructing font pickers or shapers. The
+  /// registration lasts for this process only; missing resources leave ordinary
+  /// system-font fallback available. No native work runs under the catalog lock.
+  @discardableResult
+  public static func registerBundledFonts(in directory: URL) -> [String] {
+    guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+    var failures: [String] = []
+    guard let files = FileManager.default.enumerator(
+      at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles],
+      errorHandler: { url, error in
+        failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+        return true
+      }) else { return ["Could not read \(directory.path)"] }
+    let urls = files.compactMap { $0 as? URL }.filter {
+      ["ttf", "otf", "ttc", "otc"].contains($0.pathExtension.lowercased())
+        && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }.sorted { $0.path < $1.path }
+    for url in urls {
+      var error: Unmanaged<CFError>?
+      if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error),
+        let failure = error?.takeRetainedValue(),
+        CFErrorGetCode(failure) != CTFontManagerError.alreadyRegistered.rawValue
+      {
+        failures.append("\(url.lastPathComponent): \(failure)")
+      }
+    }
+    if !urls.isEmpty { invalidate() }
+    return failures
+  }
+
   private final class Cache: @unchecked Sendable {
     let lock = NSLock()
     var generation: UInt64 = 1
