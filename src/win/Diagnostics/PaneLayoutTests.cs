@@ -79,6 +79,33 @@ internal static class PaneLayoutTests
             double fixedBottom = Bars()[2];
             await InputRoutingTests.Drag(window, third.StatusControl, [new(.3, .5), new(.3, -.5)], _ => { });
             Check(Bars()[2] == fixedBottom, "native pointer dragging cannot move the bottom status bar");
+            view.Ex("only"); await window.PendingEffectsForTesting;
+            window.FocusPane(first);
+            ulong revision = first.Document.State.document_revision;
+            view.Ex("vs"); await window.PendingEffectsForTesting;
+            var right = window.ActivePane!; await right.Ready; window.PaneStack.UpdateLayout();
+            Check(window.Panes.Count == 2 && right.Document == first.Document && window.PaneStack.MinimumSize.Width == 205,
+                "vertical Ex split shares a buffer and enforces a 100-DIP minimum per pane");
+            view.Ex("vertical 2resize 24"); await window.PendingEffectsForTesting; window.PaneStack.UpdateLayout();
+            Check(Math.Abs(right.ActualWidth - Math.Max(100, right.View!.DefaultColumnWidth * 24)) < 1,
+                "indexed vertical resize uses the target pane's default font and zoom");
+            window.FocusPane(first);
+            var splitter = window.PaneStack.Splitters.Single();
+            Check(Math.Abs(splitter.ActualWidth - 5) < .01, "vertical splitter occupies five DIPs");
+            double width = first.ActualWidth;
+            await InputRoutingTests.Drag(window, splitter, [new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
+            Check(Math.Abs(first.ActualWidth - width - 40) < 2 && window.ActivePane == first,
+                "native vertical dragging moves the divider and preserves pane focus");
+            window.PaneStack.ResizeWidth(right, 1);
+            Check(Math.Abs(right.ActualWidth - 100) < .01, "width commands cannot shrink below 100 DIPs");
+            rejected = false;
+            try { window.SplitPane(right, first.Document, vertical: true); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
+            Check(rejected && window.Panes.Count == 2, "a vertical split without 205 DIPs fails before adding a view");
+            await InputRoutingTests.Drag(window, right.StatusControl, [new(.3, .5), new(.3, .5)], _ => { });
+            Check(window.ActivePane == right, "a plain status-bar click focuses its buffer");
+            right.View!.Ex("vnew"); await window.PendingEffectsForTesting;
+            Check(window.Panes.Count == 2, "vnew obeys the same admission check before creating a document");
+            Check(first.Document.State.document_revision == revision, "pane operations preserve the source revision");
         }
         finally
         {

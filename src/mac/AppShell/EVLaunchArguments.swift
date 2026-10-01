@@ -6,15 +6,17 @@ public struct EVLaunchArguments: Decodable, Equatable, Sendable {
     public var filenames: [String]
     /// nil opens one pane; zero opens a stacked pane for each filename.
     public var splitCount: Int?
+    public var verticalSplits: Bool
     /// One-based first-file line; UInt64.max requests the last line.
     public var initialLine: UInt64?
 
     var isEmpty: Bool { filenames.isEmpty && splitCount == nil && initialLine == nil }
 
-    public init(filenames: [String] = [], splitCount: Int? = nil, initialLine: UInt64? = nil) {
+    public init(filenames: [String] = [], splitCount: Int? = nil, initialLine: UInt64? = nil, verticalSplits: Bool = false) {
         self.filenames = filenames
         self.splitCount = splitCount
         self.initialLine = initialLine
+        self.verticalSplits = verticalSplits
     }
 
     @MainActor public static var parse: ([String]) throws -> EVLaunchArguments = { arguments in

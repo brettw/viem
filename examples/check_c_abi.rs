@@ -252,6 +252,10 @@ _Static_assert(VIEM_EX_JUMP_V1_SIZE == sizeof(ViemExJumpV1),
 _Static_assert(sizeof(ViemExTextLineV1) == {ex_text_line}, "Ex text line");
 _Static_assert(VIEM_EX_TEXT_LINE_V1_SIZE == sizeof(ViemExTextLineV1),
     "Ex text-line size macro");
+_Static_assert(sizeof(ViemPaneChrome) == {pane_chrome}, "Pane chrome");
+_Static_assert(sizeof(ViemPaneFrame) == {pane_frame}, "Pane frame");
+_Static_assert(offsetof(ViemPaneFrame, x) == {pane_frame_x}, "Pane coordinate alignment");
+_Static_assert(sizeof(ViemPaneSnapshot) == {pane_snapshot}, "Pane snapshot");
 _Static_assert(sizeof(ViemExFrontendRequestV1) == {ex_request},
     "Ex frontend request");
 _Static_assert(VIEM_EX_FRONTEND_REQUEST_V1_SIZE ==
@@ -645,6 +649,10 @@ static void typecheck(void) {{
         ex_register = std::mem::size_of::<ViemExRegisterV1>(),
         ex_jump = std::mem::size_of::<ViemExJumpV1>(),
         ex_text_line = std::mem::size_of::<ViemExTextLineV1>(),
+        pane_chrome = std::mem::size_of::<ViemPaneChrome>(),
+        pane_frame = std::mem::size_of::<ViemPaneFrame>(),
+        pane_frame_x = std::mem::offset_of!(ViemPaneFrame, x),
+        pane_snapshot = std::mem::size_of::<ViemPaneSnapshot>(),
         ex_request = std::mem::size_of::<ViemExFrontendRequestV1>(),
         ex_request_payload = std::mem::offset_of!(ViemExFrontendRequestV1, first_payload),
         effect_batch_info = std::mem::size_of::<ViemEffectBatchInfoV1>(),

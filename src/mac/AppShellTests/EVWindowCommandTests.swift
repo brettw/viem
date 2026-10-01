@@ -322,7 +322,7 @@ final class EVWindowCommandTests: XCTestCase {
     container.view.frame.size.height = 350
     checkBars(container)
     for pane in container.panes.dropFirst() {
-      XCTAssertEqual(pane.editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)
+      XCTAssertEqual(pane.editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001, "pane: \(pane.view.frame), editor: \(pane.editorSurface.viewController.view.frame), bounds: \(pane.editorSurface.viewController.view.bounds)")
     }
   }
 
@@ -400,6 +400,59 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertEqual(bottomSurface.statusClicks, 1)
     XCTAssertEqual(barTops(container), beforeBottom)
     checkBars(container)
+  }
+
+  func testVerticalNativeSplittersPushReverseAndStatusClicksFocusWithoutDragFocus() throws {
+    let container = try stack(panes: 1)
+    let first = container.panes[0]
+    let second = EVDocumentContentViewController(editorSurface: Surface())
+    try container.insert(second, splitting: first, vertical: true)
+    let third = EVDocumentContentViewController(editorSurface: Surface())
+    container.focusPane(at: 1)
+    container.perform(.setWidth(columns: nil))
+    try container.insert(third, splitting: second, vertical: true)
+    container.perform(.equalizeHeights)
+    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled,.resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    container.view.translatesAutoresizingMaskIntoConstraints = false
+    window.contentView = container.view
+    window.setContentSize(NSSize(width: 600,height: 600))
+    window.makeKeyAndOrderFront(nil)
+    defer { window.close() }
+    container.view.layoutSubtreeIfNeeded()
+    XCTAssertTrue(container.panes.allSatisfy { $0.view.frame.width >= 100 })
+    XCTAssertTrue(container.panes.allSatisfy { $0.statusBar.dragDidMove == nil })
+    let divider = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.sorted { $0.frame.minX < $1.frame.minX }.first)
+    XCTAssertEqual(divider.frame.width,5)
+    let grab = divider.convert(NSPoint(x:2.5,y:divider.bounds.midY),to:nil)
+    var sawDragCursor = false
+    let move = divider.dragDidMove
+    divider.dragDidMove = { delta in sawDragCursor = NSCursor.current == NSCursor.resizeLeftRight; move?(delta) }
+    container.focusPane(at: 2)
+    try pointerGesture(window:window,points:[grab,NSPoint(x:grab.x+800,y:grab.y),NSPoint(x:grab.x+850,y:grab.y),NSPoint(x:grab.x+838,y:grab.y),NSPoint(x:grab.x+838,y:grab.y)])
+    XCTAssertTrue(sawDragCursor)
+    XCTAssertTrue(container.activePane === third,"a splitter drag preserves focus")
+    XCTAssertEqual(first.view.frame.width,378,accuracy:1)
+    XCTAssertEqual(second.view.frame.width,112,accuracy:1)
+    XCTAssertEqual(third.view.frame.width,100,accuracy:1)
+    container.focusPane(at:0)
+    container.perform(.setWidth(columns:1))
+    XCTAssertEqual(first.view.frame.width,100,accuracy:0.001)
+    XCTAssertThrowsError(try container.requireSplitRoom(in:first,vertical:true))
+    let statusPoint = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
+    try pointerGesture(window:window,points:[statusPoint,statusPoint])
+    XCTAssertTrue(container.activePane === second,"a plain status background click focuses its buffer")
+    let below = EVDocumentContentViewController(editorSurface:Surface())
+    try container.insert(below,splitting:second)
+    container.focusPane(at:container.panes.firstIndex(where:{$0 === third})!)
+    let point = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
+    var upDownCursor = false
+    let statusMove = second.statusBar.dragDidMove
+    second.statusBar.dragDidMove = { delta in upDownCursor = NSCursor.current == NSCursor.resizeUpDown; statusMove?(delta) }
+    try pointerGesture(window:window,points:[point,NSPoint(x:point.x,y:point.y-30),NSPoint(x:point.x,y:point.y-30)])
+    XCTAssertTrue(upDownCursor)
+    XCTAssertTrue(container.activePane === third,"a status-bar drag preserves focus")
+    XCTAssertNil(below.statusBar.dragDidMove)
   }
 
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {

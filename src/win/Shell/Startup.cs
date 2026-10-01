@@ -59,6 +59,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
@@ -234,15 +235,17 @@ internal sealed partial class EditorWindow
         }
         App.Instance.Arguments.Clear(); App.Instance.Arguments.AddRange(paths);
         int split = args.SplitCount == 0 ? Math.Max(1, paths.Length) : args.SplitCount ?? 1;
-        split = Math.Clamp(split, 1, Math.Max(1, (int)(paneGrid.ActualHeight / Math.Max(28, preferences.StatusFontSize + 12))));
+        split = Math.Clamp(split, 1, Math.Max(1, args.VerticalSplits ? (int)((paneGrid.ActualWidth + 5) / 105) : (int)(paneGrid.ActualHeight / Math.Max(28, preferences.StatusFontSize + 12))));
         EditorPane? first = paths.Length == 0 ? ActivePane : null;
         foreach (string path in paths.Take(split))
         {
-            await OpenPath(path, first != null);
+            if (first != null && ActivePane != null) paneGrid.Action(ActivePane, 5, args.VerticalSplits ? 1u : 0u, flags: 2);
+            await OpenPath(path, first != null, vertical: args.VerticalSplits);
+            paneGrid.Equalize();
             if (closed) return;
             first ??= App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, path));
         }
-        while (Panes.Count < split) { RequireSplitRoom(); var added = SplitPane(ActivePane!, NewDocument()); first ??= added; }
+        while (Panes.Count < split) { paneGrid.Action(ActivePane!, 5, args.VerticalSplits ? 1u : 0u, flags: 2); RequireSplitRoom(vertical: args.VerticalSplits); var added = SplitPane(ActivePane!, NewDocument(), vertical: args.VerticalSplits); paneGrid.Equalize(); first ??= added; }
         if (first != null)
         {
             foreach (var pane in Panes) await pane.Ready.WaitAsync(TimeSpan.FromSeconds(15));
@@ -251,7 +254,7 @@ internal sealed partial class EditorWindow
             var owner = App.Instance.Windows.First(w => w.Panes.Contains(first)); owner.Activate(); owner.SetActive(first); first.FocusEditor();
         }
     }
-    private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, string? Error);
+    private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, bool VerticalSplits, string? Error);
     private static unsafe LaunchArguments ParseArguments(string[] args)
     {
         using var timing = Diagnostics.StartupPerformance.Measure("arguments.parse");
@@ -260,10 +263,10 @@ internal sealed partial class EditorWindow
         using var document = JsonDocument.Parse(output);
         var root = document.RootElement;
         string? error = root.GetProperty("error").ValueKind == JsonValueKind.Null ? null : root.GetProperty("error").GetString();
-        if (error != null) return new([], null, null, error);
+        if (error != null) return new([], null, null, false, error);
         var arguments = root.GetProperty("arguments");
         return new(arguments.GetProperty("filenames").EnumerateArray().Select(p => p.GetString()!).ToArray(),
             arguments.GetProperty("splitCount").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("splitCount").GetInt32(),
-            arguments.GetProperty("initialLine").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("initialLine").GetUInt64(), null);
+            arguments.GetProperty("initialLine").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("initialLine").GetUInt64(), arguments.GetProperty("verticalSplits").GetBoolean(), null);
     }
 }

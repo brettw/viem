@@ -8,6 +8,7 @@ pub struct LaunchArguments {
     pub filenames: Vec<String>,
     /// None opens one view; zero requests one stacked pane per argument.
     pub split_count: Option<usize>,
+    pub vertical_splits: bool,
     /// One-based line in the first file; u64::MAX means its last line.
     pub initial_line: Option<u64>,
 }
@@ -44,7 +45,8 @@ where
         let argument = argument.as_ref();
         if !literal && argument == "--" {
             literal = true;
-        } else if !literal && argument.starts_with("-o") {
+        } else if !literal && (argument.starts_with("-o") || argument.starts_with("-O")) {
+            result.vertical_splits = argument.starts_with("-O");
             let digits = &argument[2..];
             result.split_count = Some(if digits.is_empty() {
                 0
@@ -113,6 +115,13 @@ mod tests {
         }
     }
     #[test]
+    fn vertical_startup_and_last_orientation_win() {
+        let parsed=parse_launch_arguments(["-o2","-O3","first","second"]).unwrap();
+        assert_eq!(parsed.split_count,Some(3));assert!(parsed.vertical_splits);
+        assert!(!parse_launch_arguments(["-O","-o"]).unwrap().vertical_splits);
+        assert_eq!(parse_launch_arguments(["-O"]).unwrap().split_count,Some(0));
+    }
+    #[test]
     fn plus_defaults_to_last_line_and_accepts_zero_and_leading_zeroes() {
         assert_eq!(
             parse_launch_arguments(["+"]).unwrap().initial_line,
@@ -136,7 +145,7 @@ mod tests {
     }
     #[test]
     fn invalid_or_overflowing_options_do_not_become_filenames() {
-        for value in ["-x", "-O", "-"] {
+        for value in ["-x", "-"] {
             assert!(matches!(
                 parse_launch_arguments([value]),
                 Err(LaunchArgumentError::UnknownOption(_))

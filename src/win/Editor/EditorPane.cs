@@ -29,6 +29,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public CoreView? View { get; private set; }
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
     internal ulong? InitialHeightLines { get; set; }
+    internal bool InitialVerticalSplit { get; set; }
+    internal Point WindowFocusPoint { get { try { if (View != null) { var caret = View.CaretGeometry(); var viewport = View.Viewport; return new(caret.rect.x - viewport.left, caret.rect.y - viewport.top); } } catch { } return new(ActualWidth / 2, ActualHeight / 2); } }
     private readonly EditorWindow window;
     private readonly Preferences preferences;
     internal CanvasControl Canvas { get; } = new();
@@ -36,7 +38,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly Canvas inputLayer = new() { IsHitTestVisible = false };
     private readonly ScrollBar vertical = new() { Orientation = Orientation.Vertical, Width = 14, SmallChange = 30 };
     private readonly ScrollBar horizontal = new() { Orientation = Orientation.Horizontal, Height = 14, SmallChange = 30, Visibility = Visibility.Collapsed };
-    private readonly Grid status = new() { Height = 28, ColumnSpacing = 5 };
+    private readonly DragCursorGrid status = new() { Height = 28, ColumnSpacing = 5 };
     private readonly TextBlock mode = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly TextBlock location = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
     private readonly TextBlock message = new() { VerticalAlignment = VerticalAlignment.Center, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis };
@@ -210,6 +212,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         InvalidateDrawingCache();
         var theme = preferences.Theme;
         Background = new SolidColorBrush(theme.Background); status.Background = new SolidColorBrush(theme.StatusBackground);
+        status.BorderBrush = PaneStackPanel.SeparatorBrush(preferences); status.BorderThickness = new(0, 1, 0, 0);
         mode.Foreground = message.Foreground = location.Foreground = new SolidColorBrush(theme.StatusForeground);
         foreach (var label in new[] { mode, message, location }) { label.FontFamily = new FontFamily(preferences.StatusFontFamily); label.FontSize = preferences.StatusFontSize; }
         status.Height = Math.Max(28, preferences.StatusFontSize + 12);
@@ -528,6 +531,6 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
         InvalidateDrawingCache();
-        View?.Dispose(); View = null; prompt.Dispose(); Canvas.RemoveFromVisualTree();
+        View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); Canvas.RemoveFromVisualTree();
     }
 }

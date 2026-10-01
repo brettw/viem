@@ -179,8 +179,10 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let force: Bool
   public let path: String?
   public let hardLineRange: ClosedRange<UInt64>?
-  /// Initial text-area height of a new pane, measured in default paragraph lines.
+  /// Initial text-area height in default paragraph lines, or width in default
+  /// paragraph columns when verticalSplit is true.
   public let initialHeightRows: Int?
+  public let verticalSplit: Bool
   public let argumentNavigation: EVArgumentNavigation?
   public let readAfterLine: UInt64?
 
@@ -192,6 +194,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     path: String? = nil,
     hardLineRange: ClosedRange<UInt64>? = nil,
     initialHeightRows: Int? = nil,
+    verticalSplit: Bool = false,
     argumentNavigation: EVArgumentNavigation? = nil,
     readAfterLine: UInt64? = nil
   ) {
@@ -202,6 +205,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.path = path
     self.hardLineRange = hardLineRange
     self.initialHeightRows = initialHeightRows
+    self.verticalSplit = verticalSplit
     self.argumentNavigation = argumentNavigation
     self.readAfterLine = readAfterLine
   }
@@ -300,6 +304,8 @@ public enum EVWindowRequest: Equatable, Sendable {
   case focusNext(index: Int?)
   /// Without an index, the previous pane, wrapping to the bottom.
   case focusPrevious(index: Int?)
+  case focusLeft(count: Int)
+  case focusRight(count: Int)
   case focusTop
   case focusBottom
   case focusLastAccessed
@@ -310,12 +316,20 @@ public enum EVWindowRequest: Equatable, Sendable {
   case exchange(index: Int?)
   case moveToTop
   case moveToBottom
+  case moveToLeft
+  case moveToRight
   case closeOthers
   case grow(rows: Int)
   case shrink(rows: Int)
   /// Without a row count, as tall as the window allows.
   case setHeight(rows: Int?)
+  case resize(index: Int?, width: Bool, size: Int?, change: Int)
   case equalizeHeights
+  case equalizeHeightOnly
+  case equalizeWidthOnly
+  case growWidth(columns: Int)
+  case shrinkWidth(columns: Int)
+  case setWidth(columns: Int?)
 }
 
 /// One view onto an editor document. Its NSView is a projection, never storage.
@@ -328,6 +342,9 @@ public protocol EVEditorSurface: AnyObject {
   /// Base Paragraph font size with line spacing and view zoom applied.
   /// Independent of visible text, font metrics, and layout availability.
   var defaultLineHeight: CGFloat? { get }
+  var defaultColumnWidth: CGFloat? { get }
+  /// Caret position in top-left pane coordinates for directional focus.
+  var windowFocusPoint: NSPoint? { get }
 
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
@@ -350,6 +367,8 @@ public protocol EVEditorSurface: AnyObject {
 
 extension EVEditorSurface {
   public var defaultLineHeight: CGFloat? { nil }
+  public var defaultColumnWidth: CGFloat? { nil }
+  public var windowFocusPoint: NSPoint? { nil }
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}

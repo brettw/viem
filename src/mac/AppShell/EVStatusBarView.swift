@@ -28,6 +28,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   /// Space between the command area and the caret position widget.
   static let commandAreaGap: CGFloat = 5
 
+  var clicked: (() -> Void)?
+  private var dragCursorPushed = false
+  private lazy var clickGesture: EVStatusClickRecognizer = {
+    let gesture = EVStatusClickRecognizer(target: self, action: #selector(observedClick))
+    gesture.isEnabled = true
+    gesture.clicked = { [weak self] in self?.clicked?() }
+    return gesture
+  }()
   public var preferredHeightDidChange: (() -> Void)?
   /// Top-to-bottom window delta; nil for the fixed bottom status bar.
   var dragDidMove: ((CGFloat) -> Void)? {
@@ -84,12 +92,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     setAccessibilityRole(.group)
     setAccessibilityLabel("Editor status")
     addGestureRecognizer(resizeGesture)
+    addGestureRecognizer(clickGesture)
 
     let separator = NSBox()
     separator.boxType = .separator
     separator.translatesAutoresizingMaskIntoConstraints = false
 
     wantsLayer = true
+    layer?.masksToBounds = true
     locationLabel.isBordered = false
     locationLabel.imagePosition = .imageLeading
     locationLabel.imageScaling = .scaleProportionallyDown
@@ -190,7 +200,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     apply(EVStatusBarState())
   }
 
-  deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
+  deinit {
+    if dragCursorPushed { NSCursor.pop() }
+    if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+  }
 
   private func applyTheme() {
     let theme = EVThemeStore.shared.theme
@@ -232,6 +245,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     writeCopiedPath(EVStatusFilePath.relative(fileURL))
   }
 
+  @objc private func observedClick() {}
+
   @objc private func toggleLineMode() {
     optionDidChange?(.lineMode(currentState.lineMode == .visual ? .physicalSource : .visual))
   }
@@ -239,13 +254,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   @objc private func resizePanes(_ gesture: NSPanGestureRecognizer) {
     switch gesture.state {
     case .began, .changed:
-      if gesture.state == .began { lastDragTranslation = 0 }
+      if gesture.state == .began { lastDragTranslation = 0; NSCursor.resizeUpDown.push(); dragCursorPushed = true }
       let translation = -gesture.translation(in: nil).y
       let delta = translation - lastDragTranslation
       lastDragTranslation = translation // Discard blocked overshoot at an edge.
       dragDidMove?(delta)
     default:
       lastDragTranslation = 0
+      if dragCursorPushed { NSCursor.pop(); dragCursorPushed = false }
     }
   }
 
@@ -429,8 +445,12 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     commandLineDidSelect?(offset, true)
   }
 
+  public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
   public override func layout() {
     super.layout()
+    let hideLabels = currentState.commandLine != nil || currentState.commandOutput != nil || bounds.width < 320
+    if leftGroup.isHidden != hideLabels { leftGroup.isHidden = hideLabels }
     let area = commandAreaRect
     let inset = Self.contentInset
     let buttonWidth = min(20, max(0, area.width - inset))
@@ -450,7 +470,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public func apply(_ state: EVStatusBarState) {
     currentState = state
     let showingOutput = state.commandLine == nil && state.commandOutput != nil
-    leftGroup.isHidden = state.commandLine != nil || showingOutput
+    leftGroup.isHidden = state.commandLine != nil || showingOutput || bounds.width < 320
     outputScroll.isHidden = !showingOutput
     outputCloseButton.isHidden = !showingOutput
     if let output = state.commandOutput, outputTextView.string != output {
@@ -525,4 +545,23 @@ final class EVStatusOutputTextView: NSTextView {
     selectAll.target = self
     return menu
   }
+}
+
+/// Observe ordinary clicks without recognizing (and consuming) a gesture. The
+/// pan recognizer still delays child events and consumes recognized drags.
+@MainActor
+private final class EVStatusClickRecognizer: NSClickGestureRecognizer {
+  var clicked: (() -> Void)?
+  private var press: NSPoint?
+  private var moved = false
+  override func mouseDown(with event: NSEvent) { super.mouseDown(with: event); press = event.locationInWindow; moved = false }
+  override func mouseDragged(with event: NSEvent) {
+    super.mouseDragged(with: event)
+    if let press, hypot(event.locationInWindow.x - press.x, event.locationInWindow.y - press.y) >= 4 { moved = true }
+  }
+  override func mouseUp(with event: NSEvent) {
+    if press != nil && !moved { clicked?() }
+    state = .failed
+  }
+  override func reset() { press = nil; moved = false; super.reset() }
 }

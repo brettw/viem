@@ -333,10 +333,12 @@ pub enum ExFileRequest {
     Split {
         path: Option<String>,
         height: Option<usize>,
+        vertical: bool,
     },
     /// A new empty document in a new pane; the current buffer remains open.
     NewPane {
         height: Option<usize>,
+        vertical: bool,
     },
     Edit {
         path: Option<String>,
@@ -1170,9 +1172,11 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 );
             }
         }
-        ExAction::Split { path } => {
-            push_file(&mut plan, ExFileRequest::Split { path: path.clone(), height: None })
+        ExAction::Split { path, vertical, size } => {
+            push_file(&mut plan, ExFileRequest::Split { path: path.clone(), height: *size, vertical: *vertical })
         }
+        ExAction::NewPane { vertical, size } => push_file(&mut plan, ExFileRequest::NewPane { height: *size, vertical: *vertical }),
+        ExAction::Window(request) => plan.outcome.frontend_requests.push(ExFrontendRequest::Window(*request)),
         ExAction::Edit { path } => push_file(
             &mut plan,
             ExFileRequest::Edit {

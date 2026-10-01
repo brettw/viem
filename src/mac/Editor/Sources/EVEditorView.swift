@@ -3471,6 +3471,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private var presentationCaretAffinity: UInt32 { presentationCaretTarget.affinity }
 
+    var windowFocusPoint: NSPoint? {
+        guard let snapshot = surface?.layoutSnapshot,
+              let rect = caretRect(offset: presentationCaretUTF8Offset, snapshot: snapshot) else { return nil }
+        return NSPoint(x: rect.midX, y: isFlipped ? rect.midY : bounds.height - rect.midY)
+    }
+
     private func caretRect(
         offset: UInt64,
         affinity: UInt32? = nil,

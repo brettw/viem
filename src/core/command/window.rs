@@ -1,16 +1,13 @@
-//! `CTRL-W` window commands for stacked panes.
+//! Portable `CTRL-W` window command grammar.
 //!
-//! Panes are ordered top to bottom and that order is the whole geometry these
-//! commands address. Resolving the prefix, its count, and the command key is
-//! portable command grammar; moving focus, reordering panes, and changing
-//! heights are frontend effects, so this module produces a typed request and
-//! never touches the document.
+//! The frontend owns pane lifetime and focus. Shared layout geometry consumes
+//! native intentions; this module never touches buffers when resolving keys.
 use super::ex_execute::ExFileRequest;
 use super::{CommandInterpreter, CommandOutput, CommandStatus, CountError, Key, Mode, Pending};
 use crate::document::Document;
 
 /// A window effect the frontend performs. Panes are addressed by their
-/// top-to-bottom order; an index is one-based, matching Vim's counts.
+/// tree traversal order; an index is one-based, matching Vim's counts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WindowRequest {
     /// Move focus down `count` panes, stopping at the bottom.
@@ -29,6 +26,8 @@ pub enum WindowRequest {
     FocusPrevious {
         index: Option<usize>,
     },
+    FocusLeft { count: usize },
+    FocusRight { count: usize },
     FocusTop,
     FocusBottom,
     /// The pane focused before the current one.
@@ -47,9 +46,11 @@ pub enum WindowRequest {
     },
     MoveToTop,
     MoveToBottom,
+    MoveToLeft,
+    MoveToRight,
     /// Close every pane except the focused one.
     CloseOthers,
-    /// Grow the focused pane by `rows` visual rows, taking the space from its
+    /// Grow the focused pane by `rows` default paragraph lines, taking the space from its
     /// neighbours.
     Grow {
         rows: usize,
@@ -61,7 +62,13 @@ pub enum WindowRequest {
     SetHeight {
         rows: Option<usize>,
     },
+    Resize { index: Option<usize>, width: bool, change: i8, size: Option<usize> },
     EqualizeHeights,
+    EqualizeHeightOnly,
+    EqualizeWidthOnly,
+    GrowWidth { columns: usize },
+    ShrinkWidth { columns: usize },
+    SetWidth { columns: Option<usize> },
 }
 
 /// What `CTRL-W` followed by one key means.
@@ -71,13 +78,12 @@ pub enum WindowCommand {
     Request(WindowRequest),
     /// A pane lifecycle request handled by the document host.
     File(ExFileRequest),
-    /// Valid grammar with nothing to do. A stacked layout has no left or right
-    /// neighbour, which is also how Vim behaves when one is absent.
+    /// Valid grammar with nothing to do.
     Accepted,
     /// Open the Ex prompt, as with `:` in the current selection mode.
     Prompt,
     /// A real Vim command this product deliberately does not provide, such as
-    /// one that needs side-by-side panes or tab pages.
+    /// one that needs tab pages.
     Unsupported,
 }
 
@@ -98,25 +104,25 @@ pub fn window_command(key: Key, count: Option<usize>) -> WindowCommand {
         Key::Char('t') | Key::Ctrl('t') => request(WindowRequest::FocusTop),
         Key::Char('b') | Key::Ctrl('b') => request(WindowRequest::FocusBottom),
         Key::Char('p') | Key::Ctrl('p') => request(WindowRequest::FocusLastAccessed),
-        // No pane is ever to the left or right of another.
-        Key::Char('h' | 'l') | Key::Ctrl('h' | 'l') | Key::Backspace | Key::Left | Key::Right => {
-            WindowCommand::Accepted
-        }
+        Key::Char('h') | Key::Ctrl('h') | Key::Backspace | Key::Left => request(WindowRequest::FocusLeft { count: repeat }),
+        Key::Char('l') | Key::Ctrl('l') | Key::Right => request(WindowRequest::FocusRight { count: repeat }),
         Key::Char('r') | Key::Ctrl('r') => request(WindowRequest::RotateDown { count: repeat }),
         Key::Char('R') => request(WindowRequest::RotateUp { count: repeat }),
         Key::Char('x') | Key::Ctrl('x') => request(WindowRequest::Exchange { index: count }),
         Key::Char('K') => request(WindowRequest::MoveToTop),
         Key::Char('J') => request(WindowRequest::MoveToBottom),
+        Key::Char('H') => request(WindowRequest::MoveToLeft),
+        Key::Char('L') => request(WindowRequest::MoveToRight),
         Key::Char('o') | Key::Ctrl('o') => request(WindowRequest::CloseOthers),
-        // `vsplit` stacks panes here exactly as `split` does.
         Key::Char('s' | 'S' | 'v') | Key::Ctrl('s' | 'v') => {
             WindowCommand::File(ExFileRequest::Split {
                 path: None,
                 height: count,
+                vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')),
             })
         }
         Key::Char('n') | Key::Ctrl('n') => {
-            WindowCommand::File(ExFileRequest::NewPane { height: count })
+            WindowCommand::File(ExFileRequest::NewPane { height: count, vertical: false })
         }
         Key::Char('q' | 'c') | Key::Ctrl('q') => {
             WindowCommand::File(ExFileRequest::Quit { force: false })
@@ -124,12 +130,14 @@ pub fn window_command(key: Key, count: Option<usize>) -> WindowCommand {
         Key::Char('+') => request(WindowRequest::Grow { rows: repeat }),
         Key::Char('-') => request(WindowRequest::Shrink { rows: repeat }),
         Key::Char('_') | Key::Ctrl('_') => request(WindowRequest::SetHeight { rows: count }),
+        Key::Char('>') => request(WindowRequest::GrowWidth { columns: repeat }),
+        Key::Char('<') => request(WindowRequest::ShrinkWidth { columns: repeat }),
+        Key::Char('|') => request(WindowRequest::SetWidth { columns: count }),
         Key::Char('=') => request(WindowRequest::EqualizeHeights),
         Key::Char(':') => WindowCommand::Prompt,
         Key::Ctrl('c') => WindowCommand::Accepted,
-        // Side-by-side panes and tab pages are out of scope, so these are
-        // reported rather than silently ignored.
-        Key::Char('H' | 'L' | '<' | '>' | '|' | 'T') => WindowCommand::Unsupported,
+        // Vim tab pages remain outside the product scope.
+        Key::Char('T') => WindowCommand::Unsupported,
         _ => WindowCommand::Unsupported,
     }
 }
@@ -278,18 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_focus_is_accepted_and_does_nothing() {
-        for key in [Key::Char('h'), Key::Char('l'), Key::Left, Key::Right] {
-            assert_eq!(
-                window_command(key, None),
-                WindowCommand::Accepted,
-                "{key:?}"
-            );
-            assert_eq!(
-                window_command(key, Some(4)),
-                WindowCommand::Accepted,
-                "{key:?}"
-            );
+    fn horizontal_focus_carries_direction_and_counts() {
+        for (key,left) in [(Key::Char('h'),true),(Key::Ctrl('h'),true),(Key::Backspace,true),(Key::Left,true),(Key::Char('l'),false),(Key::Ctrl('l'),false),(Key::Right,false)] {
+            for count in [None,Some(4)] {
+                let count_value=count.unwrap_or(1);
+                assert_eq!(window_command(key,count),WindowCommand::Request(if left {WindowRequest::FocusLeft {count:count_value}} else {WindowRequest::FocusRight {count:count_value}}));
+            }
         }
     }
 
@@ -338,15 +340,14 @@ mod tests {
                 window_command(key, None),
                 WindowCommand::File(ExFileRequest::Split {
                     path: None,
-                    height: None
-                }),
+                    height: None, vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')) }),
                 "{key:?}"
             );
         }
         for key in [Key::Char('n'), Key::Ctrl('n')] {
             assert_eq!(
                 window_command(key, None),
-                WindowCommand::File(ExFileRequest::NewPane { height: None }),
+                WindowCommand::File(ExFileRequest::NewPane { height: None, vertical: false }),
                 "{key:?}"
             );
         }
@@ -397,11 +398,6 @@ mod tests {
     #[test]
     fn layouts_this_product_lacks_are_reported_not_ignored() {
         for key in [
-            Key::Char('H'),
-            Key::Char('L'),
-            Key::Char('<'),
-            Key::Char('>'),
-            Key::Char('|'),
             Key::Char('T'),
             Key::Char('z'),
             Key::Char('5'),

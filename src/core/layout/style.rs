@@ -911,7 +911,7 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
     replace_some!(letter_spacing);
 }
 
-fn shaping_style(
+pub(crate) fn shaping_style(
     character: &ResolvedCharacterStyle,
 ) -> Result<ResolvedTextStyle, DocumentStyleError> {
     let features = character

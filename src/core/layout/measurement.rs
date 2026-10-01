@@ -387,6 +387,34 @@ pub trait TextMeasurementProvider {
     ) -> Result<Vec<ShapedFragment>, MeasurementError>;
 }
 
+/// A bounded, metrics-only basis for native window-width counts. Providers
+/// receive one complete glyph; document shaping caches and snapshots are untouched.
+pub(crate) fn default_column_width<P: TextMeasurementProvider>(
+    provider: &mut P, document_id: DocumentId, document_revision: Revision,
+    style: &ResolvedTextStyle, scale: f32,
+) -> Result<f32, MeasurementError> {
+    let environment = provider.measurement_environment_id();
+    let generation = provider.metrics_generation();
+    let request = ShapeRequest {
+        document_id, document_revision, measurement_environment_id: environment,
+        metrics_generation: generation, text_range: 0..1, text: "0",
+        context_before: "", context_after: "", style_runs: &[], default_style: style,
+        paragraph_base_direction: TextDirection::LeftToRight, scale,
+        purpose: ShapePurpose::MetricsOnly, render_run_policy: None,
+    };
+    let shaped = provider.shape_batch(&[request])?;
+    let valid = shaped.len() == 1 && shaped[0].document_id == document_id
+        && shaped[0].document_revision == document_revision
+        && shaped[0].measurement_environment_id == environment
+        && shaped[0].metrics_generation == generation && shaped[0].text_range == (0..1)
+        && shaped[0].clusters.len() == 1 && shaped[0].clusters[0].text_range == (0..1);
+    let width = shaped.iter().flat_map(|f| &f.clusters).map(|c| c.advance).sum::<f32>();
+    if !valid || !width.is_finite() || width <= 0.0 {
+        return Err(MeasurementError::Provider("Invalid default font column measurement".into()));
+    }
+    Ok(width)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -296,7 +296,7 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
                     height: 13.0,
                 },
                 bidi_level: 0,
-                has_render_run: 1,
+                has_render_run: u32::from(request.purpose == VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
                 fallback_font: ViemUtf8Slice {
                     data: FAKE_FONT.as_ptr(),
                     length: FAKE_FONT.len() as u64,
@@ -1726,6 +1726,24 @@ fn default_line_height_is_view_local_and_does_not_measure_visible_text() {
     height = -1.0;
     assert_eq!(unsafe { viem_core_view_default_line_height(core.handle, view, &mut height) }, ViemStatus::InvalidView);
     assert_eq!(height, -1.0, "failure leaves the result untouched");
+}
+
+#[test]
+fn default_column_width_shapes_only_one_default_glyph_in_a_large_document() {
+    let core = create_core("mixed text\n".repeat(20_000).as_bytes(),ViemDocumentOptions::default());
+    let mut context=Box::new(FakeProviderContext::new(core.handle));
+    let (view,mut outcome)=add_test_view(&core,&mut *context);
+    let calls=context.shape_calls;let mut width=-1.0;
+    assert_eq!(unsafe{viem_core_view_default_column_width(core.handle,view,&mut width)},ViemStatus::Ok);
+    assert!(width>0.0);assert_eq!(context.shape_calls,calls+1);
+    let original=width;
+    assert_eq!(unsafe{viem_core_view_set_scale(core.handle,view,1.5,&mut outcome)},ViemStatus::Ok);
+    let calls=context.shape_calls;
+    assert_eq!(unsafe{viem_core_view_default_column_width(core.handle,view,&mut width)},ViemStatus::Ok);
+    assert_eq!(width,original);assert_eq!(context.last_requested_scale,1.5);assert_eq!(context.shape_calls,calls+1);
+    assert_eq!(viem_core_view_remove(core.handle,view),ViemStatus::Ok);
+    width=-1.0;
+    assert_eq!(unsafe{viem_core_view_default_column_width(core.handle,view,&mut width)},ViemStatus::InvalidView);assert_eq!(width,-1.0);
 }
 
 #[test]

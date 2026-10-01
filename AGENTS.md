@@ -1119,8 +1119,9 @@ pane, preserving edits; never fork buffers for aliases.
 
 Startup captures filenames relative to launch cwd; only the first opens by
 default, later files load on navigation. Nonexistent files start named, clean,
-empty without disk creation. `+line` addresses the first file and `-o` opens
-stacked panes with it focused. Arbitrary `+cmd` and Ex wildcards are unsupported.
+empty without disk creation. `+line` addresses the first file; `-o` opens stacked
+panes and `-O` opens side-by-side panes with the first file focused. Arbitrary
+`+cmd` and Ex wildcards are unsupported.
 Test fresh-process macOS startup: AppKit must not duplicate arguments as file
 opens. Argument position is per pane, nonwrapping, and survives unrelated opens;
 splits copy then independently evolve it. Failed/stale opens leave it intact.
@@ -1149,20 +1150,29 @@ open new windows. Drops never insert paths or write files. Read successfully
 and revalidate pane/document/revision/dirty state after dialogs or asynchronous
 work before replacement; failures preserve the original.
 
-Splits, including `:vsplit`, are **stacked only**. Views share document/history
+Horizontal and vertical splits may nest in one native window. New splits open
+below or to the right of the current pane. Views share document/history
 but own cursor, selection, viewport, wrapping, line mode, status, and scrollbar.
 Focus controls save/style/menu routing; final-view closure reviews unsaved changes.
-Window commands are core grammar with frontend geometry/focus, create no undo or
-register effects, and are not dot-repeatable. Height counts use Base Paragraph's
+Window commands are core grammar with shared portable geometry and frontend
+focus, create no undo or register effects, and are not dot-repeatable.
+Height counts use Base Paragraph's
 font size with its line spacing and view zoom, independent of visible row metrics.
+Width counts use the zoomed Base Paragraph advance of `0`.
 Status bars are the stacked-pane drag handles, including their controls; a plain
-click retains the control's action. The bottom bar is fixed. Bars may touch but
+click focuses the buffer above and retains the control's action. Drags do not
+focus or activate controls; show an up/down cursor during status-bar drags.
+The bottom bar in each column is fixed. Bars may touch but
 never overlap, and editor areas may collapse to zero. Dragging pushes bars met in
 the current direction; reversing releases previously pushed bars immediately,
 including after reaching an edge. Splitting requires room for one additional
 status bar in the current pane; otherwise report that there is no room to split.
-Side-by-side/tab-page-dependent
-commands are unsupported. Retain normal window geometry across launches,
+Vertical splitters are 5 DIPs wide, use the status background and matching
+separator borders, and show a left/right cursor on hover and drag. Every pane
+retains at least 100 DIPs of width; splits require 205 DIPs in the current pane.
+Dragging pushes adjacent splits with their minimum widths, and reversing releases
+them immediately. Vim tab-page-dependent commands remain unsupported.
+Retain normal window geometry across launches,
 recover offscreen frames, cascade new windows, and preserve existing frames.
 
 ### Editing locks and recovery
@@ -1343,7 +1353,7 @@ abbreviations remain unsupported.
 
 Do not build speculative Vimscript/Vim9script, plugin/runtime execution,
 terminal jobs, shell filters/`:!`, tags, quickfix, diff, folding, spellchecking,
-Vim tab pages, side-by-side splits, sessions/viminfo, remote server commands, or
+Vim tab pages, sessions/viminfo, remote server commands, or
 full Vim option/regex parity. Adopted syntax providers and supported Vim syntax
 loading are exceptions only for syntax highlighting; they do not authorize a
 general runtime, Neovim Lua plugins, arbitrary autocommands, syntax-driven

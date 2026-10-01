@@ -63,6 +63,30 @@ typedef uint32_t ViemStatus;
 #define VIEM_STATUS_INTERNAL_ERROR 254u
 #define VIEM_STATUS_PANIC 255u
 
+/* Frontend-owned window geometry; root pane ID is 1. IDs/handles never reuse.
+ * Orientations: 0 stacked, 1 side by side. At most 256 panes (511 frames).
+ * Failed mutations leave geometry unchanged. All calls are serial per handle.
+ * Copy outputs must be aligned and disjoint; policy-required means no room. */
+typedef struct ViemPaneChrome { uint64_t id; double status_height; } ViemPaneChrome;
+typedef struct ViemPaneFrame {
+  uint64_t id; uint32_t kind; uint32_t flags;
+  double x; double y; double width; double height;
+} ViemPaneFrame;
+typedef struct ViemPaneSnapshot { uint64_t count; double minimum_width; double minimum_height; } ViemPaneSnapshot;
+ViemStatus viem_pane_layout_create(uint64_t *out_handle);
+ViemStatus viem_pane_layout_destroy(uint64_t handle);
+ViemStatus viem_pane_layout_update(uint64_t handle, double width, double height, const ViemPaneChrome *chrome, uint64_t count);
+ViemStatus viem_pane_layout_copy(uint64_t handle, ViemPaneFrame *frames, uint64_t capacity, ViemPaneSnapshot *out_snapshot);
+ViemStatus viem_pane_layout_can_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height);
+ViemStatus viem_pane_layout_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height, uint64_t *out_pane);
+ViemStatus viem_pane_layout_remove(uint64_t handle, uint64_t pane);
+ViemStatus viem_pane_layout_drag(uint64_t handle, uint64_t id, uint32_t kind, double delta);
+/* Operations: focus=1(direction=count, steps=value, caret=x/y), rotate=2
+ * (steps=count, flags:0 forward/1 backward), exchange=3(one-based count, 0=next), move=4(direction=count),
+ * resize=5(axis=count, DIPs=value, flags:1 relative/2 maximize), equalize=6
+ * (count:0 both/1 heights/2 widths). Directions:0 down/1 up/2 left/3 right. */
+ViemStatus viem_pane_layout_action(uint64_t handle, uint64_t pane, uint32_t operation, uint64_t count, double value, uint32_t flags, double x, double y, uint64_t *out_focus);
+
 /*
  * Core-owned initial detection: supported BOM first, otherwise wholly valid
  * UTF-8, otherwise ISO-8859-1. Nonzero values force the named encoding.
@@ -381,6 +405,20 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_WINDOW_SHRINK 15u
 #define VIEM_WINDOW_SET_HEIGHT 16u
 #define VIEM_WINDOW_EQUALIZE_HEIGHTS 17u
+#define VIEM_WINDOW_FOCUS_LEFT 18u
+#define VIEM_WINDOW_FOCUS_RIGHT 19u
+#define VIEM_WINDOW_MOVE_TO_LEFT 20u
+#define VIEM_WINDOW_MOVE_TO_RIGHT 21u
+#define VIEM_WINDOW_GROW_WIDTH 22u
+#define VIEM_WINDOW_SHRINK_WIDTH 23u
+#define VIEM_WINDOW_SET_WIDTH 24u
+#define VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY 25u
+#define VIEM_WINDOW_EQUALIZE_WIDTH_ONLY 26u
+#define VIEM_WINDOW_RESIZE_INDEXED 27u
+/* Indexed resize: argument_count is the target pane (0=current), argument_command
+ * is 0 absolute/1 grow/2 shrink; window_count is the size when HAS_COUNT. */
+#define VIEM_EX_FRONTEND_VERTICAL (1u << 9)
+
 
 #define VIEM_EX_FRONTEND_FORCE (1u << 0)
 #define VIEM_EX_FRONTEND_HAS_PATH (1u << 1)
@@ -2404,6 +2442,7 @@ ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32
 /* Base Paragraph font size with line spacing and this view's zoom applied.
  * Does not perform layout or consult the visible text's styles/font metrics. */
 ViemStatus viem_core_view_default_line_height(ViemCoreHandle core, ViemViewId view, float *out_height);
+ViemStatus viem_core_view_default_column_width(ViemCoreHandle handle, ViemViewId view, float *out_width);
 ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t mode, ViemCoreOutcomeV1 *out_outcome);
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */
 ViemStatus viem_core_view_set_smart_quotes(ViemCoreHandle core, ViemViewId view, uint32_t enabled);

@@ -10,6 +10,8 @@ extension Notification.Name {
 @MainActor
 public final class EVEditorSurfaceController: NSViewController, EVEditorSurface, EVDocumentHostAttachable {
     public var viewController: NSViewController { self }
+    public var defaultColumnWidth: CGFloat? { try? session?.defaultColumnWidth() }
+    public var windowFocusPoint: NSPoint? { editorView.windowFocusPoint }
     public var defaultLineHeight: CGFloat? { try? session?.defaultLineHeight() }
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
@@ -1486,12 +1488,14 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             throw EVCoreFrontendError.invalidHostEffect
         }
         func required() throws -> Int {
-            guard let index, index > 0 else { throw EVCoreFrontendError.invalidHostEffect }
+            guard let index, index >= 0 else { throw EVCoreFrontendError.invalidHostEffect }
             return index
         }
         switch effect.windowCommand {
         case UInt32(VIEM_WINDOW_FOCUS_DOWN): return .focusDown(count: try required())
         case UInt32(VIEM_WINDOW_FOCUS_UP): return .focusUp(count: try required())
+        case UInt32(VIEM_WINDOW_FOCUS_LEFT): return .focusLeft(count: try required())
+        case UInt32(VIEM_WINDOW_FOCUS_RIGHT): return .focusRight(count: try required())
         case UInt32(VIEM_WINDOW_FOCUS_NEXT): return .focusNext(index: index)
         case UInt32(VIEM_WINDOW_FOCUS_PREVIOUS): return .focusPrevious(index: index)
         case UInt32(VIEM_WINDOW_FOCUS_TOP): return .focusTop
@@ -1505,8 +1509,20 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_WINDOW_CLOSE_OTHERS): return .closeOthers
         case UInt32(VIEM_WINDOW_GROW): return .grow(rows: try required())
         case UInt32(VIEM_WINDOW_SHRINK): return .shrink(rows: try required())
+        case UInt32(VIEM_WINDOW_RESIZE_INDEXED):
+            let target = effect.windowTarget.flatMap { Int(exactly: $0) }
+            guard effect.windowTarget == nil || target != nil, effect.windowResizeMode <= 2 else { throw EVCoreFrontendError.invalidHostEffect }
+            return .resize(index: target, width: effect.flags & UInt32(VIEM_EX_FRONTEND_VERTICAL) != 0,
+                size: index, change: effect.windowResizeMode == 2 ? -1 : Int(effect.windowResizeMode))
         case UInt32(VIEM_WINDOW_SET_HEIGHT): return .setHeight(rows: index)
         case UInt32(VIEM_WINDOW_EQUALIZE_HEIGHTS): return .equalizeHeights
+        case UInt32(VIEM_WINDOW_MOVE_TO_LEFT): return .moveToLeft
+        case UInt32(VIEM_WINDOW_MOVE_TO_RIGHT): return .moveToRight
+        case UInt32(VIEM_WINDOW_GROW_WIDTH): return .growWidth(columns: try required())
+        case UInt32(VIEM_WINDOW_SHRINK_WIDTH): return .shrinkWidth(columns: try required())
+        case UInt32(VIEM_WINDOW_SET_WIDTH): return .setWidth(columns: index)
+        case UInt32(VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY): return .equalizeHeightOnly
+        case UInt32(VIEM_WINDOW_EQUALIZE_WIDTH_ONLY): return .equalizeWidthOnly
         default: throw EVCoreFrontendError.invalidHostEffect
         }
     }
@@ -1664,7 +1680,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         let initialHeightRows: Int?
         if let count = effect.windowCount {
             guard kind == .split || kind == .newPane,
-                  let rows = Int(exactly: count), rows > 0
+                  let rows = Int(exactly: count), rows >= 0
             else { throw EVCoreFrontendError.invalidHostEffect }
             initialHeightRows = rows
         } else {
@@ -1678,6 +1694,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             path: path,
             hardLineRange: effect.hardLineRange,
             initialHeightRows: initialHeightRows,
+            verticalSplit: effect.flags & UInt32(VIEM_EX_FRONTEND_VERTICAL) != 0,
             argumentNavigation: effect.argumentNavigation,
             readAfterLine: effect.readAfterLine
         )
