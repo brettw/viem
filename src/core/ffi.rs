@@ -18,6 +18,8 @@ mod argument_list;
 pub use argument_list::*;
 mod view_restoration;
 pub use view_restoration::*;
+mod panes;
+pub use panes::*;
 mod external_change;
 pub use external_change::*;
 mod completion;
@@ -492,6 +494,17 @@ pub const VIEM_WINDOW_GROW: u32 = 14;
 pub const VIEM_WINDOW_SHRINK: u32 = 15;
 pub const VIEM_WINDOW_SET_HEIGHT: u32 = 16;
 pub const VIEM_WINDOW_EQUALIZE_HEIGHTS: u32 = 17;
+pub const VIEM_WINDOW_FOCUS_LEFT: u32 = 18;
+pub const VIEM_WINDOW_FOCUS_RIGHT: u32 = 19;
+pub const VIEM_WINDOW_MOVE_TO_LEFT: u32 = 20;
+pub const VIEM_WINDOW_MOVE_TO_RIGHT: u32 = 21;
+pub const VIEM_WINDOW_GROW_WIDTH: u32 = 22;
+pub const VIEM_WINDOW_SHRINK_WIDTH: u32 = 23;
+pub const VIEM_WINDOW_SET_WIDTH: u32 = 24;
+pub const VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY: u32 = 25;
+pub const VIEM_WINDOW_EQUALIZE_WIDTH_ONLY: u32 = 26;
+pub const VIEM_WINDOW_RESIZE_INDEXED: u32 = 27;
+pub const VIEM_EX_FRONTEND_VERTICAL: u32 = 1 << 9;
 
 pub const VIEM_EX_FRONTEND_FORCE: u32 = 1 << 0;
 pub const VIEM_EX_FRONTEND_HAS_PATH: u32 = 1 << 1;
@@ -3656,6 +3669,22 @@ fn export_ex_frontend_request(
                     count(*rows)?;
                     VIEM_WINDOW_SET_HEIGHT
                 }
+                WindowRequest::FocusLeft { count: n } => { count(Some(*n))?; VIEM_WINDOW_FOCUS_LEFT },
+                WindowRequest::FocusRight { count: n } => { count(Some(*n))?; VIEM_WINDOW_FOCUS_RIGHT },
+                WindowRequest::MoveToLeft => { VIEM_WINDOW_MOVE_TO_LEFT },
+                WindowRequest::MoveToRight => { VIEM_WINDOW_MOVE_TO_RIGHT },
+                WindowRequest::GrowWidth { columns } => { count(Some(*columns))?; VIEM_WINDOW_GROW_WIDTH },
+                WindowRequest::ShrinkWidth { columns } => { count(Some(*columns))?; VIEM_WINDOW_SHRINK_WIDTH },
+                WindowRequest::SetWidth { columns } => { count(*columns)?; VIEM_WINDOW_SET_WIDTH },
+                WindowRequest::EqualizeHeightOnly => { VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY },
+                WindowRequest::EqualizeWidthOnly => { VIEM_WINDOW_EQUALIZE_WIDTH_ONLY },
+                WindowRequest::Resize { index, width, change, size } => {
+                    count(*size)?;
+                    output.argument_count = index.map(checked_export_count).transpose()?.unwrap_or(0);
+                    output.argument_command = if *change > 0 { 1 } else if *change < 0 { 2 } else { 0 };
+                    if *width { output.flags |= VIEM_EX_FRONTEND_VERTICAL; }
+                    VIEM_WINDOW_RESIZE_INDEXED
+                },
                 WindowRequest::EqualizeHeights => VIEM_WINDOW_EQUALIZE_HEIGHTS,
             };
         }
@@ -3711,16 +3740,18 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_CD;
                 set_ex_path(&mut output, strings, path.as_deref())?;
             }
-            ExFileRequest::Split { path, height } => {
+            ExFileRequest::Split { path, height, vertical } => {
                 output.kind = VIEM_EX_FRONTEND_SPLIT;
+                if *vertical { output.flags |= VIEM_EX_FRONTEND_VERTICAL; }
                 set_ex_path(&mut output, strings, path.as_deref())?;
                 if let Some(height) = height {
                     output.flags |= VIEM_EX_FRONTEND_HAS_COUNT;
                     output.window_count = checked_export_count(*height)?;
                 }
             }
-            ExFileRequest::NewPane { height } => {
+            ExFileRequest::NewPane { height, vertical } => {
                 output.kind = VIEM_EX_FRONTEND_NEW_PANE;
+                if *vertical { output.flags |= VIEM_EX_FRONTEND_VERTICAL; }
                 if let Some(height) = height {
                     output.flags |= VIEM_EX_FRONTEND_HAS_COUNT;
                     output.window_count = checked_export_count(*height)?;
@@ -13166,6 +13197,18 @@ pub unsafe extern "C" fn viem_core_view_default_line_height(
         })?;
         unsafe { out_height.write(height); }
         Ok(())
+    })
+}
+
+/// Read the zoomed Base Paragraph `0` advance for window width commands.
+/// # Safety
+/// out_width identifies one aligned writable f32. Errors leave it unchanged.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_default_column_width(handle: ViemCoreHandle, view: ViemViewId, out_width: *mut f32) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_width, 1)?;
+        let width = with_core_mut(handle, |core| core.default_column_width(ViewId(view)).map_err(core_status))?;
+        unsafe { out_width.write(width); } Ok(())
     })
 }
 

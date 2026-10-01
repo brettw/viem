@@ -2082,6 +2082,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    /// A Vim window-width column is the zoomed Base Paragraph `0` advance.
+    /// This bounded metrics-only request never resolves or shapes document text.
+    pub fn default_column_width(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
+        let code_sheet;
+        let sheet = if self.document.format().is_code() {
+            code_sheet = crate::document::code_style::snapshot(); &code_sheet
+        } else { self.document.projection().style_sheet() };
+        let paragraph = sheet.default_paragraph_style()
+            .map_err(|_| CoreError::Layout(LayoutError::MalformedMeasurement("Invalid default paragraph style".into())))?;
+        let style = crate::layout::shaping_style(&paragraph.character).map_err(|_| CoreError::Layout(
+            LayoutError::MalformedMeasurement("Invalid default paragraph font".into())))?;
+        let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let scale = view.layout.scale();
+        crate::layout::default_column_width(view.engine.provider_mut(),self.document.id(),
+            self.document.revision(),&style,scale).map_err(|e| CoreError::Layout(LayoutError::Measurement(e)))
+    }
+
     /// Scheduling requirements for a view's provider. A frontend uses this
     /// before selecting the compatible executor for `compute_layout_job`.
     pub fn layout_provider_requirements(

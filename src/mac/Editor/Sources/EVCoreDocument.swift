@@ -1130,6 +1130,12 @@ final class EVCoreViewSession {
         return EVLineMode(rawValue: value) ?? .visual
     }
 
+    func defaultColumnWidth() throws -> CGFloat {
+        var width: Float = 0
+        try checked(viem_core_view_default_column_width(document.core, viewID, &width), operation: "Read default column width")
+        return CGFloat(width)
+    }
+
     func defaultLineHeight() throws -> CGFloat {
         var height: Float = 0
         try checked(viem_core_view_default_line_height(document.core, viewID, &height), operation: "Read default line height")

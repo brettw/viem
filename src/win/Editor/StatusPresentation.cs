@@ -19,6 +19,7 @@ internal sealed partial class EditorPane
     private uint? statusPointer;
     private global::Windows.Foundation.Point statusPress, statusLastPoint;
     private bool statusDragging;
+    private bool statusSelectingOutput;
     private readonly Grid normalStatus = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 12 };
     private readonly TextBlock filePath = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
     private readonly TextBlock statusMeasure = new() { TextWrapping = TextWrapping.NoWrap };
@@ -40,6 +41,13 @@ internal sealed partial class EditorPane
     private long outputDeadline;
     private (ulong Document, ulong Revision, ulong Cursor, uint Affinity, uint Mode, ulong Configuration, ulong Environment, ulong Metrics)? locationIdentity;
     private string locationText = "Ln —, Col —";
+
+    private bool IsOutputDescendant(DependencyObject source)
+    {
+        for (DependencyObject? current = source; current != null; current = VisualTreeHelper.GetParent(current))
+            if (current == outputText) return true;
+        return false;
+    }
 
     private void UpdateLocation()
     {
@@ -104,18 +112,19 @@ internal sealed partial class EditorPane
         // movement crosses the drag threshold, retaining ordinary native clicks.
         status.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) => {
             var point = e.GetCurrentPoint(window.PaneStack);
-            if (!point.Properties.IsLeftButtonPressed || window.Panes.LastOrDefault() == this) return;
-            statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false;
+            if (!point.Properties.IsLeftButtonPressed) return;
+            statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
         }), true);
         status.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) => {
             if (statusPointer != e.Pointer.PointerId) return;
             var point = e.GetCurrentPoint(window.PaneStack);
-            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusDragging = false; return; }
+            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusDragging = false; status.SetDragging(false); return; }
             if (!statusDragging)
             {
                 if (Math.Abs(point.Position.Y - statusPress.Y) < 4 && Math.Abs(point.Position.X - statusPress.X) < 4) return;
                 statusDragging = true;
-                if (!status.CapturePointer(e.Pointer)) { statusPointer = null; statusDragging = false; return; }
+                if (window.PaneStack.CanDragBar(this)) status.SetDragging(true);
+                if (!statusSelectingOutput && !status.CapturePointer(e.Pointer)) { statusPointer = null; statusDragging = false; status.SetDragging(false); return; }
             }
             double delta = point.Position.Y - statusLastPoint.Y;
             statusLastPoint = point.Position; // No blocked overshoot survives a reversal.
@@ -124,11 +133,12 @@ internal sealed partial class EditorPane
         status.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => {
             if (statusPointer != e.Pointer.PointerId) return;
             bool dragged = statusDragging;
-            statusPointer = null; statusDragging = false;
-            if (dragged) { status.ReleasePointerCapture(e.Pointer); e.Handled = true; }
+            statusPointer = null; statusDragging = false; status.SetDragging(false);
+            if (!dragged) window.FocusPane(this, keepStatusFocus: statusSelectingOutput);
+            if (dragged && !statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (e.OriginalSource is Grid source && source == status) { statusPointer = null; statusDragging = false; }
+            if (e.OriginalSource == status) { statusPointer = null; statusDragging = false; status.SetDragging(false); }
         };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         commandOutput.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });

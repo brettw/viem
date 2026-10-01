@@ -9,6 +9,7 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 [Markdown compatibility gaps](../MARKDOWN_GAPS.md) track the GFM work.
 
 - [macOS development](macos-development.md): build, run, test and startup setup.
+- [Split views](window-panes.md): window commands, resize units, and mouse dragging.
 - [Windows development](../src/win/README.md): native build, packaging and tests.
 - [C ABI validation](abi-validation.md): matching the Rust core and native headers.
 - [Backend fuzzing](fuzzing.md): campaigns, replay, watchdogs and history probes.

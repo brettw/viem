@@ -352,7 +352,7 @@ extension EVDocumentWindowController {
   /// occupy this initially hidden window. Later arguments stay lazy unless
   /// requested by `-o`, including when the first file was already open.
   public func openArgumentList(
-    _ urls: [URL], splitCount: Int?, initialLine: UInt64?,
+    _ urls: [URL], splitCount: Int?, initialLine: UInt64?, vertical: Bool = false,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     guard !isClosed, !isPerformingDocumentHostEffect,
@@ -412,7 +412,7 @@ extension EVDocumentWindowController {
       // Reusing another window or an earlier argument consumes no space here.
       // Once this window is full, leave the next new target lazy without even
       // reading it, while allowing already represented arguments to be reused.
-      if installedNewPane && paneCount >= launchPaneCapacity() {
+      if installedNewPane && paneCount >= launchPaneCapacity(vertical: vertical) {
         guard list.urls.indices.contains(index),
           let existing = EVDocumentIdentity.existingDocument(at: list.urls[index]),
           Self.windowShowing(document: existing) != nil else {
@@ -452,10 +452,12 @@ extension EVDocumentWindowController {
             installedNewPane = true
           } else {
             paneContainer.focusPane(at: paneCount - 1)
-            do { try addPane(document: opened) } catch {
+            paneContainer.perform(vertical ? .setWidth(columns: nil) : .setHeight(rows: nil))
+            do { try addPane(document: opened, vertical: vertical) } catch {
               closeIfUnrepresented(opened)
               finish(.failure(error)); return
             }
+            paneContainer.perform(.equalizeHeights)
             targetPane = documentContentController
           }
           targetController = self
@@ -492,7 +494,8 @@ extension EVDocumentWindowController {
     openNext(0)
   }
 
-  private func launchPaneCapacity() -> Int {
+  private func launchPaneCapacity(vertical: Bool = false) -> Int {
+    if vertical { return max(1, Int(((window?.contentLayoutRect.width ?? 920) + 5) / 105)) }
     let minimum = EVStatusBarView.preferredHeight
     return max(1, Int((window?.contentLayoutRect.height ?? 680) / minimum))
   }
@@ -707,15 +710,15 @@ extension EVDocumentWindowController {
     case .checkTime:
       document.checkForExternalChangesAndReview(completion: completion)
     case .split:
-      split(document, in: openingPane, path: request.path, initialHeightRows: request.initialHeightRows, completion: completion)
+      split(document, in: openingPane, path: request.path, initialHeightRows: request.initialHeightRows, vertical: request.verticalSplit, completion: completion)
     case .newPane:
       do {
-        try paneContainer.requireSplitRoom()
+        try paneContainer.requireSplitRoom(vertical: request.verticalSplit)
         let next = EVDocument()
         try next.read(from: Data(), ofType: EVDocument.plainTextType)
         next.fileType = EVDocument.plainTextType
         NSDocumentController.shared.addDocument(next)
-        try addPane(document: next, initialHeightRows: request.initialHeightRows)
+        try addPane(document: next, initialHeightRows: request.initialHeightRows, vertical: request.verticalSplit)
         completion(.success(nil))
       } catch {
         completion(.failure(error))
@@ -1194,13 +1197,13 @@ extension EVDocumentWindowController {
 
   fileprivate func split(
     _ source: EVDocument, in sourcePane: EVDocumentContentViewController,
-    path: String?, initialHeightRows: Int? = nil,
+    path: String?, initialHeightRows: Int? = nil, vertical: Bool = false,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     let expected = source.editorBackend.persistenceState
-    do { try paneContainer.requireSplitRoom(in: sourcePane) } catch { completion(.failure(error)); return }
+    do { try paneContainer.requireSplitRoom(in: sourcePane, vertical: vertical) } catch { completion(.failure(error)); return }
     guard let path else {
-      do { try addPane(document: source, initialHeightRows: initialHeightRows, splitting: sourcePane) }
+      do { try addPane(document: source, initialHeightRows: initialHeightRows, splitting: sourcePane, vertical: vertical) }
       catch { completion(.failure(error)); return }
       completion(.success(nil))
       return
@@ -1215,7 +1218,7 @@ extension EVDocumentWindowController {
         do {
           guard self.canReplace(sourcePane, document: source, expected: expected)
           else { throw EVDocumentHostError.staleRequest }
-          try self.addPane(document: opened, initialHeightRows: initialHeightRows, splitting: sourcePane)
+          try self.addPane(document: opened, initialHeightRows: initialHeightRows, splitting: sourcePane, vertical: vertical)
           completion(.success(nil))
         } catch {
           self.closeIfUnrepresented(opened)
@@ -1342,11 +1345,11 @@ extension EVDocumentWindowController {
     return pane
   }
 
-  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil) throws {
-    try paneContainer.requireSplitRoom(in: source)
-    try paneContainer.insert(makePane(document: document, from: source), splitting: source)
+  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false) throws {
+    try paneContainer.requireSplitRoom(in: source, vertical: vertical)
+    try paneContainer.insert(makePane(document: document, from: source), splitting: source, vertical: vertical)
     if let rows = initialHeightRows {
-      paneContainer.perform(.setHeight(rows: rows))
+      paneContainer.perform(vertical ? .setWidth(columns: rows) : .setHeight(rows: rows))
     }
     updateActiveDocumentChrome()
   }
@@ -1549,6 +1552,7 @@ final class EVDocumentContentViewController: NSViewController,
 
   override func loadView() {
     let root = NSView()
+    root.clipsToBounds = true
     // Programmatic content views do not receive the nib loader's default
     // width/height autoresizing mask. Keep the controller root matched to
     // the window's content rect as the window is shown and resized.
@@ -1557,9 +1561,9 @@ final class EVDocumentContentViewController: NSViewController,
     addChild(editorSurface.viewController)
     let editorView = editorSurface.viewController.view
     editorView.translatesAutoresizingMaskIntoConstraints = true
-    editorView.autoresizingMask = [.width, .height]
+    editorView.autoresizingMask = []
     statusBar.translatesAutoresizingMaskIntoConstraints = true
-    statusBar.autoresizingMask = [.width, .maxYMargin]
+    statusBar.autoresizingMask = []
     root.addSubview(editorView)
     root.addSubview(statusBar)
 
@@ -1606,6 +1610,9 @@ final class EVDocumentContentViewController: NSViewController,
       width: bounds.width,
       height: max(0, bounds.height - statusHeight)
     )
+    // AppKit retains an old bounds dimension when a previously zero-sized
+    // view is autoresized. Keep collapsed editor geometry exact as well.
+    if editorView.bounds.size != editorView.frame.size { editorView.setBoundsSize(editorView.frame.size) }
     statusBar.layoutSubtreeIfNeeded()
     editorView.layoutSubtreeIfNeeded()
   }

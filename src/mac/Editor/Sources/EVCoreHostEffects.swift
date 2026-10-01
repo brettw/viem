@@ -161,6 +161,8 @@ struct EVExHostEffect: Equatable {
     let registers: [EVExRegisterEffect]
     let jumps: [EVExJumpEffect]
     let textLines: [EVExTextLineEffect]
+    var windowTarget: UInt64? = nil
+    var windowResizeMode: UInt32 = 0
     var argumentNavigation: EVArgumentNavigation? = nil
     var readAfterLine: UInt64? = nil
 }
@@ -433,6 +435,8 @@ private extension EVRawEffectBatch {
                 registers: try registers(for: request),
                 jumps: try jumps(for: request),
                 textLines: try textLines(for: request),
+                windowTarget: request.kind == UInt32(VIEM_EX_FRONTEND_WINDOW) && request.argument_count > 0 ? request.argument_count : nil,
+                windowResizeMode: request.argument_command,
                 argumentNavigation: argumentNavigation,
                 readAfterLine: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil
             )

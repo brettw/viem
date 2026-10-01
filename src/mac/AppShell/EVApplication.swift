@@ -273,7 +273,7 @@ final class EVApplicationDelegate: NSObject,
             URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
         }
         controller.openArgumentList(urls, splitCount: arguments.splitCount,
-            initialLine: arguments.initialLine) { [self] result in
+            initialLine: arguments.initialLine, vertical: arguments.verticalSplits) { [self] result in
             if case let .failure(error) = result {
                 NSApplication.shared.presentError(error)
             }

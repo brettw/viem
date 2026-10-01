@@ -3,6 +3,33 @@ using System.Runtime.InteropServices;
 namespace Viem.Windows.Interop;
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemPaneChrome
+{
+    public ulong @id;
+    public double @status_height;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemPaneFrame
+{
+    public ulong @id;
+    public uint @kind;
+    public uint @flags;
+    public double @x;
+    public double @y;
+    public double @width;
+    public double @height;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemPaneSnapshot
+{
+    public ulong @count;
+    public double @minimum_width;
+    public double @minimum_height;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemDocumentOptions
 {
     public uint @struct_size;
@@ -1433,6 +1460,17 @@ internal static unsafe partial class Native
     public const uint VIEM_WINDOW_SHRINK = 15u;
     public const uint VIEM_WINDOW_SET_HEIGHT = 16u;
     public const uint VIEM_WINDOW_EQUALIZE_HEIGHTS = 17u;
+    public const uint VIEM_WINDOW_FOCUS_LEFT = 18u;
+    public const uint VIEM_WINDOW_FOCUS_RIGHT = 19u;
+    public const uint VIEM_WINDOW_MOVE_TO_LEFT = 20u;
+    public const uint VIEM_WINDOW_MOVE_TO_RIGHT = 21u;
+    public const uint VIEM_WINDOW_GROW_WIDTH = 22u;
+    public const uint VIEM_WINDOW_SHRINK_WIDTH = 23u;
+    public const uint VIEM_WINDOW_SET_WIDTH = 24u;
+    public const uint VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY = 25u;
+    public const uint VIEM_WINDOW_EQUALIZE_WIDTH_ONLY = 26u;
+    public const uint VIEM_WINDOW_RESIZE_INDEXED = 27u;
+    public const uint VIEM_EX_FRONTEND_VERTICAL = (1u << 9);
     public const uint VIEM_EX_FRONTEND_FORCE = (1u << 0);
     public const uint VIEM_EX_FRONTEND_HAS_PATH = (1u << 1);
     public const uint VIEM_EX_FRONTEND_HAS_RANGE = (1u << 2);
@@ -1761,6 +1799,24 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_startup(ulong @core, byte* @input, ulong @length, nint @diagnostic, void* @context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_create(ulong* @out_handle);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_destroy(ulong @handle);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_update(ulong @handle, double @width, double @height, ViemPaneChrome* @chrome, ulong @count);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_copy(ulong @handle, ViemPaneFrame* @frames, ulong @capacity, ViemPaneSnapshot* @out_snapshot);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_can_split(ulong @handle, ulong @pane, uint @orientation, double @status_height);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_split(ulong @handle, ulong @pane, uint @orientation, double @status_height, ulong* @out_pane);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_remove(ulong @handle, ulong @pane);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_drag(ulong @handle, ulong @id, uint @kind, double @delta);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_action(ulong @handle, ulong @pane, uint @operation, ulong @count, double @value, uint @flags, double @x, double @y, ulong* @out_focus);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern ViemArgumentResolution viem_argument_list_resolve(ulong @length, ulong @current_index, ulong @remembered_index, uint @command, ulong @count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_external_file_review_create(ulong* @out_handle);
@@ -1936,6 +1992,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_line_mode(ulong @core, ulong @view, uint* @out_mode);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_default_line_height(ulong @core, ulong @view, float* @out_height);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_default_column_width(ulong @handle, ulong @view, float* @out_width);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_line_mode(ulong @core, ulong @view, uint @mode, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

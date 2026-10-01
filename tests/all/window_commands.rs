@@ -148,14 +148,13 @@ fn lifecycle_commands_reuse_the_existing_ex_requests() {
             single(&mut c, &mut d, "", key),
             ExFrontendRequest::File(ExFileRequest::Split {
                 path: None,
-                height: None
-            }),
+                height: None, vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')) }),
             "{key:?}"
         );
     }
     assert_eq!(
         single(&mut c, &mut d, "", Key::Char('n')),
-        ExFrontendRequest::File(ExFileRequest::NewPane { height: None })
+        ExFrontendRequest::File(ExFileRequest::NewPane { height: None, vertical: false })
     );
     for key in [Key::Char('q'), Key::Char('c'), Key::Ctrl('q')] {
         assert_eq!(
@@ -167,38 +166,12 @@ fn lifecycle_commands_reuse_the_existing_ex_requests() {
 }
 
 #[test]
-fn horizontal_focus_is_accepted_and_unsupported_layouts_are_reported() {
+fn horizontal_focus_and_width_commands_publish_effects() {
     let (mut c, mut d) = setup();
-    for key in [
-        Key::Char('h'),
-        Key::Char('l'),
-        Key::Ctrl('h'),
-        Key::Ctrl('l'),
-        Key::Backspace,
-        Key::Left,
-        Key::Right,
-    ] {
-        let output = window(&mut c, &mut d, "", key);
-        assert!(matches!(output.status, CommandStatus::Complete), "{key:?}");
-        assert!(requests(&output).is_empty(), "{key:?}");
+    for (key, expected) in [(Key::Left,WindowRequest::FocusLeft {count:6}), (Key::Right,WindowRequest::FocusRight {count:6}), (Key::Char('>'),WindowRequest::GrowWidth {columns:6}), (Key::Char('<'),WindowRequest::ShrinkWidth {columns:6}), (Key::Char('|'),WindowRequest::SetWidth {columns:Some(6)}), (Key::Char('H'),WindowRequest::MoveToLeft), (Key::Char('L'),WindowRequest::MoveToRight)] {
+        assert_eq!(requests(&window(&mut c,&mut d,"6",key)),[ExFrontendRequest::Window(expected)]);
     }
-    for key in [
-        Key::Char('H'),
-        Key::Char('L'),
-        Key::Char('<'),
-        Key::Char('>'),
-        Key::Char('|'),
-        Key::Char('T'),
-        Key::Enter,
-    ] {
-        let output = window(&mut c, &mut d, "", key);
-        assert!(
-            matches!(output.status, CommandStatus::Unsupported(_)),
-            "{key:?}: {:?}",
-            output.status
-        );
-        assert!(requests(&output).is_empty(), "{key:?}");
-    }
+    for key in [Key::Char('T'),Key::Enter] {assert!(matches!(window(&mut c,&mut d,"",key).status,CommandStatus::Unsupported(_)));}
 }
 
 #[test]
@@ -367,12 +340,11 @@ fn window_split_and_new_pane_carry_the_combined_initial_height() {
         send(&mut c, &mut d, Key::Char('3'));
         let output = send(&mut c, &mut d, key);
         let file = if matches!(key, Key::Char('n') | Key::Ctrl('n')) {
-            ExFileRequest::NewPane { height: Some(6) }
+            ExFileRequest::NewPane { height: Some(6), vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')) }
         } else {
             ExFileRequest::Split {
                 path: None,
-                height: Some(6),
-            }
+                height: Some(6), vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')) }
         };
         assert_eq!(
             requests(&output),
@@ -452,8 +424,7 @@ fn visual_block_window_prefix_precedes_block_shortcuts_and_preserves_the_rectang
                 requests(&output),
                 [ExFrontendRequest::File(ExFileRequest::Split {
                     path: None,
-                    height: Some(6)
-                })]
+                    height: Some(6), vertical: true })]
             );
         } else if command == Key::Ctrl('q') {
             assert_eq!(
@@ -502,8 +473,7 @@ fn uppercase_control_window_prefix_and_suffix_are_ascii_aliases() {
             requests(&output),
             [ExFrontendRequest::File(ExFileRequest::Split {
                 path: None,
-                height: Some(3)
-            })]
+                height: Some(3), vertical: true })]
         );
         assert_eq!(c.mode(), mode);
         send(&mut c, &mut d, Key::Ctrl('W'));

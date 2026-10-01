@@ -3,6 +3,7 @@
 // Leave room for the native insertion indicator at a zero-margin line end.
 pub(crate) const CARET_REVEAL_WIDTH: f32 = 2.0;
 
+pub mod panes;
 mod composition;
 mod block_box;
 mod direction;
@@ -54,6 +55,7 @@ pub use jobs::{
     LayoutJobRegion, LayoutJobRequest, LayoutProviderRequirements, ViewportLayoutRegion,
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
+pub(crate) use measurement::default_column_width;
 pub use measurement::{
     BoundaryAffinity, ClusterCaretStop, FontSlant, MeasurementEnvironmentId, MeasurementError,
     MetricsGeneration, OpenTypeFeature, ProviderThreading, RenderRunHandle, RenderRunOwner,
@@ -62,6 +64,7 @@ pub use measurement::{
     TextMeasurementProvider, TextMetrics,
 };
 pub use mock::MockTextMeasurementProvider;
+pub(crate) use style::shaping_style;
 pub use style::{
     DocumentLayoutStyles, DocumentStyleError, DocumentStyleInput, PaintStyleRun,
     ParagraphLayoutStyle, ResolvedTextPaint,

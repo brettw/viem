@@ -92,7 +92,7 @@ final class EVWindowInputTests: XCTestCase {
         let split = try surface(window)
         XCTAssertTrue(split.backend === backend)
         XCTAssertFalse(split === original)
-        XCTAssertEqual(split.editorView.bounds.height, 6 * (try XCTUnwrap(split.defaultLineHeight)), accuracy: 2)
+        XCTAssertEqual(split.view.superview!.bounds.width, 100, accuracy: 2)
         XCTAssertEqual(original.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
 
         type("iX", in: split)
@@ -145,6 +145,48 @@ final class EVWindowInputTests: XCTestCase {
         try control("w", in: split)
         type("1w", in: split)
         XCTAssertTrue(window.editorSurface === original)
+    }
+
+    func testVerticalExSplitsArrowFocusWidthCountsAndIndexedResizeKeepSource() throws {
+        let (backend, document, window) = try fixture()
+        defer { window.close(); document.close() }
+        window.window?.setContentSize(NSSize(width:920,height:680))
+        func ex(_ command: String, in target: EVEditorSurfaceController) throws {
+            type(":" + command, in: target)
+            let enter = try XCTUnwrap(NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,characters:"\r",charactersIgnoringModifiers:"\r",isARepeat:false,keyCode:36))
+            target.editorView.keyDown(with:enter)
+        }
+        let original = try surface(window)
+        let bytes = try backend.serializedSource(typeName:EVDocument.plainTextType)
+        let revision = backend.persistenceState.documentRevision
+        try ex("vs",in:original)
+        let right = try surface(window)
+        XCTAssertFalse(right === original)
+        XCTAssertTrue(right.backend === backend)
+        try control("w",in:right)
+        let left = try XCTUnwrap(NSEvent.keyEvent(with:.keyDown,location:.zero,modifierFlags:[],timestamp:0,windowNumber:0,context:nil,characters:"\u{f702}",charactersIgnoringModifiers:"\u{f702}",isARepeat:false,keyCode:123))
+        right.editorView.keyDown(with:left)
+        XCTAssertTrue(window.editorSurface === original)
+        let unit = try XCTUnwrap(right.defaultColumnWidth)
+        try ex("vert 2resize 24",in:original)
+        XCTAssertTrue(window.editorSurface === original,"indexed resizing does not change focus")
+        XCTAssertEqual(right.view.superview!.bounds.width,max(100,unit*24),accuracy:1)
+        try ex("vert resize +3",in:original)
+        XCTAssertNil(original.commandOutput)
+        try ex("wincmd l",in:original)
+        XCTAssertTrue(window.editorSurface === right)
+        try ex("new",in:right)
+        let empty = try surface(window)
+        let emptyDocument = try XCTUnwrap(window.activeDocument)
+        defer { emptyDocument.close() }
+        XCTAssertEqual(window.paneCount,3)
+        XCTAssertFalse(empty.backend === backend)
+        try ex("resize 0",in:empty)
+        XCTAssertEqual(empty.view.bounds.height,0,accuracy:1)
+        try ex("wincmd K",in:empty)
+        XCTAssertEqual(empty.view.superview!.bounds.width,920,accuracy:1)
+        XCTAssertEqual(try backend.serializedSource(typeName:EVDocument.plainTextType),bytes)
+        XCTAssertEqual(backend.persistenceState.documentRevision,revision)
     }
 
     func testSplittingACollapsedPaneReportsNoRoomWithoutChangingTheBuffer() throws {

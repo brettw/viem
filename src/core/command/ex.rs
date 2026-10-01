@@ -68,9 +68,9 @@ pub enum ExAction {
         path: Option<String>,
     },
     Update,
-    Split {
-        path: Option<String>,
-    },
+    Split { path: Option<String>, vertical: bool, size: Option<usize> },
+    NewPane { vertical: bool, size: Option<usize> },
+    Window(super::window::WindowRequest),
     Edit {
         path: Option<String>,
     },
@@ -328,7 +328,55 @@ impl fmt::Display for ExParseError {
 impl std::error::Error for ExParseError {}
 
 pub fn parse_ex(input: &str) -> Result<ExCommand, ExParseError> {
+    if let Some((vertical, rest, offset)) = orientation_modifier(input) {
+        let mut command = Parser::new(rest).parse().map_err(|mut error| {
+            error.offset += offset;
+            error
+        })?;
+        use super::window::WindowRequest as W;
+        match &mut command.action {
+            ExAction::Split { vertical: v, .. } | ExAction::NewPane { vertical: v, .. } => {
+                *v = vertical;
+            }
+            ExAction::Window(request) => {
+                *request = match *request {
+                    W::Resize { index, change, size, .. } => {
+                        W::Resize { index, width: vertical, change, size }
+                    }
+                    W::EqualizeHeights => {
+                        if vertical { W::EqualizeHeightOnly } else { W::EqualizeWidthOnly }
+                    }
+                    W::Grow { rows } if vertical => W::GrowWidth { columns: rows },
+                    W::Shrink { rows } if vertical => W::ShrinkWidth { columns: rows },
+                    W::SetHeight { rows } if vertical => W::SetWidth { columns: rows },
+                    r => r,
+                };
+            }
+            _ => {},
+        }
+        return Ok(command);
+    }
     Parser::new(input).parse()
+}
+
+fn orientation_modifier(input: &str) -> Option<(bool, &str, usize)> {
+    let stripped = input.trim_start();
+    let stripped = stripped.strip_prefix(':').unwrap_or(stripped).trim_start();
+    let (modifier, rest) = stripped.split_once(char::is_whitespace)?;
+    let vertical = modifier.len() >= 4 && "vertical".starts_with(modifier);
+    let horizontal = modifier.len() >= 3 && "horizontal".starts_with(modifier);
+    (vertical || horizontal).then_some((vertical, rest, input.len() - rest.len()))
+}
+
+fn window_ex_action(command: super::window::WindowCommand, offset: usize) -> Result<ExAction, ExParseError> {
+    use super::{window::WindowCommand as W, ex_execute::ExFileRequest as F};
+    match command {
+        W::Request(r) => Ok(ExAction::Window(r)),
+        W::File(F::Split {path,height,vertical}) => Ok(ExAction::Split {path,vertical,size:height}),
+        W::File(F::NewPane {height,vertical}) => Ok(ExAction::NewPane {vertical,size:height}),
+        W::File(F::Quit {..}) => Ok(ExAction::Quit),
+        _ => Err(ExParseError { offset, kind: ExParseErrorKind::UnexpectedArgument("unsupported window command".into()) }),
+    }
 }
 
 pub(super) struct FilenameArgument {
@@ -341,6 +389,7 @@ pub(super) struct FilenameArgument {
 pub(super) fn filename_argument(input: &str, cursor: usize) -> Option<FilenameArgument> {
     let prefix = input.get(..cursor)?;
     let mut parser = Parser::new(prefix);
+    if let Some((_, _, offset)) = orientation_modifier(prefix) { parser.at = offset; }
     parser.skip_space();
     if parser.peek() == Some(':') {
         parser.bump();
@@ -352,7 +401,7 @@ pub(super) fn filename_argument(input: &str, cursor: usize) -> Option<FilenameAr
     let directories_only = match name {
         CommandName::ChangeDirectory => true,
         CommandName::EditNewWindow
-        | CommandName::Split
+        | CommandName::Split | CommandName::VSplit | CommandName::NewPane | CommandName::VNew
         | CommandName::Edit
         | CommandName::Write
         | CommandName::SaveAs
@@ -419,13 +468,27 @@ impl<'a> Parser<'a> {
             CommandName::RepeatSubstitute | CommandName::RepeatWithSearch => raw_args.trim_end(),
             _ => raw_args.trim(),
         };
-        let action = if name.is_argument_navigation() {
+        let mut action = if name.is_argument_navigation() {
             parse_argument_navigation(name, args, args_offset, range.as_ref())?
         } else {
             self.parse_action(name, args, args_offset)?
         };
+        let window_count = matches!(name, CommandName::Split | CommandName::VSplit | CommandName::NewPane | CommandName::VNew | CommandName::Window | CommandName::Resize);
+        if window_count {
+            let count = match &range {
+                None => None,
+                Some(ExRange::Single(ExAddress { base: AddressBase::Absolute(n), offset: 0 })) => Some(usize::try_from(*n).map_err(|_| ExParseError { offset: 0, kind: ExParseErrorKind::InvalidNumber(n.to_string()) })?),
+                _ => return self.error(ExParseErrorKind::UnexpectedRange(name.canonical().to_owned())),
+            };
+            match &mut action {
+                ExAction::Split { size,.. } | ExAction::NewPane { size,.. } => *size = count,
+                ExAction::Window(super::window::WindowRequest::Resize { index,.. }) => *index = count,
+                ExAction::Window(_) if name == CommandName::Window => { action = window_ex_action(super::window::window_command(super::Key::Char(args.chars().next().unwrap()),count),args_offset)?; },
+                _ => {},
+            }
+        }
         // The prefix for argument navigation is a file count, never a hard-line range.
-        let range = if name.is_argument_navigation() { None } else { range };
+        let range = if name.is_argument_navigation() || window_count { None } else { range };
         Ok(ExCommand {
             range,
             bang,
@@ -611,9 +674,21 @@ impl<'a> Parser<'a> {
                 path: optional_string(args),
             }),
             CommandName::Update => no_args(ExAction::Update),
-            CommandName::Split => Ok(ExAction::Split {
-                path: optional_string(args),
-            }),
+            CommandName::Split | CommandName::VSplit => Ok(ExAction::Split { path: optional_string(args), vertical: name == CommandName::VSplit, size: None }),
+            CommandName::NewPane | CommandName::VNew => Ok(if args.is_empty() { ExAction::NewPane { vertical: name == CommandName::VNew, size: None } } else { ExAction::Split { path: optional_string(args), vertical: name == CommandName::VNew, size: None } }),
+            CommandName::Window => {
+                let mut chars = args.chars();
+                let key = chars.next().filter(|_| chars.next().is_none()).ok_or(ExParseError { offset: args_offset, kind: ExParseErrorKind::UnexpectedArgument(args.to_owned()) })?;
+                window_ex_action(super::window::window_command(super::Key::Char(key), None), args_offset)
+            }
+            CommandName::Resize => {
+                let change = if args.starts_with('+') { 1 } else if args.starts_with('-') { -1 } else { 0 };
+                let digits = if change == 0 { args } else { &args[1..] };
+                let size = if args.is_empty() { None } else if digits.is_empty() && change != 0 { Some(1) } else {
+                    Some(digits.parse::<usize>().map_err(|_| ExParseError { offset: args_offset, kind: ExParseErrorKind::InvalidNumber(args.to_owned()) })?)
+                };
+                Ok(ExAction::Window(super::window::WindowRequest::Resize { index: None, width: false, change, size }))
+            }
             CommandName::Edit => Ok(ExAction::Edit {
                 path: optional_string(args),
             }),
@@ -783,6 +858,11 @@ enum CommandName {
     ChangeDirectory,
     Update,
     Split,
+    VSplit,
+    NewPane,
+    VNew,
+    Window,
+    Resize,
     Edit,
     New,
     Write,
@@ -842,6 +922,11 @@ impl CommandName {
             Self::ChangeDirectory => "cd",
             Self::Update => "update",
             Self::Split => "split",
+            Self::VSplit => "vsplit",
+            Self::NewPane => "new",
+            Self::VNew => "vnew",
+            Self::Window => "wincmd",
+            Self::Resize => "resize",
             Self::Edit => "edit",
             Self::New => "enew",
             Self::Write => "write",
@@ -907,7 +992,7 @@ impl CommandName {
     }
 
     fn accepts_range(self) -> bool {
-        matches!(self, Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
+        matches!(self, Self::Split | Self::VSplit | Self::NewPane | Self::VNew | Self::Window | Self::Resize | Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
             | Self::Retab | Self::Left | Self::Right | Self::Center | Self::Read) ||
         matches!(self, Self::Next | Self::Previous | Self::Argument | Self::WriteNext | Self::WritePrevious) || matches!(
             self,
@@ -1003,10 +1088,14 @@ const COMMANDS: &[CommandSpec] = &[
         minimum: 2,
     },
     CommandSpec {
-        name: CommandName::Split,
+        name: CommandName::VSplit,
         spelling: "vsplit",
         minimum: 2,
     },
+    CommandSpec { name: CommandName::NewPane, spelling: "new", minimum: 3 },
+    CommandSpec { name: CommandName::VNew, spelling: "vnew", minimum: 3 },
+    CommandSpec { name: CommandName::Window, spelling: "wincmd", minimum: 4 },
+    CommandSpec { name: CommandName::Resize, spelling: "resize", minimum: 3 },
     CommandSpec {
         name: CommandName::Quit,
         spelling: "close",
@@ -2095,19 +2184,49 @@ mod tests {
     }
 
     #[test]
-    fn stacked_split_aliases_preserve_paths_and_reject_unsupported_modifiers() {
+    fn split_aliases_preserve_orientation_paths_and_reject_ranges() {
         for command in [":sp", ":split", ":vs", ":vsplit"] {
-            assert_eq!(parse(command).action, ExAction::Split { path: None });
+            assert_eq!(parse(command).action, ExAction::Split { path: None, vertical: command.contains("vs"), size: None });
             assert_eq!(
                 parse(&format!("{command} notes file.md")).action,
                 ExAction::Split {
-                    path: Some("notes file.md".to_owned())
-                }
+                    path: Some("notes file.md".to_owned()), vertical: command.contains("vs"), size: None }
             );
             assert!(parse_ex(&format!("{command}!")).is_err());
         }
         assert!(parse_ex(":1,2split").is_err());
         assert_eq!(parse(":clo").action, ExAction::Quit);
+    }
+
+    #[test]
+    fn split_counts_modifiers_new_views_and_indexed_resize_are_portable() {
+        use super::super::window::WindowRequest as W;
+        for (input, expected) in [
+            (":24vs", ExAction::Split {path:None,vertical:true,size:Some(24)}),
+            (":vertical 12sp file.md", ExAction::Split {path:Some("file.md".into()),vertical:true,size:Some(12)}),
+            (":vnew", ExAction::NewPane {vertical:true,size:None}),
+            (":new", ExAction::NewPane {vertical:false,size:None}),
+            (":vert wincmd n", ExAction::NewPane {vertical:true,size:None}),
+            (":3wincmd h", ExAction::Window(W::FocusLeft {count:3})),
+            (":vert wincmd =", ExAction::Window(W::EqualizeHeightOnly)),
+            (":horizontal wincmd =", ExAction::Window(W::EqualizeWidthOnly)),
+            (":vertical 2resize +5", ExAction::Window(W::Resize {index:Some(2),width:true,change:1,size:Some(5)})),
+            (":resize 0", ExAction::Window(W::Resize {index:None,width:false,change:0,size:Some(0)})),
+            (":resize -", ExAction::Window(W::Resize {index:None,width:false,change:-1,size:Some(1)})),
+            (":vert resize", ExAction::Window(W::Resize {index:None,width:true,change:0,size:None})),
+        ] { let command=parse(input);assert_eq!(command.action,expected,"{input}");assert!(command.range.is_none()); }
+        for input in [":1,2vs",":%wincmd h",":resize --2",":resize +bad"] {assert!(parse_ex(input).is_err(),"{input}");}
+    }
+
+    #[test]
+    fn filename_completion_recognizes_split_forms_and_orientation_modifiers() {
+        for input in [":vs ./notes", ":new ./notes", ":vnew ./notes",
+            " :vertical 24sp ./notes", ":hor 12vnew ./notes"] {
+            let argument = filename_argument(input, input.len()).expect(input);
+            assert_eq!(&input[argument.range], "./notes", "{input}");
+            assert!(!argument.directories_only);
+        }
+        assert!(filename_argument(":vertical resize 24", 19).is_none());
     }
 
     #[test]

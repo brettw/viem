@@ -50,6 +50,7 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
+        paneGrid.Configure(preferences);
         formattingToolbar = new();
         ConfigureFormattingToolbar();
         menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
@@ -76,7 +77,7 @@ internal sealed partial class EditorWindow : Window
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
             settingsWindow?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
-            foreach (var pane in Panes) pane.Dispose(); Panes.Clear();
+            foreach (var pane in Panes) pane.Dispose(); Panes.Clear(); paneGrid.Dispose();
             foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
         };
         preferences.Changed += ApplyPreferences;
@@ -90,8 +91,8 @@ internal sealed partial class EditorWindow : Window
             root.Loaded += (_, _) => BeginFileLaunch();
         }
         else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
-        WindowSizing.TrackMinimumSize(this, () => new(480,
-            Math.Max(280, Panes.Sum(p => p.StatusBarHeight) + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
+        WindowSizing.TrackMinimumSize(this, () => new(Math.Max(480, paneGrid.MinimumSize.Width),
+            Math.Max(280, paneGrid.MinimumSize.Height + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
@@ -163,7 +164,7 @@ internal sealed partial class EditorWindow : Window
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);
-    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null)
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         if (!savedSources.ContainsKey(doc))
@@ -178,8 +179,18 @@ internal sealed partial class EditorWindow : Window
         preferences.AttachThemeDocument(doc, initialize: false);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
-        Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex); SetActive(pane); return pane;
+        if (replacing != null)
+        {
+            int index = Panes.IndexOf(replacing); Panes[index] = pane;
+            pane.RememberedArgument = replacing.RememberedArgument;
+            paneGrid.ReplacePane(replacing, pane); replacing.Focused -= SetActive; replacing.Dispose();
+            if (lastPane == replacing) lastPane = null;
+            if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); replacing.Document.Dispose(); }
+        }
+        else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical); }
+        SetActive(pane); return pane;
     }
+    internal void FocusPane(EditorPane pane, bool keepStatusFocus = false) { SetActive(pane); if (!keepStatusFocus) pane.FocusEditor(); }
     private void SetActive(EditorPane pane)
     {
         // WinUI can deliver a queued focus event after a pane was detached.
@@ -188,23 +199,23 @@ internal sealed partial class EditorWindow : Window
         foreach (var item in Panes) item.IsActive = item == pane;
         UpdateTitle(); RefreshStyleMenus();
     }
-    private void RebuildPanes(int? splitIndex = null) => paneGrid.Rebuild(Panes, splitIndex);
+    private void RebuildPanes(int? splitIndex = null, bool vertical = false) => paneGrid.Rebuild(Panes, splitIndex, vertical);
+    private void SyncPaneOrder() { var next = paneGrid.OrderedPanes.ToArray(); Panes.Clear(); Panes.AddRange(next); }
 
-    internal void RequireSplitRoom(EditorPane? pane = null)
+    internal void RequireSplitRoom(EditorPane? pane = null, bool vertical = false)
     {
         pane ??= ActivePane;
-        paneGrid.UpdateLayout();
-        if (pane == null || !Panes.Contains(pane)
-            || pane.ActualHeight - pane.StatusBarHeight < Math.Max(28, preferences.StatusFontSize + 12))
-            throw new InvalidOperationException("No room to split the current view.");
+        if (pane == null || !Panes.Contains(pane)) throw new InvalidOperationException("No room to split the current view.");
+        paneGrid.RequireSplitRoom(pane, Math.Max(28, preferences.StatusFontSize + 12), vertical);
     }
 
-    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null)
+    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false)
     {
-        RequireSplitRoom(pane);
-        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane));
+        RequireSplitRoom(pane, vertical);
+        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical);
+        SyncPaneOrder();
         paneGrid.UpdateLayout();
-        added.InitialHeightLines = lines;
+        added.InitialHeightLines = lines; added.InitialVerticalSplit = vertical;
         ApplyInitialPaneHeight(added);
         return added;
     }
@@ -213,7 +224,8 @@ internal sealed partial class EditorWindow : Window
     {
         if (pane.View is not { } view || pane.InitialHeightLines is not { } lines || !Panes.Contains(pane)) return;
         pane.InitialHeightLines = null;
-        paneGrid.ResizePane(pane, lines * (double)view.DefaultLineHeight);
+        if (pane.InitialVerticalSplit) paneGrid.ResizeWidth(pane, lines * (double)view.DefaultColumnWidth);
+        else paneGrid.ResizePane(pane, lines * (double)view.DefaultLineHeight);
     }
 
     internal void UpdateTitle()
@@ -253,7 +265,7 @@ internal sealed partial class EditorWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
-        EditorPane? targetPane = null, bool newWindow = false)
+        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
@@ -276,7 +288,7 @@ internal sealed partial class EditorWindow : Window
         }
         var splitSource = split ? old : null;
         ValidateTarget();
-        if (split) RequireSplitRoom(splitSource);
+        if (split) RequireSplitRoom(splitSource, vertical);
         path = ResolvePath(path);
         bool pickedFile = Directory.Exists(path);
         if (pickedFile)
@@ -349,7 +361,7 @@ internal sealed partial class EditorWindow : Window
             }
             else doc = ConfigureNewDocument(doc, source, path);
         }
-        try { ValidateTarget(); RequireReplacementAllowed(); if (split) RequireSplitRoom(splitSource); }
+        try { ValidateTarget(); RequireReplacementAllowed(); if (split) RequireSplitRoom(splitSource, vertical); }
         catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
         if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
         if (readOnly) doc.SetReadOnly(true);
@@ -364,8 +376,7 @@ internal sealed partial class EditorWindow : Window
         {
             int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
             ulong argument = old?.RememberedArgument ?? ulong.MaxValue;
-            if (!split && old != null) RemovePane(old, false);
-            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines) : AddPane(doc, Math.Min(index, Panes.Count));
+            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines, vertical) : AddPane(doc, Math.Min(index, Panes.Count), replacing: old);
             opened.RememberedArgument = argument;
         }
         preferences.Remember(path);
@@ -468,10 +479,10 @@ internal sealed partial class EditorWindow : Window
     private void RemovePane(EditorPane pane, bool rebuild = true)
     {
         pane.Focused -= SetActive;
-        pane.Dispose(); paneGrid.Children.Remove(pane); Panes.Remove(pane);
+        paneGrid.RemovePane(pane); pane.Dispose(); Panes.Remove(pane);
         if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); pane.Document.Dispose(); }
         if (ActivePane == pane) ActivePane = Panes.FirstOrDefault();
-        if (rebuild) { RebuildPanes(); if (ActivePane != null) SetActive(ActivePane); }
+        if (rebuild) { RebuildPanes(); paneGrid.Equalize(); if (ActivePane != null) SetActive(ActivePane); }
     }
     internal async Task<ContentDialogResult> Dialog(string title, string text, string primary = "OK", string close = "", string secondary = "")
     {
@@ -499,14 +510,14 @@ internal sealed partial class EditorWindow : Window
                     switch (r.kind)
                     {
                         case VIEM_EX_FRONTEND_SPLIT:
-                            if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, targetPane: pane);
-                            else SplitPane(pane, pane.Document, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, vertical: (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0, targetPane: pane);
+                            else SplitPane(pane, pane.Document, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
                             break;
                         case VIEM_EX_FRONTEND_NEW_PANE:
-                            RequireSplitRoom(pane);
-                            SplitPane(pane, NewDocument(), (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            RequireSplitRoom(pane, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
+                            SplitPane(pane, NewDocument(), (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
                             break;
-                        case VIEM_EX_FRONTEND_NEW: if (force || await ConfirmDiscard(pane)) { int i = Panes.IndexOf(pane); RemovePane(pane, false); AddPane(NewDocument(), i); } break;
+                        case VIEM_EX_FRONTEND_NEW: if (force || await ConfirmDiscard(pane)) AddPane(NewDocument(), replacing: pane); break;
                         case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(ResolvePath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force, targetPane: pane); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
                         case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW:
                             if (request.Text.Length > 0) await OpenPath(request.Text, targetPane: pane, newWindow: true);
@@ -521,7 +532,10 @@ internal sealed partial class EditorWindow : Window
                             if (pane.Document.State.document_revision != r.document_revision) throw new InvalidOperationException("The file was saved, but newer edits remain open.");
                             await ClosePane(pane, true); break;
                         case VIEM_EX_FRONTEND_WRITE_ALL: foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).DistinctBy(p => p.Document).Where(p => p.Document.IsDirty).ToArray()) await Save(doc, false, null, force, native: false); break;
-                        case VIEM_EX_FRONTEND_WINDOW: await WindowCommand(pane, r.window_command, r.window_count); break;
+                        case VIEM_EX_FRONTEND_WINDOW:
+                            if (r.window_command == VIEM_WINDOW_RESIZE_INDEXED) ResizeWindow(pane, r.argument_count, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0, r.argument_command, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
+                            else await WindowCommand(pane, r.window_command, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : 0);
+                            break;
                         case VIEM_EX_FRONTEND_ONLY: await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1); break;
                         case VIEM_EX_FRONTEND_PWD: pane.SetMessage(Environment.CurrentDirectory); break;
                         case VIEM_EX_FRONTEND_CD:
@@ -595,26 +609,43 @@ internal sealed partial class EditorWindow : Window
     {
         var w = new EditorWindow(preferences, document); App.Instance.Windows.Add(w); w.Closed += (_, _) => App.Instance.Windows.Remove(w); w.Activate(); return w;
     }
+    private void ResizeWindow(EditorPane current, ulong index, bool width, uint change, ulong? size)
+    {
+        if (index > (ulong)Panes.Count || change > 2) throw new InvalidOperationException("Invalid window number.");
+        var pane = index == 0 ? current : Panes[(int)index-1];
+        double unit = width ? pane.View?.DefaultColumnWidth ?? 8 : pane.View?.DefaultLineHeight ?? 16;
+        paneGrid.Action(pane, 5, width ? 1u : 0u, (size ?? 0) * unit * (change == 2 ? -1 : 1), size == null ? 2u : change == 0 ? 0u : 1u);
+    }
     private async Task WindowCommand(EditorPane pane, uint command, ulong count)
     {
         int index = Panes.IndexOf(pane), n = (int)Math.Clamp(count, 1, (ulong)Math.Max(Panes.Count, 1));
         EditorPane target = pane;
         switch (command)
         {
-            case VIEM_WINDOW_FOCUS_DOWN: target = Panes[Math.Min(Panes.Count - 1, index + n)]; break;
-            case VIEM_WINDOW_FOCUS_UP: target = Panes[Math.Max(0, index - n)]; break;
-            case VIEM_WINDOW_FOCUS_NEXT: target = Panes[(index + n) % Panes.Count]; break;
-            case VIEM_WINDOW_FOCUS_PREVIOUS: target = Panes[(index - n + Panes.Count) % Panes.Count]; break;
+            case VIEM_WINDOW_FOCUS_DOWN: target = paneGrid.Action(pane, 1, 0, count); break;
+            case VIEM_WINDOW_FOCUS_UP: target = paneGrid.Action(pane, 1, 1, count); break;
+            case VIEM_WINDOW_FOCUS_LEFT: target = paneGrid.Action(pane, 1, 2, count); break;
+            case VIEM_WINDOW_FOCUS_RIGHT: target = paneGrid.Action(pane, 1, 3, count); break;
+            case VIEM_WINDOW_FOCUS_NEXT: target = Panes[count == 0 ? (index + 1) % Panes.Count : n - 1]; break;
+            case VIEM_WINDOW_FOCUS_PREVIOUS: target = Panes[count == 0 ? (index - 1 + Panes.Count) % Panes.Count : n - 1]; break;
             case VIEM_WINDOW_FOCUS_TOP: target = Panes[0]; break;
             case VIEM_WINDOW_FOCUS_BOTTOM: target = Panes[^1]; break;
             case VIEM_WINDOW_FOCUS_LAST_ACCESSED: target = lastPane != null && Panes.Contains(lastPane) ? lastPane : pane; break;
-            case VIEM_WINDOW_ROTATE_DOWN: Panes.Insert(0, Panes[^1]); Panes.RemoveAt(Panes.Count - 1); RebuildPanes(); break;
-            case VIEM_WINDOW_ROTATE_UP: Panes.Add(Panes[0]); Panes.RemoveAt(0); RebuildPanes(); break;
-            case VIEM_WINDOW_MOVE_TO_TOP: Panes.Remove(pane); Panes.Insert(0, pane); RebuildPanes(); break;
-            case VIEM_WINDOW_MOVE_TO_BOTTOM: Panes.Remove(pane); Panes.Add(pane); RebuildPanes(); break;
-            case VIEM_WINDOW_EXCHANGE: int other = (index + 1) % Panes.Count; (Panes[index], Panes[other]) = (Panes[other], Panes[index]); RebuildPanes(); break;
+            case VIEM_WINDOW_ROTATE_DOWN: paneGrid.Action(pane, 2, count); SyncPaneOrder(); break;
+            case VIEM_WINDOW_ROTATE_UP: paneGrid.Action(pane, 2, count, flags: 1); SyncPaneOrder(); break;
+            case VIEM_WINDOW_MOVE_TO_TOP: paneGrid.Action(pane, 4, 1); SyncPaneOrder(); break;
+            case VIEM_WINDOW_MOVE_TO_BOTTOM: paneGrid.Action(pane, 4, 0); SyncPaneOrder(); break;
+            case VIEM_WINDOW_MOVE_TO_LEFT: paneGrid.Action(pane, 4, 2); SyncPaneOrder(); break;
+            case VIEM_WINDOW_MOVE_TO_RIGHT: paneGrid.Action(pane, 4, 3); SyncPaneOrder(); break;
+            case VIEM_WINDOW_EXCHANGE: paneGrid.Action(pane, 3, count); SyncPaneOrder(); break;
             case VIEM_WINDOW_CLOSE_OTHERS: foreach (var p in Panes.Where(p => p != pane).ToArray()) await ClosePane(p); break;
             case VIEM_WINDOW_EQUALIZE_HEIGHTS: paneGrid.Equalize(); break;
+            case VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY: paneGrid.Equalize(1); break;
+            case VIEM_WINDOW_EQUALIZE_WIDTH_ONLY: paneGrid.Equalize(2); break;
+            case VIEM_WINDOW_GROW_WIDTH: case VIEM_WINDOW_SHRINK_WIDTH: case VIEM_WINDOW_SET_WIDTH:
+                double column = pane.View?.DefaultColumnWidth ?? 8;
+                paneGrid.Action(pane, 5, 1, (command == VIEM_WINDOW_SHRINK_WIDTH ? -1 : 1) * Math.Max(1, count) * column,
+                    command == VIEM_WINDOW_SET_WIDTH ? (count == 0 ? 2u : 0u) : 1u); break;
             case VIEM_WINDOW_GROW: case VIEM_WINDOW_SHRINK: case VIEM_WINDOW_SET_HEIGHT:
                 paneGrid.UpdateLayout();
                 double line = pane.View?.DefaultLineHeight ?? 16;

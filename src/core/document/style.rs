@@ -2094,13 +2094,16 @@ impl StyleSheet {
         )
     }
 
+    /// Base Paragraph appearance without source-authored or named overrides.
+    pub fn default_paragraph_style(&self) -> Result<ResolvedParagraphStyle, StyleError> {
+        self.resolve_paragraph_style(&self.base_paragraph, &self.base_paragraph, None,
+            &BlockProperties::default(), &CharacterProperties::default())
+    }
+
     /// The unscaled unit for native pane height commands, independent of text,
     /// font metrics, wrapping, and source-authored paragraph overrides.
     pub fn default_line_height(&self) -> Result<f32, StyleError> {
-        let paragraph = self.resolve_paragraph_style(
-            &self.base_paragraph, &self.base_paragraph, None,
-            &BlockProperties::default(), &CharacterProperties::default(),
-        )?;
+        let paragraph = self.default_paragraph_style()?;
         let size = paragraph.character.size;
         Ok(match paragraph.line_spacing {
             LineSpacing::Normal => size,
