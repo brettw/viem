@@ -573,6 +573,31 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         }
     }
 
+    func testDirectoryVerticalSplitKeepsOrientationAfterPickingFile() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let selected = try registeredDocument(at: directory.appendingPathComponent("selected.txt"))
+        defer { selected.close() }
+        let backend = Backend(data: Data("source".utf8), dirty: false)
+        let (original, controller) = makeController(backend: backend)
+        controller.showWindow(nil)
+        controller.window?.setContentSize(EVDocumentWindowController.initialContentSize)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        let origin = controller.editorSurface
+        controller.openFilePanelPresenter = { _, _, choose in choose(selected.fileURL) }
+        var result: Result<String?, Error>?
+        controller.perform(documentHostRequests: [EVDocumentHostRequest(
+            kind: .split, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision,
+            path: directory.path, verticalSplit: true)]) { result = $0 }
+        _ = try XCTUnwrap(result).get()
+        XCTAssertEqual(controller.paneCount, 2)
+        XCTAssertTrue(controller.activeDocument === selected)
+        controller.perform(windowRequests: [.focusLeft(count: 1)], from: controller.editorSurface)
+        XCTAssertTrue(controller.editorSurface === origin)
+        XCTAssertTrue(controller.activeDocument === original)
+    }
+
     func testDirectoryCapitalEditOpensSelectedFileInNewWindow() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
