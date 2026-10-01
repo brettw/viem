@@ -20,6 +20,8 @@ internal sealed partial class EditorPane
     private global::Windows.Foundation.Point statusPress, statusLastPoint;
     private bool statusDragging;
     private bool statusSelectingOutput;
+    private double filePathTextWidth, modeTextWidth, messageTextWidth;
+    private (string Mode, string Message, string Family, double Size)? resizeHoverTextIdentity;
     private readonly Grid normalStatus = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 12 };
     private readonly TextBlock filePath = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
     private readonly TextBlock statusMeasure = new() { TextWrapping = TextWrapping.NoWrap };
@@ -47,6 +49,26 @@ internal sealed partial class EditorPane
         for (DependencyObject? current = source; current != null; current = VisualTreeHelper.GetParent(current))
             if (current == outputText) return true;
         return false;
+    }
+
+    internal void ClearStatusResizeHover() => status.SetResizeHover(false);
+    internal bool StatusResizeHoverAt(global::Windows.Foundation.Point point)
+    {
+        if (status.Visibility != Visibility.Visible || !window.PaneStack.CanDragBar(this)
+            || point.X < 0 || point.Y < 0 || point.X >= status.ActualWidth || point.Y >= status.ActualHeight) return false;
+        bool Over(FrameworkElement control, double? textWidth = null)
+        {
+            if (control.Visibility != Visibility.Visible) return false;
+            var origin = control.TransformToVisual(status).TransformPoint(new global::Windows.Foundation.Point());
+            double width = Math.Min(control.ActualWidth, textWidth ?? control.ActualWidth);
+            return new global::Windows.Foundation.Rect(origin.X, origin.Y, width, control.ActualHeight).Contains(point);
+        }
+        if (Over(locationToggle)) return false;
+        if (prompt.Visibility == Visibility.Visible && Over(prompt)) return false;
+        if (commandOutput.Visibility == Visibility.Visible && (Over(outputScroll) || Over(outputClose))) return false;
+        if (normalStatus.Visibility == Visibility.Visible && (Over(mode, modeTextWidth)
+            || Over(filePath, filePathTextWidth) || Over(message, messageTextWidth))) return false;
+        return true;
     }
 
     private void UpdateLocation()
@@ -116,6 +138,7 @@ internal sealed partial class EditorPane
             statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
         }), true);
         status.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) => {
+            status.SetResizeHover(StatusResizeHoverAt(e.GetCurrentPoint(status).Position));
             if (statusPointer != e.Pointer.PointerId) return;
             var point = e.GetCurrentPoint(window.PaneStack);
             if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusDragging = false; status.SetDragging(false); return; }
@@ -140,6 +163,7 @@ internal sealed partial class EditorPane
         status.PointerCaptureLost += (_, e) => {
             if (e.OriginalSource == status) { statusPointer = null; statusDragging = false; status.SetDragging(false); }
         };
+        status.PointerExited += (_, e) => { if (e.OriginalSource == status) status.SetResizeHover(false); };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         commandOutput.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         commandOutput.Children.Add(outputClose); commandOutput.Children.Add(outputScroll); SetColumn(outputScroll, 1);
@@ -244,11 +268,19 @@ internal sealed partial class EditorPane
     private void UpdateFilePathText()
     {
         filePath.Text = StatusFilePath.TrimLeft(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
+        filePathTextWidth = MeasureStatusText(filePath.Text);
     }
 
     private void UpdateStatusPresentation(bool refreshPrompt = true)
     {
         RefreshStatusFilePath();
+        var resizeText = (mode.Text, message.Text, preferences.StatusFontFamily, preferences.StatusFontSize);
+        if (resizeHoverTextIdentity != resizeText)
+        {
+            modeTextWidth = mode.Text.Length == 0 ? 0 : MeasureStatusText(mode.Text);
+            messageTextWidth = message.Text.Length == 0 ? 0 : MeasureStatusText(message.Text);
+            resizeHoverTextIdentity = resizeText;
+        }
         message.Visibility = message.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
         bool command = presentation.mode == VIEM_MODE_COMMAND_LINE;
         if (command) { output = null; outputText.Text = ""; outputTimer.Stop(); outputDeadline = 0; outputHadFocus = false; }

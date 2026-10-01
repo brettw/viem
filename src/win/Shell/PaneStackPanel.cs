@@ -72,6 +72,7 @@ internal sealed unsafe class PaneStackPanel : Panel, IDisposable
         var next = new ViemPaneFrame[511]; ViemPaneSnapshot snapshot = default;
         fixed (ViemPaneFrame* output = next) Check(viem_pane_layout_copy(handle, output, (ulong)next.Length, &snapshot));
         frames = next.Take((int)snapshot.count).ToArray(); MinimumSize = new(snapshot.minimum_width, snapshot.minimum_height);
+        foreach (var pane in ids.Keys.Where(p => !CanDragBar(p))) pane.ClearStatusResizeHover();
         var live = frames.Where(f => f.kind == 1).Select(f => f.id).ToHashSet();
         foreach (ulong id in splitters.Keys.Where(id => !live.Contains(id)).ToArray())
         { var splitter = splitters[id]; Children.Remove(splitter); splitter.Dispose(); splitters.Remove(id); }
@@ -116,7 +117,10 @@ internal sealed unsafe class PaneStackPanel : Panel, IDisposable
 internal sealed class DragCursorGrid : Grid, IDisposable
 {
     private readonly InputSystemCursor cursor = InputSystemCursor.Create(InputSystemCursorShape.SizeNorthSouth);
-    internal void SetDragging(bool dragging) => ProtectedCursor = dragging ? cursor : null;
+    private bool dragging, hovering;
+    internal void SetDragging(bool value) { dragging = value; UpdateCursor(); }
+    internal void SetResizeHover(bool value) { hovering = value; UpdateCursor(); }
+    private void UpdateCursor() => ProtectedCursor = dragging || hovering ? cursor : null;
     public void Dispose() { ProtectedCursor = null; cursor.Dispose(); }
 }
 

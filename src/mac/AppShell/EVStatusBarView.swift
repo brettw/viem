@@ -39,7 +39,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public var preferredHeightDidChange: (() -> Void)?
   /// Top-to-bottom window delta; nil for the fixed bottom status bar.
   var dragDidMove: ((CGFloat) -> Void)? {
-    didSet { resizeGesture.isEnabled = dragDidMove != nil }
+    didSet {
+      resizeGesture.isEnabled = dragDidMove != nil
+      if (oldValue == nil) != (dragDidMove == nil) { window?.invalidateCursorRects(for: self) }
+    }
   }
   private lazy var resizeGesture: NSPanGestureRecognizer = {
     let gesture = NSPanGestureRecognizer(target: self, action: #selector(resizePanes(_:)))
@@ -81,6 +84,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public var commandOutputDidDismiss: (() -> Void)?
   public var commandOutputDidReceiveKey: ((NSEvent) -> Void)?
   private let leftGroup = NSStackView()
+  private var leftGroupTrailingConstraint: NSLayoutConstraint!
   private let commandCaret = NSTextInsertionIndicator(frame: .zero)
   private let outputScroll = NSScrollView()
   let outputTextView = EVStatusOutputTextView()
@@ -174,17 +178,18 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     outputCloseButton.setAccessibilityLabel("Close command output")
     addSubview(outputCloseButton)
     heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
+    leftGroupTrailingConstraint = leftGroup.trailingAnchor.constraint(
+      lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14)
     let inset = Self.contentInset
     NSLayoutConstraint.activate([
       heightConstraint,
       separator.leadingAnchor.constraint(equalTo: leadingAnchor),
       separator.trailingAnchor.constraint(equalTo: trailingAnchor),
       separator.topAnchor.constraint(equalTo: topAnchor),
+      separator.heightAnchor.constraint(equalToConstant: 1),
       leftGroup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
-      leftGroup.topAnchor.constraint(equalTo: separator.bottomAnchor),
-      leftGroup.bottomAnchor.constraint(equalTo: bottomAnchor),
-      leftGroup.trailingAnchor.constraint(
-        lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14),
+      leftGroup.centerYAnchor.constraint(equalTo: centerYAnchor),
+      leftGroupTrailingConstraint,
       locationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
       locationLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
     ])
@@ -223,6 +228,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     locationLabel.attributedTitle = NSAttributedString(
       string: currentState.location,
       attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
+    locationLabel.invalidateIntrinsicContentSize()
     outputTextView.font = commandFont
     outputTextView.textColor = theme.statusForeground.color
     outputTextView.insertionPointColor = .clear
@@ -447,10 +453,53 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
 
   public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
+  /// Empty background remains a resize target; native controls and command
+  /// selection retain their usual hover cursors.
+  var resizeCursorRects: [NSRect] {
+    guard dragDidMove != nil, !isHiddenOrHasHiddenAncestor else { return [] }
+    let controls: [NSView] = [modeLabel, filePathLabel, messageLabel, locationLabel,
+                              outputCloseButton, outputScroll]
+    var exclusions = controls.filter { !$0.isHiddenOrHasHiddenAncestor }.map { control in
+      var rect = control.bounds
+      if let label = control as? NSTextField {
+        rect = label.cell?.titleRect(forBounds: rect) ?? rect
+        let width = min(rect.width, (label.stringValue as NSString).size(
+          withAttributes: [.font: label.font ?? EVThemeStore.shared.theme.statusFont]).width)
+        if label.alignment == .right { rect.origin.x = rect.maxX - width }
+        else if label.alignment == .center { rect.origin.x = rect.midX - width / 2 }
+        rect.size.width = width
+      }
+      return control.convert(rect, to: self)
+    }
+    if currentState.commandLine != nil { exclusions.append(commandAreaRect) }
+    var areas = [bounds]
+    for excluded in exclusions {
+      areas = areas.flatMap { area -> [NSRect] in
+        let overlap = area.intersection(excluded)
+        guard !overlap.isEmpty else { return [area] }
+        return [
+          NSRect(x: area.minX, y: area.minY, width: area.width, height: overlap.minY - area.minY),
+          NSRect(x: area.minX, y: overlap.maxY, width: area.width, height: area.maxY - overlap.maxY),
+          NSRect(x: area.minX, y: overlap.minY, width: overlap.minX - area.minX, height: overlap.height),
+          NSRect(x: overlap.maxX, y: overlap.minY, width: area.maxX - overlap.maxX, height: overlap.height),
+        ].filter { !$0.isEmpty }
+      }
+    }
+    return areas
+  }
+
+  public override func resetCursorRects() {
+    super.resetCursorRects()
+    for rect in resizeCursorRects { addCursorRect(rect, cursor: .resizeUpDown) }
+  }
+
   public override func layout() {
-    super.layout()
     let hideLabels = currentState.commandLine != nil || currentState.commandOutput != nil || bounds.width < 320
-    if leftGroup.isHidden != hideLabels { leftGroup.isHidden = hideLabels }
+    setLeftGroupHidden(hideLabels)
+    // Refresh native button metrics after attachment or a change in split
+    // width, so a compressed position widget recovers when widened.
+    locationLabel.invalidateIntrinsicContentSize()
+    super.layout()
     let area = commandAreaRect
     let inset = Self.contentInset
     let buttonWidth = min(20, max(0, area.width - inset))
@@ -465,12 +514,13 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     outputTextView.minSize = outputScroll.contentSize
     outputTextView.sizeToFit()
     updateCommandCaret()
+    window?.invalidateCursorRects(for: self)
   }
 
   public func apply(_ state: EVStatusBarState) {
     currentState = state
     let showingOutput = state.commandLine == nil && state.commandOutput != nil
-    leftGroup.isHidden = state.commandLine != nil || showingOutput || bounds.width < 320
+    setLeftGroupHidden(state.commandLine != nil || showingOutput || bounds.width < 320)
     outputScroll.isHidden = !showingOutput
     outputCloseButton.isHidden = !showingOutput
     if let output = state.commandOutput, outputTextView.string != output {
@@ -505,6 +555,13 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     updateCommandCaret()
   }
 
+  private func setLeftGroupHidden(_ hidden: Bool) {
+    if leftGroup.isHidden != hidden { leftGroup.isHidden = hidden }
+    // An invisible label group must not squeeze the position widget. Its
+    // intrinsic width remains stable as a pane narrows and widens again.
+    leftGroupTrailingConstraint.isActive = !hidden
+  }
+
   static func lineIcon(_ mode: EVLineMode) -> NSImage? {
     let path =
       mode == .visual
@@ -513,6 +570,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let svg =
       "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><g fill='none' stroke='black' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'>\(path)</g></svg>"
     let image = NSImage(data: Data(svg.utf8))
+    image?.size = NSSize(width: 16, height: 16)
     image?.isTemplate = true
     return image
   }

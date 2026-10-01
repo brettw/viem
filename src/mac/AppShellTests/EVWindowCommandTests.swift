@@ -455,6 +455,52 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertNil(below.statusBar.dragDidMove)
   }
 
+  func testVerticalSplitStatusHeightsAndTextAlignmentSurviveNarrowingAndWidening() throws {
+    func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+    let appearance = EVThemeStore.shared.theme
+    defer { EVThemeStore.shared.update(appearance) }
+    let container = try stack(panes: 1)
+    let first = container.panes[0]
+    let second = EVDocumentContentViewController(editorSurface: Surface())
+    try container.insert(second, splitting: first, vertical: true)
+    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = container.view
+    window.setContentSize(NSSize(width: 840, height: 600))
+    window.makeKeyAndOrderFront(nil)
+    defer { window.close() }
+    container.focusPane(at: 0)
+    for (family, size) in [("System", 11.0), ("Georgia", 16), ("Helvetica", 24)] {
+      var theme = appearance
+      theme.statusFontFamily = family; theme.statusFontSize = size
+      EVThemeStore.shared.update(theme)
+      for columns in [20, 50, 12, 70, 20] {
+        container.perform(.setWidth(columns: columns))
+        container.view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
+        for pane in container.panes {
+          let bar = pane.statusBar
+          XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight, accuracy: 0.01)
+          XCTAssertEqual(bar.bounds.height, bar.frame.height, accuracy: 0.01)
+          let separator = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSBox }.first)
+          let separatorRect = separator.alignmentRect(forFrame: separator.convert(separator.bounds, to: bar))
+          XCTAssertEqual(separatorRect.height, 1, accuracy: 0.01)
+          XCTAssertEqual(separatorRect.maxY, bar.bounds.maxY, accuracy: 0.01)
+          let button = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first)
+          let buttonText = try XCTUnwrap(button.cell).titleRect(forBounds: button.bounds)
+          let buttonY = button.convert(buttonText, to: bar).midY
+          let labels = descendants(bar).compactMap { $0 as? NSTextField }
+          if bar.bounds.width >= 320 { XCTAssertTrue(labels.contains { !$0.isHiddenOrHasHiddenAncestor && $0.stringValue == "NORMAL" }) }
+          for label in labels where !label.isHiddenOrHasHiddenAncestor && !label.stringValue.isEmpty {
+            let text = try XCTUnwrap(label.cell).titleRect(forBounds: label.bounds)
+            let labelY = label.convert(text, to: bar).midY
+            XCTAssertEqual(labelY, buttonY, accuracy: 1.5, "\(label.stringValue), width \(pane.view.frame.width), bar \(bar.frame), bounds \(bar.bounds), text \(labelY)/\(buttonY)")
+          }
+        }
+      }
+    }
+  }
+
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {
     let (controller, backend, document) = try makeWindow(panes: 3)
     defer { document.close() }

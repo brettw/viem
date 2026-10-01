@@ -189,6 +189,44 @@ final class EVWindowInputTests: XCTestCase {
         XCTAssertEqual(backend.persistenceState.documentRevision,revision)
     }
 
+    func testMixedSplitStatusBarsKeepTheirHeightAndTextAlignmentAfterCollapseAndResize() throws {
+        let (backend, document, controller) = try fixture()
+        defer { controller.close(); document.close() }
+        let original = try surface(controller)
+        try control("w", in: original); type("s", in: original)
+        let lower = try surface(controller)
+        try control("w", in: lower); type("v", in: lower)
+        let right = try surface(controller)
+        let surfaces = [original, lower, right]
+        let window = try XCTUnwrap(controller.window)
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        for size in [NSSize(width: 920, height: 680), NSSize(width: 805, height: 491), NSSize(width: 640, height: 600)] {
+            window.setContentSize(size)
+            controller.perform(windowRequests: [.focusTop, .grow(rows: Int.max), .shrink(rows: 5)], from: controller.editorSurface)
+            controller.perform(windowRequests: [.focusBottom, .setWidth(columns: 20)], from: controller.editorSurface)
+            for target in surfaces { target.refreshPresentation() }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            let root = try XCTUnwrap(window.contentView)
+            let bars = descendants(root).compactMap { $0 as? EVStatusBarView }
+            XCTAssertEqual(bars.count, 3)
+            for bar in bars {
+                XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight, accuracy: 0.01)
+                XCTAssertEqual(bar.convert(bar.bounds, to: root).height, EVStatusBarView.preferredHeight, accuracy: 0.01)
+                let pane = try XCTUnwrap(bar.superview)
+                XCTAssertEqual(pane.bounds.size, pane.frame.size)
+                let button = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first)
+                let title = try XCTUnwrap(button.cell).titleRect(forBounds: button.bounds)
+                let buttonY = button.convert(title, to: root).midY
+                for label in descendants(bar).compactMap({ $0 as? NSTextField }) where !label.isHiddenOrHasHiddenAncestor && !label.stringValue.isEmpty {
+                    let text = try XCTUnwrap(label.cell).titleRect(forBounds: label.bounds)
+                    XCTAssertEqual(label.convert(text, to: root).midY, buttonY, accuracy: 1.5, label.stringValue)
+                }
+            }
+            controller.perform(windowRequests: [.equalizeHeights], from: controller.editorSurface)
+        }
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data("first line\nsecond line\nthird".utf8))
+    }
+
     func testSplittingACollapsedPaneReportsNoRoomWithoutChangingTheBuffer() throws {
         let (backend, document, window) = try fixture()
         defer { window.close(); document.close() }
