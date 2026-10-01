@@ -23,6 +23,8 @@ internal static class VariableFontTests
             Check(parts.Count > 0, "typographic font selection preserves packaged-font glyphs");
             Check(parts.First().Font.GetInformationalStrings(Microsoft.Graphics.Canvas.Text.CanvasFontInformation.PostscriptName).Values.Contains(packagedFace.Name), "typographic selection retains the packaged font collection instead of substituting a system face");
         }
+        RecursiveFontChecks(pane);
+        await RecursiveInspectorChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -72,6 +74,56 @@ internal static class VariableFontTests
             Check(!Descendants<CheckBox>(inspector.RootControl).Any(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Variant"), "font face has one inheritance checkbox and no variant checkbox");
             await Task.Delay(300);
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".variable-font.png");
+        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+    }
+    internal static void RecursiveFontChecks(EditorPane pane)
+    {
+        var recursiveFamilies = FontCatalog.Families.Where(f => f.StartsWith("Recursive", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var recursiveFaces = recursiveFamilies.SelectMany(FontCatalog.Faces).ToArray();
+        var face = recursiveFaces.FirstOrDefault(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == "Recursive_VF_1.085.ttf")
+            ?? throw new InvalidOperationException("The bundled Recursive variable font is unavailable. Families: " + string.Join(", ", recursiveFamilies) + "; Faces: " + string.Join(", ", recursiveFaces.Select(f => f.Name)));
+        Check(face.Source is { IsFile: true } && Path.GetFileName(face.Source.LocalPath) == "Recursive_VF_1.085.ttf", "Recursive resolves to the bundled variable font");
+        Check(!File.Exists(Path.Combine(AppContext.BaseDirectory, "Resources/fonts/recursive/recursive-static-TTFs.ttc")), "rebuilding removes the old Recursive static collection");
+        Check(FontCatalog.Families.Contains(face.Family), "the bundled Recursive variable font appears in the font picker");
+        var info = FontVariations.For(face);
+        Check(info.Axes.Select(a => a.Tag).ToHashSet().SetEquals(["MONO", "CASL", "wght", "slnt", "CRSV"]), "Recursive exposes all five variable axes");
+        var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
+        Check(instances.Length == 64, "Recursive exposes all 64 named instances");
+        byte[] source = "Writing MMMM iii 0123"u8.ToArray();
+        using var doc = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        foreach (var instance in instances) {
+            view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name, "serif"], face, instance.Values);
+            var layout = view.Layout();
+            var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
+            Check(info.Axes.All(a => Math.Abs(axes.GetValueOrDefault(a.Tag, float.NaN) - instance.Values[a.Tag]) < .001f), $"Recursive {instance.Name} renders with its named-instance coordinates");
+        }
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "bundled Recursive instance selection preserves document source");
+        Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "saved Recursive styles use portable names and coordinates");
+    }
+    private static async Task RecursiveInspectorChecks(EditorPane pane, Preferences preferences)
+    {
+        var face = FontCatalog.Families.Where(f => f.StartsWith("Recursive", StringComparison.OrdinalIgnoreCase))
+            .SelectMany(FontCatalog.Faces).First(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == "Recursive_VF_1.085.ttf");
+        var info = FontVariations.For(face);
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        using var doc = new CoreDocument("Recursive variable inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name], face);
+        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
+        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        try {
+            await Task.Delay(100);
+            var sliders = Descendants<Slider>(inspector.RootControl).ToArray();
+            Check(sliders.Length == 5, "Recursive exposes five sliders in the style inspector");
+            var rowCounts = sliders.GroupBy(s => Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(s)))
+                .Select(g => g.Count()).OrderDescending().ToArray();
+            Check(rowCounts.SequenceEqual([2, 2, 1]), "Recursive's five axes occupy two full rows and one half row");
+            var preset = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>()
+                .First(i => i.Values["MONO"] == 1 && i.Values["CASL"] == 1 && i.Values["slnt"] == -15);
+            inspector.FontVariantControl.SelectedItem = preset;
+            Check(info.Axes.All(a => Math.Abs(sliders.Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == a.Name).Value - preset.Values[a.Tag]) < .001f), "Recursive named instances synchronize all five sliders");
+            Check(inspector.Error.Length == 0, "Recursive variable-font controls apply without inspector errors");
         } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
     private static async Task SegoeVariable(EditorPane pane, Preferences preferences, uint format)

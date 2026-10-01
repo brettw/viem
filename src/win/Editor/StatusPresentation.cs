@@ -161,9 +161,9 @@ internal sealed partial class EditorPane
             if (dragged && !statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (e.OriginalSource == status) { statusPointer = null; statusDragging = false; status.SetDragging(false); }
+            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusDragging = false; status.SetDragging(false); }
         };
-        status.PointerExited += (_, e) => { if (e.OriginalSource == status) status.SetResizeHover(false); };
+        status.PointerExited += (_, e) => { if (ReferenceEquals(e.OriginalSource, status)) status.SetResizeHover(false); };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         commandOutput.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         commandOutput.Children.Add(outputClose); commandOutput.Children.Add(outputScroll); SetColumn(outputScroll, 1);

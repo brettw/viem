@@ -27,12 +27,16 @@ struct EVBundledFontTests {
     #expect(files.count == 13)
     #expect(EVFontCatalog.registerBundledFonts(in: directory).isEmpty)
     #expect(EVFontCatalog.registerBundledFonts(in: directory).isEmpty)
-    let expectedFamilies = ["Flightline Code", "Recursive Mono Casual Static", "Recursive Mono Linear Static",
-      "Recursive Sans Casual Static", "Recursive Sans Linear Static"]
-    for family in expectedFamilies {
+    #expect(files.contains { $0.lastPathComponent == "Recursive_VF_1.085.ttf" })
+    #expect(!files.contains { $0.lastPathComponent == "recursive-static-TTFs.ttc" })
+    for family in ["Flightline Code", "Recursive"] {
       #expect(NSFontManager.shared.availableFontFamilies.contains(family))
-      #expect(EVFontCatalog.faces(for: family).count == (family == "Flightline Code" ? 12 : 16))
+      #expect(!EVFontCatalog.faces(for: family).isEmpty)
     }
+    #expect(EVFontCatalog.faces(for: "Flightline Code").count == 12)
+    let recursive = EVFontVariations.info(for: "Recursive")
+    #expect(Set(recursive.axes.map(\.tag)) == ["MONO", "CASL", "wght", "slnt", "CRSV"])
+    #expect(recursive.instances.filter { $0.name != "Default" }.count == 64)
     var count = 0
     for file in files {
       let descriptors = try #require(CTFontManagerCreateFontDescriptorsFromURL(file as CFURL) as? [CTFontDescriptor])
@@ -59,7 +63,7 @@ struct EVBundledFontTests {
         count += 1
       }
     }
-    #expect(count == 76)
+    #expect(count == 13)
   }
 
   @Test func missingOrInvalidFontsLeaveSystemFallbackAvailable() throws {

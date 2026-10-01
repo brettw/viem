@@ -319,8 +319,7 @@ internal static class StyleAndSettingsTests
 
     private static void BundledFontChecks(EditorPane pane)
     {
-        string[] families = ["Flightline Code", "Recursive Mono Casual Static", "Recursive Mono Linear Static",
-            "Recursive Sans Casual Static", "Recursive Sans Linear Static"];
+        string[] families = ["Flightline Code"];
         using var doc = new CoreDocument("Writing 0123"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var style = view.Styles().Styles.Single(s => s.Id == "Code");
@@ -330,7 +329,7 @@ internal static class StyleAndSettingsTests
         {
             Check(FontCatalog.Families.Contains(family), $"bundled {family} appears in the font picker");
             var faces = FontCatalog.Faces(family);
-            Check(faces.Length == (family == "Flightline Code" ? 12 : 16), $"bundled {family} exposes every variant");
+            Check(faces.Length == 12, $"bundled {family} exposes every variant");
             foreach (var face in faces)
             {
                 Check(face.Source is { IsFile: true } && File.Exists(face.Source.LocalPath), $"{face.Name} resolves to a bundled file");
@@ -344,7 +343,8 @@ internal static class StyleAndSettingsTests
                 count++;
             }
         }
-        Check(count == 76, "all 76 bundled font faces render through the native provider");
+        Check(count == 12, "all 12 bundled static font faces render through the native provider");
+        VariableFontTests.RecursiveFontChecks(pane);
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual("Writing 0123"u8), "bundled font selection preserves document source");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),
             "saved font styles contain portable names rather than resource URIs");

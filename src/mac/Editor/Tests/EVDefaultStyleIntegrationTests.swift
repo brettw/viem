@@ -14,7 +14,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let fontDirectory = root.appendingPathComponent("assets/fonts/recursive")
     XCTAssertTrue(EVFontCatalog.registerBundledFonts(in: fontDirectory).isEmpty)
     defer {
-      CTFontManagerUnregisterFontsForURL(fontDirectory.appendingPathComponent("recursive-static-TTFs.ttc") as CFURL, .process, nil)
+      CTFontManagerUnregisterFontsForURL(fontDirectory.appendingPathComponent("Recursive_VF_1.085.ttf") as CFURL, .process, nil)
       EVFontCatalog.invalidate()
     }
     let config = try configuration()
@@ -22,7 +22,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     try config.createTheme(named: "Recursive")
     let styles = try EVThemeStyleSession(configuration: config, format: .markdown)
     try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
-      mutation: .setDeclaration(.characterFontFamilies, .stringList(["RecursiveSansLnrSt-Light"])))
+      mutation: .setDeclaration(.characterFontFamilies, .stringList(["Recursive"])))
     try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
       mutation: .setDeclaration(.characterSize, .float(16)))
     let specimen = "# Heading\n\nWriting with [a link](https://example.com) and ~~struck text~~.\n\n<!-- Comment -->\n\n[reference][unknown]\n\n"
@@ -50,14 +50,14 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       XCTAssertNil(backend.configurationWarning)
       XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
         .properties[.characterFontFamilies]?.effective,
-        .stringList([name == "Paper" ? "system-ui" : "RecursiveSansLnrSt-Light"]))
+        .stringList([name == "Paper" ? "system-ui" : "Recursive"]))
       surface.refreshPresentation()
-      XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive Sans Linear Static")
+      XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive")
       for width: CGFloat in [420, 900, 700] {
         _ = try session.resize(width: width, height: 180)
         surface.refreshPresentation()
         XCTAssertNil(surface.commandOutput, surface.statusBarState.message)
-        XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive Sans Linear Static")
+        XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive")
       }
       XCTAssertEqual(try backend.recoverySnapshot(), original)
       XCTAssertFalse(surface.canUndo)
