@@ -616,6 +616,10 @@ static void typecheck(void) {{
   (void)composition_begin; (void)composition_update;
   (void)composition_overlay_info; (void)copy_composition_range;
   (void)composition_commit; (void)composition_cancel;
+  ViemStatus (*layout_diagnostics)(ViemCoreHandle, ViemViewId,
+      const ViemLayoutSnapshotIdentityV1 *, uint8_t *, uint64_t, uint64_t *) =
+      viem_core_view_copy_layout_diagnostics;
+  (void)layout_diagnostics;
 }}
 "#,
         abi = VIEM_CORE_ABI_VERSION,

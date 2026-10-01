@@ -140,13 +140,21 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("document.configure");
         try
         {
-            doc.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
-            string[] diagnostics = preferences.AttachThemeDocument(doc);
+            doc.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
+            string[] diagnostics = [];
+            doc.ConfigureForEditing("theme styles", () => diagnostics = preferences.AttachThemeDocument(doc));
             if (diagnostics.Length > 0) styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics);
-            if (preferences.StartupCommands.Length > 0) doc.InitializeStartup(preferences.StartupCommands);
-            GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
-            if (path != null) { savedSources[doc] = SHA256.HashData(source ?? []); if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true); }
-            if (path != null) recoveries[doc] = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => ActivePane?.Report(e));
+            if (preferences.StartupCommands.Length > 0) doc.ConfigureForEditing("startup.viem", () => doc.InitializeStartup(preferences.StartupCommands));
+            doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath));
+            if (path != null) {
+                savedSources[doc] = SHA256.HashData(source ?? []);
+                doc.ConfigureForEditing("file attributes", () => {
+                    if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true);
+                });
+                doc.ConfigureForEditing("recovery backups", () => {
+                    recoveries[doc] = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => ActivePane?.Report(e));
+                });
+            }
             doc.Disposed += () => { recoveries.Remove(doc); styleDefaultsWarnings.Remove(doc); };
             return doc;
         }
@@ -160,6 +168,7 @@ internal sealed partial class EditorWindow : Window
         var diagnostics = new List<string>();
         if (styleDefaultsWarnings.Remove(pane.Document, out string? warning)) diagnostics.Add(warning);
         if (pane.Document.StartupDiagnostics.Length > 0) diagnostics.Add(Path.Combine(preferences.DirectoryPath, pane.Document.StartupDiagnostics));
+        if (pane.Document.ConfigurationDiagnostics.Length > 0) diagnostics.Add(pane.Document.ConfigurationDiagnostics);
         if (diagnostics.Count > 0) pane.SetMessage(string.Join(Environment.NewLine, diagnostics));
         OnPaneReady(pane);
     }

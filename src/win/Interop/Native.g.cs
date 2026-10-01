@@ -1240,7 +1240,7 @@ internal unsafe struct ViemSetDocumentModeV1
 
 internal static unsafe partial class Native
 {
-    public const uint VIEM_CORE_ABI_VERSION = 7u;
+    public const uint VIEM_CORE_ABI_VERSION = 8u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 = 3u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
     public const uint VIEM_STATUS_OK = 0u;
@@ -2120,6 +2120,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_copy_whitespace_markers(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, byte* @output, ulong @capacity, ulong* @out_length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_poll_syntax(ulong @core, byte* @changed);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_layout_diagnostics(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_syntax_diagnostics(ulong @core, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

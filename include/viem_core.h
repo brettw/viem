@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 7u
+#define VIEM_CORE_ABI_VERSION 8u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 3u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
   VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3
@@ -2710,6 +2710,9 @@ ViemStatus viem_core_view_copy_whitespace_markers(ViemCoreHandle core, ViemViewI
     uint8_t *output, uint64_t capacity, uint64_t *out_length);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
+/* Read up to 8 KiB of distinct warnings for this exact immutable layout.
+ * Standard two-pass UTF-8 output; stale snapshots are rejected, never replaced. */
+ViemStatus viem_core_view_copy_layout_diagnostics(ViemCoreHandle core, ViemViewId view, const ViemLayoutSnapshotIdentityV1 *expected, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax
    runs, including undefined names. Does not parse, publish, or scan source. */
 ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);

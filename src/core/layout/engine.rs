@@ -3575,8 +3575,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        let mut document_styles = DocumentLayoutStyles::resolve_region_with_search(
-            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(), view.search_matches(document.id(), document.revision()),
+        let mut document_styles = DocumentLayoutStyles::resolve_region_for_presentation(
+            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(), view.search_matches(document.id(), document.revision()), document.format(),
         )?;
         document_styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
         let hard_lines = if view.paragraph_flow() {
@@ -3974,6 +3974,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .iter()
             .flat_map(|fragment| fragment.diagnostics.iter().cloned())
             .collect();
+        diagnostics.extend(document_styles.recovery_diagnostic.iter().cloned());
         let mut fragment_cursor = 0usize;
         let mut lines = Vec::with_capacity(line_slices.len());
 
@@ -4622,6 +4623,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .flat_map(|fragment| fragment.diagnostics.iter().cloned())
             .collect();
         let mut fragment_cursor = 0;
+        if let Some(styles) = &document_styles {
+            diagnostics.extend(styles.recovery_diagnostic.iter().cloned());
+        }
         let whitespace_style = document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style);
         let whitespace_unit = whitespace_style.size * view.scale * 0.5;
         let whitespace_view = view.capture_layout_job_with_style_runs(Vec::new());
@@ -5184,9 +5188,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         render_run_policy: Some(render_run_policy),
                     })
                     .collect();
-                let responses = self
-                    .provider
-                    .shape_batch(&requests)
+                let responses = super::recovery::shape_with_fallback(&mut self.provider, &requests)
                     .map_err(LayoutError::from)?;
                 control.checkpoint()?;
                 if responses.len() != batch.len() {

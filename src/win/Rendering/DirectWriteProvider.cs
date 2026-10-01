@@ -56,6 +56,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public string? LastError { get; private set; }
     public int LiveResourceCount => resources.Count;
 #if DEBUG
+    internal int FailShapingBatchesForTest;
     private static readonly bool verifyGlyphOrigins = Diagnostics.FrontendSmokeTests.ReportPath != null
         && Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") == null;
     internal string[] RenderedFontNames(ulong handle) => resources.TryGetValue(handle, out var resource)
@@ -96,7 +97,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     public void InvalidateMetrics() => Interlocked.Increment(ref shared.Generation);
     public void ResetDevice(CanvasDevice replacement)
-    { measurement.Dispose(); device = replacement; measurement = new CanvasRenderTarget(device, 1, 1, 96); InvalidateMetrics(); }
+    {
+        var next = new CanvasRenderTarget(replacement, 1, 1, 96);
+        var previous = measurement;
+        measurement = next; device = replacement; InvalidateMetrics();
+        previous.Dispose();
+    }
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
     public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
     {
@@ -157,7 +163,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             drawing.DrawGlyphRun(origin, font!.Font, size, glyphs.ToArray(), false, 0, runBrush); DrawCalls++;
             glyphs.Clear(); advance = 0; font = null;
         }
-        public void Dispose() { Flush(); foreach (var brush in brushes.Values) brush.Dispose(); }
+        public void Dispose() { try { Flush(); } finally { foreach (var brush in brushes.Values) brush.Dispose(); } }
     }
 
     private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
@@ -187,6 +193,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             arena = new();
             foreach (var id in responseResources) ReleaseResource(id);
             responseResources.Clear();
+#if DEBUG
+            if (FailShapingBatchesForTest > 0) { FailShapingBatchesForTest--; throw new InvalidOperationException("Injected native shaping failure."); }
+#endif
             for (ulong i = 0; i < count; i++) responses[i] = Shape(requests[i]);
             LastError = null;
             return VIEM_STATUS_OK;
@@ -194,6 +203,11 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         catch (Exception error)
         {
             LastError = error.ToString();
+            // No response from a failed batch is accepted or leased by core.
+            // Dispose partial native output before the default-font retry.
+            foreach (var id in responseResources) ReleaseResource(id);
+            responseResources.Clear();
+            arena.Dispose(); arena = new();
             return VIEM_STATUS_PROVIDER_FAILURE; // Managed exceptions never cross the ABI.
         }
     }
@@ -221,6 +235,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // the text and avoids losing fractional precision at a huge right edge.
         // Rust owns the real wrap width and final paragraph placement.
         var layout = new CanvasTextLayout(device, text.Length == 0 ? " " : text, format, 1, 16_777_216);
+        var fragment = new Fragment(layout);
+        using var unleasedLayout = new UnleasedLayout(fragment);
         layout.Options = CanvasDrawTextOptions.EnableColorFont;
         using var measuring = measurement.CreateDrawingSession();
         ApplyStyle(layout, 0, Math.Max(text.Length, 1), request.default_style, request.scale);
@@ -238,7 +254,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         using (IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.nativeCapture")) layout.DrawToTextRenderer(capture, Vector2.Zero);
         using var clusterTiming = Diagnostics.StartupPerformance.Measure("shape.clusters");
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
-        var fragment = new Fragment(layout);
         var line = layout.LineMetrics[0];
         var defaultMetrics = new ViemTextMetricsV1 {
             ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0
@@ -322,10 +337,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             if (request.purpose == VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
             {
                 ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
-                Interlocked.Increment(ref fragment.References);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
                 if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline, cluster.ink_bounds, markerFont)))
                     throw new InvalidOperationException("Duplicate glyph resource identity.");
+                Interlocked.Increment(ref fragment.References);
                 responseResources.Add(id);
                 cluster.has_render_run = 1;
                 cluster.render_run = new() { owner = owner, identifier = id, metrics_generation = Generation, threading = VIEM_RENDER_THREADING_ANY };
@@ -334,7 +349,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             positions.Add(left);
             start = end;
         }
-        if (fragment.References == 0) layout.Dispose();
         ShapedCharacters += interior.Length;
         if (IsWorker)
         {
@@ -354,6 +368,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             clusters = nativeGeometry, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
+    }
+
+    // A fragment with published resources is released by their leases. Before
+    // its first resource exists, any native shaping exception must release it.
+    private sealed class UnleasedLayout(Fragment fragment) : IDisposable
+    {
+        public void Dispose() { if (fragment.References == 0) fragment.Layout.Dispose(); }
     }
 
     private readonly record struct GlyphInkKey(GlyphFontMetadata Font, float Size, int Index,

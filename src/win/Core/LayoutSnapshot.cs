@@ -7,7 +7,7 @@ namespace Viem.Windows.Core;
 internal sealed record LayoutSnapshot(ViemLayoutSnapshotInfoV1 Info, ViemVisualRowV1[] Rows,
     ViemPositionedClusterV1[] Clusters, ViemPositionedCaretV1[] Carets, ViemLayoutPaintInfoV1 Paint,
     ViemPaintStyleRunV1[] PaintRuns, ViemVisualSelectionRectangleV1[] Selection,
-    ViemLayoutDecorationV1[] Decorations);
+    ViemLayoutDecorationV1[] Decorations, string Diagnostics);
 
 internal sealed unsafe partial class CoreView
 {
@@ -40,7 +40,13 @@ internal sealed unsafe partial class CoreView
         var decorations = new ViemLayoutDecorationV1[checked((int)furniture.decoration_count)]; var labels = new byte[checked((int)furniture.label_bytes)];
         fixed (ViemLayoutDecorationV1* d = decorations) fixed (byte* l = labels)
             Check(viem_core_view_copy_layout_decorations(Document.Handle, Id, &identity, d, (ulong)decorations.Length, l, (ulong)labels.Length, &furniture), "Copy decorations");
-        return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations);
+        string diagnostics = "";
+        // Reading a warning cannot invalidate an otherwise complete frame.
+        try { diagnostics = System.Text.Encoding.UTF8.GetString(Copy((p, n, r) => {
+            var expected = identity;
+            return viem_core_view_copy_layout_diagnostics(Document.Handle, Id, &expected, p, n, r);
+        })); } catch (CoreException) { }
+        return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations, diagnostics);
     }
     public (ViemVisualSelectionInfoV1 Info, ViemVisualSelectionSegmentV1[] Segments, ViemVisualSelectionRectangleV1[] Rectangles) Selection()
     {

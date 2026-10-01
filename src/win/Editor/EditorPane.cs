@@ -63,6 +63,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private Task inputQueue = Task.CompletedTask;
     public event Action<EditorPane>? Focused;
     internal Exception? LastError { get; private set; }
+    private string lastLayoutWarning = "";
+    private string lastConfigurationWarning = "";
+    private readonly HashSet<string> optionalPresentationWarnings = [];
     private readonly TaskCompletionSource<CoreView> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task<CoreView> Ready => View is { } current ? Task.FromResult(current) : ready.Task;
     [DllImport("user32.dll")] private static extern uint GetCaretBlinkTime();
@@ -204,7 +207,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); }
     private void ApplyPreferences()
     {
-        Document.ConfigureDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
+        Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
         View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes);
     }
     private void ApplyTheme()
@@ -220,7 +223,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.Invalidate();
     }
     public void FocusEditor() { if (!disposed) input.Focus(FocusState.Programmatic); }
-    public void Report(Exception error) { LastError = error; Diagnostics.StartupPerformance.Failed(error); ShowCommandOutput(error.Message); }
+    public void Report(Exception error) { LastError = error; Diagnostics.StartupPerformance.Failed(error); ShowCommandOutput(
+        error is CoreException core && core.Status == VIEM_STATUS_PROVIDER_FAILURE && View?.Provider.LastError is string detail
+            ? error.Message + Environment.NewLine + detail : error.Message); }
     public void Run(Action action) { try { action(); } catch (Exception e) { Report(e); } }
     public void SetMessage(string text) { ShowCommandOutput(text); }
     private void ResetBlink() { caretVisible = true; blink.Stop(); blink.Start(); Canvas.Invalidate(); prompt.Blink(true); }
@@ -346,8 +351,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
         foreach (var write in effects.Clipboard)
         {
             var data = clipboardOverride ?? (write.Text, write.Fragment);
-            ClipboardFormats.Write(data.Text, data.Fragment);
-            View!.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
+            try {
+                ClipboardFormats.Write(data.Text, data.Fragment);
+                View!.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
+            } catch (Exception error) {
+                // Core may already have committed the command. Keep its undo
+                // and finish publishing the new frame; never replay the input.
+                Report(error);
+            }
         }
         _ = window.ApplyEffects(this, effects);
     }
@@ -422,15 +433,36 @@ internal sealed partial class EditorPane : Grid, IDisposable
             horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
             caretRect = CalculateCaret();
-            using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info);
-            RefreshCompletion();
+            try { using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info); }
+            catch (CoreException error) { whitespace = null; PresentationWarning("whitespace markers", error); }
+            try { RefreshCompletion(); }
+            catch (CoreException error) { completion = null; completionBorder.Visibility = Visibility.Collapsed; PresentationWarning("completion popup", error); }
             Microsoft.UI.Xaml.Controls.Canvas.SetLeft(input, Math.Clamp(caretRect.X, 0, Math.Max(0, Canvas.ActualWidth - 2)));
             Microsoft.UI.Xaml.Controls.Canvas.SetTop(input, Math.Clamp(caretRect.Y, 0, Math.Max(0, Canvas.ActualHeight - 24)));
             input.Height = Math.Max(16, caretRect.Height);
             Canvas.Invalidate(); window.UpdateTitle();
+            if (snapshot.Diagnostics != lastLayoutWarning) {
+                lastLayoutWarning = snapshot.Diagnostics;
+                if (lastLayoutWarning.Length > 0) SetMessage(lastLayoutWarning);
+            }
+            if (Document.ConfigurationDiagnostics != lastConfigurationWarning) {
+                lastConfigurationWarning = Document.ConfigurationDiagnostics;
+                if (lastConfigurationWarning.Length > 0) SetMessage(lastConfigurationWarning);
+            }
         }
-        catch (Exception e) { Report(e); }
+        catch (Exception e) {
+            // A previous source/device snapshot cannot become the new frame
+            // merely because exporting its replacement failed.
+            snapshot = null; whitespace = null; caretRect = new();
+            InvalidateDrawingCache(); Canvas.Invalidate(); Report(e);
+        }
         finally { refreshing = false; scrollUpdating = false; }
+    }
+    private void PresentationWarning(string name, CoreException error)
+    {
+        string warning = $"Could not display {name}. {error.Message}";
+        if (optionalPresentationWarnings.Count >= 8) optionalPresentationWarnings.Clear();
+        if (optionalPresentationWarnings.Add(warning)) SetMessage(warning);
     }
     private void RefreshCompletion()
     {

@@ -12,7 +12,7 @@ pub struct MockTextMeasurementProvider {
     request_calls: usize,
     ligatures: bool,
     response_generation_override: Option<MetricsGeneration>,
-    failure: Option<String>,
+    failure: Option<(usize, String)>,
 }
 
 impl Default for MockTextMeasurementProvider {
@@ -57,7 +57,11 @@ impl MockTextMeasurementProvider {
     }
 
     pub fn fail_next_batch(&mut self, message: impl Into<String>) {
-        self.failure = Some(message.into());
+        self.fail_next_batches(1, message);
+    }
+
+    pub fn fail_next_batches(&mut self, count: usize, message: impl Into<String>) {
+        self.failure = (count > 0).then(|| (count, message.into()));
     }
 
     pub fn batch_calls(&self) -> usize {
@@ -465,7 +469,8 @@ impl TextMeasurementProvider for MockTextMeasurementProvider {
     ) -> Result<Vec<ShapedFragment>, MeasurementError> {
         self.batch_calls += 1;
         self.request_calls += requests.len();
-        if let Some(message) = self.failure.take() {
+        if let Some((remaining, message)) = self.failure.take() {
+            if remaining > 1 { self.failure = Some((remaining - 1, message.clone())); }
             return Err(MeasurementError::Provider(message));
         }
         Ok(requests

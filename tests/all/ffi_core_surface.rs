@@ -100,6 +100,7 @@ struct FakeProviderContext {
     minimum_request_start: u64,
     maximum_request_end: u64,
     fail_next: Option<ViemStatus>,
+    repeat_failure: bool,
     saw_complete_request: bool,
     saw_crossing_cluster_tail: bool,
     last_requested_scale: f32,
@@ -119,6 +120,7 @@ impl FakeProviderContext {
             minimum_request_start: u64::MAX,
             maximum_request_end: 0,
             fail_next: None,
+            repeat_failure: false,
             saw_complete_request: false,
             saw_crossing_cluster_tail: false,
             last_requested_scale: 0.0,
@@ -350,6 +352,7 @@ unsafe extern "C" fn fake_shape_batch(
     };
     context.shape_calls += 1;
     if let Some(status) = context.fail_next.take() {
+        if context.repeat_failure { context.fail_next = Some(status); context.repeat_failure = false; }
         return status as u32;
     }
     let mut revision = u64::MAX;
@@ -649,6 +652,44 @@ fn add_test_view(
         ViemStatus::Ok
     );
     (view, outcome)
+}
+
+#[test]
+fn recovered_layout_warnings_are_exact_bounded_and_do_not_replay_source_edits() {
+    let source = b"Markdown [link](url) with text\n\nMore text.";
+    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN_SOURCE, ..Default::default() });
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    context.fail_next = Some(ViemStatus::ProviderFailure);
+    let (view, mut outcome) = add_test_view(&core, &mut *context);
+    let mut info = ViemLayoutSnapshotInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
+    let calls = context.shape_calls;
+    let mut required = 0;
+    assert_eq!(unsafe { viem_core_view_copy_layout_diagnostics(core.handle, view, &info.identity, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+    assert!(required > 0 && required <= 8192);
+    let mut bytes = vec![0xa5; required as usize];
+    assert_eq!(unsafe { viem_core_view_copy_layout_diagnostics(core.handle, view, &info.identity, bytes.as_mut_ptr(), 1, &mut required) }, ViemStatus::BufferTooSmall);
+    assert!(bytes.iter().all(|b| *b == 0xa5), "short outputs are never partially written");
+    assert_eq!(unsafe { viem_core_view_copy_layout_diagnostics(core.handle, view, &info.identity, bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+    assert!(String::from_utf8(bytes).unwrap().contains("using the default system font"));
+    assert_eq!(context.shape_calls, calls, "warning export must never shape");
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, core.revision), source);
+    assert_eq!(document_state(&core).flags & VIEM_DOCUMENT_STATE_IS_DIRTY, 0);
+
+    assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, u32::from('i')), &mut outcome) }, ViemStatus::Ok);
+    context.fail_next = Some(ViemStatus::ProviderFailure);
+    assert_eq!(unsafe { test_send_text(core.handle, view, b"X".as_ptr(), 1, &mut outcome) }, ViemStatus::Ok);
+    let state = document_state(&core);
+    let mut expected = b"X".to_vec(); expected.extend(source);
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, state.document_revision), expected);
+    required = 99;
+    assert_eq!(unsafe { viem_core_view_copy_layout_diagnostics(core.handle, view, &info.identity, ptr::null_mut(), 0, &mut required) }, ViemStatus::StaleRevision);
+    assert_eq!(required, 0);
+    assert_eq!(unsafe { viem_core_view_copy_layout_diagnostics(core.handle, view, ptr::null(), ptr::null_mut(), 0, &mut required) }, ViemStatus::NullPointer);
+    assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_ESCAPE, 0), &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, u32::from('u')), &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, document_state(&core).document_revision), source);
+    assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }
 
 #[allow(dead_code)]
@@ -3450,6 +3491,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
 
     let before_failure = state;
     context.fail_next = Some(ViemStatus::ProviderFailure);
+    context.repeat_failure = true; // Neither requested nor default typography is available.
     let failed = request_from_state(state, 70.0, 5_000.0);
     assert_eq!(
         unsafe { viem_core_view_set_viewport_origin(core.handle, view, &failed, &mut outcome) },

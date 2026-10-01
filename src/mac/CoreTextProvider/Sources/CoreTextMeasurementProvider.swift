@@ -33,7 +33,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   private var responseArenas: [ResponseArena] = []
   private var localFontObserver: NSObjectProtocol?
   private var distributedFontObserver: NSObjectProtocol?
-  private let shapingDidBegin: (@Sendable () -> Void)?
+  private let shapingDidBegin: (@Sendable () throws -> Void)?
 
   public convenience init(
     measurementEnvironmentID: UInt64 = UInt64.random(in: 1...UInt64.max),
@@ -49,7 +49,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   init(
     measurementEnvironmentID: UInt64,
     initialMetricsGeneration: UInt64,
-    shapingDidBegin: (@Sendable () -> Void)?
+    shapingDidBegin: (@Sendable () throws -> Void)?
   ) {
     self.measurementEnvironmentID = measurementEnvironmentID
     let proposedOwner = measurementEnvironmentID ^ 0x4354_5255_4E53_4554
@@ -178,7 +178,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
 
     // Internal deterministic test instrumentation. Production providers leave
     // this nil; importantly, it runs in the same unlocked region as Core Text.
-    shapingDidBegin?()
+    do { try shapingDidBegin?() } catch { return Status.providerFailure }
 
     let arena = ResponseArena(registry: renderRegistry, generation: callbackGeneration)
     var shaped: [ViemShapeResponseV1] = []

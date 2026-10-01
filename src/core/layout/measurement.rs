@@ -340,6 +340,9 @@ pub struct ShapedFragment {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MeasurementError {
     Provider(String),
+    /// A provider violated its response/ownership contract. Changing fonts
+    /// cannot make an invalid native pointer, enum or lease safe to accept.
+    InvalidResponse(String),
     /// The provider cannot affirm that the requested ownership interiors are
     /// stable with the bounded context supplied in this batch. The diagnostic
     /// is provider-authored and must explain the unsupported shaping case.
@@ -402,7 +405,7 @@ pub(crate) fn default_column_width<P: TextMeasurementProvider>(
         paragraph_base_direction: TextDirection::LeftToRight, scale,
         purpose: ShapePurpose::MetricsOnly, render_run_policy: None,
     };
-    let shaped = provider.shape_batch(&[request])?;
+    let shaped = super::recovery::shape_with_fallback(provider, &[request])?;
     let valid = shaped.len() == 1 && shaped[0].document_id == document_id
         && shaped[0].document_revision == document_revision
         && shaped[0].measurement_environment_id == environment

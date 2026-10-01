@@ -14,7 +14,33 @@ internal sealed unsafe class CoreDocument : IDisposable
     public event Action? Changed;
     public event Action? Disposed;
     public string StartupDiagnostics { get; private set; } = "";
+    private readonly List<string> configurationDiagnostics = [];
+    public string ConfigurationDiagnostics => string.Join(Environment.NewLine, configurationDiagnostics);
+
+    // Callers validating or editing settings still use the strict APIs. Only
+    // optional setup of an editing document uses this recovery boundary.
+    internal bool ConfigureForEditing(string name, Action action)
+    {
+        try { action(); return true; }
+        catch (Exception error) when (error is InvalidDataException or IOException or UnauthorizedAccessException
+            || (error is CoreException core && core.Status is VIEM_STATUS_INVALID_ARGUMENT
+                or VIEM_STATUS_UNSUPPORTED_OPERATION or VIEM_STATUS_UNKNOWN_STYLE or VIEM_STATUS_INVALID_STYLE_VALUE
+                or VIEM_STATUS_STYLE_INHERITANCE_CYCLE or VIEM_STATUS_INCOMPATIBLE_STYLE_ROLE
+                or VIEM_STATUS_INVALID_STYLE_RELATIONSHIP or VIEM_STATUS_RESOURCE_EXHAUSTED))
+        {
+            ConfigurationWarning($"Could not load {name}; keeping available defaults. {error.Message}");
+            return false;
+        }
+    }
+    internal void ConfigurationWarning(string message)
+    {
+        message = message.Length > 1024 ? message[..1024] : message;
+        if (configurationDiagnostics.Contains(message)) return;
+        if (configurationDiagnostics.Count == 8) configurationDiagnostics.RemoveAt(0);
+        configurationDiagnostics.Add(message);
+    }
     private string? configurationKey;
+    private string? editingConfigurationKey;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StartupDiagnostic(nint context, ulong line, byte* message, ulong length);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StyleDefaultsDiagnostic(nint context, byte* message, ulong length);
     public ViemDocumentStateV1 State
@@ -39,9 +65,13 @@ internal sealed unsafe class CoreDocument : IDisposable
         try
         {
             byte[] directory = Encoding.UTF8.GetBytes(BundledVimRuntime.SyntaxDirectory);
-            fixed (byte* p = directory) Check(viem_core_configure_syntax(Handle, p, (ulong)directory.Length), "Configure syntax");
+            ConfigureForEditing("syntax resources", () => {
+                fixed (byte* p = directory) Check(viem_core_configure_syntax(Handle, p, (ulong)directory.Length), "Configure syntax");
+            });
             byte[] filename = Encoding.UTF8.GetBytes(path ?? "");
-            fixed (byte* p = filename) Check(viem_core_initialize_code_detection(Handle, p, (ulong)filename.Length, (byte)(format == null && path != null ? 1 : 0)), "Detect code language");
+            ConfigureForEditing("language detection", () => {
+                fixed (byte* p = filename) Check(viem_core_initialize_code_detection(Handle, p, (ulong)filename.Length, (byte)(format == null && path != null ? 1 : 0)), "Detect code language");
+            });
         }
         catch { Dispose(); throw; }
     }
@@ -94,6 +124,24 @@ internal sealed unsafe class CoreDocument : IDisposable
         Check(viem_core_set_text_width_default(Handle, width), "Set text width default");
         fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         configurationKey = key;
+    }
+    internal void ConfigureEditingDefaults(byte[] indentation, byte[] whitespace, uint width, byte[] associations)
+    {
+        string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + Convert.ToBase64String(associations);
+        if (key == editingConfigurationKey) return;
+        ConfigureForEditing("indentation", () => {
+            fixed (byte* p = indentation) Check(viem_core_set_indentation_defaults(Handle, p, (ulong)indentation.Length), "Set indentation defaults");
+        });
+        ConfigureForEditing("whitespace presentation", () => {
+            fixed (byte* p = whitespace) Check(viem_core_set_whitespace_presentation_defaults(Handle, p, (ulong)whitespace.Length), "Set whitespace defaults");
+        });
+        ConfigureForEditing("text width", () => Check(viem_core_set_text_width_default(Handle, width), "Set text width default"));
+        ConfigureForEditing("filename associations", () => {
+            fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
+        });
+        // A failed preference is retried on the next preference change, rather
+        // than on every presentation refresh. Strict validation remains separate.
+        editingConfigurationKey = key;
     }
     public string[] InitializeStyleDefaults(byte[] json) => SetStyleDefaults(json, false);
     public string[] ReplaceStyleDefaults(byte[] json) => SetStyleDefaults(json, true);

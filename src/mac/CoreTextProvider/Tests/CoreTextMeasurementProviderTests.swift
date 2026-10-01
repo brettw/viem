@@ -9,6 +9,53 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @MainActor @Test("Core retries one native shaping failure with system typography and exports its warning")
+  func coreFontFailureRecovery() throws {
+    let fault = NativeShapingFault()
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 712, initialMetricsGeneration: 1,
+      shapingDidBegin: { try fault.begin() })
+    var options = ViemDocumentOptions()
+    options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
+    options.encoding = UInt32(VIEM_ENCODING_UTF8)
+    options.format = UInt32(VIEM_FORMAT_PLAIN_TEXT)
+    var core: UInt64 = 0, revision: UInt64 = 0
+    let source = Array("Exact é 🙂 אב source".utf8)
+    let opened = source.withUnsafeBufferPointer {
+      viem_core_create($0.baseAddress, UInt64($0.count), &options, &core, &revision)
+    }
+    #expect(opened == VIEM_STATUS_OK)
+    defer { #expect(viem_core_destroy(core) == VIEM_STATUS_OK) }
+    var table = provider.makeProviderTable()
+    var viewOptions = ViemViewOptionsV1()
+    viewOptions.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+    viewOptions.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
+    viewOptions.width = 500; viewOptions.height = 200
+    var view: UInt64 = 0
+    var outcome = ViemCoreOutcomeV1()
+    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    #expect(viem_core_view_add(core, &viewOptions, &table, &view, &outcome) == VIEM_STATUS_OK)
+    #expect(fault.calls == 2)
+    var info = ViemLayoutSnapshotInfoV1()
+    info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+    #expect(viem_core_view_layout_snapshot_info(core, view, &info) == VIEM_STATUS_OK)
+    #expect(info.cluster_count > 0)
+    var required: UInt64 = 0
+    #expect(viem_core_view_copy_layout_diagnostics(core, view, &info.identity, nil, 0, &required) == VIEM_STATUS_BUFFER_TOO_SMALL)
+    let capacity = required
+    var bytes = [UInt8](repeating: 0, count: Int(capacity))
+    let copied = bytes.withUnsafeMutableBufferPointer {
+      viem_core_view_copy_layout_diagnostics(core, view, &info.identity, $0.baseAddress, capacity, &required)
+    }
+    #expect(copied == VIEM_STATUS_OK)
+    #expect(String(decoding: bytes, as: UTF8.self).contains("default system font"))
+    #expect(fault.calls == 2, "Reading warnings never shapes")
+    var saved = [UInt8](repeating: 0, count: source.count)
+    let serialized = saved.withUnsafeMutableBufferPointer {
+      viem_core_copy_source_bytes(core, revision, $0.baseAddress, UInt64($0.count), &required)
+    }
+    #expect(serialized == VIEM_STATUS_OK && saved == source)
+    #expect(viem_core_view_remove(core, view) == VIEM_STATUS_OK)
+  }
   @Test("ASCII indentation retains separate tab and space geometry around shaped text")
   func indentationWhitespaceClusters() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 181)
@@ -531,6 +578,16 @@ struct CoreTextMeasurementProviderTests {
     #expect(isolatedLTR.bidiLevel == 2)
     #expect(nestedRTL.bidiLevel == 3)
     #expect(result.clusters.map(\.bidiLevel).max() == 3)
+  }
+}
+
+private final class NativeShapingFault: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+  var calls: Int { lock.lock(); defer { lock.unlock() }; return count }
+  func begin() throws {
+    lock.lock(); count += 1; let fail = count == 1; lock.unlock()
+    if fail { throw CocoaError(.coderInvalidValue) }
   }
 }
 

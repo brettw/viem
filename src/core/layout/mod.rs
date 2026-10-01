@@ -15,6 +15,7 @@ mod line_breaks;
 mod unicode_breaks;
 mod unicode_break_data;
 mod measurement;
+mod recovery;
 mod mock;
 mod search_overlay;
 mod scroll;

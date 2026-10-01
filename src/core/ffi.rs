@@ -89,7 +89,7 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 7;
+pub const VIEM_CORE_ABI_VERSION: u32 = 8;
 
 /// Adds paragraph base direction in the request's fixed-layout extension slot
 /// and the context-owned cluster contract, plus explicit fragment resource
@@ -2940,9 +2940,10 @@ impl TextMeasurementProvider for CTextMeasurementProvider {
             ));
         }
         if callback_status != ViemStatus::Ok as u32 {
-            return Err(MeasurementError::Provider(format!(
-                "C provider callback returned status {callback_status}"
-            )));
+            let message = format!("C provider callback returned status {callback_status}");
+            return Err(if callback_status == ViemStatus::ProviderFailure as u32 {
+                MeasurementError::Provider(message)
+            } else { MeasurementError::InvalidResponse(message) });
         }
         ffi_responses
             .iter()
@@ -3030,7 +3031,7 @@ fn parse_ffi_bool(raw: u32) -> Result<bool, ViemStatus> {
 }
 
 fn measurement_failure(message: impl Into<String>) -> MeasurementError {
-    MeasurementError::Provider(message.into())
+    MeasurementError::InvalidResponse(message.into())
 }
 
 unsafe fn provider_slice<'a, T>(
@@ -13683,6 +13684,66 @@ pub unsafe extern "C" fn viem_core_copy_syntax_diagnostics(handle:ViemCoreHandle
         if capacity < text.len() as u64 {return Err(ViemStatus::BufferTooSmall);}
         unsafe{copy_output(text.as_bytes(),output);} Ok(())
     })
+}
+
+/// Presentation warnings from an exact installed snapshot. At most sixteen
+/// distinct messages and 8 KiB are exported; querying performs no layout work.
+/// # Safety
+/// Standard disjoint two-pass UTF-8 output and a valid expected identity.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_copy_layout_diagnostics(
+    handle: ViemCoreHandle, view: ViemViewId, expected: *const ViemLayoutSnapshotIdentityV1,
+    output: *mut u8, capacity: u64, required: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(expected, 1)?,
+            typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let expected = unsafe { read_layout_identity(expected)? };
+        unsafe { required.write(0); }
+        let text = with_core(handle, |core| {
+            let snapshot = current_ffi_layout_snapshot(core, ViewId(view))?;
+            validate_snapshot_identity(expected, snapshot, ViewId(view))?;
+            Ok(layout_diagnostic_text(&snapshot.diagnostics))
+        })?;
+        unsafe { required.write(text.len() as u64); }
+        if capacity < text.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(text.as_bytes(), output); }
+        Ok(())
+    })
+}
+
+fn layout_diagnostic_text(diagnostics: &[ShapingDiagnostic]) -> String {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut text = String::new();
+    for diagnostic in diagnostics.iter().take(64) {
+        if !seen.insert(diagnostic.message.as_str()) { continue; }
+        if !text.is_empty() { text.push('\n'); }
+        text.extend(diagnostic.message.chars().take(512));
+        if seen.len() == 16 || text.len() >= 6144 { break; }
+    }
+    text
+}
+
+#[cfg(test)]
+mod layout_diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn warning_export_bounds_unicode_bytes_distinct_messages_and_examined_records() {
+        let diagnostics: Vec<_> = (0..100).map(|index| ShapingDiagnostic {
+            text_range: 0..0, message: format!("{index}: {}", "🙂".repeat(1024)),
+        }).collect();
+        let text = layout_diagnostic_text(&diagnostics);
+        assert!(text.len() <= 8192);
+        assert!(text.lines().count() <= 16);
+        let duplicates = vec![diagnostics[0].clone(); 100];
+        assert_eq!(layout_diagnostic_text(&duplicates).lines().count(), 1);
+        let small: Vec<_> = (0..100).map(|index| ShapingDiagnostic { text_range: 0..0, message: index.to_string() }).collect();
+        assert_eq!(layout_diagnostic_text(&small).lines().count(), 16);
+        let mut late = vec![ShapingDiagnostic { text_range: 0..0, message: "same".into() }; 64];
+        late.push(diagnostics[0].clone());
+        assert_eq!(layout_diagnostic_text(&late), "same");
+    }
 }
 
 /// Read-only two-pass JSON array of unique, sorted names from accepted syntax

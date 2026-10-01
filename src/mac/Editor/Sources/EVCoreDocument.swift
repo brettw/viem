@@ -104,7 +104,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         do {
             try createCore()
         } catch {
-            assertionFailure("Unable to create the initial Viem core: \(error)")
+            configurationWarning = "Unable to create the initial editor. \(error.localizedDescription)"
         }
         codeObservers.append(NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -164,9 +164,37 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             let result = EVCoreStyleDefaults.initialize(core: core, revision: currentDocumentState.document_revision, json: json,
                 path: configuration.selectedThemeURL?.path ?? "Default", replacing: true)
             try checked(result.status, operation: "Apply theme styles")
+            if !result.messages.isEmpty { noteConfigurationWarning(result.messages.joined(separator: "\n")) }
             for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
             NotificationCenter.default.post(name: .viemCoreDocumentDidChange, object: self)
-        } catch { configurationWarning = error.localizedDescription }
+        } catch { noteConfigurationWarning("Could not apply theme styles; keeping available styles. \(error.localizedDescription)") }
+    }
+
+    fileprivate func noteConfigurationWarning(_ warning: String) {
+        let previous = configurationWarning
+        var messages: [String] = []
+        for message in [configurationWarning, warning].compactMap({ $0 }).joined(separator: "\n").split(separator: "\n") {
+            let bounded = String(message.prefix(1024))
+            if !messages.contains(bounded) { messages.append(bounded) }
+        }
+        configurationWarning = messages.suffix(8).joined(separator: "\n")
+        guard configurationWarning != previous else { return }
+        for surface in surfaces.compactMap(\.value) { surface.showDocumentMessage(String(warning.prefix(8192))) }
+    }
+
+    /// Optional setup may retain validated defaults; an invalid core handle,
+    /// reentrant owner or failed integrity boundary still aborts opening.
+    private func configureOptional(_ name: String, _ operation: () throws -> Void) throws {
+        do { try operation() }
+        catch {
+            if case EVCoreFrontendError.core(_, let status) = error,
+               [UInt32(VIEM_STATUS_INVALID_HANDLE), UInt32(VIEM_STATUS_CORE_BUSY),
+                UInt32(VIEM_STATUS_INTERNAL_ERROR), UInt32(VIEM_STATUS_CORE_FAILURE), UInt32(VIEM_STATUS_PANIC),
+                UInt32(VIEM_STATUS_VERIFICATION_FAILED)].contains(status) {
+                throw error
+            }
+            noteConfigurationWarning("Could not load \(name); keeping available defaults. \(error.localizedDescription)")
+        }
     }
 
     /// A replacement has no observers, timers, surfaces, or persistence
@@ -539,18 +567,24 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         _ = try documentState()
         if isStylePreview { return }
         configureSyntax()
-        try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
-        try configureWhitespace(indentation: configuration.indentation, presentation: configuration.whitespacePresentation)
-        let associations = try configuration.codeFilenameAssociationsJSON()
-        let configuredAssociations = associations.withUnsafeBytes {
-            viem_core_set_code_filename_associations_json(core, $0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
+        try configureOptional("text width") {
+            try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
         }
-        try checked(configuredAssociations, operation: "Load Code filename associations")
-        let filename = Array(openingFilename.utf8)
-        let detected = filename.withUnsafeBufferPointer {
-            viem_core_initialize_code_detection(core, $0.baseAddress, UInt64($0.count), allowAutomaticCode ? 1 : 0)
+        try configureOptional("whitespace settings") {
+            try configureWhitespace(indentation: configuration.indentation, presentation: configuration.whitespacePresentation)
         }
-        try checked(detected, operation: "Detect code language")
+        try configureOptional("Code filename associations") {
+            let associations = try configuration.codeFilenameAssociationsJSON()
+            try checked(associations.withUnsafeBytes {
+                viem_core_set_code_filename_associations_json(core, $0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count))
+            }, operation: "Load Code filename associations")
+        }
+        try configureOptional("language detection") {
+            let filename = Array(openingFilename.utf8)
+            try checked(filename.withUnsafeBufferPointer {
+                viem_core_initialize_code_detection(core, $0.baseAddress, UInt64($0.count), allowAutomaticCode ? 1 : 0)
+            }, operation: "Detect code language")
+        }
         _ = try documentState()
         let defaultStyleName = sourceFormat.defaultStyleName
         let defaultStyleFile = configuration.selectedThemeURL ?? configuration.themesDirectory.appendingPathComponent("Default")
@@ -572,7 +606,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             configurationWarning = ([configurationWarning].compactMap { $0 } + [warning]).joined(separator: "\n")
         }
         let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
-        try EVSelectionPreferences.attach(self)
+        try configureOptional("selection settings") { try EVSelectionPreferences.attach(self) }
         if !startupDiagnostics.isEmpty {
             configurationWarning = ([configurationWarning].compactMap { $0 } + startupDiagnostics).joined(separator: "\n")
         }
@@ -1428,7 +1462,15 @@ final class EVCoreViewSession {
         request.flags = top == nil ? 0 : UInt32(VIEM_VIEWPORT_ORIGIN_HAS_TOP)
         request.left = Float(max(left, 0))
         request.top = Float(max(top ?? 0, 0))
-        if let state {
+        // An omitted expected state means a fresh native scroll request. It
+        // must still capture the current identity; zero-filled identities are
+        // rejected by core just like any other stale layout.
+        let captured: ViemViewportStateV1?
+        if top != nil && state == nil {
+            try refreshLayoutIfNeeded()
+            captured = try viewportState()
+        } else { captured = state }
+        if let state = captured {
             request.expected_document_id = state.document_id
             request.expected_document_revision = state.document_revision
             request.expected_layout_revision = state.layout_revision
@@ -1482,12 +1524,45 @@ final class EVCoreViewSession {
         return info
     }
 
+    private var cachedLayoutDiagnostics: (identity: ViemLayoutSnapshotIdentityV1, text: String)?
+
+    /// Optional, read-only UI exports may be omitted for the current frame.
+    /// Required source/layout identities are validated by the caller as usual.
+    func optionalPresentation<T>(_ name: String, fallback: T, _ operation: () throws -> T) -> T {
+        do { return try operation() }
+        catch {
+            document.noteConfigurationWarning("Could not display \(name). \(error.localizedDescription)")
+            return fallback
+        }
+    }
+
+    func layoutDiagnostics(identity: ViemLayoutSnapshotIdentityV1) throws -> String {
+        if let cachedLayoutDiagnostics, cachedLayoutDiagnostics.identity.isSameLayout(as: identity) {
+            return cachedLayoutDiagnostics.text
+        }
+        var expected = identity
+        var required: UInt64 = 0
+        let status = viem_core_view_copy_layout_diagnostics(document.core, viewID, &expected, nil, 0, &required)
+        if status != Status.bufferTooSmall { try checked(status, operation: "Read layout warnings") }
+        guard required <= 8192 else { throw EVCoreFrontendError.unavailableLayout }
+        var bytes = [UInt8](repeating: 0, count: Int(required))
+        let capacity = required
+        try checked(bytes.withUnsafeMutableBufferPointer {
+            viem_core_view_copy_layout_diagnostics(document.core, viewID, &expected, $0.baseAddress, capacity, &required)
+        }, operation: "Copy layout warnings")
+        let text = String(decoding: bytes, as: UTF8.self)
+        cachedLayoutDiagnostics = (identity, text)
+        return text
+    }
+
     func layoutExport() throws -> EVLayoutExport {
         let info = try layoutSnapshotInfo()
         if var cached = cachedLayoutExport, cached.info.identity.isSameLayout(as: info.identity) {
             // Extent estimates and viewport dimensions are cheap live metadata.
             cached.info = info
-            cached.whitespace = try whitespaceMarkersExport(identity: info.identity)
+            cached.whitespace = optionalPresentation("whitespace markers", fallback: EVWhitespaceMarkerExport(enabled: false)) {
+                try whitespaceMarkersExport(identity: info.identity)
+            }
             return cached
         }
         guard info.row_count <= UInt64(Int.max),
@@ -1525,7 +1600,9 @@ final class EVCoreViewSession {
         let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
         let exported = EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
                                       decorations: furniture.0, decorationLabels: furniture.1,
-                                      whitespace: try whitespaceMarkersExport(identity: copiedInfo.identity))
+                                      whitespace: optionalPresentation("whitespace markers", fallback: EVWhitespaceMarkerExport(enabled: false)) {
+                                          try whitespaceMarkersExport(identity: copiedInfo.identity)
+                                      })
         presentationExportCounters.geometryCopies &+= 1
         cachedLayoutExport = exported
         return exported
