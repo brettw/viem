@@ -15,6 +15,8 @@ use crate::document::{
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+mod recovery;
+
 fn lower_alpha(mut ordinal: u64) -> Option<String> {
     if ordinal == 0 {
         return None;
@@ -148,6 +150,7 @@ impl ParagraphLayoutStyle {
 /// Layout-facing result of resolving one immutable formatted snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocumentLayoutStyles {
+    pub(crate) recovery_diagnostic: Option<super::ShapingDiagnostic>,
     /// Default Paragraph font, excluding authored character spans and the
     /// current paragraph's named style. Whitespace geometry uses this basis.
     pub whitespace_shaping_style: ResolvedTextStyle,
@@ -335,21 +338,21 @@ impl DocumentLayoutStyles {
         Self::resolve_region(document, 0..document.text_tree().byte_len())
     }
 
-    pub(crate) fn source_flow_paragraphs(
+    pub(crate) fn source_flow_styles(
         document: &FormattedDocument,
         range: Range<usize>,
-    ) -> Result<Option<Vec<ParagraphLayoutStyle>>, DocumentStyleError> {
+    ) -> Result<Option<Self>, DocumentStyleError> {
         let Some(blocks) = document.flow_blocks_for_region(&range) else {
             return Ok(None);
         };
-        let resolved = Self::resolve_validated(StyleCascadeInput {
+        let resolved = Self::resolve_for_presentation(StyleCascadeInput {
             blocks: &blocks,
             style_spans: &[],
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
             search_matches: &[],
-        })?;
-        Ok(Some(resolved.paragraphs))
+        }, crate::document::Format::MarkdownSource)?;
+        Ok(Some(resolved))
     }
 
     /// Resolve only blocks and character spans that can affect a contiguous
@@ -377,6 +380,26 @@ impl DocumentLayoutStyles {
         flow: bool,
         search_matches: &[Range<usize>],
     ) -> Result<Self, DocumentStyleError> {
+        Self::resolve_region_impl(document, text_range, flow, search_matches, None)
+    }
+
+    pub(crate) fn resolve_region_for_presentation(
+        document: &FormattedDocument,
+        text_range: Range<usize>,
+        flow: bool,
+        search_matches: &[Range<usize>],
+        format: crate::document::Format,
+    ) -> Result<Self, DocumentStyleError> {
+        Self::resolve_region_impl(document, text_range, flow, search_matches, Some(format))
+    }
+
+    fn resolve_region_impl(
+        document: &FormattedDocument,
+        text_range: Range<usize>,
+        flow: bool,
+        search_matches: &[Range<usize>],
+        recovery_format: Option<crate::document::Format>,
+    ) -> Result<Self, DocumentStyleError> {
         let text = document.text_tree();
         if text_range.start > text_range.end
             || text_range.end > text.byte_len()
@@ -394,13 +417,17 @@ impl DocumentLayoutStyles {
         let regional_spans = document.style_spans_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
-        let mut styles = Self::resolve_validated(StyleCascadeInput {
+        let input = StyleCascadeInput {
             blocks: &regional_blocks,
             style_spans: &regional_spans,
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
             search_matches,
-        })?;
+        };
+        let mut styles = match recovery_format {
+            Some(format) => Self::resolve_for_presentation(input, format),
+            None => Self::resolve_validated(input),
+        }?;
         for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
             if !structural_flow {
                 paragraph.list_marker_range = document
@@ -611,6 +638,7 @@ impl DocumentLayoutStyles {
         }
 
         Ok(Self {
+            recovery_diagnostic: None,
             whitespace_shaping_style,
             style_sheet_revision: sheet.revision,
             document_insets: EdgeInsets {

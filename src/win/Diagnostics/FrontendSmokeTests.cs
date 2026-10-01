@@ -29,6 +29,28 @@ internal static class FrontendSmokeTests
         string test = Path.Combine(profile, "files"); Directory.CreateDirectory(test);
         string path = Path.Combine(test, "recovery.md");
         byte[] disk = "# original\r\n"u8.ToArray(); File.WriteAllBytes(path, disk);
+        using (var doc = new CoreDocument("exact source"u8.ToArray()))
+        using (var view = new CoreView(doc, device, dispatcher, 500, 200))
+        {
+            doc.ConfigureEditingDefaults("{\"tabstop\":0}"u8.ToArray(), "{}"u8.ToArray(), 0, "{}"u8.ToArray());
+            Check(doc.ConfigurationDiagnostics.Contains("indentation"), "invalid optional settings warn without losing the document");
+            bool strictRejected = false;
+            try { doc.ConfigureDefaults("{\"tabstop\":0}"u8.ToArray(), "{}"u8.ToArray(), 0, "{}"u8.ToArray()); }
+            catch { strictRejected = true; }
+            Check(strictRejected, "optional recovery does not bypass strict settings validation");
+            view.Command("i"); view.Provider.FailShapingBatchesForTest = 1;
+            view.Text("X");
+            Check(doc.FormattedText() == "Xexact source" && view.Layout().Diagnostics.Contains("default system font"),
+                "native shaping failure recovers a usable frame and inserts text exactly once");
+            view.Key(VIEM_KEY_ESCAPE); view.Command("u");
+            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual("exact source"u8), "undo after font recovery restores exact source");
+            view.Provider.FailShapingBatchesForTest = 2;
+            bool declined = false;
+            try { view.Provider.InvalidateMetrics(); view.Resize(420, 200); } catch { declined = true; }
+            Check(declined, "an unavailable native device has a finite recovery budget");
+            view.Resize(500, 200);
+            Check(view.Layout().Rows.Length > 0, "editing resumes when native shaping becomes available");
+        }
         using (var doc = new CoreDocument(disk, path))
         using (var view = new CoreView(doc, device, dispatcher, 500, 200))
         {

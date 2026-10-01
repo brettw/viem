@@ -325,7 +325,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut retained_rows = Vec::new();
         let mut horizontal_rows = Vec::new();
         let mut statistics = LayoutWorkStatistics::default();
-        let mut diagnostics = Vec::new();
+        let mut diagnostics: Vec<_> = styles.recovery_diagnostic.iter().cloned().collect();
         let mut wanted_top = (desired_top - view.height).max(0.0);
         let mut wanted_bottom = desired_top + view.height * 2.0;
         let focus = view

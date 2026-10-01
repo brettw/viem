@@ -58,6 +58,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private var viewPreferencesObserver: NSObjectProtocol?
     private var appliedMargins: EVViewMargins?
     private var lastErrorMessage = ""
+    private var lastLayoutWarning = ""
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
     var findPasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.find
     private var pasteMatchesStyle = false
@@ -206,6 +207,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func detachFromCore() {
+        lastLayoutWarning = ""
         stopSearchPolling()
         completionTimer?.invalidate()
         completionTimer = nil
@@ -230,15 +232,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func refreshPresentation(advancingSearch: Bool = true) {
         guard let session else { return }
         do {
-            if advancingSearch { _ = try session.pollSearch() }
+            if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()
             let nextDocumentState = try backend.documentState()
             let nextFormattedSnapshot = try backend.formattedSnapshot()
             let nextPresentation = try session.presentation()
             let nextViewport = try session.viewportState()
             let nextCompositionOverlay = try session.compositionOverlayExport()
-            let nextCompletion = try session.completionExport()
-            let nextSearchWorkPending = try session.searchWorkPending()
+            let nextCompletion = session.optionalPresentation("completion popup", fallback: nil as EVCompletionExport?) { try session.completionExport() }
+            let nextSearchWorkPending = session.optionalPresentation("search highlights", fallback: false) { try session.searchWorkPending() }
             guard nextFormattedSnapshot.info.identity.document_id == nextDocumentState.document_id,
                   nextFormattedSnapshot.info.identity.document_revision == nextDocumentState.document_revision,
                   nextFormattedSnapshot.info.identity.document_id == nextPresentation.document_id,
@@ -397,11 +399,29 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if isViewLoaded {
                 editorView.applyPresentation()
             }
+            // Warnings are optional presentation data. A warning-copy failure
+            // must not suppress an otherwise verified frame or replay input.
+            if let layoutSnapshot, let warning = try? session.layoutDiagnostics(identity: layoutSnapshot.info.identity),
+               warning != lastLayoutWarning {
+                lastLayoutWarning = warning
+                if !warning.isEmpty { publishHostMessage(warning) }
+            }
             if selectionChanged {
                 NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: self)
             }
         } catch {
             stopSearchPolling()
+            // Retain a frame only while core can still attest to its complete
+            // source/configuration/metrics identity. Never draw a stale frame.
+            if let current = try? session.layoutSnapshotInfo(),
+               layoutSnapshot?.info.identity.isSameLayout(as: current.identity) == true {
+                // The previous verified frame remains usable.
+            } else {
+                layoutSnapshot = nil; layoutPaint = nil; layoutTextSlices = []
+                compositionOverlay = nil; compositionTextSlices = []; visualSelection = nil
+                immutablePresentationGeneration &+= 1
+                if isViewLoaded { editorView.applyPresentation() }
+            }
             report(error)
         }
     }

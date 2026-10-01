@@ -54,6 +54,13 @@ Recognized and explicitly selected formats retain their precedence.
 
 ## Architecture and concurrency constraints
 
+Recover failed optional setup and disposable presentation with validated defaults
+when source and resource identities remain sound. Keep editing available after
+font, theme, highlighting, decoration, or recovery-backup failures where a safe
+fallback exists, and report bounded diagnostics. Recovery must not rewrite source,
+replay input or external effects, accept stale geometry, or conceal failed
+transaction verification. Retries and degraded work must remain bounded.
+
 - `document` owns state, invariants and semantic mutations; `command` interprets
   Vim input through immutable public queries; `layout` consumes document
   snapshots. Document code must not depend on command grammar. Commands must not

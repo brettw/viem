@@ -207,7 +207,7 @@ mod tests {
             .unwrap()
             .engine
             .provider_mut()
-            .fail_next_batch("temporary font service failure");
+            .fail_next_batches(2, "font service unavailable even with defaults");
         core.set_indentation_defaults(IndentationOptions {
             tabstop: 8,
             ..Default::default()

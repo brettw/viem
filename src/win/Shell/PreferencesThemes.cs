@@ -77,16 +77,25 @@ internal sealed partial class Preferences
     public string[] AttachThemeDocument(CoreDocument document, bool initialize = true)
     {
         if (themeDocuments.ContainsKey(document)) return [];
-        ApplyCodeStyles(activeTheme);
+        document.ConfigureForEditing("Code styles", () => ApplyCodeStyles(activeTheme));
         string family = StyleFamily(document.State.format);
         byte[] styles = ThemeStyleDefaults(document.State.format);
-        string[] diagnostics = family == "code" ? [] : initialize ? document.InitializeStyleDefaults(styles) : document.ReplaceStyleDefaults(styles);
+        string[] diagnostics = [];
+        bool applied = document.ConfigureForEditing("theme styles", () => {
+            diagnostics = family == "code" ? [] : initialize ? document.InitializeStyleDefaults(styles) : document.ReplaceStyleDefaults(styles);
+        });
         themeDocuments[document] = family;
-        appliedDocumentStyles[document] = family + Convert.ToBase64String(styles);
+        if (applied) appliedDocumentStyles[document] = family + Convert.ToBase64String(styles);
         document.Changed += () => {
             if (applyingTheme || !themeDocuments.TryGetValue(document, out string? previous)) return;
             string current = StyleFamily(document.State.format);
-            if (current != previous) { ApplyDocumentStyles(document, activeTheme); document.NotifyChanged(); }
+            if (current != previous) {
+                document.ConfigureForEditing("theme styles", () => ApplyDocumentStyles(document, activeTheme));
+                // Retain the format family even on failure so notification does
+                // not recursively retry the same broken theme.
+                themeDocuments[document] = current;
+                document.NotifyChanged();
+            }
         };
         document.Disposed += () => { themeDocuments.Remove(document); appliedDocumentStyles.Remove(document); };
         return diagnostics;
@@ -104,7 +113,8 @@ internal sealed partial class Preferences
         byte[] styles = ThemeBytes(theme["styles"]?[family] ?? DefaultTheme()["styles"]![family]!);
         string key = family + Convert.ToBase64String(styles);
         bool changed = !appliedDocumentStyles.TryGetValue(document, out string? prior) || prior != key;
-        if (family != "code" && changed) document.ReplaceStyleDefaults(styles);
+        if (family != "code" && changed)
+            foreach (string diagnostic in document.ReplaceStyleDefaults(styles)) document.ConfigurationWarning(diagnostic);
         themeDocuments[document] = family; appliedDocumentStyles[document] = key; return changed;
     }
     private HashSet<CoreDocument> ApplyTheme(JsonObject theme)
@@ -113,8 +123,11 @@ internal sealed partial class Preferences
         try {
             bool codeChanged = ApplyCodeStyles(theme);
             var changed = new HashSet<CoreDocument>();
-            foreach (var document in themeDocuments.Keys.ToArray())
-                if (ApplyDocumentStyles(document, theme) || codeChanged && document.State.format == VIEM_FORMAT_CODE) changed.Add(document);
+            foreach (var document in themeDocuments.Keys.ToArray()) {
+                bool styleChanged = false;
+                bool applied = document.ConfigureForEditing("theme styles", () => styleChanged = ApplyDocumentStyles(document, theme));
+                if (!applied || styleChanged || codeChanged && document.State.format == VIEM_FORMAT_CODE) changed.Add(document);
+            }
             return changed;
         }
         finally { applyingTheme = false; }

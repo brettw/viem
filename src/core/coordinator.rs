@@ -3540,11 +3540,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .transpose()
             .map_err(DocumentError::FormattedTextStorage)?
             .unwrap_or(base_text_end);
-        let mut styles = DocumentLayoutStyles::resolve_region_with_search(
+        let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(
             self.document.projection(),
             base_text_start..style_end,
             flow,
             self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()),
+            self.document.format(),
         )
         .map_err(LayoutError::from)?;
         if flow {
@@ -3739,11 +3740,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .transpose()
                 .map_err(DocumentError::FormattedTextStorage)?
                 .unwrap_or_else(|| to_base(style_capture.end, true));
-            let mut styles = DocumentLayoutStyles::resolve_region_with_search(
+            let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(
                 self.document.projection(),
                 to_base(capture.start, false)..style_end,
                 flow,
                 self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()),
+                self.document.format(),
             )
             .map_err(LayoutError::from)?;
             if flow {
@@ -7556,6 +7558,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct ControlledFailureProvider {
         inner: MockTextMeasurementProvider,
+        decline_font_retry: bool,
         fail_next: Arc<AtomicBool>,
         invalidate_during_shape: Arc<AtomicBool>,
         metric_changes_after_shape: Arc<AtomicUsize>,
@@ -7576,6 +7579,7 @@ mod tests {
             (
                 Self {
                     inner: MockTextMeasurementProvider::new(),
+                    decline_font_retry: false,
                     fail_next: Arc::clone(&fail_next),
                     invalidate_during_shape: Arc::new(AtomicBool::new(false)),
                     metric_changes_after_shape: Arc::new(AtomicUsize::new(0)),
@@ -7613,7 +7617,14 @@ mod tests {
                     "font registration during shaping".into(),
                 ));
             }
+            // These atomicity tests model a failed request with no viable
+            // default-font recovery, rather than a single transient failure.
+            if self.decline_font_retry {
+                self.decline_font_retry = false;
+                return Err(MeasurementError::Provider("injected post-commit failure".into()));
+            }
             if self.fail_next.swap(false, Ordering::AcqRel) {
+                self.decline_font_retry = true;
                 return Err(MeasurementError::Provider(
                     "injected post-commit failure".to_owned(),
                 ));
@@ -10839,7 +10850,7 @@ mod tests {
     }
 
     #[test]
-    fn input_preflight_shapes_only_when_command_resolution_needs_layout() {
+    fn input_preflight_defers_layout_until_resolution_or_presentation_needs_it() {
         let (provider, fail_next, shape_calls, generation) =
             ControlledFailureProvider::new_counted();
         let mut core = Core::new(Document::new("abc\ndef\nghi"));
@@ -10859,15 +10870,15 @@ mod tests {
         let changed = core.handle(view, key('x')).unwrap();
         assert!(changed.document_changed);
         assert_eq!(core.document().text(), "bc\ndef\nghi");
-        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 1);
+        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 2);
 
         fail_next.store(true, Ordering::Release);
         let undone = core.handle(view, key('u')).unwrap();
         assert!(undone.document_changed);
         assert_eq!(core.document().text(), "abc\ndef\nghi");
-        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 2);
+        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 4);
 
-        // Pending operator/search grammar is entirely logical. It preserves
+        // Pending operator grammar is entirely logical. It preserves
         // the viewport and must not consume the next provider failure.
         let viewport_top = core.layout(view).unwrap().viewport_top();
         generation.fetch_add(1, Ordering::AcqRel);
@@ -10876,17 +10887,23 @@ mod tests {
         assert_eq!(pending.command.unwrap().status, CommandStatus::Pending);
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
             .unwrap();
+        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 4);
+        assert!(fail_next.load(Ordering::Acquire));
+        // Search highlight publication may rebuild the unavailable frame;
+        // failure remains presentation-only and does not reject prompt input.
         core.handle(view, key('/')).unwrap();
         core.handle(view, text("abc")).unwrap();
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
             .unwrap();
-        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 2);
-        assert!(fail_next.load(Ordering::Acquire));
+        assert_eq!(core.document().text(), "abc\ndef\nghi");
         assert_eq!(core.layout(view).unwrap().viewport_top(), viewport_top);
 
         // Bare vertical motion uses desired-x in layout units even without
         // wrapping. It must acquire exact geometry and therefore reaches the
-        // still-armed failing provider.
+        // newly armed failing provider.
+        generation.fetch_add(1, Ordering::AcqRel);
+        fail_next.store(true, Ordering::Release);
+        let before_motion = shape_calls.load(Ordering::Acquire);
         let error = core.handle(view, key('j')).unwrap_err();
         assert!(
             matches!(
@@ -10900,7 +10917,7 @@ mod tests {
             ),
             "unexpected layout acquisition error: {error:?}"
         );
-        assert_eq!(shape_calls.load(Ordering::Acquire), initial_calls + 3);
+        assert_eq!(shape_calls.load(Ordering::Acquire), before_motion + 2);
         assert!(!fail_next.load(Ordering::Acquire));
     }
 
@@ -12531,7 +12548,7 @@ mod long_line_focus_tests {
             .unwrap()
             .engine
             .provider_mut()
-            .fail_next_batch("end chunk failed");
+            .fail_next_batches(2, "end chunk failed");
         let request = CoreEvent::SetViewportOrigin {
             left: 0.0,
             top: Some(f32::MAX),
