@@ -57,6 +57,10 @@ internal static class StyleInspectorBehaviorTests
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         BlockPreview(pane, preferences);
+        if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLE_PERFORMANCE_ONLY") == "1") {
+            await Following(pane, preferences);
+            return;
+        }
         await CodeBlockBackground(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
@@ -82,6 +86,49 @@ internal static class StyleInspectorBehaviorTests
             "Block preview uses core nested-container geometry");
         Check(boxes.All(box => Math.Abs(box.paint.foreground.alpha - .5f) < .001f),
             "Block preview copies committed background opacity");
+        int edits = preview.PropertyEdits;
+        double fullMs = 0, incrementalMs = 0;
+        for (int i = 0; i < 8; i++) {
+            view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(20 + i));
+            sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+            using var fresh = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            fresh.Update(sheet, quote, preferences.Theme.Foreground);
+            fullMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            start = System.Diagnostics.Stopwatch.GetTimestamp();
+            preview.Update(sheet, quote, preferences.Theme.Foreground);
+            incrementalMs += System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            var actual = preview.Layout(560, 300);
+            var expected = fresh.Layout(560, 300);
+            Check(actual.Decorations.Select(d => d.typographic_bounds).SequenceEqual(expected.Decorations.Select(d => d.typographic_bounds)),
+                "Incremental block preview matches fresh native geometry after padding edit " + i);
+        }
+        Check(preview.PropertyEdits - edits == 8, "Eight single-property preview changes submit exactly eight property edits");
+        Check(true, $"Preview property update benchmark: full {fullMs / 8:F2} ms, incremental {incrementalMs / 8:F2} ms, speedup {fullMs / Math.Max(.001, incrementalMs):F2}x");
+        edits = preview.PropertyEdits;
+        // A change to another style yields a new string arena, but should not
+        // submit unchanged effective values to this specimen.
+        var heading = sheet.Styles.Single(s => s.Id == "Heading1" && s.Namespace == 1);
+        view.EditStyle(heading, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(31));
+        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        preview.Update(sheet, quote, preferences.Theme.Foreground);
+        Check(preview.PropertyEdits == edits, "An unrelated stylesheet revision does not resubmit unchanged preview values");
+        view.EditStyleFont(quote, ["Consolas"], null);
+        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        var foreground = Color.FromArgb(255, 36, 72, 108);
+        preview.Update(sheet, quote, foreground);
+        using var freshPixels = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
+        freshPixels.Update(sheet, quote, foreground);
+        byte[] Pixels(BlockStylePreview specimen) {
+            using var surface = new CanvasRenderTarget(pane.Canvas.Device, 560, 300, 96);
+            using (var drawing = surface.CreateDrawingSession()) {
+                drawing.Clear(Microsoft.UI.Colors.White);
+                specimen.Draw(drawing, 560, 300, foreground);
+            }
+            return surface.GetPixelBytes();
+        }
+        Check(Pixels(preview).SequenceEqual(Pixels(freshPixels)),
+            "Incremental preview pixels match a fresh specimen after font and theme foreground changes");
         Check(document.Source(document.State.document_revision).SequenceEqual(source),
             "Block preview leaves the inspected document source unchanged");
     }
@@ -152,6 +199,15 @@ internal static class StyleInspectorBehaviorTests
             await Task.Delay(450);
             Check(Selected(inspector).Id == "Heading1" && inspector.CaretStyleQueries == queries + 1 && !inspector.CaretFollowScheduled,
                 "a drag burst produces one settled paragraph-style update");
+            var catalogue = inspector.StylePicker.ItemsSource;
+            var families = inspector.FontFamilyControl.ItemsSource;
+            var faces = inspector.FontVariantControl.ItemsSource;
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading3");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
+            Check(ReferenceEquals(catalogue, inspector.StylePicker.ItemsSource)
+                && ReferenceEquals(families, inspector.FontFamilyControl.ItemsSource)
+                && ReferenceEquals(faces, inspector.FontVariantControl.ItemsSource),
+                "Following styles with the same font retains catalogue, family and variant menu resources");
             queries = inspector.CaretStyleQueries;
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
             view.Refresh(); view.Zoom(1.1f); document.NotifyChanged(); Move(view, 1);

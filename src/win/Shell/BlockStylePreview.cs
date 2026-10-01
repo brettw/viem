@@ -20,6 +20,23 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     private StyleDefinition? appliedStyle;
     private Color appliedForeground;
     private (float Width, float Height) size;
+#if DEBUG
+    internal int PropertyEdits { get; private set; }
+#endif
+    // Compare payloads, not offsets into independently exported string arenas.
+    private static bool SameValue(StyleSheet left, ViemStyleValueV1 a, StyleSheet right, ViemStyleValueV1 b)
+    {
+        if (a.kind != b.kind || a.number != b.number || a.enum_value != b.enum_value
+            || !a.color.Equals(b.color) || a.item_count != b.item_count) return false;
+        if (a.kind == VIEM_STYLE_VALUE_STRING && left.String(a) != right.String(b)) return false;
+        for (ulong i = 0; i < a.item_count; i++) {
+            var x = left.Items[checked((int)(a.first_item + i))];
+            var y = right.Items[checked((int)(b.first_item + i))];
+            if (x.kind != y.kind || x.unsigned_value != y.unsigned_value
+                || Text(left.Strings, x.@string) != Text(right.Strings, y.@string)) return false;
+        }
+        return true;
+    }
 
     public BlockStylePreview(uint role, CanvasDevice device, DispatcherQueue dispatcher)
     {
@@ -42,12 +59,28 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     public void Update(StyleSheet sheet, StyleDefinition style, Color foreground)
     {
         if (ReferenceEquals(appliedSheet, sheet) && ReferenceEquals(appliedStyle, style) && appliedForeground == foreground) return;
+        try { Apply(sheet, style, foreground); }
+        catch { appliedSheet = null; appliedStyle = null; throw; }
+    }
+    private void Apply(StyleSheet sheet, StyleDefinition style, Color foreground)
+    {
         var baseStyle = view.Styles().Styles.Single(s => s.Id == "Paragraph" && s.Namespace == 1);
         var context = New<ViemStyleEditValueV1>(); context.kind = VIEM_STYLE_VALUE_COLOR;
         context.color = new() { red = foreground.R / 255f, green = foreground.G / 255f, blue = foreground.B / 255f, alpha = foreground.A / 255f };
-        view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, context);
+        if (appliedSheet == null || appliedForeground != foreground)
+            view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, context);
         foreach (uint property in target.Properties.Keys) {
             var effective = style.Value(property);
+            if (appliedSheet != null && appliedStyle != null) {
+                bool same = property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND
+                    && (style.UsesThemeForeground || appliedStyle.UsesThemeForeground)
+                    ? style.UsesThemeForeground && appliedStyle.UsesThemeForeground && foreground == appliedForeground
+                    : SameValue(appliedSheet, appliedStyle.Value(property), sheet, effective);
+                if (same) continue;
+            }
+#if DEBUG
+            PropertyEdits++;
+#endif
             if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && style.UsesThemeForeground) {
                 view.EditStyle(target, VIEM_STYLE_EDIT_SET_DECLARATION, property, context);
                 continue;
