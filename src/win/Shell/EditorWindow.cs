@@ -653,7 +653,7 @@ internal sealed partial class EditorWindow : Window
             case VIEM_WINDOW_EQUALIZE_WIDTH_ONLY: paneGrid.Equalize(2); break;
             case VIEM_WINDOW_GROW_WIDTH: case VIEM_WINDOW_SHRINK_WIDTH: case VIEM_WINDOW_SET_WIDTH:
                 double column = pane.View?.DefaultColumnWidth ?? 8;
-                paneGrid.Action(pane, 5, 1, (command == VIEM_WINDOW_SHRINK_WIDTH ? -1 : 1) * Math.Max(1, count) * column,
+                paneGrid.Action(pane, 5, 1, (command == VIEM_WINDOW_SHRINK_WIDTH ? -1d : 1d) * Math.Max(1, count) * column,
                     command == VIEM_WINDOW_SET_WIDTH ? (count == 0 ? 2u : 0u) : 1u); break;
             case VIEM_WINDOW_GROW: case VIEM_WINDOW_SHRINK: case VIEM_WINDOW_SET_HEIGHT:
                 paneGrid.UpdateLayout();

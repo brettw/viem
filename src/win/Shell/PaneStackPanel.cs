@@ -87,7 +87,9 @@ internal sealed unsafe class PaneStackPanel : Panel, IDisposable
     {
         UpdateLayout(); var point = pane.WindowFocusPoint; var origin = pane.TransformToVisual(this).TransformPoint(new Point()); ulong focus = 0;
         Check(viem_pane_layout_action(handle, ids[pane], operation, count, value, flags, origin.X + point.X, origin.Y + point.Y, &focus));
-        RefreshFrames(); InvalidateMeasure(); UpdateLayout(); return ids.First(p => p.Value == focus).Key;
+        RefreshFrames(); InvalidateMeasure(); UpdateLayout();
+        ulong focusedId = focus;
+        return ids.First(p => p.Value == focusedId).Key;
     }
     internal void Equalize(uint axis = 0) { if (ids.Count > 0) Action(ids.Keys.First(), 6, axis); }
     internal void DragBar(EditorPane pane, double delta)
@@ -124,7 +126,7 @@ internal sealed class DragCursorGrid : Grid, IDisposable
     public void Dispose() { ProtectedCursor = null; cursor.Dispose(); }
 }
 
-internal sealed class VerticalSplitter : Border, IDisposable
+internal sealed class VerticalSplitter : Grid, IDisposable
 {
     private readonly InputSystemCursor cursor = InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast);
     private uint? pointer;

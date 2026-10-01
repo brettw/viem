@@ -42,8 +42,9 @@ internal sealed unsafe partial class CoreView
             Check(viem_core_view_copy_layout_decorations(Document.Handle, Id, &identity, d, (ulong)decorations.Length, l, (ulong)labels.Length, &furniture), "Copy decorations");
         string diagnostics = "";
         // Reading a warning cannot invalidate an otherwise complete frame.
+        var diagnosticsIdentity = identity;
         try { diagnostics = System.Text.Encoding.UTF8.GetString(Copy((p, n, r) => {
-            var expected = identity;
+            var expected = diagnosticsIdentity;
             return viem_core_view_copy_layout_diagnostics(Document.Handle, Id, &expected, p, n, r);
         })); } catch (CoreException) { }
         return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations, diagnostics);
