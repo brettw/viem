@@ -359,6 +359,11 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   Preserve body-leading WYSIWYG spaces/tabs with numeric references when literal
   whitespace would become structural indentation. Escape typed reference syntax;
   code and source views retain their literal spelling.
+- Prefer literal characters when their Markdown meaning is unchanged. Text
+  edits may simplify authored escapes and adjacent space/tab references that
+  have become safe, including references already present before the edit.
+  Preserve necessary whitespace, delimiter and structure protection, and leave
+  unrelated source spelling untouched. Cleanup shares the edit's undo unit.
 - Code Block assignment fences each selected paragraph with a sufficiently
   long delimiter. Clearing fences removes their language annotation; clearing
   indented code removes its code indentation. Preserve literal body text and

@@ -1216,7 +1216,7 @@ mod tests {
         let saved = document.source_bytes();
         assert!(std::str::from_utf8(&saved)
             .unwrap()
-            .contains(r"***A \* B & C***"));
+            .contains(r"***A * B & C***"));
         let reopened = open(&saved, Format::Markdown);
         for document in [&document, &reopened] {
             assert_eq!(document.text(), plain);

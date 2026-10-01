@@ -38,6 +38,8 @@ mod markdown_numbering;
 mod markdown_quote_edit;
 #[path = "markdown_split.rs"]
 mod markdown_split;
+#[path = "markdown_edit_spelling.rs"]
+mod markdown_edit_spelling;
 #[path = "markdown_typing.rs"]
 mod markdown_typing;
 #[path = "named_character.rs"]
@@ -1982,6 +1984,7 @@ impl Document {
             self.repair_markdown_authored_spaces(&edits, &mut source_patches)?;
             self.repair_markdown_reference_spaces(&edits, &mut source_patches)?;
         }
+        self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
@@ -2585,6 +2588,7 @@ impl Document {
                 .map(|edit| &edit.range),
             &mut source_patches,
         )?;
+        self.simplify_markdown_edit_spelling(&text_edits, &mut source_patches)?;
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;

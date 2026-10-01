@@ -127,7 +127,7 @@ final class EVPaneContainer: NSViewController {
     ids.removeValue(forKey: ObjectIdentifier(pane)); panes.remove(at: index)
     if lastAccessedPane === pane { lastAccessedPane = nil }
     preferredIndex = min(index,panes.count-1)
-    try? geometry.action(id(panes[preferredIndex]),operation:6)
+    _ = try? geometry.action(id(panes[preferredIndex]),operation:6)
     layoutStack(); focusPane(at: preferredIndex)
   }
   func replace(_ old: EVDocumentContentViewController, with next: EVDocumentContentViewController) {

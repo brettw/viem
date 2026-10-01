@@ -2966,7 +2966,7 @@ mod tests {
             .insert_formatted_payload(markdown.text().len(), payload)
             .unwrap();
         assert_eq!(markdown.text(), "before*literal*\n# title");
-        assert_eq!(markdown.source_bytes(), b"before\\*literal\\*\n\n\\# title");
+        assert_eq!(markdown.source_bytes(), b"before\\*literal*\n\n\\# title");
 
         let mut unix = Document::from_bytes_with_file_format(
             b"x".to_vec(),
@@ -3271,7 +3271,7 @@ mod tests {
             Document::from_bytes(b"plain".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         document.insert(5, " *literal*").unwrap();
         assert_eq!(document.text(), "plain *literal*");
-        assert_eq!(document.source_bytes(), b"plain \\*literal\\*");
+        assert_eq!(document.source_bytes(), b"plain \\*literal*");
     }
 
     #[test]

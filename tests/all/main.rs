@@ -82,6 +82,7 @@ mod markdown_indented_code;
 mod markdown_empty_continuations;
 mod markdown_inline_breaks;
 mod markdown_literal_insertions;
+mod markdown_edit_spelling;
 mod markdown_numbering;
 mod markdown_source_layout;
 mod markdown_source_navigation;

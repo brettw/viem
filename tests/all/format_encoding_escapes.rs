@@ -234,6 +234,6 @@ fn typed_reference_spelling_stays_literal_beside_generated_unicode_escapes() {
     let mut document = document("before after", Format::Markdown);
     document.replace(7..7, "&#65; 中 ").unwrap();
     assert_eq!(document.text(), "before &#65; 中 after");
-    assert_eq!(document.source_bytes(), b"before \\&\\#65; &#x4E2D; after");
+    assert_eq!(document.source_bytes(), b"before \\&#65; &#x4E2D; after");
     assert_eq!(reopened(&document).text(), document.text());
 }
