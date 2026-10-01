@@ -26,6 +26,9 @@ internal sealed partial class StyleWindow
     }.Concat(installed).ToArray();
     private readonly ComboBox fontFamily = new() { IsEditable = true, Width = 205, ItemsSource = FontFamilyItems(FontCatalog.Families) };
     private readonly ComboBox fontVariant = new() { Width = 140 };
+    private string[]? listedFamilies;
+    private FontFace[]? listedFaces;
+    private FontVariationInfo? listedVariations;
     private FontFace? CurrentFace => FontCatalog.Named(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES))) ?? FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
         selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
     private void BuildFontRow()
@@ -58,15 +61,22 @@ internal sealed partial class StyleWindow
             var installed = display.Length != 0 && FontCatalog.StorageFamily(display) == null
                 && !FontCatalog.Families.Contains(display, StringComparer.OrdinalIgnoreCase)
                 ? FontCatalog.Families.Append(display).OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase).ToArray() : FontCatalog.Families;
-            var names = FontFamilyItems(installed);
-            fontFamily.ItemsSource = names;
-            fontFamily.SelectedItem = names.OfType<string>().FirstOrDefault(f => string.Equals(f, display, StringComparison.OrdinalIgnoreCase));
+            if (listedFamilies == null || !listedFamilies.SequenceEqual(installed)) {
+                fontFamily.ItemsSource = FontFamilyItems(installed);
+                listedFamilies = installed;
+            }
+            fontFamily.SelectedItem = fontFamily.Items.Cast<object>().OfType<string>().FirstOrDefault(f => string.Equals(f, display, StringComparison.OrdinalIgnoreCase));
             fontFamily.Text = display;
             var faces = FontCatalog.Faces(stored);
-            var info = FontVariations.For(CurrentFace);
-            if (info.Axes.Length == 0) { fontVariant.ItemsSource = faces; fontVariant.SelectedItem = CurrentFace; }
+            var face = CurrentFace;
+            var info = FontVariations.For(face);
+            if (!ReferenceEquals(listedFaces, faces) || !ReferenceEquals(listedVariations, info)) {
+                fontVariant.ItemsSource = info.Axes.Length == 0 ? faces
+                    : faces.Cast<object>().Concat(info.Instances).Append("Custom").ToArray();
+                listedFaces = faces; listedVariations = info;
+            }
+            if (info.Axes.Length == 0) { fontVariant.SelectedItem = face; }
             else {
-                fontVariant.ItemsSource = faces.Cast<object>().Concat(info.Instances).Append("Custom").ToArray();
                 var values = CurrentAxisValues;
                 fontVariant.SelectedItem = (object?)info.Instances.FirstOrDefault(i => info.Axes.All(a => Math.Abs(i.Values[a.Tag] - values.GetValueOrDefault(a.Tag, a.Default)) < .001f)) ?? "Custom";
             }
@@ -84,7 +94,7 @@ internal sealed partial class StyleWindow
     private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values);
     private void RefreshAxisControls(FontVariationInfo info)
     {
-        string identity = selected.Key + ":" + CurrentFace?.Name;
+        string identity = CurrentFace?.Name ?? "";
         if (identity != axisControlIdentity) {
             axisControlIdentity = identity; axisRows.Children.Clear(); axisControls.Clear();
             var visible = info.Axes.Where(a => !a.Hidden && a.Maximum > a.Minimum).ToArray();

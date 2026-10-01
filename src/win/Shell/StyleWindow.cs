@@ -35,7 +35,7 @@ internal sealed partial class StyleWindow : Window
     private readonly StackPanel paragraph = new() { Spacing = 8 };
     private readonly StackPanel block = new() { Spacing = 8 };
     private readonly CanvasControl preview = new() { Height = 200 };
-    private BlockStylePreview? blockPreview;
+    private readonly Dictionary<uint, BlockStylePreview> blockPreviews = [];
     private readonly TextBlock error = new() { TextWrapping = TextWrapping.Wrap, FontSize = 12, Visibility = Visibility.Collapsed };
     private readonly List<Action> refreshFields = [];
 
@@ -81,7 +81,7 @@ internal sealed partial class StyleWindow : Window
             if (visibleColorPickers.Count == 0) return;
             args.Cancel = true; Close();
         };
-        Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; preferences.ThemesChanged -= SelectedThemeChanged; view.Dispose(); styleDocument.Dispose(); blockPreview?.Dispose(); blockPreview = null; preview.RemoveFromVisualTree(); };
+        Closed += (_, _) => { DetachView(); DismissColorPickers(); closed = true; preferences.Changed -= ThemeChanged; preferences.ThemesChanged -= SelectedThemeChanged; view.Dispose(); styleDocument.Dispose(); foreach (var specimen in blockPreviews.Values) specimen.Dispose(); blockPreviews.Clear(); preview.RemoveFromVisualTree(); };
         Load(followCaret: followCaret);
     }
     private readonly ToggleButton characterTab = new() { Content = "Character", FontSize = 13, Width = 130, Padding = new(12, 3, 12, 3) };
@@ -136,6 +136,7 @@ internal sealed partial class StyleWindow : Window
     }
     private static void Field(Grid grid, string label, FrameworkElement value)
     { int row = grid.RowDefinitions.Count; grid.RowDefinitions.Add(new() { Height = GridLength.Auto, MinHeight = 24 }); var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right }; Grid.SetRow(text, row); grid.Children.Add(text); Grid.SetRow(value, row); Grid.SetColumn(value, 1); grid.Children.Add(value); }
+    private StyleSheet? catalogueSheet;
     private void Load(StyleKey? key = null, bool followCaret = false, StyleSheet? snapshot = null)
     {
         if (view.Id == 0) { EnableChildren(root, false); return; }
@@ -153,20 +154,26 @@ internal sealed partial class StyleWindow : Window
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();
             selected = chosen;
-            var catalogue = new List<object>();
-            foreach (var (title, entries) in new[] {
-                ("Paragraph", styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)),
-                ("Container", styles.Where(s => s.Native.role >= VIEM_STYLE_ROLE_QUOTE)),
-                ("Character", styles.Where(s => s.Namespace == 2))
-            }) {
-                var group = entries.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
-                if (group.Length == 0) continue;
-                catalogue.Add(new ComboBoxItem { Content = title, IsEnabled = false });
-                catalogue.AddRange(group);
+            if (!ReferenceEquals(catalogueSheet, sheet)) {
+                var catalogue = new List<object>();
+                foreach (var (title, entries) in new[] {
+                    ("Paragraph", styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)),
+                    ("Container", styles.Where(s => s.Native.role >= VIEM_STYLE_ROLE_QUOTE)),
+                    ("Character", styles.Where(s => s.Namespace == 2))
+                }) {
+                    var group = entries.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+                    if (group.Length == 0) continue;
+                    catalogue.Add(new ComboBoxItem { Content = title, IsEnabled = false });
+                    catalogue.AddRange(group);
+                }
+                stylePicker.ItemsSource = catalogue;
+                next.ItemsSource = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray();
+                catalogueSheet = sheet;
             }
-            stylePicker.ItemsSource = catalogue; stylePicker.SelectedItem = selected;
+            stylePicker.SelectedItem = selected;
             var parents = new object[] { selected.Namespace == 2 ? "Default Paragraph" : "None" }.Concat(styles.Where(s => s.Namespace == selected.Namespace && (s.Native.role == selected.Native.role || (selected.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)) && !IsDescendant(s))).ToArray(); parent.ItemsSource = parents; parent.SelectedItem = parents.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Parent) ?? parents[0]; parent.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
-            var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray(); next.ItemsSource = following; next.SelectedItem = following.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Next) ?? following[0]; next.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE);
+            next.SelectedItem = next.Items.Cast<object>().OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Next) ?? next.Items.Cast<object>().First();
+            next.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE);
             UpdateNavigation(visitParent, new(selected.Namespace, selected.Parent), "parent style"); UpdateNavigation(visitNext, new(1, selected.Next), "next paragraph style");
             paragraphTab.IsEnabled = selected.Namespace == 1;
             if (!paragraphTab.IsEnabled) SelectTab(false);
@@ -229,9 +236,9 @@ internal sealed partial class StyleWindow : Window
         if (selected == null) return;
         if (selected.Namespace == 1) {
             try {
-                if (blockPreview?.Role != selected.Native.role) {
-                    blockPreview?.Dispose(); blockPreview = null;
+                if (!blockPreviews.TryGetValue(selected.Native.role, out var blockPreview)) {
                     blockPreview = new(selected.Native.role, preview.Device, DispatcherQueue);
+                    blockPreviews.Add(selected.Native.role, blockPreview);
                 }
                 blockPreview.Update(sheet, selected, preferences.Theme.Foreground);
                 blockPreview.Draw(drawing, (float)preview.ActualWidth, (float)preview.ActualHeight, preferences.Theme.Foreground);
@@ -241,7 +248,6 @@ internal sealed partial class StyleWindow : Window
             }
             return;
         }
-        blockPreview?.Dispose(); blockPreview = null;
         string family = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
         var resolved = FontCatalog.Resolve(family) ?? (Family: "Segoe UI", Stretch: FontStretch.Normal);
         float size = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
