@@ -69,6 +69,65 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertGreaterThan(messageFrame.minX, modeFrame.maxX)
   }
 
+  func testResizeHoverCoversOnlyEmptyMovableBackgroundAndFollowsPresentation() throws {
+    let bar = makeBar(width: 900)
+    bar.dragDidMove = { _ in }
+    func resizeCursor(at point: NSPoint) -> Bool { bar.resizeCursorRects.contains { $0.contains(point) } }
+    let empty = NSPoint(x: bar.commandAreaRect.maxX - 2, y: bar.bounds.midY)
+    XCTAssertTrue(resizeCursor(at: empty))
+    for control in [try locationWidget(bar), try modeLabel(bar),
+                    try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }.first { $0.stringValue == "Untitled" })] {
+      let text = (control as? NSTextField)?.cell?.titleRect(forBounds: control.bounds) ?? control.bounds
+      let point = control.convert(NSPoint(x: text.minX + 3, y: text.midY), to: bar)
+      XCTAssertFalse(resizeCursor(at: point))
+    }
+    let mode = try modeLabel(bar)
+    XCTAssertTrue(resizeCursor(at: mode.convert(NSPoint(x: mode.bounds.maxX - 2, y: mode.bounds.midY), to: bar)), "empty reserved mode space is background")
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandLine: EVStatusCommandLine(prompt: ":", text: "sp", cursorUTF8Offset: 2)))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertFalse(resizeCursor(at: empty), "the command area retains pointer selection")
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "Output"))
+    bar.layoutSubtreeIfNeeded()
+    let output = bar.outputTextView.convert(bar.outputTextView.bounds, to: bar)
+    XCTAssertFalse(resizeCursor(at: NSPoint(x: output.minX + 2, y: output.midY)))
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34"))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertTrue(resizeCursor(at: empty))
+    bar.dragDidMove = nil
+    XCTAssertTrue(bar.resizeCursorRects.isEmpty, "a bottom status bar retains normal hover cursors")
+  }
+
+  func testStatusPixelsAfterNarrowingAndWideningMatchFreshLayout() throws {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 150),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.makeKeyAndOrderFront(nil)
+    defer { window.close() }
+    let changed = makeBar(width: 900)
+    changed.translatesAutoresizingMaskIntoConstraints = true
+    changed.autoresizingMask = []
+    changed.frame.origin.y = 40
+    window.contentView?.addSubview(changed)
+    for width in [100.0, 500, 200, 900] {
+      changed.frame.size.width = width
+      changed.layoutSubtreeIfNeeded()
+      RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+    }
+    let fresh = makeBar(width: 900)
+    fresh.translatesAutoresizingMaskIntoConstraints = true
+    fresh.autoresizingMask = []
+    fresh.frame.origin.y = 80
+    window.contentView?.addSubview(fresh)
+    window.contentView?.layoutSubtreeIfNeeded()
+    XCTAssertEqual(try locationWidget(changed).frame, try locationWidget(fresh).frame)
+    func pixels(_ bar: EVStatusBarView) throws -> Data {
+      let bitmap = try XCTUnwrap(bar.bitmapImageRepForCachingDisplay(in: bar.bounds))
+      bar.cacheDisplay(in: bar.bounds, to: bitmap)
+      return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+    }
+    XCTAssertEqual(try pixels(changed), try pixels(fresh), "resized status text and borders match a fresh render")
+  }
+
   func testACommandLineReplacesTheLeftGroupAndKeepsTheCaretWidget() throws {
     let bar = makeBar()
     let mode = try modeLabel(bar)

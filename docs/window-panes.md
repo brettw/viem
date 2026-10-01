@@ -34,7 +34,10 @@ sizes and current visible rows do not change these units.
 
 Click a status bar to focus the buffer above it. Clicking the eye also toggles
 line mode. Dragging consumes the click and preserves focus. Status bars use an
-up/down cursor during dragging; each column's bottom bar is fixed. Editor areas
+up/down cursor during dragging; each column's bottom bar is fixed. Status bars
+use the same height and centered text regardless of split width. Empty
+background in a movable status bar also shows the up/down cursor on hover;
+text and controls keep their usual hover cursors. Editor areas
 can collapse completely, but status bars may only touch, never overlap. A
 horizontal split needs room for another status bar in the current view.
 

@@ -30,6 +30,14 @@ internal static class PaneLayoutTests
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
             var third = window.SplitPane(second, first.Document); await third.Ready;
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout(); await Task.Delay(80);
+            var positionOrigin = first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
+            var empty = new Point(positionOrigin.X - 2, first.StatusControl.ActualHeight / 2);
+            Check(first.StatusResizeHoverAt(empty) && !third.StatusResizeHoverAt(empty),
+                "only movable status backgrounds show the resize hover cursor");
+            var fileOrigin = first.FilePathControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
+            Check(!first.StatusResizeHoverAt(new(fileOrigin.X + 2, fileOrigin.Y + first.FilePathControl.ActualHeight / 2))
+                && !first.StatusResizeHoverAt(new(positionOrigin.X + 4, first.StatusControl.ActualHeight / 2)),
+                "filename and position controls retain their usual hover cursors");
             var view = first.View!;
             var baseStyle = view.Styles().Styles.Single(s => s.Namespace == VIEM_STYLE_NAMESPACE_BLOCK && s.Id == "Paragraph");
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(20));

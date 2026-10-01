@@ -1162,6 +1162,9 @@ Width counts use the zoomed Base Paragraph advance of `0`.
 Status bars are the stacked-pane drag handles, including their controls; a plain
 click focuses the buffer above and retains the control's action. Drags do not
 focus or activate controls; show an up/down cursor during status-bar drags.
+All visible status bars share the theme's height and vertically centered text.
+Show the up/down hover cursor only over empty background in a movable bar;
+text, controls and command selection retain their usual hover cursors.
 The bottom bar in each column is fixed. Bars may touch but
 never overlap, and editor areas may collapse to zero. Dragging pushes bars met in
 the current direction; reversing releases previously pushed bars immediately,

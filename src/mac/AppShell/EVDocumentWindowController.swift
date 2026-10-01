@@ -1604,6 +1604,9 @@ final class EVDocumentContentViewController: NSViewController,
       width: bounds.width,
       height: statusHeight
     )
+    // Explicit pane frames use DIPs throughout, including a status bar that
+    // was hidden or belonged to a differently sized split.
+    if statusBar.bounds.size != statusBar.frame.size { statusBar.setBoundsSize(statusBar.frame.size) }
     editorView.frame = NSRect(
       x: bounds.minX,
       y: bounds.minY + statusHeight,
