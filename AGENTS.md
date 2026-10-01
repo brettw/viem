@@ -1122,6 +1122,9 @@ invocations activate an existing window or create a blank one when none remains.
 Repeated filenames/symlinks/hard links reuse the same buffer/history and existing
 pane, preserving edits; never fork buffers for aliases.
 
+Shell launch helpers preserve the caller's working directory for the started
+process. Make run targets may use make's selected working directory.
+
 Startup captures filenames relative to launch cwd; only the first opens by
 default, later files load on navigation. Nonexistent files start named, clean,
 empty without disk creation. `+line` addresses the first file; `-o` opens stacked

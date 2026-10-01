@@ -9,9 +9,9 @@ debug release:
 run-debug: debug
 run-release: release
 
-# Start the newly built executable even if another instance is already running.
+# Inherit make's working directory; Launch Services does not preserve it.
 run-debug run-release:
-	open -n .build/Viem.app
+	.build/Viem.app/Contents/MacOS/Viem &
 
 run: run-release
 
