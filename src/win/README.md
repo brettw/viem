@@ -28,7 +28,8 @@ cargo test --locked
 `run-win.ps1` only launches the existing Release build. Rebuild explicitly
 with `build-win.ps1 -Configuration Release` after code changes; add `-Offline`
 to use already-restored dependencies. `build-win.ps1 -Configuration Debug -Run`
-builds and launches Debug.
+builds and launches Debug. Both launch paths preserve the invoking PowerShell
+directory as the application's working directory.
 
 Release uses `dotnet publish` and ReadyToRun compilation to precompile Viem and
 its managed WinUI/Win2D projections. The script preserves the executable path

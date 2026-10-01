@@ -25,6 +25,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows frontend build failed.' }
     $executable = Join-Path $executableDirectory 'Viem.exe'
     Write-Output $executable
-    if ($Run) { & $executable }
 }
 finally { Pop-Location }
+# Launch after restoring the caller's directory rather than the build directory.
+if ($Run) { & $executable }
