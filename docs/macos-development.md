@@ -44,6 +44,12 @@ sign `.build/Viem.app`. `make debug` (also the default for `make`) builds with
 debug information; `make release` builds an optimized application. Each replaces
 the same application bundle.
 
+The bundle includes the shared desktop fonts and their attribution files from
+[`assets/fonts`](../assets/fonts/README.md) in `Contents/Resources/fonts`.
+Startup registers these fonts for Viem's process before opening font pickers or
+shaping text. They are available alongside installed fonts without systemwide
+installation; saved styles retain ordinary family and face names.
+
 After moving or renaming the checkout, remove cached build artifacts before
 rebuilding. Swift and Clang precompiled modules can retain absolute source paths:
 

@@ -325,9 +325,17 @@ impl StyleSheet {
     /// Start from generated built-ins rather than the previous theme. Keep
     /// source definitions and referenced custom IDs as fallbacks: existing
     /// source assignments and inheritance may still refer to those IDs.
-    pub(crate) fn replacing_default_json(&self, bytes: &[u8], projection: &crate::document::FormattedDocument) -> Result<(Self, Vec<String>), StyleDefaultsError> {
+    pub(crate) fn replacing_default_json(
+        &self,
+        bytes: &[u8],
+        projection: &crate::document::FormattedDocument,
+        format: crate::document::Format,
+    ) -> Result<(Self, Vec<String>), StyleDefaultsError> {
         let mut baseline = self.clone();
-        let builtins = StyleSheet::default();
+        // Adapter defaults are part of the format's presentation contract.
+        // In particular, Markdown's automatic spans still reference these
+        // definitions when a sparse theme does not declare them.
+        let builtins = StyleSheet::for_format(format);
         let mut retained_blocks = BTreeSet::new();
         let mut retained_characters = BTreeSet::new();
         for id in self.block_styles.keys().filter(|id| !builtins.block_styles.contains_key(*id)) {

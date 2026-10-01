@@ -77,7 +77,7 @@ internal sealed unsafe partial class DirectWriteProvider
                 };
                 if (!layouts.TryGetValue((font, marker.Text), out var layout))
                 {
-                    using var format = new CanvasTextFormat { FontFamily = font.Family, FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
+                    using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(font.Family, font.Weight, font.Slant, font.Stretch), FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
                         Direction = Value("direction")?.GetString() == "RightToLeft" ? CanvasTextDirection.RightToLeftThenTopToBottom : CanvasTextDirection.LeftToRightThenTopToBottom };
                     layout = new CanvasTextLayout(device, marker.Text, format, 1, 10000);
                     layouts.Add((font, marker.Text), layout);

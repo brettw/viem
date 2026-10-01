@@ -25,7 +25,7 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         Diagnostics.StartupPerformance.Mark("app.launched");
-        Rendering.FontCatalog.PrepareSystemFonts();
+        Rendering.FontCatalog.PrepareFonts();
         using (Diagnostics.StartupPerformance.Measure("instance.broker")) broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {

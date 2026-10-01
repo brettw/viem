@@ -240,8 +240,7 @@ internal static class StyleAndSettingsTests
             "the style dialog labels the two portable system tokens instead of a resolved font name");
         Check(FontCatalog.StorageFamily("System Default") == "system-ui" && FontCatalog.StorageFamily("System Monospace") == "ui-monospace"
             && FontCatalog.StorageFamily("Segoe UI") == null, "only the picker's own two labels reverse to a portable token");
-        foreach (string family in FontCatalog.Families.Where(f => f.Contains("Flightline", StringComparison.OrdinalIgnoreCase)))
-            Check(FontCatalog.Faces(family).Length > 1, $"installed {family} exposes its font variants");
+        BundledFontChecks(pane);
         using var doc = new CoreDocument("A sample for font selection."u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         string id = "Code";
@@ -316,6 +315,39 @@ internal static class StyleAndSettingsTests
             Check(alignmentBefore.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "theme paragraph alignment leaves authored source unchanged");
         }
         finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalThemeStyles); }
+    }
+
+    private static void BundledFontChecks(EditorPane pane)
+    {
+        string[] families = ["Flightline Code", "Recursive Mono Casual Static", "Recursive Mono Linear Static",
+            "Recursive Sans Casual Static", "Recursive Sans Linear Static"];
+        using var doc = new CoreDocument("Writing 0123"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var style = view.Styles().Styles.Single(s => s.Id == "Code");
+        view.SelectAll(); view.AssignStyle(2, "Code");
+        int count = 0;
+        foreach (string family in families)
+        {
+            Check(FontCatalog.Families.Contains(family), $"bundled {family} appears in the font picker");
+            var faces = FontCatalog.Faces(family);
+            Check(faces.Length == (family == "Flightline Code" ? 12 : 16), $"bundled {family} exposes every variant");
+            foreach (var face in faces)
+            {
+                Check(face.Source is { IsFile: true } && File.Exists(face.Source.LocalPath), $"{face.Name} resolves to a bundled file");
+                string rendering = FontCatalog.RenderingFamily(face.Family, face.Weight, face.Slant, face.Stretch);
+                Check(rendering == face.Source!.AbsoluteUri + "#" + face.Family, $"{face.Name} selects its bundled variant file");
+                view.EditStyleFont(style, [face.Name, "serif"], face);
+                style = view.Styles().Styles.Single(s => s.Id == "Code");
+                var layout = view.Layout();
+                Check(layout.Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(face.Name),
+                    $"DirectWrite shapes {face.Name} from app-local resources");
+                count++;
+            }
+        }
+        Check(count == 76, "all 76 bundled font faces render through the native provider");
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual("Writing 0123"u8), "bundled font selection preserves document source");
+        Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),
+            "saved font styles contain portable names rather than resource URIs");
     }
     private static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
     {

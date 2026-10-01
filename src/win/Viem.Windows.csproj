@@ -34,6 +34,7 @@
     <None Include="../../target/$(RustProfile)/viem_core.dll" Link="viem_core.dll" CopyToOutputDirectory="PreserveNewest" />
     <Compile Remove="Tests/**/*.cs" />
     <Content Include="../../assets/themes/*.json" Link="Resources/themes/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <BundledFontResource Include="../../assets/fonts/**/*" />
     <Content Update="Assets\Viem.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="../../src/core/document/syntax/treesitter/*.LICENSE;../../src/core/document/syntax/treesitter/nvim.NOTICES.md"
              Link="Resources/Licenses/nvim-treesitter/%(Filename)%(Extension)"
@@ -41,6 +42,16 @@
   </ItemGroup>
   <Target Name="CheckRustLibrary" BeforeTargets="BeforeBuild">
     <Error Condition="!Exists('../../target/$(RustProfile)/viem_core.dll')" Text="Build the Rust core first with scripts/build-win.ps1." />
+  </Target>
+  <!-- Replace the owned font subtree, including licenses and attribution.
+       Publishing without a build also copies directly from the checkout. -->
+  <Target Name="PackageBundledFonts" AfterTargets="Build">
+    <RemoveDir Directories="$(TargetDir)Resources/fonts" />
+    <Copy SourceFiles="@(BundledFontResource)" DestinationFiles="@(BundledFontResource->'$(TargetDir)Resources/fonts/%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+  <Target Name="PublishBundledFonts" AfterTargets="Publish">
+    <RemoveDir Directories="$(PublishDir)Resources/fonts" />
+    <Copy SourceFiles="@(BundledFontResource)" DestinationFiles="@(BundledFontResource->'$(PublishDir)Resources/fonts/%(RecursiveDir)%(Filename)%(Extension)')" />
   </Target>
   <Target Name="VerifyBundledVimRuntime" BeforeTargets="PrepareForBuild">
     <Exec Command="&quot;$(VimRuntimePython)&quot; &quot;$(VimRuntimeScript)&quot; verify" />

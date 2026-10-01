@@ -49,6 +49,13 @@ launched from another working directory. Windows App SDK
 is self-contained; this development build uses the installed .NET 10 runtime.
 It does not install file associations or an application package.
 
+Both build and publish also copy [`assets/fonts`](../../assets/fonts/README.md)
+to `Resources/fonts`, retaining the original fonts, licenses and attribution.
+The font picker includes these app-local families and variants alongside system
+fonts. DirectWrite resolves bundled files relative to the executable, including
+in previews and whitespace markers; saved styles retain portable font names.
+No systemwide font installation is required.
+
 The first build restores the locked Cargo/NuGet dependencies. After restoration,
 `-Offline` uses cached dependencies and skips NuGet restore. If compiling native
 Rust dependencies cannot find MSVC, run from a VS 2026 Developer PowerShell.
@@ -83,7 +90,7 @@ fullscreen bounds do not replace the saved normal frame.
 - Ctrl+C/X/V always copy/cut/paste; Ctrl+Shift+V pastes plain text.
 - Ctrl+Q retains Visual Block and literal-next input.
 - F8 opens or raises the style inspector outside literal-next input. Font
-  pickers list sorted families and installed variants such as Light or Bold.
+  pickers list sorted families and installed/bundled variants such as Light or Bold.
 - The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
   there is no Format menu. Fonts, colors, and paragraph properties remain
   available in the independent theme style inspector. Its title identifies the
