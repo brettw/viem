@@ -569,6 +569,27 @@ fn create_core(source: &[u8], options: ViemDocumentOptions) -> TestCore {
     TestCore { handle, revision }
 }
 
+#[test]
+fn stylesheet_identity_matches_export_without_changing_document() {
+    let core = create_core(b"# Heading\nbody", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
+    let before = document_state(&core);
+    let mut identity = ViemStyleSheetIdentityV1::default();
+    let mut info = ViemStyleSheetInfoV1::default();
+    assert_eq!(unsafe { viem_core_style_sheet_identity(core.handle, &mut identity) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_style_sheet_info(core.handle, &mut info) }, ViemStatus::Ok);
+    assert_eq!(identity.document_id, info.identity.document_id);
+    assert_eq!(identity.document_revision, info.identity.document_revision);
+    assert_eq!(identity.style_sheet_revision, info.identity.style_sheet_revision);
+    assert_eq!(document_state(&core).document_revision, before.document_revision);
+    assert_eq!(unsafe { viem_core_style_sheet_identity(core.handle, ptr::null_mut()) }, ViemStatus::NullPointer);
+    assert_eq!(unsafe { viem_core_style_sheet_identity(u64::MAX, &mut identity) }, ViemStatus::InvalidHandle);
+    assert_eq!(identity.document_id, 0);
+    assert_eq!(unsafe { viem_core_style_sheet_identity(0, &mut identity) }, ViemStatus::Ok);
+    assert_eq!(identity.document_id, 0);
+    assert_eq!(identity.document_revision, 0);
+    assert_ne!(identity.style_sheet_revision, 0);
+}
+
 fn document_state(core: &TestCore) -> ViemDocumentStateV1 {
     let mut state = ViemDocumentStateV1::default();
     assert_eq!(

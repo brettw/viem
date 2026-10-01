@@ -83,6 +83,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var allowAutomaticCode = false
     private var recoveryInterpretation: EVRecoverySnapshot?
     private var isStylePreview = false
+    var cachedStyleSheet: EVStyleSheetSnapshot?
     private(set) var currentDocumentState = ViemDocumentStateV1()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []

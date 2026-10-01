@@ -16,12 +16,15 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     private readonly CoreDocument document;
     private readonly CoreView view;
     private readonly StyleDefinition target;
+    private readonly StyleDefinition baseStyle;
     private StyleSheet? appliedSheet;
     private StyleDefinition? appliedStyle;
     private Color appliedForeground;
     private (float Width, float Height) size;
+    private ulong metricsGeneration;
 #if DEBUG
     internal int PropertyEdits { get; private set; }
+    internal void InvalidateFontsForTesting() => view.Provider.InvalidateMetrics();
 #endif
     // Compare payloads, not offsets into independently exported string arenas.
     private static bool SameValue(StyleSheet left, ViemStyleValueV1 a, StyleSheet right, ViemStyleValueV1 b)
@@ -52,7 +55,9 @@ internal sealed unsafe class BlockStylePreview : IDisposable
         CoreView? created = null;
         try {
             view = created = new(document, device, dispatcher, 560, 200);
-            target = view.Styles().Styles.Single(s => s.Id == id && s.Namespace == 1);
+            var initialSheet = view.Styles();
+            target = initialSheet.Styles.Single(s => s.Id == id && s.Namespace == 1);
+            baseStyle = initialSheet.Styles.Single(s => s.Id == "Paragraph" && s.Namespace == 1);
         } catch { created?.Dispose(); document.Dispose(); throw; }
     }
 
@@ -64,7 +69,6 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     }
     private void Apply(StyleSheet sheet, StyleDefinition style, Color foreground)
     {
-        var baseStyle = view.Styles().Styles.Single(s => s.Id == "Paragraph" && s.Namespace == 1);
         var context = New<ViemStyleEditValueV1>(); context.kind = VIEM_STYLE_VALUE_COLOR;
         context.color = new() { red = foreground.R / 255f, green = foreground.G / 255f, blue = foreground.B / 255f, alpha = foreground.A / 255f };
         if (appliedSheet == null || appliedForeground != foreground)
@@ -102,7 +106,7 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     }
 
     internal LayoutSnapshot Layout(float width, float height) {
-        if (size != (width, height)) { view.Resize(Math.Max(1, width), Math.Max(1, height)); size = (width, height); }
+        if (size != (width, height) || metricsGeneration != view.Provider.Generation) { view.Resize(Math.Max(1, width), Math.Max(1, height)); size = (width, height); metricsGeneration = view.Provider.Generation; }
         return view.Layout();
     }
     public void Draw(CanvasDrawingSession drawing, float width, float height, Color fallback)

@@ -7977,11 +7977,30 @@ pub unsafe extern "C" fn viem_core_view_state(
     })
 }
 
-/// Read exact sizes and identity for the current immutable normalized style
-/// sheet. The companion copy call validates this identity before copying.
+/// Read the current stylesheet identity without resolving or exporting values.
 ///
 /// # Safety
 ///
+/// `out_identity` must identify one aligned writable value.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_style_sheet_identity(
+    handle: ViemCoreHandle,
+    out_identity: *mut ViemStyleSheetIdentityV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_identity, 1)?;
+        unsafe { out_identity.write(ViemStyleSheetIdentityV1::default()) };
+        let identity = if handle == 0 {
+            code_style_identity(&crate::document::code_style::snapshot())
+        } else { with_core(handle, |core| Ok(style_sheet_identity(core.document())))? };
+        unsafe { out_identity.write(identity) };
+        Ok(())
+    })
+}
+
+/// Query export sizes for one immutable stylesheet.
+///
+/// # Safety
 /// `out_info` must identify one aligned writable value.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_style_sheet_info(

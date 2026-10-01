@@ -2050,6 +2050,9 @@ ViemStatus viem_core_mark_saved(ViemCoreHandle core,
  * call returns BUFFER_TOO_SMALL plus exact current sizes. Any identity change
  * returns STALE_REVISION rather than substituting a newer sheet.
  */
+/* Identity only: does not resolve or serialize styles. core=0 selects Code. */
+ViemStatus viem_core_style_sheet_identity(ViemCoreHandle core,
+                                          ViemStyleSheetIdentityV1 *out_identity);
 ViemStatus viem_core_style_sheet_info(ViemCoreHandle core,
                                       ViemStyleSheetInfoV1 *out_info);
 ViemStatus viem_core_copy_style_sheet(

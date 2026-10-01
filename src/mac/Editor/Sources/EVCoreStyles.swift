@@ -440,12 +440,16 @@ extension Notification.Name {
 @MainActor
 extension EVCoreDocumentBackend {
     func styleSheetSnapshot() throws -> EVStyleSheetSnapshot {
+        let identity = try EVCoreStyleBridge.styleIdentity(core: core)
+        if let cachedStyleSheet, cachedStyleSheet.identity == identity { return cachedStyleSheet }
         // A concurrent frontend turn can land between the size and copy calls.
         // Retrying obtains one exact immutable export; the copy itself never
         // substitutes a newer revision.
         for _ in 0..<3 {
             do {
-                return try EVCoreStyleBridge.copyStyleSheet(core: core)
+                let fresh = try EVCoreStyleBridge.copyStyleSheet(core: core)
+                cachedStyleSheet = fresh
+                return fresh
             } catch let error as EVStyleBridgeError where error.isStale {
                 continue
             }
@@ -510,6 +514,12 @@ extension EVCoreViewSession {
 }
 
 enum EVCoreStyleBridge {
+    static func styleIdentity(core: ViemCoreHandle) throws -> EVStyleSheetIdentity {
+        var identity = ViemStyleSheetIdentityV1()
+        identity.struct_size = UInt32(MemoryLayout<ViemStyleSheetIdentityV1>.size)
+        try check(viem_core_style_sheet_identity(core, &identity))
+        return EVStyleSheetIdentity(identity)
+    }
     static func beginGroup(
         core: ViemCoreHandle,
         view: ViemViewId,
