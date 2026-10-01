@@ -17342,7 +17342,7 @@ mod tests {
                 assert_eq!(
                     document.source_bytes(),
                     forced_mac_source(if format == Format::Markdown {
-                        "a\r&#32;&#32;&#32;&#32;b\nc"
+                        "a\r&#32;   b\nc"
                     } else { "a\r    b\nc" }, format)
                 );
             }

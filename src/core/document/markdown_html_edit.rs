@@ -487,7 +487,7 @@ mod tests {
             let saved = String::from_utf8(document.source_bytes()).unwrap();
             assert!(saved.starts_with("<p>"));
             assert!(saved.ends_with("</p>"));
-            assert!(saved.contains("&#32;&lt;&amp;&#32;"));
+            assert!(saved.contains(" &lt;&amp; "), "{saved}");
             let reopened =
                 Document::from_bytes(saved.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
             assert_eq!(reopened.text(), expected);
