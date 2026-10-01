@@ -924,7 +924,12 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
             }
         };
     }
+    if source.font_families.is_some() {
+        destination.font_axes = None;
+        destination.weight = None;
+    }
     replace_some!(font_families);
+    replace_some!(font_axes);
     replace_some!(size);
     replace_some!(weight);
     replace_some!(bold);
@@ -958,6 +963,7 @@ pub(crate) fn shaping_style(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ResolvedTextStyle {
         font_families: character.font_families.clone(),
+        font_axes: character.font_axes.clone(),
         size: character.size,
         weight: f32::from(character.weight),
         relative_bold: character.bold,
@@ -1117,6 +1123,7 @@ mod tests {
             alpha: 1.0,
         });
         root.direct_default_character.font_families = Some(vec!["Writer Serif".to_owned()]);
+        root.direct_default_character.weight = Some(550);
         root.direct_default_character.size = Some(13.0.into());
         let styles = resolve_custom(
             projection,

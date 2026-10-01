@@ -142,7 +142,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
         XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
-        XCTAssertTrue(editor.useInheritedForTesting(.characterWeight))
+        XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -168,64 +168,24 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared)
     }
 
-    func testWeightOverrideIsVisibleAndIndependentOfInheritedFontFamily() throws {
+    func testFontFaceUsesOneInheritanceCheckbox() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
+        XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
-        let familyOverride = try control(NSButton.self, label: "Override font families", in: editor.view)
-        let weightOverride = try control(NSButton.self, label: "Override weight", in: editor.view)
-        XCTAssertEqual(familyOverride.state, .off)
-        XCTAssertEqual(family.stringValue, "")
-        XCTAssertFalse(family.isEnabled)
-        XCTAssertEqual(weightOverride.state, .on)
-        XCTAssertEqual(weightOverride.toolTip, "Override inherited")
-        XCTAssertTrue(face.isEnabled)
-        XCTAssertEqual(face.titleOfSelectedItem, "Bold")
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterWeight]?.declared, .unsigned(700))
-
-        familyOverride.performClick(nil)
-        XCTAssertTrue(family.isEnabled)
-        familyOverride.performClick(nil)
-        XCTAssertFalse(family.isEnabled)
-        XCTAssertEqual(weightOverride.state, .on, "Changing the family override must not erase an independent face/weight override")
-        XCTAssertTrue(face.isEnabled)
-        XCTAssertEqual(face.titleOfSelectedItem, "Bold")
-
-        weightOverride.performClick(nil)
-        XCTAssertFalse(face.isEnabled)
-        XCTAssertNil(face.titleOfSelectedItem)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterWeight]?.declared)
-        XCTAssertEqual(familyOverride.state, .off)
-        XCTAssertEqual(family.stringValue, "")
-        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(400))
-    }
-
-    func testClearingFaceOverrideResolvesInheritedWeightForAnExplicitPostScriptFont() throws {
-        let (backend, surface, editor, _) = try makeEditor()
-        defer { withExtendedLifetime(surface) {} }
-        let styleKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
-        editor.selectStyle(styleKey)
-        let faces = EVFontCatalog.faces(for: "SF Pro")
-        let bold = try XCTUnwrap(faces.first { $0.styleName == "Bold" })
-        let regular = try XCTUnwrap(faces.first { $0.styleName == "Regular" })
-        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
-        let weightOverride = try control(NSButton.self, label: "Override weight", in: editor.view)
-        face.selectItem(withTitle: bold.styleName)
-        XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
-        XCTAssertEqual(editor.inspection.preview.resolvedFontPostScriptName, bold.postScriptName)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterFontFamilies]?.declared, .stringList([bold.postScriptName]))
-        weightOverride.performClick(nil)
-        XCTAssertFalse(face.isEnabled)
-        XCTAssertNil(face.titleOfSelectedItem)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterWeight]?.declared)
-        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(400))
-        XCTAssertEqual(editor.inspection.preview.resolvedFontPostScriptName, regular.postScriptName,
-            "The retained PostScript request must not freeze Bold when its weight becomes inherited")
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: styleKey)?.properties[.characterFontFamilies]?.declared, .stringList([bold.postScriptName]),
-            "The family request remains independently declared")
+        let checkbox = try control(NSButton.self, label: "Override font families", in: editor.view)
+        XCTAssertFalse(family.isEnabled); XCTAssertFalse(face.isEnabled)
+        checkbox.performClick(nil)
+        XCTAssertTrue(family.isEnabled); XCTAssertTrue(face.isEnabled)
+        checkbox.performClick(nil)
+        let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: heading))
+        XCTAssertNil(definition.properties[.characterFontFamilies]?.declared)
+        XCTAssertNil(definition.properties[.characterWeight]?.declared)
+        XCTAssertNil(definition.properties[.characterFontAxes]?.declared)
+        XCTAssertFalse(family.isEnabled); XCTAssertFalse(face.isEnabled)
     }
 
     func testFirstClickOnInheritedBoldTogglesBoldAndUndoesAsOneAction() throws {
@@ -271,9 +231,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let (_, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
-        XCTAssertTrue(editor.useInheritedForTesting(.characterWeight))
+        XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
-        let override = try control(NSButton.self, label: "Override weight", in: editor.view)
+        let override = try control(NSButton.self, label: "Override font families", in: editor.view)
         XCTAssertFalse(face.isEnabled)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
             styleMask: [.titled], backing: .buffered, defer: false)
@@ -586,7 +546,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let definition = try XCTUnwrap(try backend.styleSheetSnapshot().definition(for: .baseParagraph))
         XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList([expected.postScriptName] + tail))
         XCTAssertEqual(definition.properties[.characterWeight]?.declared, .unsigned(UInt32(expected.weight)))
-        XCTAssertEqual(definition.properties[.characterSlant]?.declared, .fontSlant(expected.italic ? 1 : 0))
+        XCTAssertEqual(definition.properties[.characterSlant]?.declared, .fontSlant(initial.italic ? 1 : 0), "Choosing a base face preserves semantic Italic")
         let changed = try backend.serializedSource(typeName: EVDocument.markdownType)
         XCTAssertEqual(changed, source)
         surface.perform(menuCommand: .undo, sender: nil)

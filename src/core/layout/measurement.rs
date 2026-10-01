@@ -68,6 +68,7 @@ pub struct OpenTypeFeature {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTextStyle {
     pub font_families: Vec<String>,
+    pub font_axes: std::collections::BTreeMap<String, f32>,
     pub size: f32,
     pub weight: f32,
     pub relative_bold: bool,
@@ -85,6 +86,7 @@ impl Default for ResolvedTextStyle {
     fn default() -> Self {
         Self {
             font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
+            font_axes: Default::default(),
             size: 14.0,
             weight: 400.0,
             relative_bold: false,
@@ -111,6 +113,12 @@ impl ResolvedTextStyle {
         self.size.is_finite()
             && self.size > 0.0
             && self.weight.is_finite()
+            && self.font_axes.len() <= 64
+            && self.font_axes.iter().all(|(tag, value)| {
+                tag.len() == 4
+                    && tag.bytes().all(|b| (0x20..=0x7e).contains(&b))
+                    && value.is_finite()
+            })
             && self.letter_spacing.is_finite()
             && !self.font_families.is_empty()
             && self.font_families.iter().all(|family| !family.is_empty())

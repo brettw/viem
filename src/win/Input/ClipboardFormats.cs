@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Viem.Windows.Core;
 using Viem.Windows.Interop;
+using Viem.Windows.Rendering;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Storage.Streams;
 using static Viem.Windows.Interop.Native;
@@ -162,6 +163,14 @@ internal static class ClipboardFormats
             if (run.GetProperty("direction").GetString() != "Natural") css.Append("unicode-bidi:bidi-override;direction:").Append(run.GetProperty("direction").GetString() == "RightToLeft" ? "rtl;" : "ltr;");
             var features = run.GetProperty("open_type_features").EnumerateObject().Select(p => CssString(p.Name) + " " + p.Value.GetUInt32()).ToArray();
             if (features.Length > 0) css.Append("font-feature-settings:").Append(string.Join(",", features)).Append(';');
+            if (run.TryGetProperty("font_axes", out var axes) && axes.EnumerateObject().Any()) {
+                var saved = FontVariations.Decode(axes.GetRawText());
+                string primary = run.GetProperty("font_families").EnumerateArray().FirstOrDefault().GetString() ?? "";
+                var info = FontVariations.For(FontCatalog.Named(primary) ?? FontCatalog.Faces(primary).FirstOrDefault());
+                var rendered = FontVariations.Effective(info, saved, (float)run.GetProperty("weight").GetDouble(), run.GetProperty("bold").GetBoolean(), run.GetProperty("slant").GetString() == "Upright" ? 0u : 1u);
+                if (rendered.Count == 0) rendered = saved;
+                css.Append("font-variation-settings:").Append(string.Join(",", rendered.Select(p => CssString(p.Key) + " " + p.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)))).Append(';');
+            }
             return css.ToString();
         }
     private static string CssString(string value) => "'" + value.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\r", "\\d ").Replace("\n", "\\a ") + "'";

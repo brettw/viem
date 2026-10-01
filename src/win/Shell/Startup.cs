@@ -62,7 +62,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1"
-                        || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all")
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") is "1" or "all" or "variable")
                     {
                         if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1")
                         {
@@ -89,9 +89,15 @@ internal sealed partial class EditorWindow
                             await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1")
                             await Diagnostics.FormattingToolbarTests.Run(preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "variable")
+                        {
+                            Diagnostics.StyleAndSettingsTests.StartupFontChecks();
+                            await Diagnostics.VariableFontTests.Run(pane, preferences);
+                        }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "all")
                         {
                             Diagnostics.StyleAndSettingsTests.StartupFontChecks();
+                            await Diagnostics.VariableFontTests.Run(pane, preferences);
                             await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
                         }
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "1")
@@ -164,7 +170,8 @@ internal sealed partial class EditorWindow
                     if (Menu.Visibility != Microsoft.UI.Xaml.Visibility.Collapsed || pane.Canvas.ActualHeight <= previous) throw new InvalidOperationException("Menu toggle did not reclaim editor space.");
                     preferences.Set("windows", "showMenu", true);
                     Diagnostics.FrontendSmokeTests.UiChecks.Add("titlebar menu visibility toggle reflows panes");
-                    await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
+                    await Diagnostics.VariableFontTests.Run(pane, preferences);
+                            await Diagnostics.StyleAndSettingsTests.Run(pane, this, preferences);
                     await Diagnostics.FormattingToolbarTests.Run(preferences);
                     await Diagnostics.WindowPlacementTests.Run(this, preferences.DirectoryPath);
                     await Diagnostics.FrontendSmokeTests.FileChecks(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);

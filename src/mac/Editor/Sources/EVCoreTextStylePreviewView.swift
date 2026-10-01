@@ -316,7 +316,8 @@ final class EVCoreTextStylePreviewView: NSView {
         } else { features = [] }
         return resolveFont(families: requested.families, size: requested.size,
             cssWeight: CGFloat(bold ? min(weight + 300, 1000) : weight),
-            slant: slant, features: features, relativeBold: bold)
+            slant: slant, features: features, relativeBold: bold,
+            axes: { if case let .string(value)? = values[.characterFontAxes] { return EVFontVariations.decode(value) }; return [:] }())
 
     }
 

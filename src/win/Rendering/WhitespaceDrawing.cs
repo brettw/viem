@@ -15,7 +15,7 @@ namespace Viem.Windows.Rendering;
 
 internal sealed unsafe partial class DirectWriteProvider
 {
-    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features)
+    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}")
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
@@ -28,7 +28,7 @@ internal sealed unsafe partial class DirectWriteProvider
             }
             var resolved = ResolveFont(style);
             return new(resolved.Family, resolved.Stretch, style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
-                style.has_language != 0 ? Text(style.language) : "", features);
+                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family)));
         }
     }
 
@@ -73,7 +73,7 @@ internal sealed unsafe partial class DirectWriteProvider
                     Family = family, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
                     Slant = Value("slant")?.GetString() switch { "Upright" => FontStyle.Normal, "Italic" => FontStyle.Italic, "Oblique" => FontStyle.Oblique, _ => inherited.Slant },
                     Spacing = Value("letter_spacing") is JsonElement spacing ? spacing.GetSingle() * viewport.scale : inherited.Spacing,
-                    Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features
+                    Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features, Axes = Value("font_axes")?.GetRawText() ?? (Value("font_families") == null ? inherited.Axes : "{}")
                 };
                 if (!layouts.TryGetValue((font, marker.Text), out var layout))
                 {
@@ -82,6 +82,8 @@ internal sealed unsafe partial class DirectWriteProvider
                     layout = new CanvasTextLayout(device, marker.Text, format, 1, 10000);
                     layouts.Add((font, marker.Text), layout);
                     layout.SetCharacterSpacing(0, marker.Text.Length, 0, font.Spacing, 0);
+                    var axes = FontVariations.Decode(font.Axes);
+                    if (axes.Count != 0) FontVariations.Apply(layout, 0, marker.Text.Length, axes, FontCatalog.Faces(font.Family).FirstOrDefault());
                     if (font.Language.Length > 0) layout.SetLocaleName(0, marker.Text.Length, font.Language);
                     layout.SetUnderline(0, marker.Text.Length, Value("underline")?.GetBoolean() == true);
                     layout.SetStrikethrough(0, marker.Text.Length, Value("strikethrough")?.GetBoolean() == true);

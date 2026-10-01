@@ -1354,8 +1354,14 @@ acyclic inheritance remain valid. Deleting an in-use configuration style falls
 back to Base Paragraph/Default Paragraph, not its parent, atomically; Code keeps
 its name-reference/suppression policy.
 
-Keep family/fallback, explicit face/base weight, and semantic Bold independent;
-removing Bold retains the base face. Family changes preserve matching face style
+Family/fallback, explicit face/base weight, and variable-axis coordinates form
+one inherited font-face group. Size and semantic Bold/Italic remain separate;
+removing an emphasis modifier restores the saved base coordinates. Variable
+axes use integer slider steps, two labeled sliders per inspector row, and
+font-provided named presets, with Custom for unmatched coordinates. Bold uses an applicable style link or
++300 weight, clamped to the font range; Italic prefers a designed italic face or
+ital=1, then a supported slnt target of -12 degrees, preserving stronger slant.
+Family changes preserve matching face style
 when available, fallback order, and Bold. Native substitution must not masquerade
 as an unavailable family's catalogue or lose an explicit same-metrics face.
 Relative-size unit changes preserve appearance; show transparency distinctly.

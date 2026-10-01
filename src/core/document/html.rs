@@ -1451,6 +1451,47 @@ fn font_features(value: &str) -> Option<BTreeMap<String, u32>> {
     }
     Some(features)
 }
+fn font_axis_settings(value: &str) -> Option<BTreeMap<String, f32>> {
+    let mut axes = BTreeMap::new();
+    if value.eq_ignore_ascii_case("normal") {
+        return Some(axes);
+    }
+    for part in split_css(value, ',') {
+        let part = part.trim();
+        let quote = part.chars().next().filter(|c| matches!(c, '\'' | '"'))?;
+        let mut escaped = false;
+        let mut end = None;
+        for (at, c) in part.char_indices().skip(1) {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if c == '\\' {
+                escaped = true;
+                continue;
+            }
+            if c == quote {
+                end = Some(at + 1);
+                break;
+            }
+        }
+        let end = end?;
+        let tag = css_unescape(&part[..end])?;
+        if tag.len() != 4 || !tag.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+            return None;
+        }
+        let count = part[end..]
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|n| n.is_finite())?;
+        if axes.len() >= 64 && !axes.contains_key(&tag) {
+            return None;
+        }
+        axes.insert(tag, count);
+    }
+    Some(axes)
+}
 fn css_box_sides<T: Clone>(values: &[T]) -> Option<[T; 4]> {
     Some(match values {
         [all] => [all.clone(), all.clone(), all.clone(), all.clone()],
@@ -1680,6 +1721,7 @@ pub(super) fn apply_css(
     character: &mut CharacterProperties,
     paragraph: &mut BlockProperties,
 ) {
+    let mut base_axes = None;
     for (key, value) in cascade_declarations(css) {
         let value = value.as_str();
         let lower = value.to_ascii_lowercase();
@@ -1815,6 +1857,12 @@ pub(super) fn apply_css(
                     paragraph.line_spacing = Some(n);
                 }
             }
+            "font-variation-settings" => {
+                if let Some(axes) = font_axis_settings(value) {
+                    character.font_axes = Some(axes);
+                }
+            }
+            "--viem-base-font-axes" => base_axes = font_axis_settings(value),
             "font-feature-settings" => {
                 if let Some(features) = font_features(value) {
                     character.open_type_features = Some(features);
@@ -1822,6 +1870,9 @@ pub(super) fn apply_css(
             }
             _ => {}
         }
+    }
+    if let Some(axes) = base_axes {
+        character.font_axes = Some(axes);
     }
 }
 
@@ -1951,6 +2002,36 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
             }
         ));
     }
+    if let Some(axes) = &properties.font_axes {
+        let settings = |values: &BTreeMap<String, f32>| {
+            if values.is_empty() {
+                "normal".to_owned()
+            } else {
+                values
+                    .iter()
+                    .map(|(tag, value)| format!("'{}' {value}", css_string(tag)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        let mut rendered = axes.clone();
+        if properties.bold == Some(true) {
+            if let Some(weight) = rendered.get_mut("wght") {
+                *weight = (*weight + 300.0).min(1000.0);
+            }
+        }
+        if properties.slant.is_some_and(|s| s != FontSlant::Upright) {
+            if let Some(italic) = rendered.get_mut("ital") {
+                *italic = 1.0;
+            } else if let Some(slant) = rendered.get_mut("slnt") {
+                *slant = slant.min(-12.0);
+            }
+        }
+        declarations.push(format!("font-variation-settings: {}", settings(&rendered)));
+        if rendered != *axes {
+            declarations.push(format!("--viem-base-font-axes: {}", settings(axes)));
+        }
+    }
     if let Some(features) = &properties.open_type_features {
         declarations.push(format!(
             "font-feature-settings: {}",
@@ -1973,6 +2054,33 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
 #[cfg(test)]
 mod reference_tests {
     use super::*;
+
+    #[test]
+    fn variable_axes_css_preserves_base_coordinates_and_emphasis() {
+        let properties = CharacterProperties {
+            font_axes: Some(BTreeMap::from([
+                ("wght".into(), 450.25),
+                ("wdth".into(), 87.5),
+                ("slnt".into(), -4.0),
+            ])),
+            weight: Some(450),
+            bold: Some(true),
+            slant: Some(FontSlant::Italic),
+            ..Default::default()
+        };
+        let css = character_css(&properties);
+        assert!(css.contains("'wght' 750.25"));
+        assert!(css.contains("'slnt' -12"));
+        let mut parsed = CharacterProperties::default();
+        apply_css(&css, &mut parsed, &mut BlockProperties::default());
+        assert_eq!(parsed.font_axes, properties.font_axes);
+        assert_eq!(parsed.bold, properties.bold);
+        assert_eq!(parsed.weight, properties.weight);
+        for invalid in ["'bad' 1", "'wght' NaN", "'wght' inf", "'wght' on"] {
+            assert!(font_axis_settings(invalid).is_none());
+        }
+        assert_eq!(font_axis_settings("normal"), Some(BTreeMap::new()));
+    }
 
     #[test]
     fn named_references_retain_the_complete_imported_mapping() {

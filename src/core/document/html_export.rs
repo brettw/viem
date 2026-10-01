@@ -281,6 +281,7 @@ fn export_links(
 fn character(shape: &ResolvedTextStyle, paint: &ResolvedTextPaint) -> CharacterProperties {
     CharacterProperties {
         font_families: Some(shape.font_families.clone()),
+        font_axes: Some(shape.font_axes.clone()),
         size: Some(FontSize::Points(shape.size)),
         weight: Some(shape.weight.round() as u16),
         slant: Some(shape.slant),

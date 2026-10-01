@@ -516,14 +516,15 @@ private struct ResolvedStyle {
       cssWeight: weight,
       slant: slant,
       features: decodedFeatures,
-      relativeBold: source.reserved & 1 != 0
+      relativeBold: source.reserved & 1 != 0,
+      axes: EVFontVariations.decode(try decode(source.font_axes))
     )
     let baseWeight = EVFontCatalog.face(named: families.first ?? "")?.weight
     let target =
       source.reserved & 1 != 0
       ? min(Int(baseWeight ?? UInt16(max(1, min(1000, source.weight - 300)))) + 300, 1000)
       : Int(source.weight)
-    syntheticBold = target >= 500 && Int(EVFontCatalog.weight(of: font)) < target
+    syntheticBold = !EVFontVariations.info(font: font).axes.contains(where: { $0.tag == "wght" }) && target >= 500 && Int(EVFontCatalog.weight(of: font)) < target
   }
 
   var attributes: [NSAttributedString.Key: Any] {
@@ -643,7 +644,8 @@ public func resolveFont(
   cssWeight: CGFloat,
   slant: UInt32,
   features: [(String, UInt32)],
-  relativeBold: Bool = false
+  relativeBold: Bool = false,
+  axes: [String: Double] = [:]
 ) -> CTFont {
   // This also covers previews and clipboard fonts that do not pass through
   // the portable layout resolver. Kerning always follows the font's default.
@@ -656,13 +658,11 @@ public func resolveFont(
   let targetWidth = exactFace?.width ?? 0
   let nearestWidth = faces.map { abs($0.width - targetWidth) }.min() ?? 0
   let matchingWidth = faces.filter { abs($0.width - targetWidth) <= nearestWidth + 0.0001 }
-  let wantsItalic = slant != UInt32(VIEM_FONT_SLANT_UPRIGHT)
+  let wantsItalic = slant != UInt32(VIEM_FONT_SLANT_UPRIGHT) || (exactFace?.italic ?? false)
   let matchingSlant = matchingWidth.filter { $0.italic == wantsItalic }
   let available = matchingSlant.isEmpty ? matchingWidth : matchingSlant
   let targetWeight =
-    relativeBold && exactFace != nil
-    ? EVFontCatalog.boldWeight(baseWeight: exactFace!.weight, faces: available)
-    : UInt16(max(1, min(1000, cssWeight.rounded())))
+    UInt16(max(1, min(1000, cssWeight.rounded())))
   let preferred: EVFontFace?
   if !relativeBold, let exactFace, exactFace.weight == targetWeight, exactFace.italic == wantsItalic {
     preferred = exactFace
@@ -676,13 +676,23 @@ public func resolveFont(
     }
   }
   var member = preferred.flatMap { EVFontCatalog.font(for: $0, size: size) } ?? base
+  // Keep variation outlines before considering any synthetic treatment.
+  let variationBase = wantsItalic && !(exactFace?.italic ?? false) ? member : base
+  let variationInfo = EVFontVariations.info(font: variationBase)
+  let coordinates = EVFontVariations.effective(variationInfo, saved: requestedIndex == 0 ? axes : [:], weight: Double(cssWeight), bold: relativeBold, slant: slant)
+  if !coordinates.isEmpty {
+    let variation = Dictionary(uniqueKeysWithValues: coordinates.map { (NSNumber(value: EVFontVariations.identifier($0.key)), NSNumber(value: $0.value)) })
+    let descriptor = CTFontDescriptorCreateCopyWithAttributes(CTFontCopyFontDescriptor(variationBase), [kCTFontVariationAttribute: variation] as CFDictionary)
+    member = CTFontCreateWithFontDescriptor(descriptor, size, nil)
+  }
   var symbolic: CTFontSymbolicTraits = []
   if relativeBold || targetWeight >= 600 { symbolic.insert(.traitBold) }
   if wantsItalic { symbolic.insert(.traitItalic) }
   // Ask Core Text for a native member first. If no heavier/italic member
   // exists, descriptor traits request the platform's synthetic treatment.
-  let needsSyntheticBold = relativeBold && (preferred?.weight ?? 0) < targetWeight
-  let needsSyntheticItalic = wantsItalic && !(preferred?.italic ?? false)
+  let needsSyntheticBold = relativeBold && !variationInfo.axes.contains(where: { $0.tag == "wght" }) && (preferred?.weight ?? 0) < targetWeight
+  let hasItalicAxis = variationInfo.axes.contains { $0.tag == "ital" || $0.tag == "slnt" }
+  let needsSyntheticItalic = wantsItalic && !hasItalicAxis && !(preferred?.italic ?? false)
   var traits: [CFString: Any] = [:]
   if needsSyntheticBold || needsSyntheticItalic {
     member = CTFontCreateCopyWithSymbolicTraits(member, size, nil, symbolic, symbolic) ?? member
@@ -717,7 +727,7 @@ public func resolveFont(
     descriptorAttributes as CFDictionary
   )
   let resolved = CTFontCreateWithFontDescriptor(descriptor, size, nil)
-  if wantsItalic && !CTFontGetSymbolicTraits(resolved).contains(.traitItalic) {
+  if wantsItalic && !hasItalicAxis && !CTFontGetSymbolicTraits(resolved).contains(.traitItalic) {
     var matrix = CTFontGetMatrix(resolved)
     matrix.c += 0.2
     return CTFontCreateCopyWithAttributes(resolved, size, &matrix, nil)
