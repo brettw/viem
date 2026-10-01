@@ -932,7 +932,8 @@ extension EVDocumentWindowController {
       // its replacement/window/split destination, force flag, and split height.
       let selectedRequest = EVDocumentHostRequest(
         kind: request.kind, documentID: request.documentID, documentRevision: request.documentRevision,
-        force: request.force, path: url.path, initialHeightRows: request.initialHeightRows)
+        force: request.force, path: url.path, initialHeightRows: request.initialHeightRows,
+        verticalSplit: request.verticalSplit)
       self.performDocumentHostRequest(selectedRequest, in: pane, completion: completion)
     }
     if let openFilePanelPresenter { openFilePanelPresenter(panel, window, selected) }
