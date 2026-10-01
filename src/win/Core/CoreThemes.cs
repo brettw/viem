@@ -19,5 +19,5 @@ internal static unsafe class CoreThemes
     }
     public static void ReplaceCodeStyles(byte[] json)
     { fixed (byte* p = json) Check(viem_code_replace_style_json(p, (ulong)json.Length), "Apply theme Code styles"); }
-    public static ulong CodeStyleRevision { get { var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_style_sheet_info(&info), "Read Code style revision"); return info.identity.style_sheet_revision; } }
+    public static ulong CodeStyleRevision { get { var identity = New<ViemStyleSheetIdentityV1>(); Check(viem_core_style_sheet_identity(0, &identity), "Read Code style revision"); return identity.style_sheet_revision; } }
 }

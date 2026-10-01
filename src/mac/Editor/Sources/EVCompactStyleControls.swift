@@ -347,6 +347,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         }
     }
 
+    private var listedFontFaces: [EVFontFace]?
+    private var listedFontInstances: [EVFontInstance]?
+    private var listedVariableFont = false
+    private var rebuildFaceMenu = false
     private func refreshFontControls() {
         let wasUpdating = updating
         updating = true
@@ -361,8 +365,13 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         }
         setFamilyText(isOverridden(.characterFontFamilies) ? displayFamily : "")
         family.isEnabled = isOverridden(.characterFontFamilies)
-        face.removeAllItems()
-        for member in fontFaces { face.addItem(withTitle: member.styleName) }
+        let info = EVFontVariations.info(for: chosen)
+        rebuildFaceMenu = listedFontFaces != fontFaces || listedFontInstances != info.instances || listedVariableFont != !info.axes.isEmpty
+        if rebuildFaceMenu {
+            face.removeAllItems()
+            for member in fontFaces { face.addItem(withTitle: member.styleName) }
+            listedFontFaces = fontFaces; listedFontInstances = info.instances; listedVariableFont = !info.axes.isEmpty
+        }
         // A popup selects its first item automatically when populated. An
         // unresolved request must not appear to select that unrelated face.
         face.select(nil)
@@ -399,13 +408,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let info = EVFontVariations.info(for: chosen)
         fontInstances = info.instances
         if !info.axes.isEmpty {
-            for instance in fontInstances { face.addItem(withTitle: instance.name) }
-            face.addItem(withTitle: "Custom")
+            if rebuildFaceMenu {
+                for instance in fontInstances { face.addItem(withTitle: instance.name) }
+                face.addItem(withTitle: "Custom")
+            }
             if let index = fontInstances.firstIndex(where: { instance in info.axes.allSatisfy { abs(instance.values[$0.tag]! - (axisValues[$0.tag] ?? $0.defaultValue)) < 0.001 } }) {
                 face.selectItem(at: fontFaces.count + index)
             } else { face.selectItem(at: face.numberOfItems - 1) }
         }
-        let identity = "\(String(describing: definition?.key)):\(chosen)"
+        let identity = chosen
         if axisIdentity != identity {
             axisIdentity = identity
             for view in axisRows.arrangedSubviews { axisRows.removeArrangedSubview(view); view.removeFromSuperview() }

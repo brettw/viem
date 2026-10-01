@@ -52,5 +52,7 @@ internal sealed partial class StyleWindow
     internal CoreView ThemeView => view;
     internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.Document.State.format, view.ExportStyleDefaults());
     internal void RefreshForTesting() => Load(selected?.Key);
+    internal bool EditPropertyForTesting(uint property, float number)
+        => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(number)));
 #endif
 }

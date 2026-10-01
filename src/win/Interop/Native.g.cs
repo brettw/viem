@@ -1859,6 +1859,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_mark_saved(ulong @core, ViemMarkSavedV1* @request);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_style_sheet_identity(ulong @core, ViemStyleSheetIdentityV1* @out_identity);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_style_sheet_info(ulong @core, ViemStyleSheetInfoV1* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_style_sheet(ulong @core, ViemStyleSheetIdentityV1* @expected, ViemStyleDefinitionV1* @definitions, ulong @definition_capacity, ViemStylePropertyV1* @properties, ulong @property_capacity, ViemStyleValueItemV1* @value_items, ulong @value_item_capacity, ViemStyleDependencyV1* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfoV1* @out_info);

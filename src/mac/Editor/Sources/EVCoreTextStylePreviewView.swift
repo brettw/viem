@@ -55,6 +55,7 @@ final class EVCoreTextStylePreviewView: NSView {
     private static let unavailableText =
         "Select a document style to preview its effective formatting."
 
+    private var blockPreviews: [EVStyleKind: EVCoreBlockStylePreview] = [:]
     private var blockPreview: EVCoreBlockStylePreview?
     private var blockPreviewError: String?
     private var kind: EVStyleKind?
@@ -96,12 +97,16 @@ final class EVCoreTextStylePreviewView: NSView {
                 let context = contextualForegroundColor().usingColorSpace(.sRGB) ?? .gray
                 let foreground = EVStyleColor(red: Float(context.redComponent), green: Float(context.greenComponent),
                     blue: Float(context.blueComponent), alpha: Float(context.alphaComponent))
-                if let blockPreview, blockPreview.kind == kind {
-                    try blockPreview.update(values: effectiveValues, contextForeground: foreground)
+                if let retained = blockPreviews[kind] {
+                    try retained.update(values: effectiveValues, contextForeground: foreground)
+                    blockPreview = retained
                 } else {
-                    blockPreview = try EVCoreBlockStylePreview(kind: kind, values: effectiveValues, contextForeground: foreground)
+                    let created = try EVCoreBlockStylePreview(kind: kind, values: effectiveValues, contextForeground: foreground)
+                    blockPreviews[kind] = created
+                    blockPreview = created
                 }
             } catch {
+                blockPreviews.removeValue(forKey: kind)
                 blockPreview = nil
                 blockPreviewError = error.localizedDescription
             }

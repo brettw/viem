@@ -59,6 +59,7 @@ internal static class StyleInspectorBehaviorTests
         BlockPreview(pane, preferences);
         if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLE_PERFORMANCE_ONLY") == "1") {
             await Following(pane, preferences);
+            await CacheRegressions(pane, preferences);
             return;
         }
         await CodeBlockBackground(pane, preferences);
@@ -129,8 +130,44 @@ internal static class StyleInspectorBehaviorTests
         }
         Check(Pixels(preview).SequenceEqual(Pixels(freshPixels)),
             "Incremental preview pixels match a fresh specimen after font and theme foreground changes");
+        preview.InvalidateFontsForTesting();
+        Check(Pixels(preview).SequenceEqual(Pixels(freshPixels)),
+            "Font invalidation at unchanged preview dimensions rebuilds usable matching pixels");
+        int exports = view.StyleExports;
+        for (int i = 0; i < 40; i++) view.Styles();
+        Check(view.StyleExports == exports, "Unchanged stylesheet reads perform no full exports");
         Check(document.Source(document.State.document_revision).SequenceEqual(source),
             "Block preview leaves the inspected document source unchanged");
+    }
+    private static async Task CacheRegressions(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        using var document = new CoreDocument("A paragraph with `code`."u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences, followCaret: false);
+        inspector.Activate(); await Task.Delay(150);
+        try {
+            var styleMenu = inspector.StylePicker.ItemsSource;
+            var parents = inspector.ParentPicker.ItemsSource;
+            var following = inspector.NextPicker.ItemsSource;
+            var faces = inspector.FontVariantControl.ItemsSource;
+            inspector.RefreshForTesting();
+            Check(ReferenceEquals(parents, inspector.ParentPicker.ItemsSource), "Unchanged inspector refresh retains parent menu entries");
+            Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 19), "Inspector commits a size edit");
+            Check(ReferenceEquals(styleMenu, inspector.StylePicker.ItemsSource)
+                && ReferenceEquals(parents, inspector.ParentPicker.ItemsSource)
+                && ReferenceEquals(following, inspector.NextPicker.ItemsSource)
+                && ReferenceEquals(faces, inspector.FontVariantControl.ItemsSource)
+                && Selected(inspector).Id == "Paragraph", "A property edit retains all unchanged menus and the selected style");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Code" && s.Namespace == 2);
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items.OfType<StyleDefinition>().First(s => s.Id == "Comment");
+            Check(inspector.Error.Length == 0, "Character style accepts a named parent");
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items[0];
+            Check(inspector.Error.Length == 0 && inspector.ParentPicker.SelectedItem is string,
+                "Default Paragraph clears a named character parent without an invalid relationship");
+        }
+        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
     private static async Task CodeBlockBackground(EditorPane pane, Preferences preferences)
     {

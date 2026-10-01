@@ -7,6 +7,28 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testDefaultParagraphClearsCharacterParentAndUnchangedMenusAreRetained() throws {
+        let (_, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
+        let parentKey = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Comment"))
+        editor.selectStyle(code)
+        XCTAssertTrue(editor.setParentForTesting(parentKey))
+        let parent = try control(NSPopUpButton.self, label: "Based on style", in: editor.view)
+        parent.selectItem(withTitle: "Default Paragraph")
+        XCTAssertTrue(parent.sendAction(try XCTUnwrap(parent.action), to: parent.target))
+        XCTAssertEqual(editor.inspection.parentValue, "Default Paragraph")
+        let style = try control(NSPopUpButton.self, label: "Style", in: editor.view)
+        let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let following = try control(NSPopUpButton.self, label: "Following paragraph style", in: editor.view)
+        let entries = [style, parent, face, following].map { $0.itemArray }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(19)))
+        for (popup, old) in zip([style, parent, face, following], entries) {
+            XCTAssertEqual(popup.itemArray.count, old.count)
+            for (a, b) in zip(popup.itemArray, old) { XCTAssertTrue(a === b) }
+        }
+    }
+
     func testFontSizeUnitConversionTracksBasedOnParagraphAndKeepsDeclaration() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }

@@ -20,6 +20,7 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     private static var fileMonitor: EVCodeStyleFileMonitor?
     let configuration: EVConfigurationStore
     let undoManager = UndoManager()
+    private var cachedStyleSheet: EVStyleSheetSnapshot?
     private var groupStart: Data?
     private(set) var lastError: String?
     private var changeObserver: NSObjectProtocol?
@@ -98,8 +99,10 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     }
 
     func snapshot() throws -> EVStyleSheetSnapshot {
+        let identity = try EVCoreStyleBridge.styleIdentity(core: 0)
+        if let cachedStyleSheet, cachedStyleSheet.identity == identity { return cachedStyleSheet }
         for _ in 0..<3 {
-            do { return try EVCoreStyleBridge.copyStyleSheet(core: nil) }
+            do { let fresh = try EVCoreStyleBridge.copyStyleSheet(core: nil); cachedStyleSheet = fresh; return fresh }
             catch let error as EVStyleBridgeError where error.isStale { continue }
         }
         throw EVStyleBridgeError.core(status: UInt32(VIEM_STATUS_STALE_REVISION))

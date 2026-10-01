@@ -325,6 +325,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private var codeSettingsSession: EVCodeStyleSession? { settingsSession as? EVCodeStyleSession }
     private var hasTarget: Bool { document != nil || settingsSession != nil }
     override var undoManager: UndoManager? { settingsSession?.undoManager ?? super.undoManager }
+    private var styleMenuChoices: [EVStyleChoiceIdentity]?
+    private var parentMenuChoices: [EVStyleChoiceIdentity]?
     private var snapshot: EVStyleSheetSnapshot?
     private var selectedStyleKey: EVStyleKey = .baseParagraph
     private var documentObserver: NSObjectProtocol?
@@ -724,7 +726,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     var hasActiveStyleEditGroupForTesting: Bool { activeStyleEditGroup != nil || settingsSession?.isEditingGroup == true }
 
     @discardableResult
-    func setParentForTesting(_ key: EVStyleKey) -> Bool { commit(.setParent(key.id)) }
+    func setParentForTesting(_ key: EVStyleKey) -> Bool { commit(key == .defaultParagraph ? .clearParent : .setParent(key.id)) }
 
     @discardableResult
     func setFollowingStyleForTesting(_ key: EVStyleKey?) -> Bool {
@@ -888,6 +890,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func configureStylePopup(snapshot: EVStyleSheetSnapshot) {
+        let signature = snapshot.definitions.map {
+            EVStyleChoiceIdentity(key: $0.key, name: $0.name, kind: $0.kind, internalSyntax: $0.flags.contains(.internalSyntax))
+        }
+        stylePopup.isEnabled = true
+        if styleMenuChoices == signature { return }
+        styleMenuChoices = signature
         let menu = NSMenu()
         let definitions = snapshot.definitions.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -914,36 +922,33 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func configureBasedOn(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
-        basedOnPopup.removeAllItems()
-        if definition.capabilities.contains(.parent) {
-            if definition.kind == .character {
-                basedOnPopup.addItem(withTitle: "Default Paragraph")
-                basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(.defaultParagraph)
-            }
-            for candidate in snapshot.legalParents(for: definition)
-                .sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
-            {
-                basedOnPopup.addItem(withTitle: candidate.name)
-                basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(candidate.key)
-            }
-            if let parentKey = definition.parentKey,
-               let item = basedOnPopup.itemArray.first(where: {
-                   ($0.representedObject as? EVStyleKeyBox)?.key == parentKey
-               })
-            {
-                basedOnPopup.select(item)
-            }
-            basedOnPopup.isEnabled = !basedOnPopup.itemArray.isEmpty
-            basedOnPopup.toolTip = "Only compatible styles that cannot create an inheritance cycle are shown."
+        let editable = definition.capabilities.contains(.parent)
+        var choices: [EVStyleChoiceIdentity] = []
+        if editable {
+            if definition.kind == .character { choices.append(EVStyleChoiceIdentity(key: .defaultParagraph, name: "Default Paragraph")) }
+            choices += snapshot.legalParents(for: definition)
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name) }
         } else {
             let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name }
                 ?? (definition.kind == .character ? "Default Paragraph" : "None")
-            basedOnPopup.addItem(withTitle: title)
-            basedOnPopup.isEnabled = false
-            basedOnPopup.toolTip = definition.flags.isBase
-                ? "The parent of this distinguished base style is fixed."
-                : "This style's parent is read-only."
+            choices = [EVStyleChoiceIdentity(key: definition.parentKey, name: title)]
         }
+        if parentMenuChoices != choices {
+            basedOnPopup.removeAllItems()
+            for choice in choices {
+                basedOnPopup.addItem(withTitle: choice.name)
+                if let key = choice.key { basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(key) }
+            }
+            parentMenuChoices = choices
+        }
+        let selected = definition.parentKey ?? (definition.kind == .character ? .defaultParagraph : nil)
+        if let item = basedOnPopup.itemArray.first(where: { ($0.representedObject as? EVStyleKeyBox)?.key == selected }) {
+            basedOnPopup.select(item)
+        } else { basedOnPopup.select(nil) }
+        basedOnPopup.isEnabled = editable && !choices.isEmpty
+        basedOnPopup.toolTip = editable ? "Only compatible styles that cannot create an inheritance cycle are shown."
+            : (definition.flags.isBase ? "The parent of this distinguished base style is fixed." : "This style's parent is read-only.")
     }
 
     private func configureNavigationTargets(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
@@ -1114,6 +1119,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private func renderNoDocument() {
         isUpdatingUI = true
         defer { isUpdatingUI = false }
+        styleMenuChoices = nil; parentMenuChoices = nil
         stylePopup.removeAllItems()
         stylePopup.isEnabled = false
         newStyleButton.isEnabled = false
@@ -1296,7 +1302,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
 
     @objc private func basedOnChanged(_ sender: NSPopUpButton) {
         guard !isUpdatingUI, let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
-        _ = commit(.setParent(key.id))
+        _ = commit(key == .defaultParagraph ? .clearParent : .setParent(key.id))
     }
 
     @objc private func editParentStyle(_ sender: Any?) {
@@ -1418,6 +1424,13 @@ private final class EVStyleKeyBox: NSObject {
     init(_ key: EVStyleKey) { self.key = key }
 }
 
+private struct EVStyleChoiceIdentity: Equatable {
+    let key: EVStyleKey?
+    let name: String
+    var kind: EVStyleKind? = nil
+    var internalSyntax: Bool = false
+}
+
 @MainActor
 private final class EVFollowingStyleRow: NSObject {
     var popupForCompactLayout: NSPopUpButton { popup }
@@ -1425,6 +1438,7 @@ private final class EVFollowingStyleRow: NSObject {
     var onChange: ((EVStyleKey?) -> Void)?
     private let popup = NSPopUpButton()
     private var isConfiguring = false
+    private var menuChoices: [EVStyleChoiceIdentity]?
 
     override init() {
         let title = NSTextField(labelWithString: "Following paragraph style")
@@ -1444,11 +1458,16 @@ private final class EVFollowingStyleRow: NSObject {
     func configure(selected: EVStyleKey?, choices: [EVStyleDefinition], editable: Bool) {
         isConfiguring = true
         defer { isConfiguring = false }
-        popup.removeAllItems()
-        popup.addItem(withTitle: "Same Style")
-        for choice in choices.sorted(by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending }) {
-            popup.addItem(withTitle: choice.name)
-            popup.lastItem?.representedObject = EVStyleKeyBox(choice.key)
+        let signature = choices.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name) }
+        if menuChoices != signature {
+            popup.removeAllItems()
+            popup.addItem(withTitle: "Same Style")
+            for choice in signature {
+                popup.addItem(withTitle: choice.name)
+                if let key = choice.key { popup.lastItem?.representedObject = EVStyleKeyBox(key) }
+            }
+            menuChoices = signature
         }
         if let selected,
            let item = popup.itemArray.first(where: { ($0.representedObject as? EVStyleKeyBox)?.key == selected })

@@ -11,10 +11,12 @@ final class EVCoreBlockStylePreview {
     private let session: EVCoreViewSession
     private let selectedRange: NSRange
     private let text: String
+    private let supportedProperties: Set<EVStyleProperty>
     private let selectedStyleKey: EVStyleKey
     private var appliedValues: [EVStyleProperty: EVStyleValue]?
     private var contextForeground: EVStyleColor?
     private var size: CGSize = .zero
+    private var metricsGeneration: UInt64 = 0
     private var snapshot: EVLayoutExport?
     private var paint: EVLayoutPaintExport?
     var accessibilityText: String { text.replacingOccurrences(of: "\n", with: " ") }
@@ -49,25 +51,26 @@ final class EVCoreBlockStylePreview {
             ?? sheet.definitions.first { $0.kind == kind }
         guard let selectedDefinition else { throw EVStyleBridgeError.malformedSnapshot("Missing block specimen style") }
         selectedStyleKey = selectedDefinition.key
+        supportedProperties = Set(selectedDefinition.properties.keys)
         text = try backend.formattedText()
         selectedRange = (text as NSString).range(of: selected)
         try update(values: values, contextForeground: contextForeground)
     }
 
     func update(values: [EVStyleProperty: EVStyleValue], contextForeground: EVStyleColor) throws {
+        if appliedValues == values && self.contextForeground == contextForeground { return }
         if self.contextForeground != contextForeground {
-            let sheet = try backend.styleSheetSnapshot()
-            _ = try session.editStyle(key: .baseParagraph, expected: sheet.identity,
+            let identity = try EVCoreStyleBridge.styleIdentity(core: backend.core)
+            _ = try session.editStyle(key: .baseParagraph, expected: identity,
                 mutation: .setDeclaration(.characterForeground, .color(contextForeground)))
             self.contextForeground = contextForeground
         }
-        let definition = try backend.styleSheetSnapshot().definition(for: selectedStyleKey)
         for property in EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties + EVStyleProperty.blockProperties {
-            guard definition?.properties[property] != nil,
+            guard supportedProperties.contains(property),
                   appliedValues == nil || appliedValues?[property] != values[property] else { continue }
-            let latest = try backend.styleSheetSnapshot()
+            let identity = try EVCoreStyleBridge.styleIdentity(core: backend.core)
             let mutation: EVStyleMutation = values[property].map { .setDeclaration(property, $0) } ?? .clearDeclaration(property)
-            _ = try session.editStyle(key: selectedStyleKey, expected: latest.identity, mutation: mutation)
+            _ = try session.editStyle(key: selectedStyleKey, expected: identity, mutation: mutation)
         }
         appliedValues = values
         snapshot = nil
@@ -75,11 +78,14 @@ final class EVCoreBlockStylePreview {
     }
 
     private func prepare(_ requested: CGSize) throws -> EVLayoutExport {
-        if snapshot == nil || size != requested {
-            size = requested
+        if snapshot == nil || size != requested || metricsGeneration != session.provider.metricsGeneration {
             _ = try session.resize(width: max(1, requested.width), height: max(1, requested.height))
-            snapshot = try session.layoutExport()
-            paint = try session.layoutPaintExport()
+            let fresh = try session.layoutExport()
+            let freshPaint = try session.layoutPaintExport()
+            snapshot = fresh
+            paint = freshPaint
+            size = requested
+            metricsGeneration = session.provider.metricsGeneration
         }
         return snapshot!
     }

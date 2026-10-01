@@ -136,6 +136,18 @@ internal sealed partial class StyleWindow : Window
     }
     private static void Field(Grid grid, string label, FrameworkElement value)
     { int row = grid.RowDefinitions.Count; grid.RowDefinitions.Add(new() { Height = GridLength.Auto, MinHeight = 24 }); var text = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Right }; Grid.SetRow(text, row); grid.Children.Add(text); Grid.SetRow(value, row); Grid.SetColumn(value, 1); grid.Children.Add(value); }
+    private static bool SameChoices(ComboBox picker, IEnumerable<object> choices)
+    {
+        static (StyleKey? Key, string Name) Identity(object item) => item switch {
+            StyleDefinition style => (style.Key, style.Name),
+            ComboBoxItem header => (null, header.Content as string ?? ""),
+            _ => (null, item as string ?? "")
+        };
+        return picker.Items.Cast<object>().Select(Identity).SequenceEqual(choices.Select(Identity));
+    }
+    private StyleDefinition? refreshedDefinition;
+    private StyleSheet? refreshedSheet;
+    private global::Windows.UI.Color refreshedForeground;
     private StyleSheet? catalogueSheet;
     private void Load(StyleKey? key = null, bool followCaret = false, StyleSheet? snapshot = null)
     {
@@ -166,12 +178,13 @@ internal sealed partial class StyleWindow : Window
                     catalogue.Add(new ComboBoxItem { Content = title, IsEnabled = false });
                     catalogue.AddRange(group);
                 }
-                stylePicker.ItemsSource = catalogue;
-                next.ItemsSource = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray();
+                if (!SameChoices(stylePicker, catalogue)) stylePicker.ItemsSource = catalogue;
+                var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray();
+                if (!SameChoices(next, following)) next.ItemsSource = following;
                 catalogueSheet = sheet;
             }
-            stylePicker.SelectedItem = selected;
-            var parents = new object[] { selected.Namespace == 2 ? "Default Paragraph" : "None" }.Concat(styles.Where(s => s.Namespace == selected.Namespace && (s.Native.role == selected.Native.role || (selected.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)) && !IsDescendant(s))).ToArray(); parent.ItemsSource = parents; parent.SelectedItem = parents.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Parent) ?? parents[0]; parent.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
+            stylePicker.SelectedItem = stylePicker.Items.OfType<StyleDefinition>().FirstOrDefault(s => s.Key == selected.Key);
+            var parents = new object[] { selected.Namespace == 2 ? "Default Paragraph" : "None" }.Concat(styles.Where(s => s.Namespace == selected.Namespace && (s.Native.role == selected.Native.role || (selected.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)) && !IsDescendant(s))).ToArray(); if (!SameChoices(parent, parents)) parent.ItemsSource = parents; parent.SelectedItem = parent.Items.OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Parent) ?? parent.Items[0]; parent.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
             next.SelectedItem = next.Items.Cast<object>().OfType<StyleDefinition>().FirstOrDefault(s => s.Id == selected.Next) ?? next.Items.Cast<object>().First();
             next.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE);
             UpdateNavigation(visitParent, new(selected.Namespace, selected.Parent), "parent style"); UpdateNavigation(visitNext, new(1, selected.Next), "next paragraph style");
@@ -179,8 +192,11 @@ internal sealed partial class StyleWindow : Window
             if (!paragraphTab.IsEnabled) SelectTab(false);
             blockTab.IsEnabled = selected.Namespace == 1;
             if (selected.Namespace != 1 && blockTab.IsChecked == true) SelectTab(false);
-            EnableChildren(paragraph, true); EnableChildren(character, true); EnableChildren(block, true);
-            foreach (var refresh in refreshFields) refresh();
+            if (!ReferenceEquals(refreshedDefinition, selected) || !ReferenceEquals(refreshedSheet, sheet)
+                || refreshedForeground != preferences.Theme.Foreground) {
+                foreach (var refresh in refreshFields) refresh();
+                refreshedDefinition = selected; refreshedSheet = sheet; refreshedForeground = preferences.Theme.Foreground;
+            }
             if (selected.Namespace != 1 || !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(paragraph, false);
             if (!selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(character, false);
             if (selected.Namespace != 1 || !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)) EnableChildren(block, false);
