@@ -3396,6 +3396,7 @@ impl ShapeCacheEntry {
                 + style.language.as_ref().map_or(0, String::capacity)
                 + style.script.as_ref().map_or(0, String::capacity)
                 + style.features.capacity() * std::mem::size_of::<OpenTypeFeature>()
+                + style.font_axes.len() * 96
         }
         let fragment = &self.fragment;
         let mut bytes = std::mem::size_of::<(Self, usize)>()
@@ -8075,6 +8076,28 @@ mod tests {
             .set_metrics_generation(MetricsGeneration(2));
         lay_out_regional_line(&mut engine, &document, &view, 0);
         assert_eq!(engine.provider().request_calls(), 3);
+    }
+
+    #[test]
+    fn variable_axis_changes_reshape_only_the_affected_large_document_line() {
+        let document = Document::new("unchanged text\n".repeat(2000));
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(600.0, 180.0);
+        view.set_wrap(false);
+        engine.relayout(&document, &mut view).unwrap();
+        let prior = engine.provider().request_calls();
+        view.set_style_runs(vec![ShapeStyleRun {
+            text_range: 0..14,
+            style: ResolvedTextStyle {
+                font_axes: std::collections::BTreeMap::from([("wdth".into(), 75.0)]),
+                ..Default::default()
+            },
+        }])
+        .unwrap();
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(engine.provider().request_calls(), prior + 1);
+        engine.relayout(&document, &mut view).unwrap();
+        assert_eq!(engine.provider().request_calls(), prior + 1);
     }
 
     #[test]

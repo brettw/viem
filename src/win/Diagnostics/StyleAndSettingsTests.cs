@@ -252,7 +252,7 @@ internal static class StyleAndSettingsTests
         view.EditStyleFont(style, [face.Name, "serif"], face);
         var sheet = view.Styles(); style = sheet.Styles.Single(s => s.Id == id);
         Check(sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { face.Name, "serif" })
-            && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 700 && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value == 1, "font variant persists exact face, weight, slant and fallback families");
+            && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 700 && !style.Declares(VIEM_STYLE_PROPERTY_CHARACTER_SLANT), "font variant persists exact face and base weight without declaring semantic Italic");
         var changed = view.Layout();
         Check(!CoreView.SameLayout(prior.Info.identity, changed.Info.identity) && view.Provider.ShapedCharacters > shaped
             && changed.Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(face.Name), "font change invalidates layout and DirectWrite renders the selected face");

@@ -841,6 +841,7 @@ pub struct ViemResolvedTextStyleV1 {
     pub script: ViemUtf8Slice,
     pub features: *const ViemOpenTypeFeatureV1,
     pub feature_count: u64,
+    pub font_axes: ViemUtf8Slice,
 }
 
 pub const VIEM_RESOLVED_TEXT_STYLE_V1_SIZE: u32 = size_of::<ViemResolvedTextStyleV1>() as u32;
@@ -1296,6 +1297,7 @@ pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR: u32 = 39;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH: u32 = 40;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR: u32 = 41;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND: u32 = 42;
+pub const VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES: u32 = 43;
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -2764,6 +2766,7 @@ impl Drop for CRenderResourceLease {
 struct MarshalledStyle {
     _font_families: Vec<ViemUtf8Slice>,
     _features: Vec<ViemOpenTypeFeatureV1>,
+    _font_axes: String,
     ffi: ViemResolvedTextStyleV1,
 }
 
@@ -2782,6 +2785,7 @@ impl MarshalledStyle {
                 value: feature.value,
             })
             .collect();
+        let font_axes = serde_json::to_string(&style.font_axes).expect("validated font axes");
         let ffi = ViemResolvedTextStyleV1 {
             struct_size: VIEM_RESOLVED_TEXT_STYLE_V1_SIZE,
             slant: match style.slant {
@@ -2812,10 +2816,12 @@ impl MarshalledStyle {
                 .map_or_else(ViemUtf8Slice::default, ffi_utf8_slice),
             features: slice_pointer(&features),
             feature_count: features.len() as u64,
+            font_axes: ffi_utf8_slice(&font_axes),
         };
         Self {
             _font_families: font_families,
             _features: features,
+            _font_axes: font_axes,
             ffi,
         }
     }
@@ -5216,6 +5222,7 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
         StyleProperty::ParagraphAlignment => VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT,
         StyleProperty::ParagraphBaseDirection => VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION,
         StyleProperty::CharacterFontFamilies => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES,
+        StyleProperty::CharacterFontAxes => VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES,
         StyleProperty::CharacterSize => VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
         StyleProperty::CharacterWeight => VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT,
         StyleProperty::CharacterBold => VIEM_STYLE_PROPERTY_CHARACTER_BOLD,
@@ -5279,6 +5286,13 @@ fn style_value_to_ffi(
         StylePropertyValue::Color(value) => {
             output.kind = VIEM_STYLE_VALUE_COLOR;
             output.color = color_to_ffi(*value);
+        }
+        StylePropertyValue::FontAxes(value) => {
+            output.kind = VIEM_STYLE_VALUE_STRING;
+            output.string = push_style_string(
+                strings,
+                &serde_json::to_string(value).map_err(|_| ViemStatus::InvalidStyleValue)?,
+            )?;
         }
         StylePropertyValue::Text(value) => {
             output.kind = VIEM_STYLE_VALUE_STRING;
@@ -5373,6 +5387,10 @@ fn declared_character_property(
             .font_families
             .clone()
             .map(StylePropertyValue::FontFamilies),
+        StyleProperty::CharacterFontAxes => properties
+            .font_axes
+            .clone()
+            .map(StylePropertyValue::FontAxes),
         StyleProperty::CharacterSize => properties.size.map(|size| match size {
             FontSize::Points(value) => StylePropertyValue::Float(value),
             FontSize::Percentage(value) => StylePropertyValue::Percentage(value),
@@ -5461,6 +5479,9 @@ fn effective_character_property(
     property: StyleProperty,
 ) -> Option<StylePropertyValue> {
     match property {
+        StyleProperty::CharacterFontAxes => {
+            Some(StylePropertyValue::FontAxes(properties.font_axes.clone()))
+        }
         StyleProperty::CharacterFontFamilies => Some(StylePropertyValue::FontFamilies(
             properties.font_families.clone(),
         )),
@@ -6889,6 +6910,7 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
         VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT => Ok(StyleProperty::ParagraphAlignment),
         VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION => Ok(StyleProperty::ParagraphBaseDirection),
         VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES => Ok(StyleProperty::CharacterFontFamilies),
+        VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES => Ok(StyleProperty::CharacterFontAxes),
         VIEM_STYLE_PROPERTY_CHARACTER_SIZE => Ok(StyleProperty::CharacterSize),
         VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT => Ok(StyleProperty::CharacterWeight),
         VIEM_STYLE_PROPERTY_CHARACTER_BOLD => Ok(StyleProperty::CharacterBold),
@@ -7070,6 +7092,15 @@ unsafe fn parse_style_property_value<O>(
             Ok(StylePropertyValue::FontFamilies(
                 items.into_iter().map(|(_, text, _)| text).collect(),
             ))
+        }
+        StyleProperty::CharacterFontAxes => {
+            if value.kind != VIEM_STYLE_VALUE_STRING {
+                return Err(invalid());
+            }
+            style_edit_value_has_no_array(value)?;
+            let text = unsafe { composition_utf8(value.text, out_outcome)? };
+            let axes = serde_json::from_str(&text).map_err(|_| invalid())?;
+            Ok(StylePropertyValue::FontAxes(axes))
         }
         StyleProperty::CharacterSlant => {
             if value.kind != VIEM_STYLE_VALUE_FONT_SLANT {
@@ -11229,7 +11260,7 @@ mod tests {
             ViemStatus::Ok
         );
         assert_eq!(info.definition_count, 22);
-        assert_eq!(info.property_count, 746);
+        assert_eq!(info.property_count, 768);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();

@@ -45,6 +45,7 @@ public enum EVWhitespaceWidth: String, Codable, Equatable, Sendable {
 public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
   public enum Slant: String, Codable, Sendable { case upright = "Upright", italic = "Italic", oblique = "Oblique" }
   public enum Direction: String, Codable, Sendable { case natural = "Natural", leftToRight = "LeftToRight", rightToLeft = "RightToLeft" }
+  public var fontAxes: [String: Double]?
   public var fontFamilies: [String]?
   public var size: Float?
   public var weight: UInt16?
@@ -76,13 +77,15 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
       && (openTypeFeatures.map { $0.keys.allSatisfy { tag in
         tag.utf8.count == 4 && tag.utf8.allSatisfy { (0x20...0x7e).contains($0) }
       }} ?? true)
+      && (fontAxes.map { $0.count <= 64 && $0.allSatisfy { tag, value in tag.utf8.count == 4 && tag.utf8.allSatisfy { (0x20...0x7e).contains($0) } && value.isFinite } } ?? true)
       && (letterSpacing?.isFinite ?? true)
   }
 
-  public static let propertyNames = ["font_families", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing"]
+  public static let propertyNames = ["font_families", "font_axes", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing"]
 
   private enum CodingKeys: String, CodingKey {
     case fontFamilies = "font_families", size, weight, bold, slant, foreground, background
+    case fontAxes = "font_axes"
     case underline, strikethrough, language, direction, openTypeFeatures = "open_type_features"
     case letterSpacing = "letter_spacing"
   }

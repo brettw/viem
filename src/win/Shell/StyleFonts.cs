@@ -26,7 +26,7 @@ internal sealed partial class StyleWindow
     }.Concat(installed).ToArray();
     private readonly ComboBox fontFamily = new() { IsEditable = true, Width = 205, ItemsSource = FontFamilyItems(FontCatalog.Families) };
     private readonly ComboBox fontVariant = new() { Width = 140 };
-    private FontFace? CurrentFace => FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
+    private FontFace? CurrentFace => FontCatalog.Named(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES))) ?? FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
         selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
     private void BuildFontRow()
     {
@@ -44,10 +44,11 @@ internal sealed partial class StyleWindow
             if (!values.SequenceEqual(sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)))) Try(() => view.EditStyleFont(selected, values, null));
             flyout.Hide();
         };
-        Property(row, "Font family", VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, Inline(fontFamily, fallback), caption: false);
+        Property(row, "Font family", VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, Inline(fontFamily, fallback, fontVariant), caption: false);
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(fontFamily, "Font family");
-        Property(row, "Variant", VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, fontVariant, caption: false);
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(fontVariant, "Variant");
         BuildFontSize(row);
+        character.Children.Add(axisRows);
         refreshFields.Add(() => {
             string stored = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
             string display = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) ? FontCatalog.DisplayFamily(stored) : "";
@@ -61,13 +62,67 @@ internal sealed partial class StyleWindow
             fontFamily.ItemsSource = names;
             fontFamily.SelectedItem = names.OfType<string>().FirstOrDefault(f => string.Equals(f, display, StringComparison.OrdinalIgnoreCase));
             fontFamily.Text = display;
-            fontVariant.ItemsSource = FontCatalog.Faces(stored);
-            fontVariant.SelectedItem = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) ? CurrentFace : null;
-            fontVariant.IsEnabled = ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) && ((FontFace[])fontVariant.ItemsSource).Length > 0;
+            var faces = FontCatalog.Faces(stored);
+            var info = FontVariations.For(CurrentFace);
+            if (info.Axes.Length == 0) { fontVariant.ItemsSource = faces; fontVariant.SelectedItem = CurrentFace; }
+            else {
+                fontVariant.ItemsSource = faces.Cast<object>().Concat(info.Instances).Append("Custom").ToArray();
+                var values = CurrentAxisValues;
+                fontVariant.SelectedItem = (object?)info.Instances.FirstOrDefault(i => info.Axes.All(a => Math.Abs(i.Values[a.Tag] - values.GetValueOrDefault(a.Tag, a.Default)) < .001f)) ?? "Custom";
+            }
+            fontVariant.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) && faces.Length > 0;
+            RefreshAxisControls(info);
         });
         fontFamily.SelectionChanged += (_, _) => { if (!loading && fontFamily.SelectedItem is string name) Try(() => SetFamily(name)); };
         fontFamily.LostFocus += (_, _) => { if (!loading && fontFamily.IsEnabled) Try(() => SetFamily(fontFamily.Text)); };
-        fontVariant.SelectionChanged += (_, _) => { if (!loading && fontVariant.SelectedItem is FontFace face) Try(() => SetFace(face)); };
+        fontVariant.SelectionChanged += (_, _) => { if (loading) return; if (fontVariant.SelectedItem is FontFace face) Try(() => SetFace(face)); else if (fontVariant.SelectedItem is FontInstance instance) Try(() => SetAxes(instance.Values)); };
+    }
+    private readonly StackPanel axisRows = new() { Spacing = 8 };
+    private readonly Dictionary<string, (Slider Slider, TextBlock Value)> axisControls = new();
+    private string axisControlIdentity = "";
+    private Dictionary<string, float> CurrentAxisValues => FontVariations.Decode(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES)));
+    private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values);
+    private void RefreshAxisControls(FontVariationInfo info)
+    {
+        string identity = selected.Key + ":" + CurrentFace?.Name;
+        if (identity != axisControlIdentity) {
+            axisControlIdentity = identity; axisRows.Children.Clear(); axisControls.Clear();
+            var visible = info.Axes.Where(a => !a.Hidden && a.Maximum > a.Minimum).ToArray();
+            for (int i = 0; i < visible.Length; i += 2) {
+                var row = Row(axisRows);
+                foreach (var axis in visible.Skip(i).Take(2)) {
+                    var column = new StackPanel { Width = 280, Spacing = 2 };
+                    var value = new TextBlock { FontSize = 11 };
+                    var slider = new Slider { Minimum = axis.Minimum, Maximum = axis.Maximum, StepFrequency = 1, Width = 275 };
+                    Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(slider, axis.Name);
+                    column.Children.Add(value); column.Children.Add(slider); row.Children.Add(column);
+                    axisControls.Add(axis.Tag, (slider, value));
+                    bool gesture = false;
+                    void Begin() { if (loading || gesture) return; gesture = true; BeginThemeHistoryGroup(); }
+                    void End() { if (!gesture) return; gesture = false; EndThemeHistoryGroup(); }
+                    slider.AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => Begin()), true);
+                    slider.AddHandler(UIElement.PointerReleasedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => End()), true);
+                    slider.AddHandler(UIElement.PointerCaptureLostEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => End()), true);
+                    slider.KeyDown += (_, _) => Begin(); slider.KeyUp += (_, _) => End(); slider.LostFocus += (_, _) => End(); slider.Unloaded += (_, _) => End();
+                    slider.ValueChanged += (_, _) => {
+                        if (loading || !slider.IsEnabled || identity != axisControlIdentity) return;
+                        var values = CurrentAxisValues;
+                        foreach (var a in info.Axes) values.TryAdd(a.Tag, a.Default);
+                        values[axis.Tag] = (float)Math.Clamp(Math.Round(slider.Value, MidpointRounding.AwayFromZero), axis.Minimum, axis.Maximum);
+                        Try(() => SetAxes(values));
+                    };
+                }
+            }
+        }
+        var saved = CurrentAxisValues;
+        foreach (var axis in info.Axes) if (axisControls.TryGetValue(axis.Tag, out var control)) {
+            float value = Math.Clamp(saved.GetValueOrDefault(axis.Tag, axis.Default), axis.Minimum, axis.Maximum);
+            control.Slider.Value = value;
+            control.Slider.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES);
+            var effective = FontVariations.Effective(info, saved, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value + (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0 ? 300 : 0), selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
+            control.Value.Text = axis.Name + " " + value.ToString("0") + (Math.Abs(effective[axis.Tag] - value) > .001f ? " (effective " + effective[axis.Tag].ToString("0") + ")" : "");
+        }
+        axisRows.Visibility = axisControls.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
     private void SetFamily(string proposed)
     {

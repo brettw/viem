@@ -250,7 +250,7 @@ internal sealed partial class StyleWindow : Window
         var slant = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
         using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(resolved.Family, weight, slant, resolved.Stretch), FontStretch = resolved.Stretch, FontSize = size, WordWrapping = CanvasWordWrapping.Wrap };
         format.FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(weight, 1, 999) };
-        format.FontStyle = slant;
+        format.FontStyle = slant == FontStyle.Normal ? CurrentFace?.Slant ?? slant : slant;
         format.HorizontalAlignment = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value switch { 2 => CanvasHorizontalAlignment.Right, 3 => CanvasHorizontalAlignment.Center, _ => CanvasHorizontalAlignment.Left };
         string sample = selected.Native.role >= VIEM_STYLE_ROLE_QUOTE
             ? "A first paragraph inside this container.\n\nA second paragraph shares its block box."
@@ -265,6 +265,7 @@ internal sealed partial class StyleWindow : Window
         float textX = boxX + borderLeft + paddingLeft;
         float textY = boxY + borderTop + Edge(VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP);
         using var layout = new CanvasTextLayout(preview.Device, sample, format, Math.Max(1, boxWidth - borderLeft - borderRight - paddingLeft - paddingRight), 76);
+        FontVariations.Apply(layout, 0, sample.Length, FontVariations.Effective(FontVariations.For(CurrentFace), CurrentAxisValues, weight, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value), CurrentFace);
         layout.SetUnderline(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE).enum_value != 0);
         layout.SetStrikethrough(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value != 0);
         layout.SetCharacterSpacing(0, sample.Length, 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING).number, 0);

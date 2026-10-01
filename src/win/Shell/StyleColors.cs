@@ -50,7 +50,8 @@ internal sealed partial class StyleWindow
     }
     private void DeclareEffective(uint property)
     {
-        if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
+        if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) view.EditStyleFont(selected, sheet.StringList(selected.Value(property)), CurrentFace, CurrentAxisValues);
+        else if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
         else if (property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR)
             SetColor(property, NewBlockBackground());
         else view.DeclareEffectiveStyle(selected, property, sheet);

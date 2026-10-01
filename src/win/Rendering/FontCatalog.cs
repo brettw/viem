@@ -5,7 +5,7 @@ using Windows.UI.Text;
 
 namespace Viem.Windows.Rendering;
 
-internal sealed record FontFace(string Name, string Family, string StyleName, ushort Weight, FontStyle Slant, FontStretch Stretch, Uri? Source = null)
+internal sealed record FontFace(string Name, string Family, string StyleName, ushort Weight, FontStyle Slant, FontStretch Stretch, Uri? Source = null, string? TypographicFamily = null)
 {
     public override string ToString() => StyleName;
 }
@@ -104,12 +104,26 @@ internal static class FontCatalog
                     string family = Localized(font.FamilyNames), style = Localized(font.FaceNames);
                     string name = Localized(font.GetInformationalStrings(CanvasFontInformation.PostscriptName));
                     if (name.Length == 0) name = Localized(font.GetInformationalStrings(CanvasFontInformation.FullName));
-                    if (name.Length > 0 && family.Length > 0) result.Add(new(name, family, style, font.Weight.Weight, font.Style, font.Stretch, source));
+                    if (name.Length > 0 && family.Length > 0) result.Add(new(name, family, style, font.Weight.Weight, font.Style, font.Stretch, source, Localized(font.GetInformationalStrings(CanvasFontInformation.PreferredFamilyNames))));
                 }
             }
         }
         return result.DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).OrderBy(f => f.Weight)
             .ThenBy(f => f.Slant).ThenBy(f => f.StyleName, StringComparer.CurrentCultureIgnoreCase).ThenBy(f => f.Name, StringComparer.Ordinal).ToArray();
+    }
+    internal static CanvasFontSet VariationFontSet(FontFace face) => face.Source == null ? SystemFonts
+        : BundledFonts.Sources.Single(s => s.Uri == face.Source).Fonts;
+    internal static (byte[] Fvar, byte[] Name, byte[] Stat) VariationTables(FontFace face)
+    {
+        var sets = face.Source == null ? new[] { SystemFonts } : BundledFonts.Sources.Where(s => s.Uri == face.Source).Select(s => s.Fonts).ToArray();
+        foreach (var set in sets) {
+            using var matching = set.GetMatchingFonts([Property(CanvasFontPropertyIdentifier.PostscriptName, face.Name)]);
+            foreach (var font in matching.Fonts) using (font) {
+                byte[] fvar = FontVariations.Table(font, "fvar");
+                if (fvar.Length != 0) return (fvar, FontVariations.Table(font, "name"), FontVariations.Table(font, "STAT"));
+            }
+        }
+        return ([], [], []);
     }
     internal static FontFace? Named(string name)
     {

@@ -57,6 +57,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public int LiveResourceCount => resources.Count;
 #if DEBUG
     internal int FailShapingBatchesForTest;
+    internal Dictionary<string, float>[] RenderedFontAxes(ulong handle) => resources.TryGetValue(handle, out var resource)
+        ? resource.Parts.Select(p => FontVariations.NativeAxes(p.Font)).ToArray() : [];
     private static readonly bool verifyGlyphOrigins = Diagnostics.FrontendSmokeTests.ReportPath != null
         && Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") == null;
     internal string[] RenderedFontNames(ulong handle) => resources.TryGetValue(handle, out var resource)
@@ -239,19 +241,22 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         using var unleasedLayout = new UnleasedLayout(fragment);
         layout.Options = CanvasDrawTextOptions.EnableColorFont;
         using var measuring = measurement.CreateDrawingSession();
-        ApplyStyle(layout, 0, Math.Max(text.Length, 1), request.default_style, request.scale);
+        bool variable = ApplyStyle(layout, 0, Math.Max(text.Length, 1), request.default_style, request.scale);
         for (ulong i = 0; i < request.style_run_count; i++)
         {
             var run = request.style_runs[i];
             int first = map.Utf16((int)Math.Max(0, (long)run.text_start - contextStart));
             int last = map.Utf16((int)Math.Min(map.ByteLength, (long)run.text_end - contextStart));
-            if (last > first) ApplyStyle(layout, first, last - first, run.style, request.scale);
+            if (last > first) variable |= ApplyStyle(layout, first, last - first, run.style, request.scale);
         }
         var capture = new GlyphCapture(GetFontMetadata);
         fontTiming.Dispose();
         fontCpu.Dispose();
         using (Diagnostics.StartupPerformance.Measure("shape.nativeCapture"))
-        using (IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.nativeCapture")) layout.DrawToTextRenderer(capture, Vector2.Zero);
+        using (IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.nativeCapture")) {
+            if (variable) DirectWriteGlyphCapture.Draw(layout, capture);
+            else layout.DrawToTextRenderer(capture, Vector2.Zero);
+        }
         using var clusterTiming = Diagnostics.StartupPerformance.Measure("shape.clusters");
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
         var line = layout.LineMetrics[0];
@@ -389,14 +394,29 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         return ("Segoe UI", FontStretch.Normal);
     }
     private static FontStyle Slant(uint slant) => slant switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
-    private static void ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
+    private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyleV1 style, string family)
+    {
+        if ((style.font_axes.length == 0 || Text(style.font_axes) == "{}") && style.slant == 0 && (style.reserved & 1) == 0) return [];
+        string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
+        var exact = FontCatalog.Named(requested);
+        var baseFace = style.slant != 0 && exact?.Slant == FontStyle.Normal
+            ? FontCatalog.Faces(family).FirstOrDefault(f => f.Slant == Slant(style.slant)) ?? exact
+            : exact;
+        baseFace ??= FontCatalog.Faces(family).FirstOrDefault(f => f.Slant == Slant(style.slant)) ?? FontCatalog.Faces(family).FirstOrDefault();
+        return FontVariations.Effective(FontVariations.For(baseFace), FontCatalog.Resolve(requested)?.Family == family ? FontVariations.Decode(Text(style.font_axes)) : [], style.weight, (style.reserved & 1) != 0, style.slant);
+    }
+    private static bool ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
         layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), Slant(style.slant), font.Stretch));
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });
-        layout.SetFontStyle(start, count, Slant(style.slant));
+        var authoredFace = style.font_family_count > 0 ? FontCatalog.Named(Text(style.font_families[0])) : null;
+        layout.SetFontStyle(start, count, style.slant == 0 && authoredFace != null ? authoredFace.Slant : Slant(style.slant));
+        var axes = ResolvedAxes(style, font.Family);
+        if (axes.Count != 0) FontVariations.Apply(layout, start, count, axes, authoredFace ?? FontCatalog.Faces(font.Family).FirstOrDefault());
+
         layout.SetCharacterSpacing(start, count, 0, style.letter_spacing * scale, 0);
         if (style.has_language != 0) layout.SetLocaleName(start, count, Text(style.language));
         if (style.feature_count != 0)
@@ -410,6 +430,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             }
             layout.SetTypography(start, count, typography);
         }
+        return axes.Count != 0;
     }
 
     private nint Retain(nint context, ViemRenderRunHandleV1* handles, ulong count)

@@ -220,6 +220,8 @@ impl From<FontSize> for StylePropertyValue {
 #[serde(default)]
 pub struct CharacterProperties {
     pub font_families: Option<Vec<String>>,
+    /// Coordinates in the selected font's design space; inherited as a whole.
+    pub font_axes: Option<BTreeMap<String, f32>>,
     pub size: Option<FontSize>,
     pub weight: Option<u16>,
     /// Semantic emphasis relative to the selected base face/weight.
@@ -237,7 +239,11 @@ pub struct CharacterProperties {
 
 impl CharacterProperties {
     pub(super) fn overlay(&mut self, layer: &Self) {
-        if layer.weight.is_some() {
+        if layer.font_families.is_some() {
+            self.font_axes = None;
+            self.weight = None;
+        }
+        if layer.weight.is_some() && layer.font_families.is_none() {
             self.bold = None;
         }
         self.merge_declarations(layer);
@@ -248,6 +254,10 @@ impl CharacterProperties {
             families.capacity() * std::mem::size_of::<String>()
                 + families.iter().map(|name| name.capacity() + 16).sum::<usize>()
         }) + self.language.as_ref().map_or(0, |value| value.capacity() + 16)
+            + self.font_axes.as_ref().map_or(0, |axes| {
+                style_map_heap_bytes(axes.len(), std::mem::size_of::<(String, f32)>())
+                    + axes.keys().map(|tag| tag.capacity() + 16).sum::<usize>()
+            })
             + self.open_type_features.as_ref().map_or(0, |features| {
                 style_map_heap_bytes(features.len(), std::mem::size_of::<(String, u32)>())
                     + features.keys().map(|name| name.capacity() + 16).sum::<usize>()
@@ -510,6 +520,7 @@ impl Default for StyleSheet {
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
                     font_families: Some(vec![DEFAULT_FONT_FAMILY.to_owned()]),
+                    font_axes: Some(BTreeMap::new()),
                     size: Some(DEFAULT_FONT_SIZE.into()),
                     weight: Some(400),
                     slant: Some(FontSlant::Upright),
@@ -743,6 +754,7 @@ pub enum StyleError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedCharacterStyle {
     pub font_families: Vec<String>,
+    pub font_axes: BTreeMap<String, f32>,
     pub size: f32,
     pub weight: u16,
     pub base_weight: u16,
@@ -764,6 +776,7 @@ impl Default for ResolvedCharacterStyle {
     fn default() -> Self {
         Self {
             font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
+            font_axes: BTreeMap::new(),
             size: DEFAULT_FONT_SIZE,
             weight: 400,
             base_weight: 400,
@@ -801,6 +814,7 @@ impl ResolvedCharacterStyle {
             };
         }
         compare!(font_families, StyleProperty::CharacterFontFamilies);
+        compare!(font_axes, StyleProperty::CharacterFontAxes);
         compare!(size, StyleProperty::CharacterSize);
         compare!(weight, StyleProperty::CharacterWeight);
         compare!(bold, StyleProperty::CharacterBold);
@@ -934,6 +948,7 @@ pub enum StyleProperty {
     ParagraphAlignment,
     ParagraphBaseDirection,
     CharacterFontFamilies,
+    CharacterFontAxes,
     CharacterSize,
     CharacterWeight,
     CharacterBold,
@@ -965,6 +980,7 @@ pub enum StylePropertyValue {
     Boolean(bool),
     Color(Color),
     FontFamilies(Vec<String>),
+    FontAxes(BTreeMap<String, f32>),
     Text(String),
     FontSlant(FontSlant),
     WritingDirection(WritingDirection),
@@ -1035,6 +1051,7 @@ impl StyleProperty {
             | Self::ParagraphAlignment => StyleInvalidationEffect::ParagraphLayout,
             Self::ParagraphBaseDirection => StyleInvalidationEffect::Shaping,
             Self::CharacterFontFamilies
+            | Self::CharacterFontAxes
             | Self::CharacterSize
             | Self::CharacterWeight
             | Self::CharacterBold
@@ -1085,8 +1102,9 @@ pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 23] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 13] = [
+pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
     StyleProperty::CharacterFontFamilies,
+    StyleProperty::CharacterFontAxes,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
     StyleProperty::CharacterBold,
@@ -2762,8 +2780,9 @@ macro_rules! sparse_property_operations {
 }
 
 sparse_property_operations! {
-    CharacterProperties, set_character_property_value, clear_character_property;
+    CharacterProperties, set_character_property_value, clear_character_property_value;
     font_families => CharacterFontFamilies(FontFamilies),
+    font_axes => CharacterFontAxes(FontAxes),
     size => CharacterSize(Float),
     weight => CharacterWeight(FontWeight),
     bold => CharacterBold(Boolean),
@@ -2776,6 +2795,19 @@ sparse_property_operations! {
     direction => CharacterDirection(WritingDirection),
     open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
     letter_spacing => CharacterLetterSpacing(Float),
+}
+
+pub(super) fn clear_character_property(
+    style: &StyleId,
+    properties: &mut CharacterProperties,
+    property: StyleProperty,
+) -> Result<(), StyleError> {
+    clear_character_property_value(style, properties, property)?;
+    if property == StyleProperty::CharacterFontFamilies {
+        properties.font_axes = None;
+        properties.weight = None;
+    }
+    Ok(())
 }
 
 pub(super) fn set_character_property(
@@ -2844,6 +2876,14 @@ pub(super) fn validate_character_properties(
     let valid = font_families_valid
         && language_valid
         && features_valid
+        && properties.font_axes.as_ref().map_or(true, |axes| {
+            axes.len() <= 64
+                && axes.iter().all(|(tag, value)| {
+                    tag.len() == 4
+                        && tag.bytes().all(|b| (0x20..=0x7e).contains(&b))
+                        && value.is_finite()
+                })
+        })
         && properties
             .size
             .map_or(true, FontSize::is_valid)
@@ -3012,13 +3052,16 @@ fn record_character_winners(
     if properties.font_families.is_some() {
         record_winner(contributions, StyleProperty::CharacterFontFamilies, &origin);
     }
+    if properties.font_axes.is_some() || properties.font_families.is_some() {
+        record_winner(contributions, StyleProperty::CharacterFontAxes, &origin);
+    }
     if properties.size.is_some() {
         record_winner(contributions, StyleProperty::CharacterSize, &origin);
     }
     if properties.bold.is_some() {
         record_winner(contributions, StyleProperty::CharacterBold, &origin);
     }
-    if properties.weight.is_some() {
+    if properties.weight.is_some() || properties.font_families.is_some() {
         record_winner(contributions, StyleProperty::CharacterWeight, &origin);
     }
     if properties.slant.is_some() {
@@ -3162,13 +3205,20 @@ fn apply_character_properties(
 ) {
     if let Some(value) = properties.font_families.as_ref() {
         resolved.font_families.clone_from(value);
+        resolved.font_axes.clear();
+        resolved.base_weight = 400;
+    }
+    if let Some(value) = properties.font_axes.as_ref() {
+        resolved.font_axes.clone_from(value);
     }
     if let Some(value) = properties.size {
         resolved.size = value.resolve(resolved.size);
     }
     if let Some(value) = properties.weight {
         resolved.base_weight = value;
-        resolved.bold = false;
+        if properties.font_families.is_none() {
+            resolved.bold = false;
+        }
     }
     if let Some(value) = properties.bold {
         resolved.bold = value;
@@ -3882,7 +3932,9 @@ mod tests {
                 &direct_character,
             )
             .unwrap();
-        assert_eq!(traced.contributions().len(), 18);
+        assert_eq!(traced.contributions().len(),
+            CANVAS_STYLE_PROPERTIES.len() + CHARACTER_STYLE_PROPERTIES.len()
+        );
         assert_eq!(traced.value.padding_left, 12.0);
         assert_eq!(traced.value.padding_top, 7.0);
         assert_eq!(traced.value.character.size, 18.0);
@@ -4389,5 +4441,125 @@ mod block_box_tests {
             &BlockProperties::default(), &context, &CharacterProperties::default(), None, &CharacterProperties::default()).unwrap();
         assert_eq!(heading.character.foreground, blue);
         assert_eq!(heading.character.size, 24.0);
+    }
+}
+
+#[cfg(test)]
+mod variable_font_tests {
+    use super::*;
+    #[test]
+    fn coordinates_round_trip_and_inherit_as_one_font_face() {
+        let base = CharacterProperties {
+            font_families: Some(vec!["Variable Serif".into()]),
+            font_axes: Some(BTreeMap::from([
+                ("wght".into(), 450.25),
+                ("wdth".into(), 87.5),
+            ])),
+            weight: Some(450),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&base).unwrap();
+        assert_eq!(
+            serde_json::from_str::<CharacterProperties>(&json).unwrap(),
+            base
+        );
+        let mut sheet = StyleSheet::default();
+        sheet
+            .block_styles
+            .get_mut(&sheet.base_paragraph.clone())
+            .unwrap()
+            .character = base.clone();
+        let bytes = sheet
+            .default_configuration_json(&DocumentStyleAssignment::new(sheet.base_paragraph.clone()))
+            .unwrap();
+        let (reopened, diagnostics) = StyleSheet::default().with_default_json(&bytes).unwrap();
+        assert!(diagnostics.is_empty());
+        assert_eq!(
+            reopened
+                .block_style(&reopened.base_paragraph)
+                .unwrap()
+                .character
+                .font_axes,
+            base.font_axes
+        );
+        let mut resolved = ResolvedCharacterStyle::default();
+        apply_character_properties(&mut resolved, &base);
+        apply_character_properties(
+            &mut resolved,
+            &CharacterProperties {
+                bold: Some(true),
+                ..Default::default()
+            },
+        );
+        assert_eq!(resolved.font_axes, base.font_axes.clone().unwrap());
+        assert_eq!(resolved.weight, 750);
+        apply_character_properties(
+            &mut resolved,
+            &CharacterProperties {
+                bold: Some(false),
+                ..Default::default()
+            },
+        );
+        assert_eq!(resolved.weight, 450);
+        apply_character_properties(
+            &mut resolved,
+            &CharacterProperties {
+                font_families: Some(vec!["Other Font".into()]),
+                ..Default::default()
+            },
+        );
+        assert!(resolved.font_axes.is_empty());
+        assert_eq!(resolved.base_weight, 400);
+        let traced = sheet.resolve_document_style_with_contributions(&sheet.base_paragraph, &BlockProperties::default(), &CharacterProperties { font_families: Some(vec!["Other Font".into()]), ..Default::default() }).unwrap();
+        assert_eq!(traced.contribution(StyleProperty::CharacterFontAxes).unwrap().winner, StyleContributionOrigin::DirectDocumentCharacter);
+        assert_eq!(traced.contribution(StyleProperty::CharacterWeight).unwrap().winner, StyleContributionOrigin::DirectDocumentCharacter);
+    }
+    #[test]
+    fn clearing_face_preserves_independent_size_and_emphasis() {
+        let mut properties = CharacterProperties {
+            font_families: Some(vec!["Variable Serif".into()]),
+            font_axes: Some(BTreeMap::from([("wght".into(), 425.5)])),
+            weight: Some(425),
+            size: Some(18.0.into()),
+            bold: Some(true),
+            slant: Some(FontSlant::Italic),
+            ..Default::default()
+        };
+        clear_character_property(
+            &"Test".into(),
+            &mut properties,
+            StyleProperty::CharacterFontFamilies,
+        )
+        .unwrap();
+        assert!(
+            properties.font_families.is_none()
+                && properties.weight.is_none()
+                && properties.font_axes.is_none()
+        );
+        assert_eq!(properties.bold, Some(true));
+        assert_eq!(properties.slant, Some(FontSlant::Italic));
+        assert_eq!(properties.size, Some(18.0.into()));
+    }
+    #[test]
+    fn invalid_coordinates_are_rejected_and_axis_changes_invalidate_shaping() {
+        for (tag, value) in [("bad", 1.0), ("wght", f32::NAN), ("wght", f32::INFINITY)] {
+            let properties = CharacterProperties {
+                font_axes: Some(BTreeMap::from([(tag.into(), value)])),
+                ..Default::default()
+            };
+            assert!(validate_character_properties(&"Test".into(), &properties).is_err());
+        }
+        let mut resolved = ResolvedCharacterStyle::default();
+        let before = resolved.clone();
+        resolved.font_axes.insert("wdth".into(), 75.0);
+        assert!(before
+            .changed_properties(&resolved)
+            .contains(&StyleProperty::CharacterFontAxes));
+        assert_eq!(
+            StyleProperty::CharacterFontAxes.invalidation_effect(),
+            StyleInvalidationEffect::Shaping
+        );
+        let shape = crate::layout::shaping_style(&resolved).unwrap();
+        assert_eq!(shape.font_axes["wdth"], 75.0);
     }
 }

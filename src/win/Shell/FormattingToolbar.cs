@@ -164,7 +164,8 @@ internal sealed class FormattingToolbar : UserControl
                 var state = view.SemanticStyle(semantic);
                 Set(action, state.state, (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
             }
-            Set(ToolbarAction.Strikethrough, available ? view.StrikethroughState() : 0, view.CanFormatStrikethrough);
+            bool canStrike = view.CanFormatStrikethrough;
+            Set(ToolbarAction.Strikethrough, canStrike ? view.StrikethroughState() : 0, canStrike);
             RefreshCode(ToolbarAction.CharacterCode, new(2, "Code"), new(2, ""));
             RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
             Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);

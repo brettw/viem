@@ -149,7 +149,7 @@ extension EVEditorView {
         let slant: UInt32 = style.slant.map { $0 == .upright ? 0 : $0 == .italic ? 1 : 2 }
             ?? (inheritedTraits.contains(.traitItalic) ? 1 : 0)
         return resolveFont(families: style.fontFamilies ?? [CTFontCopyFamilyName(inherited) as String],
-            size: size, cssWeight: weight, slant: slant, features: features, relativeBold: style.bold == true)
+            size: size, cssWeight: weight, slant: slant, features: features, relativeBold: style.bold == true, axes: style.fontAxes ?? [:])
     }
 
 }
