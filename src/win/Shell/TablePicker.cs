@@ -61,7 +61,7 @@ internal sealed class TablePicker
     private const double Cell = 21;
     private readonly TableInsertButton button;
     private readonly Popup popup = new() { IsLightDismissEnabled = true };
-    private readonly TextBlock title = new() { Text = "Insert Table", FontSize = 14, FontWeight = global::Windows.UI.Text.FontWeights.SemiBold };
+    private readonly TextBlock title = new() { Text = "Insert Table", FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
     private readonly TextBlock detail = new() { FontSize = 10, TextWrapping = TextWrapping.Wrap, Margin = new(0, 4, 0, 8) };
     private readonly ScrollViewer scroll = new() { HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Enabled };
     private readonly TablePickerGrid grid = new() { IsTabStop = true, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
@@ -84,7 +84,6 @@ internal sealed class TablePicker
         this.button = button; this.restoreFocus = restoreFocus;
         content.Children.Add(title); content.Children.Add(detail); content.Children.Add(scroll); scroll.Content = grid;
         popup.Child = new Border { Child = content, Background = (Brush)Application.Current.Resources["SolidBackgroundFillColorBaseBrush"], BorderBrush = (Brush)Application.Current.Resources["SurfaceStrokeColorDefaultBrush"], BorderThickness = new(1), CornerRadius = new(8) };
-        popup.Closed += (_, _) => { timer.Stop(); ReleaseCapture(); accept = null; State = new(); restoreFocus(); Closed?.Invoke(); };
         button.Pressed = e => Start?.Invoke(e);
         button.Moved = e => Track(button, e); button.Released = e => Release(button, e);
         button.CaptureLost = e => CaptureLost(button, e);
@@ -115,6 +114,7 @@ internal sealed class TablePicker
         AutomationProperties.SetLiveSetting(grid, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
         timer = button.DispatcherQueue.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(50);
         timer.Tick += (_, _) => Autoscroll();
+        popup.Closed += (_, _) => { timer.Stop(); ReleaseCapture(); accept = null; State = new(); restoreFocus(); Closed?.Invoke(); };
     }
     internal Action<PointerRoutedEventArgs?>? Start;
     internal void Open(PointerRoutedEventArgs? e, Action<uint, uint> accept)

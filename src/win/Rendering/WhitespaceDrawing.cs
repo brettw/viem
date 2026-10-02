@@ -27,8 +27,11 @@ internal sealed unsafe partial class DirectWriteProvider
                 features = JsonSerializer.Serialize(values, FontFeaturesJsonContext.Default.Features);
             }
             var resolved = ResolveFont(style);
-            return new(resolved.Family, resolved.Stretch, style.size * scale, (ushort)style.weight, DirectWriteProvider.Slant(style.slant), style.letter_spacing * scale,
-                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family)));
+            var slant = ResolvedSlant(style);
+            var weight = (ushort)Math.Clamp(style.weight, 1, 999);
+            var face = ResolvedFace(style, resolved.Family, slant, resolved.Stretch);
+            return new(resolved.Family, resolved.Stretch, style.size * scale, weight, slant, style.letter_spacing * scale,
+                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family, face)));
         }
     }
 
