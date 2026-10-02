@@ -492,6 +492,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &LayoutJobViewConfiguration,
         cancellation: &dyn LayoutCancellationProbe,
     ) -> Result<RegionalLayoutSnapshot, LayoutComputationError> {
+        if styles.table_context.as_ref().is_some_and(|context| line_ranges.iter().any(|range| context.contains_line(range))) {
+            return self.layout_table_region_from_tree(document_id, document_revision, tree, line_ranges,
+                first_hard_line, document_hard_line_count, following_line_range, styles, view, cancellation);
+        }
         self.layout_streamed_rows_cancellable(
             document_id,
             document_revision,
@@ -770,7 +774,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 &paragraph.style.default_shaping_style
             };
-            let direction = shaping_base_direction(paragraph.style.base_direction);
             let right_to_left = if let Some(checkpoint) =
                 overflow_slice.and_then(|slice| slice.checkpoint.as_ref())
             {
@@ -778,6 +781,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 base_direction(tree, full_range.clone(), &paragraph.style, &control)?
             };
+            let direction = if right_to_left { TextDirection::RightToLeft } else { TextDirection::LeftToRight };
             let summary_key = SummaryKey {
                 code_wrap: view.wrap && view.whitespace.format.is_code(),
                 whitespace_style: styles.whitespace_shaping_style.clone(),
@@ -1071,6 +1075,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             if limited_origin { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
             let baseline = y + metrics.ascent;
             let mut row = VisualRow {
+                table_cell: None,
+                table_widths_are_exact: None,
                 paragraph_id: paragraph.paragraph_id,
                 hard_line_index,
                 fragment_index: 0,

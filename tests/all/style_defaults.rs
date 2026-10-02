@@ -321,7 +321,7 @@ fn clear_definition(document: &mut Document, id: &StyleId, character: bool) {
         .unwrap();
 }
 
-fn assert_inherits_base(document: &Document, id: &StyleId, character: bool) {
+fn assert_inherits_parent(document: &Document, id: &StyleId, character: bool) {
     let sheet = document.projection().style_sheet();
     let resolve = |paragraph: &StyleId, character| {
         sheet
@@ -335,7 +335,12 @@ fn assert_inherits_base(document: &Document, id: &StyleId, character: bool) {
             )
             .unwrap()
     };
-    let mut base = resolve(&sheet.base_paragraph, None);
+    let parent = if character {
+        &sheet.base_paragraph
+    } else {
+        sheet.block_style(id).unwrap().based_on.as_ref().unwrap_or(&sheet.base_paragraph)
+    };
+    let mut base = resolve(parent, None);
     if !character && sheet.block_style(id).is_some_and(|style| style.role.is_container()) {
         base = ResolvedParagraphStyle { character: base.character, ..Default::default() };
     }
@@ -386,7 +391,7 @@ fn loading_defaults_keeps_all_builtin_declarations_visible() {
 }
 
 #[test]
-fn clearing_all_builtin_deltas_inherits_base_and_survives_settings_reopen() {
+fn clearing_all_builtin_deltas_inherits_parent_and_survives_settings_reopen() {
     let original = open("# Title\n\nText", Format::Markdown);
     let original_defaults = original.export_style_defaults().unwrap();
     let sheet = original.projection().style_sheet();
@@ -408,17 +413,17 @@ fn clearing_all_builtin_deltas_inherits_base_and_survives_settings_reopen() {
         let before = document.projection().style_sheet().clone();
         clear_definition(&mut document, &id, character);
         let changed = document.projection().style_sheet() != &before;
-        assert_inherits_base(&document, &id, character);
+        assert_inherits_parent(&document, &id, character);
         let settings = document.export_style_defaults().unwrap();
         document.insert(document.text().len(), " appended").unwrap();
-        assert_inherits_base(&document, &id, character);
+        assert_inherits_parent(&document, &id, character);
         assert!(document.undo());
         if changed { assert!(document.undo()); }
         assert_eq!(document.projection().style_sheet(), &before);
         if changed { assert!(document.redo()); }
-        assert_inherits_base(&document, &id, character);
+        assert_inherits_parent(&document, &id, character);
         let mut reopened = open("# Title\n\nText", Format::Markdown);
         reopened.initialize_style_defaults(&settings).unwrap();
-        assert_inherits_base(&reopened, &id, character);
+        assert_inherits_parent(&reopened, &id, character);
     }
 }

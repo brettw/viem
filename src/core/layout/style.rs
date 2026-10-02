@@ -150,6 +150,7 @@ impl ParagraphLayoutStyle {
 /// Layout-facing result of resolving one immutable formatted snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DocumentLayoutStyles {
+    pub(crate) table_context: Option<super::engine::tables::TableLayoutContext>,
     pub(crate) recovery_diagnostic: Option<super::ShapingDiagnostic>,
     /// Default Paragraph font, excluding authored character spans and the
     /// current paragraph's named style. Whitespace geometry uses this basis.
@@ -435,6 +436,9 @@ impl DocumentLayoutStyles {
                     .filter(|range| !range.is_empty());
             }
         }
+        if !document.tables().is_empty() {
+            styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document, recovery_format.is_some_and(|format| format.is_source_view())));
+        }
         Ok(styles)
     }
 
@@ -638,6 +642,7 @@ impl DocumentLayoutStyles {
         }
 
         Ok(Self {
+            table_context: None,
             recovery_diagnostic: None,
             whitespace_shaping_style,
             style_sheet_revision: sheet.revision,

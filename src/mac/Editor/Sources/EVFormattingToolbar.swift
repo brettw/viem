@@ -19,6 +19,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let characterCode = NSButton()
   let codeBlock = NSButton()
   let formattedView = NSButton()
+  let insertTable = EVInsertTableButton()
+  private(set) var tablePicker: EVTablePickerController?
+  private var pickerSelection: ViemLogicalSelectionIdentityV1?
   private let scroll = NSScrollView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()
@@ -73,6 +76,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     blockGroup.addArrangedSubview(codeBlock)
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
     add(.decreaseIndent, title: "Unindent", symbol: "decrease.indent", to: indentGroup, toggle: false)
+    configure(insertTable, title: "Insert Table", toggle: false)
+    insertTable.image = Self.tableImage()
+    insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
+    row.addArrangedSubview(insertTable)
     scroll.drawsBackground = false
     scroll.borderType = .noBorder
     scroll.hasHorizontalScroller = true
@@ -126,6 +133,31 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     row.frame = NSRect(x: 0, y: 0, width: row.fittingSize.width, height: bounds.height)
   }
 
+  private static func tableImage() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 15), flipped: false) { _ in
+      NSColor.black.setStroke()
+      let path = NSBezierPath()
+      for x in [CGFloat(1), 9, 17] { path.move(to: NSPoint(x: x, y: 1.5)); path.line(to: NSPoint(x: x, y: 13.5)) }
+      for y in [CGFloat(1.5), 5.5, 9.5, 13.5] { path.move(to: NSPoint(x: 1, y: y)); path.line(to: NSPoint(x: 17, y: y)) }
+      path.lineWidth = 1; path.stroke(); return true
+    }
+    image.isTemplate = true; return image
+  }
+
+  func openTablePicker(event: NSEvent? = nil) {
+    guard let surface, let session = surface.session,
+          let context = try? session.tableContext(), context.flags & 1 != 0 else { return }
+    let picker = tablePicker ?? EVTablePickerController()
+    tablePicker = picker
+    pickerSelection = context.selection
+    picker.didClose = { [weak self] in self?.pickerSelection = nil }
+    picker.open(from: insertTable, editor: surface.editorView, event: event) { [weak self, weak surface, weak session] columns, rows in
+      guard let self, let surface, let session, surface.session === session else { return }
+      surface.performInput { _ = try session.insertTable(columns: columns, bodyRows: rows, expected: context.selection) }
+      self.finishAction()
+    }
+  }
+
   private static func formattedViewImage() -> NSImage {
     let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
       NSColor.black.setStroke()
@@ -158,6 +190,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     guard let surface else { return }
     formattedView.state = surface.backend.sourceFormat == .markdown ? .on : .off
     formattedView.isEnabled = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
+    let markdown = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
+    setHidden(!markdown, for: insertTable)
+    let tableContext = try? surface.session?.tableContext()
+    insertTable.isEnabled = markdown && (tableContext?.flags ?? 0) & 1 != 0
+    if let expected = pickerSelection, let current = tableContext?.selection,
+       !expected.isSameSelection(as: current) {
+      tablePicker?.close()
+    }
     let selected = try? surface.session?.selectedNamedStyles()
     let selection = try? surface.session?.listSelection()
     if styleSnapshot?.identity != selected?.identity || styleSnapshot == nil {
@@ -188,6 +228,11 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     }
     refreshCode(characterCode, role: .character, id: "Code", catalogue: next)
     refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
+    if (tableContext?.flags ?? 0) & UInt32(VIEM_TABLE_IN_TABLE) != 0 {
+      paragraphStyle.isEnabled = false
+      for action in [EVMenuCommand.bulletedList, .numberedList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
+      setHidden(true, for: codeBlock)
+    }
   }
 
   private func setHidden(_ hidden: Bool, for view: NSView) {

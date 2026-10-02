@@ -36,6 +36,10 @@ mod lists;
 mod containers;
 pub use containers::{ContainerIdentity, ContainerKind, ContainerAttributes, ContainerMembership, ContainerNode, ContainerStructure};
 mod markdown_blocks;
+mod markdown_tables;
+mod markdown_table_rows;
+pub use markdown_table_rows::TableRows;
+pub use markdown_tables::{MarkdownTable, MarkdownTableCell, MarkdownTableRow, MarkdownTableSourceRow, TableAlignment, TableEditIntent};
 mod markdown_syntax;
 mod markdown_code;
 mod markdown_indented_code;
@@ -137,7 +141,7 @@ pub(crate) use style::{
 };
 pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
-    ClipboardFragment, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
+    ClipboardFragment, TableClipboardCell, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
     SourcePatch, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
@@ -430,6 +434,7 @@ pub enum DocumentError {
     },
     HardLineTransferProjectionMismatch,
     UnsupportedFormatting,
+    UnsupportedTableEdit(&'static str),
     OverlappingFormatting,
     /// A reverse projection selected only part of an opaque malformed source
     /// item. Committing it could silently discard bytes, so no state changed.
@@ -521,6 +526,7 @@ impl fmt::Display for DocumentError {
             Self::HardLineTransferProjectionMismatch => formatter.write_str(
                 "source-backed hard-line transfer did not reproduce the requested structure",
             ),
+            Self::UnsupportedTableEdit(reason) => formatter.write_str(reason),
             Self::UnsupportedFormatting => {
                 formatter.write_str("the source format cannot represent that formatting edit")
             }
@@ -2631,8 +2637,9 @@ mod tests {
                 assert_eq!(document.line_end(1), Some(5));
                 assert_eq!(document.source_bytes(), original);
                 assert_eq!(
-                    document.projection().hard_lines_for_region(&(3..4)),
-                    vec![2..5]
+                    document.projection().hard_line_at_offset(3)
+                        .and_then(|line| document.projection().hard_line_range(line)),
+                    Some(2..5)
                 );
                 assert_eq!(document.projection().blocks().len(), 2);
                 assert_eq!(document.projection().blocks()[1].range, 2..5);

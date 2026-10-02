@@ -22,17 +22,29 @@ internal sealed class FormattingToolbar : UserControl
     internal readonly DropDownButton Character = Selector("Character style");
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
+    internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
+    private readonly TablePicker tablePicker;
+    private ViemLogicalSelectionIdentityV1? pickerSelection;
     private StyleSheet? sheet;
     private SelectedStyles? selected;
     private StyleChoice[] choices = [];
     private bool refreshing;
     private int tracking;
     internal event Action? PopupsClosed;
-    internal bool HasOpenPopup => tracking > 0;
+    internal bool HasOpenPopup => tracking > 0 || tablePicker.IsOpen;
     private CoreView? View => pane?.View;
 
     internal FormattingToolbar()
     {
+        tablePicker = new(InsertTable, RestoreEditorFocus);
+        tablePicker.Closed += () => { pickerSelection = null; PopupsClosed?.Invoke(); };
+        tablePicker.Start = e => {
+            if (View is not { } view) return;
+            var context = view.TableContext();
+            if ((context.flags & 1) == 0) return;
+            pickerSelection = context.selection;
+            tablePicker.Open(e, (columns, rows) => { if (View == view) Run(() => view.InsertTable(columns, rows, context.selection)); });
+        };
         Height = 42; Visibility = Visibility.Collapsed;
         Scroll.Content = row;
         var layout = new Grid { ColumnSpacing = 12, Padding = new(0, 0, 10, 0) };
@@ -71,6 +83,9 @@ internal sealed class FormattingToolbar : UserControl
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
+        InsertTable.Content = TableIcon(InsertTable);
+        AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
+        row.Children.Add(InsertTable);
     }
 
     private static StackPanel Group(double spacing = 2) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
@@ -91,6 +106,17 @@ internal sealed class FormattingToolbar : UserControl
         AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
+    }
+
+    private static Canvas TableIcon(Button owner)
+    {
+        var canvas = new Canvas { Width = 18, Height = 15 };
+        var geometry = new GeometryGroup();
+        foreach (double x in new double[] { 1, 9, 17 }) geometry.Children.Add(new LineGeometry { StartPoint = new(x, 1.5), EndPoint = new(x, 13.5) });
+        foreach (double y in new double[] { 1.5, 5.5, 9.5, 13.5 }) geometry.Children.Add(new LineGeometry { StartPoint = new(1, y), EndPoint = new(17, y) });
+        var path = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
+        path.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        canvas.Children.Add(path); return canvas;
     }
 
     private static Canvas FormattedViewIcon(ToggleButton owner)
@@ -139,7 +165,7 @@ internal sealed class FormattingToolbar : UserControl
 
     internal void Synchronize(EditorPane? active, bool visible)
     {
-        if (pane != active) { sheet = null; selected = null; choices = []; }
+        if (pane != active) { tablePicker.Close(); sheet = null; selected = null; choices = []; }
         pane = active;
         Visibility = visible && View != null ? Visibility.Visible : Visibility.Collapsed;
         if (Visibility == Visibility.Visible) Refresh();
@@ -153,6 +179,11 @@ internal sealed class FormattingToolbar : UserControl
         try
         {
             FormattedView.IsChecked = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
+            bool markdown = view.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+            InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            var tableContext = markdown ? view.TableContext() : default;
+            InsertTable.IsEnabled = markdown && (tableContext.flags & 1) != 0;
+            if (pickerSelection is { } expected && !CoreView.SameSelection(expected, tableContext.selection)) tablePicker.Close();
             selected = view.SelectedNamedStyles();
             sheet = view.Styles(selected.Identity);
             choices = CoreView.StyleChoices(sheet, selected);
@@ -173,6 +204,11 @@ internal sealed class FormattingToolbar : UserControl
             uint indent = available ? view.ListCapabilities() : 0;
             Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
             Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
+            if ((tableContext.flags & VIEM_TABLE_IN_TABLE) != 0) {
+                Paragraph.IsEnabled = false;
+                foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
+                Buttons[ToolbarAction.CodeBlock].Visibility = Visibility.Collapsed;
+            }
         }
         catch (Exception error) { pane?.Report(error); }
         finally { refreshing = false; }
@@ -257,6 +293,7 @@ internal sealed class FormattingToolbar : UserControl
 
     internal bool DismissPopups()
     {
+        tablePicker.Close();
         ((MenuFlyout)Paragraph.Flyout).Hide(); ((MenuFlyout)Character.Flyout).Hide();
         return tracking > 0;
     }

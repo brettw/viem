@@ -417,6 +417,8 @@ fn render_projection(
         let numbers = super::markdown_serialization::containers::numbering(document.blocks());
         let mut previous: &[ContainerLayoutStyle] = &[];
         for (block, paragraph) in document.blocks().iter().zip(&styles.paragraphs) {
+            let table = document.table_at(block.range.start);
+            if table.is_some_and(|table|block.range.start != table.range.start) {continue;}
             let path = paragraph.containers.as_ref();
             let common = previous
                 .iter()
@@ -460,6 +462,26 @@ fn render_projection(
                     extra,
                     attribute(&css)
                 ));
+            }
+            if let Some(table) = table {
+                output.push_str("<table style=\"border-collapse:collapse;white-space:pre\"><thead>\n");
+                for (row_index,row) in table.rows.iter().enumerate() {
+                    if row_index==1 {output.push_str("</thead><tbody>\n");}
+                    output.push_str("<tr>");
+                    for (column,cell) in row.cells.iter().enumerate() {
+                        let tag=if row_index==0 {"th"}else{"td"};
+                        let alignment=match table.columns[column] {super::TableAlignment::Unspecified|super::TableAlignment::Left=>"left",super::TableAlignment::Center=>"center",super::TableAlignment::Right=>"right"};
+                        let paragraph_index=styles.paragraphs.partition_point(|paragraph|paragraph.text_range.start<cell.range.start);
+                        let mut css=styles.paragraphs.get(paragraph_index).filter(|paragraph|paragraph.text_range.start==cell.range.start).map(paragraph_css).unwrap_or_default();
+                        css.push_str(&format!(";text-align:{alignment};vertical-align:top;white-space:pre"));
+                        output.push_str(&format!("<{tag}{}{}>",attribute(&css),if row_index==0 {" scope=\"col\""}else{""}));
+                        write_runs(&mut output,document,&styles,cell.range.clone(),links,&mut classes);
+                        output.push_str(&format!("</{tag}>"));
+                    }
+                    output.push_str("</tr>\n");
+                }
+                output.push_str(if table.rows.len()>1 {"</tbody></table>\n"}else{"</thead></table>\n"});
+                previous=path;continue;
             }
             let heading = match block.kind {
                 BlockKind::Heading(level) => Some(level),

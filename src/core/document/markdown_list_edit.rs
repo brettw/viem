@@ -604,6 +604,7 @@ impl Document {
         &self,
         at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
         let block =
             edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
         if matches!(block.kind, BlockKind::ListItem { .. }) {
@@ -630,6 +631,9 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&(at..at))?;
         self.validate_range(&(origin..origin))?;
+        if self.format()==Format::Markdown && self.projection().table_cell_at(origin).is_some() {
+            return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);
+        }
         if self.format().is_wysiwyg() {
             return self.prepare_open_paragraph(at, origin, after);
         }

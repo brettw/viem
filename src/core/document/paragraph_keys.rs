@@ -145,6 +145,7 @@ impl Document {
             // Plain/source projections author a literal source line ending.
             return self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")]);
         }
+        if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
         let block = super::super::edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
         if self.format() == Format::Markdown

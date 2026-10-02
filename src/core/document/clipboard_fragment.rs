@@ -32,6 +32,8 @@ struct Export {
     paragraph_runs: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     source_segments: Vec<SourceSegment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    table_cells: Vec<Vec<Export>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,7 +44,19 @@ struct SourceSegment {
     fragment: Export,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TableClipboardCell {pub text:String,pub fragment:ClipboardFragment}
+
+pub(super) fn tabular_text(cells:&[Vec<String>])->String {
+    cells.iter().map(|row|row.iter().map(|cell|if cell.contains(['\t','\n','"']) {format!("\"{}\"",cell.replace('"',"\"\""))}else{cell.clone()}).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n")
+}
 impl ClipboardFragment {
+    pub fn table_cells(&self)->Option<Vec<Vec<TableClipboardCell>>> {
+        let export:Export=serde_json::from_str(self.json()).ok()?;
+        if export.table_cells.is_empty(){return None;}
+        Some(export.table_cells.into_iter().map(|row|row.into_iter().map(|cell|TableClipboardCell{text:cell.plain_text.clone(),fragment:ClipboardFragment(Arc::from(serde_json::to_string(&cell).expect("validated cell")))}).collect()).collect())
+    }
+
     pub fn json(&self) -> &str {
         &self.0
     }
@@ -83,6 +97,7 @@ impl ClipboardFragment {
             character_runs,
             paragraph_runs,
             source_segments: Vec::new(),
+            table_cells: Vec::new(),
         };
         let json =
             serde_json::to_string(&export).map_err(|_| DocumentError::UnsupportedFormatting)?;
@@ -104,6 +119,22 @@ impl ClipboardFragment {
                     && value.plain_text == format!("{}\n", value.source_plain_text))
         {
             return Err(DocumentError::UnsupportedFormatting);
+        }
+        if !value.table_cells.is_empty() {
+            let columns=value.table_cells[0].len();
+            if columns==0 || value.table_cells.iter().any(|row|row.len()!=columns) {return Err(DocumentError::UnsupportedFormatting);}
+            let mut matrix=Vec::new();
+            for row in &value.table_cells {
+                let mut texts=Vec::new();
+                for cell in row {
+                    if !cell.table_cells.is_empty(){return Err(DocumentError::UnsupportedFormatting);}
+                    let json=serde_json::to_string(cell).map_err(|_|DocumentError::UnsupportedFormatting)?;
+                    Self::from_json(&json,&cell.plain_text)?;
+                    texts.push(cell.plain_text.clone());
+                }
+                matrix.push(texts);
+            }
+            if tabular_text(&matrix)!=value.plain_text {return Err(DocumentError::UnsupportedFormatting);}
         }
         let mut last = None;
         for &offset in &value.hard_breaks {
@@ -411,6 +442,7 @@ impl Document {
             character_runs,
             paragraph_runs,
             source_segments: Vec::new(),
+            table_cells: Vec::new(),
         };
         Ok(ClipboardFragment(Arc::from(
             serde_json::to_string(&export).map_err(|_| DocumentError::UnsupportedFormatting)?,
@@ -1283,5 +1315,23 @@ mod tests {
         assert!(original.clipboard_fragment(3..1).is_err());
         let emoji = open("👩‍💻".as_bytes(), Format::Markdown);
         assert!(emoji.clipboard_fragment(0..4).is_err());
+    }
+}
+
+impl Document {
+    pub fn table_clipboard_fragment(&self,table:u64,rows:Range<usize>,columns:Range<usize>)->Result<(ClipboardFragment,String),DocumentError>{
+        if !self.format().is_wysiwyg(){return Err(DocumentError::UnsupportedFormatting);}
+        let table=self.projection().tables().iter().find(|value|value.id==table).ok_or(DocumentError::UnsupportedTableEdit("The table changed."))?;
+        if rows.is_empty()||columns.is_empty()||rows.end>table.rows.len()||columns.end>table.columns.len(){return Err(DocumentError::UnsupportedTableEdit("The cell selection changed."));}
+        let mut cells=Vec::new();let mut texts=Vec::new();
+        for row_index in rows {let row=&table.rows[row_index];let mut fragments=Vec::new();let mut strings=Vec::new();for cell in &row.cells[columns.clone()] {
+            let fragment=self.clipboard_fragment(cell.range.clone())?;
+            let value:Export=serde_json::from_str(fragment.json()).map_err(|_|DocumentError::UnsupportedFormatting)?;
+            strings.push(value.plain_text.clone());fragments.push(value);
+        }texts.push(strings);cells.push(fragments);}
+        let plain_text=tabular_text(&texts);
+        let export=Export {schema_version:1,plain_text:plain_text.clone(),source_plain_text:plain_text.clone(),hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
+        let json=serde_json::to_string(&export).map_err(|_|DocumentError::UnsupportedFormatting)?;
+        Ok((ClipboardFragment(Arc::from(json)),plain_text))
     }
 }

@@ -39,6 +39,13 @@ from deferred work. It does not claim complete GFM conformance.
   soft source break fold to one space. Explicit hard breaks remain distinct.
 - **Loose lists:** items receive paragraph spacing; tight lists retain their
   compact presentation. Tightness is structure, not direct formatting.
+- **GFM pipe tables:** header/body structure, alignment, optional pipes,
+  short and excess rows, inline formatting and explicit cell breaks. WYSIWYG
+  uses content-sized cells; Source aligns the original syntax through geometry
+  without adding source characters. Native insertion, row/column actions and
+  rectangular cell editing follow the [table specification](docs/markdown-tables.md).
+  Counted structured matrix puts are explicitly rejected; single puts retain
+  the matrix instead of flattening it to text.
 
 Supporting edits retain the requested visible text. Depending on the edit,
 this can require numeric whitespace references, switching an affected Setext
@@ -52,11 +59,8 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 
 ## P1 — deferred structure
 
-1. **Tables.** Pipe tables still display as ordinary text, without cell/row
-   structure or alignment. Table rendering and editing are reserved for a
-   separate implementation; the [table specification](docs/markdown-tables.md)
-   defines the planned behavior and acceptance coverage. HTML tables also retain
-   literal source.
+1. **HTML tables.** Raw HTML tables retain literal source. Pipe-table support
+   does not enable editing HTML tables, merged cells, or row/column spans.
 2. **Ordered children interrupting prose.** In `- parent\n  4. child\n- tail`,
    GFM keeps `4. child` as literal continuation of the first item's paragraph;
    an ordered child starting above 1 needs a blank separator first. Viem's
@@ -100,6 +104,18 @@ GitHub's HTML sanitizer are broader than those fixtures. Continue differential
 coverage of malformed/container nesting, tabs at every depth, Unicode
 punctuation, autolink edge cases, HTML recovery and allowed-tag presentation.
 Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
+
+Table event, rendering, and accessibility adapters are implemented on both native
+frontends. macOS has automated native coverage and app interaction checks;
+Windows runtime validation remains outstanding on a Windows development host.
+
+The shared bounded shaper does not yet carry distant explicit Unicode bidi
+embedding, override, or isolate controls into later text slices. A control such
+as U+202E followed by thousands of characters can therefore lose its directional
+effect in later slices, in ordinary unwrapped text as well as large table cells.
+Natural paragraph direction and ordinary mixed-direction table content retain
+their direction across slices; carrying explicit control stacks is separate
+typography work.
 
 Reference-sensitive source edits currently use a complete parse so changes to
 remote definitions cannot leave stale styling. Ordinary prose/list edits retain

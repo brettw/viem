@@ -138,7 +138,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
       Set(catalogue.entries.filter { $0.role == .paragraph }.map(\.stableID)),
       Set(
         [
-          "Paragraph", "Block quote", "Code Block", "Bulleted List", "Numbered List", "List item", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6",
+          "Paragraph", "Block quote", "Code Block", "Bulleted List", "Numbered List", "List item", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6", "Table", "Table cell", "Table header",
         ]))
     XCTAssertFalse(catalogue.entries.contains { $0.displayName == "Base Document" || $0.displayName == "Base Character" })
     XCTAssertTrue(catalogue.entries.allSatisfy { !$0.presentation.isEnabled })

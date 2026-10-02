@@ -56,6 +56,53 @@ pub unsafe extern "C" fn viem_core_view_prepare_prelayout(
     })
 }
 
+/// Capture immutable input for one bounded table refinement.
+/// # Safety
+/// `out_request` identifies one aligned writable u64.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_prepare_table_refinement(
+    core: ViemCoreHandle, view: ViemViewId, out_request: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_request, 1)?;
+        unsafe { out_request.write(0) };
+        let input = with_core_mut(core, |core| core.prepare_view_table_refinement(ViewId(view)).map_err(core_status))?;
+        if let Some(input) = input {
+            let cancellation = input.cancellation_token();
+            let result = register(Work::Request(Arc::new(Request { core, view: ViewId(view), input, started: AtomicBool::new(false) })));
+            if result.is_err() { cancellation.cancel(); }
+            unsafe { out_request.write(result?) };
+        }
+        Ok(())
+    })
+}
+
+/// Install and consume a refinement result; stale work reports zero.
+/// # Safety
+/// `out_installed` identifies one writable byte.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_install_table_refinement(
+    core: ViemCoreHandle, view: ViemViewId, id: u64, out_installed: *mut u8,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_installed, 1)?;
+        unsafe { out_installed.write(0) };
+        let work = {
+            let mut registry = registry().lock().map_err(|_| ViemStatus::InternalError)?;
+            match registry.entries.get(&id) {
+                Some(Work::Result { core: owner, view: owner_view, .. }) if *owner == core && owner_view.0 == view => (),
+                _ => return Err(ViemStatus::InvalidHandle),
+            }
+            registry.entries.remove(&id).expect("validated result")
+        };
+        let Work::Result { candidate, .. } = work else { unreachable!() };
+        let installed = with_core_mut(core, |core| core.install_view_table_refinement(ViewId(view), candidate).map_err(core_status))?;
+        unsafe { out_installed.write(u8::from(installed)) };
+        Ok(())
+    })
+
+}
+
 /// Worker-only computation with a compatible independently owned provider.
 /// No mutable core/view is accessed. A request can be computed once. Zero output
 /// means it was cancelled. Release both request and returned result explicitly.

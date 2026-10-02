@@ -89,6 +89,15 @@ fn capture_baseline_anchor<P: TextMeasurementProvider>(
     if row.baseline < top || row.baseline > top + view.layout.height() {
         return None;
     }
+    // A sparse unwrapped row can retain its whole logical range while only
+    // the band around the caret has geometry. Its offscreen start can disappear
+    // from the next band, so use the visible caret as that edit's anchor.
+    let row_start = row_start && snapshot
+        .logical_endpoint_geometry(row.text_range.start, BoundaryAffinity::Downstream)
+        .is_ok_and(|geometry| {
+            geometry.rect.x >= view.layout.viewport_left()
+                && geometry.rect.x <= view.layout.viewport_left() + view.layout.width()
+        });
     let anchor = document
         .text_anchor(
             document

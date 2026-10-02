@@ -23,7 +23,7 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   unfinished native scheduler connection and its acceptance checks.
 - [Markdown demo](markdown_demo.md): loadable examples of supported syntax and
   deliberate presentation exceptions.
-- [Markdown tables](markdown-tables.md): planned GFM compatibility, Word-like
+- [Markdown tables](markdown-tables.md): GFM compatibility, Word-like
   editing, source alignment, and acceptance requirements.
 
 Syntax contracts stay beside their implementations:

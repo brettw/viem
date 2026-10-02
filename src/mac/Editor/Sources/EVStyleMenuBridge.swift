@@ -5,14 +5,15 @@ import ViemAppShell
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
   func listStylePresentation(_ command: EVMenuCommand) -> EVMenuItemPresentation {
-    guard let selected = try? session?.selectedNamedStyles() else { return .disabled }
+    guard ((try? session?.tableContext().flags) ?? 0) & UInt32(VIEM_TABLE_IN_TABLE) == 0,
+          let selected = try? session?.selectedNamedStyles() else { return .disabled }
     return EVMenuItemPresentation(isEnabled: true,
       state: command == .bulletedList ? selected.bulletState
         : command == .numberedList ? selected.numberedState : .off)
   }
 
   func listIndentPresentation(unindent: Bool) -> EVMenuItemPresentation {
-    guard let session,
+    guard ((try? session?.tableContext().flags) ?? 0) & UInt32(VIEM_TABLE_IN_TABLE) == 0, let session,
       let selection = try? session.listSelection(),
       let flags = try? session.listIndentCapabilities(expected: selection)
     else { return .disabled }
@@ -33,6 +34,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   /// The toolbar can reuse an exact-revision snapshot while the cursor moves.
   func styleMenuCatalogue(snapshot: EVStyleSheetSnapshot, selectedStyles: EVSelectedNamedStyles?,
                           selectionAvailable: Bool) -> EVStyleMenuCatalogue {
+    let inTable = ((try? session?.tableContext().flags) ?? 0) & UInt32(VIEM_TABLE_IN_TABLE) != 0
     var entries = snapshot.definitions.filter {
       !$0.flags.contains(.internalSyntax)
         && (!$0.flags.contains(.internalList)
@@ -47,7 +49,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         displayName: definition.name,
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
-          isEnabled: selectionAvailable
+          isEnabled: selectionAvailable && (!inTable || definition.kind == .character)
             && ((self.standardHeadingLevel(for: definition.key.id.rawValue) != nil
               && definition.kind == .paragraph)
               || (definition.capabilities.contains(.assign)
@@ -301,7 +303,7 @@ extension EVStyleKind {
   fileprivate var menuRole: EVStyleMenuRole {
     switch self {
     case .character: .character
-    case .paragraph, .quote, .codeBlock, .list, .listItem: .paragraph
+    case .paragraph, .quote, .codeBlock, .list, .listItem, .table: .paragraph
     }
   }
 }

@@ -134,11 +134,12 @@ pub enum BlockRole {
     CodeBlock,
     List,
     ListItem,
+    Table,
 }
 
 impl BlockRole {
     pub const fn is_container(self) -> bool {
-        matches!(self, Self::Quote | Self::CodeBlock | Self::List | Self::ListItem)
+        matches!(self, Self::Quote | Self::CodeBlock | Self::List | Self::ListItem | Self::Table)
     }
 }
 
@@ -623,6 +624,15 @@ impl Default for StyleSheet {
                 },
             });
         }
+        for (name, parent, role) in [("Table cell", "Paragraph", BlockRole::Paragraph), ("Table header", "Table cell", BlockRole::Paragraph), ("Table", "Paragraph", BlockRole::Table)] {
+            let cell = name == "Table cell";
+            block_styles.insert(name.into(), BlockStyle {
+                id: name.into(), based_on: Some(parent.into()), next_paragraph_style: None, role,
+                character: CharacterProperties { bold: (name == "Table header").then_some(true), ..Default::default() },
+                block: BlockProperties { padding_left: cell.then_some(10.0), padding_right: cell.then_some(10.0), padding_top: cell.then_some(6.0), padding_bottom: cell.then_some(6.0),
+                    border_left_width: cell.then_some(1.0), border_right_width: cell.then_some(1.0), border_top_width: cell.then_some(1.0), border_bottom_width: cell.then_some(1.0), ..Default::default() },
+            });
+        }
         let mut character_styles = BTreeMap::new();
         let code_properties = CharacterProperties {
             font_families: Some(vec!["monospace".to_owned()]),
@@ -677,7 +687,7 @@ impl Default for StyleSheet {
             "Block quote".into(),
             StyleDefinitionMetadata::generated("Block quote"),
         );
-        for name in ["Bulleted List", "Numbered List", "List item"] {
+        for name in ["Bulleted List", "Numbered List", "List item", "Table", "Table cell", "Table header"] {
             block_metadata.insert(name.into(), StyleDefinitionMetadata::generated(name));
         }
         let mut character_metadata = BTreeMap::new();

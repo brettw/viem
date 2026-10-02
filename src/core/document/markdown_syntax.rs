@@ -133,12 +133,14 @@ pub(super) struct Blocks {
     pub containers: Vec<Container>,
     pub owners: Vec<super::containers::SourceContainer>,
     pub definitions: Vec<Range<usize>>,
+    pub tables: Vec<super::markdown_tables::TableSyntax>,
 }
 impl Blocks {
     pub fn parse(text: &str) -> Self {
         use pulldown_cmark::TagEnd;
-        let parser = Parser::new(text);
+        let parser = Parser::new_ext(text, Options::ENABLE_TABLES);
         let mut result = Self::default();
+        result.tables = super::markdown_tables::parse(text);
         result.definitions = parser.reference_definitions().iter().map(|(_, definition)| definition.span.clone()).collect();
         let mut quotes = 0;
         let mut lists: Vec<(Range<usize>, Option<u64>, bool, usize)> = Vec::new();
@@ -215,6 +217,7 @@ impl Blocks {
     pub fn to_source(mut self, input: &super::line_endings::NormalizedText) -> Self {
         let at = |at| input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
             .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start);
+        self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }
         for container in &mut self.containers { container.range = at(container.range.start)..at(container.range.end); }

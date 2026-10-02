@@ -1,8 +1,8 @@
 # Markdown tables
 
-This is the product specification for planned table support on macOS and
-Windows. It does not claim that tables are implemented; current support remains
-tracked in [MARKDOWN_GAPS.md](../MARKDOWN_GAPS.md). The source-preservation,
+This is the product specification for table support on macOS and Windows.
+Current support and remaining gaps are tracked in
+[MARKDOWN_GAPS.md](../MARKDOWN_GAPS.md). The source-preservation,
 transaction, input, style, and performance requirements in
 [AGENTS.md](../AGENTS.md) apply throughout.
 
@@ -401,7 +401,10 @@ needed, preserving existing cells outside its destination rectangle and using
 the existing header. It never merges cells or replaces column alignment as a
 side effect. A single text payload remains text in one cell, with line breaks
 handled as above; do not guess a table solely from tabs in arbitrary prose.
-Validate the whole paste before publishing changes.
+Validate the whole paste before publishing changes. Counted matrix puts are
+explicitly unavailable: report that the matrix must be pasted once and preserve
+the document, selection, mode, history, and registers. Do not flatten a counted
+matrix into text or silently ignore its count.
 
 HTML export uses semantic table/header/body/row/cell elements and column
 alignment, from the same interpreted table in either view. Export must remain

@@ -146,6 +146,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// be an `unowned` lifetime precondition. Late AppKit callbacks observe a
     /// detached, inert text surface through this weak reference instead.
     private(set) weak var surface: EVEditorSurfaceController?
+    private lazy var tables = EVTableInteraction(editor: self)
+    private var tableTrackingArea: NSTrackingArea?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
     private let completionPopup = EVCompletionPopup()
     let documentScrollbars: EVDocumentScrollbars
@@ -413,7 +415,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
             drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
-            drawSelection(snapshot, dirtyRect: dirtyRect, in: context)
+            if !tables.drawSelection(snapshot, in: context) { drawSelection(snapshot, dirtyRect: dirtyRect, in: context) }
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
             drawParagraphDecorations(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
@@ -430,6 +432,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func applyPresentation() {
+        tables.invalidate()
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
         updateNativeTextInputAvailability()
@@ -700,6 +703,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func accessibilitySelectedText() -> String? {
         guard let surface else { return nil }
+        if let session = surface.session, let selection = try? session.tableSelection(), selection.active != 0 {
+            return try? session.tableSelectionText(selection)
+        }
         guard let context = accessibilityLayoutContext() else { return nil }
         if EVSelectionModes.hasSelection(context.presentation.mode) {
             guard let selection = accessibilitySelection(in: context),
@@ -714,6 +720,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func setAccessibilitySelectedText(_ selectedText: String?) {
+        if let surface, let session = surface.session, let selectedText,
+           let selection = try? session.tableSelection(), selection.active != 0 {
+            surface.performInput { _ = try session.sendText(selectedText) }
+            return
+        }
         guard let selectedText,
               let target = accessibilityReplacementTarget()
         else { return }
@@ -730,6 +741,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func accessibilitySelectedTextRanges() -> [NSValue]? {
         guard let surface else { return nil }
+        if let session = surface.session, let selection = try? session.tableSelection(), selection.active != 0 {
+            guard let ranges = try? session.tableSelectionRanges(selection) else { return nil }
+            let converted = ranges.compactMap(utf16Range(forUTF8:))
+            return converted.count == ranges.count ? converted.map(NSValue.init(range:)) : nil
+        }
         guard let context = accessibilityLayoutContext() else { return nil }
         if EVSelectionModes.hasSelection(context.presentation.mode) {
             guard let selection = accessibilitySelection(in: context),
@@ -1922,6 +1938,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             item.target = self
             menu.addItem(item)
         }
+        tables.appendMenu(to: menu, event: event)
         return menu
     }
 
@@ -1970,6 +1987,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     // MARK: - Pointer and scrolling
 
+    override func accessibilityChildren() -> [Any]? {
+        let tableChildren = tables.accessibilityTables()
+        return tableChildren.isEmpty ? super.accessibilityChildren() : (super.accessibilityChildren() ?? []) + tableChildren
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tableTrackingArea { removeTrackingArea(tableTrackingArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        tableTrackingArea = area; addTrackingArea(area)
+    }
+
+    override func mouseMoved(with event: NSEvent) { tables.moved(to: convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { tables.hide() }
+
     override func mouseDown(with event: NSEvent) {
         surface?.dismissCommandOutput()
         if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
@@ -1988,6 +2020,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         }
         placeCursor(for: event, extending: event.modifierFlags.contains(.shift))
+        tables.beginDrag(at: convert(event.locationInWindow, from: nil))
         if event.clickCount >= 2 {
             surface?.selectFromPointer(event, returningTo: returnMode)
         }
@@ -1996,11 +2029,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func mouseDragged(with event: NSEvent) {
         _ = autoscroll(with: event)
         customCaretBlinkController.restartAfterActivity()
+        if tables.drag(to: convert(event.locationInWindow, from: nil)) { updateDragAutoscroll(for: convert(event.locationInWindow, from: nil)); return }
         placeCursor(for: event, extending: true)
         updateDragAutoscroll(for: convert(event.locationInWindow, from: nil))
     }
 
     override func mouseUp(with event: NSEvent) {
+        tables.endDrag()
         stopDragAutoscroll()
         super.mouseUp(with: event)
     }
@@ -2027,6 +2062,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        tables.hide()
         guard let surface else { return }
         guard surface.refreshGeometryBeforeInteraction() else { return }
         guard let snapshot = surface.layoutSnapshot else { return }
@@ -3019,7 +3055,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             x: min(max(location.x, viewport.minX), max(viewport.minX, viewport.maxX - 0.5)),
             y: min(max(location.y, viewport.minY), max(viewport.minY, viewport.maxY - 0.5))
         )
-        placeCursor(at: edgePoint, extending: true)
+        if !tables.drag(to: edgePoint) { placeCursor(at: edgePoint, extending: true) }
         return true
     }
 
@@ -3278,6 +3314,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func selectionRectsForDrawing(in snapshot: EVLayoutExport) -> [NSRect] {
+        if let rectangles = tables.selectionRects(snapshot) { return rectangles }
         guard let surface else { return [] }
         guard let selection = surface.visualSelection,
               sameLayoutIdentity(selection.info.identity.layout, snapshot.info.identity)

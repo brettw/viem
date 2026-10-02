@@ -9,6 +9,7 @@ mod block_box;
 mod direction;
 mod engine;
 mod height_index;
+mod persistent_map;
 mod jobs;
 mod long_line_cache;
 mod line_breaks;
@@ -36,7 +37,7 @@ pub(crate) use long_line_cache::LongLineCheckpointCache;
 pub use zoom::{adjacent_zoom_scale, valid_zoom_scale, ZOOM_STOPS};
 
 pub use engine::{
-    CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,
+    TableCellGeometry, TableGeometry, CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutPoint, LayoutRect, LayoutRevision,
     LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret,
     DecorationKind, DecorationOwner, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,

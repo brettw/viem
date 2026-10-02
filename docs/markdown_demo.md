@@ -180,16 +180,26 @@ The larger separator below keeps an editable empty paragraph in Viem.
 
 This paragraph follows that empty paragraph. GitHub collapses surplus blank separator lines.
 
+## Tables
+
+Columns grow to fit their contents. Explicit breaks add lines inside a cell;
+Source view keeps the markup visible and aligns it without changing its bytes.
+
+| Feature | Example | Count |
+| :--- | :---: | ---: |
+| Inline formatting | **Bold**, *italic*, and `code` | 12 |
+| Explicit breaks | First line<br>Second line | 2 |
+| Protected pipes | a\|b and `c\|d` | 4 |
+| Empty cells | | 0 |
+
+Header-only tables are valid too:
+
+Left | Center | Right
+:-- | :-: | --:
+
 ## Unsupported GitHub features
 
 The following examples intentionally demonstrate features that Viem does not implement. Image and reference syntax above is also an intentional visible-syntax treatment, rather than GitHub's rendered images or resolved reference labels.
-
-### Tables
-
-| Feature | Status |
-| :--- | ---: |
-| Table layout | Deferred |
-| Cell alignment | Deferred |
 
 ### Task-list checkboxes
 

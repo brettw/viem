@@ -157,7 +157,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
         var context = new MenuFlyout();
         foreach (var (title, action) in new (string, Func<Task>)[] { ("Cut", () => Copy(true)), ("Copy", () => Copy(false)), ("Copy Source", CopySource), ("Paste", () => Paste()), ("Paste and Match Style", () => Paste(true)), ("Select All", () => { SelectAll(); return Task.CompletedTask; }) })
         { var item = new MenuFlyoutItem { Text = title }; item.Click += (_, _) => Enqueue(action); context.Items.Add(item); }
+        ConfigureTableContext(context);
         Canvas.ContextFlyout = context;
+        Canvas.ContextRequested += (_, e) => {
+            if (!e.TryGetPosition(Canvas, out var point)) return;
+            e.Handled = true;
+            Run(() => { TargetTableContext(point); context.ShowAt(Canvas, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = point }); });
+        };
         ApplyTheme();
     }
     private void Attach()
@@ -271,6 +277,12 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.Undo: View.Undo(); break;
                 case NativeAction.Redo: View.Redo(); break;
                 case NativeAction.Styles: window.ShowStyles(); break;
+                case NativeAction.ContextMenu:
+                    Canvas.ContextFlyout?.ShowAt(Canvas, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions {
+                        Position = new Point(Math.Clamp(caretRect.X, 0, Math.Max(0, Canvas.ActualWidth)),
+                            Math.Clamp(caretRect.Bottom, 0, Math.Max(0, Canvas.ActualHeight)))
+                    });
+                    break;
                 case NativeAction.Save: await window.Save(this); break;
                 case NativeAction.SaveAs: await window.Save(this, true); break;
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;
@@ -311,7 +323,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         else if (View.HasSelection)
         {
             var selection = View.Selection();
-            if (selection.Segments.Length == 1)
+            if (View.TableSelection().active == 0 && selection.Segments.Length == 1)
             {
                 var segment = selection.Segments[0]; string fragment = Encoding.UTF8.GetString(View.ClipboardJson(segment.text_start, segment.text_end));
                 using var json = System.Text.Json.JsonDocument.Parse(fragment);
@@ -336,9 +348,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (View?.Presentation.mode == VIEM_MODE_COMMAND_LINE) return Copy(false);
         if (View?.HasSelection != true) return Task.CompletedTask;
         var fragments = new List<string>(); var selection = View.Selection();
-        foreach (var range in selection.Segments)
+        var cells = View.TableSelection();
+        var ranges = cells.active != 0
+            ? View.TableSelectionRanges(cells).Select(range => (Start: range.utf8_start, End: range.utf8_end))
+            : selection.Segments.Select(range => (Start: range.text_start, End: range.text_end));
+        foreach (var range in ranges)
         {
-            using var value = System.Text.Json.JsonDocument.Parse(View.ClipboardJson(range.text_start, range.text_end));
+            using var value = System.Text.Json.JsonDocument.Parse(View.ClipboardJson(range.Start, range.End));
             var root = value.RootElement; string source = root.GetProperty("source_text").GetString()!;
             if (source.Length == 0 && root.GetProperty("plain_text").GetString()!.Length > 0) throw new InvalidOperationException("The selection has no editable source fragment.");
             fragments.Add(source);
@@ -369,13 +385,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissCommandOutput(false);
         FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
         Run(() => View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift)));
+        BeginTableDrag(point);
         pointerPress = dragPoint = point; pressedPointer = e.Pointer.PointerId; dragging = false;
         if (!Canvas.CapturePointer(e.Pointer)) pressedPointer = null;
         e.Handled = true; ResetBlink();
     }
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (pressedPointer != e.Pointer.PointerId || View == null) return;
+        if (pressedPointer != e.Pointer.PointerId || View == null) { TableHover(e.GetCurrentPoint(Canvas).Position); return; }
         var point = e.GetCurrentPoint(Canvas);
         if (!point.Properties.IsLeftButtonPressed)
         {
@@ -389,7 +406,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (Math.Abs(dragPoint.X - pointerPress.X) < 4 && Math.Abs(dragPoint.Y - pointerPress.Y) < 4) return;
             dragging = true;
         }
-        Run(() => View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true));
+        Run(() => { if (!DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true); });
         e.Handled = true;
     }
     internal ScrollBar VerticalScrollControl => vertical;
@@ -420,6 +437,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;
+            RefreshTableInteraction();
             mode.Text = presentation.mode switch {
                 VIEM_MODE_INSERT => "INSERT", VIEM_MODE_REPLACE => "REPLACE",
                 VIEM_MODE_VISUAL_CHARACTER => "VISUAL", VIEM_MODE_VISUAL_LINE => "V-LINE", VIEM_MODE_VISUAL_BLOCK => "V-BLOCK",
@@ -509,7 +527,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         // Source highlights, selection, then text: preserve the original layering.
         var scrollOffset = new System.Numerics.Vector2(drawnViewport.left - viewport.left, drawnViewport.top - viewport.top);
         drawing.DrawImage(cachedBackground, scrollOffset);
-        foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
+        if (tableSelection.active == 0) foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
+        DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
         bool focused = active && window.IsWindowActive && input.FocusState != FocusState.Unfocused;
         if (caretRect.Height > 0 && presentation.mode != VIEM_MODE_COMMAND_LINE && (!focused || caretVisible))
@@ -556,7 +575,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             double dx = dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
             if (dx == 0 && dy == 0) return;
             View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
-            View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true);
+            if (!DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true);
         });
     }
     public void Dispose()

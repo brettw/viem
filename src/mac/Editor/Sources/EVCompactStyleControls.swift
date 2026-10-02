@@ -95,6 +95,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     var onEditEnded: (() -> Void)?
     private(set) var hasInvalidDraft = false
     private var definition: EVStyleDefinition?
+    private var alignmentGroup: NSView?
+    private let tableAlignmentNote = NSTextField(labelWithString: "Alignment comes from the table column")
     private var documentID: UInt64?
     private var theme = EVTheme.midnight
     private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
@@ -203,7 +205,11 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         alignment.target = self
         alignment.action = #selector(alignmentChanged(_:))
         alignment.setAccessibilityLabel("Paragraph alignment")
-        let paraToolbar = row([overrideGroup(.paragraphAlignment, control: alignment), NSView(), direction(.paragraphBaseDirection, title: "Direction")])
+        let alignmentGroup = overrideGroup(.paragraphAlignment, control: alignment)
+        self.alignmentGroup = alignmentGroup
+        tableAlignmentNote.font = .systemFont(ofSize: 11); tableAlignmentNote.textColor = .secondaryLabelColor
+        tableAlignmentNote.isHidden = true
+        let paraToolbar = row([alignmentGroup, tableAlignmentNote, NSView(), direction(.paragraphBaseDirection, title: "Direction")])
         let indents = row([
             numeric(.paragraphLeadingIndent, title: "Start indent", icon: .leadingIndent),
             numeric(.paragraphTrailingIndent, title: "End indent", icon: .trailingIndent),
@@ -319,6 +325,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             button.isEnabled = canEdit(property) && !isBaseParagraph
             button.state = isBaseParagraph || definition?.properties[property]?.isDeclared == true
             || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true) ? .on : .off
+        }
+        let tableCell = ["Table cell", "Table header"].contains(definition?.key.id.rawValue ?? "")
+        alignmentGroup?.isHidden = tableCell; tableAlignmentNote.isHidden = !tableCell
+        let table = definition?.kind == .table
+        alignment.setAccessibilityLabel(table ? "Table placement" : "Paragraph alignment")
+        alignment.toolTip = table ? "Position the whole table. Column text alignment comes from Markdown." : nil
+        let alignmentLabels = table ? ["Place table at start", "Center table", "Place table at end"] : ["Align start", "Center", "Align end"]
+        for (index, labelText) in alignmentLabels.enumerated() {
+            alignment.setToolTip(labelText, forSegment: index)
         }
         alignment.selectedSegment = isOverridden(.paragraphAlignment) ? (alignmentValues.firstIndex(of: unsigned(.paragraphAlignment)) ?? 0) : -1
         alignment.isEnabled = isOverridden(.paragraphAlignment)

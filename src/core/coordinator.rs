@@ -1,7 +1,7 @@
 use crate::command::clipboard::ClipboardCommandContext;
 use crate::command::composition::{
     CompositionCommit, CompositionError, CompositionEvent, CompositionOverlay,
-    CompositionRestoration, CompositionSession,
+    CompositionRestoration, CompositionSession, CompositionTarget,
 };
 use crate::command::ex_execute::{
     CompletedExArtifactWrite, ExFileRequest, ExFrontendRequest, ExOptionName, ExOptionValue,
@@ -44,6 +44,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 mod input_layout;
 mod prelayout;
 mod formatting;
+mod tables;
 mod startup;
 mod ex_files;
 mod completion;
@@ -119,6 +120,7 @@ pub enum LogicalSelectionKind {
     Character,
     Line,
     Block,
+    Cells,
 }
 
 /// Exact snapshot-local identity of one active linear Visual selection.
@@ -374,6 +376,11 @@ pub enum CoreEvent {
     SetListStyle {
         expected: LogicalSelectionIdentity,
         style: Option<crate::document::ListStyle>,
+    },
+    TableEdit {
+        document: DocumentId,
+        revision: Revision,
+        intent: crate::document::TableEditIntent,
     },
     IndentList {
         expected: LogicalSelectionIdentity,
@@ -1171,6 +1178,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         style: SemanticInlineStyle,
     ) -> Result<SemanticStylePresentation, CoreError> {
+        if let Some(presentation) = self.table_semantic_style_presentation(view_id, style)? { return Ok(presentation); }
         let view = self
             .views
             .get(&view_id)
@@ -1262,7 +1270,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             })
             .collect::<Vec<_>>();
         covered.sort_by_key(|segment| (segment.start, segment.end));
-        let state = if covered.is_empty() {
+        let inside_cell = self.document.projection().table_cell_at(range.start)
+            .is_some_and(|(_, _, cell)| range.end <= cell.range.end);
+        let state = if inside_cell {
+            ranged_boolean_style_state(
+                self.document.projection().text_tree(), range.clone(), false,
+                covered.iter().cloned().map(|range| (range, true)),
+            )
+        } else if covered.is_empty() {
             SemanticStyleState::Off
         } else {
             let mut cursor = range.start;
@@ -1305,6 +1320,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<SemanticStyleState, CoreError> {
+        if let Some(state) = self.table_strikethrough_state(view_id)? { return Ok(state); }
         if self.active_linear_selection_identity(view_id)?.is_none() {
             let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
             if !matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
@@ -1337,6 +1353,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<LogicalSelectionIdentity, CoreError> {
+        if let Some(selection) = self.table_logical_selection(view_id)? { return Ok(selection); }
         if let Some(selection) = self.active_linear_selection_identity(view_id)? {
             return Ok(selection);
         }
@@ -1365,6 +1382,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
+        if let Some(styles) = self.table_named_styles(view_id)? { return Ok(styles); }
         let selection = self.list_selection_identity(view_id)?;
         let mut selected = if self.document.format().is_code() {
             self.document.projection().selected_code_named_styles(
@@ -2143,7 +2161,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             return Err(CoreError::UnknownView(view_id));
         }
         if let LayoutJobRegion::Viewport(viewport) = &region {
-            if !viewport.has_horizontal_focus() {
+            if viewport.needs_automatic_horizontal_focus() {
                 let view = &self.views[&view_id];
                 let position = view.commands.visual_position();
                 let offset = view.search_preview_destination(&self.document)
@@ -2151,7 +2169,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let desired_x = view.commands.desired_x().or_else(|| {
                     view.layout.snapshot()?.logical_endpoint_geometry(offset, view.commands.boundary_affinity()).ok().map(|geometry| geometry.rect.x)
                 });
-                region = LayoutJobRegion::Viewport(viewport.clone().with_horizontal_focus(offset, desired_x));
+                let retain_focus = priority != LayoutJobPriority::Background
+                    || view.layout.snapshot().is_some_and(|snapshot| {
+                        snapshot.document_revision == self.document.revision()
+                            && snapshot.logical_endpoint_geometry(offset, view.commands.boundary_affinity())
+                                .is_ok_and(|geometry| {
+                                    geometry.rect.x >= view.layout.viewport_left()
+                                        && geometry.rect.x <= view.layout.viewport_left() + view.layout.width()
+                                        && geometry.rect.y + geometry.rect.height >= view.layout.viewport_top()
+                                        && geometry.rect.y <= view.layout.viewport_top() + view.layout.height()
+                                })
+                    });
+                if retain_focus {
+                    region = LayoutJobRegion::Viewport(viewport.clone().with_horizontal_focus(offset, desired_x));
+                }
             }
         }
         if self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some() {
@@ -2189,7 +2220,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         let job_id = self.allocate_layout_job_id()?;
         let tracked_cancellation = cancellation.clone();
-        let request = {
+        let mut request = {
             let view = self
                 .views
                 .get_mut(&view_id)
@@ -2204,6 +2235,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 cancellation,
             )?
         };
+        request.capture_table_measurements(&self.views[&view_id].engine);
         let next = ActiveLayoutWork {
             job_id: request.job_id(),
             cancellation: tracked_cancellation,
@@ -2301,6 +2333,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .ok_or(CoreError::UnknownView(view_id))?;
         refresh_observed_metrics(view);
         let requirements = inspect_layout_provider(&view.engine);
+        let table_measurements = candidate.table_measurements();
         let installed = install_layout_job(
             &mut view.layout,
             LayoutInstallTarget {
@@ -2311,6 +2344,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             },
             candidate,
         )?;
+        view.engine.install_table_measurements(table_measurements);
         if let Some(checkpoint) = checkpoint {
             view.long_line_checkpoints
                 .insert(&self.document, checkpoint);
@@ -2367,13 +2401,22 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         intent: ImmediateLayoutIntent,
     ) -> Result<(), CoreError> {
+        self.materialize_immediate_viewport_with_focus(view_id, intent, true)
+    }
+
+    fn materialize_immediate_viewport_with_focus(
+        &mut self,
+        view_id: ViewId,
+        intent: ImmediateLayoutIntent,
+        allow_automatic_horizontal_focus: bool,
+    ) -> Result<(), CoreError> {
         self.poll_syntax();
         self.synchronize_whitespace(view_id)?;
         // Font registration may advance metrics synchronously during shaping.
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
             let before = self.layout_provider_requirements(view_id)?;
-            let result = self.materialize_immediate_viewport_once(view_id, intent)
+            let result = self.materialize_immediate_viewport_once(view_id, intent, allow_automatic_horizontal_focus)
                 .and_then(|()| self.materialize_revealed_horizontal_viewport(view_id));
             if result.is_ok() || attempt == 2 {
                 return result;
@@ -2391,10 +2434,33 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Revealing a caret can leave the old horizontal band on giant rows.
     /// Refill only the resulting viewport, preserving the published target.
     fn materialize_revealed_horizontal_viewport(&mut self, view_id: ViewId) -> Result<(), CoreError> {
-        let layout = &self.views[&view_id].layout;
+        let view = &self.views[&view_id];
+        let layout = &view.layout;
         let (left, top) = (layout.viewport_left(), layout.viewport_top());
         if layout.snapshot().is_some_and(|snapshot| !snapshot.covers_horizontal_viewport(left, layout.width())) {
+            let caret = (view.commands.cursor(), view.commands.boundary_affinity());
+            let retain_caret = layout.snapshot().is_some_and(|snapshot| {
+                snapshot.logical_endpoint_geometry(caret.0, caret.1).is_ok_and(|geometry| {
+                    geometry.rect.x >= left && geometry.rect.x <= left + layout.width()
+                })
+            });
             self.materialize_requested_viewport(view_id, left, top)?;
+            // Refilling a table band can refine provisional column coordinates.
+            // Keep an already-visible caret visible at its new x without
+            // undoing a manual vertical or horizontal scroll away from it.
+            if retain_caret {
+                let view = self.views.get_mut(&view_id).expect("validated view");
+                if let Some(geometry) = view.layout.snapshot().and_then(|snapshot| {
+                    snapshot.logical_endpoint_geometry(caret.0, caret.1).ok()
+                }) {
+                    let left = view.layout.reveal_viewport_left(
+                        geometry.rect.x..geometry.rect.x + geometry.rect.width.max(crate::layout::CARET_REVEAL_WIDTH),
+                        geometry.rect.x,
+                    );
+                    view.layout.set_viewport_left(left)?;
+                    update_viewport_anchor(&self.document, view);
+                }
+            }
         }
         Ok(())
     }
@@ -2403,6 +2469,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         view_id: ViewId,
         intent: ImmediateLayoutIntent,
+        allow_automatic_horizontal_focus: bool,
     ) -> Result<(), CoreError> {
         const MIN_OVERSCAN_LINES: usize = 8;
 
@@ -2565,11 +2632,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut next_requested_top = requested_top;
 
         loop {
-            let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
+            let region = ViewportLayoutRegion::new(
                 start..end,
                 next_requested_top,
                 viewport_height.max(f32::EPSILON),
-            )?);
+            )?;
+            let region = LayoutJobRegion::Viewport(if allow_automatic_horizontal_focus {
+                region
+            } else {
+                region.without_automatic_horizontal_focus()
+            });
             let request = self.prepare_view_layout_job(
                 view_id,
                 LayoutJobPriority::ChangedVisibleRows,
@@ -2817,6 +2889,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         staged_layout: &mut ViewLayout,
         requirements: LayoutProviderRequirements,
         immediate_layout_context: LayoutExecutionContext,
+        horizontal_focus: Option<(usize, Option<f32>)>,
     ) -> Result<Vec<LongLineLayoutCheckpoint>, CoreError> {
         let flow = self.presentation_flow(view_id);
         let count = self.document.projection().presentation_line_count(flow);
@@ -2859,6 +2932,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         ViewportLayoutRegion::resume_long_line(checkpoint, f32::MAX, height)?
                     }
                     None => ViewportLayoutRegion::new(line..line + 1, f32::MAX, height)?,
+                };
+                let region = match horizontal_focus {
+                    Some((offset, desired_x)) => region.with_horizontal_focus(offset, desired_x),
+                    None => region,
                 };
                 let job_id = self.allocate_layout_job_id()?;
                 let request = prepare_layout_job(
@@ -2926,6 +3003,18 @@ impl<P: TextMeasurementProvider> Core<P> {
         left: f32,
         requested_top: f32,
     ) -> Result<(), CoreError> {
+        self.materialize_requested_viewport_with_focus(view_id, left, requested_top, None)
+    }
+
+    /// A resize preserves a caret that was already on screen. Explicit scrolling
+    /// passes no focus so it can freely move away from the insertion location.
+    fn materialize_requested_viewport_with_focus(
+        &mut self,
+        view_id: ViewId,
+        left: f32,
+        requested_top: f32,
+        horizontal_focus: Option<(usize, Option<f32>)>,
+    ) -> Result<(), CoreError> {
         // A wheel tick usually stays inside the already materialized overscan.
         // Reuse that exact document-coordinate geometry without cloning caches,
         // publishing another layout revision or cancelling its background job.
@@ -2968,7 +3057,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         for attempt in 0..3 {
             let before = self.layout_provider_requirements(view_id)?;
             let result =
-                self.materialize_requested_viewport_once(view_id, left, requested_top, target_hit);
+                self.materialize_requested_viewport_once(view_id, left, requested_top, target_hit, horizontal_focus);
             if result.is_ok() || attempt == 2 {
                 return result;
             }
@@ -2989,6 +3078,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         left: f32,
         requested_top: f32,
         target_hit: Option<crate::layout::HardLineHeightHit>,
+        horizontal_focus: Option<(usize, Option<f32>)>,
     ) -> Result<(), CoreError> {
         const MIN_OVERSCAN_LINES: usize = 8;
 
@@ -3047,6 +3137,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 &mut staged_layout,
                 requirements,
                 immediate_layout_context,
+                horizontal_focus,
             )?;
         } else {
             let estimated_line_top = staged_layout
@@ -3079,11 +3170,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             let mut next_requested_top = estimated_target_top;
 
             loop {
-                let region = LayoutJobRegion::Viewport(ViewportLayoutRegion::new(
-                    start..end,
-                    next_requested_top,
-                    viewport_height,
-                )?);
+                let region = ViewportLayoutRegion::new(
+                    start..end, next_requested_top, viewport_height,
+                )?;
+                let region = LayoutJobRegion::Viewport(match horizontal_focus {
+                    Some((offset, desired_x)) => region.with_horizontal_focus(offset, desired_x),
+                    None => region,
+                });
                 let job_id = self.allocate_layout_job_id()?;
                 let request = prepare_layout_job(
                     &self.document,
@@ -3291,6 +3384,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         active: ViewId,
         active_intent: ImmediateLayoutIntent,
     ) {
+        for view in self.views.values_mut() {
+            // A structural edit in another view may remove a rectangle's
+            // stable cell identities. Retire its fallback text extent before
+            // exposing the new selection or painting the changed document.
+            view.commands.retire_invalid_table_selection(&self.document);
+        }
         let view_ids: Vec<_> = self.views.keys().copied().collect();
         for view_id in view_ids {
             // A source commit retires snapshot-bound completion queries and
@@ -4253,6 +4352,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         style: SemanticInlineStyle,
         enabled: bool,
     ) -> Result<CoreOutcome, CoreError> {
+        if expected.kind() == LogicalSelectionKind::Cells {
+            if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+            let selection = self.table_selection(view_id)?.ok_or(CoreError::StaleLogicalSelection)?;
+            return self.apply_table_edit(view_id, expected.document(), expected.revision(), crate::document::TableEditIntent::SetCellsSemanticStyle {
+                table: selection.table, rows: selection.rows(), columns: selection.columns(), style, enabled,
+            });
+        }
         if expected.kind() == LogicalSelectionKind::None {
             if self.list_selection_identity(view_id)? != expected {
                 return Err(CoreError::StaleLogicalSelection);
@@ -4425,7 +4531,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view existence checked before native file-format change")
             .commands
             .capture_history_restoration(&self.document)?;
-        let capture_anchors = if matches!(request, ModelRequest::SetMarkdownSource { .. } | ModelRequest::SetViewFormat { .. }) {
+        let projection_change = matches!(request, ModelRequest::SetMarkdownSource { .. } | ModelRequest::SetViewFormat { .. });
+        let capture_anchors = if projection_change {
             CommandInterpreter::capture_format_position_anchors
         } else {
             CommandInterpreter::capture_position_anchors
@@ -4449,7 +4556,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let changed = committed.after_revision() != committed.before_revision();
         debug_assert!(changed);
 
-        for (id, commands) in next_commands {
+        for (id, mut commands) in next_commands {
+            if projection_change { commands.retire_table_selection(&self.document); }
             self.views
                 .get_mut(&id)
                 .expect("prepared view remains attached during serial dispatch")
@@ -5045,6 +5153,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if self.list_selection_identity(view_id)? != expected {
                     return Err(CoreError::StaleLogicalSelection);
                 }
+                if let Some(selection) = self.table_selection(view_id)? {
+                    return self.apply_table_edit(view_id, expected.document(), expected.revision(),
+                        crate::document::TableEditIntent::SetCellsStrikethrough {
+                            table: selection.table, rows: selection.rows(), columns: selection.columns(), enabled,
+                        });
+                }
                 if expected.kind() == LogicalSelectionKind::None {
                     let commands = &mut self.views.get_mut(&view_id).expect("view checked").commands;
                     let previous_cursor = commands.cursor();
@@ -5136,8 +5250,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     },
                 );
             }
+            CoreEvent::TableEdit { document, revision, intent } => {
+                return self.apply_table_edit(view_id, document, revision, intent);
+            }
             CoreEvent::IndentList { expected, unindent } => {
                 if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+                self.reject_table_block_formatting(&expected)?;
                 return self.apply_native_model_request(view_id, ModelRequest::IndentList {
                     document: expected.document(), revision: expected.revision(), range: expected.range(), unindent,
                 });
@@ -5146,6 +5264,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if self.list_selection_identity(view_id)? != expected {
                     return Err(CoreError::StaleLogicalSelection);
                 }
+                self.reject_table_block_formatting(&expected)?;
                 return self.apply_native_model_request(
                     view_id,
                     ModelRequest::SetListStyle {
@@ -5160,6 +5279,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if self.list_selection_identity(view_id)? != expected {
                     return Err(CoreError::StaleLogicalSelection);
                 }
+                self.reject_table_block_formatting(&expected)?;
                 return self.apply_native_model_request(
                     view_id,
                     ModelRequest::SetParagraphStyle {
@@ -5176,6 +5296,17 @@ impl<P: TextMeasurementProvider> Core<P> {
                 namespace,
                 style,
             } => {
+                if expected.kind() == LogicalSelectionKind::Cells {
+                    if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+                    self.validate_style_sheet_identity(expected.document(), expected.revision(), style_sheet_revision)?;
+                    if namespace != StyleNamespace::Character { return Err(DocumentError::UnsupportedTableEdit("Table cells retain their structural paragraph style.").into()); }
+                    let selection = self.table_selection(view_id)?.ok_or(CoreError::StaleLogicalSelection)?;
+                    return self.apply_table_edit(view_id, expected.document(), expected.revision(),
+                        crate::document::TableEditIntent::AssignCellsNamedStyle {
+                            table: selection.table, rows: selection.rows(), columns: selection.columns(), style,
+                        });
+                }
+                if namespace != StyleNamespace::Character { self.reject_table_block_formatting(&expected)?; }
                 let actual = if namespace == StyleNamespace::Character
                     && expected.kind() != LogicalSelectionKind::None
                 {
@@ -5422,40 +5553,109 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
-                // A view showing the document end stays pinned to it. The end
-                // request measures backward from the end and publishes only the
-                // terminal viewport, where preserving the anchor inside a long
-                // final paragraph would publish its whole resumed slice.
-                let text_len = self.document.projection().text_tree().byte_len();
-                let at_end = view.layout.snapshot().is_some_and(|snapshot| {
-                    snapshot.document_id == self.document.id()
-                        && snapshot.document_revision == self.document.revision()
-                        && snapshot.rows.last().is_some_and(|row| row.text_range.end == text_len)
-                        && snapshot.coverage.vertical_range().is_some_and(|coverage| {
-                            view.layout.viewport_top() + view.layout.height() >= coverage.end - 0.5
-                        })
-                });
-                let (left, before) = (view.layout.viewport_left(), view.layout.configuration_generation());
-                view.layout.resize(width, height);
-                if view.layout.configuration_generation() != before {
-                    cancel_active_layout_work(view);
-                }
-                if at_end {
-                    self.materialize_requested_viewport(view_id, left, f32::MAX)?;
+                let requirements = inspect_layout_provider(&view.engine);
+                let current =
+                    current_snapshot_for_layout(&self.document, &view.layout, requirements);
+                let same_size = width == view.layout.width() && height == view.layout.height();
+                if same_size && current.is_some() {
+                    // AppKit can lay out its unchanged surface after every key.
+                    // A current viewport needs neither another shaping pass nor
+                    // cancellation of useful intrinsic-width refinement.
+                    Ok(CoreOutcome {
+                        command: None,
+                        document_changed: false,
+                        position_map: None,
+                        layout_changed: false,
+                        composition_changes: Vec::new(),
+                    })
                 } else {
-                    self.materialize_immediate_viewport(
-                        view_id,
-                        ImmediateLayoutIntent::PreserveViewport,
-                    )?;
+                    let caret = (view.commands.cursor(), view.commands.boundary_affinity());
+                    let horizontal_focus = view
+                        .layout
+                        .snapshot()
+                        .filter(|snapshot| {
+                            snapshot.document_id == self.document.id()
+                                && snapshot.document_revision == self.document.revision()
+                        })
+                        .and_then(|snapshot| {
+                            snapshot.logical_endpoint_geometry(caret.0, caret.1).ok()
+                        })
+                        .filter(|geometry| {
+                            geometry.rect.x >= view.layout.viewport_left()
+                                && geometry.rect.x
+                                    <= view.layout.viewport_left() + view.layout.width()
+                                && geometry.rect.y + geometry.rect.height
+                                    >= view.layout.viewport_top()
+                                && geometry.rect.y
+                                    <= view.layout.viewport_top() + view.layout.height()
+                        })
+                        .map(|geometry| (caret.0, Some(geometry.rect.x)));
+                    // A view showing the document end stays pinned to it. The end
+                    // request measures backward from the end and publishes only the
+                    // terminal viewport, where preserving the anchor inside a long
+                    // final paragraph would publish its whole resumed slice.
+                    let text_len = self.document.projection().text_tree().byte_len();
+                    let at_end = view.layout.snapshot().is_some_and(|snapshot| {
+                        snapshot.document_id == self.document.id()
+                            && snapshot.document_revision == self.document.revision()
+                            && snapshot
+                                .rows
+                                .last()
+                                .is_some_and(|row| row.text_range.end == text_len)
+                            && snapshot.coverage.vertical_range().is_some_and(|coverage| {
+                                view.layout.viewport_top() + view.layout.height()
+                                    >= coverage.end - 0.5
+                            })
+                    });
+                    let (left, before) = (
+                        view.layout.viewport_left(),
+                        view.layout.configuration_generation(),
+                    );
+                    view.layout.resize(width, height);
+                    if view.layout.configuration_generation() != before {
+                        cancel_active_layout_work(view);
+                    }
+                    if at_end {
+                        self.materialize_requested_viewport_with_focus(
+                            view_id,
+                            left,
+                            f32::MAX,
+                            horizontal_focus,
+                        )?;
+                        if horizontal_focus.is_some() {
+                            let view = self.views.get_mut(&view_id).expect("validated view");
+                            if let Some(geometry) = view.layout.snapshot().and_then(|snapshot| {
+                                snapshot.logical_endpoint_geometry(caret.0, caret.1).ok()
+                            }) {
+                                let left = view.layout.reveal_viewport_left(
+                                    geometry.rect.x
+                                        ..geometry.rect.x
+                                            + geometry
+                                                .rect
+                                                .width
+                                                .max(crate::layout::CARET_REVEAL_WIDTH),
+                                    geometry.rect.x,
+                                );
+                                view.layout.set_viewport_left(left)?;
+                                update_viewport_anchor(&self.document, view);
+                            }
+                        }
+                    } else {
+                        self.materialize_immediate_viewport_with_focus(
+                            view_id,
+                            ImmediateLayoutIntent::PreserveViewport,
+                            horizontal_focus.is_some(),
+                        )?;
+                    }
+                    self.rematerialize_active_composition(view_id, true)?;
+                    Ok(CoreOutcome {
+                        command: None,
+                        document_changed: false,
+                        position_map: None,
+                        layout_changed: true,
+                        composition_changes: Vec::new(),
+                    })
                 }
-                self.rematerialize_active_composition(view_id, true)?;
-                Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: true,
-                    composition_changes: Vec::new(),
-                })
             }
             CoreEvent::SetScale(scale) => {
                 let changed = {
@@ -6174,6 +6374,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetDocumentMode { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
+            | CoreEvent::TableEdit { .. }
             | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }
             | CoreEvent::AssignNamedStyle { .. } => {
@@ -6800,6 +7001,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                 {
                     return Err(CoreError::Composition(CompositionError::AlreadyActive));
                 }
+                // A rectangle is not its source/text hull. The transient IME
+                // overlay belongs to the anchor cell; commit still consumes
+                // the exact semantic rectangle retained by the controller.
+                let target = if let Some(selection) = self.table_selection(view_id)? {
+                    CompositionSession::begin(&self.document, target)?;
+                    let table = self.document.projection().tables().iter()
+                        .find(|table| table.id == selection.table).expect("validated table selection");
+                    CompositionTarget::at_offsets(&self.document,
+                        table.rows[selection.anchor_row].cells[selection.anchor_column].range.clone())?
+                } else { target };
                 let session = CompositionSession::begin(&self.document, target)?;
                 let overlay = session.overlay(&self.document)?;
                 if self.edit_group_owner.take().is_some() {
@@ -6933,7 +7144,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .expect("composition view remains attached")
             .commands;
-        let select_commit = invoking_commands.select_composition_commit(&self.document);
+        let table_commit = invoking_commands.table_selection(&self.document).is_some();
+        let select_commit = (!table_commit).then(|| invoking_commands.select_composition_commit(&self.document)).flatten();
         let typing_properties = invoking_commands.typing_properties().to_vec();
         let typing_named = invoking_commands.typing_named_style().cloned();
         let typing_inherited = self.document.replacement_typing_context(session.replacement_range())?
@@ -7006,6 +7218,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("composition preparation validated the committed caret boundary");
         if let Some(select_commit) = select_commit {
             target_commands.finish_select_composition_commit(&mut self.document, select_commit, caret_offset, &inserted_text);
+        }
+        if table_commit {
+            target_commands.finish_native_table_edit(&mut self.document, caret_offset, true);
         }
         target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
         target_commands.note_markdown_typing_exit(&self.document, markdown_exit)

@@ -1431,6 +1431,8 @@ impl From<FormattedTextError> for SourceToTextError {
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
     revision: Revision,
+    tables: Arc<[super::MarkdownTable]>,
+    table_lines: Option<OrderedRangeStore<HardLine>>,
     /// Canonical persistent formatted-text representation.
     text: FormattedTextTree,
     /// Lazily materialized compatibility view. Regional candidates can remain
@@ -1467,6 +1469,7 @@ impl PartialEq for FormattedDocument {
     fn eq(&self, other: &Self) -> bool {
         self.revision == other.revision
             && self.text() == other.text()
+            && self.tables == other.tables
             && self.blocks == other.blocks
             && self.hard_lines == other.hard_lines
             && self.flow_lines == other.flow_lines
@@ -1508,6 +1511,91 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
+    pub fn tables(&self) -> &[super::MarkdownTable] { &self.tables }
+    pub(super) fn extract_table_row(&self,index:usize,source_delta:i128,source:Range<usize>)
+        -> Option<(Self,super::MarkdownTableRow,super::MarkdownTableSourceRow)> {
+        let table=self.tables.first()?;let row=table.rows.get(index)?;let range=row.range.clone();
+        let source_row=table.source_rows.get(if index==0 {0}else{index+1})?;
+        let text=self.text.slice(range.clone()).ok()?;
+        let mut blocks=self.blocks.query_touching(&range);blocks.retain(|block|range.start<=block.range.start && block.range.end<=range.end);
+        for block in &mut blocks {block.range=shift_range_i128(&block.range,-(range.start as i128))?;}
+        let mut styles=self.styles.query_touching(&range);styles.retain(|span|range.start<=span.range.start && span.range.end<=range.end);
+        for span in &mut styles {span.range=shift_range_i128(&span.range,-(range.start as i128))?;}
+        let mut provenance=self.provenance.query_touching(&range);provenance.retain(|span|range.start<=span.formatted.start && span.formatted.end<=range.end);
+        for span in &mut provenance {span.formatted=shift_range_i128(&span.formatted,-(range.start as i128))?;span.source=shift_range_i128(&span.source,source_delta)?;}
+        let diagnostics=self.decoding_diagnostics.query_touching(&range).into_iter()
+            .filter(|item|range.start<=item.formatted_range.start && item.formatted_range.end<=range.end)
+            .map(|item|item.with_transform(shift_range_i128(&item.formatted_range,-(range.start as i128))?,source_delta,None))
+            .collect::<Option<Vec<_>>>()?;
+        let mut projection=Self::from_parts(self.revision,text,blocks,styles,provenance,diagnostics,self.style_sheet.as_ref().clone(),source.start,source.end);
+        let lines=self.hard_lines.query_touching(&range).into_iter().filter(|line|range.start<=line.range.start && line.range.end<=range.end)
+            .map(|line|shift_range_i128(&line.range,-(range.start as i128))).collect::<Option<Vec<_>>>()?;
+        projection.install_hard_line_partition(lines);
+        let mut row=row.with_transform(0..range.len(),source_delta,None)?;row.source_range=source.clone();
+        let mut source_row=source_row.with_transform(0..range.len(),source_delta,None)?;source_row.source_range=source;
+        Some((projection,row,source_row))
+    }
+    pub(super) fn replace_table_row_metadata(&mut self,table_id:u64,index:usize,mut row:super::MarkdownTableRow,
+        source_row:super::MarkdownTableSourceRow) -> Option<RangeSpliceStats> {
+        let table=Arc::make_mut(&mut self.tables).iter_mut().find(|table|table.id==table_id)?;
+        let old=table.rows.get(index)?;row.id=old.id;
+        for (new,old) in row.cells.iter_mut().zip(&old.cells) {new.id=old.id;}
+        let mut stats=RangeSpliceStats::default();
+        table.rows=table.rows.splice_transformed(index..index+1,vec![row],0,0,0,0,&mut stats)?;
+        let source_index=if index==0 {0}else{index+1};
+        table.source_rows=table.source_rows.splice_transformed(source_index..source_index+1,vec![source_row],0,0,0,0,&mut stats)?;
+        Some(stats)
+    }
+    pub(super) fn extend_table_terminal_source(&mut self, end:usize) {
+        if let Some(table)=Arc::make_mut(&mut self.tables).last_mut() {
+            table.source_range.end=end;
+            if let Some(row)=table.rows.iter_mut().last() {row.source_range.end=end;}
+            if let Some(row)=table.source_rows.iter_mut().last() {row.source_range.end=end;}
+        }
+    }
+    pub fn table_at(&self, offset: usize) -> Option<&super::MarkdownTable> {
+        self.tables.get(self.tables.partition_point(|table| table.range.start <= offset).checked_sub(1)?)
+            .filter(|table| offset <= table.range.end)
+    }
+    pub fn table_cell_at(&self, offset: usize) -> Option<(&super::MarkdownTable, &super::MarkdownTableRow, &super::MarkdownTableCell)> {
+        let table = self.table_at(offset)?;
+        let row = table.rows.get(table.rows.partition_point(|row| row.range.start <= offset).checked_sub(1)?)?;
+        let cell = row.cells.get(row.cells.partition_point(|cell| cell.range.start <= offset).checked_sub(1)?)?;
+        (offset <= cell.range.end).then_some((table, row, cell))
+    }
+    fn rebuild_table_presentation_lines(&mut self) {
+        if self.tables.is_empty() {self.table_lines=None;return;}
+        let mut presentation=Vec::new();let mut index=0;
+        for table in self.tables.iter() {
+            while index<self.hard_lines.len() && self.hard_lines.get(index).unwrap().range.start<table.range.start {presentation.push(self.hard_lines.get(index).unwrap());index+=1;}
+            for row in &table.rows {presentation.push(HardLine{id:row.id,range:row.range.clone(),separator_length:1});}
+            while index<self.hard_lines.len() && self.hard_lines.get(index).unwrap().range.start<=table.range.end {index+=1;}
+        }
+        while index<self.hard_lines.len() {presentation.push(self.hard_lines.get(index).unwrap());index+=1;}
+        self.table_lines=Some(OrderedRangeStore::new(presentation));
+    }
+    fn install_table_ids(&mut self, mut next_id:u64, previous:Option<&Self>) -> Result<u64,BlockIdentityError> {
+        let mut previous_cells=std::collections::HashMap::new();let mut previous_rows=std::collections::HashMap::new();
+        if let Some(previous)=previous {for table in previous.tables.iter().filter(|old|self.tables.iter().any(|new|!new.rows.is_frozen() && old.source_range.start==new.source_range.start)){for row in &table.rows {previous_rows.insert(row.id,(table.id,row));for cell in &row.cells {previous_cells.insert(cell.id,(table.id,row));}}}}
+        for table in Arc::make_mut(&mut self.tables) {
+            if table.rows.is_frozen() { continue; }
+            let mut table_previous=None;
+            for row in &mut table.rows {
+                let block_id=self.blocks.get(self.blocks.partition_point_start(row.range.start+1).saturating_sub(1)).map_or(0,|block|block.id);
+                let old_row=if table.source_view {previous_rows.get(&block_id).copied()} else {row.cells.iter().find_map(|cell|self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).and_then(|block|previous_cells.get(&block.id).copied()))};
+                if let Some((old_table,_))=old_row {table_previous=Some(old_table);}
+                for (column,cell) in row.cells.iter_mut().enumerate() {
+                    if table.source_view {
+                        cell.id=if column==0 {block_id} else if let Some(old)=old_row.and_then(|(_,row)|row.cells.get(column)) {old.id} else if cell.id!=0 {cell.id} else {let id=next_id;next_id=next_id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;id};
+                    } else {cell.id=self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).map_or(0,|block|block.id);}
+                }
+                row.id=old_row.map_or_else(||row.cells.first().map_or(0,|cell|cell.id),|(_,row)|row.id);
+            }
+            table.id=table_previous.unwrap_or_else(||table.rows.first().map_or(0,|row|row.id));
+            table.rows.freeze(); table.source_rows.freeze();
+        }
+        Ok(next_id)
+    }
 
     pub(super) fn visit_retained_memory(
         &self,
@@ -1525,6 +1613,12 @@ impl FormattedDocument {
         self.hard_lines.visit_retained_memory(visitor);
         if trace { eprintln!("  hard_lines {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         if let Some(lines) = &self.flow_lines { lines.visit_retained_memory(visitor); }
+        if let Some(lines) = &self.table_lines { lines.visit_retained_memory(visitor); }
+        visitor.arc(&self.tables, |visitor| {
+            for table in self.tables.iter() {
+                visitor.vector(&table.columns,0); table.rows.visit_retained_memory(visitor); table.source_rows.visit_retained_memory(visitor);
+            }
+        });
         if let Some(blocks) = &self.flow_blocks { blocks.visit_retained_memory(visitor); }
         self.styles.visit_retained_memory(visitor);
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
@@ -1589,6 +1683,8 @@ impl FormattedDocument {
             revision,
             text,
             flat_text: compatibility_text,
+            tables: Arc::from([]),
+            table_lines: None,
             blocks: OrderedRangeStore::new(blocks),
             hard_lines: OrderedRangeStore::new(hard_lines),
             flow_lines: None,
@@ -1644,6 +1740,7 @@ impl FormattedDocument {
     }
 
     pub fn presentation_line_count(&self, flow: bool) -> usize {
+        if let Some(lines) = &self.table_lines { return lines.len(); }
         if flow {
             self.flow_lines
                 .as_ref()
@@ -1654,6 +1751,7 @@ impl FormattedDocument {
     }
 
     pub fn presentation_line_range(&self, index: usize, flow: bool) -> Option<Range<usize>> {
+        if let Some(lines) = &self.table_lines { return lines.get(index).map(|line| line.range); }
         let lines = if flow {
             self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
         } else {
@@ -1666,11 +1764,11 @@ impl FormattedDocument {
         if offset > self.text.byte_len() {
             return None;
         }
-        let lines = if flow {
+        let lines = self.table_lines.as_ref().unwrap_or_else(|| if flow {
             self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
         } else {
             &self.hard_lines
-        };
+        });
         // The persistent store answers this in logarithmic time; slicing it
         // would flatten every line of the document on the first lookup after
         // each edit.
@@ -2151,6 +2249,7 @@ impl FormattedDocument {
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
         super::containers::reconcile(&mut blocks, &[], false);
         self.blocks = OrderedRangeStore::new(blocks);
+        let next_id=self.install_table_ids(next_id,None)?;
         let next_id = self.assign_initial_hard_line_ids(next_id)?;
         let next_id = self.reconcile_flow_block_ids(None, &[], next_id)?;
         // Initial validation used the construction string. Literal snapshots
@@ -2234,6 +2333,7 @@ impl FormattedDocument {
         super::containers::reconcile(&mut blocks, &previous_blocks, false);
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
+        self.install_table_ids(u64::MAX,Some(previous))?;
         self.install_unchanged_hard_line_ids(previous)?;
         if let (Some(flow), Some(old)) = (&mut self.flow_blocks, &previous.flow_blocks) {
             let mut blocks = flow.to_vec();
@@ -2342,6 +2442,7 @@ impl FormattedDocument {
         super::containers::reconcile(&mut blocks, &previous_blocks, false);
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
+        let next_id=self.install_table_ids(next_id,Some(previous))?;
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
         let next_id = self.reconcile_flow_block_ids(Some(previous), edits, next_id)?;
         self.styles.reuse_equal_chunks(&previous.styles);
@@ -2824,16 +2925,6 @@ impl FormattedDocument {
             return None;
         }
         self.hard_lines.index_touching_point(offset)
-    }
-
-    /// Authoritative line ranges touching a formatted text region, found in
-    /// `O(log n + k)` time and materialized with absolute snapshot offsets.
-    pub(crate) fn hard_lines_for_region(&self, text_range: &Range<usize>) -> Vec<Range<usize>> {
-        self.hard_lines
-            .query_touching(text_range)
-            .into_iter()
-            .map(|line| line.range)
-            .collect()
     }
 
     pub(crate) fn hard_breaks_for_region(&self, range: &Range<usize>) -> Vec<usize> {
@@ -4005,6 +4096,13 @@ pub(crate) struct ProjectionSpliceStatistics {
 }
 
 impl ProjectionSpliceStatistics {
+    pub(super) fn add_range_statistics(&mut self,stats:RangeSpliceStats) {
+        self.range_indexes.nodes_visited+=stats.nodes_visited;
+        self.range_indexes.nodes_copied+=stats.nodes_copied;
+        self.range_indexes.leaves_copied+=stats.leaves_copied;
+        self.range_indexes.items_copied+=stats.items_copied;
+    }
+
 
     pub(crate) fn range_index_nodes_visited(self) -> usize {
         self.range_indexes.nodes_visited
@@ -4088,6 +4186,7 @@ pub(crate) fn splice_line_local_projection(
     source_paragraphs: bool,
     literal_topology: bool,
     edits: &[TextEdit],
+    source_patches: &[super::SourcePatch],
     next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
     if regional.revision != revision
@@ -4318,9 +4417,26 @@ pub(crate) fn splice_line_local_projection(
             .iter()
             .enumerate()
             .map(|(index, line)| {
+                let mut range = shift_region_range(&line.range, old_formatted.start)?;
+                // A literal reparse can capture only a bounded piece of a
+                // giant line. Keep its untouched outer extent, while retaining
+                // the regional boundaries of newly inserted/internal breaks.
+                if index == 0 {
+                    range.start = old_lines.first().unwrap().range.start;
+                }
+                if index + 1 == regional_lines.len() {
+                    range.end = old_lines.last().unwrap().range.end
+                        .checked_sub(old_formatted.end)
+                        .and_then(|tail| tail.checked_add(new_formatted_end))
+                        .ok_or(BlockIdentityError::InvalidProjection)?;
+                }
+                let owner=regional_blocks.get(regional_blocks.partition_point(|block|block.range.start<=range.start).saturating_sub(1));
+                let id=if let Some(block)=owner.filter(|block|block.range.start==range.start) {block.id} else {
+                    let id=*next_projected_block_id;*next_projected_block_id=id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;id
+                };
                 Ok(HardLine {
-                    id: regional_blocks[index].id,
-                    range: regional_blocks[index].range.clone(),
+                    id,
+                    range,
                     separator_length: if index + 1 == regional_lines.len() {
                         old_lines.last().unwrap().separator_length
                     } else {
@@ -4573,6 +4689,15 @@ pub(crate) fn splice_line_local_projection(
         }
         first..previous.provenance.partition_point_start(old_formatted.end)
     } else { contained_interval_indices(&previous.provenance, &old_formatted)? };
+    // A table row can end in an empty cell. Its caret contributor belongs to
+    // this row even though it occupies the half-open formatted endpoint.
+    if literal_topology && previous.table_at(old_formatted.start).is_some() {
+        while previous.provenance.get(provenance_indices.end).is_some_and(|span|
+            span.formatted == (old_formatted.end..old_formatted.end)
+                && old_source.start <= span.source.start && span.source.end <= old_source.end) {
+            provenance_indices.end += 1;
+        }
+    }
     // A paragraph that ends inside inline markup, such as `<b>…</b></p>`,
     // records its following break as an empty source span at the end of its
     // last content, which lies inside the region. The break moves with that
@@ -4799,10 +4924,12 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
-    let candidate = FormattedDocument {
+    let mut candidate = FormattedDocument {
         revision,
         text: target_text,
         flat_text: Arc::new(OnceLock::new()),
+        tables: Arc::from([]),
+        table_lines: None,
         blocks,
         hard_lines,
         flow_lines,
@@ -4841,6 +4968,84 @@ pub(crate) fn splice_line_local_projection(
             + new_source_content_end as i128
             - previous.source_content_end as i128) as usize,
     };
+    // Table structure is retained for grammar-proven cell edits and untouched
+    // tables outside this local window. Regional parsing replaces complete tables.
+    let map_point = |point:usize, spans:&[(Range<usize>,usize)], after:bool| {
+        let mut delta=0isize;
+        for (range,length) in spans {
+            if point < range.start || point == range.start && !after {break;}
+            if point <= range.end {return (range.start as isize + delta) as usize + if after {*length} else {0};}
+            delta+=*length as isize-range.len() as isize;
+        }
+        point.checked_add_signed(delta).unwrap()
+    };
+    let text_spans=edits.iter().map(|edit|(edit.range.clone(),edit.replacement.len())).collect::<Vec<_>>();
+    let source_spans=source_patches.iter().map(|patch|(patch.range(),patch.replacement().len())).collect::<Vec<_>>();
+    let map_range=|range:&Range<usize>,spans:&[(Range<usize>,usize)]| map_point(range.start,spans,false)..map_point(range.end,spans,true);
+    let mut tables=Vec::new();
+    for old in previous.tables.iter() {
+        if !regional.tables.is_empty() && old_formatted.start <= old.range.start && old.range.end <= old_formatted.end {continue;}
+        let mut table=old.clone(); table.range=map_range(&table.range,&text_spans); table.source_range=map_range(&table.source_range,&source_spans);
+        // Only records touching the changed interval are copied. Coordinates
+        // on the persistent suffix shift together, including physical bytes.
+        let changed_text=text_spans.first().map_or(old_formatted.start,|span|span.0.start)..text_spans.last().map_or(old_formatted.end,|span|span.0.end);
+        let changed_source=source_spans.first().unwrap().0.start..source_spans.last().unwrap().0.end;
+        let rows=table.rows.partition_point(|row|row.range.end<changed_text.start && row.source_range.end<changed_source.start)
+            ..table.rows.partition_point(|row|row.range.start<=changed_text.end || row.source_range.start<=changed_source.end);
+        let mut replacement=Vec::with_capacity(rows.len());
+        for index in rows.clone() {let mut row=table.rows[index].clone();
+            row.range=map_range(&row.range,&text_spans);row.source_range=map_range(&row.source_range,&source_spans);
+            for cell in &mut row.cells {cell.range=map_range(&cell.range,&text_spans);cell.source_range=map_range(&cell.source_range,&source_spans);}
+            replacement.push(row);
+        }
+        table.rows=table.rows.splice_transformed(rows,replacement,old_formatted.end,new_formatted_end,
+            previous.source_content_end,new_source_content_end,&mut range_stats).ok_or(BlockIdentityError::InvalidProjection)?;
+        let rows=table.source_rows.partition_point(|row|row.source_range.end<changed_source.start)
+            ..table.source_rows.partition_point(|row|row.source_range.start<=changed_source.end);
+        let mut replacement=Vec::with_capacity(rows.len());
+        for index in rows.clone() {let mut row=table.source_rows[index].clone();
+            row.range=map_range(&row.range,&text_spans);row.source_range=map_range(&row.source_range,&source_spans);row.source_body=map_range(&row.source_body,&source_spans);
+            for cell in &mut row.cells {*cell=map_range(cell,&text_spans);}
+            for cell in &mut row.source_cells {*cell=map_range(cell,&source_spans);}
+            for pipe in &mut row.pipes {*pipe=map_point(*pipe,&text_spans,true);}
+            replacement.push(row);
+        }
+        table.source_rows=table.source_rows.splice_transformed(rows,replacement,old_formatted.end,new_formatted_end,
+            previous.source_content_end,new_source_content_end,&mut range_stats).ok_or(BlockIdentityError::InvalidProjection)?;
+        tables.push(table);
+    }
+    for mut table in regional.tables.iter().cloned() {
+        table.range=shift_region_range(&table.range,old_formatted.start)?;
+        for row in &mut table.rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {cell.range=shift_region_range(&cell.range,old_formatted.start)?;}}
+        for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {*cell=shift_region_range(cell,old_formatted.start)?;}for pipe in &mut row.pipes {*pipe+=old_formatted.start;}}
+        tables.push(table);
+    }
+    tables.sort_by_key(|table|table.range.start);candidate.tables=tables.into();
+    if !regional.tables.is_empty() {
+        *next_projected_block_id=candidate.install_table_ids(*next_projected_block_id,Some(previous))?;
+    }
+    if let Some(previous_lines)=&previous.table_lines {
+        let start=previous_lines.partition_point(|line|line.range.end<old_formatted.start);
+        let end=previous_lines.partition_point(|line|line.range.start<=old_formatted.end);
+        let expanded_start=previous_lines.get(start).map_or(old_formatted.start,|line|line.range.start);
+        let expanded_end=previous_lines.get(end.saturating_sub(1)).map_or(old_formatted.end,|line|line.range.end);
+        let new_start=map_point(expanded_start,&text_spans,false);
+        let new_end=map_point(expanded_end,&text_spans,true);
+        let mut index=candidate.hard_lines.partition_point_start(new_start);
+        let mut lines=Vec::new();
+        while let Some(line)=candidate.hard_lines.get(index).filter(|line|line.range.start<=new_end) {
+            if let Some(table)=candidate.table_at(line.range.start).filter(|table|!table.source_view) {
+                let row_index=table.rows.partition_point(|row|row.range.start<=line.range.start).saturating_sub(1);
+                if let Some(row)=table.rows.get(row_index).filter(|row|line.range.start<=row.range.end) {
+                    lines.push(HardLine{id:row.id,range:row.range.clone(),separator_length:1});
+                    index=candidate.hard_lines.partition_point_start(row.range.end.saturating_add(1));continue;
+                }
+            }
+            lines.push(line);index+=1;
+        }
+        candidate.table_lines=Some(previous_lines.splice(start..end,lines,old_formatted.end,new_formatted_end,&mut range_stats)
+            .ok_or(BlockIdentityError::InvalidProjection)?);
+    } else if regional.table_lines.is_some() {candidate.rebuild_table_presentation_lines();}
     Ok((
         candidate,
         ProjectionSpliceStatistics {
@@ -5265,6 +5470,7 @@ fn project_markdown_lines(
     builder.reference_definitions = definitions.to_owned();
     let input_lines = normalized_hard_line_ranges(normalized);
     let mut hard_breaks = Vec::new();
+    let mut tables = Vec::new();
 
     let mut line_index = 0;
     let mut container_index = 0;
@@ -5321,6 +5527,67 @@ fn project_markdown_lines(
             } else { fallback };
             markdown_presented_kind(kind, preserve_markers)
         };
+        if let Some(table) = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= at)).filter(|table| table.range.start <= source_end && at < table.range.end) {
+            let mut projected = super::MarkdownTable { id: 0, range: output_start..output_start, source_range: table.range.clone(), source_view:preserve_markers, columns: table.columns.clone(), rows: Default::default(), source_rows: Default::default() };
+            builder.in_table = true;
+            for source_row in &table.rows {
+                let row_start = builder.output.len();
+                let raw_start = normalized_at(source_row.range.start);
+                let raw_end = normalized_at(source_row.body.end);
+                let style = if source_row.delimiter || projected.rows.is_empty() { "Table header" } else { "Table cell" };
+                let mut cells = Vec::new();
+                let mut shown_cells = Vec::new();
+                if preserve_markers {
+                    let mut previous = raw_start;
+                    for cell in &source_row.cells {
+                        let a = normalized_at(cell.start).min(raw_end); let b = normalized_at(cell.end).min(raw_end);
+                        builder.emit_range(previous, a);
+                        let start = builder.output.len(); builder.parse_inline(a,b);
+                        shown_cells.push(start..builder.output.len()); previous = b;
+                    }
+                    builder.emit_range(previous, raw_end);
+                    let mut block = Block::new(0,row_start..builder.output.len(),presented_kind(BlockKind::Paragraph),style.into(),None);
+                    block.quote_depth = quote_depth; builder.blocks.push(block);
+                } else if !source_row.delimiter {
+                    for column in 0..table.columns.len() {
+                        if column > 0 { hard_breaks.push(builder.output.len()); builder.output.push('\n'); }
+                        let start = builder.output.len();
+                        let raw = source_row.cells.get(column).cloned().unwrap_or(source_row.body.end..source_row.body.end);
+                        let a = normalized_at(raw.start).min(raw_end); let b = normalized_at(raw.end).min(raw_end);
+                        let value = &normalized.text[a..b];
+                        let left = a + value.len() - value.trim_start_matches([' ', '\t']).len();
+                        let right = a + value.trim_end_matches([' ', '\t']).len();
+                        builder.parse_inline(left, right.max(left));
+                        let source = if left < right { builder.unit_at(left).unwrap().source.start..builder.unit_at(normalized.text[..right].char_indices().next_back().unwrap().0).unwrap().source.end } else { raw.start..raw.start };
+                        if start == builder.output.len() { builder.provenance.push(ProvenanceSpan { formatted:start..start, source:source.clone() }); }
+                        let range = start..builder.output.len();
+                        let mut block = Block::new(0,range.clone(),presented_kind(BlockKind::Paragraph),style.into(),None); block.quote_depth=quote_depth; builder.blocks.push(block);
+                        cells.push(super::MarkdownTableCell { id:0,range,source_range:source,missing:column>=source_row.cells.len() });
+                    }
+                }
+                let row_end = builder.output.len();
+                if preserve_markers && !source_row.delimiter {
+                    for column in 0..table.columns.len() {
+                        let raw = source_row.cells.get(column).cloned().unwrap_or(source_row.body.end..source_row.body.end);
+                        let shown = shown_cells.get(column).cloned().unwrap_or(row_end..row_end);
+                        cells.push(super::MarkdownTableCell { id:0,range:shown,source_range:raw,missing:column>=source_row.cells.len() });
+                    }
+                }
+                projected.source_rows.push(super::MarkdownTableSourceRow { range:row_start..row_end,source_range:source_row.range.clone(),source_body:source_row.body.clone(),cells:shown_cells,source_cells:source_row.cells.clone(),pipes:source_row.pipes.iter().map(|pipe| row_start+normalized_at(*pipe)-raw_start).collect(),delimiter:source_row.delimiter });
+                if !source_row.delimiter { projected.rows.push(super::MarkdownTableRow { id:0,range:row_start..row_end,source_range:source_row.range.clone(),cells }); }
+                if preserve_markers || !source_row.delimiter {
+                    let last = source_row.range.end == table.rows.iter().rev().find(|row| preserve_markers || !row.delimiter).unwrap().range.end;
+                    if !last { hard_breaks.push(builder.output.len()); if preserve_markers && normalized.text.as_bytes().get(raw_end)==Some(&b'\n') { builder.emit_unit_at(raw_end); } else { builder.output.push('\n'); } }
+                }
+            }
+            builder.in_table = false;
+            projected.range.end=builder.output.len();
+            while line_index < input_lines.len() && builder.unit_at(input_lines[line_index].start).is_some_and(|unit| unit.source.start < table.range.end) { line_index+=1; }
+            // The table's final physical ending separates it from subsequent prose.
+            if let Some(ending) = line_index.checked_sub(1).and_then(|index| normalized.endings.get(index)) { hard_breaks.push(builder.output.len()); builder.emit_unit_at(ending.normalized.start); }
+            tables.push(projected);
+            continue;
+        }
         if let Some(html) = block_syntax.filter(|block| matches!(block.role, super::markdown_syntax::BlockRole::Html)
             && markdown_inline_break_length(&normalized.text[normalized_at(block.range.start).min(line.end)..line.end]).is_none()) {
             let first = line_index;
@@ -5599,6 +5866,17 @@ fn project_markdown_lines(
     }
     lines.push(start..text_len);
     projection.install_hard_line_partition(lines);
+    if !preserve_markers && !tables.is_empty() {
+        let mut presentation = Vec::new(); let mut index=0;
+        for table in &tables {
+            while index < projection.hard_lines.len() && projection.hard_lines.get(index).unwrap().range.start < table.range.start { presentation.push(projection.hard_lines.get(index).unwrap()); index+=1; }
+            for row in &table.rows { presentation.push(HardLine { id:0,range:row.range.clone(),separator_length:1 }); }
+            while index < projection.hard_lines.len() && projection.hard_lines.get(index).unwrap().range.start <= table.range.end { index+=1; }
+        }
+        while index < projection.hard_lines.len() { presentation.push(projection.hard_lines.get(index).unwrap()); index+=1; }
+        projection.table_lines=Some(OrderedRangeStore::new(presentation));
+    }
+    projection.tables=tables.into();
     projection
 }
 
@@ -5663,6 +5941,7 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
 }
 
 struct MarkdownBuilder<'a> {
+    in_table: bool,
     preserve_markers: bool,
     html_stack: Vec<(String, usize, StyleApplication)>,
     inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
@@ -5688,6 +5967,7 @@ impl<'a> MarkdownBuilder<'a> {
     ) -> Self {
         Self {
             preserve_markers: false,
+            in_table: false,
             html_stack: Vec::new(),
             inline_syntax: Default::default(),
             reference_definitions: String::new(),
@@ -5853,7 +6133,10 @@ impl<'a> MarkdownBuilder<'a> {
                             body.start += 1;
                             body.end -= 1;
                         }
-                        self.emit_range(body.start, body.end);
+                        if self.in_table {
+                            let mut point=body.start;
+                            while point<body.end { if self.source_text[point..body.end].starts_with("\\|") { self.emit_escaped(point,point+1); point+=2; } else { self.emit_unit_at(point); point=self.next_boundary(point).unwrap_or(body.end); } }
+                        } else { self.emit_range(body.start, body.end); }
                     }
                     self.push_semantic_style(output_start, SemanticInlineStyle::Code);
                     if output_start < self.output.len() {
