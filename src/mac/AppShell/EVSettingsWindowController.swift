@@ -83,6 +83,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     if window.screen != nil { window.center() }
   }
 
+  func selectThemeCategory() {
+    sidebar.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+  }
+
   override func showWindow(_ sender: Any?) {
     refresh()
     if !hasPresented { window?.setContentSize(NSSize(width: 800, height: 690)) }

@@ -7,6 +7,7 @@ import AppKit
     func openRecentDocument(_ sender: Any?)
     func clearRecentDocuments(_ sender: Any?)
     func showSettings(_ sender: Any?)
+    func showThemeSettings(_ sender: Any?)
     func showHelpItem(_ sender: Any?)
 }
 
@@ -480,6 +481,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let create = NSMenuItem(title: "New Theme…", action: #selector(createTheme(_:)), keyEquivalent: "")
         create.target = self
         menu.addItem(create)
+        menu.addItem(applicationItem(
+            "Theme Settings…",
+            action: #selector(EVApplicationCommandRouting.showThemeSettings(_:))
+        ))
     }
 
     @objc private func selectTheme(_ item: NSMenuItem) {

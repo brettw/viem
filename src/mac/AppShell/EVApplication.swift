@@ -195,9 +195,18 @@ final class EVApplicationDelegate: NSObject,
     }
 
     @objc func showSettings(_ sender: Any?) {
+        showSettings(sender, selectTheme: false)
+    }
+
+    @objc func showThemeSettings(_ sender: Any?) {
+        showSettings(sender, selectTheme: true)
+    }
+
+    private func showSettings(_ sender: Any?, selectTheme: Bool) {
         if settingsWindowController == nil {
             settingsWindowController = EVSettingsWindowController(store: themeStore)
         }
+        if selectTheme { settingsWindowController?.selectThemeCategory() }
         settingsWindowController?.showWindow(sender)
         settingsWindowController?.window?.makeKeyAndOrderFront(sender)
     }

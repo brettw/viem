@@ -41,6 +41,8 @@ internal sealed partial class SettingsWindow : Window
         WindowSizing.Resize(this, 800, 730);
         loading = false;
     }
+    internal void SelectThemeCategory() => categories.SelectedIndex = 1;
+
     private StackPanel Page(string title, string glyph, string description)
     {
         var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };

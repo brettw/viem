@@ -190,11 +190,15 @@ internal sealed partial class EditorWindow
         fallback.Click += (_, _) => Safe(() => { preferences.SelectTheme(null); return Task.CompletedTask; });
         themeMenu.Items.Add(fallback);
         themeMenu.Items.Add(Item("New theme…", () => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme)));
+        themeMenu.Items.Add(Item("Theme Settings…", ShowThemeSettings));
     }
     private SettingsWindow? settingsWindow;
-    internal Task ShowSettings()
+    internal Task ShowSettings() => ShowSettings(selectTheme: false);
+    internal Task ShowThemeSettings() => ShowSettings(selectTheme: true);
+    private Task ShowSettings(bool selectTheme)
     {
         if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences); settingsWindow.Closed += (_, _) => settingsWindow = null; }
+        if (selectTheme) settingsWindow.SelectThemeCategory();
         settingsWindow.Activate(); return Task.CompletedTask;
     }
 #if DEBUG

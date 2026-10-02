@@ -10,6 +10,7 @@ final class EVThemeSelectionTests: XCTestCase {
     func openRecentDocument(_ sender: Any?) {}
     func clearRecentDocuments(_ sender: Any?) {}
     func showSettings(_ sender: Any?) {}
+    func showThemeSettings(_ sender: Any?) {}
     func showHelpItem(_ sender: Any?) {}
   }
 
@@ -30,7 +31,7 @@ final class EVThemeSelectionTests: XCTestCase {
     let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
     XCTAssertEqual(styles.items.first?.title, "Theme")
     let themes = try XCTUnwrap(styles.item(withTitle: "Theme")?.submenu)
-    XCTAssertEqual(themes.items.map { $0.isSeparatorItem ? "-" : $0.title }, ["amber", "Midnight", "Paper", "Zebra", "-", "Default", "New Theme…"])
+    XCTAssertEqual(themes.items.map { $0.isSeparatorItem ? "-" : $0.title }, ["amber", "Midnight", "Paper", "Zebra", "-", "Default", "New Theme…", "Theme Settings…"])
     let fallback = try XCTUnwrap(themes.item(withTitle: "Default"))
     XCTAssertTrue(NSApplication.shared.sendAction(try XCTUnwrap(fallback.action), to: fallback.target, from: fallback))
     XCTAssertNil(configuration.currentThemeName)

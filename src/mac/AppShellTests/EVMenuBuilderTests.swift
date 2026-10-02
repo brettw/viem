@@ -18,6 +18,7 @@ final class EVMenuBuilderTests: XCTestCase {
         }
         @objc func clearRecentDocuments(_ sender: Any?) { clearRecentDocumentsCount += 1 }
         @objc func showSettings(_ sender: Any?) {}
+        @objc func showThemeSettings(_ sender: Any?) {}
         @objc func showHelpItem(_ sender: Any?) {}
     }
 
@@ -328,6 +329,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let main = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
         let applicationRoutes: [String: Selector] = [
             "Viem/Settings…": #selector(EVApplicationCommandRouting.showSettings(_:)),
+            "Style/Theme/Theme Settings…": #selector(EVApplicationCommandRouting.showThemeSettings(_:)),
             "File/New": #selector(EVApplicationCommandRouting.newDocument(_:)),
             "File/Open…": #selector(EVApplicationCommandRouting.openDocument(_:)),
         ]
