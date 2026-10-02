@@ -12,6 +12,7 @@ final class EVDocumentModeMenuTests: XCTestCase {
         func openRecentDocument(_ sender: Any?) {}
         func clearRecentDocuments(_ sender: Any?) {}
         func showSettings(_ sender: Any?) {}
+        func showThemeSettings(_ sender: Any?) {}
         func showHelpItem(_ sender: Any?) {}
     }
     private func surface(_ source: String, filename: String, type: String? = nil) throws -> EVEditorSurfaceController {
