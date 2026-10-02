@@ -42,6 +42,8 @@ mod markdown_split;
 mod markdown_edit_spelling;
 #[path = "markdown_typing.rs"]
 mod markdown_typing;
+#[path = "markdown_autodetect.rs"]
+mod markdown_autodetect;
 #[path = "named_character.rs"]
 mod named_character;
 #[path = "paragraph_insertion.rs"]
@@ -1894,9 +1896,27 @@ impl Document {
 
     fn prepare_text_edits_with_patches(
         &self,
-        mut edits: Vec<TextEdit>,
+        edits: Vec<TextEdit>,
         explicit_source_patches: Option<Vec<SourcePatch>>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.prepare_text_edits_with_patch_policy(edits, explicit_source_patches, false)
+    }
+
+    fn prepare_text_edits_with_patch_policy(
+        &self,
+        mut edits: Vec<TextEdit>,
+        explicit_source_patches: Option<Vec<SourcePatch>>,
+        authored_syntax: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if authored_syntax && edits.is_empty() {
+            if let Some(patch) = explicit_source_patches.as_ref().and_then(|patches| patches.first()) {
+                let at = self.projection().map_source_boundary(self.revision(), patch.range.start, BoundaryAffinity::Downstream)
+                    .map_err(|_| DocumentError::AmbiguousProjection)?.formatted_offset;
+                // A real source/style change with unchanged visible text still
+                // needs a local verification window, not a full-buffer copy.
+                edits.push(TextEdit::new(at..at, ""));
+            }
+        }
         if edits.is_empty() {
             if let Some(patches) = explicit_source_patches {
                 return self.prepare_source_only_patches(patches);
@@ -1928,7 +1948,7 @@ impl Document {
                 .slice(edit.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
             let changes_text = current != edit.replacement;
-            if changes_text
+            if changes_text || authored_syntax
                 || self
                     .projection()
                     .has_decoding_diagnostic_overlapping(&edit.range)
@@ -1978,13 +1998,15 @@ impl Document {
                 &mut source_patches,
             )?;
         }
-        if !translate_source && self.format() == Format::Markdown {
+        if !authored_syntax && !translate_source && self.format() == Format::Markdown {
             markdown_split::remove_empty_emphasis(self, &edits, &mut source_patches)?;
             markdown_split::repair_flanking(self, &edits, &mut source_patches)?;
             self.repair_markdown_authored_spaces(&edits, &mut source_patches)?;
             self.repair_markdown_reference_spaces(&edits, &mut source_patches)?;
         }
-        self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
+        if !authored_syntax {
+            self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
+        }
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
@@ -2025,6 +2047,7 @@ impl Document {
             text_splice_work,
             &edits,
             &source_patches,
+            authored_syntax,
         );
         let TextEditCandidate {
             state: mut candidate,
@@ -3355,6 +3378,7 @@ impl Document {
             FormattedTextSpliceStats::default(),
             &edits,
             &source_patches,
+            false,
         )?;
         let verification_range = if built.work.scope == ProjectionWorkScope::RegionalHardLines {
             self.line_local_projection_region(&edits, &source_patches)?
@@ -4262,6 +4286,7 @@ impl Document {
         text_splice_work: FormattedTextSpliceStats,
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
+        authored_syntax: bool,
     ) -> Result<TextEditCandidate, ModelTransactionError> {
         if let Some(candidate) = self.build_disjoint_literal_edit_candidate(
             &source,
@@ -4286,7 +4311,7 @@ impl Document {
         // A regional Markdown Source result that cannot be proven exact, or
         // that the splice cannot place, leaves this block for the complete
         // verified candidate below.
-        if let Some(region) = self.line_local_projection_region(edits, source_patches)? {
+        if let Some(region) = self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)? {
             let regional = (|| -> Result<Option<TextEditCandidate>, ModelTransactionError> {
                 let new_source_end = rebase_source_boundary(
                     region.old_source.end,
@@ -4324,7 +4349,7 @@ impl Document {
                 } else {
                     0
                 };
-                let source_rows_change = self.format() == Format::MarkdownSource
+                let source_rows_change = (self.format() == Format::MarkdownSource || authored_syntax)
                     && normalized.endings.len() + usize::from(!unowned_terminal_row)
                         != region.source_lines.len();
                 if self.format() != Format::Markdown
@@ -4782,7 +4807,9 @@ impl Document {
                 && (span.source.start == patch.range.start || span.source.end == patch.range.start)
         });
 
-        if edit.range.is_empty() && !insertion_has_character_sample {
+        let verified_empty_code = markdown_code && !markdown_list && block.range.is_empty()
+            && super::markdown_code::fenced_source(self, &block)?.is_some_and(|fence| fence.body == patch.range);
+        if edit.range.is_empty() && !insertion_has_character_sample && !verified_empty_code {
             // Empty formatting elements expose a valid typing anchor but no
             // character sample. Parse their active source context explicitly.
             return Ok(None);
@@ -4911,11 +4938,14 @@ impl Document {
             edit.range.start
         };
 
-        let insertion_styles = old_styles
+        let mut insertion_styles = old_styles
             .iter()
             .filter(|span| span.range.contains(&sampled_at))
             .map(|span| span.application.clone())
             .collect::<Vec<_>>();
+        if verified_empty_code && !insertion_styles.contains(&StyleApplication::Semantic(SemanticInlineStyle::Code)) {
+            insertion_styles.push(StyleApplication::Semantic(SemanticInlineStyle::Code));
+        }
 
         let mut styles = Vec::new();
         for span in old_styles {
@@ -5535,6 +5565,15 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
     ) -> Result<Option<LineLocalProjectionRegion>, ModelTransactionError> {
+        self.line_local_projection_region_with_context(edits, source_patches, false)
+    }
+
+    fn line_local_projection_region_with_context(
+        &self,
+        edits: &[TextEdit],
+        source_patches: &[SourcePatch],
+        authored_syntax: bool,
+    ) -> Result<Option<LineLocalProjectionRegion>, ModelTransactionError> {
         if self.markdown_edit_needs_reference_context(edits) {
             return Ok(None);
         }
@@ -5554,7 +5593,7 @@ impl Document {
             }) {
                 return Ok(None);
             }
-            for patch in source_patches {
+            for patch in source_patches.iter().filter(|_| !authored_syntax) {
                 let old = self
                     .state()
                     .source
@@ -5570,7 +5609,7 @@ impl Document {
         }
         if self.format().is_markdown()
             && edits.iter().any(|edit| {
-                edit.replacement.contains(['`', '~'])
+                (!authored_syntax && edit.replacement.contains(['`', '~']))
                     || self
                         .projection()
                         .blocks_for_region(&edit.range)
@@ -5795,6 +5834,35 @@ impl Document {
                         .unwrap(),
                 );
             }
+            if authored_syntax {
+                let in_list = |line| {
+                    self.projection()
+                        .hard_line_range(line)
+                        .is_some_and(|range| {
+                            self.projection()
+                                .blocks_for_region(&range)
+                                .iter()
+                                .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }))
+                        })
+                };
+                if (first_line..=last_line).any(in_list) {
+                    // Authored inline punctuation must be parsed with its
+                    // list stack. A continuation's indentation alone has a
+                    // different meaning at a standalone parser restart.
+                    while first_line > 0 && in_list(first_line - 1) {
+                        first_line -= 1;
+                        if last_line - first_line >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
+                            return Err(DocumentError::UnsupportedFormatting.into());
+                        }
+                    }
+                    while last_line + 1 < self.projection().hard_line_count() && in_list(last_line + 1) {
+                        last_line += 1;
+                        if last_line - first_line >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
+                            return Err(DocumentError::UnsupportedFormatting.into());
+                        }
+                    }
+                }
+            }
         }
         let hard_lines = first_line..last_line.saturating_add(1);
         if hard_lines.is_empty()
@@ -5909,6 +5977,9 @@ impl Document {
                 || patch.range.end > old_source.end
         }) {
             return Ok(None);
+        }
+        if authored_syntax && old_source.len() > 32768 {
+            return Err(DocumentError::UnsupportedFormatting.into());
         }
 
         Ok(Some(LineLocalProjectionRegion {

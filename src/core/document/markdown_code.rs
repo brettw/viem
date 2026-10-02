@@ -294,6 +294,75 @@ fn empty_body_patches(
     replacement: &str,
     quoted: bool,
 ) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    if let Some(fence) = fenced_source(document, block)?.filter(|fence| {
+        fence
+            .body_prefix
+            .bytes()
+            .all(|byte| matches!(byte, b' ' | b'\t' | b'>'))
+            && document
+                .state()
+                .source_hard_lines
+                .line_at_offset(fence.body.start)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+                .and_then(|line| document.state().source.bytes_in(fence.body.start..line.end))
+                .and_then(|bytes| {
+                    document
+                        .encoding()
+                        .decode_region(&bytes, fence.body.start)
+                        .ok()
+                })
+                .is_some_and(|decoded| {
+                    super::line_endings::normalize(&decoded, document.file_format())
+                        .text
+                        .trim_end_matches('\n')
+                        .is_empty()
+                })
+    }) {
+        // An explicit blank body already supplies a local insertion seed,
+        // including the indentation of a list-owned fence. No document scan
+        // is needed to materialize the first character.
+        let separator = format!("{}{}", document.file_format().spelling(), fence.body_prefix);
+        let mut patches = vec![(fence.body.clone(), replacement.replace('\n', &separator))];
+        let needed = replacement
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                (!line.is_empty() && line.bytes().all(|byte| byte == fence.delimiter))
+                    .then_some(line.len() + 1)
+            })
+            .max()
+            .unwrap_or(0)
+            .max(fence.width);
+        if needed > fence.width {
+            let marker = (fence.delimiter as char).to_string().repeat(needed);
+            let encoded_width = document
+                .encoding()
+                .encode_fragment(&(fence.delimiter as char).to_string().repeat(fence.width))?
+                .len();
+            patches.push((
+                fence.opening_marker..fence.opening_marker + encoded_width,
+                marker.clone(),
+            ));
+            if let Some(closing) = fence.closing {
+                let bytes = document
+                    .state()
+                    .source
+                    .bytes_in(closing.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let raw = document
+                    .encoding()
+                    .decode_region(&bytes, closing.start)?
+                    .text;
+                let quote = super::markdown_quotes::prefix(&raw);
+                let prefix =
+                    quote + raw[quote..].len() - raw[quote..].trim_start_matches([' ', '\t']).len();
+                let start =
+                    closing.start + document.encoding().encode_fragment(&raw[..prefix])?.len();
+                patches.push((start..start + encoded_width, marker));
+            }
+        }
+        return Ok(patches);
+    }
     let at = super::source_edit::insertion_point(document.projection(), block.range.start, None)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode(&document.source_bytes())?;

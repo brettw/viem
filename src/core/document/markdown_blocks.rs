@@ -139,9 +139,14 @@ fn marker(text: &str, origin: usize) -> Option<Marker> {
 }
 
 pub(super) fn marker_prefix_length(text: &str) -> Option<usize> {
+    marker_prefix_geometry(text).map(|(bytes, _)| bytes)
+}
+
+pub(super) fn marker_prefix_geometry(text: &str) -> Option<(usize, usize)> {
     // Physical source-line slices may retain their ending. A bare marker such
     // as `1.` is still an empty item when followed by that line ending.
-    marker(text.trim_end_matches(['\r', '\n']), 0).map(|marker| marker.content_start)
+    marker(text.trim_end_matches(['\r', '\n']), 0)
+        .map(|marker| (marker.content_start, marker.content_indent))
 }
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {

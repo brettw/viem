@@ -174,12 +174,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var caretAppearanceObserver: NSObjectProtocol?
     private var editingPreferencesObserver: NSObjectProtocol?
     private weak var configuredEditingSession: EVCoreViewSession?
+    private var configuredMarkdownAutodetect: Bool?
     private var configuredSmartQuotes: Bool?
     private var configuredTextWidth: UInt32?
     private var configuredIndentation: EVIndentationOptions?
     private var configuredWhitespace: EVWhitespacePresentationOptions?
     var editingPreferences = EVEditingPreferences.shared {
-        didSet { configuredSmartQuotes = nil; configuredTextWidth = nil; configuredIndentation = nil; configuredWhitespace = nil; synchronizeEditingPreferences() }
+        didSet { configuredMarkdownAutodetect = nil; configuredSmartQuotes = nil; configuredTextWidth = nil; configuredIndentation = nil; configuredWhitespace = nil; synchronizeEditingPreferences() }
     }
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
@@ -576,13 +577,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let enabled = editingPreferences.smartQuotes && surface?.backend.sourceFormat != .code
         let textWidth = editingPreferences.textWidth
         guard configuredEditingSession !== session || configuredSmartQuotes != enabled
+            || configuredMarkdownAutodetect != editingPreferences.markdownAutodetect
             || configuredTextWidth != textWidth || configuredIndentation != editingPreferences.indentation
             || configuredWhitespace != editingPreferences.whitespacePresentation else { return }
         do {
+            try session.setMarkdownAutodetect(editingPreferences.markdownAutodetect)
             try session.setSmartQuotes(enabled)
             try session.setTextWidthDefault(textWidth)
             try session.setWhitespaceDefaults(indentation: editingPreferences.indentation, presentation: editingPreferences.whitespacePresentation)
             configuredEditingSession = session
+            configuredMarkdownAutodetect = editingPreferences.markdownAutodetect
             configuredSmartQuotes = enabled
             configuredTextWidth = textWidth
             configuredIndentation = editingPreferences.indentation

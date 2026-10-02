@@ -17,6 +17,7 @@ public final class EVEditingPreferences {
   private var validationError: String?
   private var configurationObserver: NSObjectProtocol?
   private let center: NotificationCenter
+  public private(set) var markdownAutodetect: Bool
   public private(set) var smartQuotes: Bool
   /// Application default `textwidth` in columns for `gq`/`gw` reflow.
   public private(set) var textWidth: UInt32
@@ -27,6 +28,7 @@ public final class EVEditingPreferences {
     let configuration = configuration ?? .shared
     self.configuration = configuration
     self.center = center
+    markdownAutodetect = configuration.markdownAutodetect
     smartQuotes = configuration.smartQuotes
     textWidth = configuration.textWidth
     indentation = configuration.indentation
@@ -48,8 +50,9 @@ public final class EVEditingPreferences {
 
   public func reloadFromConfiguration() {
     do { try configuration.reloadFromDisk() } catch { return }
-    let changed = smartQuotes != configuration.smartQuotes || textWidth != configuration.textWidth
+    let changed = markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || textWidth != configuration.textWidth
       || indentation != configuration.indentation || whitespacePresentation != configuration.whitespacePresentation
+    markdownAutodetect = configuration.markdownAutodetect
     smartQuotes = configuration.smartQuotes
     textWidth = configuration.textWidth
     indentation = configuration.indentation
@@ -87,6 +90,12 @@ public final class EVEditingPreferences {
     do { try configuration.setTextWidth(width) } catch { return false }
     reloadFromConfiguration()
     return true
+  }
+
+  public func setMarkdownAutodetect(_ enabled: Bool) {
+    guard enabled != markdownAutodetect else { return }
+    do { try configuration.setMarkdownAutodetect(enabled) } catch { return }
+    reloadFromConfiguration()
   }
 
   public func setSmartQuotes(_ enabled: Bool) {

@@ -4,6 +4,33 @@ import XCTest
 
 @MainActor
 final class EVConfigurationStoreTests: XCTestCase {
+  func testMarkdownAutodetectDefaultsOnPersistsAndUpdatesLivePreferences() throws {
+    let (directory, legacy) = try fixture()
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    let preferences = EVEditingPreferences(configuration: store)
+    XCTAssertTrue(preferences.markdownAutodetect)
+    preferences.setMarkdownAutodetect(false)
+    XCTAssertFalse(preferences.markdownAutodetect)
+    let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertFalse(reopened.markdownAutodetect)
+    try reopened.setSmartQuotes(true)
+    try reopened.setMarkdownAutodetect(true)
+    XCTAssertTrue(preferences.markdownAutodetect)
+    XCTAssertTrue(preferences.smartQuotes)
+  }
+
+  func testInvalidMarkdownAutodetectDoesNotOverwriteSettings() throws {
+    let (directory, legacy) = try fixture()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let file = directory.appendingPathComponent("config.json")
+    let before = Data(#"{"version":1,"editing":{"markdownAutodetect":1}}"#.utf8)
+    try before.write(to: file)
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertTrue(store.markdownAutodetect)
+    XCTAssertNotNil(store.lastError)
+    XCTAssertThrowsError(try store.setMarkdownAutodetect(false))
+    XCTAssertEqual(try Data(contentsOf: file), before)
+  }
   private func fixture() throws -> (URL, UserDefaults) {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-json-\(UUID().uuidString)")
     let name = "viem-json-legacy-\(UUID().uuidString)"

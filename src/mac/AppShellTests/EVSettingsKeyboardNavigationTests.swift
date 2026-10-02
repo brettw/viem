@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 final class EVSettingsKeyboardNavigationTests: XCTestCase {
+  func testEditingOffersEnabledMarkdownAutodetectionAndPersistsClick() throws {
+    let configuration = configuration()
+    let settings = settings(configuration)
+    defer { settings.close() }
+    settings.showWindow(nil)
+    let window = try XCTUnwrap(settings.window)
+    let sidebar = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSTableView }.first)
+    sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+    let checkbox = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
+      .first { $0.title == "Automatically format typed Markdown" })
+    XCTAssertEqual(checkbox.state, .on)
+    checkbox.performClick(nil)
+    XCTAssertFalse(configuration.markdownAutodetect)
+    XCTAssertFalse(EVConfigurationStore(directory: configuration.directory).markdownAutodetect)
+  }
   private func configuration() -> EVConfigurationStore {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-settings-keyboard-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }

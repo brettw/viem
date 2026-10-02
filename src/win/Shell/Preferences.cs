@@ -65,6 +65,7 @@ internal sealed partial class Preferences
         Update(candidate => Merge(candidate, new JsonObject { ["windows"] = new JsonObject { ["documentFrame"] = frame.Json } }), notify: false);
     }
     public bool ShowStatus => Get("appearance", "showStatusBar", true);
+    public bool MarkdownAutodetect => Get("editing", "markdownAutodetect", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", false);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
     public Theme Theme => ReadTheme(activeTheme);
@@ -118,7 +119,7 @@ internal sealed partial class Preferences
         void Number(JsonNode? node, double min, double max, string name, bool integral = false)
         { if (node == null) return; double n = node.GetValue<double>(); if (!double.IsFinite(n) || n < min || n > max || (integral && n != Math.Truncate(n))) throw new InvalidDataException("Invalid " + name + "."); }
         if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
-        foreach (var (section, key) in new[] { ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
+        foreach (var (section, key) in new[] { ("editing", "markdownAutodetect"), ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
         if (value["editing"] is JsonObject editing && editing.ContainsKey("markdownFormattedView"))
             _ = editing["markdownFormattedView"]?.GetValue<bool>() ?? throw new InvalidDataException("markdownFormattedView must be a boolean.");
         if (value["formattingToolbar"] is JsonObject toolbar)

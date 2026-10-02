@@ -417,6 +417,19 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
 
 ### Authored input and caret formatting
 
+Automatically formatting typed Markdown defaults on and is configurable in
+Settings > Editing. It applies only to Markdown WYSIWYG committed input.
+Incomplete delimiters remain visible; completed emphasis, strong, strike, code
+and inline-link spans become semantic formatting. ATX headings, list markers
+and quote prefixes activate on their following space; three backticks or tildes
+immediately make a literal paragraph a Code Block with its caret at the beginning,
+retaining list and quote ownership. Protected or opaque content stays literal.
+Thematic-rule prefixes activate on completion. Recognition uses bounded local
+context and verified, atomic source patches, sharing insertion undo and replay.
+With the preference off, ordinary input retains the existing literal behavior.
+Control-Q/V literal-next bypasses recognition and preserves explicit literal
+syntax protection in saved source, including across later input and view changes.
+
 Smart quotes are off initially and convert straight quotes consistently in
 committed prose input, including replacement, paste/register puts, IME and
 accessibility. Existing curly quotes remain unchanged. They never

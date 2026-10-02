@@ -262,6 +262,7 @@ impl CompositionSession {
             generation: self.generation,
             edit,
             caret_offset,
+            markdown_exit: None,
             prepared,
         })
     }
@@ -295,6 +296,8 @@ impl CompositionSession {
             commands.typing_properties(),
             commands.insertion_boundary_affinity(),
             commands.typing_inherited_context().or(inherited.as_ref()),
+            commands.markdown_autodetect(),
+            commands.markdown_typing_exit(document),
         )
     }
 
@@ -305,8 +308,11 @@ impl CompositionSession {
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
         inherited: Option<&crate::document::ReplacementTypingContext>,
+        autodetect: bool,
+        exit: Option<crate::document::SourcePoint>,
     ) -> Result<CompositionCommitRequest, CompositionError> {
-        if named.is_none() && values.is_empty() && inherited.is_none() || self.marked_text.is_empty() {
+        let autodetect = autodetect && document.format() == crate::document::Format::Markdown;
+        if !autodetect && named.is_none() && values.is_empty() && inherited.is_none() || self.marked_text.is_empty() {
             return self.prepare_commit(document);
         }
         self.validate_document(document)?;
@@ -321,21 +327,19 @@ impl CompositionSession {
             value.hard_break_offsets().to_vec(),
         )
         .expect("composition literal text has validated semantic break offsets");
-        let (prepared, caret_offset, _) = document
-            .prepare_insertion_with_typing_context(
-                FormattedPayloadEdit::new(edit.range.clone(), payload)
-                    .with_boundary_affinity(affinity),
-                named,
-                values,
-                inherited,
-            )
-            .map_err(composition_model_error)?;
+        let typing = FormattedPayloadEdit::new(edit.range.clone(), payload).with_boundary_affinity(affinity);
+        let (prepared, caret_offset, _, markdown_exit) = if autodetect && document.format() == crate::document::Format::Markdown {
+            document.prepare_markdown_typing_batch(typing, named, values, inherited, false, exit)
+        } else {
+            document.prepare_insertion_with_typing_context(typing, named, values, inherited).map(|(p, c, s)| (p, c, s, None))
+        }.map_err(composition_model_error)?;
         Ok(CompositionCommitRequest {
             document_id: self.target.document_id,
             expected_revision: self.target.revision,
             generation: self.generation,
             edit,
             caret_offset,
+            markdown_exit,
             prepared,
         })
     }
@@ -591,6 +595,7 @@ pub struct CompositionCommitRequest {
     generation: u64,
     edit: TextEdit,
     caret_offset: usize,
+    markdown_exit: Option<usize>,
     prepared: PreparedModelTransaction,
 }
 
@@ -609,6 +614,7 @@ impl fmt::Debug for CompositionCommitRequest {
 }
 
 impl CompositionCommitRequest {
+    pub(crate) fn markdown_exit(&self) -> Option<usize> { self.markdown_exit }
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }

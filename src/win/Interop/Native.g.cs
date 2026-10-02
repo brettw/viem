@@ -2003,6 +2003,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_smart_quotes(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_markdown_autodetect(ulong @core, ulong @view, uint @enabled);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_wrap(ulong @core, ulong @view, uint @wrap, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_linebreak(ulong @core, ulong @view, uint @linebreak, ViemCoreOutcomeV1* @out_outcome);

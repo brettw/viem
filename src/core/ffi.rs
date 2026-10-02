@@ -13361,6 +13361,19 @@ pub extern "C" fn viem_core_view_set_smart_quotes(
     })
 }
 
+/// Application typing policy; only Markdown WYSIWYG interprets it.
+#[no_mangle]
+pub extern "C" fn viem_core_view_set_markdown_autodetect(
+    handle: ViemCoreHandle, view: ViemViewId, enabled: u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if enabled > 1 { return Err(ViemStatus::InvalidArgument); }
+        with_core_mut(handle, |core| {
+            dispatch_event(core, view, CoreEvent::SetMarkdownAutodetect(enabled != 0)).map(|_| ())
+        })
+    })
+}
+
 pub const VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT: u32 = 1;
 pub const VIEM_LINE_LOCATION_FRAGMENT_EXACT: u32 = 2;
 #[repr(C)]

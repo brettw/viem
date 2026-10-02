@@ -180,6 +180,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Zoom(float scale) => Apply(o => viem_core_view_set_scale(Document.Handle, Id, scale, o));
     public void StepZoom(bool increase) { float target = 1; Check(viem_core_adjacent_zoom_scale(Viewport.scale, increase ? 1u : 0u, &target), "Zoom"); Zoom(target); }
     public void Padding(float top, float left, float bottom, float right) { Check(viem_core_view_set_padding(Document.Handle, Id, top, left, bottom, right), "Set margins"); Refresh(); }
+    public void MarkdownAutodetect(bool enabled) => Check(viem_core_view_set_markdown_autodetect(Document.Handle, Id, enabled ? 1u : 0u), "Markdown typing");
     public void SmartQuotes(bool enabled) => Check(viem_core_view_set_smart_quotes(Document.Handle, Id, enabled ? 1u : 0u), "Smart quotes");
     public void VisibleWhitespace(bool enabled) { Check(viem_core_view_set_visible_whitespace(Document.Handle, Id, (byte)(enabled ? 1 : 0)), "Visible whitespace"); Refresh(); }
     public void Scroll(float left, float top)

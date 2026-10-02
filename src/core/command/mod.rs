@@ -9,6 +9,7 @@ pub mod caret;
 pub mod clipboard;
 pub mod composition;
 mod selection;
+use crate::document::Format;
 use selection::SelectionBehavior;
 pub use selection::{NavigationKey, SelectionOptions, SelectionOrigin};
 pub mod completion;
@@ -1884,7 +1885,7 @@ impl CommandInterpreter {
         // publishes its validated post-change slot to every view after this
         // position-map preparation, so an inactive view must not discard the
         // shared pre-publication value here.
-        next.typing_style = Default::default();
+        next.retire_typing_context();
         next.position_revision = Some(map.target_revision());
         *self = next;
         Ok(true)
@@ -2429,7 +2430,7 @@ impl CommandInterpreter {
             .map(|(name, anchor)| validate(*anchor).map(|offset| (*name, offset)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
 
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         self.mode = Mode::Normal;
         self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
         self.boundary_affinity = restoration.cursor().affinity();
@@ -2726,7 +2727,7 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         if lines.is_grapheme_boundary(offset) {
             self.mapping_pending.clear();
-            self.typing_style = Default::default();
+            self.retire_typing_context();
             self.invalidate_replace_restoration();
             self.cursor = normalize_normal_cursor_document(document, &lines, offset);
             self.position_revision = Some(document.revision());
@@ -2759,7 +2760,7 @@ impl CommandInterpreter {
         }
 
         self.invalidate_replace_restoration();
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         if extend_selection {
             if !matches!(
                 self.mode,
@@ -2838,7 +2839,7 @@ impl CommandInterpreter {
     /// This is deliberately outside input dispatch and macro recording.
     pub(crate) fn go_to_line(&mut self, document: &Document, line: u64) -> CommandOutput {
         let old_mode = self.mode;
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         self.mode = Mode::Normal;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -2945,7 +2946,7 @@ impl CommandInterpreter {
                     | Key::PageDown
             )
         ) {
-            self.typing_style = Default::default();
+            self.retire_typing_context();
         }
         let edit_group_depth = document.edit_group_depth();
         let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -3139,6 +3140,9 @@ impl CommandInterpreter {
         }
         let event = self.normalized_input_event(event);
         if self.handles_literal_input(&event) || self.is_cancel_input(&event)
+            || (context.document().format() == Format::Markdown && self.markdown_autodetect()
+                && matches!(self.mode, Mode::Insert | Mode::Replace)
+                && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
             || matches!(&event, InputEvent::Key(Key::SelectAll)) {
@@ -3578,7 +3582,7 @@ impl CommandInterpreter {
     fn note_paragraph_key(&mut self, key: Key) {
         self.invalidate_replace_restoration();
         if key != Key::ShiftEnter {
-            self.typing_style = Default::default();
+            self.retire_typing_context();
         }
         self.boundary_affinity = BoundaryAffinity::Downstream;
         if let Some(session) = self.insert_session.as_mut() {
@@ -8170,7 +8174,7 @@ impl CommandInterpreter {
         } else {
             None
         };
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         self.boundary_affinity = position.affinity;
         self.visual_position = Some(position);
         self.cursor = next_cursor;
@@ -8379,7 +8383,10 @@ impl CommandInterpreter {
                 | Key::End
                 | Key::Ctrl('o')
         ) {
-            self.typing_style = Default::default();
+            // Escape finishes counted insertion before retiring its exact
+            // source-side caret. Explicit movement retires it immediately.
+            if key == Key::Escape { self.typing_style = Default::default(); }
+            else { self.retire_typing_context(); }
         }
         if let Some(output) = self.try_mode_line_key(document, key)? {
             return Ok(output);
@@ -10615,7 +10622,7 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         let intent = value;
         let value = self.assist_typing_input_payload(
-            document, self.cursor..self.cursor, self.insertion_boundary_affinity(), intent,
+            document, self.cursor..self.cursor, self.markdown_typing_affinity(document), intent,
         )?;
         let input = value.text.as_str();
         if input.is_empty() {
@@ -10626,13 +10633,28 @@ impl CommandInterpreter {
             .expect("insert register payload has validated semantic breaks");
         let edit =
             FormattedPayloadEdit::new(self.cursor..self.cursor, payload)
-                .with_boundary_affinity(self.insertion_boundary_affinity());
+                .with_boundary_affinity(self.markdown_typing_affinity(document));
         document.validate_typing_payload(&edit)?;
         if let Some(prepared) = value.clipboard_fragment().map(|fragment|
             document.prepare_clipboard_fragment(self.cursor..self.cursor, fragment, input)
         ).transpose().map_err(command_document_error)?.flatten() {
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             self.cursor += input.len();
+        } else if document.format() == Format::Markdown
+            && self.markdown_autodetect()
+        {
+            let (prepared, cursor, authored_start, exit_source) = document.prepare_markdown_typing_batch(
+                edit, self.typing_style.named.as_ref(), &self.typing_style.values,
+                self.typing_style.inherited.as_ref(), self.input_assistance.literal, self.markdown_typing_exit(document),
+            ).map_err(command_document_error)?;
+            let floor = self.insert_session.as_ref().map(|session| {
+                if session.unit_floor == self.cursor { Ok(authored_start) }
+                else { prepared_cursor(document, &prepared, session.unit_floor, Association::BeforeInsertion) }
+            }).transpose()?;
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), floor) { session.unit_floor = floor; }
+            self.cursor = cursor;
+            self.note_markdown_typing_exit(document, exit_source)?;
         } else if !self.typing_style.is_empty() {
             let (prepared, cursor, authored_start) = document
                 .prepare_insertion_with_typing_context(
@@ -10767,7 +10789,8 @@ impl CommandInterpreter {
         }
         let journalable = self.replace_payload_is_journalable(input);
         if journalable
-            && (!self.typing_style.is_empty()
+            && ((document.format() == Format::Markdown && self.markdown_autodetect())
+                || !self.typing_style.is_empty()
                 || self
                     .insert_session
                     .as_ref()
@@ -10794,6 +10817,9 @@ impl CommandInterpreter {
                     self.typing_style.named.as_ref(),
                     &self.typing_style.values,
                     self.insertion_boundary_affinity(),
+                    document.format() == Format::Markdown && self.markdown_autodetect(),
+                    self.input_assistance.literal,
+                    self.markdown_typing_exit(document),
                 )
                 .map_err(command_document_error)?;
             let changed = !prepared.is_no_op();
@@ -10802,6 +10828,7 @@ impl CommandInterpreter {
                 .map_err(command_document_error)?;
             if let Some(last) = records.last() {
                 self.cursor = last.after_cursor;
+                self.note_markdown_typing_exit(document, last.exit_source)?;
             }
             if let Some(session) = self.insert_session.as_mut() {
                 if !continuing {
@@ -11000,7 +11027,7 @@ impl CommandInterpreter {
         // A named menu choice in Normal mode targets the next typing session.
         // Keep its sparse direct overrides separate from the named identity.
         if self.typing_style.named.is_none() {
-            self.typing_style = Default::default();
+            self.retire_typing_context();
         }
         let lines = document.hard_line_snapshot();
         self.cursor = match placement {
@@ -11232,7 +11259,7 @@ impl CommandInterpreter {
             expansion_changed |= output.document_changed;
             expansion_changed |= self.cleanup_generated_indent(document)?;
         }
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         if let Some(session) = self.insert_session.take() {
             let last_inserted = session.last_inserted.clone();
             document.end_edit_group();
@@ -13476,7 +13503,7 @@ impl CommandInterpreter {
         output: CommandOutput,
     ) -> CommandOutput {
         if output.cursor_moved {
-            self.typing_style = Default::default();
+            self.retire_typing_context();
             self.record_jump(document, origin, self.cursor);
         }
         output
@@ -13785,7 +13812,7 @@ impl CommandInterpreter {
     }
 
     fn move_cursor(&mut self, document: &Document, motion: Motion, count: usize) -> CommandOutput {
-        self.typing_style = Default::default();
+        self.retire_typing_context();
         let text = || document.text();
         let lines = document.hard_line_snapshot();
         let old = self.cursor;
