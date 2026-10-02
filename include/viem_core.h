@@ -338,6 +338,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_SOURCE 26u
 #define VIEM_EX_FRONTEND_FILE 27u
 #define VIEM_EX_FRONTEND_ONLY 28u
+/* Quit without writing; window_count carries the process exit status. */
+#define VIEM_EX_FRONTEND_CQUIT 29u
 #define VIEM_ARGUMENT_NEXT 1u
 #define VIEM_ARGUMENT_PREVIOUS 2u
 #define VIEM_ARGUMENT_FIRST 3u

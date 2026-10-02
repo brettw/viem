@@ -14,7 +14,7 @@ internal sealed partial class EditorWindow
 #if DEBUG
         if (Diagnostics.FrontendSmokeTests.ReportPath != null) return false;
 #endif
-        var arguments = ParseArguments(Environment.GetCommandLineArgs().Skip(1).ToArray());
+        var arguments = ParseArguments(App.Instance.LaunchInvocation.Arguments);
         return arguments.Error == null && arguments.Filenames.Length > 0;
     }
     private void BeginFileLaunch()
@@ -27,7 +27,7 @@ internal sealed partial class EditorWindow
     {
         try
         {
-            await OpenArguments(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory));
+            await OpenInvocation(App.Instance.LaunchInvocation);
             if (Panes.Count == 0 && !closed) AddPane(NewDocument());
             if (preferences.Error != null) ActivePane?.SetMessage(preferences.Error);
         }
@@ -48,7 +48,8 @@ internal sealed partial class EditorWindow
             Diagnostics.FrontendSmokeTests.Started = true;
             DispatcherQueue.TryEnqueue(async () => {
                 try {
-                    if (Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
+                    if (Environment.GetEnvironmentVariable("VIEM_TEST_BLOCKING_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_STARTUP_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_HOME_PATH_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_DIRECTORY_OPEN_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SYNTAX_ONLY") == "1"
@@ -85,6 +86,8 @@ internal sealed partial class EditorWindow
                             await Diagnostics.PaneLayoutTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1")
                             await TestReloadPositions();
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_BLOCKING_ONLY") == "1")
+                            await Diagnostics.BlockingEditTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1")
                             await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1")
@@ -137,6 +140,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                     await Diagnostics.DocumentCloseReviewTests.Run(preferences);
+                    await Diagnostics.BlockingEditTests.Run(preferences);
                     await Diagnostics.DirectoryOpenTests.Run(preferences);
                     await Diagnostics.HomePathTests.Run(preferences);
                     var scrolled = AddPane(NewDocument(Diagnostics.ScrollDrawingTests.Fixture, format: VIEM_FORMAT_MARKDOWN));
@@ -224,9 +228,32 @@ internal sealed partial class EditorWindow
 #endif
     internal void ReceiveInvocation(OpenInvocation request)
     {
-        async Task Next(Task previous) { await previous; try { Activate(); await OpenArguments(request); ActivePane?.FocusEditor(); } catch (Exception error) { ActivePane?.Report(error); } }
+        async Task Next(Task previous) { await previous; try { Activate(); await OpenInvocation(request); ActivePane?.FocusEditor(); } catch (Exception error) { ActivePane?.Report(error); } }
         invocationQueue = Next(invocationQueue);
     }
+    private async Task OpenInvocation(OpenInvocation request)
+    {
+        if (request.CompletionPipe == null) { await OpenArguments(request); return; }
+        BlockingEditSessions.Completion? completion = await BlockingEditSessions.Connect(request.CompletionPipe);
+        try
+        {
+            if (request.Arguments.Length != 1) throw new InvalidDataException("Blocking editing requires one file.");
+            string path = ResolvePath(request.Arguments[0], request.Directory);
+            if (Directory.Exists(path)) throw new IOException("Blocking editing requires a file, not a directory.");
+            await OpenArguments(request);
+            var document = App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document)
+                .FirstOrDefault(d => d.FilePath is string file && FileIdentity.Same(file, path));
+            if (document == null) throw new IOException("The requested file was not opened.");
+            App.Instance.BlockingEdits.Attach(document, completion);
+            completion = null;
+#if DEBUG
+            var owner = App.Instance.Windows.First(w => w.Panes.Any(p => p.Document == document));
+            await Diagnostics.BlockingEditTests.OnBlockingLaunch(owner);
+#endif
+        }
+        finally { completion?.Dispose(); }
+    }
+
     private async Task OpenArguments(OpenInvocation request)
     {
         var args = ParseArguments(request.Arguments);

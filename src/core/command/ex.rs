@@ -83,6 +83,7 @@ pub enum ExAction {
     },
     Quit,
     QuitAll,
+    Cquit { exit_code: u32 },
     WriteQuit {
         path: Option<String>,
     },
@@ -473,6 +474,15 @@ impl<'a> Parser<'a> {
         } else {
             self.parse_action(name, args, args_offset)?
         };
+        if name == CommandName::Cquit && range.is_some() {
+            let exit_code = match &range {
+                None => 1,
+                Some(ExRange::Single(ExAddress { base: AddressBase::Absolute(n), offset: 0 })) =>
+                    u32::try_from(*n).map_err(|_| ExParseError { offset: 0, kind: ExParseErrorKind::InvalidNumber(n.to_string()) })?,
+                _ => return self.error(ExParseErrorKind::UnexpectedRange(name.canonical().to_owned())),
+            };
+            action = ExAction::Cquit { exit_code };
+        }
         let window_count = matches!(name, CommandName::Split | CommandName::VSplit | CommandName::NewPane | CommandName::VNew | CommandName::Window | CommandName::Resize);
         if window_count {
             let count = match &range {
@@ -488,7 +498,7 @@ impl<'a> Parser<'a> {
             }
         }
         // The prefix for argument navigation is a file count, never a hard-line range.
-        let range = if name.is_argument_navigation() || window_count { None } else { range };
+        let range = if name.is_argument_navigation() || window_count || name == CommandName::Cquit { None } else { range };
         Ok(ExCommand {
             range,
             bang,
@@ -701,6 +711,15 @@ impl<'a> Parser<'a> {
             }),
             CommandName::Quit => no_args(ExAction::Quit),
             CommandName::QuitAll => no_args(ExAction::QuitAll),
+            CommandName::Cquit => {
+                let exit_code = if args.is_empty() { 1 } else {
+                    if !args.bytes().all(|byte| byte.is_ascii_digit()) {
+                        return Err(ExParseError { offset: args_offset, kind: ExParseErrorKind::UnexpectedArgument(args.to_owned()) });
+                    }
+                    args.parse::<u32>().map_err(|_| ExParseError { offset: args_offset, kind: ExParseErrorKind::InvalidNumber(args.to_owned()) })?
+                };
+                Ok(ExAction::Cquit { exit_code })
+            },
             CommandName::WriteQuit => Ok(ExAction::WriteQuit {
                 path: optional_string(args),
             }),
@@ -869,6 +888,7 @@ enum CommandName {
     SaveAs,
     Quit,
     QuitAll,
+    Cquit,
     WriteQuit,
     Xit,
     WriteAll,
@@ -933,6 +953,7 @@ impl CommandName {
             Self::SaveAs => "saveas",
             Self::Quit => "quit",
             Self::QuitAll => "qall",
+            Self::Cquit => "cquit",
             Self::WriteQuit => "wq",
             Self::Xit => "xit",
             Self::WriteAll => "wall",
@@ -981,6 +1002,7 @@ impl CommandName {
                 | Self::SaveAs
                 | Self::Quit
                 | Self::QuitAll
+                | Self::Cquit
                 | Self::WriteQuit
                 | Self::Xit
                 | Self::WriteAll
@@ -992,7 +1014,7 @@ impl CommandName {
     }
 
     fn accepts_range(self) -> bool {
-        matches!(self, Self::Split | Self::VSplit | Self::NewPane | Self::VNew | Self::Window | Self::Resize | Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
+        matches!(self, Self::Cquit | Self::Split | Self::VSplit | Self::NewPane | Self::VNew | Self::Window | Self::Resize | Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
             | Self::Retab | Self::Left | Self::Right | Self::Center | Self::Read) ||
         matches!(self, Self::Next | Self::Previous | Self::Argument | Self::WriteNext | Self::WritePrevious) || matches!(
             self,
@@ -1126,6 +1148,7 @@ const COMMANDS: &[CommandSpec] = &[
         spelling: "quit",
         minimum: 1,
     },
+    CommandSpec { name: CommandName::Cquit, spelling: "cquit", minimum: 2 },
     CommandSpec {
         name: CommandName::QuitAll,
         spelling: "qall",
@@ -1890,6 +1913,22 @@ mod tests {
         assert_eq!(parse(":wq").action, ExAction::WriteQuit { path: None });
         assert_eq!(parse(":x").action, ExAction::Xit { path: None });
         assert_eq!(parse(":wa").action, ExAction::WriteAll);
+    }
+
+    #[test]
+    fn cquit_parses_exit_status_without_a_document_range() {
+        for command in [":cq", ":cqu", ":cquit", ":cq!"] {
+            assert_eq!(parse(command).action, ExAction::Cquit { exit_code: 1 });
+        }
+        for code in [0, 7, 255] {
+            let command = parse(&format!(":{code}cq"));
+            assert_eq!(command.action, ExAction::Cquit { exit_code: code });
+            assert_eq!(command.range, None);
+        }
+        assert_eq!(parse(":cq! 7").action, ExAction::Cquit { exit_code: 7 });
+        for command in [":cq file", ":1,2cq", ":%cq", ":.cq", ":4294967296cq"] {
+            assert!(parse_ex(command).is_err(), "{command}");
+        }
     }
 
     #[test]

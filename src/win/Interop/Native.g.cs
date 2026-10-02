@@ -1493,6 +1493,7 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_FRONTEND_SOURCE = 26u;
     public const uint VIEM_EX_FRONTEND_FILE = 27u;
     public const uint VIEM_EX_FRONTEND_ONLY = 28u;
+    public const uint VIEM_EX_FRONTEND_CQUIT = 29u;
     public const uint VIEM_ARGUMENT_NEXT = 1u;
     public const uint VIEM_ARGUMENT_PREVIOUS = 2u;
     public const uint VIEM_ARGUMENT_FIRST = 3u;

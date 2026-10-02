@@ -11,6 +11,8 @@ public partial class App : Application
     internal Preferences Preferences { get; }
     internal DocumentWindowPlacement WindowPlacement { get; }
     private InstanceBroker? broker;
+    internal BlockingEditSessions BlockingEdits { get; } = new();
+    internal OpenInvocation LaunchInvocation { get; private set; } = new([], Environment.CurrentDirectory);
     internal App(Preferences preferences)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("app.initialize");
@@ -25,11 +27,13 @@ public partial class App : Application
     protected override async void OnLaunched(LaunchActivatedEventArgs args)
     {
         Diagnostics.StartupPerformance.Mark("app.launched");
+        try { LaunchInvocation = OpenInvocation.FromCommandLine(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory); }
+        catch (Exception error) { _ = MessageBox(0, error.Message, "Viem could not open the file", 0x10); Exit(); return; }
         Rendering.FontCatalog.PrepareFonts();
         using (Diagnostics.StartupPerformance.Measure("instance.broker")) broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {
-            try { await broker.Redirect(new(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory)); }
+            try { await broker.Redirect(LaunchInvocation); }
             catch (Exception error) { _ = MessageBox(0, error.Message, "Viem could not open the file", 0x10); }
             broker.Dispose(); Exit(); return;
         }

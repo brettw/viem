@@ -23,6 +23,10 @@ try {
     if ($Offline) { $dotnetArguments += '--no-restore' }
     & dotnet @dotnetArguments
     if ($LASTEXITCODE -ne 0) { throw 'Windows frontend build failed.' }
+    $launcherArguments = @('publish', 'src/win/Blocking/BlockingViem.csproj', '-c', $Configuration, '--nologo', '--output', $executableDirectory)
+    if ($Offline) { $launcherArguments += '--no-restore' }
+    & dotnet @launcherArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Blocking editor launcher build failed.' }
     $executable = Join-Path $executableDirectory 'Viem.exe'
     Write-Output $executable
 }

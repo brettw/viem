@@ -362,6 +362,7 @@ pub enum ExFileRequest {
     QuitAll {
         force: bool,
     },
+    Cquit { exit_code: u32 },
     WriteQuit {
         path: Option<String>,
         force: bool,
@@ -1214,6 +1215,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 force: command.bang,
             },
         ),
+        ExAction::Cquit { exit_code } => push_file(&mut plan, ExFileRequest::Cquit { exit_code: *exit_code }),
         ExAction::QuitAll => push_file(
             &mut plan,
             ExFileRequest::QuitAll {
@@ -3799,6 +3801,21 @@ mod tests {
         assert!(outcome.document_changed);
         assert_eq!(document.file_format(), FileFormat::Dos);
         assert_eq!(document.source_bytes(), b"a\r\nb");
+    }
+
+    #[test]
+    fn cquit_stages_a_host_exit_without_editing_or_writing() {
+        for (command, code) in [(":cq", 1), (":7cquit", 7), (":0cq", 0)] {
+            let mut document = Document::new("unsaved text");
+            let mut state = ExExecutionState::default();
+            let revision = document.revision();
+            let plan = prepare_ex(&document, &state, &context(0), &parse_ex(command).unwrap(), &()).unwrap();
+            let outcome = commit_ex(&mut document, &mut state, plan).unwrap();
+            assert_eq!(outcome.frontend_requests, vec![ExFrontendRequest::File(ExFileRequest::Cquit { exit_code: code })]);
+            assert!(!outcome.document_changed);
+            assert_eq!(document.revision(), revision);
+            assert_eq!(document.text(), "unsaved text");
+        }
     }
 
     #[test]
