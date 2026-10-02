@@ -313,6 +313,11 @@ markup. Missing constructs are compatibility gaps, not alternative rules. Keep
 [the feature demo](docs/markdown_demo.md) current. The gap inventory is the
 reference for deferred constructs and known incompatibilities.
 
+Planned GFM table support follows [the Markdown table specification](docs/markdown-tables.md),
+including insertion, cell editing, styles, source-only visual alignment, and
+portable validation. That specification records target behavior, not implemented
+support; keep the compatibility inventory explicit until the feature ships.
+
 Deliberate presentation exceptions:
 
 - Images, reference links, and reference definitions retain literal bracket

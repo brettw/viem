@@ -1,6 +1,6 @@
 # Markdown compatibility with GitHub
 
-Updated September 29, 2026. The target is GitHub's rendering of repository
+Updated October 2, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
 from deferred work. It does not claim complete GFM conformance.
@@ -54,7 +54,9 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 
 1. **Tables.** Pipe tables still display as ordinary text, without cell/row
    structure or alignment. Table rendering and editing are reserved for a
-   separate implementation. HTML tables also retain literal source.
+   separate implementation; the [table specification](docs/markdown-tables.md)
+   defines the planned behavior and acceptance coverage. HTML tables also retain
+   literal source.
 2. **Ordered children interrupting prose.** In `- parent\n  4. child\n- tail`,
    GFM keeps `4. child` as literal continuation of the first item's paragraph;
    an ordered child starting above 1 needs a blank separator first. Viem's
