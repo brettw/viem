@@ -1187,6 +1187,10 @@ final class EVCoreViewSession {
         try checked(viem_core_view_set_padding(document.core, viewID, Float(padding.top), Float(padding.left), Float(padding.bottom), Float(padding.right)), operation: "Update view margins")
     }
 
+    func setMarkdownAutodetect(_ enabled: Bool) throws {
+        try checked(viem_core_view_set_markdown_autodetect(document.core, viewID, enabled ? 1 : 0), operation: "Update Markdown typing")
+    }
+
     func setSmartQuotes(_ enabled: Bool) throws {
         try checked(viem_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
     }

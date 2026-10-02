@@ -2451,6 +2451,7 @@ ViemStatus viem_core_view_default_column_width(ViemCoreHandle handle, ViemViewId
 ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t mode, ViemCoreOutcomeV1 *out_outcome);
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */
 ViemStatus viem_core_view_set_smart_quotes(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
+ViemStatus viem_core_view_set_markdown_autodetect(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 ViemStatus viem_core_view_set_wrap(ViemCoreHandle core, ViemViewId view,
                                    uint32_t wrap,
                                    ViemCoreOutcomeV1 *out_outcome);

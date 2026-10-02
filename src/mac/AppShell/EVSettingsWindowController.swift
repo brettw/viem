@@ -28,6 +28,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let content = NSView()
   private var observer: NSObjectProtocol?
   private var editingObserver: NSObjectProtocol?
+  private weak var markdownAutodetectCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
@@ -259,7 +260,14 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let explanation = NSTextField(wrappingLabelWithString: "Use opening and closing typographic quotes for text entered or pasted into prose. Code and markup syntax keep their original quotes.")
       explanation.textColor = .secondaryLabelColor
       explanation.font = .systemFont(ofSize: 12)
-      let group = section("Typing assistance", views: [checkbox, explanation])
+      let markdown = NSButton(checkboxWithTitle: "Automatically format typed Markdown", target: self, action: #selector(changeMarkdownAutodetect(_:)))
+      markdown.state = editingPreferences.markdownAutodetect ? .on : .off
+      markdown.setAccessibilityLabel("Automatically format typed Markdown")
+      markdownAutodetectCheckbox = markdown
+      let markdownExplanation = NSTextField(wrappingLabelWithString: "In Markdown Formatted view, completed Markdown spans and block prefixes become formatting. Use Control-Q before a character to keep it literal.")
+      markdownExplanation.textColor = .secondaryLabelColor
+      markdownExplanation.font = .systemFont(ofSize: 12)
+      let group = section("Typing assistance", views: [checkbox, explanation, markdown, markdownExplanation])
       stack.addArrangedSubview(group)
       group.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       textWidthField.stringValue = String(editingPreferences.textWidth)
@@ -446,6 +454,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   private func refreshEditingPreferences(error: String? = nil) {
+    markdownAutodetectCheckbox?.state = editingPreferences.markdownAutodetect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
@@ -666,6 +675,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   @objc private func removeTheme(_ sender: Any?) {
     themeActions.delete()
     refresh()
+  }
+  @objc private func changeMarkdownAutodetect(_ sender: NSButton) {
+    editingPreferences.setMarkdownAutodetect(sender.state == .on)
+    refreshEditingPreferences()
   }
   @objc private func changeSmartQuotes(_ sender: NSButton) {
     editingPreferences.setSmartQuotes(sender.state == .on)

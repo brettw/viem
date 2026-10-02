@@ -236,6 +236,7 @@ internal static class StyleAndSettingsTests
         string discoveredThemePath = Path.Combine(preferences.ThemesDirectory, "Discovered-" + Guid.NewGuid().ToString("N")[..8] + ".json");
         var theme = preferences.Theme; string font = preferences.Get("theme", "statusFontFamily", "System"); double size = preferences.StatusFontSize;
         byte[] source = pane.Document.Source(pane.Document.State.document_revision);
+        bool priorMarkdownAutodetect = preferences.MarkdownAutodetect;
         try {
             Check(settings.Categories.Items.Count == 3 && settings.Categories.SelectedIndex == 1 && settings.CurrentPage.Visibility == Visibility.Visible, "settings opens Theme beside a three-category sidebar without Code");
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(settings), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".settings.png");
@@ -261,6 +262,12 @@ internal static class StyleAndSettingsTests
                 settings.Categories.SelectedIndex = index; await Task.Delay(100);
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
             }
+            var markdownTyping = Children<CheckBox>(settings.CurrentPage).Single(c => c.Content as string == "Automatically format typed Markdown");
+            Check(markdownTyping.IsChecked == preferences.MarkdownAutodetect, "Editing reflects the Markdown typing preference");
+            markdownTyping.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(100);
+            Check(preferences.MarkdownAutodetect != priorMarkdownAutodetect
+                && new Preferences(preferences.DirectoryPath).MarkdownAutodetect == preferences.MarkdownAutodetect,
+                "the native Markdown typing checkbox persists its new value");
             Check(!Children<TextBlock>(settings.RootControl).Any(t => t.Text == "Code")
                 && !Children<Button>(settings.RootControl).Any(b => b.Content as string == "Edit Code Styles…"),
                 "settings has no Code section or Code Styles entrypoint");
@@ -268,6 +275,7 @@ internal static class StyleAndSettingsTests
         }
         finally {
             settings.Close(); File.Delete(discoveredThemePath); Preferences.AtomicWrite(paperPath, priorPaper);
+            preferences.Set("editing", "markdownAutodetect", priorMarkdownAutodetect);
             var json = Preferences.ThemeJson(theme); json["statusFontFamily"] = font; json["statusFontSize"] = size;
             preferences.SelectTheme(priorTheme, priorPath);
             preferences.SetSections(new() { ["theme"] = json }); window.Activate(); pane.FocusEditor();

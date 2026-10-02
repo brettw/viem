@@ -30,6 +30,7 @@ pub(crate) struct RecordedReplacement {
     pub next_target: usize,
     pub inserted: String,
     pub original: Option<String>,
+    pub exit_source: Option<usize>,
     pub restoration: SourceEditRestoration,
 }
 #[derive(Clone)]
@@ -178,6 +179,9 @@ impl Document {
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
+        autodetect: bool,
+        literal: bool,
+        exit: Option<crate::document::SourcePoint>,
     ) -> Result<(PreparedModelTransaction, Vec<RecordedReplacement>), ModelTransactionError> {
         if let Some(style) = named {
             self.validate_typing_named_style(style)?;
@@ -190,6 +194,8 @@ impl Document {
         let mut records = Vec::new();
         let mut cursor = cursor;
         let mut target = target;
+        let mut affinity = affinity;
+        let mut exit_source = exit.map(|point| point.offset());
         for inserted in input.graphemes(true) {
             let lines = scratch.hard_line_snapshot();
             let end = lines
@@ -216,12 +222,16 @@ impl Document {
                 .expect("journaled Replace excludes semantic hard breaks");
             let edit =
                 FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity);
-            let (prepared, after_cursor) = if values.is_empty() && named.is_none() {
+            let (prepared, after_cursor, closed) = if self.format() == Format::Markdown && (autodetect || literal) {
+                let (prepared, caret, _, closed) = scratch.prepare_markdown_typing_grapheme(edit, named, values, None, literal, exit_source.map(|at| scratch.source_point(at)).transpose()?)?;
+                (prepared, caret, closed)
+            } else if values.is_empty() && named.is_none() {
                 let prepared = scratch.prepare_formatted_payload_edits(vec![edit])?;
                 let caret = map_after(&scratch, &prepared, target)?;
-                (prepared, caret)
+                (prepared, caret, None)
             } else {
-                scratch.prepare_insertion_with_typing_style(edit, named, values)?
+                let (prepared, caret) = scratch.prepare_insertion_with_typing_style(edit, named, values)?;
+                (prepared, caret, None)
             };
             // Source-visible formatting inserts closing delimiters beyond the
             // presentation caret. The next Replace consumes the next original
@@ -282,6 +292,7 @@ impl Document {
                 next_target,
                 inserted: inserted.to_owned(),
                 original,
+                exit_source: closed,
                 restoration: SourceEditRestoration {
                     document: self.id(),
                     expected_revision,
@@ -292,6 +303,8 @@ impl Document {
             scratch.commit_model_transaction(prepared)?;
             cursor = after_cursor;
             target = next_target;
+            exit_source = closed;
+            affinity = if exit_source.is_some() { BoundaryAffinity::Downstream } else { BoundaryAffinity::Upstream };
         }
         let source_patches = source.source_patches();
         let text_edits = formatted.formatted_edits();

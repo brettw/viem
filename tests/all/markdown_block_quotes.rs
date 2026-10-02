@@ -315,6 +315,7 @@ fn quoted_list_and_code_enter_keep_their_native_body_structure() {
 fn literal_quote_punctuation_typed_in_wysiwyg_stays_text() {
     let mut core = Core::new(document("", Format::Markdown));
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+    core.handle(view, CoreEvent::SetMarkdownAutodetect(false)).unwrap();
     core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i'))))
         .unwrap();
     core.handle(view, CoreEvent::Input(InputEvent::text("> literal")))

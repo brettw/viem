@@ -152,3 +152,4 @@ mod containers;
 mod block_boxes;
 
 mod document_mode;
+mod markdown_autodetect;

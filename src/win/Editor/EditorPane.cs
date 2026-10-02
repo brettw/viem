@@ -184,6 +184,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             prepared.Zoom(viewport.scale);
             prepared.LineMode(View.CurrentLineMode);
             if (document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE) prepared.ParagraphFlow(View.ParagraphFlowEnabled);
+            prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);
             prepared.ClipboardText = View.ClipboardText;
             prepared.ClipboardFragment = View.ClipboardFragment;
@@ -208,7 +209,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void ApplyPreferences()
     {
         Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
-        View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes);
+        View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
     }
     private void ApplyTheme()
     {

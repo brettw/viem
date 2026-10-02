@@ -2,6 +2,17 @@
 
 Open this file in Markdown Source, then switch to Markdown WYSIWYG. The original source is preserved when switching views and when saving without edits.
 
+In Settings > Editing, **Automatically format typed Markdown** is on by default.
+In WYSIWYG, type `*italic*`, `**bold**`, `***bold italic***`, `~~strike~~`,
+backtick-delimited code, or `[label](https://example.com)` to complete a formatted
+span. At a paragraph's start, a space after `#` through `######`, `>`, `-`, `*`,
+`+`, or a decimal list marker activates that structure. Three backticks or tildes
+immediately make a literal paragraph a Code Block and put the caret at its start.
+`---`, or `___ ` and `*** ` with a trailing space, create thematic rules.
+Control-Q before a character keeps it literal, including after
+saving and reopening. Disabling the option restores literal WYSIWYG input;
+Source, Text and Code input are unaffected.
+
 ## Paragraphs and line breaks
 
 This sentence is written across

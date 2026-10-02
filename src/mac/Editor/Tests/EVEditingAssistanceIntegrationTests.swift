@@ -7,6 +7,34 @@ import XCTest
 
 @MainActor
 final class EVEditingAssistanceIntegrationTests: XCTestCase {
+  func testNativeMarkdownTypingTracksLivePreferenceAndLiteralNext() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-markdown-typing-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let preferences = EVEditingPreferences(configuration: EVConfigurationStore(directory: directory))
+    let backend = EVCoreDocumentBackend()
+    try backend.read(source: Data(), typeName: EVDocument.markdownType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    let session = try XCTUnwrap(surface.session)
+    surface.editorView.editingPreferences = preferences
+    surface.setFormattedView(true)
+    surface.performInput { _ = try session.sendText("i") }
+    func type(_ value: String) {
+      surface.editorView.insertText(value, replacementRange: NSRange(location: NSNotFound, length: 0))
+    }
+    type("**word**")
+    XCTAssertEqual(try backend.formattedText(), "word")
+    preferences.setMarkdownAutodetect(false)
+    type(" *literal*")
+    XCTAssertEqual(try backend.formattedText(), "word *literal*")
+    preferences.setMarkdownAutodetect(true)
+    surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: UInt32(Character("q").asciiValue!)) }
+    type("*"); type("quoted*")
+    XCTAssertEqual(try backend.formattedText(), "word *literal**quoted*")
+    surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.formattedText(), "")
+  }
   func testLiveSmartQuotePreferenceOnlyAffectsSubsequentTypedInput() throws {
     let suite = "viem-assistance-native-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

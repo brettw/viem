@@ -345,6 +345,7 @@ pub enum CoreEvent {
     /// Change the view-local domain used by unprefixed line commands.
     SetLineMode(crate::command::LineMode),
     SetSmartQuotes(bool),
+    SetMarkdownAutodetect(bool),
     /// Change the shared source line-ending spelling through one exact,
     /// revision-bound model transaction. This is intentionally typed rather
     /// than routed through Ex parsing so native UI can preserve model policy
@@ -5549,6 +5550,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                     composition_changes: Vec::new(),
                 })
             }
+            CoreEvent::SetMarkdownAutodetect(enabled) => {
+                self.views.get_mut(&view_id).expect("view checked").commands.set_markdown_autodetect(enabled);
+                Ok(CoreOutcome { command: None, document_changed: false, position_map: None,
+                    layout_changed: false, composition_changes: Vec::new() })
+            }
             CoreEvent::SetSmartQuotes(enabled) => {
                 self.views
                     .get_mut(&view_id)
@@ -6936,6 +6942,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let replaced_empty_range = request.edit().range.is_empty();
         let inserted_text = request.edit().replacement.clone();
         let caret_offset = request.caret_offset();
+        let markdown_exit = request.markdown_exit();
         let before = request.prepared_model_transaction().before_revision();
         let planned_after = request.prepared_model_transaction().after_revision();
         let changed = planned_after != before;
@@ -7001,6 +7008,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             target_commands.finish_select_composition_commit(&mut self.document, select_commit, caret_offset, &inserted_text);
         }
         target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
+        target_commands.note_markdown_typing_exit(&self.document, markdown_exit)
+            .expect("Markdown preparation validated the committed syntax boundary");
         for (id, commands) in next_commands {
             self.views
                 .get_mut(&id)

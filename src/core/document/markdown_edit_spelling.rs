@@ -297,7 +297,7 @@ impl Document {
                                         && baseline.blocks_for_region(&span.formatted).iter()
                                             .any(|block| block.markdown_html))
                             });
-                    if visible
+                    if visible && !super::markdown_autodetect::protected_reference(tail)
                         && scopes
                             .iter()
                             .any(|scope| scope.start <= origin + start && origin + end <= scope.end)
