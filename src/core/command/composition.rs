@@ -288,6 +288,22 @@ impl CompositionSession {
         // and its selection/generation remain owned by the input method.
         let mut assisted = self.clone();
         assisted.marked_text = value.text;
+        if let Some(selection) = commands.table_selection(document) {
+            let (prepared, caret_offset) = document.prepare_table_edit(
+                document.id(), document.revision(), crate::document::TableEditIntent::ReplaceCells {
+                    table: selection.table, rows: selection.rows(), columns: selection.columns(),
+                    text: assisted.marked_text.clone(), anchor_row: selection.anchor_row,
+                    anchor_column: selection.anchor_column,
+                },
+            ).map_err(composition_model_error)?;
+            return Ok(CompositionCommitRequest {
+                document_id: self.target.document_id,
+                expected_revision: self.target.revision,
+                generation: self.generation,
+                edit: TextEdit::new(self.replacement_range(), assisted.marked_text),
+                caret_offset, markdown_exit: None, prepared,
+            });
+        }
         let inherited = document.replacement_typing_context(self.replacement_range())
             .map_err(CompositionError::Document)?;
         assisted.prepare_commit_with_typing_style(

@@ -342,6 +342,37 @@ struct CoreTextMeasurementProviderTests {
     #expect(provider.renderRegistry.estimatedBytesForTesting == 0)
   }
 
+  @Test("Worker providers isolate response storage and share retained glyph leases")
+  func workerProviderStorage() async throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 845)
+    let ui = try shape(provider: provider, text: "foreground", globalStart: 0,
+      purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA))
+    let worker = provider.makeWorkerProvider()
+    #expect(worker.renderRegistry === provider.renderRegistry)
+    #expect(worker.measurementEnvironmentID == provider.measurementEnvironmentID)
+    #expect(worker.renderRunOwner == provider.renderRunOwner)
+    let result = try await Task.detached {
+      let isWorkerThread = { !Thread.isMainThread }()
+      #expect(isWorkerThread)
+      return try shape(provider: worker, text: "worker 👩🏽‍💻", globalStart: 100,
+        purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA))
+    }.value
+    #expect(provider.retainedResponseArenaCountForTesting == 1)
+    #expect(worker.retainedResponseArenaCountForTesting == 1)
+    let table = worker.makeProviderTable()
+    let handles = result.clusters.filter { $0.hasRenderRun == 1 }.map(\.renderRun)
+    let retain = try #require(table.retain_render_runs)
+    let release = try #require(table.release_render_runs)
+    let lease = try #require(handles.withUnsafeBufferPointer { retain(table.context, $0.baseAddress, UInt64($0.count)) })
+    defer { release(lease) }
+    _ = try shape(provider: worker, text: "next response", globalStart: 0)
+    #expect(handles.allSatisfy { provider.renderRegistry.contains(identifier: $0.identifier, metricsGeneration: $0.metrics_generation) })
+    #expect(ui.clusters.filter { $0.hasRenderRun == 1 }.allSatisfy { provider.renderRegistry.contains(identifier: $0.renderRun.identifier, metricsGeneration: $0.renderRun.metrics_generation) })
+    provider.invalidateMetrics()
+    #expect(worker.metricsGeneration + 1 == provider.metricsGeneration)
+    #expect(handles.allSatisfy { !provider.renderRegistry.contains(identifier: $0.identifier, metricsGeneration: $0.metrics_generation) })
+  }
+
   @Test("changing metrics generation retires render handles")
   func generationLifetime() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 45)

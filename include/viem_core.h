@@ -1010,6 +1010,7 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_ROLE_CODE_BLOCK 4u
 #define VIEM_STYLE_ROLE_LIST 5u
 #define VIEM_STYLE_ROLE_LIST_ITEM 6u
+#define VIEM_STYLE_ROLE_TABLE 7u
 
 
 #define VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION 2u
@@ -1701,6 +1702,7 @@ typedef struct ViemVisualSelectionRectangleV1 {
 #define VIEM_LOGICAL_SELECTION_KIND_CHARACTER 1u
 #define VIEM_LOGICAL_SELECTION_KIND_LINE 2u
 #define VIEM_LOGICAL_SELECTION_KIND_BLOCK 3u
+#define VIEM_LOGICAL_SELECTION_KIND_CELLS 4u
 
 #define VIEM_SEMANTIC_STYLE_STRONG 1u
 #define VIEM_SEMANTIC_STYLE_EMPHASIS 2u
@@ -1732,6 +1734,84 @@ typedef struct ViemLogicalSelectionIdentityV1 {
 
 #define VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE \
   ((uint32_t)sizeof(ViemLogicalSelectionIdentityV1))
+
+#define VIEM_TABLE_CAN_INSERT 1u
+#define VIEM_TABLE_IN_TABLE 2u
+#define VIEM_TABLE_HEADER 4u
+#define VIEM_TABLE_CELL_SELECTED 8u
+#define VIEM_TABLE_ALIGN_UNSPECIFIED 0u
+#define VIEM_TABLE_ALIGN_LEFT 1u
+#define VIEM_TABLE_ALIGN_CENTER 2u
+#define VIEM_TABLE_ALIGN_RIGHT 3u
+#define VIEM_TABLE_INSERT_ROW_ABOVE 1u
+#define VIEM_TABLE_INSERT_ROW_BELOW 2u
+#define VIEM_TABLE_DELETE_ROW 3u
+#define VIEM_TABLE_INSERT_COLUMN_LEFT 4u
+#define VIEM_TABLE_INSERT_COLUMN_RIGHT 5u
+#define VIEM_TABLE_DELETE_COLUMN 6u
+#define VIEM_TABLE_SET_ALIGNMENT 7u
+#define VIEM_TABLE_CLEAR_CELL 8u
+
+typedef struct ViemTableContextV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  ViemLogicalSelectionIdentityV1 selection;
+  uint64_t table_id;
+  uint64_t row;
+  uint64_t column;
+  uint64_t rows;
+  uint64_t columns;
+  uint32_t alignment;
+  uint32_t reserved;
+} ViemTableContextV1;
+#define VIEM_TABLE_CONTEXT_V1_SIZE ((uint32_t)sizeof(ViemTableContextV1))
+
+typedef struct ViemInsertTableV1 {
+  uint32_t struct_size;
+  uint32_t reserved;
+  ViemLogicalSelectionIdentityV1 expected_selection;
+  uint32_t columns;
+  uint32_t body_rows;
+} ViemInsertTableV1;
+#define VIEM_INSERT_TABLE_V1_SIZE ((uint32_t)sizeof(ViemInsertTableV1))
+
+typedef struct ViemTableActionV1 {
+  uint32_t struct_size;
+  uint32_t action;
+  ViemTableContextV1 expected;
+  uint32_t alignment;
+  uint32_t reserved;
+} ViemTableActionV1;
+#define VIEM_TABLE_ACTION_V1_SIZE ((uint32_t)sizeof(ViemTableActionV1))
+
+/* Current WYSIWYG cell geometry; rects are in document layout coordinates.
+ * Exported only from the exact requested immutable layout snapshot. */
+typedef struct ViemTableCellV1 {
+  uint64_t table_id;
+  uint64_t row;
+  uint64_t column;
+  uint64_t cell_id;
+  uint64_t text_start;
+  uint64_t text_end;
+  ViemLayoutRectV1 rect;
+  ViemLayoutRectV1 table_rect;
+  uint32_t alignment;
+  uint32_t flags;
+} ViemTableCellV1;
+#define VIEM_TABLE_CELL_V1_SIZE ((uint32_t)sizeof(ViemTableCellV1))
+
+typedef struct ViemTableSelectionV1 {
+  uint32_t struct_size;
+  uint32_t active;
+  uint64_t document_id;
+  uint64_t document_revision;
+  uint64_t table_id;
+  uint64_t anchor_row;
+  uint64_t anchor_column;
+  uint64_t active_row;
+  uint64_t active_column;
+} ViemTableSelectionV1;
+#define VIEM_TABLE_SELECTION_V1_SIZE ((uint32_t)sizeof(ViemTableSelectionV1))
 
 /* Adapter capability and check/mixed state at one core-owned selection. */
 typedef struct ViemSemanticStylePresentationV1 {
@@ -2084,6 +2164,15 @@ ViemStatus viem_layout_work_compute(uint64_t request,
     const ViemTextMeasurementProviderV1 *provider, uint64_t *out_result);
 ViemStatus viem_core_view_install_prelayout(ViemCoreHandle core, ViemViewId view,
     int32_t direction, uint64_t result, uint8_t *out_installed);
+/* Visible table width refinement uses the same immutable worker computation.
+ * Prepare returns zero when widths are exact or visible work is already active.
+ * Install consumes the result, discards stale dependencies and preserves the
+ * anchored viewport. An installed result requires refreshing visible exports.
+ * Repeat prepare after successful installation until it returns zero. */
+ViemStatus viem_core_view_prepare_table_refinement(ViemCoreHandle core, ViemViewId view,
+    uint64_t *out_request);
+ViemStatus viem_core_view_install_table_refinement(ViemCoreHandle core, ViemViewId view,
+    uint64_t result, uint8_t *out_installed);
 ViemStatus viem_layout_work_cancel(uint64_t request);
 ViemStatus viem_layout_work_release(uint64_t work);
 ViemStatus viem_core_view_state(ViemCoreHandle core, ViemViewId view,
@@ -2466,6 +2555,30 @@ ViemStatus viem_core_view_set_file_format(
 ViemStatus viem_core_view_list_selection(
     ViemCoreHandle core, ViemViewId view,
     ViemLogicalSelectionIdentityV1 *out_selection);
+ViemStatus viem_core_view_table_context(ViemCoreHandle core, ViemViewId view,
+    ViemTableContextV1 *out_context);
+ViemStatus viem_core_view_table_context_at(ViemCoreHandle core, ViemViewId view,
+    uint64_t document_id, uint64_t document_revision, uint64_t text_offset,
+    ViemTableContextV1 *out_context);
+ViemStatus viem_core_view_insert_table(ViemCoreHandle core, ViemViewId view,
+    const ViemInsertTableV1 *request, ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_table_action(ViemCoreHandle core, ViemViewId view,
+    const ViemTableActionV1 *request, ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_copy_table_cells(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, ViemTableCellV1 *output,
+    uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_core_view_table_selection(ViemCoreHandle core, ViemViewId view,
+    ViemTableSelectionV1 *out_selection);
+ViemStatus viem_core_view_select_table_cells(ViemCoreHandle core, ViemViewId view,
+    const ViemTableSelectionV1 *request, ViemCoreOutcomeV1 *out_outcome);
+/* Complete exact cell selection: no clipboard effects; row-major ranges include
+ * offscreen/empty cells. Pointer regions must be pairwise disjoint. */
+ViemStatus viem_core_view_copy_table_selection_text(ViemCoreHandle core, ViemViewId view,
+    const ViemTableSelectionV1 *expected, uint8_t *output,
+    uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_core_view_copy_table_selection_ranges(ViemCoreHandle core, ViemViewId view,
+    const ViemTableSelectionV1 *expected, ViemFormattedUtf8RangeV1 *output,
+    uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_view_set_list_style(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetListStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);

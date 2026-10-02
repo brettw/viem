@@ -36,6 +36,7 @@ impl Document {
         edit: &TextEdit,
         payload: Option<&FormattedPayloadEdit>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if let Some(patches) = self.table_text_patches(edit)? {return Ok(Some(patches));}
         if self.format() == Format::Markdown
             && !edit.replacement.contains('\n')
             && super::super::source_edit::complete_contributors(self.projection(), edit)?.range
@@ -220,6 +221,13 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
+            if edits.iter().all(|edit|self.projection().table_at(edit.range.start).is_some_and(|table|edit.range==table.range)) {return Ok(());}
+            if edits.iter().all(|edit|self.projection().table_cell_at(edit.range.start).is_some_and(|(_,_,cell)|edit.range.end<=cell.range.end)) {
+                super::super::markdown_code::preserve_edited_inline_delimiters(self,edits,patches)?;
+                markdown_split::remove_empty_emphasis(self,edits,patches)?;
+                markdown_split::repair_flanking(self,edits,patches)?;
+                return Ok(());
+            }
             if edits.iter().all(|edit| {
                 !edit.replacement.contains('\n')
                     && !self.text()[edit.range.clone()].contains('\n')

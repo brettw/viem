@@ -81,6 +81,10 @@ mod markdown_edit_audit;
 mod markdown_indented_code;
 mod markdown_empty_continuations;
 mod markdown_inline_breaks;
+mod markdown_tables;
+mod markdown_table_layout;
+mod markdown_table_coordinator;
+mod markdown_table_typography;
 mod markdown_literal_insertions;
 mod markdown_edit_spelling;
 mod markdown_numbering;
@@ -153,3 +157,7 @@ mod block_boxes;
 
 mod document_mode;
 mod markdown_autodetect;
+
+mod markdown_table_commands;
+
+mod markdown_table_ffi;

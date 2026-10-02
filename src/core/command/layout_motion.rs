@@ -329,7 +329,19 @@ pub fn move_visual_rows(
         Some(value) if value.is_finite() => value,
         _ => current_caret.x,
     };
-    let target_row = shift_row_index(snapshot, current_row, row_delta)?;
+    let target_row = if snapshot.table_cells().is_empty() {
+        shift_row_index(snapshot, current_row, row_delta)?
+    } else {
+        let down = row_delta >= 0;
+        let mut target = current_row;
+        for _ in 0..row_delta.unsigned_abs() {
+            if let Some(next) = snapshot.adjacent_visual_row(target, down, x) { target = next; }
+            else if if down { snapshot.contains_document_end() } else { snapshot.contains_document_start() } { break; }
+            else { return Err(outside_materialized_coverage(snapshot,
+                if down { LayoutDemandEdge::After } else { LayoutDemandEdge::Before }, 1)); }
+        }
+        target
+    };
     let row = &snapshot.rows[target_row];
     if !snapshot.horizontal_geometry_is_materialized(target_row, x) {
         return Err(horizontal_demand(snapshot, current.text_offset, Some(x)));
@@ -1195,6 +1207,18 @@ pub(crate) fn command_row_span(
     delta: isize,
 ) -> Result<Range<usize>, LayoutMotionError> {
     let (index, _) = locate(snapshot, current)?;
-    let target = shift_row_index(snapshot, index, delta)?;
-    Ok(index.min(target)..index.max(target) + 1)
+    let target = if snapshot.rows[index].table_cell.is_some() {
+        let moved = move_visual_rows(snapshot, current, delta, None)?;
+        locate(snapshot, moved.position)?.0
+    } else { shift_row_index(snapshot, index, delta)? };
+    let range = index.min(target)..index.max(target) + 1;
+    if let Some(cell) = &snapshot.rows[index].table_cell {
+        if snapshot.rows[range.clone()].iter().any(|row| row.table_cell.as_ref().is_none_or(|other| other.cell_id != cell.cell_id)) {
+            // A contiguous visual-row interval would include unrelated cells
+            // on the same baseline. Structural row deletion has its own
+            // semantic command route; never manufacture that source hull.
+            return Err(LayoutMotionError::TextDoesNotMatchLayout);
+        }
+    }
+    Ok(range)
 }

@@ -74,6 +74,7 @@ internal sealed partial class EditorWindow : Window
         Activated += (_, e) =>
         {
             IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (!IsWindowActive) formattingToolbar.DismissPopups();
             if (IsWindowActive && ActivePane is { View: { } view } activePane)
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
             foreach (var pane in Panes) pane.Canvas.Invalidate();

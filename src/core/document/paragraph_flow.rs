@@ -66,7 +66,8 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
         .filter_map(|(i, ending)| {
             let previous = &input.text[lines[i].clone()];
             let literal = super::markdown_indented_code::containing(&indented, ending.source.start).is_some();
-            let block_boundary = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.normalized.start)).is_some_and(|block| {
+            let table_boundary = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= ending.normalized.start)).is_some_and(|table| table.range.start <= ending.normalized.end);
+            let block_boundary = table_boundary || syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.normalized.start)).is_some_and(|block| {
                 let touches = block.range.start <= ending.normalized.end && ending.normalized.start < block.range.end;
                 touches && !(matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
                     && block.content.start <= ending.normalized.start && ending.normalized.end < block.content.end)

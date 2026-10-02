@@ -8,12 +8,12 @@ namespace Viem.Windows.Core;
 
 // One speculative chunk per view and one computing worker across the app.
 // No timer, unbounded backlog, mutable core access or UI callback on the worker.
-internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher) : IDisposable
+internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher, bool tableRefinement = false) : IDisposable
 {
     private static readonly SemaphoreSlim workerSlot = new(1, 1);
     private readonly record struct Dependencies(ulong Document, ulong Revision, ulong Configuration, ulong Environment, ulong Metrics);
     private Dependencies? dependencies;
-    private float top, height;
+    private float top, left, height;
     private int direction = 1;
     private bool queued, disposed, failed;
     // Also bound retries when a deliberately tiny cache cannot retain a band.
@@ -39,11 +39,12 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
         { active?.Cancel(); dependencies = null; return; }
         var next = new Dependencies(state.document_id, state.document_revision, state.configuration_generation,
             state.measurement_environment_id, state.metrics_generation);
-        if (dependencies == next && top == state.top) return;
+        if (dependencies == next && top == state.top && (!tableRefinement || left == state.left)) return;
         int nextDirection = state.top > top ? 1 : state.top < top ? -1 : direction;
-        if (dependencies != next || nextDirection != direction || Math.Abs(state.top - top) > height * 3)
+        if (dependencies != next || nextDirection != direction || Math.Abs(state.top - top) > height * 3
+            || tableRefinement && (top != state.top || left != state.left))
             active?.Cancel();
-        dependencies = next; top = state.top; height = view.LayoutInfo().viewport_height; direction = nextDirection;
+        dependencies = next; top = state.top; left = state.left; height = view.LayoutInfo().viewport_height; direction = nextDirection;
         remainingChunks = 32;
         failed = false; LastError = null;
         Queue();
@@ -51,7 +52,7 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
 
     private void Queue()
     {
-        if (disposed || !Enabled || queued || active != null || failed || remainingChunks == 0) return;
+        if (disposed || !Enabled || queued || active != null || failed || (!tableRefinement && remainingChunks == 0)) return;
         queued = dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => {
             queued = false;
             if (disposed || !Enabled || active != null || failed) return;
@@ -64,11 +65,12 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
     {
         ulong request = 0;
         using (Diagnostics.InputPerformance.Measure("prelayout.capture"))
-            Check(viem_core_view_prepare_prelayout(view.Document.Handle, view.Id, direction, &request), "Prepare background layout");
+            Check(tableRefinement ? viem_core_view_prepare_table_refinement(view.Document.Handle, view.Id, &request)
+                : viem_core_view_prepare_prelayout(view.Document.Handle, view.Id, direction, &request), "Prepare background layout");
         if (request == 0) return;
         try { active = new Work(request, view.Provider.CaptureWorkerFactory()); }
         catch { viem_layout_work_release(request); throw; }
-        remainingChunks--;
+        if (!tableRefinement) remainingChunks--;
         Started++;
         _ = Run(active);
     }
@@ -118,10 +120,12 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
                 byte installed = 0;
                 uint status;
                 using (Diagnostics.InputPerformance.Measure("prelayout.install"))
-                    status = viem_core_view_install_prelayout(view.Document.Handle, view.Id, direction, result, &installed);
+                    status = tableRefinement ? viem_core_view_install_table_refinement(view.Document.Handle, view.Id, result, &installed)
+                        : viem_core_view_install_prelayout(view.Document.Handle, view.Id, direction, result, &installed);
                 result = 0; // Installation consumes the result, including stale rejection.
                 Check(status, "Install background layout");
-                if (installed != 0) Installed++; else Discarded++;
+                if (installed != 0) { Installed++; if (tableRefinement) view.TableWidthsChanged(); }
+                else Discarded++; // A newer viewport can reject work without making discovery fail.
             }
             else Discarded++;
         }

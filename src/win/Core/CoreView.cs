@@ -14,6 +14,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public ulong Id { get; private set; }
     public DirectWriteProvider Provider { get; }
     public BackgroundLayout BackgroundLayout { get; }
+    public BackgroundLayout TableWidthRefinement { get; }
     public ViemCoreOutcomeV1 Outcome { get; private set; }
     public event Action<HostEffects>? Effects;
     public event Action? Changed;
@@ -36,6 +37,8 @@ internal sealed unsafe partial class CoreView : IDisposable
         Id = id; Outcome = outcome;
         using (Diagnostics.StartupPerformance.Measure("view.backgroundSetup"))
         {
+            TableWidthRefinement = new(this, dispatcher, tableRefinement: true);
+            TableWidthRefinement.Update();
             BackgroundLayout = new(this, dispatcher);
             BackgroundLayout.Update();
         }
@@ -153,9 +156,11 @@ internal sealed unsafe partial class CoreView : IDisposable
         if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifyChanged();
         else Changed?.Invoke();
         BackgroundLayout.Update();
+        TableWidthRefinement.Update();
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
         if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException("The command could not be completed.");
     }
+    internal void TableWidthsChanged() { Changed?.Invoke(); TableWidthRefinement.Update(); }
     public void RestorePosition(CoreView previous)
     {
         var state = New<ViemViewRestorationV1>();
@@ -229,6 +234,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     {
         if (Id == 0) return;
         BackgroundLayout.Dispose();
+        TableWidthRefinement.Dispose();
         Check(viem_core_view_remove(Document.Handle, Id), "Close pane"); Id = 0; Provider.Dispose();
         Disposed?.Invoke();
     }

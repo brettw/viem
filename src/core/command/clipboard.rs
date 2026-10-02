@@ -32,7 +32,10 @@ impl super::CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         if let Err(output) = self.require_register_write(Some('+')) { return Ok(output); }
-        let value = if self.mode == Mode::VisualBlock {
+        let value = if let Some(extent) = self.table_selection(document) {
+            let (fragment, _) = document.table_clipboard_fragment(extent.table, extent.rows(), extent.columns())?;
+            RegisterValue::from_clipboard_fragment(fragment).map_err(|_| DocumentError::UnsupportedFormatting)?
+        } else if self.mode == Mode::VisualBlock {
             let Some(layout) = layout else { return Ok(layout_required("copy block selection")) };
             let resolved = match self.resolved_visual_block(document, layout) {
                 Ok(resolved) => resolved,

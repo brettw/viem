@@ -381,7 +381,7 @@ unsafe extern "C" fn fake_shape_batch(
             && request.has_render_run_policy == 1
             && request.render_run_owner == context.expected_owner
             && request.render_run_threading == VIEM_RENDER_THREADING_ANY
-            && request.paragraph_base_direction == VIEM_TEXT_DIRECTION_AUTO
+            && request.paragraph_base_direction == VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT
             && style_is_complete;
         let Some(storage) = response_storage(request) else {
             return ViemStatus::ProviderFailure as u32;
@@ -673,6 +673,23 @@ fn add_test_view(
         ViemStatus::Ok
     );
     (view, outcome)
+}
+
+/// Shared deterministic measurement provider for the table ABI regression suite.
+pub(super) struct TableFfiFixture {
+    pub handle: ViemCoreHandle,
+    pub view: ViemViewId,
+    _core: TestCore,
+    _provider: Box<FakeProviderContext>,
+}
+impl Drop for TableFfiFixture {
+    fn drop(&mut self) { assert_eq!(viem_core_view_remove(self.handle, self.view), ViemStatus::Ok); }
+}
+pub(super) fn table_ffi_fixture(source: &[u8], format: u32) -> TableFfiFixture {
+    let core = create_core(source, ViemDocumentOptions { format, ..Default::default() });
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, &mut *provider);
+    TableFfiFixture { handle: core.handle, view, _core: core, _provider: provider }
 }
 
 #[test]

@@ -52,6 +52,8 @@ mod line_mode;
 mod registers;
 mod sort;
 mod typing_style;
+mod tables;
+pub use tables::TableSelectionExtent;
 pub use command_line_edit::{CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot};
 pub use line_mode::{LineLocation, LineMode};
 mod text;
@@ -1299,6 +1301,8 @@ pub(crate) struct BufferCommandState {
 /// Per-view Vim controller state.
 #[derive(Clone, Debug)]
 pub struct CommandInterpreter {
+    table_cells: Option<tables::TableCellSelection>,
+    table_tab_selection: bool,
     mappings: mappings::KeyMappings,
     mapping_pending: Vec<Key>,
     mapping_suppressed: bool,
@@ -1444,6 +1448,8 @@ impl CommandInterpreter {
             mapping_pending: Vec::new(),
             mapping_suppressed: false,
             mode: Mode::Normal,
+            table_cells: None,
+            table_tab_selection: false,
             selection_behavior: SelectionBehavior::Visual,
             select_visual_return: SelectionBehavior::Select,
             selection_exclusive: false,
@@ -2430,6 +2436,8 @@ impl CommandInterpreter {
             .map(|(name, anchor)| validate(*anchor).map(|offset| (*name, offset)))
             .collect::<Result<BTreeMap<_, _>, _>>()?;
 
+        self.table_cells = None;
+        self.table_tab_selection = false;
         self.retire_typing_context();
         self.mode = Mode::Normal;
         self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
@@ -2758,6 +2766,8 @@ impl CommandInterpreter {
         if !lines.is_grapheme_boundary(offset) {
             return false;
         }
+        self.table_cells = None;
+        self.table_tab_selection = false;
 
         self.invalidate_replace_restoration();
         self.retire_typing_context();
@@ -2952,7 +2962,10 @@ impl CommandInterpreter {
         let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
             && matches!(event, InputEvent::Key(Key::Home | Key::End));
         self.record_event(&event);
-        let result = self.handle_selection_input(document, &event, None).and_then(|output| {
+        let result = self.handle_table_input(document, &event).and_then(|table_output| {
+            if table_output.is_some() { return Ok(table_output); }
+            self.handle_selection_input(document, &event, None)
+        }).and_then(|output| {
             match output {
                 Some(output) => Ok(output),
                 None => self.dispatch_event(document, event),
@@ -3133,6 +3146,10 @@ impl CommandInterpreter {
                 expected: context.document().revision(),
                 actual: context.document_revision(),
             });
+        }
+
+        if self.table_input_requires_legacy(context.document(), &event) {
+            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
 
         if self.substitute_confirmation.is_some() || self.mapping_applies(&event) || self.selection_input_requires_legacy(&event) {
@@ -4013,6 +4030,9 @@ impl CommandInterpreter {
         if self.substitute_confirmation.is_some() {
             return Ok(self.handle_substitute_confirmation(document, event));
         }
+        if let Some(output) = self.handle_table_input(document, &event)? {
+            return Ok(output);
+        }
         if let Some(output) = self.handle_selection_input(document, &event, Some(context))? {
             self.finish_select_visual_once(&output);
             return Ok(output);
@@ -4610,6 +4630,7 @@ impl CommandInterpreter {
         let count = explicit_count.unwrap_or(1).max(1);
         let output = match key {
             Key::Char('"') => {
+                self.count = explicit_count;
                 self.register_pending = true;
                 CommandOutput::pending()
             }
@@ -4914,6 +4935,7 @@ impl CommandInterpreter {
             }
             Key::Char(':') => self.enter_visual_ex(document),
             Key::Char('"') => {
+                self.count = explicit_count;
                 self.register_pending = true;
                 CommandOutput::pending()
             }
@@ -9865,6 +9887,7 @@ impl CommandInterpreter {
             Ok(register) => register,
             Err(output) => return Ok(output),
         };
+        if let Some(output) = self.paste_table_matrix(document, &register, count)? { return Ok(output); }
         let register = match checked_register_repetition(&register, count) {
             Ok(register) => register,
             Err(error) => return Ok(error.into_command_output()),
@@ -10620,6 +10643,7 @@ impl CommandInterpreter {
         document: &mut Document,
         value: &RegisterValue,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(output) = self.paste_table_matrix(document, value, 1)? { return Ok(output); }
         let intent = value;
         let value = self.assist_typing_input_payload(
             document, self.cursor..self.cursor, self.markdown_typing_affinity(document), intent,
@@ -11532,6 +11556,7 @@ impl CommandInterpreter {
             Ok(value) => value,
             Err(output) => return Ok(output),
         };
+        if let Some(output) = self.paste_table_matrix(document, &value, count)? { return Ok(output); }
         if value.text.is_empty() {
             return Ok(CommandOutput::complete());
         }

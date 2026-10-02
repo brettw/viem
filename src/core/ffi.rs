@@ -24,6 +24,8 @@ mod external_change;
 pub use external_change::*;
 mod completion;
 pub use completion::*;
+mod tables;
+pub use tables::*;
 mod substitute_confirmation;
 pub use substitute_confirmation::*;
 mod search;
@@ -1237,6 +1239,7 @@ pub const VIEM_STYLE_ROLE_QUOTE: u32 = 3;
 pub const VIEM_STYLE_ROLE_CODE_BLOCK: u32 = 4;
 pub const VIEM_STYLE_ROLE_LIST: u32 = 5;
 pub const VIEM_STYLE_ROLE_LIST_ITEM: u32 = 6;
+pub const VIEM_STYLE_ROLE_TABLE: u32 = 7;
 
 pub const VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION: u32 = 2;
 pub const VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY: u32 = 3;
@@ -2022,6 +2025,7 @@ pub const VIEM_LOGICAL_SELECTION_KIND_NONE: u32 = 0;
 pub const VIEM_LOGICAL_SELECTION_KIND_CHARACTER: u32 = 1;
 pub const VIEM_LOGICAL_SELECTION_KIND_LINE: u32 = 2;
 pub const VIEM_LOGICAL_SELECTION_KIND_BLOCK: u32 = 3;
+pub const VIEM_LOGICAL_SELECTION_KIND_CELLS: u32 = 4;
 
 pub const VIEM_SEMANTIC_STYLE_STRONG: u32 = 1;
 pub const VIEM_SEMANTIC_STYLE_EMPHASIS: u32 = 2;
@@ -2668,7 +2672,7 @@ fn document_status(error: DocumentError) -> ViemStatus {
         | DocumentError::HardLineTransferProjectionMismatch => ViemStatus::VerificationFailed,
         DocumentError::LineEndingConversionWouldReinterpretContent
         | DocumentError::UnrepresentableFormattedCharacter { .. } => ViemStatus::PolicyRequired,
-        DocumentError::UnsupportedFormatting | DocumentError::OpaqueDecodingConflict { .. } => {
+        DocumentError::UnsupportedFormatting | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
             ViemStatus::UnsupportedOperation
         }
         DocumentError::DocumentIdentityExhausted | DocumentError::BlockIdentityExhausted => {
@@ -5180,6 +5184,7 @@ fn style_role_to_ffi(role: BlockRole) -> u32 {
         BlockRole::CodeBlock => VIEM_STYLE_ROLE_CODE_BLOCK,
         BlockRole::List => VIEM_STYLE_ROLE_LIST,
         BlockRole::ListItem => VIEM_STYLE_ROLE_LIST_ITEM,
+        BlockRole::Table => VIEM_STYLE_ROLE_TABLE,
 
     }
 }
@@ -5726,7 +5731,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
             .concat(),
-            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem => [
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table => [
                 PARAGRAPH_STYLE_PROPERTIES.as_slice(),
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
@@ -5757,7 +5762,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     )?;
                 }
             }
-            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem => {
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table => {
                 let resolved = sheet
                     .resolve_assigned_paragraph_style_with_contributions(
                         &assignment,
@@ -6342,6 +6347,7 @@ fn logical_selection_kind_to_ffi(kind: LogicalSelectionKind) -> u32 {
         LogicalSelectionKind::Character => VIEM_LOGICAL_SELECTION_KIND_CHARACTER,
         LogicalSelectionKind::Line => VIEM_LOGICAL_SELECTION_KIND_LINE,
         LogicalSelectionKind::Block => VIEM_LOGICAL_SELECTION_KIND_BLOCK,
+        LogicalSelectionKind::Cells => VIEM_LOGICAL_SELECTION_KIND_CELLS,
     }
 }
 
@@ -6352,6 +6358,7 @@ fn logical_selection_kind_is_valid(kind: u32) -> bool {
             | VIEM_LOGICAL_SELECTION_KIND_CHARACTER
             | VIEM_LOGICAL_SELECTION_KIND_LINE
             | VIEM_LOGICAL_SELECTION_KIND_BLOCK
+            | VIEM_LOGICAL_SELECTION_KIND_CELLS
     )
 }
 
@@ -11278,8 +11285,8 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.definition_count, 22);
-        assert_eq!(info.property_count, 768);
+        assert_eq!(info.definition_count, 25);
+        assert_eq!(info.property_count, 879);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();

@@ -37,6 +37,7 @@ enum EVStyleKind: Int, CaseIterable {
     case codeBlock
     case list
     case listItem
+    case table
 
     var isContainer: Bool { self != .paragraph && self != .character }
 
@@ -44,7 +45,7 @@ enum EVStyleKind: Int, CaseIterable {
         switch self {
         case .paragraph: "Paragraph"
         case .character: "Character"
-        case .quote, .codeBlock, .list, .listItem: "Container"
+        case .quote, .codeBlock, .list, .listItem, .table: "Container"
         }
     }
 
@@ -802,6 +803,7 @@ enum EVCoreStyleBridge {
                 case UInt32(VIEM_STYLE_ROLE_CODE_BLOCK): kind = .codeBlock
                 case UInt32(VIEM_STYLE_ROLE_LIST): kind = .list
                 case UInt32(VIEM_STYLE_ROLE_LIST_ITEM): kind = .listItem
+                case UInt32(VIEM_STYLE_ROLE_TABLE): kind = .table
                 default: throw EVStyleBridgeError.malformedSnapshot("unknown block role \(raw.role)")
                 }
             }

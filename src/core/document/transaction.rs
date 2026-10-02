@@ -11,7 +11,7 @@ mod clear_content;
 mod clipboard_fragment;
 #[path = "fragments.rs"]
 mod fragments;
-pub use clipboard_fragment::ClipboardFragment;
+pub use clipboard_fragment::{ClipboardFragment, TableClipboardCell};
 #[path = "edit_translation.rs"]
 mod edit_translation;
 #[path = "input_context.rs"]
@@ -24,6 +24,10 @@ mod markdown_block_styles;
 mod markdown_code_style;
 #[path = "markdown_gfm_edit.rs"]
 mod markdown_gfm_edit;
+#[path = "markdown_table_edit.rs"]
+mod markdown_table_edit;
+#[path = "markdown_table_projection.rs"]
+mod markdown_table_projection;
 #[path = "markdown_html_edit.rs"]
 mod markdown_html_edit;
 #[path = "markdown_indented_edit.rs"]
@@ -1857,6 +1861,8 @@ impl Document {
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if let Some(prepared) = self.prepare_table_line_deletion(&range)? { return Ok(prepared); }
+
 
         let range = { range };
         let patches = if self.format() == Format::Markdown {
@@ -2011,7 +2017,25 @@ impl Document {
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
 
-        if translate_source && self.source_edit_requires_reprojection(&edits, &source_patches)? {
+        let persistent_edits = edits
+            .iter()
+            .map(|edit| (edit.range.clone(), edit.replacement.as_str()))
+            .collect::<Vec<_>>();
+        let (target_text, text_splice_work) = self
+            .projection()
+            .text_tree()
+            .splice_prevalidated_batch_with_stats(&persistent_edits)
+            .map_err(DocumentError::FormattedTextStorage)?;
+
+        let source = apply_source_patches(&self.state().source, &source_patches)?;
+        let after_revision = Revision(self.next_revision);
+        // Table rows own their physical source grammar. A verified row stub
+        // proves literal Source edits without reparsing unrelated table rows.
+        let table_candidate = if self.format() == Format::MarkdownSource {
+            self.build_table_row_candidate(&source, after_revision, &target_text,
+                text_splice_work, &edits, &source_patches)?
+        } else { None };
+        if table_candidate.is_none() && translate_source && self.source_edit_requires_reprojection(&edits, &source_patches)? {
             // Source-mode delimiters are editable syntax. Changing a fence
             // can make formerly literal blank lines become paired paragraph
             // separators, so the new projection need not be a flat splice of
@@ -2028,19 +2052,7 @@ impl Document {
             return Ok(prepared);
         }
 
-        let persistent_edits = edits
-            .iter()
-            .map(|edit| (edit.range.clone(), edit.replacement.as_str()))
-            .collect::<Vec<_>>();
-        let (target_text, text_splice_work) = self
-            .projection()
-            .text_tree()
-            .splice_prevalidated_batch_with_stats(&persistent_edits)
-            .map_err(DocumentError::FormattedTextStorage)?;
-
-        let source = apply_source_patches(&self.state().source, &source_patches)?;
-        let after_revision = Revision(self.next_revision);
-        let built = self.build_verified_text_edit_candidate(
+        let built = if let Some(candidate) = table_candidate { Ok(candidate) } else { self.build_verified_text_edit_candidate(
             source,
             after_revision,
             &target_text,
@@ -2048,7 +2060,7 @@ impl Document {
             &edits,
             &source_patches,
             authored_syntax,
-        );
+        ) };
         let TextEditCandidate {
             state: mut candidate,
             work: projection_work,
@@ -2277,6 +2289,18 @@ impl Document {
         text: &str,
     ) -> Result<String, DocumentError> {
         let mut escaped = escape_markdown_insert_in_encoding(text, self.encoding());
+        if self.format()==Format::Markdown {
+            if let Some(cell)=self.projection().tables().iter().flat_map(|table|table.rows.iter()).flat_map(|row|row.cells.iter()).find(|cell|cell.source_range.start<=source_at && source_at<=cell.source_range.end) {
+                escaped=escaped.replace('|',"\\|").replace('\n',"<br>");
+                if source_at==cell.source_range.start || source_at==cell.source_range.end {
+                    let leading=escaped.len()-escaped.trim_start_matches([' ','\t']).len();
+                    let trailing=escaped.trim_end_matches([' ','\t']).len().max(leading);
+                    let protect=|value:&str|value.chars().map(|ch|if ch==' ' {"&#32;"}else{"&#9;"}).collect::<String>();
+                    escaped=format!("{}{}{}",protect(&escaped[..leading]),&escaped[leading..trailing],protect(&escaped[trailing..]));
+                }
+                return Ok(escaped);
+            }
+        }
         let Some(line) = self.state().source_hard_lines.line_at_offset(source_at) else {
             return Err(DocumentError::AmbiguousProjection);
         };
@@ -2397,6 +2421,12 @@ impl Document {
     ) -> Result<bool, ModelTransactionError> {
         if self.format() != Format::MarkdownSource {
             return Ok(false);
+        }
+        if edits.len()==1 && patches.len()==1 {
+            let edit=&edits[0];
+            if !edit.replacement.is_empty() && edit.replacement.chars().all(char::is_alphanumeric)
+                && self.projection().table_cell_at(edit.range.start).is_some_and(|(_,_,cell)|edit.range.end<=cell.range.end && self.table_source_text(cell.source_range.clone()).is_ok_and(|text|text.chars().all(|ch|ch.is_alphanumeric()||matches!(ch,' '|'\t'))))
+                && self.encoding().encode_fragment(&edit.replacement)?==patches[0].replacement {return Ok(false);}
         }
         let Some(region) = self.line_local_projection_region(edits, patches)? else {
             return Ok(true);
@@ -3331,6 +3361,12 @@ impl Document {
         enabled: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if self.format() == Format::Markdown && !range.is_empty()
+            && self.projection().table_cell_at(range.start).is_some_and(|(_,_,cell)| range.end <= cell.range.end)
+            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis) {
+            return self.prepare_table_semantic_style(range, style, enabled);
+        }
+
 
         if self.state().format == Format::MarkdownSource {
             let edits = self.markdown_source_style_edits(&range, style, enabled)?;
@@ -3442,6 +3478,30 @@ impl Document {
         enabled: bool,
     ) -> Result<(), ModelTransactionError> {
 
+        self.validate_range(&range)?;
+        if self.format() == Format::Markdown && !range.is_empty()
+            && self.projection().table_cell_at(range.start).is_some_and(|(_,_,cell)| range.end <= cell.range.end)
+            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis) {
+            for fragment in self.table_style_fragments(&range)? {
+                let spans = self.projection().style_spans_for_region(&fragment);
+                let containing = spans.iter().find(|span|
+                    span.application == StyleApplication::Semantic(style)
+                        && span.range.start <= fragment.start && fragment.end <= span.range.end);
+                if enabled == containing.is_some() { continue; }
+                if !enabled {
+                    let source = self.projection().source_range(containing.unwrap().range.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    self.markdown_style_removal_patches(&source, style)?;
+                } else {
+                    self.projection().source_range(fragment.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                    if spans.iter().any(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)
+                        && (span.range.start < fragment.start || fragment.end < span.range.end)) {
+                        return Err(DocumentError::UnsupportedFormatting.into());
+                    }
+                }
+            }
+            return Ok(());
+        }
         if self.state().format == Format::MarkdownSource {
             return self
                 .markdown_source_style_edits(&range, style, enabled)
@@ -3721,6 +3781,7 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
         validate_source_patches(&mut patches)?;
+        if let Ok(Some(prepared)) = self.prepare_table_local_reprojection(&patches) { return Ok(prepared); }
         let source = apply_source_patches(&self.state().source, &patches)?;
         let decoded = self.encoding().decode(&source.bytes())?;
         let revision = Revision(self.next_revision);
@@ -4298,6 +4359,7 @@ impl Document {
         )? {
             return Ok(candidate);
         }
+        if let Some(candidate)=self.build_table_row_candidate(&source,revision,target_text,text_splice_work,edits,source_patches)? {return Ok(candidate);}
         if let Some(candidate) = self.build_markdown_structured_local_candidate(
             &source,
             revision,
@@ -4494,6 +4556,7 @@ impl Document {
                     self.format() == Format::MarkdownSource,
                     self.format().is_literal(),
                     edits,
+                    source_patches,
                     &mut next_projected_block_id,
                 )
                 .map_err(super::block_identity_document_error)?;
@@ -4687,10 +4750,16 @@ impl Document {
         {
             return Ok(None);
         }
-        if self.format() != Format::Markdown || edits.len() != 1 || patches.len() != 1 {
+        if !self.format().is_markdown() || edits.len() != 1 || patches.len() != 1 {
             return Ok(None);
         }
         let (edit, patch) = (&edits[0], &patches[0]);
+        let markdown_table = self.projection().table_cell_at(edit.range.start).is_some_and(|(_,_,cell)| {
+            edit.range.end <= cell.range.end
+                && !edit.replacement.chars().any(|ch| !ch.is_alphanumeric())
+                && self.table_source_text(cell.source_range.clone()).is_ok_and(|text| text.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, ' ' | '\t')))
+        });
+        if self.format().is_source_view() && !markdown_table {return Ok(None);}
         let markdown_code = self.format() == Format::Markdown;
         let markdown_list = markdown_code
             && self
@@ -4711,7 +4780,7 @@ impl Document {
                 .blocks_for_region(&edit.range)
                 .iter()
                 .any(|block| block.style.0 == "Code Block")
-                && !markdown_list
+                && !markdown_list && !markdown_table
                 || edit.replacement.contains(['`', '~'])
                 || markdown_list && edit.replacement.contains(['*', '_', '#', '\\']))
         {
@@ -4772,7 +4841,7 @@ impl Document {
             return Ok(None);
         };
 
-        let old_line = if markdown_code && !markdown_list {
+        let old_line = if markdown_code && !markdown_list && !markdown_table {
             edited_line.clone()
         } else {
             block.range.clone()
@@ -4809,7 +4878,7 @@ impl Document {
 
         let verified_empty_code = markdown_code && !markdown_list && block.range.is_empty()
             && super::markdown_code::fenced_source(self, &block)?.is_some_and(|fence| fence.body == patch.range);
-        if edit.range.is_empty() && !insertion_has_character_sample && !verified_empty_code {
+        if edit.range.is_empty() && !insertion_has_character_sample && !verified_empty_code && !markdown_table {
             // Empty formatting elements expose a valid typing anchor but no
             // character sample. Parse their active source context explicitly.
             return Ok(None);
@@ -5037,6 +5106,7 @@ impl Document {
             false,
             false,
             edits,
+            patches,
             &mut next_projected_block_id,
         ) {
             Ok(value) => value,
@@ -5577,6 +5647,7 @@ impl Document {
         if self.markdown_edit_needs_reference_context(edits) {
             return Ok(None);
         }
+        if edits.iter().any(|edit| self.projection().table_at(edit.range.start).is_some() || self.projection().table_at(edit.range.end).is_some()) { return Ok(None); }
         if self.format() == Format::Markdown {
             if edits.iter().any(|edit| {
                 edit.replacement.is_empty()
@@ -6307,7 +6378,8 @@ fn effective_block_definition_changes(
             | super::BlockRole::Quote
             | super::BlockRole::CodeBlock
             | super::BlockRole::List
-            | super::BlockRole::ListItem => {
+            | super::BlockRole::ListItem
+            | super::BlockRole::Table => {
                 let before = before_sheet.resolve_assigned_paragraph_style(
                     before_assignment,
                     id,

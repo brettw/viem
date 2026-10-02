@@ -45,6 +45,7 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     {
         Role = role;
         (string id, string markdown) = role switch {
+            VIEM_STYLE_ROLE_TABLE => ("Table", "| Header | Detail |\n| --- | --- |\n| One | Two |"),
             VIEM_STYLE_ROLE_QUOTE => ("Block quote", "> A quotation contains a paragraph.\n>\n> Another paragraph shares its border.\n>\n>> A nested quotation has its own box."),
             VIEM_STYLE_ROLE_CODE_BLOCK => ("Code Block", "```\nA literal code block\n\nkeeps its lines and spaces.\n```"),
             VIEM_STYLE_ROLE_LIST => ("Bulleted List", "- A list item contains a paragraph.\n\n  And a second paragraph.\n\n- Another item."),

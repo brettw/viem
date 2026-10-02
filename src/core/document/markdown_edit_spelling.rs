@@ -17,6 +17,7 @@ impl Document {
         if self.format() != Format::Markdown || patches.is_empty() {
             return Ok(());
         }
+        if edits.iter().any(|edit|self.projection().table_at(edit.range.start).is_some()) {return Ok(());}
         validate_source_patches(patches)?;
         let mut scopes = Vec::new();
         let mut bands: Vec<Range<usize>> = Vec::new();

@@ -49,15 +49,18 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   init(
     measurementEnvironmentID: UInt64,
     initialMetricsGeneration: UInt64,
-    shapingDidBegin: (@Sendable () throws -> Void)?
+    shapingDidBegin: (@Sendable () throws -> Void)?,
+    sharedRegistry: CoreTextRenderRegistry? = nil,
+    observeFontChanges: Bool = true
   ) {
     self.measurementEnvironmentID = measurementEnvironmentID
     let proposedOwner = measurementEnvironmentID ^ 0x4354_5255_4E53_4554
     renderRunOwner = proposedOwner == 0 ? 0x5649_454D : proposedOwner
     generation = max(initialMetricsGeneration, 1)
-    renderRegistry = CoreTextRenderRegistry(generation: max(initialMetricsGeneration, 1))
+    renderRegistry = sharedRegistry ?? CoreTextRenderRegistry(generation: max(initialMetricsGeneration, 1))
     self.shapingDidBegin = shapingDidBegin
 
+    guard observeFontChanges else { return }
     let notificationName = Notification.Name(
       kCTFontManagerRegisteredFontsChangedNotification as String)
     localFontObserver = NotificationCenter.default.addObserver(
@@ -83,6 +86,18 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     if let distributedFontObserver {
       DistributedNotificationCenter.default().removeObserver(distributedFontObserver)
     }
+  }
+
+  /// Independent callback storage for one immutable worker request. Metrics are
+  /// frozen to the captured generation; stale installation is rejected by core.
+  /// Glyph leases share the UI registry so completed rows remain drawable.
+  public func makeWorkerProvider() -> CoreTextMeasurementProvider {
+    CoreTextMeasurementProvider(
+      measurementEnvironmentID: measurementEnvironmentID,
+      initialMetricsGeneration: metricsGeneration,
+      shapingDidBegin: nil,
+      sharedRegistry: renderRegistry,
+      observeFontChanges: false)
   }
 
   public var metricsGeneration: UInt64 {

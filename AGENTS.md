@@ -313,10 +313,11 @@ markup. Missing constructs are compatibility gaps, not alternative rules. Keep
 [the feature demo](docs/markdown_demo.md) current. The gap inventory is the
 reference for deferred constructs and known incompatibilities.
 
-Planned GFM table support follows [the Markdown table specification](docs/markdown-tables.md),
+GFM table behavior follows [the Markdown table specification](docs/markdown-tables.md),
 including insertion, cell editing, styles, source-only visual alignment, and
-portable validation. That specification records target behavior, not implemented
-support; keep the compatibility inventory explicit until the feature ships.
+portable validation. Cell rectangles are semantic selections, not contiguous
+source ranges or Vim Visual Block selections. Keep remaining compatibility and
+platform-validation limitations explicit in the compatibility inventory.
 
 Deliberate presentation exceptions:
 

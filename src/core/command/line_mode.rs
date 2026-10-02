@@ -98,6 +98,32 @@ impl CommandInterpreter {
     }
 }
 
+#[cfg(test)]
+mod status_tests {
+    use crate::document::BoundaryAffinity;
+    use crate::layout::MockTextMeasurementProvider;
+    use crate::{Core, CoreEvent, Document};
+
+    #[test]
+    fn unicode_status_column_does_not_flatten_unrelated_document_text() {
+        let prefix = "Ae\u{301}👩‍💻";
+        let mut document = Document::new(format!("e\u{301}👩‍💻Z\n{}", "later line\n".repeat(20_000)));
+        document.insert(0, "A").unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 500.0, 200.0);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: prefix.len(),
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        }).unwrap();
+        assert!(!core.document().projection().compatibility_text_is_materialized());
+        let location = core.line_location(view).unwrap();
+        assert_eq!(location.column, 4);
+        assert!(!core.document().projection().compatibility_text_is_materialized());
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LineShape {
     Whole,
@@ -869,6 +895,27 @@ impl CommandInterpreter {
                         && !pair[0].wraps_to_next)
             });
         let at = self.cursor.clamp(row.text_range.start, row.text_range.end);
+        let range = row.text_range.start..at;
+        let tree = document.projection().text_tree();
+        // Equal byte and UTF-16 lengths prove the range is ASCII. Without an
+        // LF, every byte is a grapheme; root aggregates then make even a giant
+        // unwrapped ASCII prefix a logarithmic query. Unicode uses the exact
+        // logical-boundary traversal of just the active visual fragment.
+        let column = match (
+            tree.utf16_offset_for_byte(range.start),
+            tree.utf16_offset_for_byte(range.end),
+            tree.hard_line_at_byte(range.start),
+            tree.hard_line_at_byte(range.end),
+        ) {
+            (Ok(start), Ok(end), Ok(first), Ok(last))
+                if end - start == range.len() && first == last => range.len(),
+            _ => document
+                .hard_line_snapshot()
+                .grapheme_count(range)
+                .ok_or(crate::coordinator::CoreError::LayoutMotion(
+                    LayoutMotionError::EmptyLayout,
+                ))?,
+        } + 1;
         Ok(LineLocation {
             mode: self.line_mode,
             line: if row.hard_line_index == 0 {
@@ -878,10 +925,7 @@ impl CommandInterpreter {
             } else {
                 exact_prefix.then_some(rows.start + 1)
             },
-            column: document.text()[row.text_range.start..at]
-                .graphemes(true)
-                .count()
-                + 1,
+            column,
             hard_line: row.hard_line_index + 1,
             fragment: row.fragment_index + 1,
         })

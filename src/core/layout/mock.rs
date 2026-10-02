@@ -314,6 +314,22 @@ impl MockTextMeasurementProvider {
         shaping_text.push_str(request.context_before);
         shaping_text.push_str(request.text);
         shaping_text.push_str(request.context_after);
+        // Native shapers resolve an automatic paragraph direction from the
+        // captured context. Keep the mock's run levels consistent with that
+        // contract, including an explicit direction carried by a long-line
+        // checkpoint into later fragments.
+        let paragraph_base_direction = match request.paragraph_base_direction {
+            TextDirection::Auto => {
+                if unicode_bidi::get_base_direction(shaping_text.as_str())
+                    == unicode_bidi::Direction::Rtl
+                {
+                    TextDirection::RightToLeft
+                } else {
+                    TextDirection::LeftToRight
+                }
+            }
+            direction => direction,
+        };
         let graphemes: Vec<(usize, &str)> = shaping_text.grapheme_indices(true).collect();
         let mut clusters = Vec::new();
         let mut fonts = std::collections::BTreeMap::<String, std::sync::Arc<str>>::new();
@@ -387,7 +403,7 @@ impl MockTextMeasurementProvider {
                 + Self::kerning_adjustment(cluster_text, next, style, request.scale))
             .max(0.0);
             let bidi_level =
-                Self::bidi_level(cluster_text, style, request.paragraph_base_direction);
+                Self::bidi_level(cluster_text, style, paragraph_base_direction);
             let metrics = Self::metrics(style, request.scale);
             let (typographic_bounds, ink_bounds) =
                 Self::bounds(advance, &metrics, style, request.scale);

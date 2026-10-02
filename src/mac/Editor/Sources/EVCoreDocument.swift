@@ -58,6 +58,7 @@ struct EVLayoutExport {
     var carets: [ViemPositionedCaretV1]
     var decorations: [ViemLayoutDecorationV1] = []
     var decorationLabels: [UInt8] = []
+    var tableCells: [ViemTableCellV1] = []
     var whitespace = EVWhitespaceMarkerExport()
 }
 
@@ -903,10 +904,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
 @MainActor
 final class EVCoreViewSession {
-    // TODO(macOS): Connect bounded background pre-layout to this session's
-    // lifecycle and viewport changes. The C ABI is ready; Core Text needs
-    // independent worker response storage with compatible shared glyph leases.
+    // General viewport pre-layout remains a separate follow-up. Table widths
+    // already use bounded worker requests with independent Core Text response
+    // storage and shared glyph leases through tableWidthRefinement.
     // See docs/windows-background-layout.md, "TODO(macOS): Connect the native scheduler".
+    lazy var tableWidthRefinement = EVTableWidthRefinement(session: self)
     private(set) unowned var document: EVCoreDocumentBackend
     let provider: CoreTextMeasurementProvider
     private nonisolated let coreHandle: ViemCoreHandle
@@ -953,6 +955,7 @@ final class EVCoreViewSession {
     }
 
     func detach() {
+        tableWidthRefinement.cancel()
         clearPresentationExportCache()
         mappingTimer?.invalidate()
         mappingTimer = nil
@@ -1333,6 +1336,98 @@ final class EVCoreViewSession {
         }
     }
 
+    func tableCells(identity: ViemLayoutSnapshotIdentityV1) throws -> [ViemTableCellV1] {
+        var identity = identity, required: UInt64 = 0
+        let status = viem_core_view_copy_table_cells(document.core, viewID, &identity, nil, 0, &required)
+        if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read table geometry") }
+        guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.core(operation: "Read table geometry", status: Status.lengthOverflow) }
+        var cells = [ViemTableCellV1](repeating: ViemTableCellV1(), count: Int(required))
+        let capacity = required
+        try checked(cells.withUnsafeMutableBufferPointer {
+            viem_core_view_copy_table_cells(document.core, viewID, &identity, $0.baseAddress, capacity, &required)
+        }, operation: "Copy table geometry")
+        return cells
+    }
+
+    func tableSelection() throws -> ViemTableSelectionV1 {
+        var selection = ViemTableSelectionV1()
+        selection.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+        try checked(viem_core_view_table_selection(document.core, viewID, &selection), operation: "Read cell selection")
+        return selection
+    }
+
+    func tableSelectionText(_ selection: ViemTableSelectionV1) throws -> String {
+        var selection = selection, required: UInt64 = 0
+        let status = viem_core_view_copy_table_selection_text(document.core, viewID, &selection, nil, 0, &required)
+        if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read selected table text") }
+        guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.core(operation: "Read selected table text", status: Status.lengthOverflow) }
+        var bytes = [UInt8](repeating: 0, count: Int(required)); let capacity = required
+        try checked(bytes.withUnsafeMutableBufferPointer {
+            viem_core_view_copy_table_selection_text(document.core, viewID, &selection, $0.baseAddress, capacity, &required)
+        }, operation: "Copy selected table text")
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    func tableSelectionRanges(_ selection: ViemTableSelectionV1) throws -> [Range<Int>] {
+        var selection = selection, required: UInt64 = 0
+        let status = viem_core_view_copy_table_selection_ranges(document.core, viewID, &selection, nil, 0, &required)
+        if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read selected table ranges") }
+        guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.core(operation: "Read selected table ranges", status: Status.lengthOverflow) }
+        var ranges = [ViemFormattedUtf8RangeV1](repeating: ViemFormattedUtf8RangeV1(), count: Int(required)); let capacity = required
+        try checked(ranges.withUnsafeMutableBufferPointer {
+            viem_core_view_copy_table_selection_ranges(document.core, viewID, &selection, $0.baseAddress, capacity, &required)
+        }, operation: "Copy selected table ranges")
+        return try ranges.map { range in
+            guard let start = Int(exactly: range.utf8_start), let end = Int(exactly: range.utf8_end), start <= end else {
+                throw EVCoreFrontendError.core(operation: "Read selected table ranges", status: Status.lengthOverflow)
+            }
+            return start..<end
+        }
+    }
+
+    @discardableResult
+    func selectTableCells(_ selection: ViemTableSelectionV1) throws -> ViemCoreOutcomeV1 {
+        var selection = selection
+        return try performCoreOperation("Select table cells") { outcome in
+            viem_core_view_select_table_cells(document.core, viewID, &selection, outcome)
+        }
+    }
+
+    func tableContext() throws -> ViemTableContextV1 {
+        var context = ViemTableContextV1()
+        context.struct_size = UInt32(MemoryLayout<ViemTableContextV1>.size)
+        try checked(viem_core_view_table_context(document.core, viewID, &context), operation: "Read table actions")
+        return context
+    }
+
+    func tableContext(at offset: UInt64, documentID: UInt64, revision: UInt64) throws -> ViemTableContextV1 {
+        var context = ViemTableContextV1()
+        context.struct_size = UInt32(MemoryLayout<ViemTableContextV1>.size)
+        try checked(viem_core_view_table_context_at(document.core, viewID, documentID, revision, offset, &context), operation: "Read table cell")
+        return context
+    }
+
+    @discardableResult
+    func insertTable(columns: Int, bodyRows: Int, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemInsertTableV1()
+        request.struct_size = UInt32(MemoryLayout<ViemInsertTableV1>.size)
+        request.expected_selection = selection
+        request.columns = UInt32(columns); request.body_rows = UInt32(bodyRows)
+        return try performCoreOperation("Insert table") { outcome in
+            viem_core_view_insert_table(document.core, viewID, &request, outcome)
+        }
+    }
+
+    @discardableResult
+    func tableAction(_ action: UInt32, alignment: UInt32 = 0, expected context: ViemTableContextV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemTableActionV1()
+        request.struct_size = UInt32(MemoryLayout<ViemTableActionV1>.size)
+        request.action = action; request.alignment = alignment; request.expected = context
+        return try performCoreOperation("Edit table") { outcome in
+            viem_core_view_table_action(document.core, viewID, &request, outcome)
+        }
+    }
+
     func listSelection() throws -> ViemLogicalSelectionIdentityV1 {
         var selection = ViemLogicalSelectionIdentityV1()
         selection.struct_size = UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
@@ -1605,6 +1700,7 @@ final class EVCoreViewSession {
         let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
         let exported = EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
                                       decorations: furniture.0, decorationLabels: furniture.1,
+                                      tableCells: try tableCells(identity: copiedInfo.identity),
                                       whitespace: optionalPresentation("whitespace markers", fallback: EVWhitespaceMarkerExport(enabled: false)) {
                                           try whitespaceMarkersExport(identity: copiedInfo.identity)
                                       })

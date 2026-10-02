@@ -159,7 +159,21 @@ internal sealed partial class StyleWindow
             button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
             refreshFields.Add(() => button.IsChecked = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT) && selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == value);
         }
-        Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true);
+        var alignmentGroup = Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true);
+        var tableAlignmentNote = new TextBlock { Text = "Alignment comes from the table column", FontSize = 11, Opacity = .65, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
+        top.Children.Add(tableAlignmentNote);
+        refreshFields.Add(() => {
+            bool tableCell = selected.Id is "Table cell" or "Table header";
+            alignmentGroup.Visibility = tableCell ? Visibility.Collapsed : Visibility.Visible;
+            tableAlignmentNote.Visibility = tableCell ? Visibility.Visible : Visibility.Collapsed;
+            bool table = selected.Native.role == VIEM_STYLE_ROLE_TABLE;
+            AutomationProperties.SetName(alignment, table ? "Table placement" : "Alignment");
+            ToolTipService.SetToolTip(alignment, table ? "Position the whole table. Column text alignment comes from Markdown." : null);
+            string[] labels = table ? ["Place table at start", "Center table", "Place table at end"] : ["Align start", "Align center", "Align end"];
+            for (int i = 0; i < buttons.Count; i++) {
+                AutomationProperties.SetName(buttons[i], labels[i]); ToolTipService.SetToolTip(buttons[i], labels[i]);
+            }
+        });
         Choice(top, "Direction", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, ["Automatic", "Left to Right", "Right to Left"], [0, 1, 2]); Grid.SetColumn((FrameworkElement)top.Children.Last(), 1);
         paragraph.Children.Add(Separator());
         var row = Row(paragraph);

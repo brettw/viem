@@ -35,6 +35,10 @@ final class EVCoreBlockStylePreview {
             target = "Code Block"
             selected = "A literal code block\n\nkeeps its lines and spaces."
             source = "```\nA literal code block\n\nkeeps its lines and spaces.\n```"
+        case .table:
+            target = "Table"
+            selected = "Header\nDetail\nOne\nTwo"
+            source = "| Header | Detail |\n| --- | --- |\n| One | Two |"
         case .list, .listItem:
             target = kind == .list ? "Bulleted List" : "List item"
             selected = "A list item contains a paragraph.\nAnd a second paragraph.\nAnother item."

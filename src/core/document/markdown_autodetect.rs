@@ -496,14 +496,15 @@ impl Document {
             .text_tree()
             .slice(start..caret)
             .map_err(DocumentError::FormattedTextStorage)?;
-        if prefix.ends_with("```") || prefix.ends_with("~~~") {
+        let in_table = self.projection().table_cell_at(caret).is_some();
+        if !in_table && (prefix.ends_with("```") || prefix.ends_with("~~~")) {
             if let Some(fence) =
                 self.recognize_markdown_fence(caret, prefix.chars().next_back().unwrap())?
             {
                 return Ok(Some(fence));
             }
         }
-        if start == line.start {
+        if !in_table && start == line.start {
             let marker = prefix.strip_suffix(' ');
             let heading =
                 marker.is_some_and(|m| (1..=6).contains(&m.len()) && m.bytes().all(|b| b == b'#'));

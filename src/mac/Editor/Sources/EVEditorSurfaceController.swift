@@ -395,6 +395,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             presentationRefreshCount &+= 1
             synchronizeCompletionPolling()
             synchronizeSearchPolling(pending: nextSearchWorkPending)
+            session.tableWidthRefinement.didInstall = { [weak self] in self?.refreshPresentation(advancingSearch: false) }
+            session.tableWidthRefinement.update()
             updateStatusBar()
             if isViewLoaded {
                 editorView.applyPresentation()
@@ -1048,6 +1050,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func selectedUTF8Ranges() -> [Range<Int>] {
+        if let session, let selection = try? session.tableSelection(), selection.active != 0 {
+            return (try? session.tableSelectionRanges(selection)) ?? []
+        }
         guard hasSelection,
               let visualSelection,
               visualSelection.info.identity.kind != UInt32(VIEM_VISUAL_SELECTION_KIND_NONE)
@@ -1083,6 +1088,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func selectionText() -> String? {
+        if let session, let selection = try? session.tableSelection(), selection.active != 0 {
+            return try? session.tableSelectionText(selection)
+        }
         let ranges = selectedUTF8Ranges()
         guard !ranges.isEmpty else { return nil }
         let pieces = ranges.compactMap(formattedText(in:))
@@ -1426,11 +1434,19 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             else { continue }
             intervals.append(cluster.text_start ..< cluster.text_end)
         }
-        for row in snapshot.rows
-            where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0
-                && row.hard_line_end < formattedLength
-        {
-            intervals.append(row.hard_line_end ..< row.hard_line_end + 1)
+        let rowStarts = Set(snapshot.rows.map(\.text_start))
+        for row in snapshot.rows where row.flags & UInt32(VIEM_VISUAL_ROW_WRAPS_TO_NEXT) == 0 {
+            // A table cell may end its visual line at an internal hard break
+            // before the enclosing table row's hard-line boundary. Accessibility
+            // selection needs that real LF to join the materialized line ranges.
+            // Two valid text boundaries one byte apart also guarantee a whole
+            // scalar, unlike a clipped long-line fragment ending before Unicode.
+            if row.text_end < formattedLength && rowStarts.contains(row.text_end + 1) {
+                intervals.append(row.text_end ..< row.text_end + 1)
+            }
+            if row.hard_line_end < formattedLength {
+                intervals.append(row.hard_line_end ..< row.hard_line_end + 1)
+            }
         }
         intervals.sort {
             $0.lowerBound == $1.lowerBound

@@ -22,6 +22,36 @@ internal static class BackgroundLayoutTests
     internal static async Task Run(CanvasDevice device, DispatcherQueue dispatcher)
     {
         void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); FrontendSmokeTests.UiChecks.Add(message); }
+        byte[] tableSource = Encoding.UTF8.GetBytes("| A | B |\n| --- | --- |\n" + string.Join("\n",
+            Enumerable.Range(0, 350).Select(i => $"| row {i} | {(i == 349 ? new string('W', 120) : "small")} |")));
+        using (var tableDoc = new CoreDocument(tableSource, format: VIEM_FORMAT_MARKDOWN, markdownFormattedView: true))
+        using (var tableView = new CoreView(tableDoc, device, dispatcher, 600, 400))
+        {
+            tableView.BackgroundLayout.Enabled = false;
+            tableView.TableWidthRefinement.Enabled = true;
+            tableView.TableWidthRefinement.Update();
+            var tableCaret = tableView.Presentation.cursor_utf8_offset;
+            var timer = Stopwatch.StartNew();
+            while (tableView.TableWidthRefinement.Started == 0 && timer.Elapsed < TimeSpan.FromSeconds(5)) await Task.Delay(1);
+            tableView.Scroll(0, 6);
+            var tableTop = tableView.Viewport.top;
+            timer.Restart();
+            while (!tableView.TableWidthRefinement.IsIdle && timer.Elapsed < TimeSpan.FromSeconds(15)) await Task.Delay(10);
+            Check(tableView.TableWidthRefinement.IsIdle && tableView.TableWidthRefinement.LastError == null && tableView.TableWidthRefinement.Installed > 0,
+                "table width discovery resumes after a small scroll and completes on the idle worker");
+            Check(tableView.Presentation.cursor_utf8_offset == tableCaret && tableView.Viewport.top == tableTop
+                && tableDoc.Source(tableDoc.State.document_revision).AsSpan().SequenceEqual(tableSource),
+                "table width refinement preserves source, caret and viewport");
+            int tableStarted = tableView.TableWidthRefinement.Started;
+            tableView.Refresh(); await Task.Delay(50);
+            Check(tableView.TableWidthRefinement.Started == tableStarted, "completed table discovery does not poll while idle");
+            tableView.Resize(610, 410);
+            tableView.Dispose();
+            timer.Restart();
+            while (!tableView.TableWidthRefinement.IsIdle && timer.Elapsed < TimeSpan.FromSeconds(15)) await Task.Delay(10);
+            Check(tableView.TableWidthRefinement.IsIdle, "closing a table view cancels refinement without waiting on its worker");
+        }
+
         int uiThread = Environment.CurrentManagedThreadId;
         byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 10_000).Select(i =>
             $"Paragraph {i}: **office** and *words* مرحبا 👩‍💻 that wrap into multiple visual rows.\n\n")));

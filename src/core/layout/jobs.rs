@@ -70,6 +70,7 @@ pub struct ViewportLayoutRegion {
     long_line_checkpoint: Option<LongLineLayoutCheckpoint>,
     horizontal_focus_offset: Option<usize>,
     horizontal_desired_x: Option<f32>,
+    allow_automatic_horizontal_focus: bool,
     complete_horizontal_geometry: bool,
 }
 
@@ -100,6 +101,7 @@ impl ViewportLayoutRegion {
             long_line_checkpoint: None,
             horizontal_focus_offset: None,
             horizontal_desired_x: None,
+            allow_automatic_horizontal_focus: true,
             complete_horizontal_geometry: false,
         })
     }
@@ -142,7 +144,16 @@ impl ViewportLayoutRegion {
         self
     }
 
-    pub(crate) fn has_horizontal_focus(&self) -> bool { self.horizontal_focus_offset.is_some() }
+    pub(crate) fn needs_automatic_horizontal_focus(&self) -> bool {
+        self.allow_automatic_horizontal_focus && self.horizontal_focus_offset.is_none()
+    }
+
+    /// A viewport-preserving resize must not replace a manually scrolled band
+    /// with geometry around an offscreen caret.
+    pub(crate) fn without_automatic_horizontal_focus(mut self) -> Self {
+        self.allow_automatic_horizontal_focus = false;
+        self
+    }
 
     /// Rectangular edits currently inspect every intervening shaping cluster.
     /// Request their complete row geometry before resolving a source change.
@@ -316,6 +327,7 @@ pub struct LayoutJobRequest {
     projection_text_len: usize,
     input: CapturedLayoutInput,
     captured_view: LayoutJobViewConfiguration,
+    table_measurements: Option<super::engine::tables::TableMeasurementCache>,
 }
 
 /// Structural accounting for one worker request. Counts are exposed instead of
@@ -368,6 +380,7 @@ impl LayoutJobCaptureStatistics {
 }
 
 impl LayoutJobRequest {
+    pub(crate) fn capture_table_measurements<P: TextMeasurementProvider>(&mut self, engine: &LayoutEngine<P>) { self.table_measurements = Some(engine.table_measurements()); }
     pub fn job_id(&self) -> LayoutJobId {
         self.job_id
     }
@@ -835,7 +848,8 @@ where
             "a continuation requires one wrapped viewport hard line",
         ));
     }
-    let use_long_line_slice = line_ranges.len() == 1
+    let has_table_line = line_ranges.iter().any(|line| document.projection().table_at(line.start).is_some_and(|table| line.end <= table.range.end));
+    let use_long_line_slice = !has_table_line && line_ranges.len() == 1
         && view.wrap()
         && (checkpoint.is_some() || line_ranges[0].len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
 
@@ -846,14 +860,13 @@ where
     let stream_wrapped_region = view.wrap() && checkpoint.is_none()
         && (line_ranges.len() > 1 || (giant_line
             && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), false, &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));
-    let use_unwrapped_viewport = (!view.wrap() || stream_wrapped_region) && !view.paragraph_flow()
-        && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
-        && giant_line;
+    let use_unwrapped_viewport = giant_line && (has_table_line || ((!view.wrap() || stream_wrapped_region) && !view.paragraph_flow()
+        && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)));
     let (input, mut captured_view) = if use_unwrapped_viewport {
         let text_origin = line_ranges.first().unwrap().start;
         let text_end = line_ranges.last().unwrap().end;
         let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(document, range.end, false)?)
+            Some(document_line_range(document, range.end, view.paragraph_flow())?)
         } else { None };
         let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
         let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, false, view.search_matches(document.id(), document.revision()), document.format())?;
@@ -1083,6 +1096,7 @@ where
         projection_text_len: document.projection().text_tree().byte_len(),
         input,
         captured_view,
+        table_measurements: None,
     })
 }
 
@@ -1112,9 +1126,11 @@ pub struct LayoutJobCandidate {
     computation_scope: LayoutComputationScope,
     cancellation: LayoutCancellationToken,
     product: LayoutJobProduct,
+    table_measurements: super::engine::tables::TableMeasurementCache,
 }
 
 impl LayoutJobCandidate {
+    pub(crate) fn table_measurements(&self) -> super::engine::tables::TableMeasurementCache { self.table_measurements.clone() }
     pub fn job_id(&self) -> LayoutJobId {
         self.job_id
     }
@@ -1259,6 +1275,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         });
     }
 
+    if let Some(cache) = &request.table_measurements { engine.install_table_measurements(cache.clone()); }
     let snapshot = match &request.input {
         CapturedLayoutInput::UnwrappedViewport { text, line_ranges, following_line_range, document_hard_line_count, styles } => {
             match engine.layout_unwrapped_viewport_cancellable(request.document_id, request.document_revision, text, line_ranges,
@@ -1375,6 +1392,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         computation_scope,
         cancellation: request.cancellation.clone(),
         product,
+        table_measurements: engine.table_measurements(),
     })
 }
 
@@ -2128,6 +2146,7 @@ mod tests {
         let mut engine = LayoutEngine::new(provider);
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
+            table_measurements: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::Background,
             document_id: document.id(),
@@ -2192,6 +2211,7 @@ mod tests {
         let mut engine = LayoutEngine::new(provider);
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
+            table_measurements: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::ViewportOverscan,
             document_id: document.id(),
@@ -2664,6 +2684,7 @@ mod tests {
         let mut engine = LayoutEngine::new(provider);
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
+            table_measurements: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::ChangedVisibleRows,
             document_id: document.id(),

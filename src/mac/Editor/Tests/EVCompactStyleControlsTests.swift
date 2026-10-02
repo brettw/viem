@@ -7,6 +7,29 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testTableStylesExposePlacementAndExplainSourceOwnedCellAlignment() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectTab(.paragraph)
+        for name in ["Table cell", "Table header"] {
+            editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: name)))
+            let alignment = try control(NSSegmentedControl.self, label: "Paragraph alignment", in: editor.view)
+            XCTAssertTrue(alignment.isHiddenOrHasHiddenAncestor, "Cell alignment is source owned")
+            func labels(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(labels) }
+            XCTAssertTrue(labels(editor.view).contains { $0.stringValue == "Alignment comes from the table column" && !$0.isHiddenOrHasHiddenAncestor })
+        }
+        let table = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Table"))
+        editor.selectStyle(table)
+        let alignment = try control(NSSegmentedControl.self, label: "Table placement", in: editor.view)
+        XCTAssertFalse(alignment.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(alignment.toolTip(forSegment: 1), "Center table")
+        let style = try control(NSPopUpButton.self, label: "Style", in: editor.view)
+        let container = try XCTUnwrap(style.itemTitles.firstIndex(of: "Container"))
+        let tableIndex = try XCTUnwrap(style.itemTitles.firstIndex(of: "Table"))
+        XCTAssertGreaterThan(tableIndex, container)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: table)?.kind, .table)
+    }
+
     func testDefaultParagraphClearsCharacterParentAndUnchangedMenusAreRetained() throws {
         let (_, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }

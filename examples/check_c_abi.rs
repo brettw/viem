@@ -69,6 +69,28 @@ _Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_d
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
 static ViemStatus (*strikethrough_state)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_strikethrough_state;
 static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint8_t, ViemCoreOutcomeV1 *) = viem_core_view_set_strikethrough;
+_Static_assert(sizeof(ViemTableContextV1) == {table_context}, "table context size");
+_Static_assert(offsetof(ViemTableContextV1, selection) == {table_context_selection}, "table context selection offset");
+_Static_assert(sizeof(ViemInsertTableV1) == {insert_table}, "insert table size");
+_Static_assert(offsetof(ViemInsertTableV1, columns) == {insert_table_columns}, "insert table dimensions offset");
+_Static_assert(sizeof(ViemTableActionV1) == {table_action}, "table action size");
+_Static_assert(offsetof(ViemTableActionV1, expected) == {table_action_expected}, "table action identity offset");
+_Static_assert(sizeof(ViemTableCellV1) == {table_cell}, "table cell size");
+_Static_assert(offsetof(ViemTableCellV1, rect) == {table_cell_rect}, "table cell geometry offset");
+_Static_assert(sizeof(ViemTableSelectionV1) == {table_selection}, "table selection size");
+_Static_assert(VIEM_LOGICAL_SELECTION_KIND_CELLS == {table_selection_kind}, "cell selection kind");
+_Static_assert(VIEM_STYLE_ROLE_TABLE == {table_role}, "table style role");
+static ViemStatus (*prepare_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t *) = viem_core_view_prepare_table_refinement;
+static ViemStatus (*install_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t, uint8_t *) = viem_core_view_install_table_refinement;
+static ViemStatus (*table_context)(ViemCoreHandle, ViemViewId, ViemTableContextV1 *) = viem_core_view_table_context;
+static ViemStatus (*table_context_at)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint64_t, ViemTableContextV1 *) = viem_core_view_table_context_at;
+static ViemStatus (*insert_table)(ViemCoreHandle, ViemViewId, const ViemInsertTableV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_table;
+static ViemStatus (*table_action)(ViemCoreHandle, ViemViewId, const ViemTableActionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_table_action;
+static ViemStatus (*copy_table_cells)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, ViemTableCellV1 *, uint64_t, uint64_t *) = viem_core_view_copy_table_cells;
+static ViemStatus (*copy_table_selection_text)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, uint8_t *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_text;
+static ViemStatus (*copy_table_selection_ranges)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, ViemFormattedUtf8RangeV1 *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_ranges;
+static ViemStatus (*table_selection)(ViemCoreHandle, ViemViewId, ViemTableSelectionV1 *) = viem_core_view_table_selection;
+static ViemStatus (*select_table_cells)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_select_table_cells;
 static ViemStatus (*style_defaults)(ViemCoreHandle, uint64_t, const uint8_t *, uint64_t, ViemStyleDefaultsDiagnosticCallback, void *) = viem_core_initialize_style_defaults;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 == 3u,
@@ -622,6 +644,17 @@ static void typecheck(void) {{
   (void)layout_diagnostics;
 }}
 "#,
+        table_context = std::mem::size_of::<ViemTableContextV1>(),
+        table_context_selection = std::mem::offset_of!(ViemTableContextV1, selection),
+        insert_table = std::mem::size_of::<ViemInsertTableV1>(),
+        insert_table_columns = std::mem::offset_of!(ViemInsertTableV1, columns),
+        table_action = std::mem::size_of::<ViemTableActionV1>(),
+        table_action_expected = std::mem::offset_of!(ViemTableActionV1, expected),
+        table_cell = std::mem::size_of::<ViemTableCellV1>(),
+        table_cell_rect = std::mem::offset_of!(ViemTableCellV1, rect),
+        table_selection = std::mem::size_of::<ViemTableSelectionV1>(),
+        table_selection_kind = VIEM_LOGICAL_SELECTION_KIND_CELLS,
+        table_role = VIEM_STYLE_ROLE_TABLE,
         abi = VIEM_CORE_ABI_VERSION,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,

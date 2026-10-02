@@ -23,7 +23,6 @@ const CASES: &[(Format, &str)] = &[
     (Format::Markdown, "[a]: url\n\n[a] b"),
     (Format::Markdown, "| a | b |\n| - | - |\n| c | d |"),
     (Format::Markdown, "a **é👩‍💻** b"),
-
 ];
 
 #[test]
@@ -40,6 +39,11 @@ fn legal_visible_replacement_ranges_preserve_requested_text() {
             for &end in &boundaries[index + 1..] {
                 for replacement in ["", "x", " ", "\n"] {
                     checked += 1;
+                    let table_boundary = document.projection().table_cell_at(start).is_some_and(
+                        |(table, _, cell)| end > cell.range.end && (start..end) != table.range,
+                    );
+                    let before_revision = document.revision();
+                    let before_history = document.history_status();
                     let mut expected = document.text().to_owned();
                     expected.replace_range(start..end, replacement);
                     match document.prepare_model_request(ModelRequest::ApplyTextEdits {
@@ -47,6 +51,11 @@ fn legal_visible_replacement_ranges_preserve_requested_text() {
                         revision: document.revision(),
                         edits: vec![TextEdit::new(start..end, replacement)],
                     }) {
+                        Err(_) if table_boundary => {
+                            assert_eq!(document.source_bytes(), source.as_bytes());
+                            assert_eq!(document.revision(), before_revision);
+                            assert_eq!(document.history_status(), before_history);
+                        }
                         Err(error) => failures.push(format!("{format:?} source={source:?} text={:?} {start}..{end} => {replacement:?}: {error:?}", document.text())),
                         Ok(prepared) => {
                             let no_op = prepared.is_no_op();

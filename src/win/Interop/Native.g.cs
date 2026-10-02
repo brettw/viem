@@ -974,6 +974,70 @@ internal unsafe struct ViemLogicalSelectionIdentityV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemTableContextV1
+{
+    public uint @struct_size;
+    public uint @flags;
+    public ViemLogicalSelectionIdentityV1 @selection;
+    public ulong @table_id;
+    public ulong @row;
+    public ulong @column;
+    public ulong @rows;
+    public ulong @columns;
+    public uint @alignment;
+    public uint @reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemInsertTableV1
+{
+    public uint @struct_size;
+    public uint @reserved;
+    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public uint @columns;
+    public uint @body_rows;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemTableActionV1
+{
+    public uint @struct_size;
+    public uint @action;
+    public ViemTableContextV1 @expected;
+    public uint @alignment;
+    public uint @reserved;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemTableCellV1
+{
+    public ulong @table_id;
+    public ulong @row;
+    public ulong @column;
+    public ulong @cell_id;
+    public ulong @text_start;
+    public ulong @text_end;
+    public ViemLayoutRectV1 @rect;
+    public ViemLayoutRectV1 @table_rect;
+    public uint @alignment;
+    public uint @flags;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemTableSelectionV1
+{
+    public uint @struct_size;
+    public uint @active;
+    public ulong @document_id;
+    public ulong @document_revision;
+    public ulong @table_id;
+    public ulong @anchor_row;
+    public ulong @anchor_column;
+    public ulong @active_row;
+    public ulong @active_column;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemSemanticStylePresentationV1
 {
     public uint @struct_size;
@@ -1558,6 +1622,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_ROLE_CODE_BLOCK = 4u;
     public const uint VIEM_STYLE_ROLE_LIST = 5u;
     public const uint VIEM_STYLE_ROLE_LIST_ITEM = 6u;
+    public const uint VIEM_STYLE_ROLE_TABLE = 7u;
     public const uint VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION = 2u;
     public const uint VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY = 3u;
     public const uint VIEM_STYLE_DEFINITION_HAS_PARENT = (1u << 0);
@@ -1733,6 +1798,7 @@ internal static unsafe partial class Native
     public const uint VIEM_LOGICAL_SELECTION_KIND_CHARACTER = 1u;
     public const uint VIEM_LOGICAL_SELECTION_KIND_LINE = 2u;
     public const uint VIEM_LOGICAL_SELECTION_KIND_BLOCK = 3u;
+    public const uint VIEM_LOGICAL_SELECTION_KIND_CELLS = 4u;
     public const uint VIEM_SEMANTIC_STYLE_STRONG = 1u;
     public const uint VIEM_SEMANTIC_STYLE_EMPHASIS = 2u;
     public const uint VIEM_SEMANTIC_STYLE_STATE_OFF = 0u;
@@ -1743,6 +1809,27 @@ internal static unsafe partial class Native
     public const uint VIEM_SEMANTIC_STYLE_CAN_CLEAR = (1u << 2);
     public const uint VIEM_SEMANTIC_STYLE_TYPING_CONTEXT = (1u << 3);
     public static readonly uint VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE = ((uint)sizeof(ViemLogicalSelectionIdentityV1));
+    public const uint VIEM_TABLE_CAN_INSERT = 1u;
+    public const uint VIEM_TABLE_IN_TABLE = 2u;
+    public const uint VIEM_TABLE_HEADER = 4u;
+    public const uint VIEM_TABLE_CELL_SELECTED = 8u;
+    public const uint VIEM_TABLE_ALIGN_UNSPECIFIED = 0u;
+    public const uint VIEM_TABLE_ALIGN_LEFT = 1u;
+    public const uint VIEM_TABLE_ALIGN_CENTER = 2u;
+    public const uint VIEM_TABLE_ALIGN_RIGHT = 3u;
+    public const uint VIEM_TABLE_INSERT_ROW_ABOVE = 1u;
+    public const uint VIEM_TABLE_INSERT_ROW_BELOW = 2u;
+    public const uint VIEM_TABLE_DELETE_ROW = 3u;
+    public const uint VIEM_TABLE_INSERT_COLUMN_LEFT = 4u;
+    public const uint VIEM_TABLE_INSERT_COLUMN_RIGHT = 5u;
+    public const uint VIEM_TABLE_DELETE_COLUMN = 6u;
+    public const uint VIEM_TABLE_SET_ALIGNMENT = 7u;
+    public const uint VIEM_TABLE_CLEAR_CELL = 8u;
+    public static readonly uint VIEM_TABLE_CONTEXT_V1_SIZE = ((uint)sizeof(ViemTableContextV1));
+    public static readonly uint VIEM_INSERT_TABLE_V1_SIZE = ((uint)sizeof(ViemInsertTableV1));
+    public static readonly uint VIEM_TABLE_ACTION_V1_SIZE = ((uint)sizeof(ViemTableActionV1));
+    public static readonly uint VIEM_TABLE_CELL_V1_SIZE = ((uint)sizeof(ViemTableCellV1));
+    public static readonly uint VIEM_TABLE_SELECTION_V1_SIZE = ((uint)sizeof(ViemTableSelectionV1));
     public static readonly uint VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE = ((uint)sizeof(ViemSemanticStylePresentationV1));
     public static readonly uint VIEM_SET_SEMANTIC_STYLE_V1_SIZE = ((uint)sizeof(ViemSetSemanticStyleV1));
     public const uint VIEM_PLACE_CURSOR_EXTEND_SELECTION = (1u << 0);
@@ -1874,6 +1961,10 @@ internal static unsafe partial class Native
     public static extern uint viem_layout_work_compute(ulong @request, ViemTextMeasurementProviderV1* @provider, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_install_prelayout(ulong @core, ulong @view, int @direction, ulong @result, byte* @out_installed);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_prepare_table_refinement(ulong @core, ulong @view, ulong* @out_request);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_install_table_refinement(ulong @core, ulong @view, ulong @result, byte* @out_installed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_layout_work_cancel(ulong @request);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2012,6 +2103,24 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_set_file_format(ulong @core, ulong @view, ViemSetFileFormatV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_list_selection(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @out_selection);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_table_context(ulong @core, ulong @view, ViemTableContextV1* @out_context);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_table_context_at(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @text_offset, ViemTableContextV1* @out_context);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_insert_table(ulong @core, ulong @view, ViemInsertTableV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_table_action(ulong @core, ulong @view, ViemTableActionV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_table_cells(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemTableCellV1* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_table_selection(ulong @core, ulong @view, ViemTableSelectionV1* @out_selection);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_select_table_cells(ulong @core, ulong @view, ViemTableSelectionV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_table_selection_text(ulong @core, ulong @view, ViemTableSelectionV1* @expected, byte* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_table_selection_ranges(ulong @core, ulong @view, ViemTableSelectionV1* @expected, ViemFormattedUtf8RangeV1* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

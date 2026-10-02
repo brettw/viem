@@ -136,6 +136,14 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
             .map(|inner| Self { inner })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn splice_transformed(&self, indices: Range<usize>, replacement: Vec<T>,
+        old_coordinate_end: usize, new_coordinate_end: usize, auxiliary_ends: Option<(usize, usize)>,
+        revision: Option<u64>, stats: &mut RangeSpliceStats) -> Option<Self> {
+        self.inner.splice(indices, replacement, old_coordinate_end, new_coordinate_end, auxiliary_ends, revision, stats)
+            .map(|inner| Self { inner })
+    }
+
     /// Finds the last ordered range whose start is at or before `offset` and
     /// whose end is at or after it. This gives deterministic downstream
     /// behavior for adjacent zero-width boundaries in `O(log n)` time.
