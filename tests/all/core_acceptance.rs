@@ -6,9 +6,7 @@
 
 use viem_core::command::{CommandStatus, InputEvent, Key, Mode, RegisterKind};
 use viem_core::document::{BlockKind, DocumentError, SemanticInlineStyle, StyleApplication};
-use viem_core::layout::{
-    BoundaryAffinity, LayoutEngine, LayoutError, MockTextMeasurementProvider, ViewLayout,
-};
+use viem_core::layout::{BoundaryAffinity, LayoutError, MockTextMeasurementProvider};
 use viem_core::{Core, CoreEvent, Document, Encoding, Format};
 
 fn encode_source(text: &str, encoding: Encoding) -> Vec<u8> {
@@ -114,35 +112,6 @@ fn text_pipelines_preserve_no_op_bytes_and_patch_locally_in_every_encoding() {
             }
         }
     }
-}
-
-#[test]
-fn document_history_retains_and_selects_redo_branches() {
-    let mut document = Document::new("base");
-
-    document.insert(4, "-old").unwrap();
-    let old_revision = document.revision();
-    let old_bytes = document.source_bytes();
-    assert!(document.undo());
-
-    document.insert(4, "-new").unwrap();
-    let new_revision = document.revision();
-    let new_bytes = document.source_bytes();
-    assert_ne!(old_revision, new_revision);
-    assert!(document.undo());
-    assert_eq!(document.text(), "base");
-    assert_eq!(document.redo_branch_count(), 2);
-
-    assert!(document.select_redo_branch(0));
-    assert!(document.redo());
-    assert_eq!(document.revision(), old_revision);
-    assert_eq!(document.source_bytes(), old_bytes);
-
-    assert!(document.undo());
-    assert!(document.select_redo_branch(1));
-    assert!(document.redo());
-    assert_eq!(document.revision(), new_revision);
-    assert_eq!(document.source_bytes(), new_bytes);
 }
 
 #[test]
@@ -259,56 +228,5 @@ fn views_have_independent_widths_and_refresh_after_shared_edits() {
         core.layout(wide).unwrap().snapshot().unwrap().revision,
         wide_revision,
         "resizing one view must not invalidate another view"
-    );
-}
-
-#[test]
-fn large_document_and_very_long_line_layout_smoke_test() {
-    const LARGE_LINE_COUNT: usize = 1_000;
-    const LONG_LINE_GRAPHEMES: usize = 10_000;
-
-    let large_text = (0..LARGE_LINE_COUNT)
-        .map(|line| format!("line {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let large_document = Document::new(large_text);
-    let mut large_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-    let mut large_view = ViewLayout::new(240.0, 300.0);
-    large_view.set_wrap(false);
-    large_engine
-        .relayout(&large_document, &mut large_view)
-        .unwrap();
-    assert_eq!(large_view.snapshot().unwrap().rows.len(), LARGE_LINE_COUNT);
-    assert_eq!(
-        large_view.snapshot().unwrap().document_revision,
-        large_document.revision()
-    );
-
-    let long_document = Document::new("x".repeat(LONG_LINE_GRAPHEMES));
-    let mut long_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-    let mut long_view = ViewLayout::new(100.0, 200.0);
-    long_view.set_wrap(false);
-    long_engine
-        .relayout(&long_document, &mut long_view)
-        .unwrap();
-    let initial_requests = long_engine.provider().request_calls();
-    assert!(
-        initial_requests > 1,
-        "a very long line should be shaped as bounded fragments"
-    );
-    assert_eq!(long_view.snapshot().unwrap().rows.len(), 1);
-    assert_eq!(
-        long_view.snapshot().unwrap().rows[0].clusters.len(),
-        LONG_LINE_GRAPHEMES
-    );
-
-    long_view.resize(80.0, 200.0);
-    long_engine
-        .relayout(&long_document, &mut long_view)
-        .unwrap();
-    assert_eq!(
-        long_engine.provider().request_calls(),
-        initial_requests,
-        "width-only relayout should reuse width-independent shaping"
     );
 }

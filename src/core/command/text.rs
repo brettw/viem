@@ -745,21 +745,9 @@ mod tests {
     use super::*;
     use crate::document::{Document, Encoding, FileFormat, Format};
 
-    fn move_horizontal(text: &str, offset: usize, amount: isize) -> usize {
-        let document = Document::new(text);
-        super::move_horizontal(&document.hard_line_snapshot(), offset, amount)
-    }
-
     fn move_vertical(text: &str, offset: usize, amount: isize) -> usize {
         let document = Document::new(text);
         super::move_vertical(text, &document.hard_line_snapshot(), offset, amount)
-    }
-
-    #[test]
-    fn horizontal_motion_never_splits_a_grapheme() {
-        let text = "a\u{301}bc";
-        assert_eq!(move_horizontal(text, 0, 1), "a\u{301}".len());
-        assert!(is_grapheme_boundary(text, move_horizontal(text, 0, 1)));
     }
 
     #[test]

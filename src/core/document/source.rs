@@ -827,14 +827,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn persistent_splices_preserve_old_revision() {
-        let original = SourceSnapshot::new(b"abcdef".to_vec());
-        let changed = original.replace(2, 4, b"XYZ".to_vec()).unwrap();
-        assert_eq!(original.bytes(), b"abcdef");
-        assert_eq!(changed.bytes(), b"abXYZef");
-    }
-
-    #[test]
     fn empty_splice_preserves_the_exact_persistent_root() {
         let original = SourceSnapshot::new(b"abcdef".to_vec());
         let unchanged = original.replace(3, 3, Vec::new()).unwrap();

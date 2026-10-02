@@ -6,17 +6,15 @@ project_dir=$(dirname -- "$script_dir")
 configuration=${1:-debug}
 
 case "$configuration" in
-    debug)
-        cargo_args=""
-        ;;
-    release)
-        cargo_args="--release"
+    debug|release)
         ;;
     *)
         echo "usage: $0 [debug|release]" >&2
         exit 64
         ;;
 esac
+
+rust_profile=${VIEM_RUST_PROFILE:-$configuration}
 
 cd "$project_dir"
 python3 "$script_dir/vim-runtime.py" verify "$project_dir/assets/vim"
@@ -28,19 +26,44 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$module_cache_dir"
 # macOS version as the Swift package, regardless of the build host's version.
 export MACOSX_DEPLOYMENT_TARGET=26.0
 
-if [ -n "$cargo_args" ]; then
-    cargo build "$cargo_args"
-else
+if [ "$rust_profile" = debug ]; then
     cargo build
+else
+    cargo build --profile "$rust_profile"
 fi
 
-# SwiftPM sees the Rust archive only as an unsafe linker argument, so archive
-# mtime changes are not part of its dependency graph. Recompile the tiny C shim
-# to force a relink against the just-built core on every bundled-app build.
-touch "$project_dir/src/mac/CViemCore/shim.c"
+swift_bin_dir=$(VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --show-bin-path)
+rust_archive="$project_dir/target/$rust_profile/libviem_core.a"
+swift_binary="$swift_bin_dir/Viem"
+link_stamp="$project_dir/.build/rust-link-$configuration.sha256"
 
-VIEM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration"
-swift_bin_dir=$(VIEM_RUST_PROFILE="$configuration" swift build --disable-sandbox -c "$configuration" --show-bin-path)
+# SwiftPM sees the archive only as an unsafe linker argument, so it cannot
+# detect changed archive bytes. SHA256 output includes the selected path too:
+# switching Rust profiles must relink even if their archives happen to match.
+archive_fingerprint=$(shasum -a 256 "$rust_archive")
+binary_fingerprint="missing $swift_binary"
+if [ -f "$swift_binary" ]; then
+    binary_fingerprint=$(shasum -a 256 "$swift_binary")
+fi
+current_fingerprint=$(printf '%s\n%s\n' "$archive_fingerprint" "$binary_fingerprint")
+# Also verify the linked output, since a manual Swift build can replace it
+# without updating this script's last-successful-link stamp.
+if [ ! -f "$link_stamp" ] || [ "$(cat "$link_stamp")" != "$current_fingerprint" ]; then
+    touch "$project_dir/src/mac/CViemCore/shim.c"
+fi
+
+VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration"
+# Do not bless a link if another build changed the archive while Swift ran.
+if [ "$(shasum -a 256 "$rust_archive")" != "$archive_fingerprint" ]; then
+    echo "Rust archive changed during Swift build; rerun the build." >&2
+    exit 1
+fi
+binary_fingerprint=$(shasum -a 256 "$swift_binary")
+link_stamp_candidate=$(mktemp "$link_stamp.XXXXXX")
+trap 'rm -f "$link_stamp_candidate"' 0
+printf '%s\n%s\n' "$archive_fingerprint" "$binary_fingerprint" > "$link_stamp_candidate"
+mv -f "$link_stamp_candidate" "$link_stamp"
+trap - 0
 
 app_bundle="$project_dir/.build/Viem.app"
 contents_dir="$app_bundle/Contents"

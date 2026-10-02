@@ -234,13 +234,21 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
         let container = NSView(frame: surface.view.bounds)
         container.addSubview(surface.view)
         let statusBar = EVStatusBarView()
-        statusBar.frame = NSRect(
-            x: 0, y: 0, width: container.bounds.width, height: EVStatusBarView.preferredHeight)
         container.addSubview(statusBar)
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: 520),
+            container.heightAnchor.constraint(equalToConstant: 260),
+            statusBar.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
         statusBar.apply(surface.statusBarState)
-        surface.statusBarStateDidChange = { [weak statusBar] state in statusBar?.apply(state) }
+        surface.statusBarStateDidChange = { [weak statusBar] state in
+            statusBar?.apply(state)
+            statusBar?.superview?.layoutSubtreeIfNeeded()
+        }
         window.contentView = container
-        statusBar.layoutSubtreeIfNeeded()
+        container.layoutSubtreeIfNeeded()
         surface.editorView.applicationIsActive = { true }
         window.setKeyWindowForTesting(true)
         return (surface, try XCTUnwrap(surface.session), window)

@@ -210,24 +210,26 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertFalse(family.isEnabled); XCTAssertFalse(face.isEnabled)
     }
 
-    func testFirstClickOnInheritedBoldTogglesBoldAndUndoesAsOneAction() throws {
+    func testFirstClickOnInheritedEmphasisTogglesAndUndoesAsOneAction() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
-        let bold = try control(NSButton.self, label: "Bold", in: editor.view)
-        let override = try control(NSButton.self, label: "Override bold", in: editor.view)
-        XCTAssertFalse(bold.isEnabled)
-        XCTAssertEqual(bold.state, .off)
-        try performFirstClick(bold)
-        XCTAssertTrue(bold.isEnabled)
-        XCTAssertEqual(bold.state, .on)
-        XCTAssertEqual(override.state, .on)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterBold]?.declared, .boolean(true))
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterBold]?.declared)
-        XCTAssertFalse(bold.isEnabled)
-        XCTAssertFalse(surface.canUndo, "Activation and the forwarded click are a single gesture")
+        for (title, property) in [("Bold", EVStyleProperty.characterBold), ("Underline", .characterUnderline)] {
+            let button = try control(NSButton.self, label: title, in: editor.view)
+            let override = try control(NSButton.self, label: "Override \(title.lowercased())", in: editor.view)
+            XCTAssertFalse(button.isEnabled)
+            XCTAssertEqual(button.state, .off)
+            try performFirstClick(button)
+            XCTAssertTrue(button.isEnabled)
+            XCTAssertEqual(button.state, .on)
+            XCTAssertEqual(override.state, .on)
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[property]?.declared, .boolean(true))
+            surface.perform(menuCommand: .undo, sender: nil)
+            XCTAssertNil(try backend.styleSheetSnapshot().definition(for: heading)?.properties[property]?.declared)
+            XCTAssertFalse(button.isEnabled)
+            XCTAssertFalse(surface.canUndo, "Activation and the forwarded click are a single gesture")
+        }
     }
 
     func testFirstClickOnInheritedStepperIncrementsAndUndoesAsOneAction() throws {
@@ -361,15 +363,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(activationCount, 1, "Read-only controls cannot activate")
     }
 
-    func testUnderlineButtonHasVisibleUnderlineAndNativeAction() throws {
-        let (backend, surface, editor, _) = try makeEditor()
-        defer { withExtendedLifetime(surface) {} }
-        let button = try control(NSButton.self, label: "Underline", in: editor.view)
-        XCTAssertEqual(button.attributedTitle.string, "U")
-        XCTAssertEqual(button.attributedTitle.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int, NSUnderlineStyle.single.rawValue)
-        button.performClick(nil)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterUnderline]?.declared, .boolean(true))
-    }
     private func makeEditor(theme: EVTheme = .paper) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)

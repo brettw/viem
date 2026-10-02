@@ -69,10 +69,11 @@ public enum EVFontCatalog {
   private static let cache = Cache()
   public static func invalidate() {
     cache.lock.lock()
-    cache.generation &+= 1
+    cache.generation += 1
     cache.faces.removeAll()
     cache.descriptors.removeAll()
     cache.lock.unlock()
+    EVFontVariations.invalidate()
   }
   public static func faces(for familyOrPostScriptName: String) -> [EVFontFace] {
     if legacyFlightlineDesign(familyOrPostScriptName) != nil { return faces(for: "Flightline Code") }
@@ -117,6 +118,22 @@ public enum EVFontCatalog {
       family = CTFontCopyFamilyName(font) as String
       descriptors = matchingDescriptors(kCTFontFamilyNameAttribute, family)
       if descriptors.isEmpty { descriptors = [descriptor] }
+    }
+    // Earlier static Flightline releases can still be installed by the user.
+    // Use the variable designs when available, including for legacy saved
+    // names, so those copies cannot hide the bundled axes or duplicate faces.
+    if sameName(family, "Flightline Code") {
+      let designs = descriptors.map { descriptor in
+        let font = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
+        return (descriptor: descriptor,
+          italic: CTFontGetSymbolicTraits(font).contains(.traitItalic),
+          variable: CTFontCopyTable(font, CTFontTableTag(0x6676_6172), []) != nil)
+      }
+      let variableSlants = Set(designs.filter { $0.variable }.map { $0.italic })
+      // An unavailable italic or upright variable resource must still permit
+      // that design's installed static faces as the native fallback.
+      descriptors = designs.filter { $0.variable || !variableSlants.contains($0.italic) }
+        .map { $0.descriptor }
     }
     var result = Discovery()
     for descriptor in descriptors {

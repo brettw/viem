@@ -97,8 +97,13 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     private func assertOverridesLockedAndValuesEditable(in editor: EVStyleEditorViewController) throws {
         let overrides = descendants(of: editor.view).compactMap { $0 as? NSButton }
             .filter { $0.toolTip == "Override inherited" }
+        // Family, base weight and variable axes share the font-face override.
+        // Language is preserved in the model but has no inspector control.
+        let propertiesWithoutIndependentOverride: Set<EVStyleProperty> = [
+            .characterLanguage, .characterWeight, .characterFontAxes,
+        ]
         let expectedProperties = Set((EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties + EVStyleProperty.blockProperties)
-            .filter { $0 != .characterLanguage }.map { Int($0.rawValue) })
+            .filter { !propertiesWithoutIndependentOverride.contains($0) }.map { Int($0.rawValue) })
         XCTAssertEqual(Set(overrides.map(\.tag)), expectedProperties,
                        "Every character and paragraph override must be covered")
         XCTAssertEqual(overrides.count, expectedProperties.count)

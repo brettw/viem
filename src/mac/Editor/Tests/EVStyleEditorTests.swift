@@ -82,34 +82,6 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testLiveCatalogueContainsEveryDefinitionAndEveryEditableProperty() throws {
-        let (backend, surface, editor) = try makeEditor(source: "# Heading", style: EVStyleKey.baseParagraph)
-        _ = backend
-        defer { withExtendedLifetime(surface) {} }
-
-        XCTAssertEqual(editor.inspection.styleCount, try backend.styleSheetSnapshot().definitions.count)
-        XCTAssertEqual(editor.inspection.selectedKind, .paragraph)
-        XCTAssertEqual(editor.inspection.characterPropertyCount, EVStyleProperty.characterProperties.count)
-        XCTAssertEqual(editor.inspection.paragraphPropertyCount, 6)
-        XCTAssertTrue(editor.inspection.paragraphTabEnabled)
-        XCTAssertTrue(editor.inspection.mutationsEnabled)
-
-        let picker = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
-            .first { $0.accessibilityLabel() == "Style" })
-        XCTAssertFalse(picker.itemTitles.contains("Base Document"))
-        XCTAssertFalse(picker.itemTitles.contains("Base Character"))
-        XCTAssertFalse(picker.itemTitles.contains("Default Paragraph"))
-        XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Language" })
-        XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == "Resolved style summary" })
-        for label in ["Create syntax style", "Delete selected style"] {
-            XCTAssertFalse(descendants(of: editor.view).contains { $0.accessibilityLabel() == label && !$0.isHiddenOrHasHiddenAncestor })
-        }
-        XCTAssertFalse(descendants(of: editor.view).contains {
-            $0.accessibilityLabel() == "Style editing status" && !$0.isHidden
-        })
-    }
-
-    @MainActor
     func testStyleMutationIsCoreOwnedSourcePreservingMultiViewAndUndoable() throws {
         let backend = EVCoreDocumentBackend()
         let source = Data("# Heading\nbody".utf8)

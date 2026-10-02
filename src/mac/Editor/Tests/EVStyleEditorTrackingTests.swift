@@ -310,51 +310,47 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         XCTAssertEqual(try backend.recoverySnapshot(), original)
     }
 
-    func testRapidSelectionChangesWaitForHalfAnIdleSecondAndDoNotPollWhileUnchanged() async throws {
+    func testSelectionFollowingCoalescesQueriesAndCancelsPendingWork() throws {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)
         let coordinator = EVStyleEditorCoordinator()
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
-        // Let AppKit finish the first panel presentation before measuring idle
-        // time: its initial drawing can otherwise delay the first 40 ms task
-        // resumption long enough for a correctly scheduled timer to fire.
-        try await Task.sleep(for: .milliseconds(700))
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
         let before = try surface.backend.recoverySnapshot()
         let count = coordinator.caretFollowQueryCount
-        for index in 0..<30 {
+        // Exercise the queued callback directly: AppKit scheduling latency is
+        // independent of the coalescing and cancellation policy under test.
+        for index in 0..<6 {
             moveCaret(index.isMultiple(of: 2) ? 1 : 7, in: surface)
-            try await Task.sleep(for: .milliseconds(40))
             XCTAssertEqual(coordinator.caretFollowQueryCount, count)
             XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
         }
         moveCaret(1, in: surface)
-        try await Task.sleep(for: .milliseconds(250))
         XCTAssertEqual(coordinator.caretFollowQueryCount, count)
         XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
-        try await Task.sleep(for: .milliseconds(450))
+        coordinator.settleSelectionFollowForTesting()
         XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
-        for _ in 0..<30 { surface.refreshPresentation() }
+        for _ in 0..<3 { surface.refreshPresentation() }
         moveCaret(1, in: surface)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
-        try await Task.sleep(for: .milliseconds(1100))
+        coordinator.settleSelectionFollowForTesting()
         XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
 
         moveCaret(7, in: surface)
         XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
         coordinator.selectStyle(EVStyleKey.baseParagraph)
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
-        try await Task.sleep(for: .milliseconds(1100))
+        coordinator.settleSelectionFollowForTesting()
         XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
         XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
         moveCaret(1, in: surface)
         coordinator.close()
         XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
-        try await Task.sleep(for: .milliseconds(1100))
+        coordinator.settleSelectionFollowForTesting()
         XCTAssertEqual(coordinator.caretFollowQueryCount, count + 1)
         XCTAssertEqual(try surface.backend.recoverySnapshot(), before)
         XCTAssertFalse(surface.canUndo)

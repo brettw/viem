@@ -33,6 +33,13 @@ let package = Package(
             name: "ViemCoreTextProvider",
             dependencies: ["CViemCore"],
             path: "src/mac/CoreTextProvider/Sources",
+            // Native layout tests spend most of their shaping time in Swift
+            // collection/hash loops. Optimize this provider while retaining
+            // debug assertions, testability and symbols. Other debug targets,
+            // including every test body, keep their normal build settings.
+            swiftSettings: rustProfile == "native-test" ? [
+                .unsafeFlags(["-O", "-assert-config", "Debug"], .when(configuration: .debug)),
+            ] : [],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("CoreGraphics"),
@@ -65,19 +72,24 @@ let package = Package(
             path: "src/mac/App",
             exclude: ["Resources"]
         ),
+        .target(
+            name: "ViemNativeTestSupport",
+            path: "src/mac/TestSupport",
+            publicHeadersPath: "include"
+        ),
         .testTarget(
             name: "ViemAppShellTests",
-            dependencies: ["ViemAppShell"],
+            dependencies: ["ViemAppShell", "ViemNativeTestSupport"],
             path: "src/mac/AppShellTests"
         ),
         .testTarget(
             name: "ViemCoreTextProviderTests",
-            dependencies: ["ViemCoreTextProvider", "CViemCore"],
+            dependencies: ["ViemCoreTextProvider", "CViemCore", "ViemNativeTestSupport"],
             path: "src/mac/CoreTextProvider/Tests"
         ),
         .testTarget(
             name: "ViemEditorTests",
-            dependencies: ["ViemEditor", "CViemCore", "ViemCoreTextProvider"],
+            dependencies: ["ViemEditor", "CViemCore", "ViemCoreTextProvider", "ViemNativeTestSupport"],
             path: "src/mac/Editor/Tests"
         ),
     ],

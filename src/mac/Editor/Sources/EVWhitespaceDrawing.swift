@@ -148,8 +148,13 @@ extension EVEditorView {
             ?? (style.bold == false && inheritedTraits.contains(.traitBold) ? 400 : CGFloat(EVFontCatalog.weight(of: inherited)))
         let slant: UInt32 = style.slant.map { $0 == .upright ? 0 : $0 == .italic ? 1 : 2 }
             ?? (inheritedTraits.contains(.traitItalic) ? 1 : 0)
+        // Explicit weight is a base weight, but the inherited CTFont already
+        // includes its bold treatment. The resolver expects an effective weight.
+        let addsBoldWeight = style.bold == true
+            && (style.weight != nil || !inheritedTraits.contains(.traitBold))
+        let effectiveWeight = addsBoldWeight ? min(weight + 300, 1000) : weight
         return resolveFont(families: style.fontFamilies ?? [CTFontCopyFamilyName(inherited) as String],
-            size: size, cssWeight: weight, slant: slant, features: features, relativeBold: style.bold == true, axes: style.fontAxes ?? [:])
+            size: size, cssWeight: effectiveWeight, slant: slant, features: features, relativeBold: style.bold == true, axes: style.fontAxes ?? [:])
     }
 
 }

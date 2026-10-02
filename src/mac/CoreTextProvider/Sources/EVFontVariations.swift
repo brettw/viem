@@ -27,22 +27,40 @@ public struct EVFontVariationInfo: Sendable {
 }
 
 public enum EVFontVariations {
+  private enum CacheKey: Hashable {
+    case request(String)
+    case font(name: String, url: URL?)
+  }
   private static let lock = NSLock()
-  nonisolated(unsafe) private static var cache: [String: EVFontVariationInfo] = [:]
+  nonisolated(unsafe) private static var generation: UInt64 = 1
+  nonisolated(unsafe) private static var cache: [CacheKey: EVFontVariationInfo] = [:]
+  static func invalidate() {
+    lock.lock()
+    generation += 1
+    cache.removeAll()
+    lock.unlock()
+  }
+  private static func store(_ value: EVFontVariationInfo, for key: CacheKey, generation expected: UInt64) {
+    lock.lock()
+    if generation == expected { cache[key] = value }
+    lock.unlock()
+  }
   public static func info(for name: String) -> EVFontVariationInfo {
-    lock.lock(); let existing = cache[name]; lock.unlock()
+    let key = CacheKey.request(name)
+    lock.lock(); let existing = cache[key]; let expected = generation; lock.unlock()
     if let existing { return existing }
     guard let font = EVFontCatalog.availableFont(named: name, size: 14) else { return .empty }
     let value = info(font: font)
-    lock.lock(); cache[name] = value; lock.unlock()
+    store(value, for: key, generation: expected)
     return value
   }
   public static func info(font: CTFont) -> EVFontVariationInfo {
-    let key = CTFontCopyPostScriptName(font) as String
-    lock.lock(); let existing = cache[key]; lock.unlock()
+    let key = CacheKey.font(name: CTFontCopyPostScriptName(font) as String,
+      url: CTFontCopyAttribute(font, kCTFontURLAttribute) as? URL)
+    lock.lock(); let existing = cache[key]; let expected = generation; lock.unlock()
     if let existing { return existing }
     guard let data = CTFontCopyTable(font, CTFontTableTag(0x66766172), []) as Data? else {
-      lock.lock(); cache[key] = .empty; lock.unlock()
+      store(.empty, for: key, generation: expected)
       return .empty
     }
     let fvar = [UInt8](data)
@@ -96,7 +114,7 @@ public enum EVFontVariations {
       }
     }
     let result = EVFontVariationInfo(axes: axes, instances: presets, links: links)
-    lock.lock(); cache[key] = result; lock.unlock()
+    store(result, for: key, generation: expected)
     return result
   }
   public static func decode(_ json: String) -> [String: Double] {

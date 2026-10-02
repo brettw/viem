@@ -43,3 +43,12 @@ overflow-checks = true
 # Keep debug info in split objects, as macOS does by default, rather than
 # linking a copy of the core's debug info into each test executable.
 split-debuginfo = "unpacked"
+
+# Swift integration tests exercise the same large-document paths through the C
+# ABI. Keep their archive separate from the ordinary unoptimized debug app,
+# with the same optimization, assertions and overflow checks as Rust tests.
+[profile.native-test]
+inherits = "test"
+# Keep source-line backtraces without making every Swift relink collect the
+# entire core's variable/type debug information. Ordinary debug builds retain it.
+debug = "line-tables-only"
