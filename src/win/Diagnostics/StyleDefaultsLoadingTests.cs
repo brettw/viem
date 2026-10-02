@@ -19,8 +19,14 @@ internal static class StyleDefaultsLoadingTests
         string directory = Path.Combine(ownerPreferences.DirectoryPath, "theme-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
-        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper" }),
-            "a fresh profile seeds Paper and Midnight and selects Midnight");
+        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper", "Typewriter" }),
+            "a fresh profile seeds Paper, Midnight and Typewriter and selects Midnight");
+        string typewriterPath = Path.Combine(preferences.ThemesDirectory, "Typewriter.json");
+        byte[] typewriter = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", "Typewriter.json"));
+        Check(File.ReadAllBytes(typewriterPath).SequenceEqual(typewriter), "first-run installation copies the bundled Typewriter theme byte for byte");
+        preferences.SelectTheme("Typewriter");
+        Check(preferences.SelectedTheme == "Typewriter" && File.ReadAllBytes(typewriterPath).SequenceEqual(typewriter), "Typewriter loads without rewriting its preset");
+        preferences.SelectTheme("Midnight");
         Check(new Preferences(directory).SelectedTheme == "Midnight", "selected theme survives preferences reload");
         byte[] midnight = File.ReadAllBytes(preferences.SelectedThemePath!);
         preferences.SelectTheme(null);
@@ -141,7 +147,7 @@ internal static class StyleDefaultsLoadingTests
         string freshDirectory = Path.Combine(directory, "legacy-styles-only"); Directory.CreateDirectory(freshDirectory);
         foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(freshDirectory, file), "obsolete stylesheet");
         var fresh = new Preferences(freshDirectory);
-        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper" }) && fresh.Error == null
+        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper", "Typewriter" }) && fresh.Error == null
             && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(freshDirectory, file)) == "obsolete stylesheet"),
             "obsolete top-level styles do not suppress fresh-profile presets or create an Imported theme");
 
