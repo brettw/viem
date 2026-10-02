@@ -12,6 +12,7 @@ public struct EVThemeChoice: Equatable {
 @MainActor
 enum EVThemeFile {
   static let maximumSize = 20 * 1024 * 1024
+  private static var encodedBuiltins: [Bool: Data] = [:]
 
   static func builtin(paper: Bool = false) throws -> [String: Any] {
     var required: UInt64 = 0
@@ -42,6 +43,16 @@ enum EVThemeFile {
   static func encode(_ object: [String: Any]) throws -> Data {
     let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     _ = try decode(data)
+    return data
+  }
+
+  fileprivate static func encodedBuiltin(paper: Bool) throws -> Data {
+    if let data = encodedBuiltins[paper] { return data }
+    // These two core presets are immutable for the life of the executable.
+    // Cache their validated bytes rather than sharing mutable theme objects;
+    // bundled and user-authored files still come from the filesystem.
+    let data = try encode(builtin(paper: paper))
+    encodedBuiltins[paper] = data
     return data
   }
 
@@ -189,7 +200,7 @@ extension EVConfigurationStore {
           if name == "Typewriter" { continue }
           // Development/test executables and damaged bundles still have a
           // complete usable default without depending on resource files.
-          data = try EVThemeFile.encode(EVThemeFile.builtin(paper: name == "Paper"))
+          data = try EVThemeFile.encodedBuiltin(paper: name == "Paper")
         }
         try data.write(to: themesDirectory.appendingPathComponent(name + ".json"), options: .withoutOverwriting)
       }

@@ -115,7 +115,9 @@ import XCTest
     }
 
     func testMarkdownInsertLineAndParagraphSelectorsFollowWrappedRowsAndPhysicalMode() throws {
-        let source = "one two three four five six seven eight nine ten eleven twelve\nTail"
+        // Keep the second visual row inside the first physical source line.
+        let source = Array(repeating: "one two three four five six seven eight nine ten eleven twelve", count: 3)
+            .joined(separator: " ") + "\nTail"
         let selectors = [
             (#selector(NSResponder.moveToBeginningOfLine(_:)), #selector(NSResponder.moveToEndOfLine(_:))),
             (#selector(NSResponder.moveToBeginningOfParagraph(_:)), #selector(NSResponder.moveToEndOfParagraph(_:))),

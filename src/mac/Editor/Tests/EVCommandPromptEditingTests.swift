@@ -31,12 +31,19 @@ import XCTest
         // A real pane pairs the editor with a status line, which now renders
         // and hit-tests the command line.
         let statusBar = EVStatusBarView()
-        statusBar.frame = NSRect(x: 0, y: 0, width: 600, height: EVStatusBarView.preferredHeight)
-        window.contentView?.addSubview(statusBar)
+        container.view.addSubview(statusBar)
+        NSLayoutConstraint.activate([
+            container.view.widthAnchor.constraint(equalToConstant: 600),
+            container.view.heightAnchor.constraint(equalToConstant: 400),
+            statusBar.leadingAnchor.constraint(equalTo: container.view.leadingAnchor),
+            statusBar.trailingAnchor.constraint(equalTo: container.view.trailingAnchor),
+            statusBar.bottomAnchor.constraint(equalTo: container.view.bottomAnchor),
+        ])
         statusBar.apply(surface.statusBarState)
         surface.statusBarStateDidChange = { [weak statusBar, weak surface, weak window] state in
             let outputFocused = statusBar?.isCommandOutputFocused == true
             statusBar?.apply(state)
+            statusBar?.superview?.layoutSubtreeIfNeeded()
             if outputFocused, state.commandOutput == nil { window?.makeFirstResponder(surface?.view) }
         }
         statusBar.commandOutputDidDismiss = { [weak surface] in surface?.dismissCommandOutput() }
@@ -44,7 +51,7 @@ import XCTest
         statusBar.commandLineDidSelect = { [weak surface] offset, extending in
             surface?.selectCommandLine(atUTF8Offset: offset, extending: extending)
         }
-        statusBar.layoutSubtreeIfNeeded()
+        container.view.layoutSubtreeIfNeeded()
         return (backend, surface, try XCTUnwrap(surface.session), window)
     }
 
@@ -87,7 +94,8 @@ import XCTest
             NSPoint(x: EVStatusBarView.contentInset, y: statusBar.bounds.midY), to: nil)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         statusBar.mouseDown(with: down)
-        XCTAssertEqual(surface.commandLine?.info.cursor_utf8_offset, 0)
+        XCTAssertEqual(surface.commandLine?.info.cursor_utf8_offset, 0,
+                       "status frame: \(statusBar.frame), children: \(statusBar.subviews.map(\.frame))")
         surface.editorView.keyDown(with: try key(119, shift: true))
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 6))
         let menu = try XCTUnwrap(surface.editorView.menu(for: down))

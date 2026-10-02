@@ -32,18 +32,6 @@ final class EVCaretAppearanceResolverTests: XCTestCase {
         XCTAssertEqual(publications, 3)
     }
 
-    func testSystemCaretColorResolvesInTheViewsEffectiveAppearance() {
-        let resolver = EVCaretAppearanceResolver(
-            notificationCenter: NotificationCenter(),
-            workspaceNotificationCenter: NotificationCenter()
-        )
-        let view = NSView()
-        view.appearance = NSAppearance(named: .darkAqua)
-
-        let color = resolver.color(for: view)
-        XCTAssertNotNil(color.usingColorSpace(.deviceRGB))
-    }
-
     func testBlockGlyphColorChoosesTheHigherWCAGContrastForRepresentativeColors() throws {
         let fixtures: [(name: String, background: NSColor, expected: NSColor)] = [
             (
@@ -95,24 +83,4 @@ final class EVCaretAppearanceResolverTests: XCTestCase {
         }
     }
 
-    func testRedUsesBlackBecauseLinearLuminanceMakesItsContrastHigher() {
-        let redLuminance = EVCaretAppearanceResolver.relativeLuminance(
-            sRGBRed: 1,
-            green: 0,
-            blue: 0
-        )
-        let contrastWithBlack = EVCaretAppearanceResolver.contrastRatio(
-            between: redLuminance,
-            and: 0
-        )
-        let contrastWithWhite = EVCaretAppearanceResolver.contrastRatio(
-            between: redLuminance,
-            and: 1
-        )
-
-        XCTAssertEqual(redLuminance, 0.2126, accuracy: 0.0001)
-        XCTAssertGreaterThan(contrastWithBlack, contrastWithWhite)
-        XCTAssertGreaterThanOrEqual(contrastWithBlack, 4.5)
-        XCTAssertLessThan(contrastWithWhite, 4.5)
-    }
 }

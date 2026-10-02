@@ -20,7 +20,6 @@ struct EVStyleEditorInspection: Equatable {
     let paragraphTabEnabled: Bool
     let hasDocument: Bool
     let mutationsEnabled: Bool
-    let nameEditable: Bool
     let parentValue: String
     let parentChoices: [EVStyleKey]
     let styleCount: Int
@@ -150,7 +149,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             content.onClose = { [weak self] in self?.controller?.close() }
             content.onExplicitStyleSelection = { [weak self] in self?.cancelPendingSelectionFollow() }
             let panel = EVStyleEditorPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 760, height: 650),
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                 styleMask: [.titled, .closable, .resizable, .utilityWindow],
                 backing: .buffered,
                 defer: false
@@ -159,7 +158,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             panel.isFloatingPanel = false
             panel.level = .normal
             panel.hidesOnDeactivate = false
-            panel.contentMinSize = NSSize(width: 700, height: 620)
+            panel.contentMinSize = NSSize(width: 700, height: 570)
             panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
             panel.collectionBehavior.insert(.fullScreenAuxiliary)
@@ -342,7 +341,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 }
 
 @MainActor
-final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
+final class EVStyleEditorViewController: NSViewController {
     var onClose: (() -> Void)?
     var onExplicitStyleSelection: (() -> Void)?
     var themeStore = EVThemeStore.shared
@@ -362,15 +361,11 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private var isCommitting = false
     private var refreshAfterCommit = false
     private var diagnosticMessage = ""
-    private var nameDraftIsInvalid = false
     private var activeStyleEditGroup: EVStyleEditGroup?
     private weak var activeStyleEditSession: EVCoreViewSession?
 
     private let stylePopup = NSPopUpButton()
-    private let newStyleButton = NSButton(title: "New", target: nil, action: nil)
-    private let deleteStyleButton = NSButton()
     private let restoreDefaultsButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
-    private let nameField = NSTextField()
     private let typeLabel = NSTextField(labelWithString: "")
     private let basedOnPopup = NSPopUpButton()
     private let editParentButton = NSButton()
@@ -409,7 +404,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             paragraphTabEnabled: tabs.isEnabled(forSegment: EVStyleEditorTab.paragraph.rawValue),
             hasDocument: document != nil,
             mutationsEnabled: definition?.capabilities.contains(.declarations) == true,
-            nameEditable: nameField.isEditable && nameField.isEnabled,
             parentValue: basedOnPopup.titleOfSelectedItem ?? "",
             parentChoices: basedOnPopup.itemArray.compactMap { ($0.representedObject as? EVStyleKeyBox)?.key },
             styleCount: snapshot?.definitions.count ?? 0,
@@ -419,7 +413,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
             declaredProperties: Set(definition?.properties.values.compactMap {
                 $0.isDeclared ? $0.property : nil
             } ?? []),
-            hasInvalidDraft: nameDraftIsInvalid || compactControls.hasInvalidDraft,
+            hasInvalidDraft: compactControls.hasInvalidDraft,
             diagnostic: diagnosticMessage,
             preview: preview.inspection()
         )
@@ -445,27 +439,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         stylePopup.setAccessibilityLabel("Style")
         stylePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        newStyleButton.bezelStyle = .rounded
-        newStyleButton.target = self
-        newStyleButton.action = #selector(newStylePressed(_:))
-        newStyleButton.setAccessibilityLabel("Create syntax style")
-        newStyleButton.widthAnchor.constraint(equalToConstant: 66).isActive = true
-        newStyleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        deleteStyleButton.title = "Delete"
-        deleteStyleButton.bezelStyle = .rounded
-        deleteStyleButton.target = self
-        deleteStyleButton.action = #selector(deleteStylePressed(_:))
-        deleteStyleButton.setAccessibilityLabel("Delete selected style")
-        deleteStyleButton.widthAnchor.constraint(equalToConstant: 64).isActive = true
-        deleteStyleButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        let stylePicker = NSStackView(views: [stylePopup, newStyleButton, deleteStyleButton])
-        stylePicker.orientation = .horizontal
-        stylePicker.alignment = .centerY
-        stylePicker.distribution = .fill
-        stylePicker.spacing = 6
-        nameField.placeholderString = "Style name"
-        nameField.delegate = self
-        nameField.setAccessibilityLabel("Style name")
         typeLabel.textColor = .secondaryLabelColor
         typeLabel.setAccessibilityLabel("Style type")
         basedOnPopup.target = self
@@ -475,8 +448,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         configureNavigationButton(editNextStyleButton, label: "Edit next paragraph style", action: #selector(editNextStyle(_:)))
 
         let propertiesGrid = NSGridView(views: [
-            [label("Style"), stylePicker],
-            [label("Name"), nameField],
+            [label("Style"), stylePopup],
             [label("Style type"), typeLabel],
             [label("Based on"), navigationRow(popup: basedOnPopup, button: editParentButton)],
             [label("Next paragraph"), navigationRow(popup: nextStyleRow.popupForCompactLayout, button: editNextStyleButton)],
@@ -489,7 +461,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         )
         availabilityLabel.textColor = .secondaryLabelColor
         availabilityLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        availabilityLabel.setAccessibilityLabel("Style editing availability")
+        availabilityLabel.setAccessibilityLabel("Style editing status")
         tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         tabs.target = self
         tabs.action = #selector(tabChanged(_:))
@@ -667,38 +639,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         tabChanged(tabs)
     }
 
-    @discardableResult
-    func createSyntaxStyle() -> Bool {
-        guard let settingsSession = codeSettingsSession else { return false }
-        return changeStyleCatalogue {
-            let latest = try settingsSession.snapshot()
-            let key = EVStyleKey(namespace: .character,
-                                 id: EVStyleID(rawValue: UUID().uuidString.lowercased()))
-            let baseName = "New Syntax Style"
-            var name = baseName
-            var suffix = 2
-            while latest.definitions.contains(where: { $0.name == name }) {
-                name = "\(baseName) \(suffix)"
-                suffix += 1
-            }
-            try settingsSession.create(key: key, name: name, expected: latest.identity)
-            self.selectedStyleKey = key
-        }
-    }
-
-    @discardableResult
-    func deleteSelectedStyle() -> Bool {
-        if let settingsSession = codeSettingsSession {
-            guard selectedDefinition?.capabilities.contains(.delete) == true else { return false }
-            return changeStyleCatalogue {
-                let latest = try settingsSession.snapshot()
-                try settingsSession.delete(key: self.selectedStyleKey, expected: latest.identity)
-                self.selectedStyleKey = .baseParagraph
-            }
-        }
-        return false
-    }
-
     private func changeStyleCatalogue(_ action: () throws -> Void) -> Bool {
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         isCommitting = true
@@ -737,17 +677,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     @discardableResult
     func useInheritedForTesting(_ property: EVStyleProperty) -> Bool {
         commit(.clearDeclaration(property))
-    }
-
-    @discardableResult
-    func renameForTesting(_ name: String) -> Bool {
-        guard isValidStyleName(name) else { return false }
-        return commit(.setDisplayName(name))
-    }
-
-    func enterNameDraftForTesting(_ name: String) {
-        nameField.stringValue = name
-        controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: nameField))
     }
 
     func beginContinuousStyleEditForTesting() { beginContinuousStyleEdit() }
@@ -849,38 +778,12 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         if let settingsSession { view.window?.title = settingsSession.windowTitle }
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
-        newStyleButton.isHidden = codeSettingsSession == nil
-        newStyleButton.isEnabled = codeSettingsSession != nil
-        deleteStyleButton.isHidden = codeSettingsSession == nil
-        deleteStyleButton.isEnabled = codeSettingsSession != nil && definition.capabilities.contains(.delete)
-        nameField.stringValue = definition.name
-        nameDraftIsInvalid = false
-        nameField.backgroundColor = .textBackgroundColor
-        nameField.isEditable = definition.capabilities.contains(.displayName)
-        nameField.isSelectable = true
-        nameField.isEnabled = definition.capabilities.contains(.displayName)
-        nameField.toolTip = definition.capabilities.contains(.displayName)
-            ? "Changes are applied immediately to the core-owned style."
-            : "This style's display name is read-only."
         typeLabel.stringValue = definition.kind.displayName
         configureBasedOn(snapshot: snapshot, definition: definition)
 
-        if diagnosticMessage.isEmpty {
-            if definition.capabilities.isEmpty {
-                availabilityLabel.stringValue = "This \(definition.origin.displayName) style is read-only. Effective and inherited values remain available for inspection."
-            } else {
-                if let settingsSession {
-                    availabilityLabel.stringValue = settingsSession.configuration.currentThemeName.map {
-                        "Theme: \($0). Changes apply to all \(settingsSession.sourceFormat.displayName) documents."
-                    } ?? "Default theme. Changes remain in memory; create a theme to save them."
-                } else { availabilityLabel.stringValue = "" }
-            }
-            availabilityLabel.textColor = .secondaryLabelColor
-        } else {
-            availabilityLabel.stringValue = diagnosticMessage
-            availabilityLabel.textColor = .systemRed
-        }
-        availabilityLabel.isHidden = availabilityLabel.stringValue.isEmpty
+        availabilityLabel.stringValue = diagnosticMessage
+        availabilityLabel.textColor = .systemRed
+        availabilityLabel.isHidden = diagnosticMessage.isEmpty
 
         let sizeBasisKey = definition.kind != .character ? definition.parentKey : .baseParagraph
         let sizeBasis: Float? = {
@@ -1151,12 +1054,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         styleMenuChoices = nil; parentMenuChoices = nil
         stylePopup.removeAllItems()
         stylePopup.isEnabled = false
-        newStyleButton.isEnabled = false
-        deleteStyleButton.isEnabled = false
-        nameDraftIsInvalid = false
-        nameField.stringValue = ""
-        nameField.isEditable = false
-        nameField.isEnabled = false
         typeLabel.stringValue = "No document"
         basedOnPopup.removeAllItems()
         basedOnPopup.addItem(withTitle: "Unavailable")
@@ -1164,9 +1061,8 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         editParentButton.isEnabled = false
         editNextStyleButton.isEnabled = false
         diagnosticMessage = ""
-        availabilityLabel.stringValue = "No target document. Choose Edit Styles… from a document to retarget this window."
-        availabilityLabel.isHidden = false
-        availabilityLabel.textColor = .secondaryLabelColor
+        availabilityLabel.stringValue = ""
+        availabilityLabel.isHidden = true
         tabs.selectedSegment = EVStyleEditorTab.character.rawValue
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.character.rawValue)
         tabs.setEnabled(false, forSegment: EVStyleEditorTab.paragraph.rawValue)
@@ -1184,9 +1080,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         isUpdatingUI = true
         defer { isUpdatingUI = false }
         stylePopup.isEnabled = false
-        newStyleButton.isEnabled = false
-        deleteStyleButton.isEnabled = false
-        nameField.isEnabled = false
         basedOnPopup.isEnabled = false
         editParentButton.isEnabled = false
         editNextStyleButton.isEnabled = false
@@ -1197,34 +1090,6 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         availabilityLabel.isHidden = false
         availabilityLabel.textColor = .systemRed
         preview.showUnavailable()
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        guard !isUpdatingUI, notification.object as AnyObject? === nameField else { return }
-        let candidate = nameField.stringValue
-        guard isValidStyleName(candidate) else {
-            nameDraftIsInvalid = true
-            nameField.backgroundColor = NSColor.systemRed.withAlphaComponent(0.12)
-            nameField.toolTip = "A style name cannot be blank or contain a null character."
-            return
-        }
-        nameDraftIsInvalid = false
-        nameField.backgroundColor = .textBackgroundColor
-        if candidate != selectedDefinition?.name { _ = commit(.setDisplayName(candidate)) }
-    }
-
-    func controlTextDidBeginEditing(_ notification: Notification) {
-        guard notification.object as AnyObject? === nameField else { return }
-        beginContinuousStyleEdit()
-    }
-
-    func controlTextDidEndEditing(_ notification: Notification) {
-        guard notification.object as AnyObject? === nameField else { return }
-        endContinuousStyleEdit()
-    }
-
-    private func isValidStyleName(_ value: String) -> Bool {
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !value.contains("\0")
     }
 
     private func stopObservingDocument() {
@@ -1318,16 +1183,10 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         selectStyle(key)
     }
 
-    @objc private func newStylePressed(_ sender: NSButton) {
-        if createSyntaxStyle() { view.window?.makeFirstResponder(nameField) }
-    }
-
     @objc private func restoreCodeDefaults(_ sender: Any?) {
         guard let settingsSession = codeSettingsSession else { return }
         _ = changeStyleCatalogue { try settingsSession.restoreDefaults() }
     }
-
-    @objc private func deleteStylePressed(_ sender: Any?) { _ = deleteSelectedStyle() }
 
     @objc private func basedOnChanged(_ sender: NSPopUpButton) {
         guard !isUpdatingUI, let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
@@ -1373,7 +1232,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         }
         guard let window = view.window else { return }
         let oldMinimum = window.contentMinSize.height
-        let minimum = 620 + height - 196
+        let minimum = 570 + height - 196
         guard abs(oldMinimum - minimum) > 0.5 else { return }
         let current = window.contentLayoutRect.height
         window.contentMinSize = NSSize(width: max(700, window.contentMinSize.width), height: minimum)

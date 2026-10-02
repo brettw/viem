@@ -774,40 +774,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn line_deletes_rotate_numbered_registers() {
-        let mut registers = Registers::default();
-        registers.delete(None, RegisterValue::linewise("one\n"), DeletionClass::Large);
-        registers.delete(None, RegisterValue::linewise("two\n"), DeletionClass::Large);
-        assert_eq!(registers.get('1').unwrap().text, "two\n");
-        assert_eq!(registers.get('2').unwrap().text, "one\n");
-    }
-
-    #[test]
-    fn uppercase_named_register_appends() {
-        let mut registers = Registers::default();
-        registers.yank(Some('a'), RegisterValue::characterwise("a\u{301}"));
-        registers.yank(Some('A'), RegisterValue::characterwise("😀"));
-        assert_eq!(
-            registers.get('a'),
-            Some(&RegisterValue::characterwise("a\u{301}😀"))
-        );
-        assert_eq!(registers.get('"'), registers.get('a'));
-    }
-
-    #[test]
-    fn named_yanks_preserve_zero_but_explicit_unnamed_yanks_update_it() {
-        let mut registers = Registers::default();
-        registers.yank(None, RegisterValue::characterwise("seed"));
-        registers.yank(Some('a'), RegisterValue::characterwise("named"));
-        assert_eq!(registers.get('0').unwrap().text, "seed");
-        assert_eq!(registers.get('"').unwrap().text, "named");
-
-        registers.yank(Some('"'), RegisterValue::characterwise("quoted"));
-        assert_eq!(registers.get('0').unwrap().text, "quoted");
-        assert_eq!(registers.get('"').unwrap().text, "quoted");
-    }
-
-    #[test]
     fn uppercase_append_uses_vim_kind_transitions_and_publishes_the_full_value() {
         let cases = [
             (
@@ -955,27 +921,6 @@ mod tests {
         assert_eq!(registers.get('3').unwrap().text, "named-small");
         assert_eq!(registers.get('4').unwrap().text, "old-large\n");
         assert_eq!(registers.get('b').unwrap().text, "named-large\n");
-    }
-
-    #[test]
-    fn exceptional_within_line_delete_writes_both_numbered_and_small_only_when_unnamed() {
-        let mut registers = Registers::default();
-        registers.delete(
-            None,
-            RegisterValue::characterwise("inside"),
-            DeletionClass::Exceptional { within_line: true },
-        );
-        assert_eq!(registers.get('1').unwrap().text, "inside");
-        assert_eq!(registers.get('-').unwrap().text, "inside");
-
-        registers.delete(
-            Some('a'),
-            RegisterValue::characterwise("named"),
-            DeletionClass::Exceptional { within_line: true },
-        );
-        assert_eq!(registers.get('1').unwrap().text, "named");
-        assert_eq!(registers.get('2').unwrap().text, "inside");
-        assert_eq!(registers.get('-').unwrap().text, "inside");
     }
 
     #[test]

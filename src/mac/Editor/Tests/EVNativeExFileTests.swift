@@ -213,8 +213,13 @@ import XCTest
         let occupied = directory.appendingPathComponent("occupied.md")
         try Data("do not overwrite".utf8).write(to: occupied)
         _ = try await perform(window, backend: backend, kind: .file, path: occupied.path).get()
-        document.externalSaveDecisionHandler = { _ in false }
-        if case .success = await perform(window, backend: backend, kind: .write) { XCTFail("Renaming acknowledged unrelated existing bytes") }
+        var reviews = 0
+        document.externalSaveDecisionHandler = { _ in reviews += 1; return false }
+        // User cancellation is silent at the native host boundary. Verify the
+        // review and unchanged bytes rather than expecting an error message.
+        let cancelled = try await perform(window, backend: backend, kind: .write).get()
+        XCTAssertNil(cancelled)
+        XCTAssertEqual(reviews, 1)
         XCTAssertEqual(try Data(contentsOf: occupied), Data("do not overwrite".utf8))
         document.externalSaveDecisionHandler = { _ in true }
         _ = try await perform(window, backend: backend, kind: .write).get()

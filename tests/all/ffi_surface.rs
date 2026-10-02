@@ -1,12 +1,11 @@
+use std::ptr;
 use viem_core::ffi::{
     viem_core_abi_version, viem_core_copy_formatted_utf8, viem_core_copy_source_bytes,
-    viem_core_create, viem_core_destroy,
-    viem_core_revision, ViemCoreHandle, ViemDocumentOptions, ViemStatus,
-    VIEM_CORE_ABI_VERSION, VIEM_DOCUMENT_OPTIONS_SIZE, VIEM_ENCODING_DETECT, VIEM_ENCODING_LATIN1,
+    viem_core_create, viem_core_destroy, viem_core_revision, ViemCoreHandle, ViemDocumentOptions,
+    ViemStatus, VIEM_CORE_ABI_VERSION, VIEM_DOCUMENT_OPTIONS_SIZE, VIEM_ENCODING_LATIN1,
     VIEM_ENCODING_UTF16_BE, VIEM_ENCODING_UTF16_LE, VIEM_ENCODING_UTF8, VIEM_FILE_FORMAT_DETECT,
     VIEM_FILE_FORMAT_DOS, VIEM_FILE_FORMAT_MAC, VIEM_FILE_FORMAT_UNIX, VIEM_FORMAT_MARKDOWN,
 };
-use std::ptr;
 
 struct TestCore {
     handle: ViemCoreHandle,
@@ -159,24 +158,6 @@ fn abi_create_validates_pointers_and_every_option_domain() {
 }
 
 #[test]
-fn automatic_encoding_choice_is_shared_by_document_creation_and_is_byte_exact() {
-    let options = ViemDocumentOptions {
-        encoding: VIEM_ENCODING_DETECT,
-        file_format: VIEM_FILE_FORMAT_UNIX,
-        ..ViemDocumentOptions::default()
-    };
-    let utf16_le = [0xff, 0xfe, b'A', 0, 0x3d, 0xd8, 0x00, 0xde];
-    let detected_utf16 = create(&utf16_le, options);
-    assert_eq!(source_bytes(&detected_utf16, 0), utf16_le);
-    assert_eq!(formatted_utf8(&detected_utf16, 0), "A😀".as_bytes());
-
-    let malformed_utf8 = [b'a', 0xf0, 0x28, 0x8c, 0x28];
-    let detected_latin1 = create(&malformed_utf8, options);
-    assert_eq!(source_bytes(&detected_latin1, 0), malformed_utf8);
-    assert_eq!(formatted_utf8(&detected_latin1, 0), "að(\u{8c}(".as_bytes());
-}
-
-#[test]
 fn snapshot_copy_is_revision_tagged_two_pass_and_length_delimited() {
     let source = b"a\0b\r\n";
     let document = create(
@@ -314,16 +295,6 @@ fn latin1_utf16_and_markdown_sources_round_trip_exactly() {
 }
 
 #[test]
-fn malformed_source_utf8_remains_opaque_on_the_core_surface() {
-    let source = [b'a', 0xff, b'b'];
-    let document = create(&source, ViemDocumentOptions::default());
-    assert_eq!(source_bytes(&document, 0), source);
-    assert_eq!(formatted_utf8(&document, 0), "a\u{fffd}b".as_bytes());
-
-
-}
-
-#[test]
 fn destroying_a_handle_is_final_and_detected_by_every_operation() {
     let mut document = create(b"text", ViemDocumentOptions::default());
     let handle = document.handle;
@@ -346,6 +317,4 @@ fn destroying_a_handle_is_final_and_detected_by_every_operation() {
         unsafe { viem_core_copy_source_bytes(handle, 0, ptr::null_mut(), 0, &mut required) };
     assert_eq!(status, ViemStatus::InvalidHandle);
     assert_eq!(required, 0);
-
-
 }

@@ -343,8 +343,29 @@ final class EVWindowCommandTests: XCTestCase {
     checkBars(container)
   }
 
-  /// Drive the AppKit event path, including deferred button clicks. Queue the
-  /// complete gesture before dispatch because controls may run a tracking loop.
+  private func prepareForPointerEvents(in window: NSWindow) {
+    let application = NSApplication.shared
+    // Ordering a window schedules AppKit setup on the run loop. Finish that
+    // setup before the first synthetic gesture, just as a displayed window
+    // would before accepting real user input.
+    window.contentView?.layoutSubtreeIfNeeded()
+    window.displayIfNeeded()
+    application.updateWindows()
+    window.makeKeyAndOrderFront(nil)
+    // AppKit ordering/activation events live in the application queue, not
+    // just the run loop. Drain them before posting the synthetic mouse down.
+    let deadline = Date(timeIntervalSinceNow: 0.05)
+    for _ in 0..<128 {
+      guard Date() < deadline,
+        let event = application.nextEvent(matching: .any, until: deadline,
+          inMode: .default, dequeue: true) else { break }
+      application.sendEvent(event)
+    }
+    window.contentView?.layoutSubtreeIfNeeded()
+  }
+
+  /// Drive native window hit-testing, recognizers and deferred button clicks.
+  /// Queue trailing events before mouseDown because controls can enter tracking.
   private func pointerGesture(window: NSWindow, points: [NSPoint]) throws {
     let events = try points.enumerated().map { index, point in
       try XCTUnwrap(NSEvent.mouseEvent(
@@ -352,33 +373,55 @@ final class EVWindowCommandTests: XCTestCase {
         location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.02,
         windowNumber: window.windowNumber, context: nil, eventNumber: index + 1, clickCount: 1, pressure: index == points.count - 1 ? 0 : 1))
     }
-    for event in events { NSApplication.shared.postEvent(event, atStart: false) }
-    while let event = NSApplication.shared.nextEvent(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp],
-      until: Date(timeIntervalSinceNow: 0.1), inMode: .default, dequeue: true) {
-      window.sendEvent(event)
+    // An inactive test host can discard a newly posted initial down before it
+    // reaches native controls. Deliver it directly, with the remaining gesture
+    // ahead of old window events for native tracking loops and the bounded pump.
+    for event in events.dropFirst().reversed() { NSApplication.shared.postEvent(event, atStart: true) }
+    window.sendEvent(events[0])
+    // Wait for a quiet queue, rather than cutting off a gesture when native
+    // dispatch/layout takes longer on a loaded machine. The event count bounds
+    // the pump even if an unrelated producer keeps posting events.
+    for _ in 0..<256 {
+      guard let event = NSApplication.shared.nextEvent(matching: .any,
+        until: Date(timeIntervalSinceNow: 0.1), inMode: .default, dequeue: true) else { break }
+      // Exercise this window's native dispatch even when the unattended test
+      // host cannot activate over another app. Preserve other events' targets.
+      if event.windowNumber == window.windowNumber,
+        [.leftMouseDown, .leftMouseDragged, .leftMouseUp].contains(event.type) {
+        window.sendEvent(event)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+      } else {
+        NSApplication.shared.sendEvent(event)
+      }
     }
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
   }
 
   func testEyeClicksAndDragsUseTheNativeGesturePath() throws {
     let container = try stack(panes: 3)
-    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    let window = NSWindow(contentRect: container.view.bounds,
+      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
     container.view.translatesAutoresizingMaskIntoConstraints = false
     window.contentView = container.view
     window.setContentSize(NSSize(width: 600, height: 600))
     window.makeKeyAndOrderFront(nil)
     defer { window.close() }
-    container.view.layoutSubtreeIfNeeded()
+    prepareForPointerEvents(in: window)
+    container.focusPane(at: 0)
+    XCTAssertTrue(window.firstResponder === container.panes[0].editorSurface.viewController.view)
     let first = container.panes[0]
     let surface = try XCTUnwrap(first.editorSurface as? Surface)
     let button = try XCTUnwrap(first.statusBar.subviews.compactMap { $0 as? NSButton }.first)
     let eye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
     let start = barTops(container)
     XCTAssertGreaterThan(button.bounds.width, 0)
+    XCTAssertTrue(button.isEnabled)
+    let hitPoint = container.view.superview?.convert(eye, from: nil) ?? eye
+    XCTAssertTrue(container.view.hitTest(hitPoint) === button)
     XCTAssertEqual(container.view.bounds.height, 600, accuracy: 1)
     try pointerGesture(window: window, points: [eye, eye])
-    XCTAssertEqual(surface.statusClicks, 1, "a plain eye click toggles line mode")
+    XCTAssertEqual(surface.statusClicks, 1, "a plain eye click toggles line mode (active: \(NSApplication.shared.isActive), key: \(window.isKeyWindow))")
     try pointerGesture(window: window, points: [eye, NSPoint(x: eye.x, y: eye.y - 40), NSPoint(x: eye.x, y: eye.y - 40)])
     XCTAssertEqual(surface.statusClicks, 1, "dragging the eye must consume its click")
     XCTAssertEqual(barTops(container)[0] - start[0], 40, accuracy: 1)
@@ -419,7 +462,7 @@ final class EVWindowCommandTests: XCTestCase {
     window.setContentSize(NSSize(width: 600,height: 600))
     window.makeKeyAndOrderFront(nil)
     defer { window.close() }
-    container.view.layoutSubtreeIfNeeded()
+    prepareForPointerEvents(in: window)
     XCTAssertTrue(container.panes.allSatisfy { $0.view.frame.width >= 100 })
     XCTAssertTrue(container.panes.allSatisfy { $0.statusBar.dragDidMove == nil })
     let divider = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.sorted { $0.frame.minX < $1.frame.minX }.first)
@@ -439,6 +482,7 @@ final class EVWindowCommandTests: XCTestCase {
     container.perform(.setWidth(columns:1))
     XCTAssertEqual(first.view.frame.width,100,accuracy:0.001)
     XCTAssertThrowsError(try container.requireSplitRoom(in:first,vertical:true))
+    container.view.layoutSubtreeIfNeeded()
     let statusPoint = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
     try pointerGesture(window:window,points:[statusPoint,statusPoint])
     XCTAssertTrue(container.activePane === second,"a plain status background click focuses its buffer")

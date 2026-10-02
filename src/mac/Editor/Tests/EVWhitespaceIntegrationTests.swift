@@ -254,6 +254,19 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         unbold.bold = false
         unbold.slant = .upright
         let heavy = CTFontCreateWithName("Georgia-BoldItalic" as CFString, 17, nil)
+        // Avenir Next also has a heavier face, so adding bold twice cannot
+        // silently choose the same maximum-weight face and hide the regression.
+        let boldSource = CTFontCreateWithName("AvenirNext-BoldItalic" as CFString, 17, nil)
+        XCTAssertEqual(EVFontCatalog.weight(of: boldSource), 700)
+        var bold = EVVisibleWhitespaceStyle()
+        bold.bold = true
+        let inheritedBold = EVEditorView.whitespaceFont(bold, inherited: boldSource, scale: 1)
+        XCTAssertEqual(EVFontCatalog.weight(of: inheritedBold), EVFontCatalog.weight(of: boldSource),
+            "a bold override must not add bold a second time to the inherited resolved font")
+        bold.weight = 400
+        let explicitBold = EVEditorView.whitespaceFont(bold, inherited: boldSource, scale: 1)
+        XCTAssertEqual(EVFontCatalog.weight(of: explicitBold), 700,
+            "an explicit base weight still receives the bold increment")
         let regular = EVEditorView.whitespaceFont(unbold, inherited: heavy, scale: 1)
         XCTAssertFalse(CTFontGetSymbolicTraits(regular).contains(.traitBold))
         XCTAssertFalse(CTFontGetSymbolicTraits(regular).contains(.traitItalic))

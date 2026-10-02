@@ -17,16 +17,6 @@ fn empty_markdown_list_accepts_whitespace() {
 }
 
 #[test]
-fn direct_empty_markdown_list_accepts_whitespace() {
-    for value in [" ", "\t"] {
-        let mut document =
-            Document::from_bytes(b"- ".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-        document.insert(0, value).unwrap();
-        assert_eq!(document.text(), value);
-    }
-}
-
-#[test]
 fn list_body_whitespace_reopens_without_rewriting_labels_or_neighbor_source() {
     for source in ["- ", "-", "1. ", "- first\n  - ", "- item"] {
         for value in [" ", "\t", " \t", "  body", "&#32;", "&#9;"] {

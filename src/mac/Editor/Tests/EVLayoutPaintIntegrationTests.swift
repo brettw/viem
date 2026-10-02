@@ -153,7 +153,9 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
 
   @MainActor
   func testLongFlowedParagraphDrawsOnlyVisibleInkAfterResizeAndMetricsInvalidation() throws {
-    let source = String(repeating: "naturally flowing prose with neighboring letters\n", count: 6_000)
+    // Enough offscreen ink to enforce the >10,000-cluster and 10:1 culling
+    // bounds below; larger text only repeats the same native drawing work.
+    let source = String(repeating: "naturally flowing prose with neighboring letters\n", count: 600)
     for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: type)

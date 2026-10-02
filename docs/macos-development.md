@@ -73,6 +73,31 @@ current app, and runs the Swift tests with isolated settings. Run `make check-ab
 for the header check alone. See [C ABI validation](abi-validation.md) for Windows
 setup and CI usage. Ordinary Rust tests do not run the C compiler check.
 
+Native tests link the separate `native-test` Rust profile, which inherits the
+Rust test suite's optimization while retaining debug assertions and overflow
+checks. The first run builds this archive;
+subsequent runs reuse it. Normal `make debug` builds remain unoptimized.
+The native-test archive keeps source-line backtraces but omits Rust variable/type
+debug information to reduce native relink work. Use an ordinary debug build when
+inspecting Rust locals in a debugger; Swift debug information is unchanged.
+The native-test configuration also optimizes only `ViemCoreTextProvider`, whose
+shaping loops dominate large native fixtures. Explicit Debug assertion settings
+retain Swift assertions and checked arithmetic; testability, `DEBUG`, and debug
+symbols remain enabled. Other Swift targets and all test bodies stay unoptimized.
+Ordinary debug builds keep the provider unoptimized too. Switching between these
+configurations may rebuild the provider; repeated native runs reuse it.
+The app builder fingerprints the Rust archive and linked executable, so an
+unchanged build avoids relinking. Changed archive bytes or profile selections
+still force a relink; the stamp is published only after a successful build.
+The test command wakes the display and temporarily prevents display/system idle
+sleep, plus system sleep while on AC, so native UI and font-service waits do not
+stall an unattended run. Saved power settings are unchanged.
+The test bundle also disables automatic AppKit window animations in its own
+volatile preference domain. This avoids blocked animation workers starving
+file I/O in the test runner, without changing saved preferences or app behavior.
+It holds a user-initiated process activity while running so App Nap does not
+throttle tests when their windows are behind other applications.
+
 The Swift package is divided into the same ownership boundaries as the source:
 
 - `CViemCore` exposes the C ABI;

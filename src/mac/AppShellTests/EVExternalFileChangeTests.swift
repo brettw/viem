@@ -89,20 +89,33 @@ final class EVExternalFileChangeTests: XCTestCase {
   func testActivationAndChecktimeUseDialogWithoutStatusWarnings() throws {
     let (document, _, url) = try fixture()
     let surface = Surface(); let window = EVDocumentWindowController(document: document, editorSurface: surface)
-    defer { window.close() }
-    try Data("external".utf8).write(to: url, options: .atomic)
     let activation = expectation(description: "activation dialog")
     var pending: ((EVExternalFileDecision) -> Void)?
+    defer {
+      document.stopExternalFileMonitoring()
+      document.externalFileReviewDecisionHandler = { _, _, decide in decide(.keepBuffer) }
+      let decide = pending
+      pending = nil
+      decide?(.keepBuffer)
+      window.close()
+    }
     document.externalFileReviewDecisionHandler = { _, _, decide in
       pending = decide; activation.fulfill()
     }
     surface.received = { message in XCTFail("Unexpected status message: \(message)") }
+    document.addWindowController(window)
+    window.window?.animationBehavior = .none
+    window.showWindow(nil)
+    // Arm the review before the write: the file monitor can observe it before
+    // the explicit activation and must not use the fixture's Keep Buffer reply.
+    try Data("external".utf8).write(to: url, options: .atomic)
     window.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification))
     wait(for: [activation], timeout: 5)
+    let decide = try XCTUnwrap(pending, "Activation must reach the review before checking its suppression")
 
     // Checking while the dialog is open or after Keep Buffer must stay silent.
     for acknowledged in [false, true] {
-      if acknowledged { pending?(.keepBuffer) }
+      if acknowledged { pending = nil; decide(.keepBuffer) }
       let command = expectation(description: "silent checktime")
       window.perform(documentHostRequests: [EVDocumentHostRequest(kind: .checkTime, documentID: 1, documentRevision: 0)]) { result in
         switch result {
@@ -168,8 +181,14 @@ final class EVExternalFileChangeTests: XCTestCase {
           let request = EVDocumentHostRequest(kind: kind, documentID: 1, documentRevision: 0,
             force: forced, path: explicitPath ? url.path : nil)
           let cancelled = expectation(description: "cancel \(kind), force \(forced), explicit \(explicitPath)")
-          window.perform(documentHostRequests: [request]) { result in
-            if case .success = result { XCTFail("Cancelled save must fail") }
+          // The UI consumes cancellation without a message, but the cancelled
+          // write must stop the host-effect queue before this forced quit.
+          let quit = EVDocumentHostRequest(kind: .quit, documentID: 1, documentRevision: 0, force: true)
+          window.perform(documentHostRequests: [request, quit]) { result in
+            switch result {
+            case .success(let message): XCTAssertNil(message)
+            case .failure(let error): XCTFail("Cancellation should remain silent: \(error)")
+            }
             cancelled.fulfill()
           }
           wait(for: [cancelled], timeout: 5)
@@ -208,7 +227,10 @@ final class EVExternalFileChangeTests: XCTestCase {
       force: true, hardLineRange: 0...0)
     let completed = expectation(description: "cancel forced ranged write")
     window.perform(documentHostRequests: [request]) { result in
-      if case .success = result { XCTFail("The cancelled ranged write must fail") }
+      switch result {
+      case .success(let message): XCTAssertNil(message)
+      case .failure(let error): XCTFail("Cancellation should remain silent: \(error)")
+      }
       completed.fulfill()
     }
     wait(for: [completed], timeout: 5)

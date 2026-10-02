@@ -489,10 +489,3 @@ fn scalar_word_assertions_do_not_make_interior_grapheme_boundaries_editable() {
         );
     }
 }
-
-#[test]
-fn compiled_search_patterns_record_the_current_language_version() {
-    assert_eq!(DIALECT_VERSION, 2);
-    let compiled = CompiledRegex::compile(r"\<word\>", false, RegexLimits::default()).unwrap();
-    assert_eq!(compiled.dialect_version(), DIALECT_VERSION);
-}

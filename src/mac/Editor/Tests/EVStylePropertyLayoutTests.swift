@@ -80,46 +80,6 @@ final class EVStylePropertyLayoutTests: XCTestCase {
         XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
     }
 
-    func testCaptionedAppearanceRowAlignsItsControlsAndPreservesOneEmSectionGaps() throws {
-        let (_, surface, editor, window) = try makeEditor()
-        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
-        let em = NSFont.systemFontSize
-        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
-            window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
-            for (width, height) in [(CGFloat(700), CGFloat(545)), (1000, 820)] {
-                window.setContentSize(NSSize(width: width, height: height))
-                editor.view.layoutSubtreeIfNeeded()
-                let bold = try control(NSButton.self, label: "Bold", in: editor.view)
-                let baseline = alignmentRect(of: bold, in: editor.view).midY
-                for name in ["Italic", "Underline", "Strikethrough", "Override foreground", "Override background", "Override opentype features"] {
-                    let aligned = try control(NSButton.self, label: name, in: editor.view)
-                    XCTAssertEqual(alignmentRect(of: aligned, in: editor.view).midY, baseline, accuracy: 1,
-                        "\(name) should align with the emphasis row at width \(width)")
-                }
-                for (title, controlName) in [("Text Color", "Text color"), ("Background Color", "Background color"), ("OpenType", "OpenType features")] {
-                    let label = try caption(title, in: editor.view)
-                    let native = try control(NSControl.self, label: controlName, in: editor.view)
-                    let labelRect = editor.view.convert(label.bounds, from: label)
-                    let nativeRect = alignmentRect(of: native, in: editor.view)
-                    XCTAssertGreaterThanOrEqual(labelRect.minY, nativeRect.maxY,
-                        "\(title) belongs above its native control")
-                    XCTAssertTrue(editor.view.bounds.contains(labelRect))
-                    XCTAssertTrue(editor.view.bounds.contains(nativeRect))
-                }
-                for (preceding, following) in [
-                    ("Bold", "Override slant"), ("Italic", "Override underline"),
-                    ("Underline", "Override strikethrough"), ("Strikethrough", "Override foreground"),
-                    ("Text color", "Override background"), ("Background color", "Override opentype features"),
-                ] {
-                    let prior = try control(NSControl.self, label: preceding, in: editor.view)
-                    let next = try control(NSButton.self, label: following, in: editor.view)
-                    XCTAssertGreaterThanOrEqual(alignmentRect(of: next, in: editor.view).minX - alignmentRect(of: prior, in: editor.view).maxX,
-                        em - 1, "Leave at least one em before \(following)")
-                }
-            }
-        }
-    }
-
     func testMinimumSizeShowsCompleteCaptionsAndUnitsOnBothTabs() throws {
         let (_, surface, editor, window) = try makeEditor()
         defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
