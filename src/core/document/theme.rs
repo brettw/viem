@@ -232,7 +232,7 @@ pub fn validate_name(name: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
-    fn builtins_are_complete_valid_and_match_packaged_resources() {
+    fn builtins_and_packaged_presets_are_valid_and_midnight_matches_default() {
         for (preset, name) in [(0, "Midnight"), (1, "Paper")] {
             let bytes = default_json(preset).unwrap();
             validate_json(&bytes).unwrap();
@@ -243,8 +243,14 @@ mod tests {
                 .is_empty());
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("assets/themes/{name}.json"));
-            let packaged: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-            assert_eq!(value, packaged);
+            let packaged = std::fs::read(path).unwrap();
+            validate_json(&packaged).unwrap();
+            // Midnight defines the built-in Default. Other installed presets
+            // can be customized independently of the emergency fallbacks.
+            if preset == 0 {
+                let packaged: Value = serde_json::from_slice(&packaged).unwrap();
+                assert_eq!(value, packaged);
+            }
         }
     }
     #[test]
