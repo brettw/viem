@@ -216,8 +216,11 @@ internal static class FontCatalog
         var face = RenderingFace(family, weight, slant, stretch);
         return face?.Source == null ? family : face.Source.AbsoluteUri + "#" + face.Family;
     }
-    internal static FontFace? RenderingFace(string family, uint weight, FontStyle slant, FontStretch stretch)
+    internal static FontFace? RenderingFace(string family, uint weight, FontStyle slant, FontStretch stretch, bool discoverSystem = false)
     {
+        // Ordinary system-family rendering is handled by DirectWrite. Only
+        // explicit face/axis requests need native variation-table discovery.
+        if (!discoverSystem && !BundledFonts.Families.Contains(family)) return null;
         var faces = Faces(family);
         var available = BundledFonts.Families.Contains(family) ? faces.Where(f => f.Source != null) : faces;
         return available.MinBy(f => (

@@ -141,7 +141,7 @@ internal static class VariableFontTests
         byte[] source = "Flightline variable controls"u8.ToArray();
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-        var upright = FontCatalog.Faces("Flightline Code").First(f => f.Source != null && f.Slant == Windows.UI.Text.FontStyle.Normal);
+        var upright = FontCatalog.Faces("Flightline Code").First(f => f.Source != null && f.Slant == FontStyle.Normal);
         view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.Name], upright);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
@@ -149,7 +149,7 @@ internal static class VariableFontTests
             await Task.Delay(100);
             foreach (bool italic in new[] { false, true }) {
                 inspector.FontVariantControl.SelectedItem = FontCatalog.Faces("Flightline Code")
-                    .First(f => f.Source != null && (f.Slant != Windows.UI.Text.FontStyle.Normal) == italic);
+                    .First(f => f.Source != null && (f.Slant != FontStyle.Normal) == italic);
                 var slider = Descendants<Slider>(inspector.RootControl).Single();
                 Check(slider.Minimum == 200 && slider.Maximum == 700 && slider.StepFrequency == 1, "Flightline's inspector weight control covers the design range in integer steps");
                 var presets = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>().ToArray();

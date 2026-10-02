@@ -404,11 +404,17 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
         return FontVariations.Effective(FontVariations.For(face), FontCatalog.Resolve(requested)?.Family == family ? FontVariations.Decode(Text(style.font_axes)) : [], style.weight, (style.reserved & 1) != 0, style.slant);
     }
+    private static FontFace? ResolvedFace(ViemResolvedTextStyleV1 style, string family, FontStyle slant, FontStretch stretch)
+    {
+        string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
+        bool discoverSystem = Text(style.font_axes) is not ("" or "{}") || FontCatalog.Named(requested) != null;
+        return FontCatalog.RenderingFace(family, (ushort)Math.Clamp(style.weight, 1, 999), slant, stretch, discoverSystem);
+    }
     private static bool ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
         var slant = ResolvedSlant(style);
-        var face = FontCatalog.RenderingFace(font.Family, style.weight, slant, font.Stretch);
+        var face = ResolvedFace(style, font.Family, slant, font.Stretch);
         layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch));
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
