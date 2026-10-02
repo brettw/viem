@@ -13,6 +13,8 @@ try {
             # as shipping builds, in a separate output from the running editor.
             & dotnet build src/win/Viem.Windows.csproj -c Debug --nologo -p:RestoreLockedMode=true -p:Optimize=true -p:RustProfile=release "-p:OutDir=$projectRoot/target/windows-profile/"
             if ($LASTEXITCODE -ne 0) { throw 'Optimized Windows test build failed.' }
+            & dotnet publish src/win/Blocking/BlockingViem.csproj -c Debug --nologo --output "$projectRoot/target/windows-profile/"
+            if ($LASTEXITCODE -ne 0) { throw 'Blocking launcher test build failed.' }
         } else { & "$PSScriptRoot/build-win.ps1" -Configuration Debug }
     }
     $testRoot = Join-Path $projectRoot 'target/windows-validation'

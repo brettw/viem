@@ -1695,6 +1695,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_FRONTEND_SAVE_AS): kind = .saveAs
         case UInt32(VIEM_EX_FRONTEND_QUIT): kind = .quit
         case UInt32(VIEM_EX_FRONTEND_QUIT_ALL): kind = .quitAll
+        case UInt32(VIEM_EX_FRONTEND_CQUIT):
+            // The blocking launcher and error-exit lifecycle are Windows-only for now.
+            throw EVCoreFrontendError.unsupportedHostEffect
         case UInt32(VIEM_EX_FRONTEND_WRITE_QUIT): kind = .writeQuit
         case UInt32(VIEM_EX_FRONTEND_XIT): kind = .xit
         case UInt32(VIEM_EX_FRONTEND_WRITE_ALL): kind = .writeAll

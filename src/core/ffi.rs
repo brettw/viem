@@ -478,6 +478,8 @@ pub const VIEM_EX_FRONTEND_READ: u32 = 25;
 pub const VIEM_EX_FRONTEND_SOURCE: u32 = 26;
 pub const VIEM_EX_FRONTEND_FILE: u32 = 27;
 pub const VIEM_EX_FRONTEND_ONLY: u32 = 28;
+/// Quit without writing; window_count carries the process exit status.
+pub const VIEM_EX_FRONTEND_CQUIT: u32 = 29;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
 pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
@@ -3791,6 +3793,10 @@ fn export_ex_frontend_request(
             ExFileRequest::Quit { force } => {
                 output.kind = VIEM_EX_FRONTEND_QUIT;
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
+            }
+            ExFileRequest::Cquit { exit_code } => {
+                output.kind = VIEM_EX_FRONTEND_CQUIT;
+                output.window_count = u64::from(*exit_code);
             }
             ExFileRequest::QuitAll { force } => {
                 output.kind = VIEM_EX_FRONTEND_QUIT_ALL;

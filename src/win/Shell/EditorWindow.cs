@@ -85,7 +85,7 @@ internal sealed partial class EditorWindow : Window
             settingsWindow?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
             foreach (var pane in Panes) pane.Dispose(); Panes.Clear(); paneGrid.Dispose();
-            foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) doc.Dispose();
+            foreach (var doc in documents) if (!App.Instance.Windows.Where(w => w != this).Any(w => w.Panes.Any(p => p.Document == doc))) { App.Instance.BlockingEdits.Released(doc); doc.Dispose(); }
         };
         preferences.Changed += ApplyPreferences;
         preferences.RecentChanged += RefreshRecentMenu; preferences.ThemesChanged += RefreshThemeMenu;
@@ -205,7 +205,7 @@ internal sealed partial class EditorWindow : Window
             pane.RememberedArgument = replacing.RememberedArgument;
             paneGrid.ReplacePane(replacing, pane); replacing.Focused -= SetActive; replacing.Dispose();
             if (lastPane == replacing) lastPane = null;
-            if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); replacing.Document.Dispose(); }
+            if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
         }
         else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical); }
         SetActive(pane); return pane;
@@ -504,7 +504,7 @@ internal sealed partial class EditorWindow : Window
     {
         pane.Focused -= SetActive;
         paneGrid.RemovePane(pane); pane.Dispose(); Panes.Remove(pane);
-        if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); pane.Document.Dispose(); }
+        if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); App.Instance.BlockingEdits.Released(pane.Document); pane.Document.Dispose(); }
         if (ActivePane == pane) ActivePane = Panes.FirstOrDefault();
         if (rebuild) { RebuildPanes(); paneGrid.Equalize(); if (ActivePane != null) SetActive(ActivePane); }
     }
@@ -549,6 +549,12 @@ internal sealed partial class EditorWindow : Window
                             break;
                         case VIEM_EX_FRONTEND_WRITE: case VIEM_EX_FRONTEND_SAVE_AS: await ExWrite(pane, request); break;
                         case VIEM_EX_FRONTEND_QUIT: await ClosePane(pane, force); break;
+                        case VIEM_EX_FRONTEND_CQUIT:
+                            int exitCode = unchecked((int)r.window_count);
+                            App.Instance.BlockingEdits.Abort(exitCode);
+                            foreach (var w in App.Instance.Windows.ToArray()) { w.closing = true; w.Close(); }
+                            Environment.Exit(exitCode);
+                            break;
                         case VIEM_EX_FRONTEND_QUIT_ALL: foreach (var w in App.Instance.Windows.ToArray()) { if (force) { w.closing = true; w.Close(); } else await w.RequestClose(); } break;
                         case VIEM_EX_FRONTEND_WRITE_QUIT: case VIEM_EX_FRONTEND_XIT:
                             if (r.kind == VIEM_EX_FRONTEND_WRITE_QUIT || pane.Document.IsDirty || request.Text.Length > 0)
@@ -627,6 +633,7 @@ internal sealed partial class EditorWindow : Window
         {
             w.savedSources.Remove(old); w.savedSources[replacement] = SHA256.HashData(bytes); w.UpdateTitle();
         }
+        App.Instance.BlockingEdits.Replace(old, replacement);
         old.Dispose();
     }
     private EditorWindow NewWindow(CoreDocument? document)

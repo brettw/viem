@@ -7,7 +7,15 @@ using Microsoft.UI.Dispatching;
 
 namespace Viem.Windows.Shell;
 
-internal sealed record OpenInvocation(string[] Arguments, string Directory);
+internal sealed record OpenInvocation(string[] Arguments, string Directory, string? CompletionPipe = null)
+{
+    internal static OpenInvocation FromCommandLine(string[] arguments, string directory)
+    {
+        if (arguments.FirstOrDefault() != "--blocking-edit") return new(arguments, directory);
+        if (arguments.Length != 3) throw new InvalidDataException("Invalid blocking editor launch request.");
+        return new([arguments[2]], directory, arguments[1]);
+    }
+}
 
 /// <summary>One UI process per user/profile, with bounded, same-user CLI handoff.</summary>
 internal sealed class InstanceBroker : IDisposable

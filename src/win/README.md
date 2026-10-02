@@ -4,6 +4,34 @@ A native C# / WinUI 3 shell over the same Rust core used by the Swift frontend.
 The editor uses Win2D/DirectWrite for shaping and drawing, with native Windows
 menus, file dialogs, controls, clipboard and input-method hosting.
 
+## Git commit messages
+
+The build script places `blocking-viem.exe` beside `Viem.exe`. Keep them and
+all their adjacent runtime files together. Put that directory on `PATH`, then:
+
+```powershell
+git config --global core.editor 'blocking-viem'
+```
+
+Git supplies the filename. To try the launcher directly, run
+`blocking-viem path/to/file`. Relative paths use the caller's working directory;
+paths containing spaces must be quoted. The launcher starts Viem if necessary
+or opens the file in its existing instance. It waits until **all panes and
+windows showing that document have closed**, including copies opened during
+editing. Saving alone does not release the wait. Reloading keeps it waiting;
+closing unrelated files does not affect it.
+
+Use `:wq` to save and close a view. Use `:cq` / `:cquit` to abort: like Vim,
+this closes **all Viem windows without saving** and returns status 1 to every
+pending blocking caller. `:7cq` or `:cq 7` specifies another exit status;
+`!` is accepted and has no additional effect. Already saved changes stay saved.
+Ordinary discard/`:q!` completes successfully using the file's existing disk
+contents, so use `:cq` when Git should abort. Cancelling a close dialog keeps
+waiting. Launch/open failure or a GUI crash returns failure.
+
+This launcher is Windows-only. macOS blocking launch and `:cq` host handling
+remain deferred.
+
 ## Build and run
 
 Prerequisites:
