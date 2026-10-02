@@ -10,9 +10,14 @@ does not install them for other applications or embed file paths in saved styles
   Slant (`slnt`), and Cursive (`CRSV`) axes and 64 named instances. It replaces
   the static collection. The original `LICENSE.txt` and `README.md` accompany
   the font.
-- `flightline/*.ttf`: the 12 supplied Flightline Code faces (six weights with
-  upright and italic variants). The original `OFL.txt`, `README.md` and
+- `flightline/FlightlineCode-{Regular,Italic}-VF.ttf`: the supplied upright and
+  italic Flightline Code variable fonts. Each has a Weight (`wght`) axis from
+  200 to 700 and six named instances, replacing the 12 static files. The
+  original `OFL.txt`, `README.md` and
   `TRADEMARKS.md` retain the distribution's copyright and licensing information.
+  Both native catalogs recognize the earlier static PostScript names in saved
+  styles. Their base weights remain intact and clamp to the new font's range
+  when rendering; lookup does not rewrite configuration.
 
 Font binaries are copied byte-for-byte. macOS registers them with Core Text at
 process scope before creating editor UI. Windows indexes the bundled files with

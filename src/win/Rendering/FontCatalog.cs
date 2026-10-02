@@ -129,11 +129,28 @@ internal static class FontCatalog
     {
         if (name.Length == 0) return null;
         if (names.TryGetValue(name, out var cached)) return cached;
+        if (LegacyFlightlineDesign(name) is { } design) {
+            var faces = familyFaces.GetOrAdd("Flightline Code", family => Discover(CanvasFontPropertyIdentifier.FamilyName, family));
+            var available = faces.Any(f => f.Source != null) ? faces.Where(f => f.Source != null) : faces;
+            return names[name] = available.Where(f => (f.Slant != FontStyle.Normal) == design.Italic)
+                .MinBy(f => Math.Abs((int)f.Weight - design.Weight));
+        }
         var face = Discover(CanvasFontPropertyIdentifier.PostscriptName, name).FirstOrDefault();
         // Fonts without PostScript metadata use their exact full name.
         face ??= Discover(CanvasFontPropertyIdentifier.FullName, name).FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
         return names[name] = face;
     }
+    // Preserve static-face requests saved by earlier releases. Resolution uses
+    // the variable design, with the persisted base-weight declaration intact.
+    private static (int Weight, bool Italic)? LegacyFlightlineDesign(string name) => name.ToLowerInvariant() switch {
+        "flightlinecode-thin" => (100, false), "flightlinecode-thinitalic" => (100, true),
+        "flightlinecode-extralight" => (200, false), "flightlinecode-extltita" => (200, true),
+        "flightlinecode-light" => (300, false), "flightlinecode-lightitalic" => (300, true),
+        "flightlinecode-regular" => (400, false), "flightlinecode-italic" => (400, true),
+        "flightlinecode-medium" => (500, false), "flightlinecode-mediumitalic" => (500, true),
+        "flightlinecode-bold" => (700, false), "flightlinecode-bolditalic" => (700, true),
+        _ => null,
+    };
     /// Portable request tokens for the family picker's built-in "use the
     /// system font" entries. EVFontCatalog on macOS recognizes the identical
     /// strings, so a style saved with one renders consistently on both
@@ -166,6 +183,7 @@ internal static class FontCatalog
     }
     internal static FontFace? ForFamilyChange(string requested, FontFace? current)
     {
+        if (LegacyFlightlineDesign(requested) != null) return Named(requested);
         var faces = Faces(requested);
         var explicitFace = faces.FirstOrDefault(f => string.Equals(f.Name, requested, StringComparison.OrdinalIgnoreCase)
             && !string.Equals(f.Family, requested, StringComparison.OrdinalIgnoreCase));
@@ -188,16 +206,23 @@ internal static class FontCatalog
         return Named(candidate) is { } face ? (face.Family, face.Stretch) : null;
     }
 
-    // File URLs stay inside the native renderer, never in saved styles. Each
-    // Flightline variant is a separate file, so choose it after weight/slant
-    // overrides, including whitespace markers and style previews, are resolved.
+    // File URLs stay inside the native renderer, never in saved styles.
+    // Flightline's upright and italic designs are separate variable files;
+    // choose the source after weight/slant overrides are resolved, including
+    // whitespace markers and style previews.
     internal static string RenderingFamily(string family, uint weight, FontStyle slant, FontStretch stretch)
     {
         if (!BundledFonts.Families.Contains(family)) return family;
-        var face = Faces(family).Where(f => f.Source != null).MinBy(f => (
+        var face = RenderingFace(family, weight, slant, stretch);
+        return face?.Source == null ? family : face.Source.AbsoluteUri + "#" + face.Family;
+    }
+    internal static FontFace? RenderingFace(string family, uint weight, FontStyle slant, FontStretch stretch)
+    {
+        var faces = Faces(family);
+        var available = BundledFonts.Families.Contains(family) ? faces.Where(f => f.Source != null) : faces;
+        return available.MinBy(f => (
             Math.Abs((int)f.Stretch - (int)stretch),
             f.Slant == slant ? 0 : f.Slant != FontStyle.Normal && slant != FontStyle.Normal ? 1 : 2,
             Math.Abs((int)f.Weight - (int)Math.Clamp(weight, 1, 999))));
-        return face == null ? family : face.Source!.AbsoluteUri + "#" + face.Family;
     }
 }

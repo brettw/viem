@@ -654,7 +654,7 @@ public func resolveFont(
   let requested = requestedIndex.map { families[$0] } ?? CoreTextMeasurementProvider.defaultFontFamily
   let base = EVFontCatalog.baseFont(named: requested, size: size)
   let faces = EVFontCatalog.faces(for: requested)
-  let exactFace = faces.first { $0.postScriptName.caseInsensitiveCompare(requested) == .orderedSame }
+  let exactFace = EVFontCatalog.face(named: requested)
   let targetWidth = exactFace?.width ?? 0
   let nearestWidth = faces.map { abs($0.width - targetWidth) }.min() ?? 0
   let matchingWidth = faces.filter { abs($0.width - targetWidth) <= nearestWidth + 0.0001 }
@@ -677,9 +677,23 @@ public func resolveFont(
   }
   var member = preferred.flatMap { EVFontCatalog.font(for: $0, size: size) } ?? base
   // Keep variation outlines before considering any synthetic treatment.
-  let variationBase = wantsItalic && !(exactFace?.italic ?? false) ? member : base
+  let baseInfo = EVFontVariations.info(font: base)
+  let hasBaseItalicAxis = baseInfo.axes.contains { $0.tag == "ital" || $0.tag == "slnt" }
+  let variationBase = wantsItalic && !(exactFace?.italic ?? false) && !hasBaseItalicAxis ? member : base
   let variationInfo = EVFontVariations.info(font: variationBase)
-  let coordinates = EVFontVariations.effective(variationInfo, saved: requestedIndex == 0 ? axes : [:], weight: Double(cssWeight), bold: relativeBold, slant: slant)
+  var savedCoordinates: [String: Double] = [:]
+  if exactFace != nil, let native = CTFontCopyVariation(variationBase) as? [NSNumber: NSNumber] {
+    // A named variable face supplies its own base design (e.g. mono/casual).
+    // Preserve that design when no explicit coordinates override it. Weight
+    // still follows the separately resolved base-weight declaration.
+    for axis in variationInfo.axes where axis.tag != "wght" {
+      if let value = native[NSNumber(value: EVFontVariations.identifier(axis.tag))] {
+        savedCoordinates[axis.tag] = value.doubleValue
+      }
+    }
+  }
+  if requestedIndex == 0 { savedCoordinates.merge(axes) { _, explicit in explicit } }
+  let coordinates = EVFontVariations.effective(variationInfo, saved: savedCoordinates, weight: Double(cssWeight), bold: relativeBold, slant: slant)
   if !coordinates.isEmpty {
     let variation = Dictionary(uniqueKeysWithValues: coordinates.map { (NSNumber(value: EVFontVariations.identifier($0.key)), NSNumber(value: $0.value)) })
     let descriptor = CTFontDescriptorCreateCopyWithAttributes(CTFontCopyFontDescriptor(variationBase), [kCTFontVariationAttribute: variation] as CFDictionary)

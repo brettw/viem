@@ -11,6 +11,70 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     private let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
     private let inlineCode = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
 
+    func testDocumentActivationRetargetsCurrentStyleWithoutStealingFocusAndCancelsOldFollowing() throws {
+        let first = try markdownSurface()
+        let other = try markdownSurface()
+        let firstHost = EVDocumentWindowController(document: EVDocument(), editorSurface: first)
+        let otherHost = EVDocumentWindowController(document: EVDocument(), editorSurface: other)
+        let firstWindow = try XCTUnwrap(firstHost.window)
+        let otherWindow = try XCTUnwrap(otherHost.window)
+        let coordinator = EVStyleEditorCoordinator.shared
+        coordinator.close()
+        defer { coordinator.close(); firstWindow.orderOut(nil); otherWindow.orderOut(nil) }
+        moveCaret(7, in: first)
+        moveCaret(1, in: other)
+        coordinator.show(document: first, sender: nil)
+        let inspector = try XCTUnwrap(coordinator.styleWindow)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+        moveCaret(17, in: first)
+        XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+        XCTAssertTrue(otherWindow.makeFirstResponder(other.editorView))
+        XCTAssertTrue(coordinator.styleWindow === inspector)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        XCTAssertTrue(otherWindow.firstResponder === other.editorView)
+        coordinator.selectStyle(EVStyleKey.baseParagraph)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: otherWindow)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
+                       "Returning from the inspector to the same document preserves an explicit choice")
+        moveCaret(7, in: first)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        // Returning to a document whose first responder was already its editor
+        // must retarget on window activation, without another mouse/key event.
+        XCTAssertTrue(firstWindow.makeFirstResponder(first.editorView))
+        coordinator.documentDidBecomeActive(other)
+        XCTAssertTrue(firstWindow.makeFirstResponder(nil))
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: firstWindow)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+        coordinator.documentDidClose(first)
+        NotificationCenter.default.post(name: .viemActiveEditorSurfaceDidChange, object: other)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        XCTAssertFalse(first.canUndo)
+        XCTAssertFalse(other.canUndo)
+    }
+
+    func testActivationSwitchesStyleFamiliesAndLeavesStandaloneCodeSettingsIndependent() throws {
+        let markdown = try markdownSurface()
+        moveCaret(1, in: markdown)
+        let backend = EVCoreDocumentBackend(configuration: markdown.backend.configuration)
+        try backend.read(source: Data("Text".utf8), typeName: EVDocument.plainTextType)
+        let text = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        prepare(text)
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: markdown, sender: nil)
+        defer { coordinator.close() }
+        coordinator.documentDidBecomeActive(text)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+        XCTAssertTrue(coordinator.styleWindow?.title.contains("Plain Text") == true)
+        coordinator.documentDidBecomeActive(markdown)
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        XCTAssertTrue(coordinator.styleWindow?.title.contains("Markdown") == true)
+        coordinator.showCode(configuration: backend.configuration, sender: nil)
+        coordinator.documentDidBecomeActive(markdown)
+        XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
+        XCTAssertTrue(coordinator.styleWindow?.title.contains("Code") == true)
+    }
+
     func testNativeEditStylesMenuAndCommandOpenTheCurrentCaretStyle() throws {
         let surface = try markdownSurface()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)

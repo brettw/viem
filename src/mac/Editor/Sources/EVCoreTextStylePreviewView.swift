@@ -26,6 +26,7 @@ struct EVCoreTextStylePreviewInspection: Equatable {
     let resolvedFontFamily: String
     let resolvedFontPostScriptName: String
     let resolvedFontSize: CGFloat
+    let resolvedFontAxes: [String: Double]
     let canvasBackground: EVStyleColor
     let accessibilityText: String
     let lines: [EVCoreTextStylePreviewLine]
@@ -141,6 +142,7 @@ final class EVCoreTextStylePreviewView: NSView {
                 at: currentStyleRange.location, effectiveRange: nil
             ) as! CTFont
             : makeFont(from: effectiveValues)
+        let variations = CTFontCopyVariation(font) as? [NSNumber: NSNumber] ?? [:]
         return EVCoreTextStylePreviewInspection(
             kind: kind,
             effectiveValues: effectiveValues,
@@ -149,6 +151,9 @@ final class EVCoreTextStylePreviewView: NSView {
             resolvedFontFamily: resolvedFamilyName(font, requested: requested.families),
             resolvedFontPostScriptName: CTFontCopyPostScriptName(font) as String,
             resolvedFontSize: CTFontGetSize(font),
+            resolvedFontAxes: Dictionary(uniqueKeysWithValues: EVFontVariations.info(font: font).axes.map { axis in
+                return (axis.tag, variations[NSNumber(value: EVFontVariations.identifier(axis.tag))]?.doubleValue ?? axis.defaultValue)
+            }),
             canvasBackground: canvasBackground,
             accessibilityText: (accessibilityValue() as? String) ?? "",
             lines: lineGeometry(in: CGRect(origin: .zero, size: size)),

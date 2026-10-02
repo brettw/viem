@@ -6,6 +6,7 @@ using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Rendering;
 using Viem.Windows.Shell;
+using Windows.UI.Text;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Diagnostics;
@@ -25,6 +26,8 @@ internal static class VariableFontTests
         }
         RecursiveFontChecks(pane);
         await RecursiveInspectorChecks(pane, preferences);
+        FlightlineFontChecks(pane);
+        await FlightlineInspectorChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -76,6 +79,102 @@ internal static class VariableFontTests
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".variable-font.png");
         } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
+    internal static void FlightlineFontChecks(EditorPane pane)
+    {
+        var faces = FontCatalog.Faces("Flightline Code");
+        string[] files = ["FlightlineCode-Regular-VF.ttf", "FlightlineCode-Italic-VF.ttf"];
+        Check(Directory.EnumerateFiles(Path.Combine(AppContext.BaseDirectory, "Resources/fonts/flightline"), "*.ttf")
+            .Select(Path.GetFileName).ToHashSet().SetEquals(files), "Flightline packaging contains two variable fonts and no static files");
+        byte[] source = "Writing MMMM iii 0123"u8.ToArray();
+        using var doc = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        foreach (string file in files) {
+            var face = faces.First(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == file);
+            bool italic = file.Contains("Italic", StringComparison.Ordinal);
+            var info = FontVariations.For(face);
+            Check(info.Axes.Length == 1 && info.Axes[0] is { Tag: "wght", Minimum: 200, Default: 400, Maximum: 700 }, "Flightline exposes its 200–700 weight axis");
+            var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
+            Check(instances.Length == 6, "each Flightline design exposes six named presets");
+            foreach (float weight in instances.Select(i => i.Values["wght"]).Append(437).Distinct()) {
+                view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name, "serif"], face, new() { ["wght"] = weight });
+                var layout = view.Layout();
+                var run = layout.Clusters.First().render_run.identifier;
+                Check(Math.Abs(view.Provider.RenderedFontAxes(run).First()["wght"] - weight) < .001f, $"Flightline {file} renders weight {weight}");
+                Check(view.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline selects the designed upright or italic outlines");
+            }
+        }
+        var upright = faces.First(f => f.Source != null && f.Slant == FontStyle.Normal);
+        var paragraph = view.Styles().Styles.Single(s => s.Id == "Paragraph");
+        view.EditStyleFont(paragraph, [upright.Name], upright, new() { ["wght"] = 437 });
+        void Emphasis(bool bold, uint slant, float weight) {
+            var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
+            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_BOLD, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, bold ? 1u : 0u));
+            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SLANT, CoreView.Enum(VIEM_STYLE_VALUE_FONT_SLANT, slant));
+            var run = view.Layout().Clusters.First().render_run.identifier;
+            Check(Math.Abs(view.Provider.RenderedFontAxes(run).First()["wght"] - weight) < .001f, "Flightline emphasis uses clamped effective weight and restores its saved base weight");
+            Check(view.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == (slant != 0)), "Flightline emphasis switches the actual variable font collection between upright and italic");
+        }
+        Emphasis(true, 0, 700); Emphasis(true, 1, 700); Emphasis(false, 1, 437); Emphasis(false, 0, 437);
+        foreach (var (name, weight, italic) in new (string, uint, bool)[] {
+            ("Thin", 100, false), ("ThinItalic", 100, true), ("ExtraLight", 200, false), ("ExtLtIta", 200, true),
+            ("Light", 300, false), ("LightItalic", 300, true), ("Regular", 400, false), ("Italic", 400, true),
+            ("Medium", 500, false), ("MediumItalic", 500, true), ("Bold", 700, false), ("BoldItalic", 700, true),
+        }) {
+            string legacy = "FlightlineCode-" + name;
+            var face = FontCatalog.Named(legacy);
+            Check(face != null && (face.Slant != FontStyle.Normal) == italic, $"saved {legacy} resolves to the variable design");
+            var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
+            view.EditStyleFont(style, [legacy, "serif"], face, []);
+            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, CoreView.Enum(VIEM_STYLE_VALUE_UNSIGNED, weight));
+            var layout = view.Layout();
+            var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
+            Check(Math.Abs(axes["wght"] - Math.Clamp(weight, 200, 700)) < .001f, "saved static-face base weight renders without rewriting or substituting fonts");
+        }
+        Check(FontCatalog.Resolve("FlightlineCode-does-not-exist") == null, "unknown Flightline names remain unavailable");
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline font changes preserve document source");
+        Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "Flightline styles retain portable font requests");
+    }
+
+    private static async Task FlightlineInspectorChecks(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        byte[] source = "Flightline variable controls"u8.ToArray();
+        using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        var upright = FontCatalog.Faces("Flightline Code").First(f => f.Source != null && f.Slant == Windows.UI.Text.FontStyle.Normal);
+        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.Name], upright);
+        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
+        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        try {
+            await Task.Delay(100);
+            foreach (bool italic in new[] { false, true }) {
+                inspector.FontVariantControl.SelectedItem = FontCatalog.Faces("Flightline Code")
+                    .First(f => f.Source != null && (f.Slant != Windows.UI.Text.FontStyle.Normal) == italic);
+                var slider = Descendants<Slider>(inspector.RootControl).Single();
+                Check(slider.Minimum == 200 && slider.Maximum == 700 && slider.StepFrequency == 1, "Flightline's inspector weight control covers the design range in integer steps");
+                var presets = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>().ToArray();
+                Check(presets.Length == 7, "Flightline's picker exposes Default and all six named presets");
+                foreach (var preset in presets) {
+                    inspector.FontVariantControl.SelectedItem = preset;
+                    Check(Math.Abs(slider.Value - preset.Values["wght"]) < .001, "Flightline preset selection synchronizes its weight slider");
+                }
+                slider.Value = 437;
+                Check(inspector.FontVariantControl.SelectedItem as string == "Custom", "intermediate Flightline weights display Custom");
+                Check(inspector.Error.Length == 0, "Flightline controls apply without inspector errors");
+                inspector.UndoThemeForTesting();
+                slider = Descendants<Slider>(inspector.RootControl).Single();
+                Check(Math.Abs(slider.Value - presets.Last().Values["wght"]) < .001, "Flightline slider undo restores the previous preset weight");
+                inspector.RedoThemeForTesting();
+                slider = Descendants<Slider>(inspector.RootControl).Single();
+                Check(slider.Value == 437, "Flightline slider redo restores the custom weight");
+                var run = inspector.ThemeView.Layout().Clusters.First().render_run.identifier;
+                Check(Math.Abs(inspector.ThemeView.Provider.RenderedFontAxes(run).First()["wght"] - 437) < .001f, "Flightline inspector edits reach native shaping");
+                Check(inspector.ThemeView.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline inspector retains its separate italic design");
+            }
+            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline inspector leaves Markdown source unchanged");
+        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+    }
+
     internal static void RecursiveFontChecks(EditorPane pane)
     {
         var recursiveFamilies = FontCatalog.Families.Where(f => f.StartsWith("Recursive", StringComparison.OrdinalIgnoreCase)).ToArray();

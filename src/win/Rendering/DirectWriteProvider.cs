@@ -226,10 +226,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var defaultFont = ResolveFont(request.default_style);
         using var format = new CanvasTextFormat
         {
-            FontFamily = FontCatalog.RenderingFamily(defaultFont.Family, (ushort)Math.Clamp(request.default_style.weight, 1, 999), Slant(request.default_style.slant), defaultFont.Stretch),
+            FontFamily = FontCatalog.RenderingFamily(defaultFont.Family, (ushort)Math.Clamp(request.default_style.weight, 1, 999), ResolvedSlant(request.default_style), defaultFont.Stretch),
             FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
-            FontStyle = Slant(request.default_style.slant), WordWrapping = CanvasWordWrapping.NoWrap,
+            FontStyle = ResolvedSlant(request.default_style), WordWrapping = CanvasWordWrapping.NoWrap,
             Direction = request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT
                 ? CanvasTextDirection.RightToLeftThenTopToBottom : CanvasTextDirection.LeftToRightThenTopToBottom
         };
@@ -394,28 +394,30 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         return ("Segoe UI", FontStretch.Normal);
     }
     private static FontStyle Slant(uint slant) => slant switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
-    private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyleV1 style, string family)
+    private static FontStyle ResolvedSlant(ViemResolvedTextStyleV1 style)
     {
-        if ((style.font_axes.length == 0 || Text(style.font_axes) == "{}") && style.slant == 0 && (style.reserved & 1) == 0) return [];
+        if (style.slant != 0) return Slant(style.slant);
+        return style.font_family_count > 0 ? FontCatalog.Named(Text(style.font_families[0]))?.Slant ?? FontStyle.Normal : FontStyle.Normal;
+    }
+    private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyleV1 style, string family, FontFace? face)
+    {
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
-        var exact = FontCatalog.Named(requested);
-        var baseFace = style.slant != 0 && exact?.Slant == FontStyle.Normal
-            ? FontCatalog.Faces(family).FirstOrDefault(f => f.Slant == Slant(style.slant)) ?? exact
-            : exact;
-        baseFace ??= FontCatalog.Faces(family).FirstOrDefault(f => f.Slant == Slant(style.slant)) ?? FontCatalog.Faces(family).FirstOrDefault();
-        return FontVariations.Effective(FontVariations.For(baseFace), FontCatalog.Resolve(requested)?.Family == family ? FontVariations.Decode(Text(style.font_axes)) : [], style.weight, (style.reserved & 1) != 0, style.slant);
+        return FontVariations.Effective(FontVariations.For(face), FontCatalog.Resolve(requested)?.Family == family ? FontVariations.Decode(Text(style.font_axes)) : [], style.weight, (style.reserved & 1) != 0, style.slant);
     }
     private static bool ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
-        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), Slant(style.slant), font.Stretch));
+        var slant = ResolvedSlant(style);
+        var face = FontCatalog.RenderingFace(font.Family, style.weight, slant, font.Stretch);
+        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch));
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });
-        var authoredFace = style.font_family_count > 0 ? FontCatalog.Named(Text(style.font_families[0])) : null;
-        layout.SetFontStyle(start, count, style.slant == 0 && authoredFace != null ? authoredFace.Slant : Slant(style.slant));
-        var axes = ResolvedAxes(style, font.Family);
-        if (axes.Count != 0) FontVariations.Apply(layout, start, count, axes, authoredFace ?? FontCatalog.Faces(font.Family).FirstOrDefault());
+        layout.SetFontStyle(start, count, slant);
+        var axes = ResolvedAxes(style, font.Family, face);
+        // The typographic collection must come from the same selected design
+        // as the URI above. An upright-only collection cannot supply Italic.
+        if (axes.Count != 0) FontVariations.Apply(layout, start, count, axes, face);
 
         layout.SetCharacterSpacing(start, count, 0, style.letter_spacing * scale, 0);
         if (style.has_language != 0) layout.SetLocaleName(start, count, Text(style.language));

@@ -48,6 +48,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private var controller: NSWindowController?
     private var contentController: EVStyleEditorViewController?
     private var targetWindowObserver: NSObjectProtocol?
+    private var activationObservers: [NSObjectProtocol] = []
     private var selectionObserver: NSObjectProtocol?
     private var familyObserver: NSObjectProtocol?
     private weak var followedDocument: EVEditorSurfaceController?
@@ -56,11 +57,13 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private var globalSession: EVCodeStyleSession?
     private var themeSession: EVThemeStyleSession?
     private var themeSessions: [String: EVThemeStyleSession] = [:]
+    private var followsActiveDocuments = false
 
     var styleWindow: NSWindow? { controller?.window }
     var inspection: EVStyleEditorInspection? { contentController?.inspection }
 
     func show(document: EVEditorSurfaceController, sender: Any?) {
+        followsActiveDocuments = true
         let styleKey = document.currentStyleEditorKey()
         if document.backend.sourceFormat == .code {
             showCode(configuration: document.backend.configuration, preferredStyle: styleKey,
@@ -90,6 +93,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         following document: EVEditorSurfaceController? = nil,
         sender: Any?
     ) {
+        followsActiveDocuments = document != nil
         do {
             themeSession = nil
             let session: EVCodeStyleSession
@@ -131,6 +135,17 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private func prepareWindow() -> Bool {
         let isNewWindow = controller == nil
         if isNewWindow {
+            for name in [NSWindow.didBecomeKeyNotification, .viemActiveEditorSurfaceDidChange] {
+                activationObservers.append(NotificationCenter.default.addObserver(forName: name,
+                    object: nil, queue: .main) { [weak self] notification in
+                    MainActor.assumeIsolated {
+                        let surface = (notification.object as? EVEditorSurfaceController)
+                            ?? ((notification.object as? NSWindow)?.windowController as? EVDocumentWindowController)?
+                                .editorSurface as? EVEditorSurfaceController
+                        if let surface { self?.documentDidBecomeActive(surface) }
+                    }
+                })
+            }
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
             content.onExplicitStyleSelection = { [weak self] in self?.cancelPendingSelectionFollow() }
@@ -172,6 +187,16 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         stopObservingTargetWindow()
     }
 
+    func documentDidBecomeActive(_ document: EVEditorSurfaceController) {
+        guard controller != nil, followsActiveDocuments, document.session != nil,
+              followedDocument !== document else { return }
+        // Returning from the inspector to the same view preserves an explicit
+        // picker choice. A different document selects its current caret style
+        // immediately, without raising the inspector or taking keyboard focus.
+        retargetFollowingFamily(of: document)
+        observeTargetWindow(of: document)
+    }
+
     func selectStyle(_ id: EVStyleID) { contentController?.selectStyle(id) }
     func selectStyle(_ key: EVStyleKey) { contentController?.selectStyle(key) }
     func selectTab(_ tab: EVStyleEditorTab) { contentController?.selectTab(tab) }
@@ -182,9 +207,12 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         stopObservingTargetWindow()
         stopFollowingSelection()
         contentController?.disableForClosedDocument()
+        for observer in activationObservers { NotificationCenter.default.removeObserver(observer) }
+        activationObservers.removeAll()
         controller = nil
         contentController = nil
         themeSession = nil
+        followsActiveDocuments = false
     }
 
     private func followSelection(of document: EVEditorSurfaceController, globalCode: Bool) {
@@ -360,6 +388,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
     private let preview = EVCoreTextStylePreviewView()
     private let compactControls = EVCompactStyleControls()
     private let nextStyleRow = EVFollowingStyleRow()
+    private var formattingHeightConstraint: NSLayoutConstraint?
 
     private var selectedDefinition: EVStyleDefinition? {
         snapshot?.definition(for: selectedStyleKey)
@@ -538,7 +567,7 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         stack.setCustomSpacing(10, after: propertiesContainer)
         root.addSubview(stack)
         let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 196)
-        preferredFormattingHeight.priority = .defaultHigh
+        formattingHeightConstraint = preferredFormattingHeight
         let preferredPreviewHeight = previewBox.heightAnchor.constraint(equalToConstant: 140)
         preferredPreviewHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
@@ -1324,6 +1353,36 @@ final class EVStyleEditorViewController: NSViewController, NSTextFieldDelegate {
         characterControls.isHidden = showParagraph || showBlock
         paragraphControls.isHidden = !showParagraph
         blockControls.isHidden = !showBlock
+        updateFormattingHeight()
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateFormattingHeight()
+    }
+
+    private func updateFormattingHeight() {
+        let controls = !paragraphControls.isHidden ? compactControls.paragraphView
+            : !blockControls.isHidden ? compactControls.blockView : compactControls.characterView
+        // The old fixed height compressed axis captions before the sliders.
+        // Fit the selected tab's controls and keep the preview usable even at
+        // the smallest permitted window size.
+        let height = max(196, ceil(controls.fittingSize.height) + 14)
+        if formattingHeightConstraint?.constant != height {
+            formattingHeightConstraint?.constant = height
+        }
+        guard let window = view.window else { return }
+        let oldMinimum = window.contentMinSize.height
+        let minimum = 620 + height - 196
+        guard abs(oldMinimum - minimum) > 0.5 else { return }
+        let current = window.contentLayoutRect.height
+        window.contentMinSize = NSSize(width: max(700, window.contentMinSize.width), height: minimum)
+        if current < minimum || abs(current - oldMinimum) < 0.5 {
+            var frame = window.frame
+            frame.origin.y -= minimum - current
+            frame.size.height += minimum - current
+            window.setFrame(frame, display: true)
+        }
     }
 
     @objc private func closePressed(_ sender: Any?) { onClose?() }

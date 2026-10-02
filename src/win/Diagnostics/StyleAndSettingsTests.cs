@@ -80,6 +80,7 @@ internal static class StyleAndSettingsTests
         new MenuFlyoutItemAutomationPeer(item).Invoke(); await Task.Delay(200);
         Check(window.StyleInspector == styles && GetForegroundWindow() == hwnd, "Edit Styles menu reuses and raises the inspector without refocusing the editor");
         styles.Close();
+        await DocumentSwitchingChecks(preferences);
         Check(KeyPolicy.Route(VirtualKey.F8, false, true, false).Kind == VIEM_KEY_FUNCTION
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
         await FontChecks(pane, preferences);
@@ -106,6 +107,58 @@ internal static class StyleAndSettingsTests
             await LineSpacingChecks(pane, styles, sourceBeforeInspector);
         }
         finally { styles.Close(); }
+    }
+
+    private static async Task DocumentSwitchingChecks(Preferences preferences)
+    {
+        using var markdown = new CoreDocument("# Title `code` tail\n\nBody"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, markdown);
+        App.Instance.Windows.Add(window); window.Activate();
+        var first = window.ActivePane!;
+        var firstView = await first.Ready;
+        firstView.Place(7, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, markdown.State.document_revision, false);
+        window.ShowStyles();
+        var inspector = window.StyleInspector!;
+        StyleDefinition Selected() => (StyleDefinition)inspector.StylePicker.SelectedItem;
+        try
+        {
+            Check(Selected().Id == "Code", "document-switch inspector starts at the Markdown caret's character style");
+            window.Activate();
+            var text = new CoreDocument("Another document"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
+            var second = window.SplitPane(first, text);
+            await second.Ready; await Task.Delay(150);
+            Check(window.StyleInspector == inspector && Selected().Key == second.View!.CurrentStyleEditorKey(second.View.Styles())
+                && inspector.Title.Contains("Plain Text"), "switching panes immediately retargets the existing inspector's family and current style");
+            Check(GetForegroundWindow() == window.Hwnd, "retargeting the inspector leaves keyboard focus in the document window");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().First(s => s.Id != Selected().Id);
+            var explicitChoice = Selected().Key;
+            window.FocusPane(second); await Task.Delay(100);
+            Check(Selected().Key == explicitChoice, "refocusing the same document preserves an explicit inspector choice");
+            window.FocusPane(first); await Task.Delay(100);
+            Check(Selected().Id == "Code" && inspector.Title.Contains("Markdown"), "switching back restores the originating document's caret style");
+            window.FocusPane(second);
+            await window.ClosePane(second, force: true); await Task.Delay(150);
+            Check(window.StyleInspector == inspector && Selected().Id == "Code",
+                "closing the followed pane keeps the inspector open and follows the remaining document");
+            var otherWindow = new EditorWindow(preferences, new CoreDocument("A separate window"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT));
+            App.Instance.Windows.Add(otherWindow); otherWindow.Activate();
+            try
+            {
+                await otherWindow.ActivePane!.Ready; await Task.Delay(150);
+                Check(otherWindow.StyleInspector == inspector && inspector.Title.Contains("Plain Text"),
+                    "switching document windows retargets the single application-wide inspector");
+                Check(GetForegroundWindow() == otherWindow.Hwnd, "window switching does not raise the inspector");
+                otherWindow.ShowStyles();
+                Check(otherWindow.StyleInspector == inspector && window.StyleInspector == inspector,
+                    "F8 in another window reuses the same inspector");
+            }
+            finally { await otherWindow.RequestCloseForTesting(); }
+            window.Activate(); await Task.Delay(150);
+            Check(Selected().Id == "Code", "returning to the original window restores its current style");
+            Check(markdown.Source(markdown.State.document_revision).AsSpan().SequenceEqual("# Title `code` tail\n\nBody"u8),
+                "document switching and inspector following leave source bytes unchanged");
+        }
+        finally { inspector.Close(); await window.RequestCloseForTesting(); }
     }
 
     private static async Task LineSpacingChecks(EditorPane pane, StyleWindow styles, byte[] sourceBeforeInspector)
@@ -329,7 +382,7 @@ internal static class StyleAndSettingsTests
         {
             Check(FontCatalog.Families.Contains(family), $"bundled {family} appears in the font picker");
             var faces = FontCatalog.Faces(family);
-            Check(faces.Length == 12, $"bundled {family} exposes every variant");
+            Check(faces.Any(f => f.Slant == FontStyle.Normal) && faces.Any(f => f.Slant == FontStyle.Italic), $"bundled {family} exposes both variable designs");
             foreach (var face in faces)
             {
                 Check(face.Source is { IsFile: true } && File.Exists(face.Source.LocalPath), $"{face.Name} resolves to a bundled file");
@@ -343,7 +396,8 @@ internal static class StyleAndSettingsTests
                 count++;
             }
         }
-        Check(count == 12, "all 12 bundled static font faces render through the native provider");
+        Check(count > 0, "all native bundled Flightline variable faces render through the provider");
+        VariableFontTests.FlightlineFontChecks(pane);
         VariableFontTests.RecursiveFontChecks(pane);
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual("Writing 0123"u8), "bundled font selection preserves document source");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),

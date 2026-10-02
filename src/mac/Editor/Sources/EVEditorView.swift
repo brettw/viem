@@ -334,6 +334,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             isActiveTextSurface = true
             applyPresentation()
             surface?.refreshStatusBarActivity()
+            if let surface { EVStyleEditorCoordinator.shared.documentDidBecomeActive(surface) }
         }
         return accepted
     }

@@ -16,7 +16,8 @@ internal sealed partial class StyleWindow
     private byte[] sessionThemeStyles = Array.Empty<byte>();
     private void CreateThemeSession()
     {
-        uint format = documentView.Document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE ? VIEM_FORMAT_MARKDOWN : documentView.Document.State.format;
+        uint sourceFormat = documentView.Id == 0 ? styleDocument.State.format : documentView.Document.State.format;
+        uint format = sourceFormat == VIEM_FORMAT_MARKDOWN_SOURCE ? VIEM_FORMAT_MARKDOWN : sourceFormat;
         var document = new CoreDocument([], format: format);
         try
         {

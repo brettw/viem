@@ -26,7 +26,7 @@ internal sealed partial class EditorWindow : Window
     internal PaneStackPanel PaneStack => paneGrid;
     internal List<EditorPane> Panes { get; } = [];
     internal EditorPane? ActivePane { get; private set; }
-    internal bool IsWindowActive { get; private set; } = true;
+    internal bool IsWindowActive { get; private set; }
     private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromMilliseconds(40) };
     private bool closing, closed, updatingPreferences;
     private EditorPane? lastPane;
@@ -71,7 +71,13 @@ internal sealed partial class EditorWindow : Window
         titleBar.SizeChanged += (_, _) => UpdateCaptionInset();
         AutomationProperties.SetName(menuToggle, "Show menu bar"); ToolTipService.SetToolTip(menuToggle, "Show or hide the menu bar");
         menuToggle.Click += (_, _) => Safe(() => { preferences.Set("windows", "showMenu", menuToggle.IsChecked == true); return Task.CompletedTask; });
-        Activated += (_, e) => { IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated; foreach (var pane in Panes) pane.Canvas.Invalidate(); };
+        Activated += (_, e) =>
+        {
+            IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (IsWindowActive && ActivePane is { View: { } view } activePane)
+                activePane.Run(() => styleInspector?.FollowActiveView(view));
+            foreach (var pane in Panes) pane.Canvas.Invalidate();
+        };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
@@ -163,7 +169,11 @@ internal sealed partial class EditorWindow : Window
     internal void PaneReady(EditorPane pane)
     {
         ApplyInitialPaneHeight(pane);
-        if (pane == ActivePane) pane.FocusEditor();
+        if (pane == ActivePane)
+        {
+            if (IsWindowActive && pane.View is { } view) pane.Run(() => styleInspector?.FollowActiveView(view));
+            pane.FocusEditor();
+        }
         UpdateTitle(); RefreshStyleMenus();
         var diagnostics = new List<string>();
         if (styleDefaultsWarnings.Remove(pane.Document, out string? warning)) diagnostics.Add(warning);
@@ -204,7 +214,11 @@ internal sealed partial class EditorWindow : Window
     {
         // WinUI can deliver a queued focus event after a pane was detached.
         if (closed || !Panes.Contains(pane) || pane.Document.Handle == 0) return;
-        if (ActivePane != pane) { lastPane = ActivePane; ActivePane = pane; }
+        if (ActivePane != pane)
+        {
+            lastPane = ActivePane; ActivePane = pane;
+        }
+        if (IsWindowActive && pane.View is { } view) pane.Run(() => styleInspector?.FollowActiveView(view));
         foreach (var item in Panes) item.IsActive = item == pane;
         UpdateTitle(); RefreshStyleMenus();
     }

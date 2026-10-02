@@ -20,14 +20,19 @@ internal sealed partial class StyleWindow
         followedPresentation = documentView.Presentation;
         documentView.Changed += ViewChanged;
         documentView.Document.Changed += DocumentChanged;
-        documentView.Disposed += Close;
+        documentView.Disposed += SourceViewClosed;
     }
     private void DetachView()
     {
         CancelCaretFollow();
         documentView.Changed -= ViewChanged;
         documentView.Document.Changed -= DocumentChanged;
-        documentView.Disposed -= Close;
+        documentView.Disposed -= SourceViewClosed;
+    }
+    private void SourceViewClosed()
+    {
+        DetachView();
+        DismissColorPickers(commit: false);
     }
     private void CancelCaretFollow()
     {
@@ -70,6 +75,7 @@ internal sealed partial class StyleWindow
     }
     private StyleKey? CurrentCaretStyle(StyleSheet snapshot)
     {
+        if (documentView.Id == 0) return null;
 #if DEBUG
         CaretStyleQueries++;
 #endif
@@ -81,7 +87,7 @@ internal sealed partial class StyleWindow
     }
     private void DocumentChanged()
     {
-        if (updating || closed) return;
+        if (updating || closed || documentView.Id == 0) return;
         if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) { DismissColorPickers(commit: false); CreateThemeSession(); }
         if (openColorPickers.Count > 0 && !view.Styles().Identity.Equals(sheet.Identity))
             DismissColorPickers(commit: false);

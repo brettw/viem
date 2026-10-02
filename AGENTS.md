@@ -1326,8 +1326,9 @@ to the remaining controls.
 not a template/automatic-update/Apply/OK/Cancel workflow.
 
 One modeless inspector exists application-wide; F8 opens/reuses and retargets
-it without changing document mode. Select the current style immediately, then
-follow actual caret/selection changes only in the originating view: single
+it without changing document mode. Switching documents or active panes retargets
+an open, caret-following inspector without taking focus. Select the current style
+immediately, then follow actual caret/selection changes only in the active view: single
 nondefault character style, otherwise paragraph style, otherwise Base Paragraph.
 Never infer style from fonts or choose an arbitrary first mixed style. Explicit
 choices survive unrelated refreshes. Coalesce following; never poll, parse, or

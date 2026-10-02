@@ -77,7 +77,7 @@ internal sealed partial class StyleWindow
             }
             if (info.Axes.Length == 0) { fontVariant.SelectedItem = face; }
             else {
-                var values = CurrentAxisValues;
+                var values = BaseAxisValues(info);
                 fontVariant.SelectedItem = (object?)info.Instances.FirstOrDefault(i => info.Axes.All(a => Math.Abs(i.Values[a.Tag] - values.GetValueOrDefault(a.Tag, a.Default)) < .001f)) ?? "Custom";
             }
             fontVariant.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) && faces.Length > 0;
@@ -91,6 +91,13 @@ internal sealed partial class StyleWindow
     private readonly Dictionary<string, (Slider Slider, TextBlock Value)> axisControls = new();
     private string axisControlIdentity = "";
     private Dictionary<string, float> CurrentAxisValues => FontVariations.Decode(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES)));
+    private Dictionary<string, float> BaseAxisValues(FontVariationInfo info)
+    {
+        var values = FontVariations.Effective(info, CurrentAxisValues,
+            selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, false, 0);
+        foreach (var (tag, value) in CurrentAxisValues) values[tag] = value;
+        return values;
+    }
     private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values);
     private void RefreshAxisControls(FontVariationInfo info)
     {
@@ -116,15 +123,14 @@ internal sealed partial class StyleWindow
                     slider.KeyDown += (_, _) => Begin(); slider.KeyUp += (_, _) => End(); slider.LostFocus += (_, _) => End(); slider.Unloaded += (_, _) => End();
                     slider.ValueChanged += (_, _) => {
                         if (loading || !slider.IsEnabled || identity != axisControlIdentity) return;
-                        var values = CurrentAxisValues;
-                        foreach (var a in info.Axes) values.TryAdd(a.Tag, a.Default);
+                        var values = BaseAxisValues(info);
                         values[axis.Tag] = (float)Math.Clamp(Math.Round(slider.Value, MidpointRounding.AwayFromZero), axis.Minimum, axis.Maximum);
                         Try(() => SetAxes(values));
                     };
                 }
             }
         }
-        var saved = CurrentAxisValues;
+        var saved = BaseAxisValues(info);
         foreach (var axis in info.Axes) if (axisControls.TryGetValue(axis.Tag, out var control)) {
             float value = Math.Clamp(saved.GetValueOrDefault(axis.Tag, axis.Default), axis.Minimum, axis.Maximum);
             control.Slider.Value = value;

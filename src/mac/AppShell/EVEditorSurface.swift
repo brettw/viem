@@ -1,6 +1,10 @@
 import AppKit
 import Foundation
 
+extension Notification.Name {
+  public static let viemActiveEditorSurfaceDidChange = Notification.Name("com.viem.active-editor-surface.did-change")
+}
+
 public enum EVLineMode: UInt32, Equatable, Sendable {
   case visual = 0
   case physicalSource = 1
