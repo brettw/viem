@@ -101,6 +101,10 @@ internal sealed partial class StyleWindow : Window
         documentView = nextView; CreateThemeSession(); AttachView(true);
         Load(followCaret: true);
     }
+    internal void FollowActiveView(CoreView nextView)
+    {
+        if (!closed && followsCaret && nextView.Id != 0 && documentView != nextView) Retarget(nextView);
+    }
     private void Add(FrameworkElement item) => root.Children.Add(item);
     private Border Separator() => new() { Height = 1, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(58, 58, 58) : Theme.Rgb(210, 210, 210)) };
     private static Button NavigationButton() => new() { Content = "↗", Width = 30, Padding = new(0), FontSize = 18, VerticalAlignment = VerticalAlignment.Center };
@@ -270,9 +274,11 @@ internal sealed partial class StyleWindow : Window
         uint weight = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value;
         if (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0) weight = Math.Min(1000, weight + 300);
         var slant = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
+        if (slant == FontStyle.Normal) slant = CurrentFace?.Slant ?? slant;
+        var renderedFace = FontCatalog.RenderingFace(resolved.Family, weight, slant, resolved.Stretch);
         using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(resolved.Family, weight, slant, resolved.Stretch), FontStretch = resolved.Stretch, FontSize = size, WordWrapping = CanvasWordWrapping.Wrap };
         format.FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(weight, 1, 999) };
-        format.FontStyle = slant == FontStyle.Normal ? CurrentFace?.Slant ?? slant : slant;
+        format.FontStyle = slant;
         format.HorizontalAlignment = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value switch { 2 => CanvasHorizontalAlignment.Right, 3 => CanvasHorizontalAlignment.Center, _ => CanvasHorizontalAlignment.Left };
         string sample = selected.Native.role >= VIEM_STYLE_ROLE_QUOTE
             ? "A first paragraph inside this container.\n\nA second paragraph shares its block box."
@@ -287,7 +293,7 @@ internal sealed partial class StyleWindow : Window
         float textX = boxX + borderLeft + paddingLeft;
         float textY = boxY + borderTop + Edge(VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP);
         using var layout = new CanvasTextLayout(preview.Device, sample, format, Math.Max(1, boxWidth - borderLeft - borderRight - paddingLeft - paddingRight), 76);
-        FontVariations.Apply(layout, 0, sample.Length, FontVariations.Effective(FontVariations.For(CurrentFace), CurrentAxisValues, weight, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value), CurrentFace);
+        FontVariations.Apply(layout, 0, sample.Length, FontVariations.Effective(FontVariations.For(renderedFace), CurrentAxisValues, weight, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value), renderedFace);
         layout.SetUnderline(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE).enum_value != 0);
         layout.SetStrikethrough(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value != 0);
         layout.SetCharacterSpacing(0, sample.Length, 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING).number, 0);

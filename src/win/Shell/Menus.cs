@@ -162,7 +162,7 @@ internal sealed partial class EditorWindow
             }
         }
     }
-    private StyleWindow? styleInspector;
+    private static StyleWindow? styleInspector;
     private MenuFlyoutItem StyleEditorItem() => Item("Edit Styles…", () => { ShowStyles(); return Task.CompletedTask; }, "F8");
     internal void ShowStyles()
     {

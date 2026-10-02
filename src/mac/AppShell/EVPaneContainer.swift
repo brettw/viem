@@ -29,6 +29,8 @@ final class EVPaneContainer: NSViewController {
     guard index != preferredIndex else { return }
     if panes.indices.contains(preferredIndex) { lastAccessedPane = panes[preferredIndex] }
     preferredIndex = index
+    NotificationCenter.default.post(name: .viemActiveEditorSurfaceDidChange,
+                                    object: panes[index].editorSurface)
   }
   func focusPane(at index: Int) {
     guard panes.indices.contains(index) else { return }

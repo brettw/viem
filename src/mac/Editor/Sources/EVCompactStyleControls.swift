@@ -369,7 +369,18 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         rebuildFaceMenu = listedFontFaces != fontFaces || listedFontInstances != info.instances || listedVariableFont != !info.axes.isEmpty
         if rebuildFaceMenu {
             face.removeAllItems()
-            for member in fontFaces { face.addItem(withTitle: member.styleName) }
+            for member in fontFaces {
+                face.menu?.addItem(NSMenuItem(title: member.styleName, action: nil, keyEquivalent: ""))
+            }
+            if !info.axes.isEmpty {
+                // Core Text also enumerates named variable instances as native
+                // faces. Mixing those with fvar presets duplicates titles;
+                // NSPopUpButton replaces duplicate items and invalidates indexes.
+                for instance in info.instances {
+                    face.menu?.addItem(NSMenuItem(title: instance.name, action: nil, keyEquivalent: ""))
+                }
+                face.menu?.addItem(NSMenuItem(title: "Custom", action: nil, keyEquivalent: ""))
+            }
             listedFontFaces = fontFaces; listedFontInstances = info.instances; listedVariableFont = !info.axes.isEmpty
         }
         // A popup selects its first item automatically when populated. An
@@ -386,7 +397,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var currentFontFace: EVFontFace? {
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
         let weight = number(.characterWeight, fallback: 400)
-        if let exact = fontFaces.first(where: { $0.postScriptName == chosen }), Float(exact.weight) == weight || !EVFontVariations.info(for: chosen).axes.isEmpty { return exact }
+        if let exact = EVFontCatalog.face(named: chosen), Float(exact.weight) == weight || !EVFontVariations.info(for: chosen).axes.isEmpty { return exact }
         let italic = EVFontCatalog.face(named: chosen)?.italic ?? false
         let matching = fontFaces.filter { Float($0.weight) == weight && $0.italic == italic }
         return matching.first { $0.postScriptName == chosen } ?? matching.first
@@ -404,17 +415,21 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let weight = UInt32(min(1000, max(1, (values["wght"] ?? Double(number(.characterWeight, fallback: 400))).rounded())))
         publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(stringList(.characterFontFamilies))), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values))), .setDeclaration(.characterWeight, .unsigned(weight))])
     }
+    private func baseAxisValues(_ info: EVFontVariationInfo, chosen: String) -> [String: Double] {
+        var values = EVFontCatalog.face(named: chosen).map { EVFontCatalog.variationCoordinates(for: $0) } ?? [:]
+        values.removeValue(forKey: "wght")
+        values.merge(axisValues) { _, saved in saved }
+        return EVFontVariations.effective(info, saved: values,
+            weight: Double(number(.characterWeight, fallback: 400)), bold: false, slant: 0)
+    }
     private func refreshAxisControls(_ chosen: String) {
         let info = EVFontVariations.info(for: chosen)
+        let base = baseAxisValues(info, chosen: chosen)
         fontInstances = info.instances
-        if !info.axes.isEmpty {
-            if rebuildFaceMenu {
-                for instance in fontInstances { face.addItem(withTitle: instance.name) }
-                face.addItem(withTitle: "Custom")
-            }
-            if let index = fontInstances.firstIndex(where: { instance in info.axes.allSatisfy { abs(instance.values[$0.tag]! - (axisValues[$0.tag] ?? $0.defaultValue)) < 0.001 } }) {
+        if !info.axes.isEmpty, isOverridden(.characterFontFamilies) {
+            if let index = fontInstances.firstIndex(where: { instance in info.axes.allSatisfy { abs(instance.values[$0.tag]! - base[$0.tag]!) < 0.001 } }) {
                 face.selectItem(at: fontFaces.count + index)
-            } else { face.selectItem(at: face.numberOfItems - 1) }
+            } else if !axisValues.isEmpty { face.selectItem(at: face.numberOfItems - 1) }
         }
         let identity = chosen
         if axisIdentity != identity {
@@ -428,11 +443,14 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
                 for axis in visible[start..<min(start + 2, visible.count)] {
                     let label = NSTextField(labelWithString: axis.name)
                     label.font = .systemFont(ofSize: 11)
+                    label.setContentCompressionResistancePriority(.required, for: .vertical)
+                    label.setContentCompressionResistancePriority(.required, for: .horizontal)
                     let slider = EVFontAxisSlider()
                     slider.minValue = axis.minimum; slider.maxValue = axis.maximum; slider.isContinuous = true
                     slider.setAccessibilityLabel(axis.name)
                     slider.axisTag = axis.tag; slider.fontIdentity = identity; slider.target = self; slider.action = #selector(axisChanged(_:))
                     slider.widthAnchor.constraint(equalToConstant: 240).isActive = true
+                    slider.setContentCompressionResistancePriority(.required, for: .vertical)
                     slider.beginGesture = { [weak self] in guard let self, !self.inheritedGestureActive else { return }; self.onEditEnded?(); self.onEditBegan?() }
                     slider.endGesture = { [weak self] in guard let self, !self.inheritedGestureActive else { return }; self.onEditEnded?() }
                     let column = NSStackView(views: [label, slider]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 2
@@ -441,23 +459,22 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
                 axisRows.addArrangedSubview(row(columns, spacing: 20))
             }
         }
-        let saved = axisValues
         let bold: Bool
         if case let .boolean(value)? = definition?.properties[.characterBold]?.effective { bold = value } else { bold = false }
-        let effective = EVFontVariations.effective(info, saved: saved, weight: Double(number(.characterWeight, fallback: 400)) + (bold ? 300 : 0), bold: bold, slant: unsigned(.characterSlant))
+        let effective = EVFontVariations.effective(info, saved: base, weight: Double(number(.characterWeight, fallback: 400)) + (bold ? 300 : 0), bold: bold, slant: unsigned(.characterSlant))
         for axis in info.axes {
             guard let (slider, label) = axisControls[axis.tag] else { continue }
-            let value = min(axis.maximum, max(axis.minimum, saved[axis.tag] ?? axis.defaultValue))
+            let value = base[axis.tag] ?? axis.defaultValue
             slider.doubleValue = value; slider.isEnabled = isOverridden(.characterFontFamilies)
             let actual = effective[axis.tag] ?? value
-            label.stringValue = "\(axis.name) \(String(format: "%.0f", value))" + (abs(actual - value) > 0.001 ? " (effective \(String(format: "%.0f", actual)))" : "")
+            label.stringValue = "\(axis.name) \(String(format: "%g", value))" + (abs(actual - value) > 0.001 ? " (effective \(String(format: "%g", actual)))" : "")
         }
         axisRows.isHidden = axisControls.isEmpty
     }
     @objc private func axisChanged(_ sender: EVFontAxisSlider) {
         guard !updating, editable, sender.fontIdentity == axisIdentity else { return }
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
-        var values = EVFontVariations.info(for: chosen).defaults
+        var values = baseAxisValues(EVFontVariations.info(for: chosen), chosen: chosen)
         values.merge(axisValues) { _, saved in saved }
         values[sender.axisTag] = min(sender.maxValue, max(sender.minValue, sender.doubleValue.rounded()))
         setFontAxes(values)
@@ -863,8 +880,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         else if fontInstances.indices.contains(index - fontFaces.count) { setFontAxes(fontInstances[index - fontFaces.count].values) }
     }
     private func chooseFace(_ member: EVFontFace) {
-        var values = EVFontVariations.info(for: member.postScriptName).defaults
-        if values["wght"] != nil { values["wght"] = Double(member.weight) }
+        let values = EVFontCatalog.variationCoordinates(for: member)
         publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: member.postScriptName))), .setDeclaration(.characterWeight, .unsigned(UInt32(member.weight))), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values)))])
     }
     private func publishFontMutations(_ mutations: [EVStyleMutation]) {

@@ -75,6 +75,7 @@ public enum EVFontCatalog {
     cache.lock.unlock()
   }
   public static func faces(for familyOrPostScriptName: String) -> [EVFontFace] {
+    if legacyFlightlineDesign(familyOrPostScriptName) != nil { return faces(for: "Flightline Code") }
     cache.lock.lock()
     let generation = cache.generation
     let cached = cache.faces[familyOrPostScriptName]
@@ -146,7 +147,31 @@ public enum EVFontCatalog {
   }
 
   public static func face(named name: String) -> EVFontFace? {
-    faces(for: name).first { sameName($0.postScriptName, name) }
+    if let design = legacyFlightlineDesign(name) {
+      return faces(for: "Flightline Code").filter { $0.italic == design.italic }
+        .min { abs(Int($0.weight) - design.weight) < abs(Int($1.weight) - design.weight) }
+    }
+    return faces(for: name).first { sameName($0.postScriptName, name) }
+  }
+
+  // Earlier releases stored the static PostScript names. Keep those requests
+  // usable after replacing the files; the saved base weight remains authoritative.
+  private static func legacyFlightlineDesign(_ name: String) -> (weight: Int, italic: Bool)? {
+    switch name.lowercased() {
+    case "flightlinecode-thin": return (100, false)
+    case "flightlinecode-thinitalic": return (100, true)
+    case "flightlinecode-extralight": return (200, false)
+    case "flightlinecode-extltita": return (200, true)
+    case "flightlinecode-light": return (300, false)
+    case "flightlinecode-lightitalic": return (300, true)
+    case "flightlinecode-regular": return (400, false)
+    case "flightlinecode-italic": return (400, true)
+    case "flightlinecode-medium": return (500, false)
+    case "flightlinecode-mediumitalic": return (500, true)
+    case "flightlinecode-bold": return (700, false)
+    case "flightlinecode-bolditalic": return (700, true)
+    default: return nil
+    }
   }
 
   public static func faceForFamilyChange(to familyOrFace: String, currentFace: EVFontFace?) -> EVFontFace? {
@@ -154,6 +179,7 @@ public enum EVFontCatalog {
   }
 
   static func faceForFamilyChange(to requested: String, currentFace: EVFontFace?, faces: [EVFontFace]) -> EVFontFace? {
+    if legacyFlightlineDesign(requested) != nil { return face(named: requested) }
     // Some Regular PostScript names equal their family (e.g. Helvetica). The
     // family picker treats those as a family; the face picker retains exact IDs.
     if let explicit = faces.first(where: { sameName($0.postScriptName, requested) && !sameName($0.familyName, requested) }) {
@@ -177,6 +203,15 @@ public enum EVFontCatalog {
     cache.lock.unlock()
     let matched = descriptor ?? discoverFaces(for: face.familyName).descriptors[face.postScriptName]
     return matched.map { CTFontCreateWithFontDescriptor($0, size, nil) }
+  }
+
+  public static func variationCoordinates(for face: EVFontFace) -> [String: Double] {
+    guard let font = font(for: face, size: 14) else { return [:] }
+    let info = EVFontVariations.info(font: font)
+    let native = CTFontCopyVariation(font) as? [NSNumber: NSNumber] ?? [:]
+    return Dictionary(uniqueKeysWithValues: info.axes.map { axis in
+      (axis.tag, native[NSNumber(value: EVFontVariations.identifier(axis.tag))]?.doubleValue ?? axis.defaultValue)
+    })
   }
 
   private static func sameName(_ first: String, _ second: String) -> Bool {
@@ -259,7 +294,7 @@ public enum EVFontCatalog {
 
   static func availableFont(named name: String, size: CGFloat) -> CTFont? {
     let available = faces(for: name)
-    let face = available.first { sameName($0.postScriptName, name) }
+    let face = face(named: name)
       ?? faceForFamilyChange(to: name, currentFace: nil, faces: available)
     return face.flatMap { font(for: $0, size: size) }
   }
