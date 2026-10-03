@@ -29,7 +29,7 @@ final class EVThemeCatalogueTests: XCTestCase {
     }
   }
 
-  func testBundlePresetsAreCopiedByteForByteOnlyForANewProfile() throws {
+  func testBundledThemesRestoreOnlyMissingFilesAndRevertFromCurrentPackage() throws {
     let resources = directory()
     let themes = resources.appendingPathComponent("themes")
     try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
@@ -66,6 +66,28 @@ final class EVThemeCatalogueTests: XCTestCase {
     XCTAssertNil(reopened.lastError)
     XCTAssertEqual(reopened.availableThemeNames, ["Midnight"])
     XCTAssertEqual(try Data(contentsOf: midnight), customized)
+    let config = try Data(contentsOf: profile.appendingPathComponent("config.json"))
+    try reopened.restoreMissingBundledThemes()
+    XCTAssertEqual(reopened.availableThemeNames, names)
+    XCTAssertEqual(try Data(contentsOf: midnight), customized)
+    XCTAssertEqual(try Data(contentsOf: profile.appendingPathComponent("config.json")), config)
+    for name in names where name != "Midnight" {
+      XCTAssertEqual(try Data(contentsOf: reopened.themesDirectory.appendingPathComponent(name + ".json")), bundled[name])
+    }
+    XCTAssertTrue(reopened.currentThemeIsBundled)
+    XCTAssertThrowsError(try reopened.deleteCurrentTheme())
+    try reopened.setTheme(.paper)
+    try reopened.saveStyleDefaults(Data(#"{"version":1,"block_styles":[],"character_styles":[],"future":42}"#.utf8), named: "markdown")
+    try reopened.revertCurrentTheme()
+    XCTAssertEqual(try Data(contentsOf: midnight), bundled["Midnight"])
+    XCTAssertEqual(reopened.currentThemeFileName, "Midnight.json")
+    XCTAssertEqual(reopened.theme, .midnight)
+    XCTAssertEqual(try Data(contentsOf: profile.appendingPathComponent("config.json")), config)
+    let current = reopened.theme
+    try Data("invalid bundled theme".utf8).write(to: themes.appendingPathComponent("Midnight.json"))
+    XCTAssertThrowsError(try reopened.revertCurrentTheme())
+    XCTAssertEqual(reopened.theme, current)
+    XCTAssertEqual(try Data(contentsOf: midnight), bundled["Midnight"])
   }
 
   func testDefaultChangesStayInMemoryAndNewThemeCopiesThem() throws {
@@ -145,12 +167,25 @@ final class EVThemeCatalogueTests: XCTestCase {
   func testDeletingSelectedThemeFallsBackAndDoesNotReseedIt() throws {
     let directory = directory()
     let store = EVConfigurationStore(directory: directory)
-    try store.selectTheme(named: "Paper")
+    try store.createTheme(named: "Custom")
+    XCTAssertFalse(store.currentThemeIsBundled)
     try store.deleteCurrentTheme()
     XCTAssertNil(store.currentThemeName)
     XCTAssertEqual(store.theme, .midnight)
-    XCTAssertEqual(store.availableThemeNames, ["Midnight"])
-    XCTAssertEqual(EVConfigurationStore(directory: directory).availableThemeNames, ["Midnight"])
+    XCTAssertEqual(store.availableThemeNames, ["Midnight", "Paper"])
+    XCTAssertEqual(EVConfigurationStore(directory: directory).availableThemeNames, ["Midnight", "Paper"])
+  }
+
+  func testBundledIdentityUsesTheFilenameNotItsDisplayName() throws {
+    let store = EVConfigurationStore(directory: directory())
+    let file = store.themesDirectory.appendingPathComponent("Paper")
+    try EVThemeFile.encode(EVThemeFile.builtin()).write(to: file)
+    try store.selectTheme(named: "Paper", fileName: "Paper")
+    XCTAssertFalse(store.currentThemeIsBundled)
+    XCTAssertThrowsError(try store.revertCurrentTheme())
+    try store.deleteCurrentTheme()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: store.themesDirectory.appendingPathComponent("Paper.json").path))
   }
 
   func testLegacyAppearanceAndStyleFilesAreIgnoredWithoutCreatingATheme() throws {

@@ -45,24 +45,6 @@ struct EVBundledFontTests {
       #expect(flightline.axes.first?.maximum == 700)
       #expect(flightline.instances.filter { $0.name != "Default" }.count == 6)
     }
-    for (name, weight, italic) in [
-      ("Thin", 100, false), ("ThinItalic", 100, true),
-      ("ExtraLight", 200, false), ("ExtLtIta", 200, true),
-      ("Light", 300, false), ("LightItalic", 300, true),
-      ("Regular", 400, false), ("Italic", 400, true),
-      ("Medium", 500, false), ("MediumItalic", 500, true),
-      ("Bold", 700, false), ("BoldItalic", 700, true),
-    ] {
-      let legacy = "FlightlineCode-" + name
-      #expect(EVFontCatalog.face(named: legacy)?.italic == italic)
-      #expect(EVFontCatalog.displayFamilyName(for: legacy) == "Flightline Code")
-      let font = resolveFont(families: [legacy, "serif"], size: 17, cssWeight: CGFloat(weight), slant: 0, features: [])
-      let url = CTFontDescriptorCopyAttribute(CTFontCopyFontDescriptor(font), kCTFontURLAttribute) as? URL
-      #expect(url?.lastPathComponent == "FlightlineCode-\(italic ? "Italic" : "Regular")-VF.ttf")
-      #expect(CTFontGetSymbolicTraits(font).contains(.traitItalic) == italic)
-      let coordinates = CTFontCopyVariation(font) as? [NSNumber: NSNumber] ?? [:]
-      #expect(coordinates[NSNumber(value: EVFontVariations.identifier("wght"))]?.intValue ?? 400 == max(200, weight))
-    }
     #expect(EVFontCatalog.faces(for: "FlightlineCode-does-not-exist").isEmpty)
     let recursive = EVFontVariations.info(for: "Recursive")
     #expect(Set(recursive.axes.map(\.tag)) == ["MONO", "CASL", "wght", "slnt", "CRSV"])
@@ -74,8 +56,8 @@ struct EVBundledFontTests {
         let originalFont = CTFontCreateWithFontDescriptor(descriptor, 17, nil)
         let name = CTFontCopyPostScriptName(originalFont) as String
         let face = try #require(EVFontCatalog.face(named: name))
-        let font = resolveFont(families: [name], size: 17, cssWeight: CGFloat(face.weight),
-          slant: face.italic ? UInt32(VIEM_FONT_SLANT_ITALIC) : UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
+        let font = resolveFont(families: [face.familyName], size: 17, cssWeight: CGFloat(face.weight),
+          slant: face.italic ? UInt32(VIEM_FONT_SLANT_ITALIC) : UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [], faceName: face.styleName)
         #expect(CTFontCopyPostScriptName(font) as String == name)
         #expect(EVFontCatalog.weight(of: font) == face.weight)
         let url = CTFontDescriptorCopyAttribute(CTFontCopyFontDescriptor(font), kCTFontURLAttribute) as? URL

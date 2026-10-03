@@ -68,9 +68,10 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
+            "font_axes" : {},
+            "font_face" : "Medium",
             "font_families" : [
-              "FlightlineCode-Medium"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -1080,9 +1081,10 @@
             "background" : null,
             "bold" : null,
             "direction" : "Natural",
-            "font_axes" : null,
+            "font_axes" : {},
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Light"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -2486,8 +2488,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Normal_ExtraLight"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,

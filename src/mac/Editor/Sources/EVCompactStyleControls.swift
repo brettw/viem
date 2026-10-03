@@ -343,7 +343,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         for (property, button) in overrideButtons {
             button.isEnabled = canEdit(property) && !isBaseParagraph
             button.state = isBaseParagraph || definition?.properties[property]?.isDeclared == true
-            || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true) ? .on : .off
+            || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true || definition?.properties[.characterFontFace]?.isDeclared == true) ? .on : .off
         }
         let tableCell = ["Table cell", "Table header"].contains(definition?.key.id.rawValue ?? "")
         alignmentGroup?.isHidden = tableCell; tableAlignmentNote.isHidden = !tableCell
@@ -399,7 +399,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         }
         setFamilyText(isOverridden(.characterFontFamilies) ? displayFamily : "")
         family.isEnabled = isOverridden(.characterFontFamilies)
-        let info = EVFontVariations.info(for: chosen)
+        let info = variationInfo(for: chosen)
         rebuildFaceMenu = listedFontFaces != fontFaces || listedFontInstances != info.instances || listedVariableFont != !info.axes.isEmpty
         if rebuildFaceMenu {
             face.removeAllItems()
@@ -428,11 +428,16 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         featureButton.isEnabled = isOverridden(.characterOpenTypeFeatures) && !EVFontCatalog.features(for: chosen).isEmpty
     }
 
+    private var fontFaceName: String {
+        if case let .string(value)? = definition?.properties[.characterFontFace]?.effective { return value }
+        return ""
+    }
     private var currentFontFace: EVFontFace? {
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
         let weight = number(.characterWeight, fallback: 400)
-        if let exact = EVFontCatalog.face(named: chosen), Float(exact.weight) == weight || !EVFontVariations.info(for: chosen).axes.isEmpty { return exact }
-        let italic = EVFontCatalog.face(named: chosen)?.italic ?? false
+        let exact = EVFontCatalog.face(in: chosen, named: fontFaceName)
+        if let exact, Float(exact.weight) == weight || !EVFontVariations.info(for: exact.postScriptName).axes.isEmpty { return exact }
+        let italic = exact?.italic ?? false
         let matching = fontFaces.filter { Float($0.weight) == weight && $0.italic == italic }
         return matching.first { $0.postScriptName == chosen } ?? matching.first
     }
@@ -447,17 +452,22 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
     private func setFontAxes(_ values: [String: Double]) {
         let weight = UInt32(min(1000, max(1, (values["wght"] ?? Double(number(.characterWeight, fallback: 400))).rounded())))
-        publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(stringList(.characterFontFamilies))), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values))), .setDeclaration(.characterWeight, .unsigned(weight))])
+        publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(stringList(.characterFontFamilies))), .setDeclaration(.characterFontFace, .string(fontFaceName)), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values))), .setDeclaration(.characterWeight, .unsigned(weight))])
+    }
+    private func variationInfo(for family: String) -> EVFontVariationInfo {
+        guard let member = EVFontCatalog.face(in: family, named: fontFaceName)
+            ?? EVFontCatalog.faceForFamilyChange(to: family, currentFace: nil) else { return .empty }
+        return EVFontVariations.info(for: member.postScriptName)
     }
     private func baseAxisValues(_ info: EVFontVariationInfo, chosen: String) -> [String: Double] {
-        var values = EVFontCatalog.face(named: chosen).map { EVFontCatalog.variationCoordinates(for: $0) } ?? [:]
+        var values = EVFontCatalog.face(in: chosen, named: fontFaceName).map { EVFontCatalog.variationCoordinates(for: $0) } ?? [:]
         values.removeValue(forKey: "wght")
         values.merge(axisValues) { _, saved in saved }
         return EVFontVariations.effective(info, saved: values,
             weight: Double(number(.characterWeight, fallback: 400)), bold: false, slant: 0)
     }
     private func refreshAxisControls(_ chosen: String) {
-        let info = EVFontVariations.info(for: chosen)
+        let info = variationInfo(for: chosen)
         let base = baseAxisValues(info, chosen: chosen)
         fontInstances = info.instances
         if !info.axes.isEmpty, isOverridden(.characterFontFamilies) {
@@ -465,7 +475,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
                 face.selectItem(at: fontFaces.count + index)
             } else if !axisValues.isEmpty { face.selectItem(at: face.numberOfItems - 1) }
         }
-        let identity = chosen
+        let identity = chosen + "\0" + fontFaceName
         if axisIdentity != identity {
             axisIdentity = identity
             for view in axisRows.arrangedSubviews { axisRows.removeArrangedSubview(view); view.removeFromSuperview() }
@@ -508,7 +518,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     @objc private func axisChanged(_ sender: EVFontAxisSlider) {
         guard !updating, editable, sender.fontIdentity == axisIdentity else { return }
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
-        var values = baseAxisValues(EVFontVariations.info(for: chosen), chosen: chosen)
+        var values = baseAxisValues(variationInfo(for: chosen), chosen: chosen)
         values.merge(axisValues) { _, saved in saved }
         values[sender.axisTag] = min(sender.maxValue, max(sender.minValue, sender.doubleValue.rounded()))
         setFontAxes(values)
@@ -742,7 +752,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
 
     private func isOverridden(_ property: EVStyleProperty) -> Bool {
         canEdit(property) && (isBaseParagraph || definition?.properties[property]?.isDeclared == true
-            || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true))
+            || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true || definition?.properties[.characterFontFace]?.isDeclared == true))
     }
 
     // A missing fill is different from an explicitly transparent color. Seed
@@ -769,7 +779,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             value = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))
         }
         if property == .characterFontFamilies, let value {
-            send([.setDeclaration(property, value), .setDeclaration(.characterWeight, definition?.properties[.characterWeight]?.effective ?? .unsigned(400)), .setDeclaration(.characterFontAxes, definition?.properties[.characterFontAxes]?.effective ?? .string("{}"))])
+            send([.setDeclaration(property, value), .setDeclaration(.characterFontFace, .string(fontFaceName)), .setDeclaration(.characterWeight, definition?.properties[.characterWeight]?.effective ?? .unsigned(400)), .setDeclaration(.characterFontAxes, definition?.properties[.characterFontAxes]?.effective ?? .string("{}"))])
         } else if let value { send([.setDeclaration(property, value)]) }
     }
 
@@ -898,13 +908,13 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         // rather than a concrete resolved face, so the same declaration
         // renders correctly on Windows too.
         if let portable = EVFontCatalog.portableFamily(forDisplayName: value) {
-            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: portable))), .setDeclaration(.characterFontAxes, .string("{}")), .setDeclaration(.characterWeight, .unsigned(400))])
+            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: portable))), .setDeclaration(.characterFontFace, .string("")), .setDeclaration(.characterFontAxes, .string("{}")), .setDeclaration(.characterWeight, .unsigned(400))])
             return
         }
         if let member = EVFontCatalog.faceForFamilyChange(to: value, currentFace: currentFontFace) {
             chooseFace(member)
         } else {
-            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: value))), .setDeclaration(.characterFontAxes, .string("{}")), .setDeclaration(.characterWeight, .unsigned(400))])
+            publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: value))), .setDeclaration(.characterFontFace, .string("")), .setDeclaration(.characterFontAxes, .string("{}")), .setDeclaration(.characterWeight, .unsigned(400))])
         }
     }
     @objc private func faceChanged(_ sender: Any?) {
@@ -915,7 +925,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
     private func chooseFace(_ member: EVFontFace) {
         let values = EVFontCatalog.variationCoordinates(for: member)
-        publishFontMutations([.setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: member.postScriptName))), .setDeclaration(.characterWeight, .unsigned(UInt32(member.weight))), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values)))])
+        publishFontMutations([.setDeclaration(.characterFontFace, .string(member.styleName)), .setDeclaration(.characterFontFamilies, .stringList(replacingPrimaryFamily(with: member.familyName))), .setDeclaration(.characterWeight, .unsigned(UInt32(member.weight))), .setDeclaration(.characterFontAxes, .string(EVFontVariations.encode(values)))])
     }
     private func publishFontMutations(_ mutations: [EVStyleMutation]) {
         guard !updating, !publishingFontChange, editable else { return }

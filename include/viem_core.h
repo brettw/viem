@@ -688,6 +688,7 @@ typedef struct ViemResolvedTextStyleV1 {
   const ViemOpenTypeFeatureV1 *features;
   uint64_t feature_count;
   ViemUtf8Slice font_axes; /* JSON object: four-character axis tags to finite coordinates. */
+  ViemUtf8Slice font_face; /* OpenType subfamily of the primary family; empty for automatic selection. */
 } ViemResolvedTextStyleV1;
 
 #define VIEM_RESOLVED_TEXT_STYLE_RELATIVE_BOLD (1u << 0)
@@ -1075,6 +1076,7 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR 41u
 #define VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND 42u
 #define VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES 43u
+#define VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE 44u
 
 
 #define VIEM_STYLE_VALUE_NONE 0u

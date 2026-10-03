@@ -38,8 +38,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -687,8 +688,9 @@
             "font_axes" : {
               "wght" : 250
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -747,8 +749,9 @@
             "font_axes" : {
               "wght" : 700
             },
+            "font_face" : "Bold",
             "font_families" : [
-              "FlightlineCode-Normal_Bold"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -1341,8 +1344,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Normal_ExtraLight"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -1571,8 +1575,9 @@
             "font_axes" : {
               "wght" : 250
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -1608,8 +1613,9 @@
               "slnt" : -5,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -2778,8 +2784,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Normal_ExtraLight"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,

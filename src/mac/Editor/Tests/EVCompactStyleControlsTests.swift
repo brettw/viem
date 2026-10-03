@@ -469,6 +469,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         try EVStyleTestFixtures.configure(configuration, declarations: [
             (.baseParagraph, .characterSize, .float(14)),
             (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontFace, .string("")),
             (.baseParagraph, .characterFontAxes, .string(EVFontVariations.encode([:]))),
             (.baseParagraph, .characterWeight, .unsigned(400)),
             (.baseParagraph, .paragraphFirstLineIndent, .float(0)),
@@ -627,7 +628,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertTrue(face.sendAction(try XCTUnwrap(face.action), to: face.target))
         guard case let .stringList(request)? = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared else { return XCTFail("Missing font request") }
         XCTAssertEqual(Array(request.dropFirst()), tail)
-        XCTAssertTrue(request[0].contains("Light"))
+        XCTAssertFalse(request[0].contains("Light"))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFace]?.declared, .string("Light"))
 
     }
 
@@ -637,7 +639,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let initial = try XCTUnwrap(EVFontCatalog.faces(for: "SF Pro").first { $0.styleName == "Light" })
         let expected = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
-        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([initial.postScriptName] + tail)))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([initial.familyName] + tail)))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFace, value: .string(initial.styleName)))
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(initial.weight))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterSlant, value: .fontSlant(initial.italic ? 1 : 0)))
@@ -670,7 +673,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(family.stringValue, "Helvetica Neue")
         XCTAssertEqual(face.titleOfSelectedItem, "Light")
         let definition = try XCTUnwrap(try backend.styleSheetSnapshot().definition(for: .baseParagraph))
-        XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList([expected.postScriptName] + tail))
+        XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList([expected.familyName] + tail))
+        XCTAssertEqual(definition.properties[.characterFontFace]?.declared, .string(expected.styleName))
         XCTAssertEqual(definition.properties[.characterWeight]?.declared, .unsigned(UInt32(expected.weight)))
         XCTAssertEqual(definition.properties[.characterSlant]?.declared, .fontSlant(initial.italic ? 1 : 0), "Choosing a base face preserves semantic Italic")
         let changed = try backend.serializedSource(typeName: EVDocument.markdownType)
@@ -692,7 +696,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let georgia = EVFontCatalog.faces(for: "Georgia")
         XCTAssertFalse(georgia.contains { $0.styleName == "Light" })
         let regular = try XCTUnwrap(georgia.first { $0.styleName == "Regular" && !$0.italic })
-        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName, "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.familyName, "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFace, value: .string(light.styleName)))
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
@@ -708,7 +713,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(nil))
         XCTAssertEqual(family.stringValue, "Georgia")
         XCTAssertEqual(face.titleOfSelectedItem, "Regular")
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList([regular.postScriptName, "Menlo"]))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFamilies]?.declared, .stringList([regular.familyName, "Menlo"]))
         XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterWeight], .unsigned(UInt32(regular.weight)))
     }
 
@@ -739,7 +744,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
-        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.familyName])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFace, value: .string(light.styleName)))
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
         let before = try backend.styleSheetSnapshot()

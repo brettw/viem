@@ -45,7 +45,7 @@ final class EVThemeSelectionTests: XCTestCase {
     XCTAssertEqual(themes.item(withTitle: "Custom")?.state, .on)
   }
 
-  func testThemeSettingsUsesDropdownAndNewDeleteWithoutPresets() throws {
+  func testThemeSettingsRevertsBundledThemesAndDeletesUserThemes() throws {
     let configuration = configuration()
     let store = EVThemeStore(configuration: configuration)
     let controller = EVSettingsWindowController(store: store)
@@ -55,11 +55,17 @@ final class EVThemeSelectionTests: XCTestCase {
     let buttons = descendants(root).compactMap { $0 as? NSButton }.filter { !($0 is NSPopUpButton) }
     XCTAssertFalse(buttons.contains { ["Paper", "Midnight", "Restore Defaults"].contains($0.title) })
     let create = try XCTUnwrap(buttons.first { $0.title == "New Theme…" })
-    let remove = try XCTUnwrap(buttons.first { $0.title == "Delete Theme" })
+    let remove = try XCTUnwrap(buttons.first { $0.title == "Revert" })
+    let bundled = try Data(contentsOf: XCTUnwrap(configuration.selectedThemeURL))
+    try configuration.setTheme(.paper)
+    remove.performClick(nil)
+    XCTAssertEqual(configuration.currentThemeName, "Midnight")
+    XCTAssertEqual(try Data(contentsOf: XCTUnwrap(configuration.selectedThemeURL)), bundled)
     controller.themeActions.requestName = { _ in "Custom" }
     create.performClick(nil)
     XCTAssertEqual(configuration.currentThemeName, "Custom")
     XCTAssertEqual(popup.titleOfSelectedItem, "Custom")
+    XCTAssertEqual(remove.title, "Delete")
     let file = try XCTUnwrap(configuration.selectedThemeURL)
     remove.performClick(nil)
     XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
@@ -146,9 +152,38 @@ final class EVThemeSelectionTests: XCTestCase {
     controller.showWindow(nil)
     let popup = try XCTUnwrap(descendants(XCTUnwrap(controller.window?.contentView)).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Theme" })
     XCTAssertTrue(popup.itemTitles.contains("Added"))
-    XCTAssertFalse(popup.itemTitles.contains("Midnight"))
-    XCTAssertEqual(popup.titleOfSelectedItem, "Default")
-    XCTAssertNil(configuration.currentThemeName)
+    XCTAssertTrue(popup.itemTitles.contains("Midnight"))
+    XCTAssertEqual(popup.titleOfSelectedItem, "Midnight")
+    XCTAssertEqual(configuration.currentThemeName, "Midnight")
+  }
+
+  func testOnlyOpeningThemeSettingsRestoresMissingBundledThemes() throws {
+    let configuration = configuration()
+    let paper = configuration.themesDirectory.appendingPathComponent("Paper.json")
+    let original = try Data(contentsOf: paper)
+    try FileManager.default.removeItem(at: paper)
+    let reopened = EVConfigurationStore(directory: configuration.directory)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paper.path))
+    let store = EVThemeStore(configuration: reopened)
+    let controller = EVSettingsWindowController(store: store)
+    defer { controller.close() }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paper.path))
+    controller.showViewCategoryForTesting()
+    controller.showWindow(nil)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paper.path))
+    try reopened.setTheme(.paper) // Ordinary notifications must not install themes.
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paper.path))
+    controller.selectThemeCategory()
+    XCTAssertEqual(try Data(contentsOf: paper), original)
+    let midnight = try XCTUnwrap(reopened.selectedThemeURL)
+    let customized = try Data(contentsOf: midnight)
+    try FileManager.default.removeItem(at: paper)
+    try reopened.setSmartQuotes(true)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: paper.path))
+    controller.showViewCategoryForTesting()
+    controller.selectThemeCategory()
+    XCTAssertEqual(try Data(contentsOf: paper), original)
+    XCTAssertEqual(try Data(contentsOf: midnight), customized)
   }
 
   func testOpeningThemeMenuAfterExternalRemovalFallsBackToDefault() throws {
@@ -160,6 +195,7 @@ final class EVThemeSelectionTests: XCTestCase {
     try FileManager.default.removeItem(at: XCTUnwrap(configuration.selectedThemeURL))
     builder.menuNeedsUpdate(menu)
     XCTAssertNil(configuration.currentThemeName)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: configuration.themesDirectory.appendingPathComponent("Midnight.json").path))
     XCTAssertEqual(menu.item(withTitle: "Default")?.state, .on)
   }
 

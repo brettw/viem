@@ -525,6 +525,7 @@ private struct ResolvedStyle {
     script = source.has_script == 1 ? try decode(source.script) : nil
     direction = source.direction
     features = decodedFeatures
+    let faceName = try decode(source.font_face)
     font = resolveFont(
       families: families,
       size: size,
@@ -532,9 +533,10 @@ private struct ResolvedStyle {
       slant: slant,
       features: decodedFeatures,
       relativeBold: source.reserved & 1 != 0,
-      axes: EVFontVariations.decode(try decode(source.font_axes))
+      axes: EVFontVariations.decode(try decode(source.font_axes)),
+      faceName: faceName
     )
-    let baseWeight = EVFontCatalog.face(named: families.first ?? "")?.weight
+    let baseWeight = EVFontCatalog.face(in: families.first ?? "", named: faceName)?.weight
     let target =
       source.reserved & 1 != 0
       ? min(Int(baseWeight ?? UInt16(max(1, min(1000, source.weight - 300)))) + 300, 1000)
@@ -660,16 +662,17 @@ public func resolveFont(
   slant: UInt32,
   features: [(String, UInt32)],
   relativeBold: Bool = false,
-  axes: [String: Double] = [:]
+  axes: [String: Double] = [:], faceName: String = ""
 ) -> CTFont {
   // This also covers previews and clipboard fonts that do not pass through
   // the portable layout resolver. Kerning always follows the font's default.
   let features = features.filter { $0.0 != "kern" }
   let requestedIndex = families.firstIndex { !EVFontCatalog.faces(for: $0).isEmpty }
   let requested = requestedIndex.map { families[$0] } ?? CoreTextMeasurementProvider.defaultFontFamily
-  let base = EVFontCatalog.baseFont(named: requested, size: size)
+  let base = (requestedIndex == 0 ? EVFontCatalog.face(in: requested, named: faceName) : nil)
+    .flatMap { EVFontCatalog.font(for: $0, size: size) } ?? EVFontCatalog.baseFont(named: requested, size: size)
   let faces = EVFontCatalog.faces(for: requested)
-  let exactFace = EVFontCatalog.face(named: requested)
+  let exactFace = requestedIndex == 0 ? EVFontCatalog.face(in: requested, named: faceName) : nil
   let targetWidth = exactFace?.width ?? 0
   let nearestWidth = faces.map { abs($0.width - targetWidth) }.min() ?? 0
   let matchingWidth = faces.filter { abs($0.width - targetWidth) <= nearestWidth + 0.0001 }
@@ -737,7 +740,8 @@ public func resolveFont(
     descriptorAttributes[kCTFontTraitsAttribute] = combined
   }
   let cascade = families.dropFirst(requestedIndex.map { $0 + 1 } ?? families.count).compactMap { family -> CTFontDescriptor? in
-    EVFontCatalog.availableFont(named: family, size: size).map(CTFontCopyFontDescriptor)
+    EVFontCatalog.faceForFamilyChange(to: family, currentFace: nil)
+      .flatMap { EVFontCatalog.font(for: $0, size: size) }.map(CTFontCopyFontDescriptor)
   }
   if !cascade.isEmpty {
     descriptorAttributes[kCTFontCascadeListAttribute] = cascade

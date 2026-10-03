@@ -100,6 +100,9 @@ public final class EVThemeStore {
   public var currentThemeFileName: String? { configuration.selectedThemeURL?.lastPathComponent }
   public func selectTheme(named name: String?, fileName: String? = nil) throws { try configuration.selectTheme(named: name, fileName: fileName) }
   public func createTheme(named name: String) throws { try configuration.createTheme(named: name) }
+  public var currentThemeIsBundled: Bool { configuration.currentThemeIsBundled }
+  public func restoreMissingBundledThemes() throws { try configuration.restoreMissingBundledThemes() }
+  public func revertCurrentTheme() throws { try configuration.revertCurrentTheme() }
   public func deleteCurrentTheme() throws { try configuration.deleteCurrentTheme() }
 
   private func reload() {

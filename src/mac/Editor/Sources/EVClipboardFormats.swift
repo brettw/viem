@@ -26,6 +26,7 @@ struct EVClipboardFragment: Decodable {
         let start, end: Int
         let fontFamilies: [String]
         let fontAxes: [String: Double]?
+        let fontFace: String?
         let size, weight, baseWeight: Double
         let bold: Bool
         let slant: String
@@ -125,7 +126,7 @@ struct EVClipboardFragment: Decodable {
             let slant: UInt32 = run.slant == "Italic" ? UInt32(VIEM_FONT_SLANT_ITALIC)
                 : run.slant == "Oblique" ? UInt32(VIEM_FONT_SLANT_OBLIQUE) : UInt32(VIEM_FONT_SLANT_UPRIGHT)
             let font = resolveFont(families: run.fontFamilies, size: run.size, cssWeight: run.weight,
-                slant: slant, features: run.openTypeFeatures.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }, relativeBold: run.bold, axes: run.fontAxes ?? [:])
+                slant: slant, features: run.openTypeFeatures.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }, relativeBold: run.bold, axes: run.fontAxes ?? [:], faceName: run.fontFace ?? "")
             var attributes: [NSAttributedString.Key: Any] = [
                 .font: font as NSFont,
                 .foregroundColor: run.foregroundIsDefault ? EVThemeStore.shared.theme.foreground.color : run.foreground.native,

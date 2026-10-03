@@ -38,8 +38,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Normal_ExtraLight"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -68,9 +69,10 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
+            "font_axes" : {},
+            "font_face" : "Medium",
             "font_families" : [
-              "FlightlineCode-Medium"
+              "Flightline Code"
             ],
             "foreground" : null,
             "language" : null,
@@ -429,8 +431,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "ExtraLight",
             "font_families" : [
-              "FlightlineCode-Normal_ExtraLight"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -496,8 +499,9 @@
               "slnt" : 0,
               "wght" : 1000
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -558,8 +562,9 @@
               "slnt" : 0,
               "wght" : 790
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -1107,8 +1112,9 @@
               "slnt" : -10,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -1312,8 +1318,9 @@
             "font_axes" : {
               "wght" : 300
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -2513,8 +2520,9 @@
               "slnt" : 0,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,

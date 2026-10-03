@@ -141,8 +141,10 @@ internal sealed unsafe partial class CoreView
         // Ordinary editor commands (including undo) already finalize the group.
         if (status != VIEM_STATUS_INVALID_STYLE_EDIT_GROUP) Check(status, "End style change");
     }
-    public void EditStyleFont(StyleDefinition style, string[] families, FontFace? face, Dictionary<string, float>? axes = null)
+    public void EditStyleFont(StyleDefinition style, string[] families, FontFace? face, Dictionary<string, float>? axes = null, string? subfamily = null)
     {
+        string selectedFace = subfamily ?? face?.PortableStyle ?? "";
+        if (face != null && families.Length > 0) families = new[] { face.PortableFamily }.Concat(families.Skip(1)).ToArray();
         if (axes == null) { axes = FontVariations.For(face).Defaults; if (face != null && axes.ContainsKey("wght")) axes["wght"] = face.Weight; }
         if (axes.Count > 64 || axes.Any(v => v.Key.Length != 4 || v.Key.Any(c => c < 32 || c > 126) || !float.IsFinite(v.Value)))
             throw new ArgumentException("Font axis tags must be four ASCII characters with finite coordinates.", nameof(axes));
@@ -153,6 +155,8 @@ internal sealed unsafe partial class CoreView
         if (!UsesGlobalStyles) { var identity = StyleIdentity(); var token = New<ViemStyleEditGroupV1>(); Check(viem_core_view_begin_style_edit_group(Document.Handle, Id, &identity, &token), "Begin font change"); group = token; }
         try {
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, value, group);
+            var faceValue = New<ViemStyleEditValueV1>(); faceValue.kind = VIEM_STYLE_VALUE_STRING; faceValue.text = arena.Utf8(selectedFace);
+            EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE, faceValue, group);
             var axisValue = New<ViemStyleEditValueV1>(); axisValue.kind = VIEM_STYLE_VALUE_STRING; axisValue.text = arena.Utf8(FontVariations.Encode(axes));
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES, axisValue, group);
             uint weight = (uint)Math.Clamp(Math.Round(axes.GetValueOrDefault("wght", face?.Weight ?? 400)), 1, 1000);

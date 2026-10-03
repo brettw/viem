@@ -67,11 +67,61 @@ enum EVThemeFile {
 
 extension EVConfigurationStore {
   static let styleNames = ["text", "markdown", "code"]
+  private static let bundledThemeNames = ["Paper", "Midnight", "Midnight Mono", "Midnight Proportional", "Typewriter"]
 
   public var themesDirectory: URL { directory.appendingPathComponent("themes", isDirectory: true) }
   public var currentThemeName: String? { activeThemeName }
   public var selectedThemeURL: URL? { activeThemeFile }
   public var currentThemeFileName: String? { activeThemeFile?.lastPathComponent }
+
+  private var currentBundledThemeName: String? {
+    Self.bundledThemeNames.first { currentThemeFileName == $0 + ".json" }
+  }
+  public var currentThemeIsBundled: Bool { currentBundledThemeName != nil }
+
+  private func bundledThemeData(named name: String) throws -> Data? {
+    let bundled = bundleResourceURL?.appendingPathComponent("themes/\(name).json")
+    if let bundled, manager.fileExists(atPath: bundled.path) {
+      let data = try EVThemeFile.read(bundled)
+      _ = try EVThemeFile.decode(data)
+      return data
+    }
+    // Development executables and incomplete packages retain core fallbacks.
+    guard name == "Paper" || name == "Midnight" else { return nil }
+    return try EVThemeFile.encodedBuiltin(paper: name == "Paper")
+  }
+
+  /// Called only when Settings opens its Theme section, never by catalogue
+  /// queries, preference refreshes, or normal startup for an existing profile.
+  public func restoreMissingBundledThemes() throws {
+    do {
+      try manager.createDirectory(at: themesDirectory, withIntermediateDirectories: true)
+      for name in Self.bundledThemeNames {
+        let file = themesDirectory.appendingPathComponent(name + ".json")
+        guard !manager.fileExists(atPath: file.path),
+              let data = try bundledThemeData(named: name) else { continue }
+        let temporary = directory.appendingPathComponent(".theme-\(UUID().uuidString).tmp")
+        defer { try? manager.removeItem(at: temporary) }
+        try data.write(to: temporary, options: .withoutOverwriting)
+        // Publish a complete file without replacing a theme created meanwhile.
+        do { try manager.linkItem(at: temporary, to: file) }
+        catch { if manager.fileExists(atPath: file.path) { continue }; throw error }
+        if file == activeThemeFile { try applyThemeFileData(data) }
+      }
+    } catch { lastError = error.localizedDescription; throw error }
+  }
+
+  public func revertCurrentTheme() throws {
+    do {
+      guard let name = currentBundledThemeName, let file = activeThemeFile,
+            let data = try bundledThemeData(named: name) else {
+        throw Self.invalid("The selected theme has no bundled original")
+      }
+      let candidate = try EVThemeFile.decode(data)
+      try data.write(to: file, options: .atomic)
+      installTheme(candidate, name: activeThemeName, file: file, diskData: data, selectionChanged: false)
+    } catch { lastError = error.localizedDescription; throw error }
+  }
 
   public func ensureCurrentThemeExists() throws {
     if let file = activeThemeFile, !manager.fileExists(atPath: file.path) {
@@ -144,6 +194,7 @@ extension EVConfigurationStore {
   }
 
   public func deleteCurrentTheme() throws {
+    guard !currentThemeIsBundled else { throw Self.invalid("Bundled themes can be reverted, not deleted") }
     guard let file = activeThemeFile else { return }
     let candidate = try EVThemeFile.builtin()
     let data = try EVThemeFile.read(file)
@@ -189,19 +240,8 @@ extension EVConfigurationStore {
     let hadThemes = manager.fileExists(atPath: themesDirectory.path)
     try manager.createDirectory(at: themesDirectory, withIntermediateDirectories: true)
     if newProfile && !hadThemes {
-      for name in ["Paper", "Midnight", "Midnight Mono", "Midnight Proportional", "Typewriter"] {
-        let bundled = bundleResourceURL?.appendingPathComponent("themes/\(name).json")
-        let data: Data
-        if let bundled, manager.fileExists(atPath: bundled.path) {
-          data = try EVThemeFile.read(bundled)
-          _ = try EVThemeFile.decode(data)
-        } else {
-          // These packaged variants have no independent emergency fallback.
-          if name != "Paper" && name != "Midnight" { continue }
-          // Development/test executables and damaged bundles still have a
-          // complete usable default without depending on resource files.
-          data = try EVThemeFile.encodedBuiltin(paper: name == "Paper")
-        }
+      for name in Self.bundledThemeNames {
+        guard let data = try bundledThemeData(named: name) else { continue }
         try data.write(to: themesDirectory.appendingPathComponent(name + ".json"), options: .withoutOverwriting)
       }
     }

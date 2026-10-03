@@ -1734,6 +1734,9 @@ pub(super) fn apply_css(
                     character.font_families = Some(values);
                 }
             }
+            "--viem-font-face" => {
+                character.font_face = css_unescape(value).filter(|name| name.len() <= 1024 && !name.chars().any(char::is_control));
+            }
             "font-size" => {
                 if let Some(size) = length(&lower).filter(|n| *n > 0.0) {
                     character.size = Some(size.into());
@@ -2002,6 +2005,9 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
             }
         ));
     }
+    if let Some(face) = &properties.font_face {
+        declarations.push(format!("--viem-font-face: '{}'", css_string(face)));
+    }
     if let Some(axes) = &properties.font_axes {
         let settings = |values: &BTreeMap<String, f32>| {
             if values.is_empty() {
@@ -2058,6 +2064,7 @@ mod reference_tests {
     #[test]
     fn variable_axes_css_preserves_base_coordinates_and_emphasis() {
         let properties = CharacterProperties {
+            font_face: Some("Condensed Light".into()),
             font_axes: Some(BTreeMap::from([
                 ("wght".into(), 450.25),
                 ("wdth".into(), 87.5),
@@ -2073,6 +2080,7 @@ mod reference_tests {
         assert!(css.contains("'slnt' -12"));
         let mut parsed = CharacterProperties::default();
         apply_css(&css, &mut parsed, &mut BlockProperties::default());
+        assert_eq!(parsed.font_face, properties.font_face);
         assert_eq!(parsed.font_axes, properties.font_axes);
         assert_eq!(parsed.bold, properties.bold);
         assert_eq!(parsed.weight, properties.weight);

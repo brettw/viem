@@ -42,8 +42,9 @@
               "slnt" : 0,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -79,8 +80,9 @@
               "slnt" : -9,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -699,8 +701,9 @@
             "font_axes" : {
               "wght" : 250
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -763,8 +766,9 @@
               "slnt" : 0,
               "wght" : 1000
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -820,8 +824,9 @@
               "slnt" : 0,
               "wght" : 800
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -877,8 +882,9 @@
               "slnt" : 0,
               "wght" : 800
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -934,8 +940,9 @@
               "slnt" : 0,
               "wght" : 800
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -1385,8 +1392,9 @@
               "slnt" : 0,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,
@@ -1615,8 +1623,9 @@
             "font_axes" : {
               "wght" : 250
             },
+            "font_face" : "Normal",
             "font_families" : [
-              "FlightlineCode-Normal"
+              "Flightline Code"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -1652,8 +1661,9 @@
               "slnt" : -5,
               "wght" : 350
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -2826,8 +2836,9 @@
               "slnt" : 0,
               "wght" : 300
             },
+            "font_face" : "Mono Casual Light",
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "Recursive"
             ],
             "foreground" : null,
             "language" : null,

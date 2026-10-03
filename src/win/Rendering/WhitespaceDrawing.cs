@@ -15,7 +15,7 @@ namespace Viem.Windows.Rendering;
 
 internal sealed unsafe partial class DirectWriteProvider
 {
-    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}")
+    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}", string Face = "")
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
@@ -31,7 +31,7 @@ internal sealed unsafe partial class DirectWriteProvider
             var weight = (ushort)Math.Clamp(style.weight, 1, 999);
             var face = ResolvedFace(style, resolved.Family, slant, resolved.Stretch);
             return new(resolved.Family, resolved.Stretch, style.size * scale, weight, slant, style.letter_spacing * scale,
-                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family, face)));
+                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family, face)), Text(style.font_face));
         }
     }
 
@@ -62,31 +62,46 @@ internal sealed unsafe partial class DirectWriteProvider
                 var inherited = resources.TryGetValue(cluster.render_run.identifier, out var resource) ? resource.MarkerFont
                     : new MarkerFont("Segoe UI", FontStretch.Normal, Math.Max(1, row.ascent + row.descent), 400, FontStyle.Normal, 0, "", "{}");
                 string family = inherited.Family;
+                string faceName = Value("font_face")?.GetString() ?? (Value("font_families") == null ? inherited.Face : "");
                 var stretch = inherited.Stretch;
-                if (Value("font_families") is JsonElement names)
+                bool primaryFamily = true;
+                if (Value("font_families") is JsonElement names) {
+                    primaryFamily = false;
+                    int index = 0;
                     foreach (var name in names.EnumerateArray())
                     {
-                        if (FontCatalog.Resolve(name.GetString()!) is not { } resolved) continue;
-                        family = resolved.Family; stretch = resolved.Stretch; break;
+                        bool primary = index++ == 0;
+                        if (FontCatalog.Resolve(name.GetString()!, primary ? faceName : "") is not { } resolved) continue;
+                        family = resolved.Family; stretch = resolved.Stretch; primaryFamily = primary; break;
                     }
+                    if (!primaryFamily) faceName = "";
+                }
                 ushort weight = Value("weight")?.GetUInt16() ?? inherited.Weight;
                 if (Value("bold")?.GetBoolean() == true) weight = weight < 350 ? (ushort)400 : weight < 550 ? (ushort)700 : (ushort)900;
                 else if (Value("bold")?.GetBoolean() == false && weight >= 600 && Value("weight") == null) weight = 400;
                 var font = inherited with {
-                    Family = family, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
+                    Family = family, Face = faceName, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
                     Slant = Value("slant")?.GetString() switch { "Upright" => FontStyle.Normal, "Italic" => FontStyle.Italic, "Oblique" => FontStyle.Oblique, _ => inherited.Slant },
                     Spacing = Value("letter_spacing") is JsonElement spacing ? spacing.GetSingle() * viewport.scale : inherited.Spacing,
-                    Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features, Axes = Value("font_axes")?.GetRawText() ?? (Value("font_families") == null ? inherited.Axes : "{}")
+                    Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features, Axes = primaryFamily ? Value("font_axes")?.GetRawText() ?? (Value("font_families") == null ? inherited.Axes : "{}") : "{}"
                 };
                 if (!layouts.TryGetValue((font, marker.Text), out var layout))
                 {
-                    using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(font.Family, font.Weight, font.Slant, font.Stretch), FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = font.Slant, WordWrapping = CanvasWordWrapping.NoWrap,
+                    var selected = FontCatalog.Match(font.Family, font.Face);
+                    var slant = font.Slant == FontStyle.Normal ? selected?.Slant ?? font.Slant : font.Slant;
+                    var native = selected != null && selected.Slant == slant && (FontVariations.For(selected).Axes.Length != 0 || selected.Weight == font.Weight)
+                        ? selected : FontCatalog.RenderingFace(font.Family, font.Weight, slant, font.Stretch, true);
+                    using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(font.Family, font.Weight, slant, font.Stretch, native), FontStretch = font.Stretch, FontSize = font.Size, FontWeight = new FontWeight { Weight = font.Weight }, FontStyle = slant, WordWrapping = CanvasWordWrapping.NoWrap,
                         Direction = Value("direction")?.GetString() == "RightToLeft" ? CanvasTextDirection.RightToLeftThenTopToBottom : CanvasTextDirection.LeftToRightThenTopToBottom };
                     layout = new CanvasTextLayout(device, marker.Text, format, 1, 10000);
                     layouts.Add((font, marker.Text), layout);
                     layout.SetCharacterSpacing(0, marker.Text.Length, 0, font.Spacing, 0);
-                    var axes = FontVariations.Decode(font.Axes);
-                    if (axes.Count != 0) FontVariations.Apply(layout, 0, marker.Text.Length, axes, FontCatalog.Faces(font.Family).FirstOrDefault());
+                    var axes = FontCatalog.NamedCoordinates(native, font.Face);
+                    foreach (var (tag, value) in FontVariations.Decode(font.Axes)) axes[tag] = value;
+                    if (axes.Count != 0) {
+                        axes = FontVariations.Effective(FontVariations.For(native), axes, font.Weight, false, (uint)font.Slant);
+                        FontVariations.Apply(layout, 0, marker.Text.Length, axes, native);
+                    }
                     if (font.Language.Length > 0) layout.SetLocaleName(0, marker.Text.Length, font.Language);
                     layout.SetUnderline(0, marker.Text.Length, Value("underline")?.GetBoolean() == true);
                     layout.SetStrikethrough(0, marker.Text.Length, Value("strikethrough")?.GetBoolean() == true);

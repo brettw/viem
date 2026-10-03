@@ -33,14 +33,17 @@ internal sealed partial class SettingsWindow : Window
         BuildTheme(Page("Theme", "\uE790", "Make a comfortable space for writing. Changes apply to every window."));
         BuildEditing(Page("Editing", "\uE70F", "Configure typing, indentation, and whitespace."));
         categories.SelectionChanged += (_, _) => {
+            if (categories.SelectedIndex == 1 && root.IsLoaded) OpenThemeSection();
             for (int i = 0; i < sections.Count; i++) sections[i].Visibility = i == categories.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
         };
+        root.Loaded += (_, _) => { if (categories.SelectedIndex == 1) OpenThemeSection(); };
         categories.SelectedIndex = 1;
         ApplyAppearance(); preferences.Changed += ApplyAppearance;
         Closed += (_, _) => preferences.Changed -= ApplyAppearance;
         WindowSizing.Resize(this, 800, 730);
         loading = false;
     }
+    private void OpenThemeSection() => Commit(() => { preferences.RestoreMissingBundledThemes(); RefreshThemeControls(); });
     internal void SelectThemeCategory() => categories.SelectedIndex = 1;
 
     private StackPanel Page(string title, string glyph, string description)

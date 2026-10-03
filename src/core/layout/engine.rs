@@ -3468,6 +3468,7 @@ impl ShapeCacheEntry {
                 + style.language.as_ref().map_or(0, String::capacity)
                 + style.script.as_ref().map_or(0, String::capacity)
                 + style.features.capacity() * std::mem::size_of::<OpenTypeFeature>()
+                + style.font_face.capacity()
                 + style.font_axes.len() * 96
         }
         let fragment = &self.fragment;

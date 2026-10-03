@@ -999,7 +999,7 @@ fn style_runs(
                 .map_err(|_| DocumentError::UnsupportedFormatting)?
                 .character;
             characters.push(json!({"start":pair[0]-range.start,"end":pair[1]-range.start,
-                "font_families":style.font_families,"font_axes":style.font_axes,"size":style.size,"weight":style.weight,"base_weight":style.base_weight,
+                "font_families":style.font_families,"font_face":style.font_face,"font_axes":style.font_axes,"size":style.size,"weight":style.weight,"base_weight":style.base_weight,
                 "bold":style.bold,"slant":style.slant,"foreground":style.foreground,"foreground_is_default":style.foreground_is_default,
                 "background":style.background,"underline":style.underline,"strikethrough":style.strikethrough,"language":style.language,
                 "direction":style.direction,"open_type_features":style.open_type_features,"letter_spacing":style.letter_spacing}));

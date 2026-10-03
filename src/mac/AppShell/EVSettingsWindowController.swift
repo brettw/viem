@@ -20,7 +20,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private let store: EVThemeStore
   let themeActions: EVThemeActions
   private let themeSelect = NSPopUpButton()
-  private let deleteTheme = NSButton(title: "Delete Theme", target: nil, action: nil)
+  private let deleteTheme = NSButton(title: "Delete", target: nil, action: nil)
   private let viewPreferences: EVViewPreferences
   private var viewObserver: NSObjectProtocol?
   private let editingPreferences: EVEditingPreferences
@@ -89,6 +89,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
 
   override func showWindow(_ sender: Any?) {
+    if selectedCategory == 1 && window?.isVisible != true { try? store.restoreMissingBundledThemes() }
     refresh()
     if !hasPresented { window?.setContentSize(NSSize(width: 800, height: 690)) }
     super.showWindow(sender)
@@ -184,6 +185,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard sidebar.selectedRow >= 0 else { return }
     selectedCategory = sidebar.selectedRow
+    if selectedCategory == 1 && window?.isVisible == true { try? store.restoreMissingBundledThemes() }
     showCategory()
   }
 
@@ -645,6 +647,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     themeSelect.select(themeSelect.itemArray.first {
       !$0.isSeparatorItem && ($0.representedObject as? EVThemeChoice)?.fileName == store.currentThemeFileName
     })
+    deleteTheme.title = store.currentThemeIsBundled ? "Revert" : "Delete"
     deleteTheme.isEnabled = store.currentThemeName != nil
     let theme = store.theme
     let colors = [
@@ -673,7 +676,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     refresh()
   }
   @objc private func removeTheme(_ sender: Any?) {
-    themeActions.delete()
+    themeActions.revertOrDelete()
     refresh()
   }
   @objc private func changeMarkdownAutodetect(_ sender: NSButton) {

@@ -22,8 +22,11 @@ final class EVThemeActions {
     catch { NSApplication.shared.presentError(error) }
   }
 
-  func delete() {
-    do { try store.deleteCurrentTheme() }
+  func revertOrDelete() {
+    do {
+      if store.currentThemeIsBundled { try store.revertCurrentTheme() }
+      else { try store.deleteCurrentTheme() }
+    }
     catch { NSApplication.shared.presentError(error) }
   }
 }

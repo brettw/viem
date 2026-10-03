@@ -307,6 +307,7 @@ internal unsafe struct ViemResolvedTextStyleV1
     public ViemOpenTypeFeatureV1* @features;
     public ulong @feature_count;
     public ViemUtf8Slice @font_axes;
+    public ViemUtf8Slice @font_face;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1680,6 +1681,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR = 41u;
     public const uint VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND = 42u;
     public const uint VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES = 43u;
+    public const uint VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE = 44u;
     public const uint VIEM_STYLE_VALUE_NONE = 0u;
     public const uint VIEM_STYLE_VALUE_FLOAT = 1u;
     public const uint VIEM_STYLE_VALUE_UNSIGNED = 2u;

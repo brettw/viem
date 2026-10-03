@@ -329,6 +329,7 @@ impl Document {
                 language: resolved.language,
                 direction: (resolved.direction != super::super::WritingDirection::Natural)
                     .then_some(resolved.direction),
+                font_face: Some(resolved.font_face),
                 font_axes: Some(resolved.font_axes),
                 open_type_features: Some(resolved.open_type_features),
                 letter_spacing: Some(resolved.letter_spacing),
