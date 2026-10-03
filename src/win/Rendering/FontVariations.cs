@@ -23,8 +23,8 @@ internal sealed record FontVariationInfo(FontAxis[] Axes, FontInstance[] Instanc
 // registry scan, or native font resource is retained in the catalogue.
 internal static unsafe class FontVariations
 {
-    private static readonly ConcurrentDictionary<string, FontVariationInfo> cache = new(StringComparer.OrdinalIgnoreCase);
-    internal static FontVariationInfo For(FontFace? face) => face == null ? FontVariationInfo.Empty : cache.GetOrAdd(face.Name, _ => Read(face));
+    private static readonly ConcurrentDictionary<FontFace, FontVariationInfo> cache = new();
+    internal static FontVariationInfo For(FontFace? face) => face == null ? FontVariationInfo.Empty : cache.GetOrAdd(face, Read);
     internal static Dictionary<string, float> Decode(string json)
     {
         if (string.IsNullOrEmpty(json)) return [];
@@ -39,27 +39,28 @@ internal static unsafe class FontVariations
         catch (Exception e) when (e is COMException or ArgumentException or IndexOutOfRangeException or OverflowException)
         { System.Diagnostics.Debug.WriteLine($"Font variations {face.Name}: {e.Message}"); return FontVariationInfo.Empty; }
     }
+    internal static string Name(byte[] names, ushort id, string fallback)
+    {
+        string? result = null;
+        if (names.Length < 6) return fallback;
+        static ushort U16(byte[] b, int i) => BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(i, 2));
+        int count = U16(names, 2), strings = U16(names, 4);
+        for (int i = 0; i < count; i++) {
+            int p = 6 + i * 12;
+            if (p + 12 > names.Length) break;
+            int platform = U16(names, p), language = U16(names, p + 4), length = U16(names, p + 8), offset = strings + U16(names, p + 10);
+            if (U16(names, p + 6) != id || offset + length > names.Length || platform is not (0 or 3)) continue;
+            string value = Encoding.BigEndianUnicode.GetString(names, offset, length);
+            result ??= value;
+            if (language == 0x409) return value;
+        }
+        return result ?? fallback;
+    }
     internal static FontVariationInfo Parse(byte[] fvar, byte[] names, byte[] stat)
     {
         if (fvar.Length < 16) return FontVariationInfo.Empty;
         static ushort U16(byte[] b, int i) => BinaryPrimitives.ReadUInt16BigEndian(b.AsSpan(i, 2));
         static float Fixed(byte[] b, int i) => BinaryPrimitives.ReadInt32BigEndian(b.AsSpan(i, 4)) / 65536f;
-        string Name(ushort id, string fallback)
-        {
-            string? result = null;
-            if (names.Length < 6) return fallback;
-            int count = U16(names, 2), strings = U16(names, 4);
-            for (int i = 0; i < count; i++) {
-                int p = 6 + i * 12;
-                if (p + 12 > names.Length) break;
-                int platform = U16(names, p), language = U16(names, p + 4), length = U16(names, p + 8), offset = strings + U16(names, p + 10);
-                if (U16(names, p + 6) != id || offset + length > names.Length || platform is not (0 or 3)) continue;
-                string value = Encoding.BigEndianUnicode.GetString(names, offset, length);
-                result ??= value;
-                if (language == 0x409) return value;
-            }
-            return result ?? fallback;
-        }
         int axisOffset = U16(fvar, 4), axisCount = U16(fvar, 8), axisSize = U16(fvar, 10), instanceCount = U16(fvar, 12), instanceSize = U16(fvar, 14);
         if (axisCount > 64 || axisSize < 20 || axisOffset + axisCount * axisSize > fvar.Length || (instanceCount > 0 && instanceSize < 4 + axisCount * 4) || instanceCount > 4096) return FontVariationInfo.Empty;
         var axes = new List<FontAxis>();
@@ -68,7 +69,7 @@ internal static unsafe class FontVariations
             string tag = Encoding.ASCII.GetString(fvar, p, 4);
             float min = Fixed(fvar, p + 4), def = Fixed(fvar, p + 8), max = Fixed(fvar, p + 12);
             if (min > def || def > max || axes.Any(a => a.Tag == tag)) return FontVariationInfo.Empty;
-            axes.Add(new(tag, Name(U16(fvar, p + 18), tag), min, def, max, (U16(fvar, p + 16) & 1) != 0));
+            axes.Add(new(tag, Name(names, U16(fvar, p + 18), tag), min, def, max, (U16(fvar, p + 16) & 1) != 0));
         }
         var instances = new List<FontInstance> { new("Default", axes.ToDictionary(a => a.Tag, a => a.Default)) };
         for (int i = 0; i < instanceCount; i++) {
@@ -76,7 +77,7 @@ internal static unsafe class FontVariations
             if (p + instanceSize > fvar.Length) break;
             var values = axes.Select((a, j) => (a.Tag, Value: Fixed(fvar, p + 4 + j * 4))).ToDictionary(a => a.Tag, a => a.Value);
             if (axes.Any(a => values[a.Tag] < a.Minimum || values[a.Tag] > a.Maximum)) continue;
-            instances.Add(new(Name(U16(fvar, p), $"Instance {i + 1}"), values));
+            instances.Add(new(Name(names, U16(fvar, p), $"Instance {i + 1}"), values));
         }
         var links = new Dictionary<string, List<FontStyleLink>>();
         if (stat.Length >= 18) {
