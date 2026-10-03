@@ -223,8 +223,10 @@ Table cell navigation takes precedence over enclosing-list Tab indentation.
 Literal-next input keeps its existing precedence and representability rules.
 Source has no table-specific Enter or Tab rewrite. Preserve its existing source
 editing, indentation, and list-continuation rules, including structural
-Tab/Shift-Tab for a table inside a list owner. Source edits may intentionally
-invalidate the table grammar. Normal/Visual Vim
+Tab/Shift-Tab for a table inside a list owner. Enter at a completed quote prefix
+creates one empty quoted line before the retained body, just as for prose; at
+the header prefix, the following quoted table remains intact. Source edits may
+intentionally invalidate the table grammar. Normal/Visual Vim
 commands retain their declared line, count, register, and operator semantics.
 Do not silently repurpose `dd`, `o`, or `O` as row-widget commands. A complete
 table/row structural deletion must be distinguished from clearing cell content

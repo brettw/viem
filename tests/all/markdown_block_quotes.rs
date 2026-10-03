@@ -11,6 +11,26 @@ fn document(source: &str, format: Format) -> Document {
 }
 
 #[test]
+fn source_enter_after_quote_prefix_in_adjacent_prose_and_table_blocks() {
+    let source = "> foo\n>\n> bar\n\n> | foo | bar |\n> |---|---|\n> |a|b";
+    for target in ["> foo", "> | foo"] {
+        let mut core = Core::new(document(source, Format::MarkdownSource));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+        let at = core.document().text().find(target).unwrap() + 1;
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        let expected = source.replacen(target, &format!(">\n{target}"), 1);
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        assert_eq!(core.command_state(view).unwrap().cursor(), at + 2);
+        assert_eq!(core.document().text(), document(&expected, Format::MarkdownSource).text());
+    }
+}
+
+#[test]
 fn quote_containers_project_bodies_and_keep_original_bytes() {
     for (source, expected, styles) in [
         ("> first\n> second", "first second", vec!["Paragraph"]),
@@ -181,6 +201,55 @@ fn enter_continues_a_quoted_prose_paragraph_with_exact_history() {
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
             .unwrap();
         assert_eq!(core.document().source_bytes(), saved);
+    }
+}
+
+#[test]
+fn source_enter_after_quote_prefix_splits_prose_and_tables_identically() {
+    for source in [
+        "> foo\n> bar",
+        "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7 |",
+        "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7",
+        include_str!("../../docs/markdown_demo.md"),
+    ] {
+        for ending in ["\n", "\r\n"] {
+            for after_space in [false, true] {
+                let source = source.replace('\n', ending);
+                let mut core = Core::new(document(&source, Format::MarkdownSource));
+                let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+                let table = source.contains("> | Quoted item");
+                let first_line = if table { "> | Quoted item" } else { "> foo" };
+                let start = core.document().text().find(first_line).unwrap();
+                let at = start + if after_space { 2 } else { 1 };
+                core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+                core.handle(view, CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(), text_offset: at,
+                    affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false,
+                }).unwrap();
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+                let empty = if after_space { "> " } else { ">" };
+                let expected = source.replace(first_line, &format!("{empty}{ending}{first_line}"));
+                let saved = core.document().source_bytes();
+                assert_eq!(saved, expected.as_bytes());
+                assert_eq!(core.command_state(view).unwrap().cursor(), at + 1 + empty.len());
+                let fresh = document(&expected, Format::MarkdownSource);
+                assert_eq!(core.document().text(), fresh.text());
+                assert!(core.document().text()[start..].starts_with(&format!("{empty}\n{first_line}")));
+                let wysiwyg = document(&expected, Format::Markdown);
+                let body = wysiwyg.text().find(if table { "Quoted item" } else { "foo" }).unwrap();
+                assert_eq!(wysiwyg.projection().blocks().iter().find(|block| block.range.contains(&body)).unwrap().quote_depth, 1);
+                if table {
+                    let table = wysiwyg.projection().table_at(body).unwrap();
+                    assert_eq!((table.rows.len(), table.columns.len()), (2, 2));
+                    assert_eq!(&wysiwyg.text()[table.rows[1].cells[1].range.clone()], "7");
+                }
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+                core.handle(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+                assert_eq!(core.document().source_bytes(), saved);
+            }
+        }
     }
 }
 
