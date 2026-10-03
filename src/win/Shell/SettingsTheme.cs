@@ -28,7 +28,7 @@ internal sealed partial class SettingsWindow
         themePicker.SelectionChanged += (_, _) => { if (!loading) { Commit(() => { if (themePicker.SelectedItem is Preferences.ThemeFile file) preferences.SelectTheme(file.Name, file.Path); else preferences.SelectTheme(null); }); RefreshThemeControls(); } };
         themePicker.DropDownOpened += (_, _) => Commit(RefreshThemeControls);
         newTheme.Click += async (_, _) => { try { await ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
-        deleteTheme.Click += async (_, _) => { try { await ThemeDialogs.Delete(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
+        deleteTheme.Click += async (_, _) => { try { await ThemeDialogs.RevertOrDelete(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
         var preview = new StackPanel { Spacing = 12, Padding = new(18, 16, 18, 16) };
         var title = Row(preview); title.Spacing = 0; title.Children.Add(previewTitle); title.Children.Add(caretPaint);
         selectionPaint.Child = previewSelection; selectionPaint.HorizontalAlignment = HorizontalAlignment.Left; preview.Children.Add(selectionPaint);
@@ -86,6 +86,7 @@ internal sealed partial class SettingsWindow
             var entries = preferences.ThemeFiles;
             themePicker.ItemsSource = entries.Cast<object>().Append("Default").ToArray();
             themePicker.SelectedItem = entries.FirstOrDefault(file => file.Path == preferences.SelectedThemePath) as object ?? "Default";
+            deleteTheme.Content = preferences.SelectedThemeIsBundled ? "Revert" : "Delete";
             deleteTheme.IsEnabled = preferences.SelectedTheme != null;
             var theme = preferences.Theme;
             colors["foreground"].Color = theme.Foreground; colors["background"].Color = theme.Background;

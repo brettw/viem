@@ -27,7 +27,7 @@ internal static class StyleAndSettingsTests
             "empty editor starts without loading font picker lists or enumerating font faces");
         Check(FontCatalog.Resolve("system-ui")?.Family == "Segoe UI" && FontCatalog.Resolve("Segoe UI")?.Family == "Segoe UI",
             "Windows default and generic system fonts resolve to Segoe UI");
-        Check(FontCatalog.Resolve("viem-missing-startup-font") == null && FontCatalog.Named("viem-missing-startup-font") == null
+        Check(FontCatalog.Resolve("viem-missing-startup-font") == null
             && FontCatalog.FaceDescriptionsRead == 0 && !FontCatalog.FamilyListLoaded,
             "missing document fonts do not trigger a system-wide face scan");
     }
@@ -260,10 +260,15 @@ internal static class StyleAndSettingsTests
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper"); await Task.Delay(100);
             Check(settings.Error.Length == 0 && preferences.SelectedTheme == "Paper" && preferences.SelectedThemePath == paperPath
                 && preferences.Theme.Background == Theme.Paper.Background, "Paper selection commits the named aggregate theme");
+            Check(settings.DeleteTheme.Content as string == "Revert", "bundled themes offer Revert in Settings");
+            settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Path == discoveredThemePath);
+            Check(settings.DeleteTheme.Content as string == "Delete", "user themes offer Delete in Settings");
+            settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper");
             settings.StatusFont.SelectedItem = "Consolas"; settings.StatusSize.Value = 14; await Task.Delay(100);
             Check(preferences.StatusFontFamily == "Consolas" && preferences.StatusFontSize == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
             settings.ThemePicker.SelectedItem = "Default"; await Task.Delay(100);
+            Check(!settings.DeleteTheme.IsEnabled, "Default has no Revert or Delete action");
             Check(StyleDefaultsLoadingTests.MatchesBuiltInTheme(preferences)
                 && settings.StatusSize.Value == preferences.StatusFontSize, "Default selection restores built-in colors and status typography");
             for (int index = 0; index < 3; index++) {
@@ -297,11 +302,12 @@ internal static class StyleAndSettingsTests
         int descriptions = FontCatalog.FaceDescriptionsRead;
         Check(FontCatalog.Faces("segoe ui").SequenceEqual(faces) && FontCatalog.FaceDescriptionsRead == descriptions,
             "repeated family variant requests reuse cached discovery");
-        Check(FontCatalog.Named(face.Name) == face, "indexed PostScript lookup retains exact face metadata");
+        Check(FontCatalog.Match(face.PortableFamily, face.PortableStyle) == face, "portable family and subfamily lookup retains exact face metadata");
         descriptions = FontCatalog.FaceDescriptionsRead;
-        Check(FontCatalog.Named(face.Name.ToLowerInvariant()) == face && FontCatalog.FaceDescriptionsRead == descriptions,
-            "repeated PostScript requests reuse cached discovery case-insensitively");
-        Check(FontCatalog.Current(face.Name, face.Weight, 1) == face && FontCatalog.Current(face.Name, 617, 1) == null, "font variants match effective traits and leave unknown combinations unresolved");
+        Check(FontCatalog.Match(face.PortableFamily.ToLowerInvariant(), face.PortableStyle.ToLowerInvariant()) == face && FontCatalog.FaceDescriptionsRead == descriptions,
+            "repeated family and subfamily requests reuse cached discovery case-insensitively");
+        Check(FontCatalog.Current(face.PortableFamily, face.Weight, 1) == face && FontCatalog.Current(face.PortableFamily, 617, 1) == null, "font variants match effective traits and leave unknown combinations unresolved");
+        Check(FontCatalog.Resolve(face.Name) == null, "a PostScript face name is not interpreted as a saved family");
         Check(FontCatalog.ForFamilyChange("Consolas", face)?.StyleName == face.StyleName, "family changes preserve a matching variant name");
         Check(FontCatalog.Faces("system-ui").Length > 1 && FontCatalog.Faces("viem-missing-font").Length == 0, "font variants resolve generic families without substituting unknown fonts");
         Check(FontCatalog.Faces("ui-monospace").Length > 1, "the portable monospace token also resolves real font variants");
@@ -318,9 +324,10 @@ internal static class StyleAndSettingsTests
         view.SelectAll(); view.AssignStyle(2, id);
         byte[] before = doc.Source(doc.State.document_revision);
         var prior = view.Layout(); long shaped = view.Provider.ShapedCharacters;
-        view.EditStyleFont(style, [face.Name, "serif"], face);
+        view.EditStyleFont(style, [face.PortableFamily, "serif"], face);
         var sheet = view.Styles(); style = sheet.Styles.Single(s => s.Id == id);
-        Check(sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { face.Name, "serif" })
+        Check(sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { face.PortableFamily, "serif" })
+            && sheet.String(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)) == face.PortableStyle
             && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 700 && !style.Declares(VIEM_STYLE_PROPERTY_CHARACTER_SLANT), "font variant persists exact face and base weight without declaring semantic Italic");
         var changed = view.Layout();
         Check(!CoreView.SameLayout(prior.Info.identity, changed.Info.identity) && view.Provider.ShapedCharacters > shaped
@@ -404,7 +411,7 @@ internal static class StyleAndSettingsTests
                 Check(face.Source is { IsFile: true } && File.Exists(face.Source.LocalPath), $"{face.Name} resolves to a bundled file");
                 string rendering = FontCatalog.RenderingFamily(face.Family, face.Weight, face.Slant, face.Stretch);
                 Check(rendering == face.Source!.AbsoluteUri + "#" + face.Family, $"{face.Name} selects its bundled variant file");
-                view.EditStyleFont(style, [face.Name, "serif"], face);
+                view.EditStyleFont(style, [face.PortableFamily, "serif"], face);
                 style = view.Styles().Styles.Single(s => s.Id == "Code");
                 var layout = view.Layout();
                 Check(layout.Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(face.Name),

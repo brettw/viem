@@ -124,7 +124,8 @@ private extension EVVisibleWhitespaceStyle {
         }
         if value == nil {
             switch property {
-            case .characterFontFamilies: fontFamilies = nil; fontAxes = nil; weight = nil
+            case .characterFontFamilies: fontFamilies = nil; fontFace = nil; fontAxes = nil; weight = nil
+            case .characterFontFace: fontFace = nil
             case .characterFontAxes: fontAxes = nil
             case .characterSize: size = nil
             case .characterWeight: weight = nil
@@ -144,6 +145,7 @@ private extension EVVisibleWhitespaceStyle {
         }
         switch (property, value!) {
         case let (.characterFontFamilies, .stringList(v)): fontFamilies = v
+        case let (.characterFontFace, .string(v)): fontFace = v
         case let (.characterFontAxes, .string(v)): fontAxes = EVFontVariations.decode(v)
         case let (.characterSize, .float(v)): size = v
         case let (.characterWeight, .unsigned(v)) where v <= UInt16.max: weight = UInt16(v)
@@ -168,6 +170,7 @@ private extension EVVisibleWhitespaceStyle {
         let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Visible whitespace"))
         var declared: [EVStyleProperty: EVStyleValue] = [:]
         declared[.characterFontFamilies] = fontFamilies.map(EVStyleValue.stringList)
+        declared[.characterFontFace] = fontFace.map(EVStyleValue.string)
         declared[.characterFontAxes] = fontAxes.map { .string(EVFontVariations.encode($0)) }
         declared[.characterSize] = size.map(EVStyleValue.float)
         declared[.characterWeight] = weight.map { .unsigned(UInt32($0)) }

@@ -27,6 +27,50 @@ internal sealed partial class Preferences
             .Select(path => new ThemeFile(System.IO.Path.GetFileName(path).EndsWith(".json", StringComparison.OrdinalIgnoreCase) ? System.IO.Path.GetFileName(path)[..^5] : System.IO.Path.GetFileName(path), path))
             .OrderBy(file => file.Name, StringComparer.OrdinalIgnoreCase).ThenBy(file => file.Name, StringComparer.Ordinal).ThenBy(file => file.Path, StringComparer.Ordinal).ToArray()
         : [];
+    private static readonly string[] bundledThemeNames = ["Paper", "Midnight", "Midnight Mono", "Midnight Proportional", "Typewriter"];
+    private string? CurrentBundledThemeName => bundledThemeNames.FirstOrDefault(name =>
+        SelectedThemePath != null && System.IO.Path.GetFileName(SelectedThemePath) == name + ".json");
+    public bool SelectedThemeIsBundled => CurrentBundledThemeName != null;
+    private static byte[]? BundledThemeData(string name)
+    {
+        string bundled = Path.Combine(AppContext.BaseDirectory, "Resources", "themes", name + ".json");
+        byte[] bytes;
+        if (File.Exists(bundled)) {
+            if (new FileInfo(bundled).Length > 20 * 1024 * 1024) throw new InvalidDataException("Theme is larger than 20 MiB.");
+            bytes = File.ReadAllBytes(bundled);
+        }
+        else if (name is "Paper" or "Midnight") bytes = CoreThemes.Defaults(name == "Paper" ? VIEM_THEME_PRESET_PAPER : VIEM_THEME_PRESET_MIDNIGHT);
+        else return null;
+        CoreThemes.Validate(bytes);
+        return bytes;
+    }
+    // Only the Theme settings section calls this. Startup and catalogue queries
+    // leave an existing profile's files alone.
+    public void RestoreMissingBundledThemes()
+    {
+        if (!writable) throw new InvalidOperationException("The profile is not writable.");
+        Directory.CreateDirectory(ThemesDirectory);
+        foreach (string name in bundledThemeNames) {
+            string path = ThemePath(name);
+            if (File.Exists(path) || Directory.Exists(path)) continue;
+            if (BundledThemeData(name) is not { } bytes) continue;
+            string temporary = Path.Combine(DirectoryPath, ".theme-" + Guid.NewGuid().ToString("N") + ".tmp");
+            try {
+                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { output.Write(bytes); output.Flush(true); }
+                try { File.Move(temporary, path); }
+                catch (IOException) when (File.Exists(path)) { continue; }
+                if (SelectedThemePath == path) PublishTheme(JsonNode.Parse(bytes)!.AsObject(), SelectedTheme, () => { }, path);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        }
+    }
+    public void RevertTheme()
+    {
+        string name = CurrentBundledThemeName ?? throw new InvalidOperationException("The selected theme has no bundled original.");
+        byte[] bytes = BundledThemeData(name) ?? throw new FileNotFoundException("The bundled theme is unavailable.");
+        string path = SelectedThemePath!;
+        PublishTheme(JsonNode.Parse(bytes)!.AsObject(), SelectedTheme, () => AtomicWrite(path, bytes), path);
+    }
     public string[] ThemeNames => ThemeFiles.Select(file => file.Name).ToArray();
     private ThemeFile FindTheme(string name) => ThemeFiles.FirstOrDefault(file => file.Name == name)
         ?? ThemeFiles.FirstOrDefault(file => string.Equals(file.Name, name, StringComparison.OrdinalIgnoreCase))
@@ -46,14 +90,8 @@ internal sealed partial class Preferences
             bool fresh = !hadConfiguration && ThemeNames.Length == 0;
             if (fresh && writable)
             {
-                foreach (string name in new[] { "Paper", "Midnight", "Midnight Mono", "Midnight Proportional", "Typewriter" })
-                {
-                    string bundled = Path.Combine(AppContext.BaseDirectory, "Resources", "themes", name + ".json");
-                    // These packaged variants have no independent emergency fallback.
-                    if ((name != "Paper" && name != "Midnight") && !File.Exists(bundled)) continue;
-                    byte[] bytes = File.Exists(bundled) ? File.ReadAllBytes(bundled) : CoreThemes.Defaults(name == "Paper" ? VIEM_THEME_PRESET_PAPER : VIEM_THEME_PRESET_MIDNIGHT);
-                    CoreThemes.Validate(bytes); AtomicWrite(ThemePath(name), bytes);
-                }
+                foreach (string name in bundledThemeNames)
+                    if (BundledThemeData(name) is { } bytes) AtomicWrite(ThemePath(name), bytes);
                 Update(candidate => SetThemeSelection(candidate, "Midnight", ThemePath("Midnight")), notify: false);
             }
             if (root["selectedTheme"] is JsonValue selection)
@@ -192,6 +230,7 @@ internal sealed partial class Preferences
     }
     public void DeleteTheme()
     {
+        if (SelectedThemeIsBundled) throw new InvalidOperationException("Bundled themes can be reverted, not deleted.");
         if (EnsureCurrentThemeExists()) return;
         if (SelectedTheme == null) throw new InvalidOperationException("Default is not a saved theme.");
         string path = SelectedThemePath!;

@@ -75,17 +75,16 @@ public enum EVFontCatalog {
     cache.lock.unlock()
     EVFontVariations.invalidate()
   }
-  public static func faces(for familyOrPostScriptName: String) -> [EVFontFace] {
-    if legacyFlightlineDesign(familyOrPostScriptName) != nil { return faces(for: "Flightline Code") }
+  public static func faces(for family: String) -> [EVFontFace] {
     cache.lock.lock()
     let generation = cache.generation
-    let cached = cache.faces[familyOrPostScriptName]
+    let cached = cache.faces[family]
     cache.lock.unlock()
     if let cached { return cached }
-    let result = discoverFaces(for: familyOrPostScriptName)
+    let result = discoverFaces(for: family)
     cache.lock.lock()
     if generation == cache.generation {
-      cache.faces[familyOrPostScriptName] = result.faces
+      cache.faces[family] = result.faces
       cache.descriptors.merge(result.descriptors) { _, new in new }
     }
     cache.lock.unlock()
@@ -106,22 +105,11 @@ public enum EVFontCatalog {
 
   private static func discoverFaces(for requested: String) -> Discovery {
     let system = systemFont(named: requested, size: 14)
-    var family = system.map { CTFontCopyFamilyName($0) as String } ?? requested
+    let family = system.map { CTFontCopyFamilyName($0) as String } ?? requested
     var descriptors = matchingDescriptors(kCTFontFamilyNameAttribute, family)
-    if descriptors.isEmpty {
-      // Matching by name can return substitutes too. Accept only an exact
-      // installed face before asking for its family; unknown names stay empty.
-      guard let descriptor = matchingDescriptors(kCTFontNameAttribute, requested).first(where: {
-        sameName(CTFontCopyPostScriptName(CTFontCreateWithFontDescriptor($0, 14, nil)) as String, requested)
-      }) else { return Discovery() }
-      let font = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
-      family = CTFontCopyFamilyName(font) as String
-      descriptors = matchingDescriptors(kCTFontFamilyNameAttribute, family)
-      if descriptors.isEmpty { descriptors = [descriptor] }
-    }
     // Earlier static Flightline releases can still be installed by the user.
-    // Use the variable designs when available, including for legacy saved
-    // names, so those copies cannot hide the bundled axes or duplicate faces.
+    // Use the variable designs when available so installed static copies
+    // cannot hide the bundled axes or duplicate faces.
     if sameName(family, "Flightline Code") {
       let designs = descriptors.map { descriptor in
         let font = CTFontCreateWithFontDescriptor(descriptor, 14, nil)
@@ -150,9 +138,6 @@ public enum EVFontCatalog {
         italic: CTFontGetSymbolicTraits(candidate).contains(.traitItalic),
         width: (CTFontCopyTraits(candidate) as NSDictionary)[kCTFontWidthTrait] as? Double ?? 0))
     }
-    if requested.hasPrefix(".SFNS-"), !result.faces.contains(where: { sameName($0.postScriptName, requested) }) {
-      return Discovery()
-    }
     result.faces.sort {
       if $0.weight != $1.weight { return $0.weight < $1.weight }
       if $0.italic != $1.italic { return !$0.italic }
@@ -163,45 +148,35 @@ public enum EVFontCatalog {
     return result
   }
 
+  /// Match the portable subfamily within its family; never borrow a face from a fallback.
+  public static func face(in family: String, named style: String) -> EVFontFace? {
+    guard !style.isEmpty else { return nil }
+    return faces(for: family).first { sameName($0.styleName, style) }
+  }
+
+  /// Exact native lookup for font tables and descriptors, not stylesheet families.
   public static func face(named name: String) -> EVFontFace? {
-    if let design = legacyFlightlineDesign(name) {
-      return faces(for: "Flightline Code").filter { $0.italic == design.italic }
-        .min { abs(Int($0.weight) - design.weight) < abs(Int($1.weight) - design.weight) }
+    // Core Text's private system faces can only be rediscovered through the
+    // system-font descriptors after a catalogue generation change.
+    if name.hasPrefix(".SFNS") {
+      let family = name.hasPrefix(".SFNSMono") ? systemMonospaceFamily : systemDefaultFamily
+      return faces(for: family).first { sameName($0.postScriptName, name) }
     }
-    return faces(for: name).first { sameName($0.postScriptName, name) }
+    cache.lock.lock()
+    let cached = cache.descriptors[name]
+    cache.lock.unlock()
+    guard let descriptor = cached ?? matchingDescriptors(kCTFontNameAttribute, name).first(where: {
+      sameName(CTFontCopyPostScriptName(CTFontCreateWithFontDescriptor($0, 14, nil)) as String, name)
+    }) else { return nil }
+    let family = CTFontCopyFamilyName(CTFontCreateWithFontDescriptor(descriptor, 14, nil)) as String
+    return faces(for: family).first { sameName($0.postScriptName, name) }
   }
 
-  // Earlier releases stored the static PostScript names. Keep those requests
-  // usable after replacing the files; the saved base weight remains authoritative.
-  private static func legacyFlightlineDesign(_ name: String) -> (weight: Int, italic: Bool)? {
-    switch name.lowercased() {
-    case "flightlinecode-thin": return (100, false)
-    case "flightlinecode-thinitalic": return (100, true)
-    case "flightlinecode-extralight": return (200, false)
-    case "flightlinecode-extltita": return (200, true)
-    case "flightlinecode-light": return (300, false)
-    case "flightlinecode-lightitalic": return (300, true)
-    case "flightlinecode-regular": return (400, false)
-    case "flightlinecode-italic": return (400, true)
-    case "flightlinecode-medium": return (500, false)
-    case "flightlinecode-mediumitalic": return (500, true)
-    case "flightlinecode-bold": return (700, false)
-    case "flightlinecode-bolditalic": return (700, true)
-    default: return nil
-    }
+  public static func faceForFamilyChange(to family: String, currentFace: EVFontFace?) -> EVFontFace? {
+    preferredFace(currentFace: currentFace, faces: faces(for: family))
   }
 
-  public static func faceForFamilyChange(to familyOrFace: String, currentFace: EVFontFace?) -> EVFontFace? {
-    faceForFamilyChange(to: familyOrFace, currentFace: currentFace, faces: faces(for: familyOrFace))
-  }
-
-  static func faceForFamilyChange(to requested: String, currentFace: EVFontFace?, faces: [EVFontFace]) -> EVFontFace? {
-    if legacyFlightlineDesign(requested) != nil { return face(named: requested) }
-    // Some Regular PostScript names equal their family (e.g. Helvetica). The
-    // family picker treats those as a family; the face picker retains exact IDs.
-    if let explicit = faces.first(where: { sameName($0.postScriptName, requested) && !sameName($0.familyName, requested) }) {
-      return explicit
-    }
+  static func preferredFace(currentFace: EVFontFace?, faces: [EVFontFace]) -> EVFontFace? {
     if let currentFace, let corresponding = faces.first(where: { sameName($0.styleName, currentFace.styleName) }) {
       return corresponding
     }
@@ -246,14 +221,12 @@ public enum EVFontCatalog {
     (systemMonospaceFamily, "System Monospace"),
   ]
 
-  /// Friendly presentation only; selected PostScript identities remain exact
-  /// in document requests and in the face catalog.
-  public static func displayFamilyName(for familyOrFace: String) -> String {
-    if let label = systemFamilyLabels.first(where: { sameName($0.family, familyOrFace) })?.label {
+  /// Friendly presentation of portable and native family names.
+  public static func displayFamilyName(for family: String) -> String {
+    if let label = systemFamilyLabels.first(where: { sameName($0.family, family) })?.label {
       return label
     }
-    let family = face(named: familyOrFace)?.familyName ?? familyOrFace
-    if familyOrFace.hasPrefix(".SFNS") || family.hasPrefix(".AppleSystemUIFont")
+    if family.hasPrefix(".AppleSystemUIFont")
       || ["system-ui", "sf pro", "-apple-system"].contains(family.lowercased())
     {
       return "SF Pro"
@@ -272,8 +245,9 @@ public enum EVFontCatalog {
     return faces.map(\.weight).filter { Int($0) >= target }.min() ?? UInt16(target)
   }
 
-  public static func features(for familyOrFace: String) -> [EVOpenTypeFeature] {
-    guard let font = availableFont(named: familyOrFace, size: 14) else { return [] }
+  public static func features(for family: String) -> [EVOpenTypeFeature] {
+    guard let face = faceForFamilyChange(to: family, currentFace: nil),
+      let font = font(for: face, size: 14) else { return [] }
     var tags = Set<String>()
     for table in [CTFontTableTag(0x4753_5542), CTFontTableTag(0x4750_4F53)] {
       guard let data = CTFontCopyTable(font, table, []) as Data? else { continue }
@@ -312,7 +286,7 @@ public enum EVFontCatalog {
   static func availableFont(named name: String, size: CGFloat) -> CTFont? {
     let available = faces(for: name)
     let face = face(named: name)
-      ?? faceForFamilyChange(to: name, currentFace: nil, faces: available)
+      ?? preferredFace(currentFace: nil, faces: available)
     return face.flatMap { font(for: $0, size: size) }
   }
 
@@ -321,7 +295,7 @@ public enum EVFontCatalog {
       return NSFont.monospacedSystemFont(ofSize: size, weight: .regular) as CTFont
     }
     if ["system-ui", "sf pro", "-apple-system"].contains(name.lowercased())
-      || (name.hasPrefix(".SFNS") && !name.hasPrefix(".SFNSMono"))
+      || sameName(name, ".AppleSystemUIFont")
     {
       return CTFontCreateUIFontForLanguage(.system, size, nil)
         ?? CTFontCreateWithName("Helvetica" as CFString, size, nil)

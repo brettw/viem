@@ -152,6 +152,7 @@ internal static class ClipboardFormats
             var css = new StringBuilder();
             string family = string.Join(",", run.GetProperty("font_families").EnumerateArray().Select(v => CssString(v.GetString()!)));
             if (family.Length > 0) css.Append("font-family:").Append(family).Append(';');
+            if (run.TryGetProperty("font_face", out var face)) css.Append("--viem-font-face:").Append(CssString(face.GetString() ?? "")).Append(';');
             css.Append("font-size:").Append(run.GetProperty("size").GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)).Append("pt;");
             css.Append("font-weight:").Append(run.GetProperty("weight").GetDouble().ToString(System.Globalization.CultureInfo.InvariantCulture)).Append(';');
             if (run.GetProperty("slant").GetString() != "Upright") css.Append("font-style:italic;");
@@ -166,7 +167,8 @@ internal static class ClipboardFormats
             if (run.TryGetProperty("font_axes", out var axes) && axes.EnumerateObject().Any()) {
                 var saved = FontVariations.Decode(axes.GetRawText());
                 string primary = run.GetProperty("font_families").EnumerateArray().FirstOrDefault().GetString() ?? "";
-                var info = FontVariations.For(FontCatalog.Named(primary) ?? FontCatalog.Faces(primary).FirstOrDefault());
+                string subfamily = face.ValueKind == JsonValueKind.String ? face.GetString() ?? "" : "";
+                var info = FontVariations.For(FontCatalog.Match(primary, subfamily) ?? FontCatalog.Faces(primary).FirstOrDefault());
                 var rendered = FontVariations.Effective(info, saved, (float)run.GetProperty("weight").GetDouble(), run.GetProperty("bold").GetBoolean(), run.GetProperty("slant").GetString() == "Upright" ? 0u : 1u);
                 if (rendered.Count == 0) rendered = saved;
                 css.Append("font-variation-settings:").Append(string.Join(",", rendered.Select(p => CssString(p.Key) + " " + p.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)))).Append(';');

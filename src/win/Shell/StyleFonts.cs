@@ -29,7 +29,7 @@ internal sealed partial class StyleWindow
     private string[]? listedFamilies;
     private FontFace[]? listedFaces;
     private FontVariationInfo? listedVariations;
-    private FontFace? CurrentFace => FontCatalog.Named(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES))) ?? FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
+    private FontFace? CurrentFace => FontCatalog.Match(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE))) ?? FontCatalog.Current(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)),
         selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
     private void BuildFontRow()
     {
@@ -93,12 +93,14 @@ internal sealed partial class StyleWindow
     private Dictionary<string, float> CurrentAxisValues => FontVariations.Decode(sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES)));
     private Dictionary<string, float> BaseAxisValues(FontVariationInfo info)
     {
-        var values = FontVariations.Effective(info, CurrentAxisValues,
+        var saved = FontCatalog.NamedCoordinates(CurrentFace, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
+        foreach (var (tag, value) in CurrentAxisValues) saved[tag] = value;
+        var values = FontVariations.Effective(info, saved,
             selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value, false, 0);
         foreach (var (tag, value) in CurrentAxisValues) values[tag] = value;
         return values;
     }
-    private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values);
+    private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
     private void RefreshAxisControls(FontVariationInfo info)
     {
         string identity = CurrentFace?.Name ?? "";
@@ -154,7 +156,7 @@ internal sealed partial class StyleWindow
         else view.EditStyleFont(selected, ReplacePrimary(value), null);
     }
     private string[] ReplacePrimary(string value) => new[] { value }.Concat(sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).Skip(1)).ToArray();
-    private void SetFace(FontFace face) => view.EditStyleFont(selected, ReplacePrimary(face.Name), face);
+    private void SetFace(FontFace face) => view.EditStyleFont(selected, ReplacePrimary(face.PortableFamily), face);
 #if DEBUG
     internal ComboBox FontFamilyControl => fontFamily;
     internal ComboBox FontVariantControl => fontVariant;

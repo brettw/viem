@@ -18,12 +18,16 @@ internal static class ThemeDialogs
         };
         await dialog.ShowAsync();
     }
-    public static async Task Delete(Preferences preferences, XamlRoot root, ElementTheme appearance)
+    public static async Task RevertOrDelete(Preferences preferences, XamlRoot root, ElementTheme appearance)
     {
         if (preferences.SelectedTheme == null) return;
         string name = preferences.SelectedTheme;
-        var dialog = new ContentDialog { XamlRoot = root, RequestedTheme = appearance, Title = "Delete theme",
-            Content = $"Delete ‘{name}’? Viem will switch to Default.", PrimaryButtonText = "Delete", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary && preferences.SelectedTheme == name) preferences.DeleteTheme();
+        string? path = preferences.SelectedThemePath;
+        bool revert = preferences.SelectedThemeIsBundled;
+        var dialog = new ContentDialog { XamlRoot = root, RequestedTheme = appearance, Title = revert ? "Revert theme" : "Delete theme",
+            Content = revert ? $"Restore ‘{name}’ to the bundled version? Your changes to this theme will be replaced." : $"Delete ‘{name}’? Viem will switch to Default.", PrimaryButtonText = revert ? "Revert" : "Delete", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary && preferences.SelectedThemePath == path) {
+            if (revert) preferences.RevertTheme(); else preferences.DeleteTheme();
+        }
     }
 }

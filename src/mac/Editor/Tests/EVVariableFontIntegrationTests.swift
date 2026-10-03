@@ -7,9 +7,39 @@ import XCTest
 
 @MainActor
 final class EVVariableFontIntegrationTests: XCTestCase {
-    func testSavedStaticFlightlineRequestExposesVariableControlsWithoutAnEdit() throws {
+    func testNamedRecursiveChoiceSavesPortableFamilyFaceAndCoordinates() throws {
+        try registerRecursive()
+        let (configuration, backend, surface, _, editor) = try fixture(family: "Recursive", face: "Mono Casual Light", weight: 300)
+        let before = try backend.recoverySnapshot()
+        let initial = try renderedFont(surface)
+        let nativeFace = try XCTUnwrap(EVFontCatalog.face(named: "RecursiveMonoCsl-Light"))
+        let picker = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        let catalog = EVFontCatalog.faces(for: "Recursive")
+        picker.selectItem(at: try XCTUnwrap(catalog.firstIndex(of: nativeFace)))
+        XCTAssertTrue(picker.sendAction(try XCTUnwrap(picker.action), to: picker.target))
+        let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph))
+        XCTAssertEqual(definition.properties[.characterFontFamilies]?.declared, .stringList(["Recursive"]))
+        XCTAssertEqual(definition.properties[.characterFontFace]?.declared, .string("Mono Casual Light"))
+        let axes = EVFontCatalog.variationCoordinates(for: nativeFace)
+        assertAxes(try renderedFont(surface), values: axes)
+        assertAxes(initial, values: axes)
+        let file = configuration.themesDirectory.appendingPathComponent("Variable.json")
+        let saved = try Data(contentsOf: file)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: saved) as? [String: Any])
+        let sheets = try XCTUnwrap(object["styles"] as? [String: Any])
+        let text = try JSONSerialization.data(withJSONObject: XCTUnwrap(sheets["text"]))
+        XCTAssertFalse(String(decoding: text, as: UTF8.self).contains("RecursiveMonoCsl-Light"))
+        let reopened = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: configuration.directory, legacyDefaults: nil))
+        try reopened.read(source: Data("reopened".utf8), typeName: EVDocument.plainTextType)
+        XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterFontFace]?.declared,
+                       .string("Mono Casual Light"))
+        XCTAssertEqual(try Data(contentsOf: file), saved)
+        XCTAssertEqual(try backend.recoverySnapshot(), before)
+    }
+
+    func testSavedPortableFlightlineRequestExposesVariableControlsWithoutAnEdit() throws {
         try registerFlightline()
-        let (configuration, backend, surface, _, editor) = try fixture(family: "FlightlineCode-LightItalic", weight: 300)
+        let (configuration, backend, surface, _, editor) = try fixture(family: "Flightline Code", face: "ExtraLight Italic", weight: 300)
         let original = try backend.recoverySnapshot()
         let settingsURL = configuration.themesDirectory.appendingPathComponent("Variable.json")
         let settings = try Data(contentsOf: settingsURL)
@@ -241,7 +271,7 @@ final class EVVariableFontIntegrationTests: XCTestCase {
         XCTAssertLessThan(panel.contentMinSize.height, recursiveHeight)
     }
 
-    private func fixture(family: String = "Recursive", weight: UInt32 = 400) throws -> (EVConfigurationStore, EVCoreDocumentBackend, EVEditorSurfaceController, EVThemeStyleSession, EVStyleEditorViewController) {
+    private func fixture(family: String = "Recursive", face: String = "", weight: UInt32 = 400) throws -> (EVConfigurationStore, EVCoreDocumentBackend, EVEditorSurfaceController, EVThemeStyleSession, EVStyleEditorViewController) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-variable-font-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let config = EVConfigurationStore(directory: directory, legacyDefaults: nil)
@@ -249,9 +279,12 @@ final class EVVariableFontIntegrationTests: XCTestCase {
         let styles = try EVThemeStyleSession(configuration: config, format: .plainText)
         try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
             mutation: .setDeclaration(.characterFontFamilies, .stringList([family])))
-        if weight != 400 {
-            try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
-                mutation: .setDeclaration(.characterWeight, .unsigned(weight)))
+        for mutation in [
+            EVStyleMutation.setDeclaration(.characterFontFace, .string(face)),
+            .setDeclaration(.characterFontAxes, .string("{}")),
+            .setDeclaration(.characterWeight, .unsigned(weight)),
+        ] {
+            try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity, mutation: mutation)
         }
         let backend = EVCoreDocumentBackend(configuration: config)
         try backend.read(source: Data("Variable aegklrWim".utf8), typeName: EVDocument.plainTextType)

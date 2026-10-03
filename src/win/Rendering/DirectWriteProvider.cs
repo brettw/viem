@@ -389,7 +389,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     {
         for (ulong i = 0; i < style.font_family_count; i++)
         {
-            if (FontCatalog.Resolve(Text(style.font_families[i])) is { } resolved) return resolved;
+            if (FontCatalog.Resolve(Text(style.font_families[i]), i == 0 ? Text(style.font_face) : "") is { } resolved) return resolved;
         }
         return ("Segoe UI", FontStretch.Normal);
     }
@@ -397,17 +397,25 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private static FontStyle ResolvedSlant(ViemResolvedTextStyleV1 style)
     {
         if (style.slant != 0) return Slant(style.slant);
-        return style.font_family_count > 0 ? FontCatalog.Named(Text(style.font_families[0]))?.Slant ?? FontStyle.Normal : FontStyle.Normal;
+        return style.font_family_count > 0 ? FontCatalog.Match(Text(style.font_families[0]), Text(style.font_face))?.Slant ?? FontStyle.Normal : FontStyle.Normal;
     }
     private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyleV1 style, string family, FontFace? face)
     {
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
-        return FontVariations.Effective(FontVariations.For(face), FontCatalog.Resolve(requested)?.Family == family ? FontVariations.Decode(Text(style.font_axes)) : [], style.weight, (style.reserved & 1) != 0, style.slant);
+        var coordinates = new Dictionary<string, float>();
+        if (FontCatalog.Resolve(requested, Text(style.font_face))?.Family == family) {
+            coordinates = FontCatalog.NamedCoordinates(face, Text(style.font_face));
+            foreach (var (tag, value) in FontVariations.Decode(Text(style.font_axes))) coordinates[tag] = value;
+        }
+        return FontVariations.Effective(FontVariations.For(face), coordinates, style.weight, (style.reserved & 1) != 0, style.slant);
     }
     private static FontFace? ResolvedFace(ViemResolvedTextStyleV1 style, string family, FontStyle slant, FontStretch stretch)
     {
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
-        bool discoverSystem = Text(style.font_axes) is not ("" or "{}") || FontCatalog.Named(requested) != null;
+        var selected = FontCatalog.Match(requested, Text(style.font_face));
+        if (selected != null && selected.Family == family && selected.Slant == slant
+            && (FontVariations.For(selected).Axes.Length != 0 || selected.Weight == style.weight)) return selected;
+        bool discoverSystem = Text(style.font_face).Length != 0 || Text(style.font_axes) is not ("" or "{}");
         return FontCatalog.RenderingFace(family, (ushort)Math.Clamp(style.weight, 1, 999), slant, stretch, discoverSystem);
     }
     private static bool ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
@@ -415,7 +423,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var font = ResolveFont(style);
         var slant = ResolvedSlant(style);
         var face = ResolvedFace(style, font.Family, slant, font.Stretch);
-        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch));
+        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch, face));
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });

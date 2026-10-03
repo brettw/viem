@@ -1271,8 +1271,12 @@ import or migrate them. Missing resources must not prevent loading.
 **Default embeds `assets/themes/Midnight.json` at compile time, so its complete
 built-in values stay synchronized with the shipped preset without runtime
 resources. Tests must compare the complete preset against the built-in output
-and validate every packaged theme.** Install bundled themes only for a new
-profile; never replace customized themes or recreate themes the user removed.
+and validate every packaged theme.** Install bundled themes for a new profile.
+For existing profiles, restore missing bundled themes only when the Theme section
+of Settings opens, never at startup or during ordinary refreshes. Identify bundled
+themes by their shipped filename: offer Revert to replace their complete contents
+with the bundled original while keeping selection. Other saved themes offer Delete.
+Restoring missing themes must leave existing customizations and user themes alone.
 
 Defaults remain sparse and source assignments/direct declarations take precedence.
 Source/WYSIWYG share defaults. Loading or changing themes never writes inherited
@@ -1400,6 +1404,12 @@ acyclic inheritance remain valid. Deleting an in-use configuration style falls
 back to Base Paragraph/Default Paragraph, not its parent, atomically; Code keeps
 its name-reference/suppression policy.
 
+Save font choices with portable family and subfamily names, independent base
+weight, and numeric variation coordinates; native PostScript names and resource
+paths are lookup details, not new saved family names. Preserve existing unknown
+requests and do not rewrite stylesheets just by loading or displaying them.
+Old face-as-family files are updated explicitly; do not add migration or legacy
+font-name aliases to the application.
 Family/fallback, explicit face/base weight, and variable-axis coordinates form
 one inherited font-face group. Size and semantic Bold/Italic remain separate;
 removing an emphasis modifier restores the saved base coordinates. Variable

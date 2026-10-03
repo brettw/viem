@@ -50,8 +50,18 @@ internal static class StyleDefaultsLoadingTests
         File.WriteAllBytes(preferences.SelectedThemePath!, customizedMidnight);
         var existing = new Preferences(directory);
         Check(!File.Exists(monoPath) && File.ReadAllBytes(preferences.SelectedThemePath!).SequenceEqual(customizedMidnight),
-            "existing profiles retain changed preset bytes and never reseed removed variants");
-        File.WriteAllBytes(preferences.SelectedThemePath!, midnight);
+            "startup retains changed preset bytes and does not restore missing variants");
+        existing.RestoreMissingBundledThemes();
+        Check(File.ReadAllBytes(monoPath).SequenceEqual(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", "Midnight Mono.json")))
+            && File.ReadAllBytes(existing.SelectedThemePath!).SequenceEqual(customizedMidnight),
+            "opening Theme settings restores missing presets without changing customizations");
+        existing.Set("theme", "statusFontSize", JsonValue.Create(19d));
+        existing.RevertTheme();
+        Check(existing.SelectedTheme == "Midnight" && File.ReadAllBytes(existing.SelectedThemePath!).SequenceEqual(midnight),
+            "Revert restores the complete bundled theme byte for byte and keeps its selection");
+        bool bundledDeleteRejected = false;
+        try { existing.DeleteTheme(); } catch (InvalidOperationException) { bundledDeleteRejected = true; }
+        Check(bundledDeleteRejected && File.Exists(existing.SelectedThemePath!), "bundled themes cannot be deleted through the theme API");
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
         preferences.Set("theme", "statusFontSize", JsonValue.Create(17d));

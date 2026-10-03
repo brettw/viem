@@ -126,7 +126,7 @@ extension EVEditorView {
     static func whitespaceFont(_ style: EVVisibleWhitespaceStyle, inherited: CTFont, scale: CGFloat) -> CTFont {
         let size = style.size.map { CGFloat($0) * scale } ?? CTFontGetSize(inherited)
         let descriptor = CTFontCopyFontDescriptor(inherited)
-        if style.fontFamilies == nil, style.weight == nil, style.bold == nil, style.slant == nil {
+        if style.fontFamilies == nil, style.fontFace == nil, style.weight == nil, style.bold == nil, style.slant == nil {
             let overrides = style.openTypeFeatures.map { features in
                 CTFontDescriptorCreateWithAttributes([
                     kCTFontFeatureSettingsAttribute: features.filter { $0.key != "kern" }.sorted { $0.key < $1.key }.map {
@@ -154,7 +154,7 @@ extension EVEditorView {
             && (style.weight != nil || !inheritedTraits.contains(.traitBold))
         let effectiveWeight = addsBoldWeight ? min(weight + 300, 1000) : weight
         return resolveFont(families: style.fontFamilies ?? [CTFontCopyFamilyName(inherited) as String],
-            size: size, cssWeight: effectiveWeight, slant: slant, features: features, relativeBold: style.bold == true, axes: style.fontAxes ?? [:])
+            size: size, cssWeight: effectiveWeight, slant: slant, features: features, relativeBold: style.bold == true, axes: style.fontAxes ?? [:], faceName: style.fontFace ?? "")
     }
 
 }

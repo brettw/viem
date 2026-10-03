@@ -221,6 +221,8 @@ impl From<FontSize> for StylePropertyValue {
 #[serde(default)]
 pub struct CharacterProperties {
     pub font_families: Option<Vec<String>>,
+    /// Human-readable OpenType subfamily of the primary family; empty selects automatically.
+    pub font_face: Option<String>,
     /// Coordinates in the selected font's design space; inherited as a whole.
     pub font_axes: Option<BTreeMap<String, f32>>,
     pub size: Option<FontSize>,
@@ -241,6 +243,7 @@ pub struct CharacterProperties {
 impl CharacterProperties {
     pub(super) fn overlay(&mut self, layer: &Self) {
         if layer.font_families.is_some() {
+            self.font_face = None;
             self.font_axes = None;
             self.weight = None;
         }
@@ -254,7 +257,8 @@ impl CharacterProperties {
         self.font_families.as_ref().map_or(0, |families| {
             families.capacity() * std::mem::size_of::<String>()
                 + families.iter().map(|name| name.capacity() + 16).sum::<usize>()
-        }) + self.language.as_ref().map_or(0, |value| value.capacity() + 16)
+        }) + self.font_face.as_ref().map_or(0, |value| value.capacity() + 16)
+            + self.language.as_ref().map_or(0, |value| value.capacity() + 16)
             + self.font_axes.as_ref().map_or(0, |axes| {
                 style_map_heap_bytes(axes.len(), std::mem::size_of::<(String, f32)>())
                     + axes.keys().map(|tag| tag.capacity() + 16).sum::<usize>()
@@ -522,6 +526,7 @@ impl StyleSheet {
                 role: BlockRole::Paragraph,
                 character: CharacterProperties {
                     font_families: Some(vec![DEFAULT_FONT_FAMILY.to_owned()]),
+                    font_face: Some(String::new()),
                     font_axes: Some(BTreeMap::new()),
                     size: Some(DEFAULT_FONT_SIZE.into()),
                     weight: Some(400),
@@ -774,6 +779,7 @@ pub enum StyleError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedCharacterStyle {
     pub font_families: Vec<String>,
+    pub font_face: String,
     pub font_axes: BTreeMap<String, f32>,
     pub size: f32,
     pub weight: u16,
@@ -796,6 +802,7 @@ impl Default for ResolvedCharacterStyle {
     fn default() -> Self {
         Self {
             font_families: vec![DEFAULT_FONT_FAMILY.to_owned()],
+            font_face: String::new(),
             font_axes: BTreeMap::new(),
             size: DEFAULT_FONT_SIZE,
             weight: 400,
@@ -834,6 +841,7 @@ impl ResolvedCharacterStyle {
             };
         }
         compare!(font_families, StyleProperty::CharacterFontFamilies);
+        compare!(font_face, StyleProperty::CharacterFontFace);
         compare!(font_axes, StyleProperty::CharacterFontAxes);
         compare!(size, StyleProperty::CharacterSize);
         compare!(weight, StyleProperty::CharacterWeight);
@@ -968,6 +976,7 @@ pub enum StyleProperty {
     ParagraphAlignment,
     ParagraphBaseDirection,
     CharacterFontFamilies,
+    CharacterFontFace,
     CharacterFontAxes,
     CharacterSize,
     CharacterWeight,
@@ -1071,6 +1080,7 @@ impl StyleProperty {
             | Self::ParagraphAlignment => StyleInvalidationEffect::ParagraphLayout,
             Self::ParagraphBaseDirection => StyleInvalidationEffect::Shaping,
             Self::CharacterFontFamilies
+            | Self::CharacterFontFace
             | Self::CharacterFontAxes
             | Self::CharacterSize
             | Self::CharacterWeight
@@ -1122,8 +1132,9 @@ pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 23] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 14] = [
+pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 15] = [
     StyleProperty::CharacterFontFamilies,
+    StyleProperty::CharacterFontFace,
     StyleProperty::CharacterFontAxes,
     StyleProperty::CharacterSize,
     StyleProperty::CharacterWeight,
@@ -2805,6 +2816,7 @@ macro_rules! sparse_property_operations {
 sparse_property_operations! {
     CharacterProperties, set_character_property_value, clear_character_property_value;
     font_families => CharacterFontFamilies(FontFamilies),
+    font_face => CharacterFontFace(Text),
     font_axes => CharacterFontAxes(FontAxes),
     size => CharacterSize(Float),
     weight => CharacterWeight(FontWeight),
@@ -2827,6 +2839,7 @@ pub(super) fn clear_character_property(
 ) -> Result<(), StyleError> {
     clear_character_property_value(style, properties, property)?;
     if property == StyleProperty::CharacterFontFamilies {
+        properties.font_face = None;
         properties.font_axes = None;
         properties.weight = None;
     }
@@ -2897,6 +2910,7 @@ pub(super) fn validate_character_properties(
                 .all(|tag| tag.len() == 4 && tag.bytes().all(|byte| (0x20..=0x7e).contains(&byte)))
         });
     let valid = font_families_valid
+        && properties.font_face.as_ref().map_or(true, |name| name.len() <= 1024 && !name.chars().any(char::is_control))
         && language_valid
         && features_valid
         && properties.font_axes.as_ref().map_or(true, |axes| {
@@ -3075,6 +3089,9 @@ fn record_character_winners(
     if properties.font_families.is_some() {
         record_winner(contributions, StyleProperty::CharacterFontFamilies, &origin);
     }
+    if properties.font_face.is_some() || properties.font_families.is_some() {
+        record_winner(contributions, StyleProperty::CharacterFontFace, &origin);
+    }
     if properties.font_axes.is_some() || properties.font_families.is_some() {
         record_winner(contributions, StyleProperty::CharacterFontAxes, &origin);
     }
@@ -3228,8 +3245,12 @@ fn apply_character_properties(
 ) {
     if let Some(value) = properties.font_families.as_ref() {
         resolved.font_families.clone_from(value);
+        resolved.font_face.clear();
         resolved.font_axes.clear();
         resolved.base_weight = 400;
+    }
+    if let Some(value) = properties.font_face.as_ref() {
+        resolved.font_face.clone_from(value);
     }
     if let Some(value) = properties.font_axes.as_ref() {
         resolved.font_axes.clone_from(value);
@@ -4474,6 +4495,7 @@ mod variable_font_tests {
     fn coordinates_round_trip_and_inherit_as_one_font_face() {
         let base = CharacterProperties {
             font_families: Some(vec!["Variable Serif".into()]),
+            font_face: Some("Condensed Light".into()),
             font_axes: Some(BTreeMap::from([
                 ("wght".into(), 450.25),
                 ("wdth".into(), 87.5),
@@ -4514,6 +4536,7 @@ mod variable_font_tests {
                 ..Default::default()
             },
         );
+        assert_eq!(resolved.font_face, "Condensed Light");
         assert_eq!(resolved.font_axes, base.font_axes.clone().unwrap());
         assert_eq!(resolved.weight, 750);
         apply_character_properties(
@@ -4531,6 +4554,7 @@ mod variable_font_tests {
                 ..Default::default()
             },
         );
+        assert!(resolved.font_face.is_empty());
         assert!(resolved.font_axes.is_empty());
         assert_eq!(resolved.base_weight, 400);
         let traced = sheet.resolve_document_style_with_contributions(&sheet.base_paragraph, &BlockProperties::default(), &CharacterProperties { font_families: Some(vec!["Other Font".into()]), ..Default::default() }).unwrap();
@@ -4541,6 +4565,7 @@ mod variable_font_tests {
     fn clearing_face_preserves_independent_size_and_emphasis() {
         let mut properties = CharacterProperties {
             font_families: Some(vec!["Variable Serif".into()]),
+            font_face: Some("Condensed Light".into()),
             font_axes: Some(BTreeMap::from([("wght".into(), 425.5)])),
             weight: Some(425),
             size: Some(18.0.into()),
@@ -4557,6 +4582,7 @@ mod variable_font_tests {
         assert!(
             properties.font_families.is_none()
                 && properties.weight.is_none()
+                && properties.font_face.is_none()
                 && properties.font_axes.is_none()
         );
         assert_eq!(properties.bold, Some(true));
@@ -4574,6 +4600,9 @@ mod variable_font_tests {
         }
         let mut resolved = ResolvedCharacterStyle::default();
         let before = resolved.clone();
+        resolved.font_face = "Condensed".into();
+        assert!(resolved.changed_properties(&before).contains(&StyleProperty::CharacterFontFace));
+        assert_eq!(StyleProperty::CharacterFontFace.invalidation_effect(), StyleInvalidationEffect::Shaping);
         resolved.font_axes.insert("wdth".into(), 75.0);
         assert!(before
             .changed_properties(&resolved)
@@ -4583,6 +4612,7 @@ mod variable_font_tests {
             StyleInvalidationEffect::Shaping
         );
         let shape = crate::layout::shaping_style(&resolved).unwrap();
+        assert_eq!(shape.font_face, "Condensed");
         assert_eq!(shape.font_axes["wdth"], 75.0);
     }
 }

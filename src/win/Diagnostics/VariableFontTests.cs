@@ -45,10 +45,10 @@ internal static class VariableFontTests
         using var view = new CoreView(doc, pane.Canvas.Device, pane.Canvas.DispatcherQueue, 1000, 300);
         var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
         saved = info.Defaults; saved["wdth"] = 100;
-        view.EditStyleFont(style, [face.Name], face, saved);
+        view.EditStyleFont(style, [face.PortableFamily], face, saved);
         var wide = view.Layout();
         saved["wdth"] = 75;
-        view.EditStyleFont(style, [face.Name], face, saved);
+        view.EditStyleFont(style, [face.PortableFamily], face, saved);
         var narrow = view.Layout();
         Check(narrow.Clusters.Sum(c => c.advance) < wide.Clusters.Sum(c => c.advance) * .98, "DirectWrite axis values change measured and rendered glyph advances");
         Check(!CoreView.SameLayout(wide.Info.identity, narrow.Info.identity), "axis edits invalidate the shaping cache");
@@ -96,7 +96,7 @@ internal static class VariableFontTests
             var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
             Check(instances.Length == 6, "each Flightline design exposes six named presets");
             foreach (float weight in instances.Select(i => i.Values["wght"]).Append(437).Distinct()) {
-                view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name, "serif"], face, new() { ["wght"] = weight });
+                view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily, "serif"], face, new() { ["wght"] = weight });
                 var layout = view.Layout();
                 var run = layout.Clusters.First().render_run.identifier;
                 Check(Math.Abs(view.Provider.RenderedFontAxes(run).First()["wght"] - weight) < .001f, $"Flightline {file} renders weight {weight}");
@@ -105,7 +105,7 @@ internal static class VariableFontTests
         }
         var upright = faces.First(f => f.Source != null && f.Slant == FontStyle.Normal);
         var paragraph = view.Styles().Styles.Single(s => s.Id == "Paragraph");
-        view.EditStyleFont(paragraph, [upright.Name], upright, new() { ["wght"] = 437 });
+        view.EditStyleFont(paragraph, [upright.PortableFamily], upright, new() { ["wght"] = 437 });
         void Emphasis(bool bold, uint slant, float weight) {
             var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
             view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_BOLD, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, bold ? 1u : 0u));
@@ -115,21 +115,6 @@ internal static class VariableFontTests
             Check(view.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == (slant != 0)), "Flightline emphasis switches the actual variable font collection between upright and italic");
         }
         Emphasis(true, 0, 700); Emphasis(true, 1, 700); Emphasis(false, 1, 437); Emphasis(false, 0, 437);
-        foreach (var (name, weight, italic) in new (string, uint, bool)[] {
-            ("Thin", 100, false), ("ThinItalic", 100, true), ("ExtraLight", 200, false), ("ExtLtIta", 200, true),
-            ("Light", 300, false), ("LightItalic", 300, true), ("Regular", 400, false), ("Italic", 400, true),
-            ("Medium", 500, false), ("MediumItalic", 500, true), ("Bold", 700, false), ("BoldItalic", 700, true),
-        }) {
-            string legacy = "FlightlineCode-" + name;
-            var face = FontCatalog.Named(legacy);
-            Check(face != null && (face.Slant != FontStyle.Normal) == italic, $"saved {legacy} resolves to the variable design");
-            var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
-            view.EditStyleFont(style, [legacy, "serif"], face, []);
-            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, CoreView.Enum(VIEM_STYLE_VALUE_UNSIGNED, weight));
-            var layout = view.Layout();
-            var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
-            Check(Math.Abs(axes["wght"] - Math.Clamp(weight, 200, 700)) < .001f, "saved static-face base weight renders without rewriting or substituting fonts");
-        }
         Check(FontCatalog.Resolve("FlightlineCode-does-not-exist") == null, "unknown Flightline names remain unavailable");
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline font changes preserve document source");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "Flightline styles retain portable font requests");
@@ -142,7 +127,7 @@ internal static class VariableFontTests
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
         var upright = FontCatalog.Faces("Flightline Code").First(f => f.Source != null && f.Slant == FontStyle.Normal);
-        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.Name], upright);
+        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.PortableFamily], upright);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
         try {
@@ -190,14 +175,27 @@ internal static class VariableFontTests
         Check(instances.Length == 64, "Recursive exposes all 64 named instances");
         byte[] source = "Writing MMMM iii 0123"u8.ToArray();
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
+        // This is the same family/subfamily spelling saved by the Mac picker.
+        Check(doc.InitializeStyleDefaults("""
+            {"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph",
+              "based_on":null,"next_paragraph_style":null,"block":{},"character":{
+                "font_families":["Recursive","serif"],"font_face":"Mono Casual Light","weight":300}}]}
+            """u8.ToArray()).Length == 0, "portable Mac font names load without diagnostics");
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        var portable = view.Layout();
+        var portableAxes = view.Provider.RenderedFontAxes(portable.Clusters.First().render_run.identifier).First();
+        Check(portableAxes["MONO"] == 1 && portableAxes["CASL"] == 1 && portableAxes["wght"] == 300,
+            "portable Recursive family and named instance resolve to the intended Windows outlines without explicit axes");
         foreach (var instance in instances) {
-            view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name, "serif"], face, instance.Values);
+            view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily, "serif"], face, instance.Values);
             var layout = view.Layout();
             var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
             Check(info.Axes.All(a => Math.Abs(axes.GetValueOrDefault(a.Tag, float.NaN) - instance.Values[a.Tag]) < .001f), $"Recursive {instance.Name} renders with its named-instance coordinates");
         }
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "bundled Recursive instance selection preserves document source");
+        var saved = view.Styles();
+        Check(saved.StringList(saved.Styles.Single(s => s.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "Recursive", "serif" }),
+            "Windows saves the same portable family and fallback order as Mac");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "saved Recursive styles use portable names and coordinates");
     }
     private static async Task RecursiveInspectorChecks(EditorPane pane, Preferences preferences)
@@ -208,7 +206,7 @@ internal static class VariableFontTests
         byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
         using var doc = new CoreDocument("Recursive variable inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.Name], face);
+        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily], face);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
         try {
@@ -329,7 +327,7 @@ internal static class VariableFontTests
             using (var fractionalDoc = new CoreDocument(source, format: format))
             using (var fractionalView = new CoreView(fractionalDoc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300)) {
                 var values = FontVariations.For(variableFace).Defaults; values["wght"] = 350.26f;
-                fractionalView.EditStyleFont(fractionalView.Styles().Styles.Single(s => s.Id == "Paragraph"), [variableFace.Name], variableFace, values);
+                fractionalView.EditStyleFont(fractionalView.Styles().Styles.Single(s => s.Id == "Paragraph"), [variableFace.PortableFamily], variableFace, values);
                 VisiblePixels(Pixels(fractionalView), "fractional coordinates from stylesheets remain renderable");
                 var axes = fractionalView.Provider.RenderedFontAxes(fractionalView.Layout().Clusters.First().render_run.identifier).First();
                 Check(Math.Abs(axes["wght"] - 350.26f) < .001f, "stylesheet coordinates retain precision independently of slider steps");

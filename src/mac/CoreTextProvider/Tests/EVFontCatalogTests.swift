@@ -17,11 +17,10 @@ struct EVFontCatalogTests {
     let light = face("Light", weight: 300)
     let regular = face("Regular")
     let bold = face("Bold", weight: 700)
-    func choose(_ requested: String = "New Family", from faces: [EVFontFace]) -> EVFontFace? {
-      EVFontCatalog.faceForFamilyChange(to: requested, currentFace: current, faces: faces)
+    func choose(from faces: [EVFontFace]) -> EVFontFace? {
+      EVFontCatalog.preferredFace(currentFace: current, faces: faces)
     }
     #expect(choose(from: [regular, bold, light]) == light)
-    #expect(choose("New-Bold", from: [regular, bold, light]) == bold)
     #expect(choose(from: [bold, regular]) == regular)
     for style in ["Normal", "Roman", "Book"] {
       let upright = face(style)
@@ -49,6 +48,16 @@ struct EVFontCatalogTests {
     #expect(cascade?.map { CTFontCopyFamilyName(CTFontCreateWithFontDescriptor($0, 16, nil)) as String } == ["Helvetica"])
   }
 
+  @Test func faceNamesAreNotStylesheetFamilies() {
+    let name = "HelveticaNeue-CondensedBold"
+    #expect(EVFontCatalog.faces(for: name).isEmpty)
+    #expect(EVFontCatalog.displayFamilyName(for: name) == name)
+    #expect(EVFontCatalog.face(in: "Helvetica Neue", named: "") == nil)
+    let font = resolveFont(families: [name, "Georgia"], size: 16,
+      cssWeight: 400, slant: 0, features: [])
+    #expect(CTFontCopyFamilyName(font) as String == "Georgia")
+  }
+
   @Test func explicitFacesWithEqualWeightAndSlantKeepTheirNativeWidths() throws {
     let faces = EVFontCatalog.faces(for: "Helvetica Neue")
     let bold = try #require(faces.first { $0.styleName == "Bold" })
@@ -56,29 +65,34 @@ struct EVFontCatalogTests {
     #expect(bold.weight == condensed.weight)
     #expect(bold.italic == condensed.italic)
     for face in [bold, condensed] {
-      let font = resolveFont(families: [face.postScriptName], size: 19,
-        cssWeight: CGFloat(face.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
-      #expect(CTFontCopyPostScriptName(font) as String == face.postScriptName)
-      #expect(abs(((CTFontCopyTraits(font) as NSDictionary)[kCTFontWidthTrait] as? Double ?? 0) - face.width) < 0.0001)
+      let portable = resolveFont(families: [face.familyName], size: 19,
+        cssWeight: CGFloat(face.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [],
+        faceName: face.styleName)
+      #expect(CTFontCopyPostScriptName(portable) as String == face.postScriptName)
+      #expect(abs(((CTFontCopyTraits(portable) as NSDictionary)[kCTFontWidthTrait] as? Double ?? 0) - face.width) < 0.0001)
     }
+    let fallback = resolveFont(families: ["Viem Missing Font", "Helvetica Neue"], size: 19,
+      cssWeight: CGFloat(condensed.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [],
+      faceName: condensed.styleName)
+    #expect(CTFontCopyPostScriptName(fallback) as String == bold.postScriptName)
   }
 
   @Test func privateSystemDescriptorsKeepCondensedFaceIdentityAndRelativeBold() throws {
     let faces = EVFontCatalog.faces(for: "SF Pro")
     let condensed = try #require(faces.first { $0.styleName == "Condensed Regular" })
     #expect(condensed.width < 0)
-    let exact = resolveFont(families: [condensed.postScriptName], size: 19,
-      cssWeight: CGFloat(condensed.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
+    let exact = resolveFont(families: [condensed.familyName], size: 19,
+      cssWeight: CGFloat(condensed.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [], faceName: condensed.styleName)
     #expect(CTFontCopyPostScriptName(exact) as String == condensed.postScriptName)
     #expect(CTFontCopyFamilyName(exact) as String == condensed.familyName)
-    let heavier = resolveFont(families: [condensed.postScriptName], size: 19,
+    let heavier = resolveFont(families: [condensed.familyName], size: 19,
       cssWeight: CGFloat(condensed.weight + 300), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT),
-      features: [], relativeBold: true)
+      features: [], relativeBold: true, faceName: condensed.styleName)
     #expect(EVFontCatalog.weight(of: heavier) > condensed.weight)
     #expect(abs(((CTFontCopyTraits(heavier) as NSDictionary)[kCTFontWidthTrait] as? Double ?? 0) - condensed.width) < 0.0001)
     EVFontCatalog.invalidate()
-    let after = resolveFont(families: [condensed.postScriptName], size: 19,
-      cssWeight: CGFloat(condensed.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
+    let after = resolveFont(families: [condensed.familyName], size: 19,
+      cssWeight: CGFloat(condensed.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [], faceName: condensed.styleName)
     #expect(CTFontCopyPostScriptName(after) as String == condensed.postScriptName)
   }
 
@@ -104,7 +118,7 @@ struct EVFontCatalogTests {
   @Test func systemFaceDisplayNameKeepsPrivateFaceIdentity() throws {
     let face = try #require(
       EVFontCatalog.faces(for: "SF Pro").first { $0.postScriptName.hasPrefix(".SFNS") })
-    #expect(EVFontCatalog.displayFamilyName(for: face.postScriptName) == "SF Pro")
+    #expect(EVFontCatalog.displayFamilyName(for: face.familyName) == "SF Pro")
     #expect(EVFontCatalog.displayFamilyName(for: ".AppleSystemUIFont") == "SF Pro")
     #expect(EVFontCatalog.face(named: face.postScriptName)?.postScriptName == face.postScriptName)
     #expect(EVFontCatalog.displayFamilyName(for: "Helvetica") == "Helvetica")
@@ -138,13 +152,13 @@ struct EVFontCatalogTests {
     let expected = EVFontCatalog.boldWeight(
       baseWeight: light.weight, faces: faces.filter { !$0.italic })
     let font = resolveFont(
-      families: [light.postScriptName], size: 16,
+      families: [light.familyName], size: 16,
       cssWeight: CGFloat(light.weight + 300), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT),
-      features: [], relativeBold: true)
+      features: [], relativeBold: true, faceName: light.styleName)
     #expect(EVFontCatalog.weight(of: font) == expected)
     let off = resolveFont(
-      families: [light.postScriptName], size: 16,
-      cssWeight: CGFloat(light.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [])
+      families: [light.familyName], size: 16,
+      cssWeight: CGFloat(light.weight), slant: UInt32(VIEM_FONT_SLANT_UPRIGHT), features: [], faceName: light.styleName)
     #expect(CTFontCopyPostScriptName(off) as String == light.postScriptName)
   }
   @Test func catalogFeaturesAreFontOwnedAndDeterministic() {

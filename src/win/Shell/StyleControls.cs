@@ -14,7 +14,7 @@ internal sealed partial class StyleWindow
 {
     private bool IsBase => (selected.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0;
     private bool ShowsValue(uint property) => IsBase || selected.Declares(property)
-        || property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES && (selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) || selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES));
+        || property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES && (selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) || selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES) || selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE));
     private static StackPanel Row(StackPanel target)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };

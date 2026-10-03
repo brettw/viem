@@ -932,10 +932,12 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
         };
     }
     if source.font_families.is_some() {
+        destination.font_face = None;
         destination.font_axes = None;
         destination.weight = None;
     }
     replace_some!(font_families);
+    replace_some!(font_face);
     replace_some!(font_axes);
     replace_some!(size);
     replace_some!(weight);
@@ -970,6 +972,7 @@ pub(crate) fn shaping_style(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ResolvedTextStyle {
         font_families: character.font_families.clone(),
+        font_face: character.font_face.clone(),
         font_axes: character.font_axes.clone(),
         size: character.size,
         weight: f32::from(character.weight),

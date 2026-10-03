@@ -846,6 +846,7 @@ pub struct ViemResolvedTextStyleV1 {
     pub features: *const ViemOpenTypeFeatureV1,
     pub feature_count: u64,
     pub font_axes: ViemUtf8Slice,
+    pub font_face: ViemUtf8Slice,
 }
 
 pub const VIEM_RESOLVED_TEXT_STYLE_V1_SIZE: u32 = size_of::<ViemResolvedTextStyleV1>() as u32;
@@ -1303,6 +1304,7 @@ pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH: u32 = 40;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR: u32 = 41;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND: u32 = 42;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES: u32 = 43;
+pub const VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE: u32 = 44;
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -2823,6 +2825,7 @@ impl MarshalledStyle {
             features: slice_pointer(&features),
             feature_count: features.len() as u64,
             font_axes: ffi_utf8_slice(&font_axes),
+            font_face: ffi_utf8_slice(&style.font_face),
         };
         Self {
             _font_families: font_families,
@@ -5233,6 +5236,7 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
         StyleProperty::ParagraphAlignment => VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT,
         StyleProperty::ParagraphBaseDirection => VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION,
         StyleProperty::CharacterFontFamilies => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES,
+        StyleProperty::CharacterFontFace => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE,
         StyleProperty::CharacterFontAxes => VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES,
         StyleProperty::CharacterSize => VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
         StyleProperty::CharacterWeight => VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT,
@@ -5398,6 +5402,7 @@ fn declared_character_property(
             .font_families
             .clone()
             .map(StylePropertyValue::FontFamilies),
+        StyleProperty::CharacterFontFace => properties.font_face.clone().map(StylePropertyValue::Text),
         StyleProperty::CharacterFontAxes => properties
             .font_axes
             .clone()
@@ -5490,6 +5495,7 @@ fn effective_character_property(
     property: StyleProperty,
 ) -> Option<StylePropertyValue> {
     match property {
+        StyleProperty::CharacterFontFace => Some(StylePropertyValue::Text(properties.font_face.clone())),
         StyleProperty::CharacterFontAxes => {
             Some(StylePropertyValue::FontAxes(properties.font_axes.clone()))
         }
@@ -6923,6 +6929,7 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
         VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT => Ok(StyleProperty::ParagraphAlignment),
         VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION => Ok(StyleProperty::ParagraphBaseDirection),
         VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES => Ok(StyleProperty::CharacterFontFamilies),
+        VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE => Ok(StyleProperty::CharacterFontFace),
         VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES => Ok(StyleProperty::CharacterFontAxes),
         VIEM_STYLE_PROPERTY_CHARACTER_SIZE => Ok(StyleProperty::CharacterSize),
         VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT => Ok(StyleProperty::CharacterWeight),
@@ -7082,7 +7089,7 @@ unsafe fn parse_style_property_value<O>(
                 alpha: value.color.alpha,
             }))
         }
-        StyleProperty::CharacterLanguage => {
+        StyleProperty::CharacterLanguage | StyleProperty::CharacterFontFace => {
             if value.kind != VIEM_STYLE_VALUE_STRING {
                 return Err(invalid());
             }
@@ -11297,7 +11304,7 @@ mod tests {
             ViemStatus::Ok
         );
         assert_eq!(info.definition_count, 25);
-        assert_eq!(info.property_count, 879);
+        assert_eq!(info.property_count, 904);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();

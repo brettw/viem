@@ -5,8 +5,10 @@ using Windows.UI.Text;
 
 namespace Viem.Windows.Rendering;
 
-internal sealed record FontFace(string Name, string Family, string StyleName, ushort Weight, FontStyle Slant, FontStretch Stretch, Uri? Source = null, string? TypographicFamily = null)
+internal sealed record FontFace(string Name, string Family, string StyleName, ushort Weight, FontStyle Slant, FontStretch Stretch, Uri? Source = null, string? TypographicFamily = null, string? TypographicStyle = null)
 {
+    public string PortableFamily => string.IsNullOrEmpty(TypographicFamily) ? Family : TypographicFamily;
+    public string PortableStyle => string.IsNullOrEmpty(TypographicStyle) ? StyleName : TypographicStyle;
     public override string ToString() => StyleName;
 }
 
@@ -29,7 +31,6 @@ internal static class FontCatalog
     private static BundledFontIndex BundledFonts => bundledFonts.Value.GetAwaiter().GetResult();
     private static readonly Lazy<string[]> families = new(DiscoverFamilies);
     private static readonly ConcurrentDictionary<string, bool> availableFamilies = new(StringComparer.OrdinalIgnoreCase);
-    private static readonly ConcurrentDictionary<string, FontFace?> names = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, FontFace[]> familyFaces = new(StringComparer.OrdinalIgnoreCase);
     internal static string[] Families => families.Value;
     internal static bool FamilyListLoaded => families.IsValueCreated;
@@ -76,6 +77,11 @@ internal static class FontCatalog
     private static string Localized(IReadOnlyDictionary<string, string> values) =>
         values.FirstOrDefault(p => string.Equals(p.Key, CultureInfo.CurrentUICulture.Name, StringComparison.OrdinalIgnoreCase)).Value
         ?? values.GetValueOrDefault("en-us") ?? values.Values.FirstOrDefault() ?? "";
+    private static string English(IReadOnlyDictionary<string, string> values) =>
+        values.FirstOrDefault(p => string.Equals(p.Key, "en-US", StringComparison.OrdinalIgnoreCase)).Value
+        ?? values.Values.FirstOrDefault() ?? "";
+    private static string PreferredEnglish(IReadOnlyDictionary<string, string> preferred, IReadOnlyDictionary<string, string> fallback) =>
+        preferred.Count == 0 ? English(fallback) : English(preferred);
     private static CanvasFontProperty Property(CanvasFontPropertyIdentifier identifier, string value) => new() { Identifier = identifier, Value = value, Locale = "" };
     private static bool IsFamily(string name)
     {
@@ -102,9 +108,9 @@ internal static class FontCatalog
                     Interlocked.Increment(ref faceDescriptionsRead);
                     if (font.Simulations != CanvasFontSimulations.None) continue;
                     string family = Localized(font.FamilyNames), style = Localized(font.FaceNames);
-                    string name = Localized(font.GetInformationalStrings(CanvasFontInformation.PostscriptName));
-                    if (name.Length == 0) name = Localized(font.GetInformationalStrings(CanvasFontInformation.FullName));
-                    if (name.Length > 0 && family.Length > 0) result.Add(new(name, family, style, font.Weight.Weight, font.Style, font.Stretch, source, Localized(font.GetInformationalStrings(CanvasFontInformation.PreferredFamilyNames))));
+                    string name = English(font.GetInformationalStrings(CanvasFontInformation.PostscriptName));
+                    if (name.Length == 0) name = English(font.GetInformationalStrings(CanvasFontInformation.FullName));
+                    if (name.Length > 0 && family.Length > 0) result.Add(new(name, family, style, font.Weight.Weight, font.Style, font.Stretch, source, PreferredEnglish(font.GetInformationalStrings(CanvasFontInformation.PreferredFamilyNames), font.FamilyNames), PreferredEnglish(font.GetInformationalStrings(CanvasFontInformation.PreferredSubfamilyNames), font.FaceNames)));
                 }
             }
         }
@@ -125,32 +131,6 @@ internal static class FontCatalog
         }
         return ([], [], []);
     }
-    internal static FontFace? Named(string name)
-    {
-        if (name.Length == 0) return null;
-        if (names.TryGetValue(name, out var cached)) return cached;
-        if (LegacyFlightlineDesign(name) is { } design) {
-            var faces = familyFaces.GetOrAdd("Flightline Code", family => Discover(CanvasFontPropertyIdentifier.FamilyName, family));
-            var available = faces.Any(f => f.Source != null) ? faces.Where(f => f.Source != null) : faces;
-            return names[name] = available.Where(f => (f.Slant != FontStyle.Normal) == design.Italic)
-                .MinBy(f => Math.Abs((int)f.Weight - design.Weight));
-        }
-        var face = Discover(CanvasFontPropertyIdentifier.PostscriptName, name).FirstOrDefault();
-        // Fonts without PostScript metadata use their exact full name.
-        face ??= Discover(CanvasFontPropertyIdentifier.FullName, name).FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
-        return names[name] = face;
-    }
-    // Preserve static-face requests saved by earlier releases. Resolution uses
-    // the variable design, with the persisted base-weight declaration intact.
-    private static (int Weight, bool Italic)? LegacyFlightlineDesign(string name) => name.ToLowerInvariant() switch {
-        "flightlinecode-thin" => (100, false), "flightlinecode-thinitalic" => (100, true),
-        "flightlinecode-extralight" => (200, false), "flightlinecode-extltita" => (200, true),
-        "flightlinecode-light" => (300, false), "flightlinecode-lightitalic" => (300, true),
-        "flightlinecode-regular" => (400, false), "flightlinecode-italic" => (400, true),
-        "flightlinecode-medium" => (500, false), "flightlinecode-mediumitalic" => (500, true),
-        "flightlinecode-bold" => (700, false), "flightlinecode-bolditalic" => (700, true),
-        _ => null,
-    };
     /// Portable request tokens for the family picker's built-in "use the
     /// system font" entries. EVFontCatalog on macOS recognizes the identical
     /// strings, so a style saved with one renders consistently on both
@@ -162,40 +142,66 @@ internal static class FontCatalog
     internal static string DisplayFamily(string name) =>
         string.Equals(name, SystemDefaultFamily, StringComparison.OrdinalIgnoreCase) ? SystemDefaultDisplayName :
         string.Equals(name, SystemMonospaceFamily, StringComparison.OrdinalIgnoreCase) ? SystemMonospaceDisplayName :
-        name.Length == 0 || IsFamily(name) ? name : Named(name)?.Family ?? name;
+        name;
     /// Reverses <see cref="DisplayFamily"/> for the picker's own two entries;
     /// any other label (an installed font name typed or picked) yields null.
     internal static string? StorageFamily(string displayName) =>
         string.Equals(displayName, SystemDefaultDisplayName, StringComparison.OrdinalIgnoreCase) ? SystemDefaultFamily :
         string.Equals(displayName, SystemMonospaceDisplayName, StringComparison.OrdinalIgnoreCase) ? SystemMonospaceFamily :
         null;
-    internal static FontFace[] Faces(string familyOrFace)
+    internal static FontFace[] Faces(string requestedFamily)
     {
-        string family = Resolve(familyOrFace)?.Family ?? familyOrFace;
-        if (family.Length == 0) return [];
-        if (familyFaces.TryGetValue(family, out var cached)) return cached;
-        return familyFaces[family] = Discover(CanvasFontPropertyIdentifier.FamilyName, family);
+        if (requestedFamily.Length == 0) return [];
+        if (familyFaces.TryGetValue(requestedFamily, out var cached)) return cached;
+        var direct = Discover(CanvasFontPropertyIdentifier.FamilyName, requestedFamily)
+            .Concat(Discover(CanvasFontPropertyIdentifier.PreferredFamilyName, requestedFamily))
+            .DistinctBy(f => f.Name, StringComparer.OrdinalIgnoreCase).OrderBy(f => f.Weight)
+            .ThenBy(f => f.Slant).ThenBy(f => f.StyleName, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(f => f.Name, StringComparer.Ordinal).ToArray();
+        if (direct.Length != 0) return familyFaces[requestedFamily] = direct;
+        string family = Resolve(requestedFamily)?.Family ?? requestedFamily;
+        return familyFaces[requestedFamily] = string.Equals(family, requestedFamily, StringComparison.OrdinalIgnoreCase)
+            ? [] : Faces(family);
+    }
+    internal static FontFace? Match(string family, string subfamily)
+    {
+        if (subfamily.Length == 0) return null;
+        var faces = Faces(family);
+        FontFace? Find(IEnumerable<FontFace> candidates)
+        {
+            var exact = candidates.FirstOrDefault(f => string.Equals(f.PortableStyle, subfamily, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(f.StyleName, subfamily, StringComparison.OrdinalIgnoreCase));
+            // DirectWrite need not enumerate named variable instances as faces.
+            return exact ?? candidates.FirstOrDefault(f => FontVariations.For(f).Instances.Any(i =>
+                string.Equals(i.Name, subfamily, StringComparison.OrdinalIgnoreCase)));
+        }
+        // A packaged variable instance wins over an older installed static face.
+        return Find(faces.Where(f => f.Source != null)) ?? Find(faces.Where(f => f.Source == null));
+    }
+    internal static Dictionary<string, float> NamedCoordinates(FontFace? face, string subfamily)
+    {
+        var instance = FontVariations.For(face).Instances.FirstOrDefault(i =>
+            string.Equals(i.Name, subfamily, StringComparison.OrdinalIgnoreCase));
+        // A named design supplies defaults, but base weight is independent.
+        return instance?.Values.Where(p => p.Key != "wght").ToDictionary(p => p.Key, p => p.Value) ?? [];
     }
     internal static FontFace? Current(string name, uint weight, uint slant)
     {
         var matching = Faces(name).Where(f => f.Weight == weight && (f.Slant != FontStyle.Normal) == (slant != 0)).ToArray();
-        return matching.FirstOrDefault(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase)) ?? matching.FirstOrDefault();
+        return matching.FirstOrDefault();
     }
     internal static FontFace? ForFamilyChange(string requested, FontFace? current)
     {
-        if (LegacyFlightlineDesign(requested) != null) return Named(requested);
         var faces = Faces(requested);
-        var explicitFace = faces.FirstOrDefault(f => string.Equals(f.Name, requested, StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(f.Family, requested, StringComparison.OrdinalIgnoreCase));
-        if (explicitFace != null) return explicitFace;
         if (current != null && faces.FirstOrDefault(f => string.Equals(f.StyleName, current.StyleName, StringComparison.OrdinalIgnoreCase)) is { } corresponding) return corresponding;
         foreach (string regular in new[] { "Regular", "Normal", "Roman", "Book" })
             if (faces.FirstOrDefault(f => f.Slant == FontStyle.Normal && string.Equals(f.StyleName, regular, StringComparison.OrdinalIgnoreCase)) is { } face) return face;
         return faces.FirstOrDefault();
     }
-    internal static (string Family, FontStretch Stretch)? Resolve(string requested)
+    internal static (string Family, FontStretch Stretch)? Resolve(string requested, string subfamily = "")
     {
         if (requested.Length == 0) return null;
+        if (subfamily.Length != 0 && Match(requested, subfamily) is { } selected) return (selected.Family, selected.Stretch);
         string candidate = requested.ToLowerInvariant() switch {
             "monospace" or "ui-monospace" or "menlo" or "monaco" => IsFamily("Cascadia Mono") ? "Cascadia Mono" : "Consolas",
             "serif" or "times" => "Georgia",
@@ -203,17 +209,18 @@ internal static class FontCatalog
             _ => requested
         };
         if (IsFamily(candidate)) return (candidate, FontStretch.Normal);
-        return Named(candidate) is { } face ? (face.Family, face.Stretch) : null;
+        var preferred = familyFaces.GetOrAdd(candidate, key => Discover(CanvasFontPropertyIdentifier.PreferredFamilyName, key));
+        return preferred.FirstOrDefault() is { } face ? (face.Family, face.Stretch) : null;
     }
 
     // File URLs stay inside the native renderer, never in saved styles.
     // Flightline's upright and italic designs are separate variable files;
     // choose the source after weight/slant overrides are resolved, including
     // whitespace markers and style previews.
-    internal static string RenderingFamily(string family, uint weight, FontStyle slant, FontStretch stretch)
+    internal static string RenderingFamily(string family, uint weight, FontStyle slant, FontStretch stretch, FontFace? selected = null)
     {
         if (!BundledFonts.Families.Contains(family)) return family;
-        var face = RenderingFace(family, weight, slant, stretch);
+        var face = selected ?? RenderingFace(family, weight, slant, stretch);
         return face?.Source == null ? family : face.Source.AbsoluteUri + "#" + face.Family;
     }
     internal static FontFace? RenderingFace(string family, uint weight, FontStyle slant, FontStretch stretch, bool discoverSystem = false)
