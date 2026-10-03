@@ -32,7 +32,7 @@ internal static class InputRoutingTests
 
     [DllImport("user32.dll")] internal static extern uint GetDoubleClickTime();
 
-    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true)
+    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true, bool doubleClick = false)
     {
         if (focusTarget) element.Focus(FocusState.Programmatic);
         await Task.Delay(150);
@@ -72,7 +72,13 @@ internal static class InputRoutingTests
         }
         if (!GetCursorPos(out var original)) throw new InvalidOperationException("Cannot save the pointer position.");
         var position = Position(fractions[0]);
-        Move(position); Button(0x0002);
+        Move(position);
+        if (doubleClick)
+        {
+            Button(0x0002); await Task.Delay(8);
+            Button(0x0004); await Task.Delay(8);
+        }
+        Button(0x0002);
         try
         {
             for (int i = 0; i < fractions.Count; i++)

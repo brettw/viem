@@ -64,6 +64,22 @@ internal static class SelectionInputTests
                 "native dragging beyond the click threshold preserves its anchor while reversing");
             Check(pane.Document.FormattedText() == original && pane.LastError == null,
                 "native pointer placement and dragging preserve source without routing errors");
+            foreach (string command in new[] { "", "i", "R" })
+            {
+                view.Key(VIEM_KEY_ESCAPE); view.Command(command);
+                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                var expected = new[] { (6ul, 10ul), (6ul, 17ul), (0ul, 10ul), (6ul, 10ul) };
+                await InputRoutingTests.Drag(window, pane.Canvas,
+                    new[] { PointAt(7), PointAt(13), PointAt(2), PointAt(7) }, step => {
+                        var selected = view.LogicalSelection();
+                        Check(selected.text_start == expected[step].Item1 && selected.text_end == expected[step].Item2,
+                            $"native double-click drag retains whole words after reversal ({command}, step {step})");
+                    }, doubleClick: true);
+                await InputRoutingTests.Text("Z");
+                Check(pane.Document.FormattedText() == "alpha Z\nsecond line", "typing replaces the complete dragged word");
+                view.Undo();
+                Check(pane.Document.FormattedText() == original, "undo restores word-drag replacement exactly");
+            }
         }
         finally { view.Key(VIEM_KEY_ESCAPE); view.Ex("%d"); pane.FocusEditor(); }
     }
@@ -125,6 +141,18 @@ internal static class SelectionInputTests
             Check(selection.text_start == 3 && selection.text_end == (ulong)original.Length, "native Ctrl+Shift+End selects through EOF");
             await Start(); await InputRoutingTests.Key(VirtualKey.Down, shift: true);
             Check(view.IsTextSelection && view.LogicalSelection().text_end > 10, "native Shift+Down extends to the next row");
+            await Start(3); await InputRoutingTests.Key(VirtualKey.Down, control: true);
+            Check(view.Presentation.cursor_utf8_offset == 11, "Ctrl+Down moves to the next paragraph start");
+            await InputRoutingTests.Key(VirtualKey.Down, control: true);
+            Check(view.Presentation.cursor_utf8_offset == 23, "repeated Ctrl+Down advances another paragraph");
+            await InputRoutingTests.Key(VirtualKey.Up, control: true);
+            Check(view.Presentation.cursor_utf8_offset == 11, "Ctrl+Up at a paragraph start moves to the preceding start");
+            await Start(3); await InputRoutingTests.Key(VirtualKey.Down, control: true, shift: true);
+            selection = view.LogicalSelection();
+            Check(selection.text_start == 3 && selection.text_end == 11, "Ctrl+Shift+Down extends through a paragraph boundary");
+            await InputRoutingTests.Key(VirtualKey.Up, control: true, shift: true);
+            selection = view.LogicalSelection();
+            Check(selection.text_start == 0 && selection.text_end == 3, "Ctrl+Shift+Up reverses paragraph selection around its anchor");
             await Start(); await InputRoutingTests.Text("i");
             await InputRoutingTests.Key(VirtualKey.Right, shift: true); await InputRoutingTests.Key(VirtualKey.Left);
             Check(view.Presentation.mode == VIEM_MODE_INSERT, "ending a native selection returns to its originating Insert mode");

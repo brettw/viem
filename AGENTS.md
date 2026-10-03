@@ -985,6 +985,11 @@ selection exports remain available even when they have no drawable rectangles.
 Mouse-up stops scrolling without dropping the range. Native editing and menu
 actions use core selection and editing intentions, never a second frontend
 selection or undo authority.
+Double-click dragging retains whole-word granularity, including direction
+changes and autoscrolling, until mouse-up. Native paragraph shortcuts follow
+semantic paragraph boundaries independently of wrapping or line policy;
+Option-Up/Down and Windows Ctrl-Up/Down also support Shift selection. Their
+platform-specific start/end destinations are specified in the native selection guide.
 
 ### Registers, repeat, and history
 

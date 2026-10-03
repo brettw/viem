@@ -66,6 +66,9 @@ pub enum NavigationKey {
     Right,
     WordLeft,
     WordRight,
+    ParagraphStart,
+    ParagraphEnd,
+    NextParagraph,
     Up,
     Down,
     Home,
@@ -82,6 +85,9 @@ impl NavigationKey {
             Self::Right => Key::Right,
             Self::WordLeft => Key::WordLeft,
             Self::WordRight => Key::WordRight,
+            Self::ParagraphStart => Key::ParagraphStart,
+            Self::ParagraphEnd => Key::ParagraphEnd,
+            Self::NextParagraph => Key::NextParagraph,
             Self::Up => Key::Up,
             Self::Down => Key::Down,
             Self::Home => Key::Home,
@@ -98,6 +104,9 @@ impl NavigationKey {
             Key::Right => Self::Right,
             Key::WordLeft => Self::WordLeft,
             Key::WordRight => Self::WordRight,
+            Key::ParagraphStart => Self::ParagraphStart,
+            Key::ParagraphEnd => Self::ParagraphEnd,
+            Key::NextParagraph => Self::NextParagraph,
             Key::Up => Self::Up,
             Key::Down => Self::Down,
             Key::Home => Self::Home,
@@ -119,6 +128,71 @@ pub(super) enum SelectionBehavior {
 }
 
 impl CommandInterpreter {
+    pub(crate) fn pointer_word_range(document: &Document, offset: usize) -> Result<Range<usize>, DocumentError> {
+        document.text_point(offset)?;
+        text_object::pointer_word_range(&document.hard_line_snapshot(), offset)
+            .ok_or(DocumentError::AmbiguousProjection)
+    }
+
+    pub(crate) fn select_pointer_word(&mut self, document: &Document, word: Range<usize>, extend: bool) {
+        let origin = if extend { self.pointer_word_origin.clone() } else { None }
+            .unwrap_or_else(|| word.clone());
+        // Keep an existing Visual/Select policy, including when the gesture
+        // begins inside it. Ordinary pointer entry selects the mouse policy.
+        self.set_cursor_from_pointer(document, word.start, BoundaryAffinity::Downstream, true);
+        let backwards = word.start < origin.start;
+        let range = word.start.min(origin.start)..word.end.max(origin.end);
+        let end = if self.is_native_selection() || range.is_empty() {
+            range.end
+        } else {
+            document.hard_line_snapshot().previous_grapheme_boundary(range.end).unwrap_or(range.start)
+        };
+        self.visual_anchor = Some(if backwards { end } else { range.start });
+        self.cursor = if backwards { range.start } else { end };
+        self.boundary_affinity = if backwards { BoundaryAffinity::Downstream } else { BoundaryAffinity::Upstream };
+        self.selection_exclusive = self.is_native_selection();
+        self.visual_to_line_end = false;
+        self.pointer_word_origin = Some(origin);
+    }
+
+    pub(super) fn move_paragraph_boundary(&mut self, document: &Document, key: Key) -> Result<CommandOutput, DocumentError> {
+        let old = self.cursor;
+        let lines = document.hard_line_snapshot();
+        let count = self.count.take().unwrap_or(1).max(1);
+        let mut at = old;
+        for _ in 0..count {
+            let range = document.paragraph_range_at(at)?;
+            let next = match key {
+                Key::ParagraphStart if at > range.start => range.start,
+                Key::ParagraphStart => match lines.previous_grapheme_boundary(range.start) {
+                    Some(previous) => document.paragraph_range_at(previous)?.start,
+                    None => 0,
+                },
+                Key::ParagraphEnd if at < range.end => range.end,
+                Key::ParagraphEnd | Key::NextParagraph => match lines.next_grapheme_boundary(range.end) {
+                    Some(next) => {
+                        let next = document.paragraph_range_at(next)?;
+                        if key == Key::NextParagraph { next.start } else { next.end }
+                    },
+                    None => lines.text_length(),
+                },
+                _ => unreachable!(),
+            };
+            if next == at { break; }
+            at = next;
+        }
+        self.cursor = at;
+        self.boundary_affinity = if key == Key::ParagraphEnd { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream };
+        self.clear_pending();
+        self.retire_typing_context();
+        self.desired_x = None;
+        self.preferred_column = None;
+        self.visual_position = None;
+        self.visual_to_line_end = false;
+        self.physical_cursor = None;
+        Ok(CommandOutput { cursor_moved: old != at, ..CommandOutput::complete() })
+    }
+
     pub fn is_select_mode(&self) -> bool {
         self.is_text_selection() && self.selection_behavior == SelectionBehavior::Select
     }
@@ -172,7 +246,7 @@ impl CommandInterpreter {
             || self.select_visual_once
             || matches!(
                 event,
-                InputEvent::Key(Key::CopySelection | Key::ModifiedNavigation { .. } | Key::Ctrl('g' | 'G'))
+                InputEvent::Key(Key::CopySelection | Key::ModifiedNavigation { .. } | Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph | Key::Ctrl('g' | 'G'))
             )
             || (matches!(self.pending, Pending::G { .. })
                 && matches!(
@@ -233,6 +307,7 @@ impl CommandInterpreter {
         event: &InputEvent,
         mut context: Option<&mut LayoutCommandContext<'_>>,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        self.pointer_word_origin = None;
         if self.literal_input_pending()
             || self.mode == Mode::CommandLine
             || self.substitute_confirmation.is_some()

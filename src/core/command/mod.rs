@@ -190,6 +190,9 @@ pub enum Key {
     Right,
     WordLeft,
     WordRight,
+    ParagraphStart,
+    ParagraphEnd,
+    NextParagraph,
     Up,
     Down,
     Home,
@@ -1326,6 +1329,9 @@ pub struct CommandInterpreter {
     desired_x: Option<f32>,
     preferred_column: Option<usize>,
     visual_anchor: Option<usize>,
+    /// Initial whole word of the current pointer gesture; rebased with the
+    /// selection anchors so dragging back across it can reverse direction.
+    pointer_word_origin: Option<Range<usize>>,
     /// Whether hard-line `$` established the moving edge of the active
     /// character/line Visual selection. Vim carries this sentinel through
     /// vertical extension and dot repeats it to the target line end.
@@ -1410,6 +1416,7 @@ pub(crate) struct CommandPositionAnchors {
     revision: Revision,
     cursor: TextAnchor,
     visual_anchor: Option<TextAnchor>,
+    pointer_word_origin: Option<(TextAnchor, TextAnchor)>,
     /// True when the invoking active Visual Character selection occupied one
     /// hard line. Vim retains the old byte columns for `gv` after a same-line
     /// destructive operator (clamped against the result), while cross-line
@@ -1469,6 +1476,7 @@ impl CommandInterpreter {
             desired_x: None,
             preferred_column: None,
             visual_anchor: None,
+            pointer_word_origin: None,
             visual_to_line_end: false,
             visual_block: None,
             active_visual_block: None,
@@ -1738,6 +1746,10 @@ impl CommandInterpreter {
                 })
                 .transpose()?,
             active_visual_was_single_hard_line,
+            pointer_word_origin: self.pointer_word_origin.as_ref().map(|range| {
+                Ok((make(range.start, Association::AfterInsertion, BoundaryAffinity::Downstream)?,
+                    make(range.end, Association::BeforeInsertion, BoundaryAffinity::Upstream)?))
+            }).transpose()?,
             marks,
             jumps,
             last_visual,
@@ -1800,6 +1812,13 @@ impl CommandInterpreter {
             return Ok(false);
         };
         next.cursor = cursor;
+        next.pointer_word_origin = match anchors.pointer_word_origin {
+            Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
+                (Some(start), Some(end)) if start <= end => Some(start..end),
+                _ => None,
+            },
+            None => None,
+        };
         next.visual_anchor = match anchors.visual_anchor {
             Some(anchor) => {
                 let Some(offset) = mapped_anchor(map, anchor)? else {
@@ -1966,6 +1985,16 @@ impl CommandInterpreter {
                     };
                     Some(mapped)
                 }
+                None => None,
+            };
+        }
+
+        if self.pointer_word_origin == before.pointer_word_origin {
+            next.pointer_word_origin = match anchors.pointer_word_origin {
+                Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
+                    (Some(start), Some(end)) if start <= end => Some(start..end),
+                    _ => None,
+                },
                 None => None,
             };
         }
@@ -2449,6 +2478,7 @@ impl CommandInterpreter {
         self.desired_x = None;
         self.preferred_column = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.command_line_state = None;
@@ -2635,6 +2665,7 @@ impl CommandInterpreter {
     fn cancel_visual_block_rebind(&mut self, error: VisualBlockRebindError) {
         self.mode = Mode::Normal;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_position = None;
@@ -2769,6 +2800,7 @@ impl CommandInterpreter {
         if !lines.is_grapheme_boundary(offset) {
             return false;
         }
+        self.pointer_word_origin = None;
         self.table_cells = None;
         self.table_tab_selection = false;
 
@@ -2859,6 +2891,7 @@ impl CommandInterpreter {
         self.desired_x = None;
         self.preferred_column = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_to_line_end = false;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -2904,6 +2937,7 @@ impl CommandInterpreter {
         self.desired_x = None;
         self.preferred_column = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.clear_pending();
@@ -4344,14 +4378,14 @@ impl CommandInterpreter {
                 }
                 CommandOutput::pending()
             }
-            Key::Home | Key::DocumentStart | Key::Ctrl('b' | 'B') => {
+            Key::Home | Key::DocumentStart | Key::ParagraphStart | Key::Ctrl('b' | 'B') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = 0;
                 }
                 CommandOutput::pending()
             }
-            Key::End | Key::DocumentEnd | Key::Ctrl('e' | 'E') => {
+            Key::End | Key::DocumentEnd | Key::ParagraphEnd | Key::NextParagraph | Key::Ctrl('e' | 'E') => {
                 if let Some(state) = self.command_line_state.as_mut() {
                     state.buffer.selection_anchor = None;
                     state.buffer.cursor = state.buffer.input.len();
@@ -5700,6 +5734,7 @@ impl CommandInterpreter {
         self.selection_return_mode = Mode::Normal;
         self.visual_to_line_end = false;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -6703,6 +6738,7 @@ impl CommandInterpreter {
         self.mode = Mode::VisualBlock;
         self.visual_to_line_end = shape.to_line_end;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -6800,6 +6836,7 @@ impl CommandInterpreter {
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_position = None;
         self.desired_x = None;
         self.preferred_column = None;
@@ -7635,6 +7672,7 @@ impl CommandInterpreter {
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         self.desired_x = None;
@@ -7809,6 +7847,7 @@ impl CommandInterpreter {
         self.mode = Mode::VisualBlock;
         self.visual_to_line_end = memory.to_line_end;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -8371,6 +8410,14 @@ impl CommandInterpreter {
         if self.is_cancel_input(&InputEvent::Key(key)) { return self.cancel_input(document); }
         if self.insert_control_g_pending() {
             return self.handle_insert_control_key(document, key);
+        }
+        if matches!(key, Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph)
+            && !matches!(self.mode, Mode::Insert | Mode::Replace | Mode::CommandLine)
+        {
+            if self.pending != Pending::None || self.mode == Mode::VisualBlock {
+                return Ok(CommandOutput::unsupported("paragraph navigation in this command"));
+            }
+            return self.move_paragraph_boundary(document, key);
         }
         if key == Key::SelectAll {
             let return_mode = self.mode;
@@ -9786,6 +9833,7 @@ impl CommandInterpreter {
         self.last_visual = remembered;
         self.update_visual_marks();
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_to_line_end = false;
         if operator != Operator::Change {
             self.mode = Mode::Normal;
@@ -9823,6 +9871,7 @@ impl CommandInterpreter {
             });
         }
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.leave_visual();
         output.mode_changed = true;
         Ok(output)
@@ -10004,6 +10053,7 @@ impl CommandInterpreter {
         };
         self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.leave_visual();
         let changed = document.revision() != before_revision;
         if changed && !self.replaying {
@@ -10043,6 +10093,7 @@ impl CommandInterpreter {
         let count = hard_line_count_for_range(&document.hard_line_snapshot(), &extent.range);
         self.cursor = extent.range.start;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.leave_visual();
         let before = document.revision();
         let mut output = self.join_hard_lines(document, count, count, insert_space)?;
@@ -10268,7 +10319,8 @@ impl CommandInterpreter {
                 }
             }
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End
-            | Key::DocumentStart | Key::DocumentEnd | Key::WordLeft | Key::WordRight => {
+            | Key::DocumentStart | Key::DocumentEnd | Key::WordLeft | Key::WordRight
+            | Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph => {
                 if let Some(output) = self.join_insert_horizontal_move(document, key) {
                     return Ok(output);
                 }
@@ -10288,6 +10340,8 @@ impl CommandInterpreter {
                 }
                 let mut output = if matches!(key, Key::DocumentStart | Key::DocumentEnd) {
                     self.move_to_document_edge(document, key == Key::DocumentEnd)
+                } else if matches!(key, Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph) {
+                    self.move_paragraph_boundary(document, key)?
                 } else if matches!(key, Key::Home | Key::End) {
                     self.move_edit_line_edge(document, key == Key::End)?
                 } else {
@@ -10396,6 +10450,7 @@ impl CommandInterpreter {
                 "Visual Block insertion cannot contain a hard line break",
             )),
             Key::DocumentStart | Key::DocumentEnd | Key::BackTab
+            | Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph
             | Key::Delete
             | Key::Left
             | Key::Right
@@ -12385,6 +12440,7 @@ impl CommandInterpreter {
         self.mode = Mode::Normal;
         self.visual_to_line_end = false;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.clear_pending();
     }
 
@@ -12962,6 +13018,7 @@ impl CommandInterpreter {
         self.desired_x = None;
         self.preferred_column = None;
         self.visual_anchor = None;
+        self.pointer_word_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_block_insert = None;

@@ -51,7 +51,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private (string Text, string Fragment)? clipboardOverride;
     private readonly DispatcherTimer blink = new();
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
-    private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, caretVisible = true;
+    private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
     private bool active;
     public bool IsActive { get => active; set { active = value; Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
@@ -105,15 +105,15 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.PointerMoved += OnPointerMoved;
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
-            pressedPointer = null; dragging = false; Canvas.ReleasePointerCapture(e.Pointer);
+            pressedPointer = null; dragging = false; wordSelectionDragging = false; Canvas.ReleasePointerCapture(e.Pointer);
         };
         Canvas.PointerCaptureLost += (_, e) => {
-            if (pressedPointer == e.Pointer.PointerId) { pressedPointer = null; dragging = false; }
+            if (pressedPointer == e.Pointer.PointerId) { pressedPointer = null; dragging = false; wordSelectionDragging = false; }
         };
         Canvas.DoubleTapped += (_, e) => Run(() => {
-            uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL;
-            var p = e.GetPosition(Canvas); View?.Key(VIEM_KEY_ESCAPE); View?.Place((float)p.X, (float)p.Y);
-            View?.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_MOUSE, returnMode); e.Handled = true;
+            var p = e.GetPosition(Canvas);
+            View?.Place((float)p.X, (float)p.Y, wholeWords: true);
+            wordSelectionDragging = true; e.Handled = true;
         });
         Canvas.PointerWheelChanged += (_, e) => {
             if (View == null) return; var p = e.GetCurrentPoint(Canvas); bool ctrl = Down(VirtualKey.Control);
@@ -383,6 +383,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
         DismissCommandOutput(false);
+        wordSelectionDragging = false;
         FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
         Run(() => View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift)));
         BeginTableDrag(point);
@@ -396,7 +397,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         var point = e.GetCurrentPoint(Canvas);
         if (!point.Properties.IsLeftButtonPressed)
         {
-            pressedPointer = null; dragging = false; Canvas.ReleasePointerCapture(e.Pointer); return;
+            pressedPointer = null; dragging = false; wordSelectionDragging = false; Canvas.ReleasePointerCapture(e.Pointer); return;
         }
         dragPoint = point.Position;
         if (!dragging)
@@ -406,7 +407,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (Math.Abs(dragPoint.X - pointerPress.X) < 4 && Math.Abs(dragPoint.Y - pointerPress.Y) < 4) return;
             dragging = true;
         }
-        Run(() => { if (!DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true); });
+        Run(() => { if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging); });
         e.Handled = true;
     }
     internal ScrollBar VerticalScrollControl => vertical;
@@ -575,7 +576,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             double dx = dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
             if (dx == 0 && dy == 0) return;
             View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
-            if (!DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true);
+            if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
         });
     }
     public void Dispose()

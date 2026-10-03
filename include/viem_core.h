@@ -262,6 +262,9 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_WORD_RIGHT 21u
 #define VIEM_KEY_FUNCTION 22u
 #define VIEM_KEY_COPY_SELECTION 23u
+#define VIEM_KEY_PARAGRAPH_START 24u
+#define VIEM_KEY_PARAGRAPH_END 25u
+#define VIEM_KEY_NEXT_PARAGRAPH 26u
 #define VIEM_KEY_MODIFIER_SHIFT 1u
 #define VIEM_KEY_MODIFIER_CONTROL 2u
 #define VIEM_KEY_MODIFIER_ALT 4u
@@ -1842,6 +1845,8 @@ typedef struct ViemSetSemanticStyleV1 {
   ((uint32_t)sizeof(ViemSetSemanticStyleV1))
 
 #define VIEM_PLACE_CURSOR_EXTEND_SELECTION (1u << 0)
+/* Select whole words; EXTEND retains the gesture's original word. */
+#define VIEM_PLACE_CURSOR_WORD_SELECTION (1u << 1)
 
 typedef struct ViemPlaceCursorV1 {
   uint32_t struct_size;

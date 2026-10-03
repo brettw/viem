@@ -36,6 +36,17 @@ Put `set` commands in `startup.viem` to retain them across launches.
 - Native Copy preserves the selection, direction, active endpoint, caret, and
   mode. Vim `y` and explicit clipboard-register yanks retain their usual
   selection-ending rules.
+- Double-click dragging extends by whole words using the same portable word
+  classes as word selection. Reversing direction retains the original word;
+  autoscrolling retains this granularity until mouse-up. A subsequent ordinary
+  click or drag uses character boundaries again.
+- Option-Up on macOS and Ctrl-Up on Windows move to the current paragraph's
+  start, or the preceding paragraph's start when already there. Option-Down
+  moves to the current paragraph's end, then successive paragraph ends;
+  Ctrl-Down moves to the next paragraph's start. Shift extends the selection
+  with the same boundaries. Semantic paragraphs include their internal hard
+  breaks; soft wrapping and the active line-navigation policy do not change
+  these destinations. Empty paragraphs remain navigation stops.
 
 The references are [Vim Select mode](https://vimhelp.org/visual.txt.html#Select-mode)
 and the [`keymodel`/`selectmode` options](https://vimhelp.org/options.txt.html).
@@ -49,8 +60,6 @@ policy and matching native input tests.
 | Area | Current behavior | Follow-up |
 | --- | --- | --- |
 | Word movement | macOS Option-Left/Right and Windows Ctrl-Left/Right use Vim word boundaries. | Decide whether native navigation should distinguish word ends from next-word starts. |
-| Paragraph movement | macOS Option-Up/Down and Windows Ctrl-Up/Down move by rows, including Shift selection. | Add explicit paragraph-boundary navigation and selection. |
-| Word drag | Double-click selects a word; dragging then extends by character. | Preserve word granularity throughout the gesture. |
 | Windows triple-click | No dedicated line/paragraph selection gesture. | Add a gesture matching the macOS active line-policy behavior. |
 | Clipboard edit mode | Native Cut and plain-text Paste use Vim operators and can finish in Normal. | Decide whether native replacement should resume Insert. |
 | Windows Ctrl-A | Routed to the Vim interpreter rather than native Select All; Select All is in the menu. | Any native Select All shortcut requires an explicit preference/product decision. |

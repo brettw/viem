@@ -157,6 +157,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var lastNativeInputContext: NSTextInputContext?
     private var lastNativeTextInputAvailability = false
     private var suppressInputContextDiscard = false
+    private var wordSelectionDragging = false
     private var dragAutoscrollTimer: Timer?
     private var dragAutoscrollLocation: NSPoint?
     private var lastCustomCaretState: EVCustomCaretState?
@@ -1822,9 +1823,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             kind = UInt32(flags.contains(.command) ? VIEM_KEY_END
                 : !flags.intersection([.option, .control]).isEmpty ? VIEM_KEY_WORD_RIGHT : VIEM_KEY_RIGHT)
         case 126:
-            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_START : VIEM_KEY_UP)
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_START : flags.contains(.option) ? VIEM_KEY_PARAGRAPH_START : VIEM_KEY_UP)
         case 125:
-            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_END : VIEM_KEY_DOWN)
+            kind = UInt32(flags.contains(.command) ? VIEM_KEY_DOCUMENT_END : flags.contains(.option) ? VIEM_KEY_PARAGRAPH_END : VIEM_KEY_DOWN)
         case 115 where flags.contains(.control): kind = UInt32(VIEM_KEY_DOCUMENT_START)
         case 119 where flags.contains(.control): kind = UInt32(VIEM_KEY_DOCUMENT_END)
         case 116: kind = UInt32(VIEM_KEY_PAGE_UP)
@@ -1849,8 +1850,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         case #selector(moveWordRight(_:)), #selector(moveWordForward(_:)): UInt32(VIEM_KEY_WORD_RIGHT)
         case #selector(moveUp(_:)): UInt32(VIEM_KEY_UP)
         case #selector(moveDown(_:)): UInt32(VIEM_KEY_DOWN)
-        case #selector(moveToBeginningOfLine(_:)), #selector(moveToBeginningOfParagraph(_:)): UInt32(VIEM_KEY_HOME)
-        case #selector(moveToEndOfLine(_:)), #selector(moveToEndOfParagraph(_:)): UInt32(VIEM_KEY_END)
+        case #selector(moveToBeginningOfLine(_:)): UInt32(VIEM_KEY_HOME)
+        case #selector(moveToBeginningOfParagraph(_:)): UInt32(VIEM_KEY_PARAGRAPH_START)
+        case #selector(moveToEndOfLine(_:)): UInt32(VIEM_KEY_END)
+        case #selector(moveToEndOfParagraph(_:)): UInt32(VIEM_KEY_PARAGRAPH_END)
         case #selector(moveToBeginningOfDocument(_:)), #selector(scrollToBeginningOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_START)
         case #selector(moveToEndOfDocument(_:)), #selector(scrollToEndOfDocument(_:)): UInt32(VIEM_KEY_DOCUMENT_END)
         case #selector(pageUp(_:)), #selector(scrollPageUp(_:)): UInt32(VIEM_KEY_PAGE_UP)
@@ -2009,32 +2012,35 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
         let returnMode = surface?.viewPresentation.mode ?? UInt32(VIEM_MODE_NORMAL)
-        if event.clickCount >= 2, let surface, let session = surface.session,
+        if event.clickCount >= 3, let surface, let session = surface.session,
            [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
             if compositionActive {
                 cancelActiveMarkedText(using: session, discardInputContext: true)
             }
             // Escape can move an insertion caret to the preceding grapheme.
-            // Normalize before hit testing so word/line selection uses the
+            // Normalize before hit testing so line selection uses the
             // pointer location rather than that preceding character.
             surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         }
-        placeCursor(for: event, extending: event.modifierFlags.contains(.shift))
-        tables.beginDrag(at: convert(event.locationInWindow, from: nil))
-        if event.clickCount >= 2 {
-            surface?.selectFromPointer(event, returningTo: returnMode)
+        wordSelectionDragging = event.clickCount == 2
+        placeCursor(for: event, extending: !wordSelectionDragging && event.modifierFlags.contains(.shift))
+        if wordSelectionDragging { tables.endDrag() }
+        else { tables.beginDrag(at: convert(event.locationInWindow, from: nil)) }
+        if event.clickCount >= 3 {
+            surface?.selectLineFromPointer(event, returningTo: returnMode)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
         _ = autoscroll(with: event)
         customCaretBlinkController.restartAfterActivity()
-        if tables.drag(to: convert(event.locationInWindow, from: nil)) { updateDragAutoscroll(for: convert(event.locationInWindow, from: nil)); return }
+        if !wordSelectionDragging && tables.drag(to: convert(event.locationInWindow, from: nil)) { updateDragAutoscroll(for: convert(event.locationInWindow, from: nil)); return }
         placeCursor(for: event, extending: true)
         updateDragAutoscroll(for: convert(event.locationInWindow, from: nil))
     }
 
     override func mouseUp(with event: NSEvent) {
+        wordSelectionDragging = false
         tables.endDrag()
         stopDragAutoscroll()
         super.mouseUp(with: event)
@@ -2057,7 +2063,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let layoutPoint = layoutPoint(fromViewPoint: local)
         surface.performInput {
             let point = try session.hitTest(layoutPoint, in: snapshot.info)
-            _ = try session.placeCursor(point, extendSelection: extending)
+            _ = try session.placeCursor(point, extendSelection: extending, wholeWords: wordSelectionDragging)
         }
     }
 
@@ -3055,7 +3061,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             x: min(max(location.x, viewport.minX), max(viewport.minX, viewport.maxX - 0.5)),
             y: min(max(location.y, viewport.minY), max(viewport.minY, viewport.maxY - 0.5))
         )
-        if !tables.drag(to: edgePoint) { placeCursor(at: edgePoint, extending: true) }
+        if wordSelectionDragging || !tables.drag(to: edgePoint) { placeCursor(at: edgePoint, extending: true) }
         return true
     }
 

@@ -400,6 +400,9 @@ pub const VIEM_KEY_WORD_LEFT: u32 = 20;
 pub const VIEM_KEY_WORD_RIGHT: u32 = 21;
 pub const VIEM_KEY_FUNCTION: u32 = 22;
 pub const VIEM_KEY_COPY_SELECTION: u32 = 23;
+pub const VIEM_KEY_PARAGRAPH_START: u32 = 24;
+pub const VIEM_KEY_PARAGRAPH_END: u32 = 25;
+pub const VIEM_KEY_NEXT_PARAGRAPH: u32 = 26;
 pub const VIEM_KEY_MODIFIER_SHIFT: u32 = 1;
 pub const VIEM_KEY_MODIFIER_CONTROL: u32 = 2;
 pub const VIEM_KEY_MODIFIER_ALT: u32 = 4;
@@ -2093,6 +2096,8 @@ pub struct ViemSetSemanticStyleV1 {
 pub const VIEM_SET_SEMANTIC_STYLE_V1_SIZE: u32 = size_of::<ViemSetSemanticStyleV1>() as u32;
 
 pub const VIEM_PLACE_CURSOR_EXTEND_SELECTION: u32 = 1 << 0;
+/// Select whole words; EXTEND retains the gesture's original word.
+pub const VIEM_PLACE_CURSOR_WORD_SELECTION: u32 = 1 << 1;
 
 /// Revision-bound pointer-placement intention. `text_offset` is a formatted
 /// UTF-8 boundary returned by exact hit testing; affinity preserves the visual
@@ -4341,7 +4346,7 @@ fn execution_context_permits(
 fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
     if input.struct_size < VIEM_KEY_INPUT_V1_SIZE
         || input.modifiers & !15 != 0
-        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
+        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_PARAGRAPH_START | VIEM_KEY_PARAGRAPH_END | VIEM_KEY_NEXT_PARAGRAPH | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -4369,6 +4374,9 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_RIGHT => special(Key::Right),
         VIEM_KEY_WORD_LEFT => special(Key::WordLeft),
         VIEM_KEY_WORD_RIGHT => special(Key::WordRight),
+        VIEM_KEY_PARAGRAPH_START => special(Key::ParagraphStart),
+        VIEM_KEY_PARAGRAPH_END => special(Key::ParagraphEnd),
+        VIEM_KEY_NEXT_PARAGRAPH => special(Key::NextParagraph),
         VIEM_KEY_UP => special(Key::Up),
         VIEM_KEY_DOWN => special(Key::Down),
         VIEM_KEY_HOME => special(Key::Home),
@@ -9075,7 +9083,7 @@ pub unsafe extern "C" fn viem_core_view_place_cursor(
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
         if request.struct_size < VIEM_PLACE_CURSOR_V1_SIZE
-            || request.flags & !VIEM_PLACE_CURSOR_EXTEND_SELECTION != 0
+            || request.flags & !(VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION) != 0
             || request.reserved != 0
         {
             return Err(ViemStatus::InvalidArgument);
@@ -9088,11 +9096,16 @@ pub unsafe extern "C" fn viem_core_view_place_cursor(
             dispatch_event(
                 core,
                 view,
-                CoreEvent::PlaceCursor {
-                    document_revision: Revision(request.document_revision),
-                    text_offset,
-                    affinity,
-                    extend_selection: request.flags & VIEM_PLACE_CURSOR_EXTEND_SELECTION != 0,
+                if request.flags & VIEM_PLACE_CURSOR_WORD_SELECTION != 0 {
+                    CoreEvent::SelectPointerWord {
+                        document_revision: Revision(request.document_revision), text_offset, affinity,
+                        extend_selection: request.flags & VIEM_PLACE_CURSOR_EXTEND_SELECTION != 0,
+                    }
+                } else {
+                    CoreEvent::PlaceCursor {
+                        document_revision: Revision(request.document_revision), text_offset, affinity,
+                        extend_selection: request.flags & VIEM_PLACE_CURSOR_EXTEND_SELECTION != 0,
+                    }
                 },
             )
         })?;
