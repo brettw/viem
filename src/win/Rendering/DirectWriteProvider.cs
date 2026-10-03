@@ -62,7 +62,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private static readonly bool verifyGlyphOrigins = Diagnostics.FrontendSmokeTests.ReportPath != null
         && Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") == null;
     internal string[] RenderedFontNames(ulong handle) => resources.TryGetValue(handle, out var resource)
-        ? resource.Parts.SelectMany(p => p.Font.GetInformationalStrings(CanvasFontInformation.PostscriptName).Values).Distinct().ToArray() : [];
+        // Inspect the actual font table: DirectWrite can synthesize identical
+        // informational names for different variable designs.
+        ? resource.Parts.Select(p => FontVariations.Name(FontVariations.Table(p.Font, "name"), 6,
+            p.Font.GetInformationalStrings(CanvasFontInformation.PostscriptName).Values.FirstOrDefault() ?? "")).Distinct().ToArray() : [];
 #endif
 
     public DirectWriteProvider(CanvasDevice device, DispatcherQueue dispatcher) : this(device, dispatcher, new(), null) { }

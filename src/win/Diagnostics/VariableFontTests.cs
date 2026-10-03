@@ -15,6 +15,7 @@ internal static class VariableFontTests
     private static void Check(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
+        FlightlinePortableChecks(pane);
         var packagedFace = FontCatalog.ForFamilyChange("Flightline Code", null)!;
         using (var format = new Microsoft.Graphics.Canvas.Text.CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(packagedFace.Family, packagedFace.Weight, packagedFace.Slant, packagedFace.Stretch), FontSize = 14 })
         using (var layout = new Microsoft.Graphics.Canvas.Text.CanvasTextLayout(pane.Canvas.Device, "Packaged fonts", format, 1000, 200)) {
@@ -22,12 +23,13 @@ internal static class VariableFontTests
             var capture = new GlyphCapture(f => new GlyphFontMetadata(f)); DirectWriteGlyphCapture.Draw(layout, capture);
             var parts = capture.Extract(0, 14, 0, 0);
             Check(parts.Count > 0, "typographic font selection preserves packaged-font glyphs");
-            Check(parts.First().Font.GetInformationalStrings(Microsoft.Graphics.Canvas.Text.CanvasFontInformation.PostscriptName).Values.Contains(packagedFace.Name), "typographic selection retains the packaged font collection instead of substituting a system face");
+            Check(FontVariations.Name(FontVariations.Table(parts.First().Font, "name"), 6, "") == packagedFace.Name, "typographic selection retains the packaged font collection instead of substituting a system face");
         }
         RecursiveFontChecks(pane);
         await RecursiveInspectorChecks(pane, preferences);
         FlightlineFontChecks(pane);
         await FlightlineInspectorChecks(pane, preferences);
+        await FlightlineSavedInspectorChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -152,12 +154,95 @@ internal static class VariableFontTests
                 inspector.RedoThemeForTesting();
                 slider = Descendants<Slider>(inspector.RootControl).Single();
                 Check(slider.Value == 437, "Flightline slider redo restores the custom weight");
-                var run = inspector.ThemeView.Layout().Clusters.First().render_run.identifier;
-                Check(Math.Abs(inspector.ThemeView.Provider.RenderedFontAxes(run).First()["wght"] - 437) < .001f, "Flightline inspector edits reach native shaping");
-                Check(inspector.ThemeView.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline inspector retains its separate italic design");
+                using var renderedDoc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+                renderedDoc.InitializeStyleDefaults(inspector.ThemeView.ExportStyleDefaults());
+                using var renderedView = new CoreView(renderedDoc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+                var run = renderedView.Layout().Clusters.First().render_run.identifier;
+                Check(Math.Abs(renderedView.Provider.RenderedFontAxes(run).First()["wght"] - 437) < .001f, "saved Flightline inspector edits reach native shaping");
+                Check(renderedView.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline inspector retains its separate italic design");
             }
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline inspector leaves Markdown source unchanged");
         } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+    }
+
+    private static byte[] FlightlineStyles(string subfamily, float weight) => System.Text.Encoding.UTF8.GetBytes($$$"""
+        {"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph",
+          "based_on":null,"next_paragraph_style":null,"block":{},"character":{
+            "font_families":["Flightline Code","serif"],"font_face":"{{{subfamily}}}",
+            "font_axes":{"wght":{{{weight}}}},"weight":{{{weight}}},"slant":"Upright"}}]}
+        """);
+
+    private static void FlightlinePortableChecks(EditorPane pane)
+    {
+        // Resolve before opening the picker: discovery must not depend on which
+        // path populated the catalogue first, nor on installed static copies.
+        Check(FontCatalog.Resolve("Flightline Code", "Normal")?.Family == "Flightline Code", "portable Flightline family resolves before picker discovery");
+        var faces = FontCatalog.Faces("Flightline Code");
+        Check(faces.Length == 2 && faces.All(f => f.Source != null), "Flightline retains both packaged designs without duplicate installed static faces");
+        var normal = FontCatalog.Match("Flightline Code", "Normal");
+        var italic = FontCatalog.Match("Flightline Code", "Normal Italic");
+        Check(normal is { Source: not null, Slant: FontStyle.Normal, Weight: 400 }
+            && italic is { Source: not null, Slant: FontStyle.Italic, Weight: 400 }, "portable Flightline Normal and Normal Italic identify different designs at the default weight");
+        Check(FontCatalog.Current("Flightline Code", 250, 0) == normal, "a custom variable weight without a subfamily retains the upright catalogue and sliders");
+        foreach (var face in faces) {
+            var info = FontVariations.For(face);
+            bool slanted = face.Slant != FontStyle.Normal;
+            var requests = info.Instances.Where(i => i.Name != "Default").Select(i => (i.Name, Weight: i.Values["wght"]))
+                .Append((face.PortableStyle, 250f));
+            foreach (var (subfamily, weight) in requests) {
+                Check(FontCatalog.Match("Flightline Code", subfamily) == face, $"portable Flightline {subfamily} resolves its own design");
+                byte[] source = "Saved font request"u8.ToArray();
+                using var doc = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
+                Check(doc.InitializeStyleDefaults(FlightlineStyles(subfamily, weight)).Length == 0, "saved Flightline family, subfamily and weight load without diagnostics");
+                using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+                byte[] saved = view.ExportStyleDefaults();
+                var run = view.Layout().Clusters.First().render_run.identifier;
+                Check(view.Provider.RenderedFontNames(run).Contains(slanted ? "FlightlineCode-NormalItalic" : "FlightlineCode-Normal")
+                    && Math.Abs(view.Provider.RenderedFontAxes(run).First()["wght"] - weight) < .001f,
+                    $"saved Flightline {subfamily} renders its design and weight {weight} without a picker edit");
+                Check(saved.AsSpan().SequenceEqual(view.ExportStyleDefaults()) && source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "resolving a saved Flightline request changes neither source nor style declarations");
+            }
+        }
+        // Exercise the shipped theme itself without pinning its numeric values.
+        using var theme = System.Text.Json.JsonDocument.Parse(CoreThemes.Defaults());
+        var markdown = theme.RootElement.GetProperty("styles").GetProperty("markdown");
+        using var midnightDoc = new CoreDocument("`Midnight code`"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        midnightDoc.InitializeStyleDefaults(System.Text.Encoding.UTF8.GetBytes(markdown.GetRawText()));
+        using var midnight = new CoreView(midnightDoc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        midnight.SetMarkdownSource(false);
+        var midnightRun = midnight.Layout().Clusters.First().render_run.identifier;
+        Check(midnight.Provider.RenderedFontNames(midnightRun).Contains("FlightlineCode-Normal"), "Midnight inline Code renders the upright Flightline design");
+    }
+
+    private static async Task FlightlineSavedInspectorChecks(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        try {
+            foreach (string subfamily in new[] { "Normal", "Normal Italic", "Light", "Light Italic", "" }) {
+                using var doc = new CoreDocument("Saved Flightline inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+                byte[] styles = FlightlineStyles(subfamily, 250);
+                doc.InitializeStyleDefaults(styles);
+                using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+                preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, styles);
+                byte[] before = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+                var inspector = new StyleWindow(view, preferences); inspector.Activate();
+                try {
+                    await Task.Delay(50);
+                    var slider = Descendants<Slider>(inspector.RootControl).Single();
+                    bool italic = subfamily.Contains("Italic", StringComparison.Ordinal);
+                    var presets = inspector.FontVariantControl.Items.OfType<FontInstance>().ToArray();
+                    Check(slider.Value == 250 && inspector.FontVariantControl.SelectedItem as string == "Custom"
+                        && presets.Length == 7 && presets.Where(p => p.Name != "Default").All(p => p.Name.Contains("Italic", StringComparison.Ordinal) == italic),
+                        "opening a saved Flightline style populates matching presets and the custom weight without changing design");
+                    inspector.RefreshForTesting();
+                    Check(before.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN)), "opening and refreshing Flightline controls do not rewrite the saved request");
+                    inspector.FontVariantControl.SelectedItem = presets.Single(p => p.Name == (italic ? "Light Italic" : "Light"));
+                    Check(slider.Value == 350 && inspector.FontVariantControl.SelectedItem is FontInstance { Name: "Light" or "Light Italic" }, "a saved Flightline style selects its matching Light preset consistently");
+                    inspector.UndoThemeForTesting();
+                    Check(Descendants<Slider>(inspector.RootControl).Single().Value == 250 && inspector.FontVariantControl.SelectedItem as string == "Custom", "undo restores the saved custom Flightline weight and picker state");
+                } finally { inspector.Close(); }
+            }
+        } finally { preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
 
     internal static void RecursiveFontChecks(EditorPane pane)
