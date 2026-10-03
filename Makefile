@@ -6,15 +6,12 @@
 debug release:
 	./scripts/build-mac-app.sh $@
 
-run-debug: debug
-run-release: release
-
 # Inherit make's working directory; Launch Services does not preserve it.
 run-debug:
-	.build/Viem.app/Contents/MacOS/Viem &
+	./scripts/run-mac-app.sh debug
 
 run-release:
-	.build/release-app/Viem.app/Contents/MacOS/Viem &
+	./scripts/run-mac-app.sh release
 
 run: run-release
 

@@ -123,7 +123,7 @@ impl Document {
             // Visible source syntax can itself be split. Continuing its
             // container before that prefix would duplicate the original label.
             let quote_marker_end = text[..prefix].rfind('>').map_or(0, |index| index + 1);
-            if marker == 0 && at >= row.start + quote_marker_end && at < row.start + prefix {
+            if marker == 0 && at >= row.start + quote_marker_end && at <= row.start + prefix {
                 // The quote marker is complete. Retain its following authored
                 // whitespace with the body instead of leaving that body bare.
                 split_quote_prefix = Some(text[..at - row.start].to_owned());
@@ -255,7 +255,10 @@ impl Document {
                 },
                 delimiter
             )
-        } else if code {
+        } else if code || split_quote_prefix.is_some() {
+            // Splitting the completed source prefix leaves an empty quote
+            // above the body. One ending already separates those two lines;
+            // a prose paragraph separator would add a third quote-only row.
             format!("\n{continuation_prefix}")
         } else {
             format!("\n{}\n{continuation_prefix}", prefix.trim_end_matches([' ', '\t']))

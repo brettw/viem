@@ -309,7 +309,8 @@ synthetic read-only definitions remain read-only.
   possible, atomically.
   Enter continues nonempty quotes and removes treatment from empty quotes.
   Source Enter after a completed quote marker, including before its optional
-  following space, keeps the following body inside the quote.
+  following space, keeps the following body inside the quote. Splitting at
+  that prefix creates one empty quoted line before the body, including a table.
   Backspace at quote start follows structural joining; quote removal preserves
   inner treatments. Whole-document deletion leaves an empty ordinary paragraph
   and preserves document metadata.
@@ -1172,6 +1173,8 @@ pane, preserving edits; never fork buffers for aliases.
 
 Shell launch helpers preserve the caller's working directory for the started
 process. Make run targets may use make's selected working directory.
+Development run targets build first, then fail if Viem is already running for
+the current user; successful launches open `docs/markdown_demo.md` in the new build.
 
 Startup captures filenames relative to launch cwd; only the first opens by
 default, later files load on navigation. Nonexistent files start named, clean,

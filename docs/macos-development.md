@@ -25,12 +25,16 @@ make run-debug
 ```
 
 `make run-release` builds and launches an optimized application; `make run` is
-an alias for `make run-release`. All run targets launch the bundled executable
-in the background with make's working directory. Normally this is the invoking
-shell's directory; `make -C` uses the directory selected by `-C`.
+an alias for `make run-release`. After building, all run targets check for an
+existing Viem process belonging to the current user and fail if one is running.
+Quit Viem and rerun the command to use the newly built executable. A failed
+process check also prevents launch.
+The targets open `docs/markdown_demo.md` in the bundled executable, in the
+background with make's working directory. Normally this is the invoking shell's
+directory; `make -C` uses the directory selected by `-C`.
 `scripts/run-mac-app.sh [debug|release]` also builds and launches in the background,
-preserving the invoking shell's directory even when called from another directory.
-If Viem is already running, its single-instance handling receives the launch.
+with the same process check and demo, preserving the invoking shell's directory
+even when called from another directory.
 
 Build the bundle without launching it:
 

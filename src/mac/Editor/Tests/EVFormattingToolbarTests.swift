@@ -283,6 +283,78 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), saved)
   }
 
+  func testNativeEnterAtQuotePrefixSplitsProseAndTablesIdentically() throws {
+    let checkout = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let demo = try String(contentsOf: checkout.appendingPathComponent("docs/markdown_demo.md"), encoding: .utf8)
+    for source in [
+      "> foo\n> bar",
+      "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7 |",
+      demo,
+    ] {
+      for afterSpace in [false, true] {
+        let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+        let session = try XCTUnwrap(surface.session)
+        let text = try backend.formattedText() as NSString
+        let firstLine = source.contains("> | Quoted item") ? "> | Quoted item" : "> foo"
+        let at = text.range(of: firstLine).location + (afterSpace ? 2 : 1)
+        // Accessibility selections address materialized geometry; first bring
+        // the demo's table into the viewport, as a user would before clicking.
+        surface.goToLine(UInt64(text.substring(to: at).filter { $0 == "\n" }.count + 1))
+        surface.performInput { _ = try session.sendText("i") }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: at, length: 0))
+        XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), NSRange(location: at, length: 0))
+        surface.editorView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+        XCTAssertNil(surface.commandOutput)
+        let prefix = afterSpace ? "> " : ">"
+        let expected = source.replacingOccurrences(of: firstLine, with: "\(prefix)\n\(firstLine)")
+        let saved = try backend.serializedSource(typeName: EVDocument.markdownSourceType)
+        XCTAssertEqual(saved, Data(expected.utf8))
+        XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), NSRange(location: at + 1 + prefix.utf16.count, length: 0))
+        XCTAssertTrue(try backend.formattedText().contains("\(prefix)\n\(firstLine)"))
+        let (_, fresh) = try self.surface(expected, type: EVDocument.markdownSourceType)
+        XCTAssertEqual(try backend.formattedText(), try fresh.backend.formattedText())
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), saved)
+      }
+    }
+  }
+
+  func testMouseAndReturnAtQuotePrefixes() throws {
+    let source = "> foo\n>\n> bar\n\n> | foo | bar |\n> |---|---|\n> |a|b"
+    for target in ["> foo", "> | foo"] {
+      let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+      let session = try XCTUnwrap(surface.session)
+      surface.performInput { _ = try session.sendText("i") }
+      let text = try backend.formattedText() as NSString
+      let at = text.range(of: target).location + 1
+      let snapshot = try session.layoutExport()
+      let caret = try XCTUnwrap(snapshot.carets.first { $0.text_offset == UInt64(at) })
+      let row = try XCTUnwrap(snapshot.rows.first { $0.row_index == caret.row_index })
+      let local = surface.editorView.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(caret.x), y: CGFloat(row.baseline - row.ascent / 2)))
+      let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
+        location: surface.editorView.convert(local, to: nil), modifierFlags: [], timestamp: 0,
+        windowNumber: 0, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+      surface.editorView.mouseDown(with: click)
+      XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(at))
+      let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+        modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+        characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+      surface.editorView.keyDown(with: enter)
+      XCTAssertNil(surface.commandOutput)
+      let saved = try backend.serializedSource(typeName: EVDocument.markdownSourceType)
+      XCTAssertEqual(saved, Data(source.replacingOccurrences(of: target, with: ">\n" + target).utf8))
+      XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(at + 2))
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), saved)
+    }
+  }
+
   func testMarkdownSourceListToolbarRemovalSeparatesTheMiddleParagraph() throws {
     for (command, marker) in [(EVMenuCommand.bulletedList, "- "), (.numberedList, "3. ")] {
       let source = "\(marker)Before\n\(marker)Middle\n\(marker)After"
