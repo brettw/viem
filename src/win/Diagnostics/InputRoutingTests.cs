@@ -32,9 +32,9 @@ internal static class InputRoutingTests
 
     [DllImport("user32.dll")] internal static extern uint GetDoubleClickTime();
 
-    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect)
+    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true)
     {
-        element.Focus(FocusState.Programmatic);
+        if (focusTarget) element.Focus(FocusState.Programmatic);
         await Task.Delay(150);
         // The automation peer for a windowed flyout omits the owner's client
         // origin. Map XAML root coordinates explicitly to physical screen pixels.

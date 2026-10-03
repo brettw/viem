@@ -1239,7 +1239,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let mut height = row.y + row.height();
             let next = following
                 .as_ref()
-                .map(|range| resolve_line_paragraph(range, &styles.paragraphs, default_style));
+                .map(|range| {
+                    resolve_flow_line_paragraph(
+                        range,
+                        &styles.paragraphs,
+                        default_style,
+                        styles.table_context.as_ref(),
+                    )
+                })
+                .transpose()?;
             let inputs = super::line_layout_inputs(
                 &line_range, &paragraph, next.as_ref(), style_runs, styles,
             );

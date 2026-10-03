@@ -25,6 +25,7 @@ pub struct TableCellGeometry {
     pub(crate) columns: usize,
     pub(crate) table_x: f32,
     pub(crate) table_width: f32,
+    pub(crate) table_row_rect: LayoutRect,
     pub(crate) rows: usize,
     pub(crate) exact: bool,
 }
@@ -41,7 +42,7 @@ pub struct TableGeometry {
 #[derive(Clone, Debug)]
 pub(crate) struct TableLayoutContext {
     projection: Arc<FormattedDocument>,
-    source: bool,
+    pub(super) source: bool,
 }
 impl PartialEq for TableLayoutContext {
     fn eq(&self, other: &Self) -> bool {
@@ -57,7 +58,7 @@ impl TableLayoutContext {
             source,
         }
     }
-    fn row(&self, range: &Range<usize>) -> Option<(&MarkdownTable, usize)> {
+    pub(super) fn row(&self, range: &Range<usize>) -> Option<(&MarkdownTable, usize)> {
         let table = self.projection.table_at(range.start)?;
         if self.source {
             let index = table
@@ -79,6 +80,45 @@ impl TableLayoutContext {
                 .map(|_| (table, index))
         }
     }
+    pub(super) fn table_style(
+        &self,
+    ) -> Result<crate::document::ResolvedParagraphStyle, LayoutError> {
+        self.resolved_style("Table")
+    }
+
+    fn resolved_style(
+        &self,
+        name: &str,
+    ) -> Result<crate::document::ResolvedParagraphStyle, LayoutError> {
+        let resolve = |sheet: &crate::document::StyleSheet| {
+            if name == "Table" {
+                sheet.resolve_assigned_container_style(
+                    self.projection.document_style(),
+                    &name.into(),
+                    &Default::default(),
+                    &Default::default(),
+                )
+            } else {
+                sheet.resolve_assigned_paragraph_style(
+                    self.projection.document_style(),
+                    &name.into(),
+                    &Default::default(),
+                    &Default::default(),
+                    None,
+                    &Default::default(),
+                )
+            }
+        };
+        resolve(self.projection.style_sheet())
+            .or_else(|_| {
+                resolve(&crate::document::StyleSheet::for_format(
+                    crate::document::Format::Markdown,
+                ))
+            })
+            .map_err(DocumentStyleError::from)
+            .map_err(LayoutError::from)
+    }
+
     pub(super) fn contains_line(&self, range: &Range<usize>) -> bool {
         self.row(range).is_some()
     }
@@ -349,7 +389,7 @@ pub(super) fn collect_tables(rows: &[VisualRow]) -> Vec<TableGeometry> {
             None => {
                 tables.push(TableGeometry {
                     table_id: cell.table_id,
-                    rect: cell.rect,
+                    rect: cell.table_row_rect,
                     column_widths: Vec::new(),
                     row_heights: Vec::new(),
                     exact: cell.exact,
@@ -358,10 +398,12 @@ pub(super) fn collect_tables(rows: &[VisualRow]) -> Vec<TableGeometry> {
             }
         };
         let table = &mut tables[index];
-        let right = (table.rect.x + table.rect.width).max(cell.rect.x + cell.rect.width);
-        let bottom = (table.rect.y + table.rect.height).max(cell.rect.y + cell.rect.height);
-        table.rect.x = table.rect.x.min(cell.rect.x);
-        table.rect.y = table.rect.y.min(cell.rect.y);
+        let right = (table.rect.x + table.rect.width)
+            .max(cell.table_row_rect.x + cell.table_row_rect.width);
+        let bottom = (table.rect.y + table.rect.height)
+            .max(cell.table_row_rect.y + cell.table_row_rect.height);
+        table.rect.x = table.rect.x.min(cell.table_row_rect.x);
+        table.rect.y = table.rect.y.min(cell.table_row_rect.y);
         table.rect.width = right - table.rect.x;
         table.rect.height = bottom - table.rect.y;
         table.rect.x = cell.table_x;
@@ -567,34 +609,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if column_count == 0 {
             return Ok(None);
         }
-        let resolve_style = |name: &str| {
-            context
-                .projection
-                .style_sheet()
-                .resolve_assigned_paragraph_style(
-                    context.projection.document_style(),
-                    &name.into(),
-                    &Default::default(),
-                    &Default::default(),
-                    None,
-                    &Default::default(),
-                )
-                .or_else(|_| {
-                    crate::document::StyleSheet::for_format(crate::document::Format::Markdown)
-                        .resolve_paragraph_style(
-                            &"Paragraph".into(),
-                            &name.into(),
-                            None,
-                            &Default::default(),
-                            &Default::default(),
-                        )
-                })
-                .map_err(DocumentStyleError::from)
-                .map_err(LayoutError::from)
+        let cell_style = context.resolved_style("Table cell")?;
+        let header_style = context.resolved_style("Table header")?;
+        let table_style = context.table_style()?;
+        let boxes = TableBoxStyles {
+            body: &cell_style,
+            header: &header_style,
+            table: &table_style,
+            scale: view.scale,
         };
-        let cell_style = resolve_style("Table cell")?;
-        let header_style = resolve_style("Table header")?;
-        let table_style = resolve_style("Table")?;
         let default_style = if view.default_style_is_override {
             view.default_style.clone()
         } else {
@@ -618,22 +641,41 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let minimum_height = empty
             .first()
             .map_or(em, |fragment| fragment.default_metrics.height());
-        let row_style = if row_index == 0 {
-            &header_style
-        } else {
-            &cell_style
-        };
-        let padding_left = cell_style.padding_left.max(header_style.padding_left) * view.scale;
-        let padding_right = cell_style.padding_right.max(header_style.padding_right) * view.scale;
-        let padding_top = row_style.padding_top * view.scale;
-        let padding_bottom = row_style.padding_bottom * view.scale;
-        let border = cell_style
-            .border_left_width
-            .max(cell_style.border_right_width)
-            .max(header_style.border_left_width)
-            .max(header_style.border_right_width)
-            * view.scale;
         let min_width = if context.source { 0. } else { 4. * em };
+        let row_count = if context.source {
+            table.source_rows.len()
+        } else {
+            table.rows.len()
+        };
+        let minimum_column = |column| {
+            if context.source {
+                0.
+            } else {
+                min_width
+                    + boxes
+                        .horizontal_insets(0, column, row_count, column_count)
+                        .max(boxes.horizontal_insets(
+                            row_count - 1,
+                            column,
+                            row_count,
+                            column_count,
+                        ))
+            }
+        };
+        let measured_width = |row, column, width: f32| {
+            if context.source {
+                width
+            } else {
+                width.max(min_width) + boxes.horizontal_insets(row, column, row_count, column_count)
+            }
+        };
+        let table_edges = boxes.container_edges();
+        let table_left = if context.source { 0. } else { table_edges.left };
+        let table_right = if context.source {
+            0.
+        } else {
+            table_edges.right
+        };
         let key = WidthKey {
             document: document_id,
             revision,
@@ -646,11 +688,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             override_style: view
                 .default_style_is_override
                 .then(|| view.default_style.clone()),
-        };
-        let row_count = if context.source {
-            table.source_rows.len()
-        } else {
-            table.rows.len()
         };
         let compatible = |entry: &Widths| {
             let mut previous = entry.key.clone();
@@ -669,7 +706,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .map(Arc::unwrap_or_clone)
             .unwrap_or_else(|| Widths {
                 key: key.clone(),
-                widths: vec![min_width; column_count],
+                widths: (0..column_count).map(minimum_column).collect(),
                 measured: MeasuredCells::default(),
                 next: 0,
                 total: row_count * column_count,
@@ -762,7 +799,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         // Exact active-row geometry is always measured first. Additional cold
         // work is limited independently of the number of rows in the table.
         let mut measured_cells = Vec::new();
-        let mut column_left = x;
+        let mut column_left = x + if context.source {
+            0.
+        } else {
+            table_style.margin_left * view.scale + table_left
+        };
         for column in 0..column_count {
             control.checkpoint()?;
             let estimate = if context.source && !widths.measured.contains(column) {
@@ -770,13 +811,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 widths.widths[column]
             };
-            let column_right = column_left
-                + estimate
-                + if context.source {
-                    em * 0.45
-                } else {
-                    padding_left + padding_right + border
-                };
+            let column_right = column_left + estimate + if context.source { em * 0.45 } else { 0. };
             let owns_focus = view.horizontal_focus_offset.is_some_and(|at| {
                 ranges(row_index, column).is_some_and(|range| {
                     range.start <= at && at <= range.end
@@ -804,7 +839,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let width = ranges(row_index, column)
                 .and_then(|range| self.table_cell_width(&range, revision))
                 .unwrap_or_else(|| span_width(&cell));
-            widths.record(row_index, column, width);
+            widths.record(row_index, column, measured_width(row_index, column, width));
             let complete = ranges(row_index, column)
                 .is_none_or(|range| self.table_cell_complete(&range, revision));
             if !context.source {
@@ -856,7 +891,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let width = ranges(row_index, column)
                 .and_then(|range| self.table_cell_width(&range, revision))
                 .unwrap_or_else(|| span_width(&cell));
-            widths.record(row_index, column, width);
+            widths.record(row_index, column, measured_width(row_index, column, width));
             row_heights.record(column, height, complete);
             if !complete {
                 widths.measured.remove(row_index * column_count + column);
@@ -885,7 +920,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let width = ranges(row, column)
                 .and_then(|range| self.table_cell_width(&range, revision))
                 .unwrap_or_else(|| span_width(&cell));
-            widths.record(row, column, width);
+            widths.record(row, column, measured_width(row, column, width));
             let complete =
                 ranges(row, column).is_none_or(|range| self.table_cell_complete(&range, revision));
             if !context.source {
@@ -909,7 +944,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
             }
         }
-        widths.refresh_widths(min_width);
+        widths.refresh_widths(0.);
+        for (column, width) in widths.widths.iter_mut().enumerate() {
+            *width = width.max(minimum_column(column));
+        }
         let exact = widths.measured.count == widths.total
             && (context.source || row_heights.measured.count == column_count);
         let retained_row_height = row_heights.height();
@@ -920,8 +958,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
         }
         let column_widths = widths.widths.clone();
-        let total_width = column_widths.iter().sum::<f32>()
-            + (padding_left + padding_right + border) * column_count as f32;
+        let total_width = column_widths.iter().sum::<f32>() + table_left + table_right;
         let available = (view.width
             - x
             - view.insets.right
@@ -955,6 +992,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 control,
             )?
         } else {
+            let edges = boxes.cell_edges(row_index, 0, row_count, column_count);
+            let row_style = boxes.row_style(row_index);
+            let padding_top = row_style.padding_top * view.scale;
+            let padding_bottom = row_style.padding_bottom * view.scale;
             let height = measured_cells
                 .iter()
                 .enumerate()
@@ -968,19 +1009,33 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .fold(minimum_height.max(retained_row_height), f32::max)
                 + padding_top
                 + padding_bottom
-                + row_style
-                    .border_top_width
-                    .max(row_style.border_bottom_width)
-                    * view.scale;
+                + edges[0].width
+                + edges[2].width;
+            let container_top = if row_index == 0 { table_edges.top } else { 0. };
+            let container_bottom = if row_index + 1 == row_count {
+                table_edges.bottom
+            } else {
+                0.
+            };
+            let table_row_rect = LayoutRect {
+                x,
+                y,
+                width: total_width,
+                height: container_top + height + container_bottom,
+            };
             let mut result = Vec::new();
-            let mut left = 0.;
+            let mut left = table_left;
             for (column, cell_rows) in measured_cells.iter_mut().enumerate() {
-                let width = column_widths[column] + padding_left + padding_right + border;
+                let width = column_widths[column];
                 if cell_rows.is_empty() {
                     left += width;
                     continue;
                 }
                 let cell = &table.rows[row_index].cells[column];
+                let edges = boxes.cell_edges(row_index, column, row_count, column_count);
+                let inset_left = edges[3].width + row_style.padding_left * view.scale;
+                let inset_right = edges[1].width + row_style.padding_right * view.scale;
+                let content_width = (width - inset_left - inset_right).max(0.);
                 complete_boundary_affinities(cell_rows, &cell.range);
                 let cell_line = context
                     .projection
@@ -994,7 +1049,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     text_range: cell.range.clone(),
                     rect: LayoutRect {
                         x: x + left,
-                        y,
+                        y: y + container_top,
                         width,
                         height,
                     },
@@ -1002,6 +1057,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     rows: row_count,
                     table_x: x,
                     table_width: total_width,
+                    table_row_rect,
                     exact,
                 };
                 for row in cell_rows.iter_mut() {
@@ -1010,30 +1066,34 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         .hard_line_at_offset(row.text_range.start)
                         .unwrap_or(cell_line)
                         .saturating_sub(cell_line);
-                    let extra = alignment_extra(
-                        table.columns[column],
-                        (column_widths[column] - row.width).max(0.),
-                    );
-                    translate_x(row, left + padding_left + extra);
-                    translate_row_vertically(row, padding_top).map_err(LayoutError::from)?;
-                    row.paragraph_content_x = left + padding_left;
-                    row.paragraph_content_width = column_widths[column];
+                    let extra =
+                        alignment_extra(table.columns[column], (content_width - row.width).max(0.));
+                    translate_x(row, left + inset_left + extra);
+                    translate_row_vertically(row, container_top + edges[0].width + padding_top)
+                        .map_err(LayoutError::from)?;
+                    row.paragraph_content_x = left + inset_left;
+                    row.paragraph_content_width = content_width;
                     row.table_cell = Some(geometry.clone());
                 }
                 if let Some(row) = cell_rows.first_mut() {
-                    decorate_cell(
-                        row,
-                        &geometry,
-                        -x,
-                        -y,
-                        &cell_style,
-                        &header_style,
-                        &table_style,
-                        view.scale,
-                    );
+                    decorate_cell(row, &geometry, -x, -y, row_style, edges);
                 }
                 result.append(cell_rows);
                 left += width;
+            }
+            if let Some(row) = result.first_mut() {
+                decorate_table(
+                    row,
+                    table.id,
+                    row_index,
+                    row_count,
+                    LayoutRect {
+                        x: 0.,
+                        y: 0.,
+                        ..table_row_rect
+                    },
+                    &boxes,
+                );
             }
             result
         };
@@ -1047,7 +1107,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         } else {
             rows.first()
                 .and_then(|row| row.table_cell.as_ref())
-                .map_or(em * 1.12, |cell| cell.rect.height)
+                .map_or(em * 1.12, |cell| cell.table_row_rect.height)
         };
         for row in &mut rows {
             translate_x(row, x);
@@ -1284,124 +1344,215 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct TableEdge {
+    width: f32,
+    color: Color,
+    foreground_is_default: bool,
+}
+
+impl Default for TableEdge {
+    fn default() -> Self {
+        Self {
+            width: 0.,
+            color: Color {
+                red: 0.,
+                green: 0.,
+                blue: 0.,
+                alpha: 1.,
+            },
+            foreground_is_default: true,
+        }
+    }
+}
+
+/// Collapsed grid edges belong to the following row/column. That allocation
+/// keeps top/left borders above/before the cell's padding and content, while
+/// painting each shared edge exactly once.
+struct TableBoxStyles<'a> {
+    body: &'a crate::document::ResolvedParagraphStyle,
+    header: &'a crate::document::ResolvedParagraphStyle,
+    table: &'a crate::document::ResolvedParagraphStyle,
+    scale: f32,
+}
+impl TableBoxStyles<'_> {
+    fn row_style(&self, row: usize) -> &crate::document::ResolvedParagraphStyle {
+        if row == 0 {
+            self.header
+        } else {
+            self.body
+        }
+    }
+    fn edges(&self, style: &crate::document::ResolvedParagraphStyle) -> [TableEdge; 4] {
+        [
+            (style.border_top_width, style.border_top_color),
+            (style.border_right_width, style.border_right_color),
+            (style.border_bottom_width, style.border_bottom_color),
+            (style.border_left_width, style.border_left_color),
+        ]
+        .map(|(width, color)| TableEdge {
+            width: width * self.scale,
+            color: color.unwrap_or(style.character.foreground),
+            foreground_is_default: color.is_none() && style.character.foreground_is_default,
+        })
+    }
+    fn cell_edges(&self, row: usize, column: usize, rows: usize, columns: usize) -> [TableEdge; 4] {
+        let mut edges = self.edges(self.row_style(row));
+        if row != 0 {
+            let previous = self.edges(self.row_style(row - 1))[2];
+            // Equal widths prefer the header, then the upper cell.
+            if previous.width >= edges[0].width {
+                edges[0] = previous;
+            }
+        }
+        if row + 1 != rows {
+            edges[2] = TableEdge::default();
+        }
+        if column != 0 && edges[1].width >= edges[3].width {
+            // Equal widths prefer the left cell's right edge.
+            edges[3] = edges[1];
+        }
+        if column + 1 != columns {
+            edges[1] = TableEdge::default();
+        }
+        edges
+    }
+    fn horizontal_insets(&self, row: usize, column: usize, rows: usize, columns: usize) -> f32 {
+        let edges = self.cell_edges(row, column, rows, columns);
+        let style = self.row_style(row);
+        edges[3].width + edges[1].width + (style.padding_left + style.padding_right) * self.scale
+    }
+    fn container_edges(&self) -> EdgeInsets {
+        EdgeInsets {
+            top: (self.table.border_top_width + self.table.padding_top) * self.scale,
+            right: (self.table.border_right_width + self.table.padding_right) * self.scale,
+            bottom: (self.table.border_bottom_width + self.table.padding_bottom) * self.scale,
+            left: (self.table.border_left_width + self.table.padding_left) * self.scale,
+        }
+    }
+}
+
+fn box_decoration(
+    kind: DecorationKind,
+    owner: DecorationOwner,
+    bounds: LayoutRect,
+    color: Color,
+) -> PositionedDecoration {
+    PositionedDecoration {
+        kind,
+        owner: Some(owner),
+        text: String::new(),
+        x: bounds.x,
+        advance: bounds.width,
+        typographic_bounds: bounds,
+        ink_bounds: bounds,
+        render_run: None,
+        paint: ResolvedTextPaint {
+            foreground: color,
+            foreground_is_default: false,
+            ..Default::default()
+        },
+        font_size: 0.,
+    }
+}
+
+fn border_decoration(
+    owner: DecorationOwner,
+    rect: LayoutRect,
+    edge: usize,
+    border: TableEdge,
+) -> Option<PositionedDecoration> {
+    if border.width <= 0. {
+        return None;
+    }
+    let bounds = match edge {
+        0 => LayoutRect {
+            height: border.width,
+            ..rect
+        },
+        1 => LayoutRect {
+            x: rect.x + rect.width - border.width,
+            width: border.width,
+            ..rect
+        },
+        2 => LayoutRect {
+            y: rect.y + rect.height - border.width,
+            height: border.width,
+            ..rect
+        },
+        _ => LayoutRect {
+            width: border.width,
+            ..rect
+        },
+    };
+    let mut decoration = box_decoration(DecorationKind::BlockBorder, owner, bounds, border.color);
+    decoration.paint.foreground_is_default = border.foreground_is_default;
+    Some(decoration)
+}
+
 fn decorate_cell(
     row: &mut VisualRow,
     cell: &TableCellGeometry,
     dx: f32,
     dy: f32,
-    body: &crate::document::ResolvedParagraphStyle,
-    header: &crate::document::ResolvedParagraphStyle,
-    table: &crate::document::ResolvedParagraphStyle,
-    scale: f32,
+    style: &crate::document::ResolvedParagraphStyle,
+    edges: [TableEdge; 4],
 ) {
     let rect = LayoutRect {
         x: cell.rect.x + dx,
         y: cell.rect.y + dy,
         ..cell.rect
     };
-    let style = if cell.row == 0 { header } else { body };
-    let last_row = cell.row + 1 == cell.rows;
-    let last_column = cell.column + 1 == cell.columns;
-    let default_color = Color {
-        red: 0.65,
-        green: 0.67,
-        blue: 0.7,
-        alpha: 0.65,
-    };
-    let mut add = |kind, bounds: LayoutRect, color: Color| {
-        row.decorations.push(PositionedDecoration {
-            kind,
-            owner: Some(DecorationOwner::Paragraph(cell.cell_id)),
-            text: String::new(),
-            x: bounds.x,
-            advance: bounds.width,
-            typographic_bounds: bounds,
-            ink_bounds: bounds,
-            render_run: None,
-            paint: ResolvedTextPaint {
-                foreground: color,
-                foreground_is_default: false,
-                ..Default::default()
-            },
-            font_size: 0.,
-        });
-    };
-    if let Some(color) = table.background {
-        add(DecorationKind::BlockBackground, rect, color);
-    }
+    let owner = DecorationOwner::Paragraph(cell.cell_id);
     if let Some(color) = style.background {
-        add(DecorationKind::BlockBackground, rect, color);
+        row.decorations.push(box_decoration(
+            DecorationKind::BlockBackground,
+            owner,
+            rect,
+            color,
+        ));
     }
-    let top = if cell.row == 0 && table.border_top_width > 0. {
-        table.border_top_width
-    } else {
-        style.border_top_width
-    } * scale;
-    let bottom = if last_row && table.border_bottom_width > 0. {
-        table.border_bottom_width
-    } else {
-        style
-            .border_bottom_width
-            .max(if last_row { 0. } else { body.border_top_width })
-    } * scale;
-    let left = if cell.column == 0 && table.border_left_width > 0. {
-        table.border_left_width
-    } else {
-        style.border_left_width
-    } * scale;
-    let right = if last_column && table.border_right_width > 0. {
-        table.border_right_width
-    } else {
-        style.border_right_width.max(style.border_left_width)
-    } * scale;
-    for (show, width, bounds, color) in [
-        (
-            cell.row == 0,
-            top,
-            LayoutRect {
-                height: top,
-                ..rect
-            },
-            style.border_top_color,
-        ),
-        (
-            cell.column == 0,
-            left,
-            LayoutRect {
-                width: left,
-                ..rect
-            },
-            style.border_left_color,
-        ),
-        (
-            true,
-            bottom,
-            LayoutRect {
-                y: rect.y + rect.height - bottom,
-                height: bottom,
-                ..rect
-            },
-            style.border_bottom_color,
-        ),
-        (
-            true,
-            right,
-            LayoutRect {
-                x: rect.x + rect.width - right,
-                width: right,
-                ..rect
-            },
-            style.border_right_color,
-        ),
-    ] {
-        if show && width > 0. {
-            add(
-                DecorationKind::BlockBorder,
-                bounds,
-                color.unwrap_or(default_color),
-            );
-        }
+    row.decorations.extend(
+        edges
+            .into_iter()
+            .enumerate()
+            .filter_map(|(side, edge)| border_decoration(owner, rect, side, edge)),
+    );
+}
+
+fn decorate_table(
+    row: &mut VisualRow,
+    table: u64,
+    index: usize,
+    rows: usize,
+    rect: LayoutRect,
+    boxes: &TableBoxStyles<'_>,
+) {
+    let owner = DecorationOwner::Table(table);
+    let mut decorations = Vec::new();
+    if let Some(color) = boxes.table.background {
+        decorations.push(box_decoration(
+            DecorationKind::BlockBackground,
+            owner,
+            rect,
+            color,
+        ));
     }
+    let mut edges = boxes.edges(boxes.table);
+    if index != 0 {
+        edges[0] = TableEdge::default();
+    }
+    if index + 1 != rows {
+        edges[2] = TableEdge::default();
+    }
+    decorations.extend(
+        edges
+            .into_iter()
+            .enumerate()
+            .filter_map(|(side, edge)| border_decoration(owner, rect, side, edge)),
+    );
+    // The table owner must precede every cell owner in compositing order.
+    row.decorations.splice(0..0, decorations);
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1555,6 +1706,28 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             control.checkpoint()?;
             let line_index = first + index;
             let next = ranges.get(index + 1).cloned().or_else(|| following.clone());
+            let paragraph = resolve_flow_line_paragraph(
+                range,
+                &styles.paragraphs,
+                &styles.default_shaping_style,
+                Some(context),
+            )?;
+            let next_paragraph = next
+                .as_ref()
+                .map(|range| {
+                    resolve_flow_line_paragraph(
+                        range,
+                        &styles.paragraphs,
+                        &styles.default_shaping_style,
+                        Some(context),
+                    )
+                })
+                .transpose()?;
+            let origin = if line_index == 0 {
+                (content_insets.top + block_box::before(&paragraph.style) * view.scale).max(0.)
+            } else {
+                0.
+            };
             if let Some((rows, height)) = self.table_line(
                 context,
                 range,
@@ -1564,41 +1737,25 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 line_index,
                 revision,
                 content_insets.left,
-                if line_index == 0 {
-                    content_insets.top
-                } else {
-                    0.
-                },
+                origin,
                 false,
                 &control,
             )? {
-                let paragraph = resolve_line_paragraph(
-                    range,
-                    &styles.paragraphs,
-                    &styles.default_shaping_style,
+                let height = table_line_flow_height(
+                    height + origin,
+                    &rows,
+                    &paragraph,
+                    next_paragraph.as_ref(),
+                    content_insets.bottom,
+                    view.scale,
                 );
-                let next_paragraph = next.as_ref().map(|range| {
-                    resolve_line_paragraph(range, &styles.paragraphs, &styles.default_shaping_style)
-                });
                 lines.push(RegionalHardLineLayout {
                     layout_revision: revision,
                     hard_line_index: line_index,
                     hard_line_range: range.clone(),
                     text_coverage: range.clone(),
                     rows,
-                    height: f64::from(
-                        height
-                            + if line_index == 0 {
-                                content_insets.top
-                            } else {
-                                0.
-                            }
-                            + if line_index + 1 == total {
-                                content_insets.bottom
-                            } else {
-                                0.
-                            },
-                    ),
+                    height: f64::from(height),
                     height_is_exact: true,
                     next_checkpoint: None,
                     diagnostics: Vec::new(),

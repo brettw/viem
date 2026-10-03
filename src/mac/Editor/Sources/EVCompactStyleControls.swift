@@ -12,6 +12,25 @@ final class EVStyleControlLabel: NSTextField {
     override func mouseDown(with event: NSEvent) { onClick() }
 }
 
+/// The first click prepares a measurement for replacement; subsequent clicks
+/// and drags stay with AppKit's field editor for ordinary text selection.
+@MainActor
+final class EVMeasurementTextField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        guard accepted, isEnabled, isEditable else { return accepted }
+        let value = stringValue
+        // NSWindow can hand the first mouse event straight to the shared field
+        // editor. Select after that event, once its native caret placement ends.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let editor = self.currentEditor(),
+                  self.window?.firstResponder === editor, editor.string == value else { return }
+            editor.selectAll(nil)
+        }
+        return accepted
+    }
+}
+
 /// A disabled native control remains inspectable and keeps its standard click
 /// behavior. The enclosing view intercepts only an inherited control's first
 /// click, declares its inherited value, and forwards that same event to AppKit.
@@ -122,7 +141,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var overrideButtons: [EVStyleProperty: NSButton] = [:]
     private let alignment = NSSegmentedControl()
     private let lineKind = NSPopUpButton()
-    private let lineValue = NSTextField()
+    private let lineValue = EVMeasurementTextField()
     private let lineUnit = EVStyleControlLabel(labelWithString: "")
     private var fontFaces: [EVFontFace] = []
     private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
@@ -564,7 +583,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         return view
     }
     private func numeric(_ property: EVStyleProperty, title: String, icon symbol: EVStyleIcons.Symbol? = nil, width: CGFloat = 65, showsLabel: Bool = true) -> NSView {
-        let field = NSTextField()
+        let field = EVMeasurementTextField()
         field.delegate = self
         field.tag = Int(property.rawValue)
         field.setAccessibilityLabel(title)

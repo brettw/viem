@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 mod recovery;
+mod source_table_paint;
 
 fn lower_alpha(mut ordinal: u64) -> Option<String> {
     if ordinal == 0 {
@@ -437,6 +438,7 @@ impl DocumentLayoutStyles {
             }
         }
         if !document.tables().is_empty() {
+            source_table_paint::apply(document, &text_range, &mut styles)?;
             styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document, recovery_format.is_some_and(|format| format.is_source_view())));
         }
         Ok(styles)

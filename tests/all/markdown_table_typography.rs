@@ -170,7 +170,8 @@ fn source_pipes_share_column_boundaries_across_header_and_body_font_sizes() {
             Format::MarkdownSource,
         )
         .unwrap();
-        document.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"Table header","name":"Table header","role":"Paragraph","character":{"size":28},"block":{}}]}"#).unwrap();
+        let diagnostics = document.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"Table header","name":"Table header","role":"Paragraph","based_on":"Table cell","character":{"size":28},"block":{}}]}"#).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let mut view = ViewLayout::new(100_000., 300.);
         LayoutEngine::new(MockTextMeasurementProvider::new())
             .relayout(&document, &mut view)

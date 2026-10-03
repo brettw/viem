@@ -272,6 +272,9 @@ synthetic read-only definitions remain read-only.
 - Insertion inherits character context from caret affinity, using the only
   interior side at paragraph edges. Empty paragraphs retain explicit paragraph
   and typing context. Hidden syntax adds no insertion/deletion stops.
+  An explicit downstream caret at an inline code span's closing boundary exits
+  Code, including at paragraph and table-cell ends; upstream typing stays in
+  Code. The character-style control reports that actual insertion side.
 - Replacement inherits the first selected text character's pre-edit character
   context, independent of direction, skipping paragraph separators but not
   spaces. Separator-only selections use pre-edit insertion context and must not
@@ -325,6 +328,8 @@ including insertion, cell editing, styles, source-only visual alignment, and
 portable validation. Cell rectangles are semantic selections, not contiguous
 source ranges or Vim Visual Block selections. Keep remaining compatibility and
 platform-validation limitations explicit in the compatibility inventory.
+WYSIWYG table borders honor resolved edge colors; Source structural border
+characters use explicit cell border colors and otherwise retain their text color.
 
 Deliberate presentation exceptions:
 
@@ -1369,6 +1374,8 @@ must not accept retained callbacks.
 Valid changes apply live; invalid intermediate text remains local with validation
 and the last committed value intact. Choices are one undo unit, continuous
 gestures coalesce, and refreshes/merely opening native pickers create no edits.
+The first click in an unfocused measurement field selects its whole value;
+subsequent clicks and drags preserve ordinary native text selection.
 Closing never rolls back. Native font/color panels stay modeless and retain the
 same target and undo authority. External changes refresh controls/preview without
 manufacturing another edit.

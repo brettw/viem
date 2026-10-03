@@ -109,6 +109,10 @@ Table event, rendering, and accessibility adapters are implemented on both nativ
 frontends. macOS has automated native coverage and app interaction checks;
 Windows runtime validation remains outstanding on a Windows development host.
 
+WYSIWYG tables inside lists or block quotes retain their source ownership but
+do not yet apply the enclosing container’s horizontal inset. A table can align
+with the document edge while surrounding content remains indented.
+
 The shared bounded shaper does not yet carry distant explicit Unicode bidi
 embedding, override, or isolate controls into later text slices. A control such
 as U+202E followed by thousands of characters can therefore lose its directional

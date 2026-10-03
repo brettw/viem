@@ -35,6 +35,9 @@ pub struct MarkdownTableSourceRow {
     pub cells: Vec<Range<usize>>,
     pub source_cells: Vec<Range<usize>>,
     pub pipes: Vec<usize>,
+    /// Source-view punctuation after trimming each delimiter cell's spaces and
+    /// tabs. Cached once during projection so paint never reads a giant row.
+    pub delimiter_markers: Vec<Range<usize>>,
     pub delimiter: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,7 +89,8 @@ impl super::range_index::RangedItem for MarkdownTableSourceRow {
         &self.range
     }
     fn owned_heap_bytes(&self) -> usize {
-        (self.cells.capacity() + self.source_cells.capacity()) * std::mem::size_of::<Range<usize>>()
+        (self.cells.capacity() + self.source_cells.capacity() + self.delimiter_markers.capacity())
+            * std::mem::size_of::<Range<usize>>()
             + self.pipes.capacity() * std::mem::size_of::<usize>()
     }
     fn with_range(&self, range: Range<usize>) -> Self {
@@ -109,6 +113,9 @@ impl super::range_index::RangedItem for MarkdownTableSourceRow {
         }
         for cell in &mut row.source_cells {
             *cell = shifted(cell, source_delta)?;
+        }
+        for marker in &mut row.delimiter_markers {
+            *marker = shifted(marker, delta)?;
         }
         for pipe in &mut row.pipes {
             *pipe = usize::try_from(*pipe as i128 + delta).ok()?;

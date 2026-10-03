@@ -301,7 +301,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(override.state, .on)
     }
 
-    func testFirstMouseClickOnInheritedSizeFocusesItsNativeTextEditor() throws {
+    func testFirstMouseClickOnInheritedSizeFocusesItsNativeTextEditor() async throws {
         let (_, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
@@ -315,10 +315,12 @@ final class EVCompactStyleControlsTests: XCTestCase {
         defer { window.orderOut(nil) }
         editor.view.layoutSubtreeIfNeeded()
         try dispatchNativeFirstClick(size)
+        await finishNativeFocus()
         XCTAssertTrue(size.isEnabled)
         let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView,
             "The first click must enter the native text field")
         XCTAssertEqual(size.floatValue, 14)
+        XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 0, length: fieldEditor.string.utf16.count))
         XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
         for text in ["18", "19"] {
             fieldEditor.insertText(text, replacementRange: NSRange(location: 0, length: fieldEditor.string.utf16.count))
@@ -330,6 +332,60 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(size.stringValue, "")
         XCTAssertFalse(size.isEnabled)
         XCTAssertFalse(surface.canUndo, "The initial activation and subsequent field typing share one undo gesture")
+    }
+
+    func testFirstMeasurementClickSelectsAllOnFocusAndReentry() async throws {
+        let (_, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        let cases: [(EVStyleEditorTab, EVStyleProperty, EVStyleValue, String)] = [
+            (.character, .characterSize, .float(24.5), "Size"),
+            (.block, .blockPaddingLeft, .float(18.5), "Padding left"),
+            (.paragraph, .paragraphLineSpacing,
+                .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_EXACT), value: 18.5)), "Line spacing value"),
+        ]
+        for (tab, property, value, label) in cases {
+            XCTAssertTrue(window.makeFirstResponder(nil))
+            XCTAssertTrue(editor.setPropertyForTesting(property, value: value))
+            editor.selectTab(tab)
+            editor.view.layoutSubtreeIfNeeded()
+            let field = try control(NSTextField.self, label: label, in: editor.view)
+            XCTAssertTrue(field.isEnabled)
+            let point = NSPoint(x: field.bounds.midX, y: field.bounds.midY)
+            try dispatchNativeMeasurementClick(field, at: point)
+            await finishNativeFocus()
+            let text = try XCTUnwrap(field.currentEditor() as? NSTextView)
+            XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: text.string.utf16.count), label)
+
+            XCTAssertTrue(window.makeFirstResponder(nil))
+            try dispatchNativeMeasurementClick(field, at: point)
+            await finishNativeFocus()
+            XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: text.string.utf16.count), label)
+            text.insertText("20", replacementRange: text.selectedRange())
+            XCTAssertEqual(field.stringValue, "20", label)
+        }
+    }
+
+    private func dispatchNativeMeasurementClick(_ field: NSTextField, at point: NSPoint) throws {
+        let window = try XCTUnwrap(field.window)
+        let location = field.convert(point, to: nil)
+        func event(_ type: NSEvent.EventType, at location: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+        }
+        NSApplication.shared.postEvent(try event(.leftMouseUp, at: location), atStart: true)
+        window.sendEvent(try event(.leftMouseDown, at: location))
+    }
+
+    private func finishNativeFocus() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
     }
 
     private func dispatchNativeFirstClick(_ control: NSControl) throws {

@@ -76,6 +76,10 @@ internal sealed partial class StyleWindow
     {
         if (root is TextBox { Name: "InputBox" } input) {
             input.TextAlignment = TextAlignment.Right;
+            // Templates can load again when a tab is shown. Install this once
+            // per field, rather than stacking callbacks on every Loaded event.
+            input.GotFocus -= MeasurementGotFocus;
+            input.GotFocus += MeasurementGotFocus;
             input.ApplyTemplate();
         }
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) {
@@ -86,6 +90,15 @@ internal sealed partial class StyleWindow
                 clear.MinWidth = 0; clear.MaxWidth = 0; clear.IsHitTestVisible = false;
             } else ConfigureNumberEditor(child);
         }
+    }
+    private static void MeasurementGotFocus(object sender, RoutedEventArgs args)
+    {
+        if (sender is not TextBox input || input.FocusState != FocusState.Pointer) return;
+        // Wait until the native pointer handler has placed its caret. Later
+        // clicks and drags do not change focus and retain normal text selection.
+        input.DispatcherQueue.TryEnqueue(() => {
+            if (input.IsLoaded && input.FocusState == FocusState.Pointer) input.SelectAll();
+        });
     }
     private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true,
         string? icon = null, double? width = null, double? groupWidth = null)

@@ -36,7 +36,17 @@ impl Document {
         edit: &TextEdit,
         payload: Option<&FormattedPayloadEdit>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
-        if let Some(patches) = self.table_text_patches(edit)? {return Ok(Some(patches));}
+        let affinity = payload.and_then(|edit| edit.boundary_affinity);
+        if edit.range.is_empty() && affinity == Some(BoundaryAffinity::Downstream)
+            && !edit.replacement.contains('\n')
+        {
+            if let Some(closing) = super::super::markdown_code::closing_boundary(self, edit.range.start)? {
+                let syntax = self.escape_markdown_source_text(closing.end, &edit.replacement)?;
+                return Ok(Some(vec![SourcePatch::primary(closing.end..closing.end,
+                    self.encoding().encode_fragment(&syntax)?)]));
+            }
+        }
+        if let Some(patches) = self.table_text_patches(edit, affinity)? {return Ok(Some(patches));}
         if self.format() == Format::Markdown
             && !edit.replacement.contains('\n')
             && super::super::source_edit::complete_contributors(self.projection(), edit)?.range
@@ -139,7 +149,6 @@ impl Document {
             }
         }
 
-        let affinity = payload.and_then(|edit| edit.boundary_affinity);
         let source_range = if edit.range.is_empty() {
             let at = if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
                 // A formatted caret belongs to its visible line even when
@@ -179,9 +188,10 @@ impl Document {
             }
         }
         let in_code = self.format() == Format::Markdown
-            && self
-                .projection()
-                .markdown_replacement_begins_in_code(&edit.range);
+            && match affinity.filter(|_| edit.range.is_empty()) {
+                Some(affinity) => self.is_code_at(edit.range.start, affinity)?,
+                None => self.projection().markdown_replacement_begins_in_code(&edit.range),
+            };
         let syntax = if let Some(payload) = payload {
             if self.format() == Format::Markdown && !in_code && breaks.is_empty() {
                 self.escape_markdown_source_text(source_range.start, &edit.replacement)?
