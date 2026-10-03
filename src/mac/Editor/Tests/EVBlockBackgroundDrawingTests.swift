@@ -7,6 +7,124 @@ import XCTest
 @MainActor
 final class EVBlockBackgroundDrawingTests: XCTestCase {
 
+    func testTypingQuoteBeforeFenceKeepsSiblingCodeBackgroundsSeparate() throws {
+        let prior = EVThemeStore.shared.theme
+        EVThemeStore.shared.update(.paper)
+        defer { EVThemeStore.shared.update(prior) }
+        let source = "```mermaid\ngraph LR\n    Writing --> Editing\n    Editing --> Saving\n```\n\n### Other GitHub features\n\nFollowing prose."
+        func configured(_ source: String) throws -> EVEditorSurfaceController {
+            let surface = try makeSurface(source, typeName: EVDocument.markdownSourceType)
+            surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
+            surface.viewDidLayout()
+            let session = try XCTUnwrap(surface.session)
+            let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
+            try session.editStyle(key: key, expected: surface.backend.styleSheetSnapshot().identity,
+                mutation: .setDeclaration(.blockBackground, .color(.init(red: 1, green: 0, blue: 0, alpha: 0.5))))
+            surface.refreshPresentation()
+            return surface
+        }
+        func codeBoxes(_ surface: EVEditorSurfaceController) throws -> [CGRect] {
+            try XCTUnwrap(surface.layoutSnapshot).decorations.filter {
+                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0
+                    && $0.paint.foreground.red == 1 && $0.paint.foreground.green == 0
+                    && $0.paint.foreground.blue == 0 && $0.paint.foreground.alpha == 0.5
+            }.map { surface.editorView.viewRect($0.typographic_bounds) }
+        }
+        let surface = try configured(source)
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { _ = try session.sendText("i"); _ = try session.sendText(">") }
+        XCTAssertNil(surface.commandOutput)
+        let boxes = try codeBoxes(surface)
+        XCTAssertGreaterThan(boxes.count, 1)
+        for (index, rect) in boxes.enumerated() {
+            for other in boxes.dropFirst(index + 1) {
+                XCTAssertLessThanOrEqual(rect.intersection(other).height, 0.01, "Distinct code backgrounds must not overlap")
+            }
+        }
+        let text = try surface.backend.formattedText() as NSString
+        let graph = UInt64(text.range(of: "graph LR").location)
+        let row = try XCTUnwrap(try session.layoutExport().rows.first { $0.text_start <= graph && graph < $0.text_end })
+        XCTAssertFalse(boxes.contains { $0.minY < CGFloat(row.baseline - surface.viewportState.top) && CGFloat(row.baseline - surface.viewportState.top) < $0.maxY })
+        let fresh = try configured(">" + source)
+        XCTAssertEqual(boxes, try codeBoxes(fresh), "Editing must agree with a fresh parse and layout")
+        if let path = ProcessInfo.processInfo.environment["VIEM_FENCE_PREVIEW"] {
+            let png = try XCTUnwrap(try bitmap(surface.editorView).representation(using: .png, properties: [:]))
+            try png.write(to: URL(fileURLWithPath: path))
+        }
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownSourceType), Data((">" + source).utf8))
+        XCTAssertEqual(try codeBoxes(surface), try codeBoxes(fresh))
+    }
+
+    func testQuotedTableHasOneContinuousOuterBorderAndBackground() throws {
+        let prior = EVThemeStore.shared.theme
+        EVThemeStore.shared.update(.paper)
+        defer { EVThemeStore.shared.update(prior) }
+        let source = "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7 |"
+        let surface = try makeSurface(source)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
+        surface.viewDidLayout()
+        let session = try XCTUnwrap(surface.session)
+        let quote = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Block quote"))
+        for (property, value) in [
+            (EVStyleProperty.blockBorderLeftWidth, EVStyleValue.float(4)),
+            (.blockBorderLeftColor, .color(.init(red: 1, green: 0, blue: 0, alpha: 1))),
+            (.blockPaddingLeft, .float(12)), (.blockPaddingTop, .float(8)),
+            (.blockPaddingBottom, .float(8)),
+            (.blockBackground, .color(.init(red: 1, green: 0, blue: 0, alpha: 0.5))),
+        ] {
+            try session.editStyle(key: quote, expected: surface.backend.styleSheetSnapshot().identity,
+                mutation: .setDeclaration(property, value))
+        }
+        for name in ["Table", "Table cell", "Table header"] {
+            let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: name))
+            for (property, value) in [
+                (EVStyleProperty.blockBackground, EVStyleValue.color(.init(red: 0, green: 0, blue: 1, alpha: 1))),
+                (.blockPaddingTop, .float(6)), (.blockPaddingBottom, .float(6)),
+                (.blockBorderTopWidth, .float(1)), (.blockBorderBottomWidth, .float(1)),
+            ] {
+                try session.editStyle(key: key, expected: surface.backend.styleSheetSnapshot().identity,
+                    mutation: .setDeclaration(property, value))
+            }
+        }
+        for scale: CGFloat in [1, 1.25] {
+            _ = try session.setScale(scale)
+            surface.refreshPresentation()
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            let borders = snapshot.decorations.filter {
+                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0
+            }.map { surface.editorView.viewRect($0.typographic_bounds) }.sorted { $0.minY < $1.minY }
+            XCTAssertEqual(borders.count, 2, "Only one outer quote slice per table row; no cell-local bars")
+            let first = try XCTUnwrap(borders.first)
+            let last = try XCTUnwrap(borders.last)
+            XCTAssertEqual(first.minX, last.minX, accuracy: 0.001)
+            XCTAssertEqual(first.maxY, last.minY, accuracy: 0.001)
+            let cells = snapshot.tableCells.map { surface.editorView.viewRect($0.rect) }
+            let grid = cells.reduce(CGRect.null) { $0.union($1) }
+            XCTAssertLessThan(first.maxX, grid.minX)
+            XCTAssertLessThan(first.minY, grid.minY)
+            XCTAssertGreaterThan(last.maxY, grid.maxY)
+            for backingScale: CGFloat in [1, 2] {
+                let image = try bitmap(surface.editorView, backingScale: backingScale)
+                let red = try composite([NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)])
+                let pink = try composite([NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 0.5)])
+                for y in Int(ceil(first.minY * backingScale))..<Int(floor(last.maxY * backingScale)) {
+                    assertPixel(image, at: CGPoint(x: first.midX * backingScale, y: CGFloat(y)), equals: red)
+                    assertPixel(image, at: CGPoint(x: (first.maxX + 4 * scale) * backingScale, y: CGFloat(y)), equals: pink)
+                }
+                let blue = try composite([NSColor(srgbRed: 0, green: 0, blue: 1, alpha: 1)])
+                for cell in cells {
+                    // The quote background is behind the opaque cell fill.
+                    assertPixel(image, at: CGPoint(x: cell.midX * backingScale,
+                        y: (cell.minY + 3 * scale) * backingScale), equals: blue)
+                }
+            }
+        }
+        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
     func testTableBorderColorsRefreshThroughThemeInspectorAndReachNativePixels() throws {
         let source = "| Header | Other |\n| --- | --- |\n| body | value |"
         let surface = try makeSurface(source)

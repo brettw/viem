@@ -481,3 +481,183 @@ fn collapsed_edge_without_color_uses_the_winning_styles_foreground() {
     assert_eq!(shared.paint.foreground, blue);
     assert!(!shared.paint.foreground_is_default);
 }
+
+fn nested_table_document(source: &str, quote_left: f32, alignment: &str) -> Document {
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    configure_nested_table(&mut document, quote_left, alignment);
+    document
+}
+
+fn configure_nested_table(document: &mut Document, quote_left: f32, alignment: &str) {
+    let diagnostics = document.replace_style_defaults(&serde_json::to_vec(&json!({
+        "version":1,"block_styles":[
+            {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","block":{}},
+            {"id":"Block quote","name":"Block quote","role":"Quote","based_on":"Paragraph",
+                "block":{"margin_left":quote_left,"padding_left":7,"border_left_width":3,"margin_right":19,"leading_indent":0}},
+            {"id":"Bulleted List","name":"Bulleted List","role":"List","based_on":"Paragraph",
+                "block":{"leading_indent":31,"trailing_indent":11}},
+            {"id":"List item","name":"List item","role":"ListItem","based_on":"Paragraph",
+                "block":{"padding_left":5,"padding_right":2}},
+            {"id":"Table","name":"Table","role":"Table","based_on":"Paragraph",
+                "block":{"margin_left":13,"margin_right":17,"alignment":alignment}},
+            {"id":"Table cell","name":"Table cell","role":"Paragraph","based_on":"Paragraph","block":{}},
+            {"id":"Table header","name":"Table header","role":"Paragraph","based_on":"Table cell","block":{}}
+        ]
+    })).unwrap()).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+}
+
+#[test]
+fn nested_table_uses_enclosing_canvas_in_full_regional_and_large_cell_layout() {
+    for large in [false, true] {
+        let body = if large { "x".repeat(70_000) } else { "body".into() };
+        for (source, left, right) in [
+            (format!("> | Head | Other |\n> | --- | --- |\n> | {body} | next |"), 27., 19.),
+            (format!("- lead\n\n  | Head | Other |\n  | --- | --- |\n  | {body} | next |"), 36., 13.),
+            (format!("> - lead\n>\n>   | Head | Other |\n>   | --- | --- |\n>   | {body} | next |"), 63., 32.),
+        ] {
+            for alignment in ["Start", "Center", "End"] {
+                let document = nested_table_document(&source, 17., alignment);
+                let mut full_view = ViewLayout::new(1000., 1000.);
+                full_view.set_insets(viem_core::layout::EdgeInsets { left: 23., right: 29., ..Default::default() });
+                let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+                engine.relayout(&document, &mut full_view).unwrap();
+                let full = full_view.snapshot().unwrap();
+                let table = &full.tables()[0];
+                let spare = (1000. - 23. - left - 29. - right - 13. - 17. - table.rect.width).max(0.);
+                close(table.rect.x, 23. + left + 13. + match alignment { "Center" => spare / 2., "End" => spare, _ => 0. });
+                let mut core = viem_core::Core::new(document);
+                let view = core.add_view(MockTextMeasurementProvider::new(), 1000., 1000.);
+                core.set_view_insets(view, viem_core::layout::EdgeInsets { left:23., right:29., ..Default::default() }).unwrap();
+                let regional = core.layout(view).unwrap().snapshot().unwrap();
+                close(regional.tables()[0].rect.x, table.rect.x);
+                for snapshot in [full, regional] {
+                    for row_index in 0..2 {
+                        let borders: Vec<_> = snapshot.rows.iter().filter(|row| {
+                            row.table_cell.as_ref().is_some_and(|cell| cell.row == row_index)
+                        }).flat_map(|row| &row.decorations).filter(|decoration| {
+                            decoration.kind == DecorationKind::BlockQuoteBorder
+                        }).collect();
+                        assert_eq!(borders.len(), usize::from(source.starts_with('>')),
+                            "One enclosing quote border per table row, regardless of cell alignment or size");
+                        if let Some(border) = borders.first() {
+                            assert!(matches!(border.owner, Some(DecorationOwner::Container(_))));
+                            close(border.typographic_bounds.x, 23. + 17.);
+                            close(border.typographic_bounds.width, 3.);
+                            let cell = first_cell_row(snapshot, row_index, 0).table_cell.as_ref().unwrap();
+                            close(border.typographic_bounds.y, cell.rect.y);
+                            close(border.typographic_bounds.height, cell.rect.height);
+                        }
+                    }
+                }
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn enclosing_table_style_change_invalidates_bounded_regional_geometry() {
+    let source = format!("> | H | V |\n> | - | - |\n{}", "> | body | value |\n".repeat(10_000));
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut view = ViewLayout::new(1000., 150.);
+    let mut document = nested_table_document(&source, 17., "Start");
+    for (id, left) in [(1, 17.), (2, 57.)] {
+        configure_nested_table(&mut document, left, "Start");
+        let request = prepare_layout_job(&document, &mut view, inspect_layout_provider(&engine),
+            LayoutJobId(id), LayoutJobPriority::ChangedVisibleRows,
+            LayoutJobRegion::HardLines(HardLineLayoutRegion::new(0..3).unwrap()), LayoutCancellationToken::new()).unwrap();
+        let result = compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+        let snapshot = result.regional_snapshot();
+        assert!(snapshot.work_statistics().table_measured_cells() < 150);
+        close(snapshot.lines()[0].rows()[0].table_cell.as_ref().unwrap().rect.x, left + 10. + 13.);
+        for line in snapshot.lines() {
+            let borders: Vec<_> = line.rows().iter().flat_map(|row| &row.decorations)
+                .filter(|decoration| decoration.kind == DecorationKind::BlockQuoteBorder).collect();
+            assert_eq!(borders.len(), 1);
+            close(borders[0].typographic_bounds.x, left);
+            close(borders[0].typographic_bounds.width, 3.);
+        }
+    }
+}
+
+#[test]
+fn quoted_tables_paint_continuous_parent_boxes_behind_the_grid() {
+    let table = "| Quoted item | Value |\n| --- | ---: |\n| Inside the quotation<br>second line | 7 |";
+    for depth in [1, 2] {
+        for surrounding_prose in [false, true] {
+            let prefix = ">".repeat(depth);
+            let table = table.lines().map(|line| format!("{prefix} {line}")).collect::<Vec<_>>().join("\n");
+            let source = if surrounding_prose {
+                format!("{prefix} before\n{prefix}\n{table}\n{prefix}\n{prefix} after")
+            } else { table };
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let diagnostics = document.replace_style_defaults(&serde_json::to_vec(&json!({
+                "version":1,"block_styles":[
+                    {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","block":{}},
+                    {"id":"Block quote","name":"Block quote","role":"Quote","based_on":"Paragraph",
+                        "block":{"margin_left":17,"padding_left":7,"border_left_width":3,
+                            "padding_top":8,"padding_bottom":10,
+                            "background":{"red":1,"green":0,"blue":0,"alpha":0.5}}},
+                    {"id":"Table","name":"Table","role":"Table","based_on":"Paragraph",
+                        "block":{"margin_top":9,"margin_bottom":11,"padding_top":5,"padding_bottom":7,
+                            "border_top_width":2,"border_bottom_width":2,
+                            "background":{"red":0,"green":0,"blue":1,"alpha":1}}},
+                    {"id":"Table cell","name":"Table cell","role":"Paragraph","based_on":"Paragraph",
+                        "block":{"padding_top":6,"padding_bottom":4,"border_top_width":2,"border_bottom_width":2}},
+                    {"id":"Table header","name":"Table header","role":"Paragraph","based_on":"Table cell","block":{}}
+                ]
+            })).unwrap()).unwrap();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            let mut core = viem_core::Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 1000., 1000.);
+            for scale in [1., 1.25, 2.] {
+                let full = layout(core.document(), scale);
+                core.handle(view, viem_core::CoreEvent::SetScale(scale)).unwrap();
+                let regional = core.layout(view).unwrap().snapshot().unwrap();
+                for snapshot in [&full, regional] {
+                    let mut owners = std::collections::BTreeMap::new();
+                    for row in snapshot.rows.iter() {
+                        for border in row.decorations.iter().filter(|d| d.kind == DecorationKind::BlockQuoteBorder) {
+                            assert!(matches!(border.owner, Some(DecorationOwner::Container(_))));
+                            let bounds = border.typographic_bounds;
+                            close(bounds.width, 3. * scale);
+                            owners.entry(border.owner.unwrap()).or_insert_with(Vec::new).push(bounds);
+                        }
+                    }
+                    assert_eq!(owners.len(), depth);
+                    for bounds in owners.values() {
+                        assert_eq!(bounds.len(), if surrounding_prose { 4 } else { 2 });
+                        for pair in bounds.windows(2) {
+                            close(pair[0].x, pair[1].x);
+                            close(pair[0].y + pair[0].height, pair[1].y);
+                        }
+                        let table = &snapshot.tables()[0].rect;
+                        assert!(bounds[0].x + bounds[0].width < table.x);
+                        assert!(bounds[0].y < table.y);
+                        let last = bounds.last().unwrap();
+                        assert!(last.y + last.height > table.y + table.height);
+                    }
+                    let ordered = snapshot.decorations_in_paint_order();
+                    let first_table = ordered.iter().position(|(_, d)| matches!(d.owner, Some(DecorationOwner::Table(_)))).unwrap();
+                    assert!(ordered[..first_table].iter().all(|(_, d)| matches!(d.owner, Some(DecorationOwner::Container(_)))));
+                    assert!(ordered[first_table..].iter().all(|(_, d)| !matches!(d.owner, Some(DecorationOwner::Container(_)))));
+                }
+                let geometry = |snapshot: &LayoutSnapshot| snapshot.rows.iter().flat_map(|r| &r.decorations)
+                    .filter(|d| matches!(d.owner, Some(DecorationOwner::Container(_))))
+                    .map(|d| (d.owner, d.kind, d.typographic_bounds)).collect::<Vec<_>>();
+                let full_geometry = geometry(&full);
+                let regional_geometry = geometry(regional);
+                assert_eq!(full_geometry.len(), regional_geometry.len());
+                for (full, regional) in full_geometry.iter().zip(&regional_geometry) {
+                    assert_eq!((full.0, full.1), (regional.0, regional.1));
+                    close(full.2.x, regional.2.x);
+                    close(full.2.y, regional.2.y);
+                    close(full.2.width, regional.2.width);
+                    close(full.2.height, regional.2.height);
+                }
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+}

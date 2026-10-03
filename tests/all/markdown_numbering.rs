@@ -162,22 +162,24 @@ fn source_counted_open_and_dot_keep_numbering_and_group_undo() {
         viem_core::command::LineMode::Visual,
         viem_core::command::LineMode::PhysicalSource,
     ] {
-        let source = "- parent\n  8. first\n  9. last";
+        let source = "- parent\n\n  8. first\n  9. last";
         let mut core = Core::new(open(source, Format::MarkdownSource));
         let view = core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
         core.handle(view, CoreEvent::SetLineMode(line_mode))
             .unwrap();
-        key(&mut core, view, Key::Char('j'));
+        let at = core.document().text().find("first").unwrap();
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
         key(&mut core, view, Key::Char('2'));
         key(&mut core, view, Key::Char('o'));
         core.handle(view, CoreEvent::Input(InputEvent::text("added")))
             .unwrap();
         key(&mut core, view, Key::Escape);
-        let once = b"- parent\n  8. first\n  9. added\n  10. added\n  11. last";
+        let once = b"- parent\n\n  8. first\n  9. added\n  10. added\n  11. last";
         assert_eq!(core.document().source_bytes(), once);
         key(&mut core, view, Key::Char('.'));
         let twice =
-            b"- parent\n  8. first\n  9. added\n  10. added\n  11. added\n  12. added\n  13. last";
+            b"- parent\n\n  8. first\n  9. added\n  10. added\n  11. added\n  12. added\n  13. last";
         assert_eq!(core.document().source_bytes(), twice);
         key(&mut core, view, Key::Char('u'));
         assert_eq!(core.document().source_bytes(), once);
@@ -199,8 +201,8 @@ fn enter_updates_the_following_source_numbers_in_both_views() {
                 "3) first\n4) added\n5) second\n\nUnrelated\n\n7. last\n1. keep",
             ),
             (
-                "- parent\n  8) first\n  9) second",
-                "- parent\n  8) first\n  9) added\n  10) second",
+                "- parent\n\n  8) first\n  9) second",
+                "- parent\n\n  8) first\n  9) added\n  10) second",
             ),
             (
                 "8. first\n9. second\n   continued\n   - child\n10. third\n    keep",

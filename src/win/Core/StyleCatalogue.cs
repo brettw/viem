@@ -7,6 +7,10 @@ namespace Viem.Windows.Core;
 
 internal sealed record SelectedStyles(ViemStyleSheetIdentityV1 Identity, uint Flags, string Paragraph, string Character)
 {
+    public bool HasCodeBlock => (Flags & VIEM_SELECTED_STYLE_HAS_CODE_BLOCK) != 0;
+    public bool HasTable => (Flags & VIEM_SELECTED_STYLE_HAS_TABLE) != 0;
+    public uint QuoteState => (Flags & VIEM_SELECTED_STYLE_HAS_QUOTES) == 0 ? VIEM_SEMANTIC_STYLE_STATE_OFF
+        : (Flags & VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_ON;
     public bool ParagraphMixed => (Flags & VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0;
     public bool CharacterMixed => (Flags & VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0;
     public uint ListState(uint kind)
@@ -54,7 +58,7 @@ internal sealed unsafe partial class CoreView
             && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0
             && ((s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) == 0 || matches && s.Id == selected.Paragraph))
             .OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(s => new StyleChoice(s.Key, s.Name, (s.Namespace == 2 || selected.Paragraph is not ("Table cell" or "Table header")) && (s.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || HeadingLevel(s.Key) != null),
+            .Select(s => new StyleChoice(s.Key, s.Name, (s.Namespace == 2 || !selected.HasTable) && (s.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || HeadingLevel(s.Key) != null),
                 matches && (s.Namespace == 1 ? !selected.ParagraphMixed && selected.Paragraph == s.Id : !selected.CharacterMixed && selected.Character == s.Id))).ToList();
         choices.Insert(0, new(new(2, ""), "Default Paragraph", true, matches && !selected.CharacterMixed && selected.Character.Length == 0));
         return choices.ToArray();

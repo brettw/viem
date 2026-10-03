@@ -10,7 +10,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
-internal enum ToolbarAction { Bold, Italic, Strikethrough, CharacterCode, Bullets, Numbers, CodeBlock, Indent, Unindent }
+internal enum ToolbarAction { Bold, Italic, Strikethrough, CharacterCode, Bullets, Numbers, BlockQuote, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
 internal sealed class FormattingToolbar : UserControl
@@ -79,6 +79,7 @@ internal sealed class FormattingToolbar : UserControl
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
+        Add(block, ToolbarAction.BlockQuote, "Block Quote", "");
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
@@ -100,12 +101,19 @@ internal sealed class FormattingToolbar : UserControl
         button.Width = 28; button.Height = 26; button.MinWidth = 0; button.MinHeight = 0; button.Padding = new(0);
         button.IsTabStop = true; button.AllowFocusOnInteraction = false;
         button.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
-        button.Content = action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
+        button.Content = action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
         AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
+    }
+
+    private static Border BlockQuoteIcon(ButtonBase owner)
+    {
+        var icon = new Border { Width = 18, Height = 12, BorderThickness = new Thickness(4, 1, 1, 1) };
+        icon.SetBinding(Border.BorderBrushProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        return icon;
     }
 
     private static Canvas TableIcon(Button owner)
@@ -204,7 +212,8 @@ internal sealed class FormattingToolbar : UserControl
             uint indent = available ? view.ListCapabilities() : 0;
             Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
             Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
-            if ((tableContext.flags & VIEM_TABLE_IN_TABLE) != 0) {
+            Set(ToolbarAction.BlockQuote, selected.QuoteState, available && !selected.HasTable && !selected.HasCodeBlock);
+            if (selected.HasTable) {
                 Paragraph.IsEnabled = false;
                 foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
                 Buttons[ToolbarAction.CodeBlock].Visibility = Visibility.Collapsed;
@@ -279,6 +288,7 @@ internal sealed class FormattingToolbar : UserControl
                 case ToolbarAction.Italic: view.ToggleSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS); break;
                 case ToolbarAction.Strikethrough: view.ToggleStrikethrough(); break;
                 case ToolbarAction.CharacterCode: Code(new(2, "Code"), new(2, "")); break;
+                case ToolbarAction.BlockQuote: view.SetBlockQuote(selected!.QuoteState != VIEM_SEMANTIC_STYLE_STATE_ON); break;
                 case ToolbarAction.CodeBlock: Code(new(1, "Code Block"), new(1, "Paragraph")); break;
                 case ToolbarAction.Bullets: List(VIEM_LIST_STYLE_BULLET); break;
                 case ToolbarAction.Numbers: List(VIEM_LIST_STYLE_NUMBERED); break;

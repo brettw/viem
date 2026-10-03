@@ -13,6 +13,28 @@ fn context(f: &TableFfiFixture) -> ViemTableContextV1 {
     );
     out
 }
+
+#[test]
+fn quote_toggle_abi_checks_selection_identity_and_preserves_heading() {
+    let f = table_ffi_fixture(b"# Heading", VIEM_FORMAT_MARKDOWN);
+    let mut request = ViemSetBlockQuoteV1 {
+        struct_size: VIEM_SET_BLOCK_QUOTE_V1_SIZE,
+        enabled: 1,
+        expected_selection: context(&f).selection,
+    };
+    let mut outcome = ViemCoreOutcomeV1::default();
+    assert_eq!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(source(&f), b"> # Heading");
+    request.enabled = 0;
+    assert_ne!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(source(&f), b"> # Heading");
+    request.expected_selection = context(&f).selection;
+    request.enabled = 2;
+    assert_eq!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::InvalidArgument);
+    request.enabled = 0;
+    assert_eq!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(source(&f), b"# Heading");
+}
 fn state(f: &TableFfiFixture) -> ViemDocumentStateV1 {
     let mut out = ViemDocumentStateV1::default();
     assert_eq!(

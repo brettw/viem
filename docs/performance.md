@@ -67,7 +67,7 @@ latency or progressive cold loading.
 macOS presentation/cache regression checks use the native test wrapper:
 
 ```sh
-scripts/test-mac.sh --filter 'EVPresentationCacheIntegrationTests|EVPointerDrawingPerformanceTests'
+scripts/test-mac.sh --filter 'EVPresentationCacheIntegrationTests|EVPointerDrawingPerformanceTests|EVBackgroundLayoutTests'
 ```
 
 For Windows input, drawing, pre-layout and startup measurements:
@@ -89,16 +89,14 @@ for other scenarios and build/profile options.
 
 ## Open work
 
-- **macOS speculative layout:** the core and Windows scheduler exist, but Mac
-  sessions are not connected. Follow the [scheduler checklist](windows-background-layout.md#todomacos-connect-the-native-scheduler).
 - **Progressive first display:** document construction still decodes and builds
   the initial state before returning. Compact storage does not make opening
   progressive. Any incremental/disk-backed design must preserve immutable
   snapshots and stable encoding interpretation after a late invalid byte.
-- **Remaining flat-text consumers:** the command compatibility executor still
-  calls `Document::text()` for paths including sentence/pair motions, Visual
-  Block resolution and case changes. Audit those paths before claiming every
-  command has a bounded working set.
+- **Remaining flat-text consumers:** sentence/pair scans, case replacement and
+  Visual Block range resolution now use snapshot queries. Other command motion,
+  selection and replay paths still call `Document::text()`. Audit those paths
+  before claiming every command has a bounded working set.
 - **Cold giant-line work:** bounded retained geometry does not bound first-pass
   metric discovery or a distant cold jump. Current long-line tests include
   linear source scanning with bounded shape fragments. Measure adversarial

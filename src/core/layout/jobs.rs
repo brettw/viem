@@ -564,7 +564,14 @@ fn retain_regional_styles(
         line_ranges
             .iter()
             .chain(following_line_range)
-            .any(|line| paragraph_matches_line(paragraph.text_range.clone(), line))
+            .any(|line| {
+                paragraph_matches_line(paragraph.text_range.clone(), line)
+                    // A table presentation row contains several paragraph
+                    // leaves. Keep their owner paths as well as cell metrics.
+                    || styles.table_context.as_ref().is_some_and(|context| context.contains_line(line))
+                        && paragraph.text_range.start <= line.end
+                        && line.start <= paragraph.text_range.end
+            })
     });
     styles
 }

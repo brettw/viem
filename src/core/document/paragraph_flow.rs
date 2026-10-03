@@ -2,9 +2,14 @@
 //! Markdown projection normalizes prose whitespace; source views retain every
 //! character and use the same classification only for optional layout flow.
 use super::line_endings::{LineEnding, LogicalUnit, NormalizedText};
-use super::projection::{markdown_block_prefix, markdown_fence, BlockKind};
+use super::projection::{markdown_block_prefix, BlockKind};
 use std::collections::BTreeSet;
 use std::ops::Range;
+
+fn source_at(input: &NormalizedText, at: usize) -> usize {
+    input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
+        .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start)
+}
 
 pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
     let mut start = 0;
@@ -18,12 +23,17 @@ pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
 }
 
 pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
+    markdown_soft_breaks_with_syntax(input, &syntax)
+}
+
+fn markdown_soft_breaks_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
     let quotes = super::markdown_quotes::classify(input);
     if quotes.iter().all(|line| line.depth == 0) {
-        return markdown_soft_breaks_without_quotes(input);
+        return markdown_soft_breaks_without_quotes(input, syntax);
     }
     let body = super::markdown_quotes::strip(input, &quotes);
-    let soft = markdown_soft_breaks_without_quotes(&body);
+    let soft = markdown_soft_breaks_without_quotes(&body, syntax);
     input.endings.iter().enumerate().filter_map(|(index, ending)| {
         (quotes[index].depth == quotes[index + 1].depth
             && soft.contains(&body.endings[index].normalized.start))
@@ -31,32 +41,21 @@ pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
     }).collect()
 }
 
-fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize> {
+fn markdown_soft_breaks_without_quotes(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
     let lines = source_lines(input);
-    let lists = super::markdown_blocks::classify(input);
-    let indented = super::markdown_indented_code::classify(input);
-    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input));
+    let (lists, literal_markers) = super::markdown_blocks::classify_with_literal_markers(input);
     let mut prose = Vec::with_capacity(lines.len());
-    let mut fence = None;
-    for line in &lines {
+    for (index, line) in lines.iter().enumerate() {
         let text = &input.text[line.clone()];
-        let was_fenced = fence.is_some();
-        if let Some((delimiter, length)) = fence {
-            if super::markdown_syntax::fence_close(text, delimiter, length) {
-                fence = None;
-            }
-        } else {
-            fence = markdown_fence(text).or_else(|| {
-                super::markdown_blocks::marker_prefix_length(text)
-                    .and_then(|prefix| markdown_fence(&text[prefix..]))
-            });
-        }
+        let start = source_at(input, line.start);
+        let end = source_at(input, line.end);
+        let code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= start))
+            .is_some_and(|code| code.range.start <= end && start < code.range.end);
         let (_, kind) = markdown_block_prefix(&input.text, line.start, line.end);
         prose.push(
-            !was_fenced
-                && fence.is_none()
+            !code
                 && !text.trim().is_empty()
-                && kind == BlockKind::Paragraph,
+                && (kind == BlockKind::Paragraph || literal_markers[index]),
         );
     }
     input
@@ -65,13 +64,14 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText) -> BTreeSet<usize
         .enumerate()
         .filter_map(|(i, ending)| {
             let previous = &input.text[lines[i].clone()];
-            let literal = super::markdown_indented_code::containing(&indented, ending.source.start).is_some();
-            let table_boundary = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= ending.normalized.start)).is_some_and(|table| table.range.start <= ending.normalized.end);
-            let block_boundary = table_boundary || syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.normalized.start)).is_some_and(|block| {
-                let touches = block.range.start <= ending.normalized.end && ending.normalized.start < block.range.end;
+            let literal = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= ending.source.start))
+                .is_some_and(|code| code.range.start <= ending.source.start);
+            let table_boundary = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= ending.source.start)).is_some_and(|table| table.range.start <= ending.source.end);
+            let block_boundary = table_boundary || syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.source.start)).is_some_and(|block| {
+                let touches = block.range.start <= ending.source.end && ending.source.start < block.range.end;
                 touches && !(matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
-                    && block.content.start <= ending.normalized.start && ending.normalized.end < block.content.end)
-            }) || syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.normalized.start)).is_some_and(|range| range.start <= ending.normalized.end);
+                    && block.content.start <= ending.source.start && ending.source.end < block.content.end)
+            }) || syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.source.start)).is_some_and(|range| range.start <= ending.source.end);
             (!literal && !block_boundary && ((prose[i]
                 && prose.get(i + 1) == Some(&true)
                 && lists[i].is_none()
@@ -119,55 +119,38 @@ fn markdown_projection(
     input: &NormalizedText,
     preserve_markers: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
-    let soft = markdown_soft_breaks(input);
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
+    let soft = markdown_soft_breaks_with_syntax(input, &syntax);
     let quotes = super::markdown_quotes::classify(input);
     if !preserve_markers && quotes.iter().any(|line| line.depth > 0) {
         let body = super::markdown_quotes::strip(input, &quotes);
         let body_soft = input.endings.iter().zip(&body.endings)
             .filter_map(|(before, after)| soft.contains(&before.normalized.start)
                 .then_some(after.normalized.start)).collect();
-        return markdown_projection_with_soft_breaks(&body, false, body_soft);
+        return markdown_projection_with_soft_breaks(&body, false, body_soft, &syntax);
     }
-    markdown_projection_with_soft_breaks(input, preserve_markers, soft)
+    markdown_projection_with_soft_breaks(input, preserve_markers, soft, &syntax)
 }
 
 fn markdown_projection_with_soft_breaks(
     input: &NormalizedText,
     preserve_markers: bool,
     soft: BTreeSet<usize>,
+    syntax: &super::markdown_syntax::Blocks,
 ) -> (NormalizedText, BTreeSet<usize>) {
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify(input);
-    let indented = super::markdown_indented_code::classify(input);
     let quotes = super::markdown_quotes::classify(input);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
-    let mut fence = None;
     let mut i = 0;
     while i < input.endings.len() {
         let text = &input.text[quotes[i].content_start..lines[i].end];
-        if let Some((delimiter, length)) = fence {
-            if super::markdown_syntax::fence_close(text, delimiter, length) {
-                fence = None;
-            }
-        } else {
-            fence = markdown_fence(text).or_else(|| {
-                super::markdown_blocks::marker_prefix_length(text)
-                    .and_then(|prefix| markdown_fence(&text[prefix..]))
-            });
-        }
         let ending = &input.endings[i];
-        if fence.is_some()
-            || lists[i]
-                .as_ref()
-                .zip(lists.get(i + 1).and_then(Option::as_ref))
-                .is_some_and(|(line, next)| {
-                    line.code && next.code && line.paragraph == next.paragraph
-                })
-            || super::markdown_indented_code::containing(&indented, ending.source.start).is_some_and(|block| ending.source.start < block.source.end)
-        {
-            // Code-body endings remain literal content; closing-fence
-            // separators below still obey ordinary paragraph separation.
+        let code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= ending.source.start));
+        if code.is_some_and(|code| code.range.start <= ending.source.start && ending.source.start < code.body_end) {
+            // Literal endings follow parser-owned code scopes. Removing quote
+            // prefixes must not let a fence consume a different container.
             i += 1;
             continue;
         }
@@ -246,11 +229,15 @@ fn markdown_projection_with_soft_breaks(
         i += 1;
     }
     for (index, context) in lists.iter().enumerate() {
+        let start = source_at(input, lines[index].start);
+        let end = source_at(input, lines[index].end);
+        // Parser ranges may begin after the container's indentation. Match
+        // the whole row so that extra literal code spaces are never stripped.
+        let indented = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= start))
+            .is_some_and(|code| !code.fenced && code.range.start <= end && start < code.range.end);
         if let Some(context) = context
             .as_ref()
-            .filter(|context| !preserve_markers && context.marker.is_none()
-                && !input.units.get(input.units.partition_point(|unit| unit.normalized.start < lines[index].start))
-                    .is_some_and(|unit| super::markdown_indented_code::containing(&indented, unit.source.start).is_some()))
+            .filter(|context| !preserve_markers && context.marker.is_none() && !indented)
         {
             if context.content_start > lines[index].start
                 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start))

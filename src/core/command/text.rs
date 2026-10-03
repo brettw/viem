@@ -600,6 +600,7 @@ pub(crate) fn move_paragraph(
     position
 }
 
+#[cfg(test)]
 pub(crate) fn move_sentence(
     text: &str,
     lines: &HardLineSnapshot,
@@ -680,6 +681,7 @@ pub(crate) fn move_sentence(
 /// sequence at `index`. Vim permits closing punctuation between the terminal
 /// and the required whitespace/end boundary; checking that boundary also
 /// prevents a decimal point in `3.14` from ending a sentence.
+#[cfg(test)]
 fn sentence_end_after(items: &[(usize, usize, &str)], index: usize) -> Option<usize> {
     let terminal = items.get(index)?.2.chars().next()?;
     if !is_sentence_terminator(terminal) {
@@ -717,7 +719,7 @@ pub(super) fn is_east_asian_sentence_terminator(ch: char) -> bool {
     matches!(ch, '。' | '！' | '？')
 }
 
-fn is_blank_hard_line_boundary(lines: &HardLineSnapshot, offset: usize) -> bool {
+pub(super) fn is_blank_hard_line_boundary(lines: &HardLineSnapshot, offset: usize) -> bool {
     let Ok(current) = lines.line_at_offset(offset) else {
         return false;
     };

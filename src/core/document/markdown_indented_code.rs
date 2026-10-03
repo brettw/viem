@@ -18,16 +18,6 @@ pub(super) struct CodeBlock {
     pub container_indent: usize,
 }
 
-pub(super) fn containing(blocks: &[CodeBlock], at: usize) -> Option<&CodeBlock> {
-    blocks
-        .get(
-            blocks
-                .partition_point(|block| block.source.start <= at)
-                .checked_sub(1)?,
-        )
-        .filter(|block| at <= block.source.end)
-}
-
 /// Consume indentation in columns. A tab crossing the boundary leaves spaces
 /// in the literal body; its physical byte remains their shared contributor.
 fn strip_indent(text: &str, target: usize) -> Option<(usize, usize)> {
@@ -75,6 +65,11 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
         let line = &lines[index];
         let text = &body.text[line.clone()];
         let context = lists[index].as_ref();
+        if index > 0 && quotes[index].depth != quotes[index - 1].depth {
+            // A fence cannot survive the end of its quote container. The next
+            // line can independently begin an indented code block.
+            fence = None;
+        }
         if index > 0
             && (quotes[index].depth != quotes[index - 1].depth
                 || context

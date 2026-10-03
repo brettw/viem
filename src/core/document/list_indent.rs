@@ -481,6 +481,24 @@ fn markdown_patches(
             (end..lines.len()).find(|&index| !input.text[lines[index].clone()].trim().is_empty());
         let next_indent = next.map_or(required, |index| columns(&input.text[lines[index].clone()]));
         let new_level = level(&blocks[target.first]).unwrap() - 1;
+        if let Some(index) = next.filter(|&index| {
+            contexts[index].as_ref().is_some_and(|context| matches!(context.kind,
+                BlockKind::ListItem { level, ordered: true, ordinal, .. }
+                    if level > new_level && ordinal != 1))
+                && index > 0 && !input.text[lines[index - 1].clone()].trim().is_empty()
+        }) {
+            // A retained numbered sibling becomes a child of the lifted item.
+            // Starting above one needs a separator to remain a list in GFM.
+            let at = converter.source_range(lines[index].start..lines[index].start).start;
+            let physical = document.state().source_hard_lines.line_at_offset(at)
+                .and_then(|line| document.state().source_hard_lines.get(line))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let prefix = document.state().source.bytes_in(physical.start..at)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let mut separator = prefix;
+            separator.extend(document.encoding().encode_fragment(document.file_format().spelling())?);
+            patches.push(SourcePatch::primary(physical.start..physical.start, separator));
+        }
         if next.and_then(|index| contexts[index].as_ref()).is_some_and(|context|
             matches!(context.kind, BlockKind::ListItem { level, .. } if level > new_level))
             && next_indent < required

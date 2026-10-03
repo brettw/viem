@@ -127,6 +127,14 @@ pub(super) struct Container {
     pub list: Option<super::BlockKind>,
     pub loose: bool,
 }
+#[derive(Clone, Debug)]
+pub(super) struct CodeSyntax {
+    pub range: Range<usize>,
+    /// Includes internal body endings, but excludes a closing fence or an
+    /// indented block's final paragraph separator.
+    pub body_end: usize,
+    pub fenced: bool,
+}
 #[derive(Default)]
 pub(super) struct Blocks {
     pub blocks: Vec<BlockSyntax>,
@@ -134,6 +142,7 @@ pub(super) struct Blocks {
     pub owners: Vec<super::containers::SourceContainer>,
     pub definitions: Vec<Range<usize>>,
     pub tables: Vec<super::markdown_tables::TableSyntax>,
+    pub code: Vec<CodeSyntax>,
 }
 impl Blocks {
     pub fn parse(text: &str) -> Self {
@@ -146,6 +155,7 @@ impl Blocks {
         let mut lists: Vec<(Range<usize>, Option<u64>, bool, usize)> = Vec::new();
         let mut items: Vec<usize> = Vec::new();
         let mut active = None;
+        let mut active_code = None;
         for (event, range) in parser.into_offset_iter() {
             match event {
                 Event::Start(Tag::BlockQuote(_)) => {
@@ -158,7 +168,22 @@ impl Blocks {
                     result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::List { ordered: ordinal.is_some() }));
                     lists.push((range, ordinal, false, result.containers.len()));
                 }
-                Event::Start(Tag::CodeBlock(_)) => result.owners.push(super::containers::SourceContainer::new(range, super::ContainerKind::CodeBlock)),
+                Event::Start(Tag::CodeBlock(kind)) => {
+                    result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::CodeBlock));
+                    active_code = Some(result.code.len());
+                    let body_end = text[range.clone()].find('\n').map_or(range.end, |at| range.start + at + 1);
+                    result.code.push(CodeSyntax { range, body_end, fenced: matches!(kind, pulldown_cmark::CodeBlockKind::Fenced(_)) });
+                }
+                Event::End(TagEnd::CodeBlock) => {
+                    if let Some(index) = active_code.take() {
+                        let code = &mut result.code[index];
+                        if !code.fenced {
+                            if let Some(body) = text[..code.body_end].strip_suffix('\n') {
+                                code.body_end = body.len();
+                            }
+                        }
+                    }
+                }
                 Event::End(TagEnd::List(_)) => {
                     let (range, _, loose, first) = lists.pop().unwrap();
                     if loose {
@@ -194,6 +219,9 @@ impl Blocks {
                 }
                 Event::Rule => result.blocks.push(BlockSyntax { content: range.clone(), range, role: BlockRole::Rule }),
                 _ => {
+                    if let Some(index) = active_code {
+                        if matches!(event, Event::Text(_)) { result.code[index].body_end = range.end; }
+                    }
                     if let Some(index) = active {
                         let block = &mut result.blocks[index];
                         block.content.start = block.content.start.min(range.start);
@@ -220,6 +248,7 @@ impl Blocks {
         self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }
+        for code in &mut self.code { code.range = at(code.range.start)..at(code.range.end); code.body_end = at(code.body_end); }
         for container in &mut self.containers { container.range = at(container.range.start)..at(container.range.end); }
         for range in &mut self.definitions { *range = at(range.start)..at(range.end); }
         self

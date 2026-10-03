@@ -10,6 +10,14 @@ struct EVSelectedNamedStyles {
   let hasBullets: Bool
   let hasNumbering: Bool
   let hasNonList: Bool
+  let hasQuotes: Bool
+  let hasNonQuote: Bool
+  let hasTable: Bool
+  let hasCodeBlock: Bool
+
+  var quoteState: NSControl.StateValue {
+    hasQuotes ? (hasNonQuote ? .mixed : .on) : .off
+  }
 
   var bulletState: NSControl.StateValue {
     hasBullets ? (hasNumbering || hasNonList ? .mixed : .on) : .off
@@ -50,7 +58,11 @@ extension EVCoreViewSession {
       characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0,
       hasBullets: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_BULLETS) != 0,
       hasNumbering: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NUMBERING) != 0,
-      hasNonList: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_LIST) != 0)
+      hasNonList: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_LIST) != 0,
+      hasQuotes: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_QUOTES) != 0,
+      hasNonQuote: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0,
+      hasTable: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_TABLE) != 0,
+      hasCodeBlock: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_CODE_BLOCK) != 0)
   }
 }
 

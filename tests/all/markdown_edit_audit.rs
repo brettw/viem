@@ -465,8 +465,8 @@ fn source_bullet_enter_keeps_typing_in_the_new_item_across_encodings_and_line_mo
 fn unindenting_a_numbered_item_keeps_later_siblings_nested_with_marker_padding() {
     use viem_core::document::{BlockKind, ModelRequest};
     for source in [
-        "- parent\n  9. child\n     continued\n  10. next\n- tail",
-        "- parent\n  9.\tchild\n      continued\n\n  10. next\n- tail",
+        "- parent\n\n  9. child\n     continued\n  10. next\n- tail",
+        "- parent\n\n  9.\tchild\n      continued\n\n  10. next\n- tail",
     ] {
         let mut doc =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)

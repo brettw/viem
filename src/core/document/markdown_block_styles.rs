@@ -200,13 +200,18 @@ pub(super) fn preserve_deleted_source_prefixes(
                     .iter()
                     .any(|block| matches!(block.kind, BlockKind::ListItem { .. }))
                 {
-                    prefix += super::super::markdown_blocks::marker_prefix_length(
-                        &decoded.text[prefix..],
-                    )
-                    .unwrap_or_else(|| {
-                        decoded.text[prefix..].len()
-                            - decoded.text[prefix..].trim_start_matches([' ', '\t']).len()
-                    });
+                    let body = &decoded.text[prefix..];
+                    let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+                    let marker = super::super::markdown_blocks::marker_prefix_length(body);
+                    let hidden_marker = if let Some(length) = marker {
+                        let start = line.start + document.encoding().encode_fragment(&decoded.text[..prefix + indent])?.len();
+                        let end = line.start + document.encoding().encode_fragment(&decoded.text[..prefix + length])?.len();
+                        (!document.projection().provenance_contained_in_source(&(start..end))
+                            .iter().any(|span| !span.formatted.is_empty())).then_some(length)
+                    } else { None };
+                    // A numbered-looking continuation can be literal prose.
+                    // Its digits and punctuation survive deletion of the fold.
+                    prefix += hidden_marker.unwrap_or(indent);
                 }
                 if prefix > 0 {
                     let end = line.start

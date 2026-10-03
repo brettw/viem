@@ -20,8 +20,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   and measurement scope; no historical results.
 - [Native selection](native-selection.md): native/Vim interaction differences
   and remaining platform gaps.
-- [macOS background layout follow-up](windows-background-layout.md): the
-  unfinished native scheduler connection and its acceptance checks.
+- [Native background layout](windows-background-layout.md): worker ownership,
+  cache-only installation, cancellation and native regression checks.
 - [Markdown demo](markdown_demo.md): loadable examples of supported syntax and
   deliberate presentation exceptions.
 - [Markdown tables](markdown-tables.md): GFM compatibility, Word-like

@@ -228,6 +228,12 @@ pub enum ModelRequest {
         range: Range<usize>,
         style: Option<super::ListStyle>,
     },
+    SetBlockQuote {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        enabled: bool,
+    },
     IndentList {
         document: DocumentId,
         revision: Revision,
@@ -328,6 +334,7 @@ impl ModelRequest {
             | Self::ClearDocumentContent { document, .. }
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
+            | Self::SetBlockQuote { document, .. }
             | Self::IndentList { document, .. }
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
@@ -354,6 +361,7 @@ impl ModelRequest {
             | Self::ClearDocumentContent { revision, .. }
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
+            | Self::SetBlockQuote { revision, .. }
             | Self::IndentList { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
@@ -1083,6 +1091,12 @@ impl Document {
             } => self.prepare_list_indent(range, unindent),
             ModelRequest::SetListStyle { range, style, .. } => {
                 self.prepare_list_style(range, style)
+            }
+            ModelRequest::SetBlockQuote { range, enabled, .. } => {
+                if !self.format().is_markdown() || self.projection().range_intersects_table(&range) {
+                    return Err(DocumentError::UnsupportedFormatting.into());
+                }
+                self.prepare_markdown_quote_style(range, enabled)
             }
             ModelRequest::SetParagraphStyle { range, style, .. } => {
                 self.prepare_markdown_paragraph_style(range, style)
@@ -4098,6 +4112,28 @@ impl Document {
             self.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    /// Visible extent of source-only formatting changed by history. Use the
+    /// persistent source diff and indexed provenance, not a whole-paragraph
+    /// guess for an inline style change. This query is presentation-only.
+    pub(crate) fn history_formatting_change_range(&self, from: HistoryNodeId) -> Option<Range<usize>> {
+        let previous = self.history.state_at_node(from)?;
+        let changed = previous.source.changed_extents(&self.state().source).into_iter()
+            .map(|(_, new)| new).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))?;
+        let projection = self.projection();
+        let start = projection.nearest_text_boundary_for_source(changed.start, true)?;
+        let end = projection.nearest_text_boundary_for_source(changed.end, false)?;
+        let range = start.min(end)..start.max(end);
+        if range.is_empty() {
+            // A changed block prefix has no body bytes of its own, but its
+            // treatment affects the containing paragraph or code container.
+            if let Some(block) = projection.blocks_for_region(&range).into_iter()
+                .find(|block| block.range.start == range.start) {
+                return Some(block.range);
+            }
+        }
+        Some(range)
     }
 
     fn prepare_history_navigation(

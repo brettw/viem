@@ -16,6 +16,10 @@ impl FormattedDocument {
             has_bullets: false,
             has_numbering: false,
             has_non_list: true,
+            has_quotes: false,
+            has_non_quote: true,
+            has_table: false,
+            has_code_block: false,
         };
         let tree = self.text_tree();
         if range.is_empty() {

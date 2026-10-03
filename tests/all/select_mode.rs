@@ -649,7 +649,7 @@ fn temporary_visual_copy_retains_forward_and_reversed_select_block_geometry() {
         let before_segments = viem_core::command::visual_block::resolve_block_selection(
             &before,
             core.layout(view).unwrap().snapshot().unwrap(),
-            core.document().text(),
+            &core.document().hard_line_snapshot(),
         )
         .unwrap()
         .range_set
@@ -671,7 +671,7 @@ fn temporary_visual_copy_retains_forward_and_reversed_select_block_geometry() {
         let after_segments = viem_core::command::visual_block::resolve_block_selection(
             after,
             core.layout(view).unwrap().snapshot().unwrap(),
-            core.document().text(),
+            &core.document().hard_line_snapshot(),
         )
         .unwrap()
         .range_set

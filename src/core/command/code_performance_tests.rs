@@ -129,3 +129,77 @@ fn ex_join_and_delete_keep_code_snapshots_unflattened() {
         );
     }
 }
+
+#[test]
+fn sentence_and_pair_commands_counts_registers_and_repeat_keep_snapshots_unflattened() {
+    for command in [")", "2)", "(", "%", "y%", "d%", "d)", "2d)", "c%"] {
+        let prefix = "unrelated line\n".repeat(10_000);
+        let text = format!(
+            "{prefix}(one [two]). Next. Last.\n{}",
+            "unrelated line\n".repeat(10_000)
+        );
+        let mut document =
+            Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap();
+        document.replace(0..0, "X").unwrap();
+        let original = document.source_bytes();
+        let mut commands = CommandInterpreter::new();
+        assert!(commands.set_cursor(&document, prefix.len() + 1));
+        for character in command.chars() {
+            event(&mut commands, &mut document, InputEvent::key(character));
+        }
+        if command == "c%" {
+            event(
+                &mut commands,
+                &mut document,
+                InputEvent::text("replacement"),
+            );
+            event(&mut commands, &mut document, InputEvent::Key(Key::Escape));
+        }
+        if document.source_bytes() != original {
+            let changed = document.source_bytes();
+            event(&mut commands, &mut document, InputEvent::key('u'));
+            assert_eq!(document.source_bytes(), original);
+            event(
+                &mut commands,
+                &mut document,
+                InputEvent::Key(Key::Ctrl('r')),
+            );
+            assert_eq!(document.source_bytes(), changed);
+            event(&mut commands, &mut document, InputEvent::key('.'));
+        }
+    }
+}
+
+#[test]
+fn local_case_commands_keep_snapshots_unflattened_and_restore_exact_source() {
+    for command in ["~", "3~", "gUl", "gU)", "guu", "g~~"] {
+        let prefix = "unrelated line\n".repeat(10_000);
+        let mut document = Document::from_bytes(
+            format!(
+                "{prefix}aßİe\u{301}. Next sentence.\n{}",
+                "unrelated line\n".repeat(10_000)
+            )
+            .into_bytes(),
+            Encoding::Utf8,
+            Format::Code,
+        )
+        .unwrap();
+        document.replace(0..0, "X").unwrap();
+        let original = document.source_bytes();
+        let mut commands = CommandInterpreter::new();
+        assert!(commands.set_cursor(&document, prefix.len() + 1));
+        for character in command.chars() {
+            event(&mut commands, &mut document, InputEvent::key(character));
+        }
+        assert_ne!(document.source_bytes(), original, "{command}");
+        let changed = document.source_bytes();
+        event(&mut commands, &mut document, InputEvent::key('u'));
+        assert_eq!(document.source_bytes(), original);
+        event(
+            &mut commands,
+            &mut document,
+            InputEvent::Key(Key::Ctrl('r')),
+        );
+        assert_eq!(document.source_bytes(), changed);
+    }
+}

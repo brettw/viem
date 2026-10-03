@@ -1105,6 +1105,14 @@ internal unsafe struct ViemSetListStyleV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemSetBlockQuoteV1
+{
+    public uint @struct_size;
+    public uint @enabled;
+    public ViemLogicalSelectionIdentityV1 @expected_selection;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemListIndentV1
 {
     public uint @struct_size;
@@ -1844,6 +1852,7 @@ internal static unsafe partial class Native
     public const uint VIEM_LIST_STYLE_BULLET = 1u;
     public const uint VIEM_LIST_STYLE_NUMBERED = 2u;
     public static readonly uint VIEM_SET_LIST_STYLE_V1_SIZE = ((uint)sizeof(ViemSetListStyleV1));
+    public static readonly uint VIEM_SET_BLOCK_QUOTE_V1_SIZE = ((uint)sizeof(ViemSetBlockQuoteV1));
     public const uint VIEM_LIST_CAN_INDENT = 1u;
     public const uint VIEM_LIST_CAN_UNINDENT = 2u;
     public static readonly uint VIEM_LIST_INDENT_V1_SIZE = ((uint)sizeof(ViemListIndentV1));
@@ -1875,6 +1884,10 @@ internal static unsafe partial class Native
     public const uint VIEM_SELECTED_STYLE_HAS_BULLETS = (1u << 2);
     public const uint VIEM_SELECTED_STYLE_HAS_NUMBERING = (1u << 3);
     public const uint VIEM_SELECTED_STYLE_HAS_NON_LIST = (1u << 4);
+    public const uint VIEM_SELECTED_STYLE_HAS_QUOTES = (1u << 5);
+    public const uint VIEM_SELECTED_STYLE_HAS_NON_QUOTE = (1u << 6);
+    public const uint VIEM_SELECTED_STYLE_HAS_TABLE = (1u << 7);
+    public const uint VIEM_SELECTED_STYLE_HAS_CODE_BLOCK = (1u << 8);
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
@@ -2124,6 +2137,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_copy_table_selection_text(ulong @core, ulong @view, ViemTableSelectionV1* @expected, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_table_selection_ranges(ulong @core, ulong @view, ViemTableSelectionV1* @expected, ViemFormattedUtf8RangeV1* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_block_quote(ulong @core, ulong @view, ViemSetBlockQuoteV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

@@ -304,9 +304,12 @@ synthetic read-only definitions remain read-only.
   Backspace joins preceding content or does nothing at the start of the
   document. Forward Delete removes the following grapheme/boundary except
   at EOF; selection deletion joins crossed boundaries into the first paragraph.
-- At a nonempty ordinary paragraph's end, choosing Block quote opens a blank
-  quote after it, reusing an empty final paragraph where possible, atomically.
+- At a nonempty ordinary paragraph's end, choosing Block quote in the style
+  menu opens a blank quote after it, reusing an empty final paragraph where
+  possible, atomically.
   Enter continues nonempty quotes and removes treatment from empty quotes.
+  Source Enter after a completed quote marker, including before its optional
+  following space, keeps the following body inside the quote.
   Backspace at quote start follows structural joining; quote removal preserves
   inner treatments. Whole-document deletion leaves an empty ordinary paragraph
   and preserves document metadata.
@@ -1029,6 +1032,9 @@ mode/presentation while remapping cursor, selection, and viewport anchors.
 Registers, repeat/macro state, search and prompt history, jumps, view options,
 scroll offsets, and filename are not restored; redo does not repeat side
 effects. Ordinary edit side effects still commit atomically with that edit.
+History navigation preserves the current viewport when the changed area and
+restored caret are visible. Otherwise it scrolls only enough to fit the changed
+area when possible, prioritizing the caret when the area exceeds the viewport.
 
 Dirty state compares exact persisted source identity, not serialized text or
 hashes on every query. Saving creates no undo entry; failed writes do not move
@@ -1325,6 +1331,12 @@ editing API. Menus and toolbar describe the focused document's actual
 named/structural/inline state, including mixed values; Code style inspection
 uses current cached syntax runs without parsing or whole-document scans.
 Native menu tracking must retain item identity while the user holds a button.
+The Block Quote toolbar toggle precedes Code Block, reports structural quote
+membership (including mixed selections), and adds/removes quote treatment while
+preserving inner paragraph/list treatments. It stays visible but disabled
+when unavailable, including carets or selections in Markdown code blocks.
+Source table delimiter rows and prefixes disable block-formatting controls just
+like table cell text.
 Windows Heading 6 remains menu-only because Control-6 belongs to Vim Control-^.
 
 The toolbar is absent in Text/Code and remembers visibility per Markdown format.
@@ -1597,9 +1609,6 @@ work/memory gates. See the provider profiles and
 Keep these follow-ups visible; linked guides describe current next steps and
 reproducible checks. Keep generated measurements outside committed documentation:
 
-- **macOS background pre-layout is not connected.** Reuse portable policy and
-  prove native cancellation, render-resource ownership, memory and paging before
-  closing the [scheduler checklist](docs/windows-background-layout.md#todomacos-connect-the-native-scheduler).
 - **Large-file memory/first display remains incomplete.** Compact literal
   storage does not satisfy progressive cold display. Remaining work includes
   dense conversion exceptions, rich projections, remaining flat-text consumers,

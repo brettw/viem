@@ -92,6 +92,7 @@ impl Document {
         {
             return Ok(None);
         }
+        let mut split_quote_prefix = None;
         if self.format() == Format::MarkdownSource {
             let row = self
                 .projection()
@@ -121,7 +122,12 @@ impl Document {
             };
             // Visible source syntax can itself be split. Continuing its
             // container before that prefix would duplicate the original label.
-            if at < row.start + prefix + marker {
+            let quote_marker_end = text[..prefix].rfind('>').map_or(0, |index| index + 1);
+            if marker == 0 && at >= row.start + quote_marker_end && at < row.start + prefix {
+                // The quote marker is complete. Retain its following authored
+                // whitespace with the body instead of leaving that body bare.
+                split_quote_prefix = Some(text[..at - row.start].to_owned());
+            } else if at < row.start + prefix + marker {
                 return Ok(None);
             }
         }
@@ -223,9 +229,13 @@ impl Document {
                 }
             }
         }
-        let logical = if let BlockKind::ListItem {
+        let continuation_prefix = split_quote_prefix.as_deref().unwrap_or(prefix);
+        // A list continuation can start with a quote rather than a list label.
+        // Splitting just after that quote marker must continue the quote itself.
+        let list_kind = split_quote_prefix.is_none().then_some(&block.kind);
+        let logical = if let Some(BlockKind::ListItem {
             ordered, ordinal, ..
-        } = block.kind
+        }) = list_kind
         {
             let label_length = crate::document::markdown_blocks::marker_prefix_length(body)
                 .ok_or(DocumentError::AmbiguousProjection)?;
@@ -238,7 +248,7 @@ impl Document {
             format!(
                 "\n{prefix}{}{}{} ",
                 &label[..indentation],
-                if ordered {
+                if *ordered {
                     ordinal.saturating_add(1).to_string()
                 } else {
                     String::new()
@@ -246,9 +256,9 @@ impl Document {
                 delimiter
             )
         } else if code {
-            format!("\n{prefix}")
+            format!("\n{continuation_prefix}")
         } else {
-            format!("\n{}\n{prefix}", prefix.trim_end_matches([' ', '\t']))
+            format!("\n{}\n{continuation_prefix}", prefix.trim_end_matches([' ', '\t']))
         };
         let edit = TextEdit::new(
             at..at,
@@ -323,12 +333,22 @@ impl Document {
             let source_end = provenance
                 .last()
                 .map_or(source_start, |span| span.source.end);
+            // A final hard break leaves an editable empty body row. Its
+            // zero-width provenance is outside this half-open block query,
+            // but that row still belongs to the quote, before the closing fence.
+            let empty_terminal_body = !block.range.is_empty()
+                && self.projection().hard_breaks_for_region(&(block.range.end - 1..block.range.end))
+                    .contains(&(block.range.end - 1));
             let index = &self.state().source_hard_lines;
             let mut first = index
                 .line_at_offset(source_start)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let mut last = index
-                .line_at_offset(source_end.saturating_sub(1).max(source_start))
+                .line_at_offset(if empty_terminal_body {
+                    source_end
+                } else {
+                    source_end.saturating_sub(1).max(source_start)
+                })
                 .ok_or(DocumentError::AmbiguousProjection)?;
             // Fenced code's delimiters are outside its visible body but belong
             // to the same containing paragraph when its quote container moves.

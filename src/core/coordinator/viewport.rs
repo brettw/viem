@@ -144,6 +144,80 @@ pub(super) fn reveal_caret_row<P: TextMeasurementProvider>(
     reveal_layout_range(&mut view.layout, target.range(), target.affinity())
 }
 
+impl<P: TextMeasurementProvider> Core<P> {
+    /// History retains the current viewport, then reveals the changed area
+    /// with the smallest movement. Large or sparsely materialized changes
+    /// fall back to the restored caret without shaping the whole edit.
+    pub(super) fn reveal_history_change(&mut self, view_id: ViewId, map: &PositionMap, previous: crate::document::HistoryNodeId) -> Result<(), CoreError> {
+        let snapshot = self.views[&view_id].layout.snapshot().ok_or(LayoutError::NoRows)?;
+        if snapshot.document_id != self.document.id() { return Err(LayoutError::WrongDocument.into()); }
+        if snapshot.document_revision != self.document.revision() { return Err(LayoutError::WrongDocumentRevision.into()); }
+        let result = reveal_caret_row(&self.document, self.views.get_mut(&view_id).expect("validated history view"));
+        match result {
+            Err(LayoutError::OutsideMaterializedCoverage) => {
+                self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+            }
+            result => result?,
+        }
+        let cursor = self.views[&view_id].commands.cursor();
+        let changed = map.replacements().map(|(_, new)| new).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
+            .or_else(|| self.document.history_formatting_change_range(previous));
+        let view = self.views.get_mut(&view_id).expect("validated history view");
+        if let Some(changed) = changed {
+            reveal_changed_area(&mut view.layout, changed, cursor)?;
+        }
+        // The logical range edge can be on the other visual side in bidi
+        // text. The restored caret's actual affinity and full cell win.
+        reveal_caret_row(&self.document, view)?;
+        update_viewport_anchor(&self.document, view);
+        if viewport_extension_needed(view) != (false, false) {
+            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
+        }
+        Ok(())
+    }
+}
+
+fn reveal_changed_area(layout: &mut ViewLayout, changed: std::ops::Range<usize>, cursor: usize) -> Result<(), LayoutError> {
+    let snapshot = layout.snapshot().ok_or(LayoutError::NoRows)?;
+    let range = changed.start.min(cursor)..changed.end.max(cursor);
+    // A partial long-line snapshot can have holes. Adjacent hard-line ranges
+    // omit their one-byte break; larger gaps do not supply exact geometry.
+    if let crate::layout::LayoutCoverage::PartialHardLines { text_ranges, .. } = &snapshot.coverage {
+        let mut end = range.start;
+        for covered in text_ranges.iter().filter(|covered| covered.end >= range.start) {
+            if covered.start > end.saturating_add(1) { break; }
+            end = end.max(covered.end);
+            if end >= range.end { break; }
+        }
+        if end < range.end { return Ok(()); }
+    }
+    let first = snapshot.logical_endpoint_geometry(range.start, BoundaryAffinity::Downstream);
+    let last = snapshot.logical_endpoint_geometry(range.end, BoundaryAffinity::Upstream);
+    let (Ok(first), Ok(last)) = (first, last) else { return Ok(()); };
+    let rows = &snapshot.rows[first.row_index.min(last.row_index)..=first.row_index.max(last.row_index)];
+    let mut vertical = f32::INFINITY..f32::NEG_INFINITY;
+    let mut horizontal = first.rect.x.min(last.rect.x)..(first.rect.x + first.rect.width).max(last.rect.x + last.rect.width);
+    let mut covered_bytes = 0;
+    for row in rows {
+        let bounds = row.reveal_bounds();
+        vertical.start = vertical.start.min(bounds.start);
+        vertical.end = vertical.end.max(bounds.end);
+        for cluster in row.clusters.iter().filter(|cluster| cluster.text_range.start < range.end && range.start < cluster.text_range.end) {
+            covered_bytes += cluster.text_range.end.min(range.end) - cluster.text_range.start.max(range.start);
+            horizontal.start = horizontal.start.min(cluster.x.min(cluster.typographic_bounds.x));
+            horizontal.end = horizontal.end.max((cluster.x + cluster.advance).max(cluster.typographic_bounds.x + cluster.typographic_bounds.width));
+        }
+    }
+    let top = layout.reveal_fitting_vertical_bounds(vertical);
+    // Sparse horizontal geometry is insufficient to fit the whole change.
+    let left = if horizontal.end - horizontal.start <= layout.width()
+        && (!snapshot.has_horizontal_materialization() || covered_bytes == range.len()) {
+        layout.reveal_viewport_left(horizontal, first.rect.x)
+    } else { layout.viewport_left() };
+    layout.set_viewport_top(top)?;
+    layout.set_viewport_left(left)
+}
+
 pub(super) fn reveal_presentation_caret_row<P: TextMeasurementProvider>(
     document: &Document,
     view: &mut View<P>,

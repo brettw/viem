@@ -223,7 +223,7 @@ fn ordered_list_enter_renumbers_siblings_and_undo_restores_literal_markers() {
     use viem_core::command::{InputEvent, Key};
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for source in ["3. first\n1. second", "- parent\n  3) first\n  1) second"] {
+    for source in ["3. first\n1. second", "- parent\n\n  3) first\n  1) second"] {
         let mut core = Core::new(open(source));
         let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 180.0);
         let at = core.document().text().find("first").unwrap() + 5;

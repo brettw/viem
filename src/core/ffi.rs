@@ -26,6 +26,8 @@ mod completion;
 pub use completion::*;
 mod tables;
 pub use tables::*;
+mod quotes;
+pub use quotes::*;
 mod substitute_confirmation;
 pub use substitute_confirmation::*;
 mod search;
@@ -6249,9 +6251,9 @@ fn export_visual_selection(
         Mode::VisualBlock => {
             let selection = state.visual_block().ok_or(ViemStatus::CoreFailure)?;
             let resolved = if state.visual_block_to_line_end() {
-                resolve_block_selection_to_line_end(selection, snapshot, document.text())
+                resolve_block_selection_to_line_end(selection, snapshot, &document.hard_line_snapshot())
             } else {
-                resolve_block_selection(selection, snapshot, document.text())
+                resolve_block_selection(selection, snapshot, &document.hard_line_snapshot())
             }
             .map_err(visual_block_status)?;
             for (segment_index, segment) in resolved.range_set.segments.iter().enumerate() {
@@ -13552,7 +13554,11 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
                     | (u32::from(selected.character_mixed) << 1)
                     | (u32::from(selected.has_bullets) << 2)
                     | (u32::from(selected.has_numbering) << 3)
-                    | (u32::from(selected.has_non_list) << 4),
+                    | (u32::from(selected.has_non_list) << 4)
+                    | (u32::from(selected.has_quotes) << 5)
+                    | (u32::from(selected.has_non_quote) << 6)
+                    | (u32::from(selected.has_table) << 7)
+                    | (u32::from(selected.has_code_block) << 8),
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 style_sheet_revision: core.document().projection().style_sheet().revision.0,

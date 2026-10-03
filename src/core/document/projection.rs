@@ -1563,6 +1563,12 @@ impl FormattedDocument {
         let cell = row.cells.get(row.cells.partition_point(|cell| cell.range.start <= offset).checked_sub(1)?)?;
         (offset <= cell.range.end).then_some((table, row, cell))
     }
+    /// Include source-only table syntax such as pipes and the delimiter row.
+    pub fn range_intersects_table(&self, range: &Range<usize>) -> bool {
+        if range.is_empty() { return self.table_at(range.start).is_some(); }
+        self.tables.get(self.tables.partition_point(|table| table.range.end <= range.start))
+            .is_some_and(|table| table.range.start < range.end)
+    }
     fn rebuild_table_presentation_lines(&mut self) {
         if self.tables.is_empty() {self.table_lines=None;return;}
         let mut presentation=Vec::new();let mut index=0;
@@ -5676,19 +5682,29 @@ fn project_markdown_lines(
             builder.units.get(builder.units.partition_point(|unit| unit.source.start < context.content_start))
                 .map_or(line.end, |unit| unit.normalized.start).min(line.end)
         });
-        if let Some((delimiter, length)) = markdown_fence(&normalized.text[fence_start..line.end]) {
+        let fence = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= at))
+            .filter(|code| code.fenced && code.range.start <= source_end && at < code.range.end);
+        if let Some(((delimiter, length), fence)) = markdown_fence(&normalized.text[fence_start..line.end]).zip(fence) {
             let mut closing = line_index + 1;
+            let mut closed = false;
             while closing < input_lines.len() {
+                let source = builder.unit_at(input_lines[closing].start).map_or(source_content_end, |unit| unit.source.start);
+                // The parser's half-open range omits the editable empty row
+                // after a terminal ending in an unclosed fence.
+                let terminal_body = source == source_content_end
+                    && source == fence.range.end && input_lines[closing].is_empty();
+                if source >= fence.range.end && !terminal_body { break; }
                 let raw = &normalized.text[input_lines[closing].clone()];
                 let body = if preserve_markers && quoted {
                     &raw[super::markdown_quotes::prefix(raw)..]
                 } else { raw };
                 if super::markdown_syntax::fence_close(body, delimiter, length) {
+                    closed = true;
                     break;
                 }
                 closing += 1;
             }
-            let after = (closing + 1).min(input_lines.len());
+            let after = (closing + usize::from(closed)).min(input_lines.len());
             let body_start = if preserve_markers {
                 line_index
             } else {

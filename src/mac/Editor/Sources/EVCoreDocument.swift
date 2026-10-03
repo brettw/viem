@@ -904,11 +904,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
 @MainActor
 final class EVCoreViewSession {
-    // General viewport pre-layout remains a separate follow-up. Table widths
-    // already use bounded worker requests with independent Core Text response
-    // storage and shared glyph leases through tableWidthRefinement.
-    // See docs/windows-background-layout.md, "TODO(macOS): Connect the native scheduler".
-    lazy var tableWidthRefinement = EVTableWidthRefinement(session: self)
+    lazy var backgroundLayout = EVBackgroundLayout(session: self, purpose: .viewport)
+    lazy var tableWidthRefinement = EVBackgroundLayout(session: self, purpose: .tableWidths)
     private(set) unowned var document: EVCoreDocumentBackend
     let provider: CoreTextMeasurementProvider
     private nonisolated let coreHandle: ViemCoreHandle
@@ -955,6 +952,7 @@ final class EVCoreViewSession {
     }
 
     func detach() {
+        backgroundLayout.cancel()
         tableWidthRefinement.cancel()
         clearPresentationExportCache()
         mappingTimer?.invalidate()
@@ -1455,6 +1453,17 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
+    func setBlockQuote(_ enabled: Bool, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetBlockQuoteV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetBlockQuoteV1>.size)
+        request.enabled = enabled ? 1 : 0
+        request.expected_selection = selection
+        return try performCoreOperation("Change block quote") { outcome in
+            viem_core_view_set_block_quote(document.core, viewID, &request, outcome)
+        }
+    }
+
+    @discardableResult
     func setListStyle(_ style: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         var request = ViemSetListStyleV1()
         request.struct_size = UInt32(MemoryLayout<ViemSetListStyleV1>.size)
@@ -1898,6 +1907,10 @@ final class EVCoreViewSession {
 
     private func publishCompositionState(_ isActive: Bool) {
         hasActiveComposition = isActive
+        if isActive {
+            backgroundLayout.cancel()
+            tableWidthRefinement.cancel()
+        }
         compositionStateDidChange?(isActive)
     }
 }

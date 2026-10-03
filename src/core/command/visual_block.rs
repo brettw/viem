@@ -8,9 +8,7 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use unicode_segmentation::UnicodeSegmentation;
-
-use crate::document::{Document, DocumentError, DocumentId, Revision, TextEdit};
+use crate::document::{Document, DocumentError, DocumentId, HardLineSnapshot, Revision, TextEdit};
 use crate::layout::{
     affinity_rank, nearest_caret, BoundaryAffinity, CaretPoint, LayoutRevision, LayoutSnapshot,
     PositionedCaret, PositionedCluster, VisualRow,
@@ -249,7 +247,7 @@ impl From<CaretPoint> for CaretPointIdentity {
 pub fn resolve_block_selection(
     selection: &BlockSelection,
     snapshot: &LayoutSnapshot,
-    formatted_text: &str,
+    formatted_text: &HardLineSnapshot,
 ) -> Result<ResolvedBlockSelection, VisualBlockError> {
     resolve_block_selection_impl(selection, snapshot, formatted_text, false)
 }
@@ -261,7 +259,7 @@ pub fn resolve_block_selection(
 pub(crate) fn resolve_block_selection_to_line_end(
     selection: &BlockSelection,
     snapshot: &LayoutSnapshot,
-    formatted_text: &str,
+    formatted_text: &HardLineSnapshot,
 ) -> Result<ResolvedBlockSelection, VisualBlockError> {
     resolve_block_selection_impl(selection, snapshot, formatted_text, true)
 }
@@ -269,7 +267,7 @@ pub(crate) fn resolve_block_selection_to_line_end(
 fn resolve_block_selection_impl(
     selection: &BlockSelection,
     snapshot: &LayoutSnapshot,
-    formatted_text: &str,
+    formatted_text: &HardLineSnapshot,
     to_line_end: bool,
 ) -> Result<ResolvedBlockSelection, VisualBlockError> {
     if snapshot.has_horizontal_materialization() {
@@ -328,7 +326,8 @@ fn resolve_block_selection_impl(
                 row_index: row.row_index,
                 hard_line_index: row.hard_line_index,
                 range: range.clone(),
-                grapheme_count: formatted_text[range.clone()].graphemes(true).count(),
+                grapheme_count: formatted_text.grapheme_count(range.clone())
+                    .ok_or(VisualBlockError::NonGraphemeBoundary(range.start))?,
                 left_affinity: row.visual_left.point.affinity,
                 right_affinity: row.visual_right.point.affinity,
             });
@@ -444,9 +443,19 @@ pub fn apply_block_edits(
 fn validate_snapshot(
     selection: &BlockSelection,
     snapshot: &LayoutSnapshot,
-    formatted_text: &str,
+    formatted_text: &HardLineSnapshot,
 ) -> Result<(), VisualBlockError> {
     validate_layout_identity(selection, snapshot)?;
+    if formatted_text.document() != snapshot.document_id {
+        return Err(VisualBlockError::WrongDocument {
+            expected: snapshot.document_id, actual: formatted_text.document(),
+        });
+    }
+    if formatted_text.revision() != snapshot.document_revision {
+        return Err(VisualBlockError::WrongDocumentRevision {
+            expected: snapshot.document_revision, actual: formatted_text.revision(),
+        });
+    }
     let materialized_text_end = snapshot
         .rows
         .last()
@@ -454,8 +463,8 @@ fn validate_snapshot(
         .ok_or(VisualBlockError::EmptyLayout)?;
     let materializes_document_end =
         snapshot.coverage.hard_lines().end == snapshot.coverage.document_hard_line_count();
-    if materialized_text_end > formatted_text.len()
-        || (materializes_document_end && materialized_text_end != formatted_text.len())
+    if materialized_text_end > formatted_text.text_length()
+        || (materializes_document_end && materialized_text_end != formatted_text.text_length())
     {
         return Err(VisualBlockError::TextDoesNotMatchLayout);
     }
@@ -620,14 +629,9 @@ fn ranges_between_visual_edges(
     }
 }
 
-fn validate_grapheme_range(text: &str, range: &Range<usize>) -> Result<(), VisualBlockError> {
+fn validate_grapheme_range(text: &HardLineSnapshot, range: &Range<usize>) -> Result<(), VisualBlockError> {
     for endpoint in [range.start, range.end] {
-        if endpoint > text.len()
-            || (endpoint != text.len()
-                && !text
-                    .grapheme_indices(true)
-                    .any(|(boundary, _)| boundary == endpoint))
-        {
+        if !text.is_grapheme_boundary(endpoint) {
             return Err(VisualBlockError::NonGraphemeBoundary(endpoint));
         }
     }
@@ -660,7 +664,7 @@ mod tests {
         let right = first.clusters[3].x + first.clusters[3].advance;
         let selection =
             BlockSelection::new(endpoint(first), endpoint(second), left, right).unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows.len(), 2);
         assert_eq!(resolved.rows[0].ranges, vec![1..4]);
         // Wide W glyphs mean the same display rectangle covers fewer graphemes.
@@ -676,7 +680,7 @@ mod tests {
             let selection =
                 BlockSelection::new(endpoint(row), endpoint(row), width * fraction, width * 1.49)
                     .unwrap();
-            let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+            let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
             assert_eq!(resolved.rows[0].ranges, expected);
         }
     }
@@ -702,7 +706,7 @@ mod tests {
             hebrew.x + hebrew.advance,
         )
         .unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows[0].ranges, vec![1..2, 4..6]);
         apply_block_edits(&mut document, delete_text_edits(&resolved)).unwrap();
         assert_eq!(document.text(), "aאcd");
@@ -721,7 +725,7 @@ mod tests {
             600.0,
         )
         .unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows[1].ranges, vec![10..10]);
         assert_eq!(resolved.rows[2].ranges, vec![11..11]);
         let inserts = insert_text_edits(&resolved, BlockInsertEdge::Left, "!");
@@ -740,7 +744,7 @@ mod tests {
             30.0,
         )
         .unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows.len(), snapshot.rows.len());
         assert!(resolved
             .range_set
@@ -760,7 +764,7 @@ mod tests {
             row.clusters.last().unwrap().x + row.clusters.last().unwrap().advance,
         )
         .unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(
             resolved.rows[0].visual_left.point.affinity,
             BoundaryAffinity::Upstream
@@ -793,7 +797,7 @@ mod tests {
             let mut selection = BlockSelection::new(point, point, x, x).unwrap();
             selection.update_inclusive_rectangle(&snapshot).unwrap();
 
-            let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+            let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
             assert_eq!(resolved.rows[0].ranges.len(), 1);
             assert_eq!(
                 &document.text()[resolved.rows[0].ranges[0].clone()],
@@ -822,7 +826,7 @@ mod tests {
             second.clusters[0].x + second.clusters[0].advance * 0.51,
         )
         .unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows[0].ranges[0], 0..3);
         assert_eq!(&document.text()[resolved.rows[1].ranges[0].clone()], "😀");
     }
@@ -836,7 +840,7 @@ mod tests {
         let right = first.clusters[2].x + first.clusters[2].advance;
         let selection =
             BlockSelection::new(endpoint(first), endpoint(second), left, right).unwrap();
-        let resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
 
         apply_block_edits(&mut document, replace_text_edits(&resolved, "X").unwrap()).unwrap();
         assert_eq!(document.text(), "aXXd\neXXh");
@@ -868,7 +872,7 @@ mod tests {
             row.clusters[0].x + row.clusters[0].advance,
         )
         .unwrap();
-        let mut resolved = resolve_block_selection(&selection, &snapshot, document.text()).unwrap();
+        let mut resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         resolved.range_set.segments[0].grapheme_count = usize::MAX;
 
         assert!(matches!(
@@ -892,7 +896,7 @@ mod tests {
 
         let (_, newer) = layout("one\ntwo", 500.0);
         assert!(matches!(
-            resolve_block_selection(&selection, &newer, document.text()),
+            resolve_block_selection(&selection, &newer, &document.hard_line_snapshot()),
             Err(VisualBlockError::WrongDocument { .. })
         ));
 
@@ -903,13 +907,14 @@ mod tests {
         engine.relayout(&document, &mut view).unwrap();
         let new_snapshot = view.snapshot().unwrap();
         assert!(matches!(
-            resolve_block_selection(&selection, new_snapshot, document.text()),
+            resolve_block_selection(&selection, new_snapshot, &document.hard_line_snapshot()),
             Err(VisualBlockError::StaleLayout { .. })
         ));
     }
 
     #[test]
     fn nonfinite_geometry_and_mismatched_text_fail_explicitly() {
+        let other = Document::new("text");
         let (document, snapshot) = layout("text", 500.0);
         assert_eq!(
             BlockSelection::new(
@@ -928,9 +933,31 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            resolve_block_selection(&selection, &snapshot, "other"),
-            Err(VisualBlockError::TextDoesNotMatchLayout)
+            resolve_block_selection(&selection, &snapshot, &other.hard_line_snapshot()),
+            Err(VisualBlockError::WrongDocument { expected: document.id(), actual: other.id() })
         );
         assert_eq!(document.text(), "text");
     }
+    #[test]
+    fn regional_block_resolution_does_not_flatten_and_rejects_newer_text() {
+        use crate::coordinator::Core;
+        use crate::document::{Encoding, Format};
+        for repeats in [100, 100_000] {
+            let mut document = Document::from_bytes(b"ae\xcc\x81 x\n".repeat(repeats), Encoding::Utf8, Format::Code).unwrap();
+            document.replace(0..0, "X").unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            let selection = BlockSelection::new(endpoint(&snapshot.rows[0]), endpoint(&snapshot.rows[1]), 0.0, 30.0).unwrap();
+            let resolved = resolve_block_selection(&selection, snapshot, &core.document().hard_line_snapshot()).unwrap();
+            assert_eq!(resolved.rows.len(), 2);
+            assert!(!core.document().projection().compatibility_text_is_materialized());
+        }
+        let (mut document, snapshot) = layout("abcd", 300.0);
+        let selection = BlockSelection::new(endpoint(&snapshot.rows[0]), endpoint(&snapshot.rows[0]), 0.0, 10.0).unwrap();
+        document.replace(0..1, "A").unwrap();
+        assert!(matches!(resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()),
+            Err(VisualBlockError::WrongDocumentRevision { .. })));
+    }
+
 }
