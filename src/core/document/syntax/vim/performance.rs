@@ -1,5 +1,5 @@
-//! Explicit, bounded release benchmark. Timing is diagnostic; work ceilings
-//! apply unchanged at each fixture size, including provisional fallback.
+//! Bounded regression gate with optional timing output. Work ceilings apply
+//! unchanged in ordinary and release tests, including provisional fallback.
 use super::*;
 use crate::document::FormattedTextTree;
 use serde_json::{json, Value};
@@ -102,12 +102,7 @@ fn hardware() -> Value {
 }
 
 #[test]
-#[ignore = "Pinned Vim 10k/100k/1m release gate; emits target/vim-benchmark.json"]
 fn pinned_vim_provider_performance() {
-    assert!(
-        !cfg!(debug_assertions),
-        "run this diagnostic with --release"
-    );
     let fixtures = [
         (
             "conf",
@@ -351,8 +346,12 @@ fn pinned_vim_provider_performance() {
             assert_eq!(cached.stats.cache_hits, 1);
         }
     }
+    let Ok(path) = std::env::var("VIEM_VIM_BENCHMARK_REPORT") else {
+        return;
+    };
     let report = json!({"fixture_revision":1,"runtime_fixture_version":"MacVim 9.1.1887; unmodified conf.vim and dosini.vim",
-        "engine":format!("native Vim profile {}", super::NATIVE_PROFILE_VERSION),"build":"release","provider_only":true,
+        "engine":format!("native Vim profile {}", super::NATIVE_PROFILE_VERSION),
+        "build":if cfg!(debug_assertions) { "test" } else { "release" },"provider_only":true,
         "compiler":command("rustc", &["--version"]),"architecture":std::env::consts::ARCH,
         "os":command("sw_vers", &["-productVersion"]),"hardware":hardware(),
         "ceilings":{"slice_instructions":SLICE_FUEL,"cold_prime_instructions":COLD_FUEL + SLICE_FUEL,
@@ -361,10 +360,5 @@ fn pinned_vim_provider_performance() {
             "compiled_program_bytes":VimLoadLimits::default().program_bytes},
         "rows":rows,"hostile_fallback_total":percentiles(fallback_times),"hostile_fallback_slices":percentiles(fallback_slices),
         "notes":"All work loops are finite. A 2 ms cooperative deadline is a target, not a hard maximum; actual maxima are recorded. Incomplete exact cold priming is followed by the real provisional viewport policy. Accounted syntax bytes exclude shared input storage and allocator/RSS overhead. Timings do not establish whole-editor latency."});
-    std::fs::create_dir_all("target").unwrap();
-    std::fs::write(
-        "target/vim-benchmark.json",
-        serde_json::to_vec_pretty(&report).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 }

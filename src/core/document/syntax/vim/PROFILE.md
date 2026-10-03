@@ -212,12 +212,15 @@ service's ownership and memory policy.
 
 ## Reproducible performance diagnostic
 
-Run the explicit release gate with:
+The work, memory, fresh-result and cached-repaint assertions run in the normal
+Rust suite at every fixture size. To also collect timing and machine metadata,
+run the gate alone in release mode:
 
-    cargo test --release --offline --lib pinned_vim_provider_performance -- --ignored --nocapture
+    VIEM_VIM_BENCHMARK_REPORT=target/vim-benchmark.json cargo test --release --offline --lib pinned_vim_provider_performance -- --nocapture --test-threads=1
 
-It emits `target/vim-benchmark.json`. The benchmark fixtures are unmodified
-`conf.vim` and `dosini.vim` from the installed MacVim 9.1.1887 runtime. Their
+This emits `target/vim-benchmark.json`; ordinary test runs write no report.
+The benchmark fixtures are unmodified `conf.vim` and `dosini.vim` from the
+installed MacVim 9.1.1887 runtime. Their
 original attribution and the accompanying `fixtures/VIM-LICENSE.txt` are
 retained. Generated four-line source units, their revision, and workload loops
 are pinned in `performance.rs`.

@@ -53,14 +53,16 @@ bytes when comparing builds. Syntax-provider performance commands and supported
 profiles live beside the [Vim](../src/core/document/syntax/vim/PROFILE.md) and
 [Tree-sitter](../src/core/document/syntax/treesitter/PROFILE.md) implementations.
 
-The complete Code pipeline also has a blocked-worker/bounded-interaction gate:
+The complete Code pipeline also has a blocked-worker/bounded-interaction gate
+in the normal Rust suite, including million-line and 100 MiB mixed-encoding
+fixtures. To collect its timings, run it alone in release mode:
 
 ```sh
-cargo test --release --offline --lib pinned_code_pipeline_performance -- --ignored --nocapture --test-threads=1
+VIEM_CODE_PIPELINE_REPORT=target/code-pipeline-benchmark.json cargo test --release --offline --lib pinned_code_pipeline_performance -- --nocapture --test-threads=1
 ```
 
-It writes fresh output under `target/` and uses mock measurement, so it does not
-establish native draw latency or progressive cold loading.
+The optional report uses mock measurement, so it does not establish native draw
+latency or progressive cold loading.
 
 macOS presentation/cache regression checks use the native test wrapper:
 
