@@ -1268,7 +1268,9 @@ mod tests {
 
     #[test]
     fn invalid_root_and_paragraph_assignments_are_typed_errors() {
-        let document = Document::new("plain");
+        let document = Document::from_bytes(
+            b"plain".to_vec(), crate::document::Encoding::Utf8, crate::document::Format::Markdown,
+        ).unwrap();
         let projection = document.projection();
         let sheet = projection.style_sheet().clone();
         let blocks = projection.blocks().to_vec();

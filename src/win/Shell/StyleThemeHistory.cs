@@ -16,6 +16,22 @@ internal sealed partial class StyleWindow
     private readonly Button restoreCodeDefaults = new() { Content = "Restore Defaults", Visibility = Visibility.Collapsed };
     private int themeHistoryGroupDepth;
     private ThemeStyleEdit? themeHistoryGroup;
+    private sealed record ThemeFamilyHistory(string? ThemeName, string? ThemePath, byte[] Styles, ThemeStyleEdit[] Undo, ThemeStyleEdit[] Redo);
+    private readonly Dictionary<string, ThemeFamilyHistory> familyHistory = new();
+
+    private void SwitchThemeHistory(string family, uint format)
+    {
+        if (sessionFamily.Length > 0)
+            familyHistory[sessionFamily] = new(sessionThemeName, sessionThemePath, sessionThemeStyles, themeUndo.ToArray(), themeRedo.ToArray());
+        ClearThemeHistory();
+        if (familyHistory.Remove(family, out var history) && history.ThemeName == preferences.SelectedTheme
+            && history.ThemePath == preferences.SelectedThemePath
+            && history.Styles.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(format))) {
+            themeUndo.AddRange(history.Undo);
+            foreach (var edit in history.Redo.Reverse()) themeRedo.Push(edit);
+            RefreshThemeHistory();
+        }
+    }
 
     private void BuildThemeHistory(Grid buttons)
     {

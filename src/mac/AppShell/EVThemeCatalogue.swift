@@ -189,7 +189,7 @@ extension EVConfigurationStore {
     let hadThemes = manager.fileExists(atPath: themesDirectory.path)
     try manager.createDirectory(at: themesDirectory, withIntermediateDirectories: true)
     if newProfile && !hadThemes {
-      for name in ["Paper", "Midnight", "Midnight Mono", "Typewriter"] {
+      for name in ["Paper", "Midnight", "Midnight Mono", "Midnight Proportional", "Typewriter"] {
         let bundled = bundleResourceURL?.appendingPathComponent("themes/\(name).json")
         let data: Data
         if let bundled, manager.fileExists(atPath: bundled.path) {
@@ -197,7 +197,7 @@ extension EVConfigurationStore {
           _ = try EVThemeFile.decode(data)
         } else {
           // These packaged variants have no independent emergency fallback.
-          if name == "Midnight Mono" || name == "Typewriter" { continue }
+          if name != "Paper" && name != "Midnight" { continue }
           // Development/test executables and damaged bundles still have a
           // complete usable default without depending on resource files.
           data = try EVThemeFile.encodedBuiltin(paper: name == "Paper")

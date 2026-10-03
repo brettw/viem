@@ -14,9 +14,9 @@ internal sealed partial class StyleWindow
     }) + " — " + preferences.ThemeDisplayName;
     private string? sessionThemeName, sessionThemePath;
     private byte[] sessionThemeStyles = Array.Empty<byte>();
-    private void CreateThemeSession()
+    private void CreateThemeSession(uint? requestedFormat = null)
     {
-        uint sourceFormat = documentView.Id == 0 ? styleDocument.State.format : documentView.Document.State.format;
+        uint sourceFormat = requestedFormat ?? styleDocument.State.format;
         uint format = sourceFormat == VIEM_FORMAT_MARKDOWN_SOURCE ? VIEM_FORMAT_MARKDOWN : sourceFormat;
         var document = new CoreDocument([], format: format);
         try
@@ -25,7 +25,7 @@ internal sealed partial class StyleWindow
             var next = new CoreView(document, CanvasDevice.GetSharedDevice(), DispatcherQueue, 640, 200);
             var oldView = view; var oldDocument = styleDocument;
             string nextFamily = Preferences.StyleFamily(format);
-            if (sessionFamily != nextFamily) ClearThemeHistory();
+            if (sessionFamily != nextFamily) SwitchThemeHistory(nextFamily, format);
             view = next; styleDocument = document; sessionFamily = nextFamily;
             RememberThemeSession();
             oldView?.Dispose(); oldDocument?.Dispose();
@@ -50,6 +50,7 @@ internal sealed partial class StyleWindow
         CreateThemeSession(); Load(key);
     }
 #if DEBUG
+    internal Microsoft.UI.Xaml.Controls.ComboBox DocumentPicker => documentPicker;
     internal CoreView ThemeView => view;
     internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.Document.State.format, view.ExportStyleDefaults());
     internal void RefreshForTesting() => Load(selected?.Key);

@@ -398,27 +398,11 @@ impl StyleSheet {
         if block_entries.len() + character_entries.len() > 4096 {
             return Err(StyleDefaultsError::Json("too many style definitions".into()));
         }
-        let builtins = StyleSheet::default();
-        let mut blocks = parse_block_defaults(block_entries, &builtins, &mut diagnostics);
+        let mut blocks = parse_block_defaults(block_entries, self, &mut diagnostics);
         let mut characters = parse_character_defaults(character_entries, &mut diagnostics);
-        let mut baseline = builtins;
-        // Keep adapter-specific defaults and already installed configuration.
-        for (id, style) in &self.block_styles {
-            {
-                baseline.block_styles.insert(id.clone(), style.clone());
-                if let Some(metadata) = self.block_metadata.get(id) {
-                    baseline.block_metadata.insert(id.clone(), metadata.clone());
-                }
-            }
-        }
-        for (id, style) in &self.character_styles {
-            {
-                baseline.character_styles.insert(id.clone(), style.clone());
-                if let Some(metadata) = self.character_metadata.get(id) {
-                    baseline.character_metadata.insert(id.clone(), metadata.clone());
-                }
-            }
-        }
+        // The target supplies its format's baseline. Loading adds all valid
+        // saved definitions without manufacturing unrelated rich styles.
+        let baseline = self.clone();
         // A repair removes an entry, next-style declaration, parent edge, or
         // size declaration. This finite bound also guards future repair changes.
         let repair_limit = 4 * (blocks.len() + characters.len());

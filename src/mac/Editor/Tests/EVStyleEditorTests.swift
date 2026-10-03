@@ -7,6 +7,24 @@ import XCTest
 
 final class EVStyleEditorTests: XCTestCase {
     @MainActor
+    func testStylePickerOmitsEmptySectionsAndSingleSectionHeadings() throws {
+        let configuration = try styleConfiguration()
+        let plain = try EVThemeStyleSession(configuration: configuration, format: .plainText)
+        let definitions = try plain.snapshot().definitions
+        XCTAssertEqual(Set(definitions.map { $0.key.id.rawValue }), ["Paragraph", "* Incremental match"])
+        let paragraph = try XCTUnwrap(definitions.first { $0.key == .baseParagraph })
+        let single = EVStyleEditorViewController.makeStyleMenu(definitions: [paragraph])
+        XCTAssertEqual(single.items.map(\.title), [paragraph.name])
+        XCTAssertFalse(single.items.contains { $0.isSectionHeader })
+        XCTAssertTrue(EVStyleEditorViewController.makeStyleMenu(definitions: []).items.isEmpty)
+        let plainMenu = EVStyleEditorViewController.makeStyleMenu(definitions: definitions)
+        XCTAssertEqual(plainMenu.items.filter { $0.isSectionHeader }.map(\.title), ["Paragraph", "Internal"])
+        let code = try EVCodeStyleSession(configuration: configuration)
+        let codeMenu = try EVStyleEditorViewController.makeStyleMenu(definitions: code.snapshot().definitions)
+        XCTAssertFalse(codeMenu.items.contains { $0.isSectionHeader && $0.title == "Container" })
+    }
+
+    @MainActor
     func testCoordinatorReusesOneModelessWindowAndRetargetsByStableIdentity() throws {
         let firstBackend = EVCoreDocumentBackend()
         try firstBackend.read(source: Data("first".utf8), typeName: "public.plain-text")
@@ -79,6 +97,67 @@ final class EVStyleEditorTests: XCTestCase {
         XCTAssertEqual(window.title, "Theme styles — Code — Default")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+
+    @MainActor
+    func testDocumentPickerEditsEachThemeFamilyWithIndependentUndoAndPreservesSource() throws {
+        let configuration = try styleConfiguration()
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        let source = Data("# Heading\n\nBody".utf8)
+        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        let window = try XCTUnwrap(coordinator.styleWindow)
+        let editor = try XCTUnwrap(window.contentViewController as? EVStyleEditorViewController)
+        let picker = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
+            .first { $0.accessibilityLabel() == "Document type" })
+        XCTAssertEqual(picker.itemTitles, ["Plain Text", "Markdown", "Code"])
+        XCTAssertEqual(picker.indexOfSelectedItem, 1)
+
+        func choose(_ index: Int) {
+            picker.selectItem(at: index)
+            XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
+        }
+        let families: [EVSourceFormat] = [.plainText, .markdown, .code]
+        var originalSizes: [EVStyleValue?] = []
+        for (index, format) in families.enumerated() {
+            let before = try families.map { try configuration.styleDefaults(named: $0.defaultStyleName) }
+            choose(index)
+            XCTAssertEqual(try families.map { try configuration.styleDefaults(named: $0.defaultStyleName) }, before,
+                           "Changing the viewed stylesheet must not save any style changes")
+            XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
+            XCTAssertTrue(window.title.contains(picker.itemTitles[index]))
+            originalSizes.append(editor.inspection.preview.effectiveValues[.characterSize])
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(Float(32 + index))))
+            XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(32 + index)))
+            for other in families.indices where other != index {
+                XCTAssertEqual(try configuration.styleDefaults(named: families[other].defaultStyleName), before[other])
+            }
+            XCTAssertNotEqual(try configuration.styleDefaults(named: format.defaultStyleName), before[index])
+            NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: surface)
+            coordinator.documentDidBecomeActive(surface)
+            XCTAssertEqual(picker.indexOfSelectedItem, index)
+            XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        }
+        for index in families.indices.reversed() {
+            choose(index)
+            XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(32 + index)))
+            XCTAssertTrue(window.undoManager?.canUndo == true)
+            window.undoManager?.undo()
+            XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], originalSizes[index])
+            window.undoManager?.redo()
+            XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(32 + index)))
+        }
+        XCTAssertEqual(backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(surface.canUndo)
+        coordinator.show(document: surface, sender: nil)
+        XCTAssertEqual(picker.indexOfSelectedItem, 1)
+        XCTAssertEqual(editor.inspection.selectedStyleID?.rawValue, "Heading1")
     }
 
     @MainActor

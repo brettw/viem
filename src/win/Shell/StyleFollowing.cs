@@ -88,7 +88,7 @@ internal sealed partial class StyleWindow
     private void DocumentChanged()
     {
         if (updating || closed || documentView.Id == 0) return;
-        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) { DismissColorPickers(commit: false); CreateThemeSession(); }
+        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) { DismissColorPickers(commit: false); CreateThemeSession(documentView.Document.State.format); }
         if (openColorPickers.Count > 0 && !view.Styles().Identity.Equals(sheet.Identity))
             DismissColorPickers(commit: false);
         ViewChanged();

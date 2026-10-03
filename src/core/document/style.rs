@@ -508,8 +508,9 @@ impl PartialEq for StyleSheet {
     }
 }
 
-impl Default for StyleSheet {
-    fn default() -> Self {
+impl StyleSheet {
+    /// The literal-text baseline has no rich-content definitions.
+    pub(crate) fn plain_text() -> Self {
         let paragraph: StyleId = "Paragraph".into();
         let mut block_styles = BTreeMap::new();
         block_styles.insert(
@@ -547,6 +548,34 @@ impl Default for StyleSheet {
                 },
             },
         );
+        let mut block_metadata = BTreeMap::new();
+        block_metadata.insert(paragraph.clone(), StyleDefinitionMetadata::generated("Base Paragraph"));
+        let character_styles = BTreeMap::new();
+        let character_metadata = BTreeMap::new();
+        let mut sheet = Self {
+            revision: StyleSheetRevision(1),
+            base_paragraph: paragraph,
+            block_styles,
+            character_styles,
+            block_metadata,
+            character_metadata,
+            deleted_configuration_blocks: BTreeSet::new(),
+            deleted_configuration_characters: BTreeSet::new(),
+            default_blocks: BTreeMap::new(),
+            default_characters: BTreeMap::new(),
+            implicit_characters: BTreeSet::new(),
+            theme_generation: 0,
+        };
+        sheet.install_incremental_match_style();
+        sheet
+    }
+}
+
+impl Default for StyleSheet {
+    fn default() -> Self {
+        let mut sheet = Self::plain_text();
+        let paragraph = sheet.base_paragraph.clone();
+        let block_styles = &mut sheet.block_styles;
         for level in 1..=6 {
             let id: StyleId = format!("Heading{level}").as_str().into();
             block_styles.insert(
@@ -633,7 +662,7 @@ impl Default for StyleSheet {
                     border_left_width: cell.then_some(1.0), border_right_width: cell.then_some(1.0), border_top_width: cell.then_some(1.0), border_bottom_width: cell.then_some(1.0), ..Default::default() },
             });
         }
-        let mut character_styles = BTreeMap::new();
+        let character_styles = &mut sheet.character_styles;
         let code_properties = CharacterProperties {
             font_families: Some(vec!["monospace".to_owned()]),
             foreground: Some(Color {
@@ -663,11 +692,7 @@ impl Default for StyleSheet {
                 properties: code_properties,
             },
         );
-        let mut block_metadata = BTreeMap::new();
-        block_metadata.insert(
-            paragraph.clone(),
-            StyleDefinitionMetadata::generated("Base Paragraph"),
-        );
+        let block_metadata = &mut sheet.block_metadata;
         for level in 1..=6 {
             block_metadata.insert(
                 StyleId(format!("Heading{level}")),
@@ -690,27 +715,12 @@ impl Default for StyleSheet {
         for name in ["Bulleted List", "Numbered List", "List item", "Table", "Table cell", "Table header"] {
             block_metadata.insert(name.into(), StyleDefinitionMetadata::generated(name));
         }
-        let mut character_metadata = BTreeMap::new();
+        let character_metadata = &mut sheet.character_metadata;
         block_metadata.insert(
             "Code Block".into(),
             StyleDefinitionMetadata::generated("Code Block"),
         );
         character_metadata.insert("Code".into(), StyleDefinitionMetadata::generated("Code"));
-        let mut sheet = Self {
-            revision: StyleSheetRevision(1),
-            base_paragraph: paragraph,
-            block_styles,
-            character_styles,
-            block_metadata,
-            character_metadata,
-            deleted_configuration_blocks: BTreeSet::new(),
-            deleted_configuration_characters: BTreeSet::new(),
-            default_blocks: BTreeMap::new(),
-            default_characters: BTreeMap::new(),
-            implicit_characters: BTreeSet::new(),
-            theme_generation: 0,
-        };
-        sheet.install_incremental_match_style();
         sheet
     }
 }
@@ -1392,6 +1402,9 @@ impl StyleSheet {
     /// Prose paragraphs use half-em block margins, collapsed by the block layout.
     /// Literal formats retain their adapter-specific defaults.
     pub(crate) fn for_format(format: super::Format) -> Self {
+        if !format.is_markdown() {
+            return if format == super::Format::Code { code::default_sheet() } else { Self::plain_text() };
+        }
         let mut sheet = Self::default();
         if format.is_markdown() {
             sheet.character_styles.insert("Link".into(), CharacterStyle {

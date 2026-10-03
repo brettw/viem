@@ -9,7 +9,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         for (type, source, headingID) in [
             ("public.markdown", "Text", "Heading1"),
         ] {
-            let configuration = isolatedConfiguration()
+            let configuration = try isolatedConfiguration()
             let backend = EVCoreDocumentBackend(configuration: configuration)
             try backend.read(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -40,7 +40,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     }
 
     func testGlobalCodeBaseParagraphNextStyleIsSameStyle() throws {
-        let configuration = isolatedConfiguration()
+        let configuration = try isolatedConfiguration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)
@@ -54,7 +54,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         for (type, source) in [
             ("public.markdown", "Text"),
         ] {
-            let configuration = isolatedConfiguration()
+            let configuration = try isolatedConfiguration()
             let backend = EVCoreDocumentBackend(configuration: configuration)
             try backend.read(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -78,7 +78,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
     }
 
     func testGlobalCodeBaseParagraphOverrideClicksLeaveSettingsAndHistoryUnchanged() throws {
-        let configuration = isolatedConfiguration()
+        let configuration = try isolatedConfiguration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let editor = EVStyleEditorViewController()
         editor.themeStore = EVThemeStore(configuration: configuration)
@@ -158,9 +158,18 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         view.subviews.flatMap { [$0] + descendants(of: $0) }
     }
 
-    private func isolatedConfiguration() -> EVConfigurationStore {
+    private func isolatedConfiguration() throws -> EVConfigurationStore {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-base-paragraph-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        // These control tests need a family with available faces, independently
+        // of the preset font and whether bundled fonts were registered by an app.
+        for format in [EVSourceFormat.markdown, .code] {
+            try EVStyleTestFixtures.configure(configuration, format: format, declarations: [
+                (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+                (.baseParagraph, .characterFontAxes, .string("{}")),
+            ])
+        }
+        return configuration
     }
 }

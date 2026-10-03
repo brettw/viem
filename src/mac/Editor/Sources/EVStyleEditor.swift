@@ -95,13 +95,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         followsActiveDocuments = document != nil
         do {
             themeSession = nil
-            let session: EVCodeStyleSession
-            if let current = globalSession, current.configuration.directory.standardizedFileURL == configuration.directory.standardizedFileURL {
-                session = current
-            } else {
-                session = try EVCodeStyleSession(configuration: configuration)
-                globalSession = session
-            }
+            let session = try codeSession(configuration: configuration)
             var selectedStyle = preferredStyle
             if let name = definingSyntaxName {
                 // Generating an implicit definition is not a settings edit: it
@@ -148,6 +142,9 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
             content.onExplicitStyleSelection = { [weak self] in self?.cancelPendingSelectionFollow() }
+            content.onDocumentSelection = { [weak self] format, configuration in
+                try self?.selectDocument(format, configuration: configuration)
+            }
             let panel = EVStyleEditorPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                 styleMask: [.titled, .closable, .resizable, .utilityWindow],
@@ -252,13 +249,39 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         return session
     }
 
+    private func selectDocument(_ format: EVSourceFormat, configuration: EVConfigurationStore) throws {
+        let session: any EVStyleSettingsSession
+        if format == .code {
+            let code = try codeSession(configuration: configuration)
+            themeSession = nil
+            session = code
+        } else {
+            let theme = try proseSession(configuration: configuration, format: format)
+            themeSession = theme
+            session = theme
+        }
+        // An explicit family choice is independent of the current document.
+        // Opening Edit Styles again resumes following the active view.
+        followsActiveDocuments = false
+        stopFollowingSelection()
+        stopObservingTargetWindow()
+        (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
+        contentController?.retarget(settingsSession: session)
+    }
+
+    private func codeSession(configuration: EVConfigurationStore) throws -> EVCodeStyleSession {
+        if let session = globalSession, session.configuration === configuration { return session }
+        let session = try EVCodeStyleSession(configuration: configuration)
+        globalSession = session
+        return session
+    }
+
     private func retargetFollowingFamily(of document: EVEditorSurfaceController) {
         do {
             let configuration = document.backend.configuration
             let session: any EVStyleSettingsSession
             if document.backend.sourceFormat == .code {
-                let code = try EVCodeStyleSession(configuration: configuration)
-                globalSession = code
+                let code = try codeSession(configuration: configuration)
                 themeSession = nil
                 session = code
             } else {
@@ -344,6 +367,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 final class EVStyleEditorViewController: NSViewController {
     var onClose: (() -> Void)?
     var onExplicitStyleSelection: (() -> Void)?
+    var onDocumentSelection: ((EVSourceFormat, EVConfigurationStore) throws -> Void)?
     var themeStore = EVThemeStore.shared
     private var themeObserver: NSObjectProtocol?
 
@@ -364,6 +388,8 @@ final class EVStyleEditorViewController: NSViewController {
     private var activeStyleEditGroup: EVStyleEditGroup?
     private weak var activeStyleEditSession: EVCoreViewSession?
 
+    private let documentPopup = NSPopUpButton()
+    private let documentFormats: [EVSourceFormat] = [.plainText, .markdown, .code]
     private let stylePopup = NSPopUpButton()
     private let restoreDefaultsButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
     private let typeLabel = NSTextField(labelWithString: "")
@@ -434,6 +460,11 @@ final class EVStyleEditorViewController: NSViewController {
         }
         let root = EVStyleEditorBackgroundView(frame: .zero)
         root.setAccessibilityElement(false)
+        documentPopup.addItems(withTitles: ["Plain Text", "Markdown", "Code"])
+        documentPopup.target = self
+        documentPopup.action = #selector(documentChanged(_:))
+        documentPopup.setAccessibilityLabel("Document type")
+        documentPopup.widthAnchor.constraint(equalToConstant: 140).isActive = true
         stylePopup.target = self
         stylePopup.action = #selector(styleChanged(_:))
         stylePopup.setAccessibilityLabel("Style")
@@ -447,8 +478,25 @@ final class EVStyleEditorViewController: NSViewController {
         configureNavigationButton(editParentButton, label: "Edit based on style", action: #selector(editParentStyle(_:)))
         configureNavigationButton(editNextStyleButton, label: "Edit next paragraph style", action: #selector(editNextStyle(_:)))
 
+        let selectors = NSStackView(views: [label("Document type"), documentPopup, label("Style"), stylePopup])
+        selectors.orientation = .horizontal
+        selectors.alignment = .centerY
+        selectors.distribution = .fill
+        selectors.spacing = 8
+        selectors.setCustomSpacing(20, after: documentPopup)
+        let selectorBox = EVStyleEditorSelectorView()
+        selectorBox.setAccessibilityLabel("Stylesheet selection")
+        selectorBox.addSubview(selectors)
+        selectors.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            selectors.leadingAnchor.constraint(equalTo: selectorBox.leadingAnchor, constant: 14),
+            selectors.trailingAnchor.constraint(equalTo: selectorBox.trailingAnchor, constant: -14),
+            selectors.topAnchor.constraint(equalTo: selectorBox.topAnchor, constant: 12),
+            selectors.bottomAnchor.constraint(equalTo: selectorBox.bottomAnchor, constant: -12),
+            selectors.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
         let propertiesGrid = NSGridView(views: [
-            [label("Style"), stylePopup],
             [label("Style type"), typeLabel],
             [label("Based on"), navigationRow(popup: basedOnPopup, button: editParentButton)],
             [label("Next paragraph"), navigationRow(popup: nextStyleRow.popupForCompactLayout, button: editNextStyleButton)],
@@ -525,7 +573,7 @@ final class EVStyleEditorViewController: NSViewController {
         let tabsContainer = centeredContainer(tabs, maximumWidth: 320, horizontalInset: 0)
 
         let stack = NSStackView(views: [
-            propertiesContainer, availabilityLabel,
+            selectorBox, propertiesContainer, availabilityLabel,
             separator(), tabsContainer, formattingBox,
             previewBox, bottom,
         ])
@@ -537,6 +585,7 @@ final class EVStyleEditorViewController: NSViewController {
             arranged.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }
         stack.setCustomSpacing(10, after: propertiesContainer)
+        stack.setCustomSpacing(10, after: selectorBox)
         root.addSubview(stack)
         let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 196)
         formattingHeightConstraint = preferredFormattingHeight
@@ -776,6 +825,7 @@ final class EVStyleEditorViewController: NSViewController {
         defer { isUpdatingUI = false }
 
         if let settingsSession { view.window?.title = settingsSession.windowTitle }
+        configureDocumentPopup()
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
         typeLabel.stringValue = definition.kind.displayName
@@ -828,8 +878,14 @@ final class EVStyleEditorViewController: NSViewController {
         stylePopup.isEnabled = true
         if styleMenuChoices == signature { return }
         styleMenuChoices = signature
+        stylePopup.menu = Self.makeStyleMenu(definitions: snapshot.definitions)
+        stylePopup.target = self
+        stylePopup.action = #selector(styleChanged(_:))
+    }
+
+    static func makeStyleMenu(definitions: [EVStyleDefinition]) -> NSMenu {
         let menu = NSMenu()
-        let definitions = snapshot.definitions.sorted {
+        let definitions = definitions.sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         let sections = [
@@ -837,9 +893,9 @@ final class EVStyleEditorViewController: NSViewController {
             ("Character", definitions.filter { $0.kind == .character && !$0.flags.contains(.internalSyntax) }),
             ("Container", definitions.filter { $0.kind.isContainer && !$0.flags.contains(.internalSyntax) }),
             ("Internal", definitions.filter { $0.flags.contains(.internalSyntax) }),
-        ]
+        ].filter { !$0.1.isEmpty }
         for (title, styles) in sections {
-            menu.addItem(.sectionHeader(title: title))
+            if sections.count > 1 { menu.addItem(.sectionHeader(title: title)) }
             for definition in styles {
                 let item = NSMenuItem(title: definition.name, action: nil, keyEquivalent: "")
                 item.representedObject = EVStyleKeyBox(definition.key)
@@ -847,10 +903,7 @@ final class EVStyleEditorViewController: NSViewController {
                 menu.addItem(item)
             }
         }
-        stylePopup.menu = menu
-        stylePopup.target = self
-        stylePopup.action = #selector(styleChanged(_:))
-        stylePopup.isEnabled = true
+        return menu
     }
 
     private func configureBasedOn(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
@@ -1049,6 +1102,7 @@ final class EVStyleEditorViewController: NSViewController {
     }
 
     private func renderNoDocument() {
+        configureDocumentPopup()
         isUpdatingUI = true
         defer { isUpdatingUI = false }
         styleMenuChoices = nil; parentMenuChoices = nil
@@ -1076,6 +1130,7 @@ final class EVStyleEditorViewController: NSViewController {
     }
 
     private func renderUnavailableStyleSheet() {
+        configureDocumentPopup()
         guard hasTarget else { renderNoDocument(); return }
         isUpdatingUI = true
         defer { isUpdatingUI = false }
@@ -1111,6 +1166,7 @@ final class EVStyleEditorViewController: NSViewController {
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .fill
         for row in 0..<grid.numberOfRows {
+            grid.row(at: row).height = 28
             guard let control = grid.cell(atColumnIndex: 1, rowIndex: row).contentView else { continue }
             control.setContentHuggingPriority(.defaultLow, for: .horizontal)
             control.widthAnchor.constraint(greaterThanOrEqualToConstant: 390).isActive = true
@@ -1176,6 +1232,26 @@ final class EVStyleEditorViewController: NSViewController {
         let box = NSBox()
         box.boxType = .separator
         return box
+    }
+
+    private func configureDocumentPopup() {
+        let format = settingsSession?.sourceFormat ?? document?.backend.sourceFormat
+        documentPopup.selectItem(at: documentFormats.firstIndex {
+            $0.defaultStyleName == format?.defaultStyleName
+        } ?? 0)
+        documentPopup.isEnabled = settingsSession != nil && onDocumentSelection != nil
+    }
+
+    @objc private func documentChanged(_ sender: NSPopUpButton) {
+        guard !isUpdatingUI, let settingsSession,
+              documentFormats.indices.contains(sender.indexOfSelectedItem) else { return }
+        endContinuousStyleEdit(reportUnexpectedFailure: false)
+        do {
+            try onDocumentSelection?(documentFormats[sender.indexOfSelectedItem], settingsSession.configuration)
+        } catch {
+            diagnosticMessage = error.localizedDescription
+            reloadCommittedStyle()
+        }
     }
 
     @objc private func styleChanged(_ sender: NSPopUpButton) {
@@ -1326,6 +1402,22 @@ private final class EVStyleEditorSectionView: EVStyleEditorBorderedView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is unavailable")
     }
+}
+
+private final class EVStyleEditorSelectorView: EVStyleEditorBorderedView {
+    init() {
+        super.init(fillColor: NSColor(name: nil) { appearance in
+            var color = NSColor.controlBackgroundColor
+            appearance.performAsCurrentDrawingAppearance {
+                color = NSColor.windowBackgroundColor.blended(withFraction: 0.09, of: .white)
+                    ?? .controlBackgroundColor
+            }
+            return color
+        })
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 
 private final class EVStyleEditorPreviewContainer: EVStyleEditorBorderedView {

@@ -67,6 +67,7 @@ internal sealed partial class StyleWindow
     {
         if (closed) return;
         root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
+        RefreshSelectorColors();
         if (Content is ScrollViewer scroll) { scroll.RequestedTheme = root.RequestedTheme; scroll.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)); }
         WindowSizing.Appearance(this, preferences.Midnight);
         foreach (var refresh in refreshColors) refresh();
