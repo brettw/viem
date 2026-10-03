@@ -36,14 +36,10 @@
             "bold" : null,
             "direction" : "Natural",
             "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 350
+              "wght" : 300
             },
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "FlightlineCode-Normal"
             ],
             "foreground" : null,
             "language" : null,
@@ -51,11 +47,11 @@
             "open_type_features" : {
 
             },
-            "size" : 16,
+            "size" : 15,
             "slant" : "Upright",
             "strikethrough" : false,
             "underline" : false,
-            "weight" : 350
+            "weight" : 300
           },
           "id" : "Paragraph",
           "name" : "Base Paragraph",
@@ -72,16 +68,8 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : {
-              "CASL" : 1,
-              "CRSV" : 1,
-              "MONO" : 0,
-              "slnt" : -9,
-              "wght" : 350
-            },
-            "font_families" : [
-              "RecursiveMonoCsl-Light"
-            ],
+            "font_axes" : null,
+            "font_families" : null,
             "foreground" : {
               "alpha" : 1,
               "blue" : 0.27807122000000001,
@@ -92,10 +80,10 @@
             "letter_spacing" : null,
             "open_type_features" : null,
             "size" : null,
-            "slant" : null,
+            "slant" : "Italic",
             "strikethrough" : null,
             "underline" : null,
-            "weight" : 350
+            "weight" : null
           }
         },
         {
@@ -754,17 +742,13 @@
           },
           "character" : {
             "background" : null,
-            "bold" : null,
+            "bold" : false,
             "direction" : null,
             "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 1000
+              "wght" : 700
             },
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "FlightlineCode-Normal_Bold"
             ],
             "foreground" : null,
             "language" : null,
@@ -775,7 +759,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : 1000
+            "weight" : 700
           },
           "id" : "Heading1",
           "name" : "Heading 1",
@@ -811,18 +795,10 @@
           },
           "character" : {
             "background" : null,
-            "bold" : null,
+            "bold" : true,
             "direction" : null,
-            "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 800
-            },
-            "font_families" : [
-              "RecursiveMonoCsl-Light"
-            ],
+            "font_axes" : null,
+            "font_families" : null,
             "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
@@ -832,7 +808,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : 800
+            "weight" : null
           },
           "id" : "Heading2",
           "name" : "Heading 2",
@@ -868,18 +844,10 @@
           },
           "character" : {
             "background" : null,
-            "bold" : null,
+            "bold" : true,
             "direction" : null,
-            "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 800
-            },
-            "font_families" : [
-              "RecursiveMonoCsl-Light"
-            ],
+            "font_axes" : null,
+            "font_families" : null,
             "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
@@ -889,7 +857,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : 800
+            "weight" : null
           },
           "id" : "Heading3",
           "name" : "Heading 3",
@@ -925,18 +893,10 @@
           },
           "character" : {
             "background" : null,
-            "bold" : null,
+            "bold" : true,
             "direction" : null,
-            "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 800
-            },
-            "font_families" : [
-              "RecursiveMonoCsl-Light"
-            ],
+            "font_axes" : null,
+            "font_families" : null,
             "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
@@ -946,7 +906,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : 800
+            "weight" : null
           },
           "id" : "Heading4",
           "name" : "Heading 4",
@@ -1379,14 +1339,10 @@
             "bold" : null,
             "direction" : "Natural",
             "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 350
+              "wght" : 300
             },
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "FlightlineCode-Normal_ExtraLight"
             ],
             "foreground" : null,
             "language" : null,
@@ -1395,11 +1351,11 @@
 
             },
             "script_position" : "Normal",
-            "size" : 16,
+            "size" : 15,
             "slant" : "Upright",
             "strikethrough" : false,
             "underline" : false,
-            "weight" : 350
+            "weight" : 300
           },
           "id" : "Paragraph",
           "name" : "Base Paragraph",
@@ -3763,14 +3719,10 @@
             "bold" : null,
             "direction" : "Natural",
             "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
               "wght" : 300
             },
             "font_families" : [
-              "RecursiveMonoCsl-Light"
+              "FlightlineCode-Normal_ExtraLight"
             ],
             "foreground" : null,
             "language" : null,
@@ -3779,7 +3731,7 @@
 
             },
             "script_position" : "Normal",
-            "size" : 16,
+            "size" : 15,
             "slant" : "Upright",
             "strikethrough" : false,
             "underline" : false,

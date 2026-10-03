@@ -29,12 +29,14 @@ private final class EVAccessibleTableCell: NSAccessibilityElement {
 
 @MainActor
 final class EVTableInteraction: NSObject, NSMenuDelegate {
+    private enum WidgetKind { case column, rowLeft, rowRight }
     private weak var editor: EVEditorView?
     private let widget = NSStackView()
     private var target: ViemTableContextV1?
     private var targetViewport = NSPoint.zero
     private var targetIdentity: ViemLayoutSnapshotIdentityV1?
     private var activation = NSRect.zero
+    private var targetKind: WidgetKind?
     private var popupTracking = false
     private var dragAnchor: ViemTableCellV1?
     private var dragIdentity: ViemLayoutSnapshotIdentityV1?
@@ -56,25 +58,43 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
         if let expected = target?.selection,
            let current = try? surface?.session?.listSelection(), !expected.isSameSelection(as: current) { hide() }
     }
-    func hide() { if !popupTracking { widget.isHidden = true; target = nil; targetIdentity = nil } }
+    func hide() { if !popupTracking { widget.isHidden = true; target = nil; targetIdentity = nil; targetKind = nil } }
 
     func moved(to point: NSPoint) {
-        guard let editor, let surface, let snapshot = surface.layoutSnapshot, surface.backend.sourceFormat == .markdown else { hide(); return }
-        if !widget.isHidden && (widget.frame.union(activation).insetBy(dx: -3, dy: -3).contains(point) || popupTracking) { return }
+        guard let editor, let surface, let snapshot = surface.layoutSnapshot, surface.backend.sourceFormat == .markdown,
+              editor.bounds.contains(point) else { hide(); return }
+        if !widget.isHidden && (widget.frame.contains(point) || popupTracking) { return }
         for cell in snapshot.tableCells {
             let table = editor.viewRect(cell.table_rect), rect = editor.viewRect(cell.rect)
-            let column = point.y >= table.minY - 3 && point.y <= table.minY + 1 && point.x >= rect.minX && (point.x < rect.maxX || point.x == table.maxX)
-            let row = point.x >= table.minX - 20 && point.x <= table.minX + 1 && point.y >= rect.minY && (point.y < rect.maxY || point.y == table.maxY)
-            guard column || row else { continue }
+            let topStrip = point.y >= table.minY - 3 && point.y <= table.minY + 1
+                && point.x >= table.minX && point.x <= table.maxX
+            let column = topStrip && point.x >= rect.minX
+                && (point.x < rect.maxX || (point.x == rect.maxX && rect.maxX == table.maxX))
+            let inRow = !topStrip && point.y >= rect.minY
+                && (point.y < rect.maxY || (point.y == rect.maxY && rect.maxY == table.maxY))
+            let left = inRow && point.x >= table.minX - 20 && point.x <= table.minX + 1
+            let right = inRow && point.x >= table.maxX - 1 && point.x <= table.maxX + 20
+            guard column || left || right else { continue }
+            let kind: WidgetKind = column ? .column : left ? .rowLeft : .rowRight
+            if let target, target.table_id == cell.table_id,
+               column ? target.column == cell.column : target.row == cell.row {
+                if targetKind == kind { return }
+                // A flipped row widget's bridge crosses the opposite gutter.
+                // Preserve its controls while entering from either side.
+                if !column && targetKind != .column,
+                   widget.frame.union(activation).insetBy(dx: -3, dy: -3).contains(point) { return }
+            }
             guard let context = try? surface.session?.tableContext(at: cell.text_start, documentID: snapshot.info.identity.document_id, revision: snapshot.info.identity.document_revision), context.flags & 2 != 0 else { break }
-            show(context, column: column, cell: rect, table: table, identity: snapshot.info.identity)
+            show(context, kind: kind, cell: rect, table: table, identity: snapshot.info.identity)
             return
         }
+        if !widget.isHidden && widget.frame.union(activation).insetBy(dx: -3, dy: -3).contains(point) { return }
         hide()
     }
-    private func show(_ context: ViemTableContextV1, column: Bool, cell: NSRect, table: NSRect, identity: ViemLayoutSnapshotIdentityV1) {
+    private func show(_ context: ViemTableContextV1, kind: WidgetKind, cell: NSRect, table: NSRect, identity: ViemLayoutSnapshotIdentityV1) {
         guard let editor else { return }
-        target = context; targetIdentity = identity; targetViewport = editor.viewportOrigin
+        let column = kind == .column
+        target = context; targetKind = kind; targetIdentity = identity; targetViewport = editor.viewportOrigin
         for view in widget.arrangedSubviews { widget.removeArrangedSubview(view); view.removeFromSuperview() }
         let number = (column ? context.column : context.row) + 1
         var actions: [(String, String, UInt32)]
@@ -93,13 +113,17 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
             widget.addArrangedSubview(button)
         }
         let width = CGFloat(actions.count * 28 + 6), height: CGFloat = 30
-        var x = column ? cell.midX - width / 2 : table.minX - width - 4
+        let leftX = table.minX - width - 4, rightX = table.maxX + 4
+        var x = column ? cell.midX - width / 2 : kind == .rowRight ? rightX : leftX
         var y = column ? table.minY - height - 4 : cell.midY - height / 2
-        if !column && x < 0 && table.maxX + width + 4 < editor.bounds.maxX { x = table.maxX + 4 }
-        if y < 0 { y = cell.maxY + 4 }
-        x = max(0, min(x, editor.bounds.maxX - width)); y = max(0, min(y, editor.bounds.maxY - height))
+        if kind == .rowLeft && x < editor.bounds.minX && rightX + width <= editor.bounds.maxX { x = rightX }
+        if kind == .rowRight && x + width > editor.bounds.maxX && leftX >= editor.bounds.minX { x = leftX }
+        if y < editor.bounds.minY { y = cell.maxY + 4 }
+        x = max(editor.bounds.minX, min(x, editor.bounds.maxX - width))
+        y = max(editor.bounds.minY, min(y, editor.bounds.maxY - height))
         widget.frame = NSRect(x: x, y: y, width: width, height: height)
-        activation = column ? NSRect(x: cell.minX, y: table.minY - 3, width: cell.width, height: 4) : NSRect(x: table.minX - 20, y: cell.minY, width: 21, height: cell.height)
+        activation = column ? NSRect(x: cell.minX, y: table.minY - 3, width: cell.width, height: 4)
+            : NSRect(x: kind == .rowRight ? table.maxX - 1 : table.minX - 20, y: cell.minY, width: 21, height: cell.height)
         widget.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         widget.isHidden = false
     }

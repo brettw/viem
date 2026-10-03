@@ -95,6 +95,111 @@ final class EVTableEditingTests: XCTestCase {
         XCTAssertEqual(align.items.map(\.title), ["Left", "Center", "Right"])
     }
 
+    func testRowHoverWorksOnBothSidesWithoutChangingSelectionAndKeepsItsTargetIntoWidget() throws {
+        let text = "| Header | Other |\n| --- | --- |\n| first | one |\n| second | two |\n| third | three |"
+        let (backend, surface, session) = try surface(text)
+        let editor = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let rows = snapshot.tableCells.filter { $0.column == 0 }.sorted { $0.row < $1.row }
+        XCTAssertEqual(rows.count, 4)
+        let selection = try session.listSelection()
+        let presentation = surface.viewPresentation
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        for right in [false, true] {
+            interaction.hide()
+            for cell in rows {
+                let table = editor.viewRect(cell.table_rect), rect = editor.viewRect(cell.rect)
+                let point = NSPoint(x: right ? table.maxX : table.minX, y: rect.midY)
+                interaction.moved(to: point)
+                XCTAssertFalse(widget.isHidden)
+                let labels = widget.arrangedSubviews.compactMap { $0.accessibilityLabel() }
+                XCTAssertEqual(labels, cell.row == 0
+                    ? ["Delete header", "Insert row below row 1"]
+                    : ["Insert row above row \(cell.row + 1)", "Delete row \(cell.row + 1)", "Insert row below row \(cell.row + 1)"])
+                if right { XCTAssertGreaterThanOrEqual(widget.frame.minX, table.maxX, "Prefer the side that activated the widget when there is room") }
+                // Cross the gap and enter a button without rebuilding or retargeting it.
+                let button = try XCTUnwrap(widget.arrangedSubviews.last as? NSButton)
+                let entryX = point.x < widget.frame.midX ? widget.frame.minX - 1 : widget.frame.maxX + 1
+                interaction.moved(to: NSPoint(x: entryX, y: widget.frame.midY))
+                interaction.moved(to: NSPoint(x: widget.frame.midX, y: widget.frame.midY))
+                XCTAssertFalse(widget.isHidden)
+                XCTAssertTrue(widget.arrangedSubviews.last === button)
+                XCTAssertTrue(try session.listSelection().isSameSelection(as: selection))
+                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, presentation.cursor_utf8_offset)
+                XCTAssertEqual(surface.viewPresentation.mode, presentation.mode)
+            }
+        }
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(text.utf8))
+
+        interaction.hide()
+        let target = try XCTUnwrap(rows.first { $0.row == 1 })
+        let rect = editor.viewRect(target.rect), table = editor.viewRect(target.table_rect)
+        interaction.moved(to: NSPoint(x: table.maxX + 20, y: rect.midY))
+        let insert = try XCTUnwrap(widget.arrangedSubviews.compactMap { $0 as? NSButton }
+            .first { $0.accessibilityLabel() == "Insert row below row 2" })
+        insert.performClick(nil)
+        XCTAssertEqual(try session.tableContext().rows, 5)
+        XCTAssertEqual(try session.tableContext().row, 2, "An explicit right-side action affects the hovered row, even when the caret was elsewhere")
+        _ = try session.undo()
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(text.utf8))
+    }
+
+    func testRowHoverEdgesCornersAndClippingUseActualTableBoundaries() throws {
+        let (_, surface, _) = try surface("| A | B | C |\n| --- | --- | --- |\n| one | two | three |\n| four | five | six |")
+        let editor = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let first = try XCTUnwrap(snapshot.tableCells.first)
+        let table = editor.viewRect(first.table_rect)
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        func labels(at point: NSPoint) -> [String] {
+            interaction.hide(); interaction.moved(to: point)
+            return widget.isHidden ? [] : widget.arrangedSubviews.compactMap { $0.accessibilityLabel() }
+        }
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX, y: table.minY)).contains("Column 3 alignment"))
+        XCTAssertTrue(labels(at: NSPoint(x: table.minX, y: table.minY)).contains("Column 1 alignment"))
+        let secondColumn = try XCTUnwrap(snapshot.tableCells.first { $0.row == 0 && $0.column == 1 })
+        XCTAssertTrue(labels(at: NSPoint(x: editor.viewRect(secondColumn.rect).minX, y: table.minY)).contains("Column 2 alignment"))
+        let secondRow = try XCTUnwrap(snapshot.tableCells.first { $0.row == 1 })
+        let secondRect = editor.viewRect(secondRow.rect)
+        for x in [table.minX, table.maxX] {
+            XCTAssertTrue(labels(at: NSPoint(x: x, y: secondRect.minY)).contains("Delete row 2"))
+            XCTAssertTrue(labels(at: NSPoint(x: x, y: table.maxY)).contains("Delete row 3"))
+        }
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX + 20, y: secondRect.midY)).contains("Delete row 2"))
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX + 21, y: secondRect.midY)).isEmpty)
+
+        let bounds = editor.bounds
+        defer { editor.bounds = bounds }
+        editor.bounds.size.width = table.maxX + 25
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX, y: secondRect.midY)).contains("Delete row 2"))
+        XCTAssertGreaterThanOrEqual(widget.frame.minX, editor.bounds.minX)
+        XCTAssertLessThanOrEqual(widget.frame.maxX, editor.bounds.maxX)
+        editor.bounds.size.width = table.maxX - 10
+        XCTAssertTrue(labels(at: NSPoint(x: editor.bounds.maxX - 1, y: secondRect.midY)).isEmpty,
+            "A clipped right edge does not become a hotspot at the viewport boundary")
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX, y: secondRect.midY)).isEmpty,
+            "Offscreen table geometry cannot activate a widget")
+    }
+
+    func testRowHoverDoesNotShowWidgetsInSourceView() throws {
+        let (_, surface, _) = try surface("| A | B |\n| --- | --- |\n| one | two |")
+        let editor = surface.editorView
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        let cells = try XCTUnwrap(surface.layoutSnapshot).tableCells
+        XCTAssertFalse(cells.isEmpty)
+        surface.formattingToolbar.formattedView.performClick(nil)
+        for cell in cells {
+            let table = editor.viewRect(cell.table_rect), rect = editor.viewRect(cell.rect)
+            for x in [table.minX, table.maxX, table.maxX + 10] {
+                interaction.moved(to: NSPoint(x: x, y: rect.midY))
+                XCTAssertTrue(widget.isHidden)
+            }
+        }
+    }
+
     func testTableGeometryAndCellSelectionRemainPortableAndDisableBlockControls() throws {
         let (_, surface, session) = try surface("| A | B |\n| --- | --- |\n| one | two |")
         let snapshot = try session.layoutExport()

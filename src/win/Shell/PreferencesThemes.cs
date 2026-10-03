@@ -46,11 +46,11 @@ internal sealed partial class Preferences
             bool fresh = !hadConfiguration && ThemeNames.Length == 0;
             if (fresh && writable)
             {
-                foreach (string name in new[] { "Paper", "Midnight", "Typewriter" })
+                foreach (string name in new[] { "Paper", "Midnight", "Midnight Mono", "Typewriter" })
                 {
                     string bundled = Path.Combine(AppContext.BaseDirectory, "Resources", "themes", name + ".json");
-                    // Typewriter has no built-in equivalent in a damaged bundle.
-                    if (name == "Typewriter" && !File.Exists(bundled)) continue;
+                    // These packaged variants have no independent emergency fallback.
+                    if ((name == "Midnight Mono" || name == "Typewriter") && !File.Exists(bundled)) continue;
                     byte[] bytes = File.Exists(bundled) ? File.ReadAllBytes(bundled) : CoreThemes.Defaults(name == "Paper" ? VIEM_THEME_PRESET_PAPER : VIEM_THEME_PRESET_MIDNIGHT);
                     CoreThemes.Validate(bytes); AtomicWrite(ThemePath(name), bytes);
                 }

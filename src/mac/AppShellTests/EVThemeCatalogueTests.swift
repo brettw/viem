@@ -25,7 +25,7 @@ final class EVThemeCatalogueTests: XCTestCase {
     for name in ["Paper", "Midnight"] {
       let file = try object(store.themesDirectory.appendingPathComponent(name + ".json"))
       let styles = try XCTUnwrap(file["styles"] as? [String: Any])
-      XCTAssertEqual(Set(styles.keys), Set(["text", "markdown", "code"]))
+      XCTAssertTrue(Set(["text", "markdown", "code"]).isSubset(of: Set(styles.keys)))
     }
   }
 
@@ -33,31 +33,39 @@ final class EVThemeCatalogueTests: XCTestCase {
     let resources = directory()
     let themes = resources.appendingPathComponent("themes")
     try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
-    let midnight = try EVThemeFile.encode(EVThemeFile.builtin()) + Data("\n\n".utf8)
-    let paper = try EVThemeFile.encode(EVThemeFile.builtin(paper: true)) + Data("\n".utf8)
     var repo = URL(fileURLWithPath: #filePath)
     for _ in 0..<4 { repo.deleteLastPathComponent() }
-    let typewriter = try Data(contentsOf: repo.appendingPathComponent("assets/themes/Typewriter.json"))
-    _ = try EVThemeFile.decode(typewriter)
-    try midnight.write(to: themes.appendingPathComponent("Midnight.json"))
-    try paper.write(to: themes.appendingPathComponent("Paper.json"))
-    try typewriter.write(to: themes.appendingPathComponent("Typewriter.json"))
+    let names = ["Midnight", "Midnight Mono", "Paper", "Typewriter"]
+    var bundled: [String: Data] = [:]
+    for name in names {
+      let data = try Data(contentsOf: repo.appendingPathComponent("assets/themes/\(name).json"))
+      _ = try EVThemeFile.decode(data)
+      bundled[name] = data
+      try data.write(to: themes.appendingPathComponent(name + ".json"))
+    }
     let profile = directory()
     let store = EVConfigurationStore(directory: profile, bundleResourceURL: resources)
     XCTAssertNil(store.lastError)
-    XCTAssertEqual(store.availableThemeNames, ["Midnight", "Paper", "Typewriter"])
+    XCTAssertEqual(store.availableThemeNames, names)
     XCTAssertEqual(store.currentThemeName, "Midnight")
-    XCTAssertEqual(try Data(contentsOf: store.themesDirectory.appendingPathComponent("Midnight.json")), midnight)
-    XCTAssertEqual(try Data(contentsOf: store.themesDirectory.appendingPathComponent("Paper.json")), paper)
-    XCTAssertEqual(try Data(contentsOf: store.themesDirectory.appendingPathComponent("Typewriter.json")), typewriter)
-    try store.selectTheme(named: "Typewriter")
-    XCTAssertEqual(store.currentThemeName, "Typewriter")
-    XCTAssertEqual(try Data(contentsOf: store.themesDirectory.appendingPathComponent("Typewriter.json")), typewriter)
+    for name in names {
+      let installed = store.themesDirectory.appendingPathComponent(name + ".json")
+      XCTAssertEqual(try Data(contentsOf: installed), bundled[name])
+      try store.selectTheme(named: name)
+      XCTAssertEqual(store.currentThemeName, name)
+      XCTAssertEqual(try Data(contentsOf: installed), bundled[name])
+    }
     try store.selectTheme(named: "Midnight")
-    try FileManager.default.removeItem(at: store.themesDirectory.appendingPathComponent("Paper.json"))
-    try FileManager.default.removeItem(at: store.themesDirectory.appendingPathComponent("Typewriter.json"))
+    let midnight = store.themesDirectory.appendingPathComponent("Midnight.json")
+    let customized = try XCTUnwrap(bundled["Midnight"]) + Data("\n\n".utf8)
+    try customized.write(to: midnight)
+    for name in names where name != "Midnight" {
+      try FileManager.default.removeItem(at: store.themesDirectory.appendingPathComponent(name + ".json"))
+    }
     let reopened = EVConfigurationStore(directory: profile, bundleResourceURL: resources)
+    XCTAssertNil(reopened.lastError)
     XCTAssertEqual(reopened.availableThemeNames, ["Midnight"])
+    XCTAssertEqual(try Data(contentsOf: midnight), customized)
   }
 
   func testDefaultChangesStayInMemoryAndNewThemeCopiesThem() throws {

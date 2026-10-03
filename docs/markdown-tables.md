@@ -294,17 +294,17 @@ alignment, with minimal necessary syntax patches. It affects header and body
 together. Explicitly choosing Left may record explicit left alignment even when
 the previous unspecified alignment already appeared left-aligned.
 
-Hovering the table's left border or its **20 DIP gutter to the left** shows a row
-widget for that row: **Insert row above**, **Delete row**, **Insert row below**,
-using plus/up, minus, and plus/down icons. The request's left-side buffer is
-interpreted as this row activation gutter. The header has no Insert row above
-option; Insert row below creates the first body row.
+Hovering either table side border or its **20 DIP gutter outside that side** shows
+a row widget for that row: **Insert row above**, **Delete row**, **Insert row below**,
+using plus/up, minus, and plus/down icons. Both sides target the same row actions;
+prefer placing the widget beside the side that activated it. The header has no
+Insert row above option; Insert row below creates the first body row.
 
 Widgets overlay rather than reflow the document. Keep the target fixed while
 moving into the widget or its alignment popup; its hit region includes the path
 from the activation strip. Do not let the widget disappear under the pointer or
-silently retarget on activation. At the top-left corner, the top-border strip
-targets columns; the remaining left gutter targets rows. Exact shared boundaries
+silently retarget on activation. At either top corner, the top-border strip
+targets columns; the remaining side gutters target rows. Exact shared boundaries
 belong to the following row/column, with the last outer edge belonging to the
 last one. Put controls inside available screen space without covering the active
 cell's editable text when an alternative placement exists.

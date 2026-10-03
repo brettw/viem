@@ -1264,8 +1264,11 @@ collide. Missing selected files use Default. Load only the current theme format,
 one file per theme in the profile's `themes` directory, with current stylesheet
 versions. Ignore obsolete top-level appearance and stylesheet files; do not
 import or migrate them. Missing resources must not prevent loading.
-**When changing `assets/themes/Midnight.json`, update the built-in defaults too;
-tests must compare the complete preset against code defaults.**
+**Default embeds `assets/themes/Midnight.json` at compile time, so its complete
+built-in values stay synchronized with the shipped preset without runtime
+resources. Tests must compare the complete preset against the built-in output
+and validate every packaged theme.** Install bundled themes only for a new
+profile; never replace customized themes or recreate themes the user removed.
 
 Defaults remain sparse and source assignments/direct declarations take precedence.
 Source/WYSIWYG share defaults. Loading or changing themes never writes inherited

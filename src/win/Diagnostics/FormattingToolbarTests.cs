@@ -43,6 +43,7 @@ internal static class FormattingToolbarTests
     internal static async Task Run(Preferences preferences)
     {
         TablePickerTests.Run();
+        await TableInteractionTests.Run(preferences);
         const string source = "# Heading\n\nplain `code`";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);

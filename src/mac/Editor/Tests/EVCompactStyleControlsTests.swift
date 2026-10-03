@@ -188,6 +188,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
         editor.selectStyle(heading)
         XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
         XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
+        guard case let .float(inheritedSize)? = editor.inspection.preview.effectiveValues[.characterSize] else {
+            return XCTFail("Expected an inherited point size")
+        }
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -204,8 +207,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         override.performClick(nil)
         XCTAssertEqual(override.state, .on)
         XCTAssertTrue(size.isEnabled)
-        XCTAssertEqual(size.floatValue, 14)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(14))
+        XCTAssertEqual(size.floatValue, inheritedSize)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(inheritedSize))
         override.performClick(nil)
         XCTAssertEqual(override.state, .off)
         XCTAssertEqual(size.stringValue, "")
@@ -216,6 +219,9 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testFontFaceUsesOneInheritanceCheckbox() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(400)))
         let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         editor.selectStyle(heading)
         XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
@@ -277,6 +283,11 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testFirstMouseClickOnInheritedFontFaceOpensItsNativePopup() throws {
         let (_, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
+        // This control test needs an available native family, independently of
+        // whether the app's bundled variable fonts are registered by the host.
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(400)))
         editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
         XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -302,9 +313,14 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     func testFirstMouseClickOnInheritedSizeFocusesItsNativeTextEditor() async throws {
-        let (_, surface, editor, _) = try makeEditor()
+        let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
+        XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
+        let before = try backend.styleSheetSnapshot()
+        guard case let .float(inheritedSize)? = editor.inspection.preview.effectiveValues[.characterSize] else {
+            return XCTFail("Expected an inherited point size")
+        }
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         XCTAssertFalse(size.isEnabled)
         XCTAssertEqual(size.stringValue, "")
@@ -319,7 +335,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertTrue(size.isEnabled)
         let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView,
             "The first click must enter the native text field")
-        XCTAssertEqual(size.floatValue, 14)
+        XCTAssertEqual(size.floatValue, inheritedSize)
         XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 0, length: fieldEditor.string.utf16.count))
         XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
         for text in ["18", "19"] {
@@ -331,7 +347,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(size.stringValue, "")
         XCTAssertFalse(size.isEnabled)
-        XCTAssertFalse(surface.canUndo, "The initial activation and subsequent field typing share one undo gesture")
+        XCTAssertEqual(try backend.styleSheetSnapshot(), before,
+            "The initial activation and subsequent field typing share one undo gesture")
     }
 
     func testFirstMeasurementClickSelectsAllOnFocusAndReentry() async throws {
@@ -390,10 +407,13 @@ final class EVCompactStyleControlsTests: XCTestCase {
 
     private func dispatchNativeFirstClick(_ control: NSControl) throws {
         let window = try XCTUnwrap(control.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        control.scrollToVisible(control.bounds)
         let wrapper = try inheritedWrapper(for: control)
         let location = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
         let parent = try XCTUnwrap(wrapper.superview)
-        let hit = try XCTUnwrap(wrapper.hitTest(parent.convert(location, from: nil)))
+        let hit = try XCTUnwrap(wrapper.hitTest(parent.convert(location, from: nil)) as? EVInheritedStyleControl,
+            "The inherited fixture must intercept the first click before dispatch")
         XCTAssertTrue(hit === wrapper)
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
@@ -483,6 +503,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testParagraphControlsUseCoreEnumValuesForDisplayAndNativeActions() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,
+            value: .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))))
         editor.selectTab(.paragraph)
         let alignment = try control(NSSegmentedControl.self, label: "Paragraph alignment", in: editor.view)
         let lineKind = try control(NSPopUpButton.self, label: "Line spacing kind", in: editor.view)
@@ -607,6 +629,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let expected = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         let tail = ["Georgia", "Apple Color Emoji", "Menlo"]
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([initial.postScriptName] + tail)))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(initial.weight))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterSlant, value: .fontSlant(initial.italic ? 1 : 0)))
         let source = try backend.serializedSource(typeName: EVDocument.markdownType)
@@ -661,6 +684,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertFalse(georgia.contains { $0.styleName == "Light" })
         let regular = try XCTUnwrap(georgia.first { $0.styleName == "Regular" && !$0.italic })
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName, "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -683,6 +707,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica", "Menlo"])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(700)))
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -706,6 +731,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         defer { withExtendedLifetime(surface) {} }
         let light = try XCTUnwrap(EVFontCatalog.faces(for: "Helvetica Neue").first { $0.styleName == "Light" })
         XCTAssertTrue(editor.setPropertyForTesting(.characterFontFamilies, value: .stringList([light.postScriptName])))
+        XCTAssertTrue(editor.setPropertyForTesting(.characterFontAxes, value: .string(EVFontVariations.encode([:]))))
         XCTAssertTrue(editor.setPropertyForTesting(.characterWeight, value: .unsigned(UInt32(light.weight))))
         let before = try backend.styleSheetSnapshot()
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
@@ -788,16 +814,20 @@ final class EVCompactStyleControlsTests: XCTestCase {
             XCTAssertEqual(stepper.isEnabled, field.isEnabled)
             if field.isEnabled { XCTAssertEqual(stepper.doubleValue, field.doubleValue, accuracy: 0.0001) }
         }
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(14))
+        guard case let .float(initialSize)? = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared else {
+            return XCTFail("Base Paragraph must declare an absolute point size")
+        }
         let size = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
+        XCTAssertEqual(size.doubleValue, Double(initialSize), accuracy: 0.0001)
+        let expectedSize = initialSize + Float(size.increment)
         size.doubleValue += size.increment
         XCTAssertTrue(size.sendAction(try XCTUnwrap(size.action), to: size.target))
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(expectedSize))
         let baseOverride = try control(NSButton.self, label: "Override font size", in: editor.view)
         XCTAssertFalse(baseOverride.isEnabled)
         baseOverride.performClick(nil)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
-        XCTAssertEqual(size.doubleValue, 15)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(expectedSize))
+        XCTAssertEqual(size.doubleValue, Double(expectedSize), accuracy: 0.0001)
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
     }
@@ -834,6 +864,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testNumericFieldDraftAndLineSpacingPrecisionAndKindTransitions() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphLineSpacing,
+            value: .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 770), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = editor
         window.makeKeyAndOrderFront(nil)

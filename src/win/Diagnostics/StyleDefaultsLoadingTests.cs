@@ -19,16 +19,26 @@ internal static class StyleDefaultsLoadingTests
         string directory = Path.Combine(ownerPreferences.DirectoryPath, "theme-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
-        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper", "Typewriter" }),
-            "a fresh profile seeds Paper, Midnight and Typewriter and selects Midnight");
-        string typewriterPath = Path.Combine(preferences.ThemesDirectory, "Typewriter.json");
-        byte[] typewriter = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", "Typewriter.json"));
-        Check(File.ReadAllBytes(typewriterPath).SequenceEqual(typewriter), "first-run installation copies the bundled Typewriter theme byte for byte");
-        preferences.SelectTheme("Typewriter");
-        Check(preferences.SelectedTheme == "Typewriter" && File.ReadAllBytes(typewriterPath).SequenceEqual(typewriter), "Typewriter loads without rewriting its preset");
+        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }),
+            "a fresh profile seeds all four bundled themes and selects Midnight");
+        foreach (string name in new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }) {
+            string path = Path.Combine(preferences.ThemesDirectory, name + ".json");
+            byte[] bundled = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", name + ".json"));
+            Check(File.ReadAllBytes(path).SequenceEqual(bundled), $"first-run installation copies bundled {name} byte for byte");
+            preferences.SelectTheme(name);
+            Check(preferences.SelectedTheme == name && File.ReadAllBytes(path).SequenceEqual(bundled), $"{name} loads without rewriting its preset");
+        }
         preferences.SelectTheme("Midnight");
         Check(new Preferences(directory).SelectedTheme == "Midnight", "selected theme survives preferences reload");
         byte[] midnight = File.ReadAllBytes(preferences.SelectedThemePath!);
+        string monoPath = Path.Combine(preferences.ThemesDirectory, "Midnight Mono.json");
+        File.Delete(monoPath);
+        byte[] customizedMidnight = midnight.Concat(Encoding.UTF8.GetBytes("\n\n")).ToArray();
+        File.WriteAllBytes(preferences.SelectedThemePath!, customizedMidnight);
+        var existing = new Preferences(directory);
+        Check(!File.Exists(monoPath) && File.ReadAllBytes(preferences.SelectedThemePath!).SequenceEqual(customizedMidnight),
+            "existing profiles retain changed preset bytes and never reseed removed variants");
+        File.WriteAllBytes(preferences.SelectedThemePath!, midnight);
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
         preferences.Set("theme", "statusFontSize", JsonValue.Create(17d));
@@ -147,7 +157,7 @@ internal static class StyleDefaultsLoadingTests
         string freshDirectory = Path.Combine(directory, "legacy-styles-only"); Directory.CreateDirectory(freshDirectory);
         foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(freshDirectory, file), "obsolete stylesheet");
         var fresh = new Preferences(freshDirectory);
-        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Paper", "Typewriter" }) && fresh.Error == null
+        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }) && fresh.Error == null
             && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(freshDirectory, file)) == "obsolete stylesheet"),
             "obsolete top-level styles do not suppress fresh-profile presets or create an Imported theme");
 
