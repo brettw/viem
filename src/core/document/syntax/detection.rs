@@ -10,7 +10,7 @@ pub use profile::{
 };
 
 pub const DETECTION_BYTE_LIMIT: usize = 64 * 1024;
-pub const PROFILE_VERSION: u32 = 3;
+pub const PROFILE_VERSION: u32 = 4;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LanguageSelection {
     Automatic,
@@ -406,6 +406,27 @@ mod tests {
             Some("rust")
         );
     }
+    #[test]
+    fn git_message_filenames_use_exact_portable_basename_rules() {
+        let source = input("Describe the change\n\n# Changes to be committed:\n");
+        for basename in ["COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG", "TAG_EDITMSG", "NOTES_EDITMSG", "EDIT_DESCRIPTION"] {
+            for filename in [basename.to_owned(), format!("/project/.git/{basename}"), format!(r"C:\project\.git\{basename}")] {
+                let result = detect(&source, &filename, &LanguageSelection::Automatic, &[]);
+                assert_eq!(result.language.as_deref(), Some("gitcommit"), "{filename}");
+                assert_eq!(result.reason, "bundled filename association", "{filename}");
+            }
+        }
+        for filename in ["commit_editmsg", "COMMIT_EDITMSG.bak", "MERGE_MSG.old", "/COMMIT_EDITMSG/notes", ".gitmessage"] {
+            assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &[]).language, None, "{filename}");
+        }
+        let associations = [FilenameAssociation { pattern: "*_EDITMSG".into(), language: "markdown".into() }];
+        assert_eq!(detect(&source, "COMMIT_EDITMSG", &LanguageSelection::Automatic, &associations).language.as_deref(), Some("markdown"));
+        assert_eq!(detect(&input("# vim: ft=diff"), "COMMIT_EDITMSG", &LanguageSelection::Automatic, &associations).language.as_deref(), Some("diff"));
+        assert_eq!(detect(&source, "COMMIT_EDITMSG", &LanguageSelection::None, &[]).language, None);
+        assert_eq!(detect(&source, "COMMIT_EDITMSG", &LanguageSelection::Language("python".into()), &[]).language.as_deref(), Some("python"));
+        assert!(super::super::languages::supported_languages().iter().any(|language| language.id == "gitcommit" && language.name == "Git Commit"));
+    }
+
     #[test]
     fn audited_filename_rules_cover_scripts_languages_build_files_and_data() {
         let source = input("");

@@ -52,12 +52,13 @@ Recognized and explicitly selected formats retain their precedence.
   Builds must use the verified bundled Vim runtime without requiring installed
   Vim or downloads; preserve its original bytes, attribution, and license.
 
-Windows blocking editor invocations complete only when all views of the requested
+Blocking editor invocations on macOS and Windows complete only when all views of the requested
 shared document close, including later copies; save alone does not complete them.
 Reload preserves the wait. `:cq` abandons all open documents without saving and
 returns failure to pending callers (or its explicit exit status), following Vim.
-Launch/open failure and GUI crashes must not report successful editing. macOS
-blocking invocation support remains deferred.
+Launch/open failure and GUI crashes must not report successful editing.
+Tests that need specific numeric theme values must declare them in their fixtures;
+bundled preset numbers are not test baselines.
 
 ## Architecture and concurrency constraints
 

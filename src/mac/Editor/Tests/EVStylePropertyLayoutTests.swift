@@ -68,7 +68,7 @@ final class EVStylePropertyLayoutTests: XCTestCase {
             native.target = recorder
             native.action = #selector(NativeActionRecorder.record(_:))
             try clickCaption(caption(title, in: editor.view), in: editor.view)
-            XCTAssertTrue(native.isEnabled)
+            XCTAssertTrue(native.isEnabled, title)
             XCTAssertTrue(try backend.styleSheetSnapshot().definition(for: heading)?.properties[property]?.isDeclared == true)
             XCTAssertEqual(recorder.count, 0, "Caption clicks do not dispatch the underlying control action")
             XCTAssertEqual(menusOpened, 0)
@@ -142,6 +142,20 @@ final class EVStylePropertyLayoutTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-property-layout-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .characterLetterSpacing, .float(0)),
+            (.baseParagraph, .characterDirection, .writingDirection(0)),
+            (.baseParagraph, .characterOpenTypeFeatures, .openTypeFeatures([])),
+            (heading, .characterFontFamilies, nil),
+            (heading, .characterFontAxes, nil),
+            (heading, .characterLetterSpacing, nil),
+            (heading, .characterDirection, nil),
+            (heading, .characterOpenTypeFeatures, nil),
+        ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data("# Heading\n\nBody".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

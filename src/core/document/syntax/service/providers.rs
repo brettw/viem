@@ -5,7 +5,7 @@ use crate::document::syntax::{
         self, InjectionRegion, ParseOutcome, SyntaxInputEdit, TreeSitterBudget, TreeSitterError,
         TreeSitterSession,
     },
-    vim::{VimBudget, VimDiagnostic, VimLoadLimits, VimProgram, VimSession, VimSetupContext},
+    vim::{VimBudget, VimDiagnostic, VimLoadLimits, VimProgram, VimSession, VimSetupContext, VimSetupReads},
     Coverage, SyntaxInputSnapshot, SyntaxRun,
 };
 use std::{
@@ -45,6 +45,7 @@ pub struct BackendProvider {
     fallback_failure: Vec<String>,
     fallback_input: Option<SyntaxInputSnapshot>,
     fallback_context: Option<VimSetupContext>,
+    fallback_reads: VimSetupReads,
     input: Option<SyntaxInputSnapshot>,
     parse_slices: usize,
     parse_progress: usize,
@@ -115,6 +116,7 @@ struct Child {
     failed: Option<String>,
     fallback_input: Option<SyntaxInputSnapshot>,
     fallback_context: Option<VimSetupContext>,
+    fallback_reads: VimSetupReads,
     fallback_work: usize,
     cache: Option<ChildOutput>,
 }
@@ -247,13 +249,14 @@ impl BackendProvider {
         };
         if !self.fallback_attempted {
             if !request.configuration.vim_directory.is_empty() {
-                let loaded = VimProgram::load_directory_with_context(
+                let (loaded, reads) = VimProgram::load_directory_with_reads(
                     &request.configuration.vim_directory,
                     vim_language(language),
                     VimLoadLimits::default(),
                     self.fallback_context.as_ref().expect("input setup context"),
                     cancelled,
                 );
+                self.fallback_reads = reads;
                 if !self.finish_fallback_load(loaded, cancelled) {
                     return SyntaxResult::missing(request, "Syntax work cancelled");
                 }
@@ -439,6 +442,7 @@ impl BackendProvider {
                         failed: None,
                         fallback_input: None,
                         fallback_context: None,
+                        fallback_reads: VimSetupReads::default(),
                         fallback_work: 0,
                         cache: None,
                     });
@@ -547,6 +551,7 @@ impl SyntaxProvider for BackendProvider {
                 .saturating_add(session.retained_input_bytes()))
                 .saturating_add(child.fallback.as_ref().map_or(0, VimSession::retained_bytes))
                 .saturating_add(context_bytes(&child.fallback_context))
+                .saturating_add(child.fallback_reads.retained_bytes())
                 .saturating_add(child.cache.as_ref().map_or(0, |cache| cache.runs.capacity() * std::mem::size_of::<SyntaxRun>()
                     + cache.runs.iter().map(|run| run.name.0.len() + run.origin.len()).sum::<usize>()))
         }).sum::<usize>();
@@ -556,6 +561,7 @@ impl SyntaxProvider for BackendProvider {
             .map(|input| input.byte_len().saturating_add(input.text_tree().leaf_count().saturating_mul(256))).sum::<usize>();
         primary.saturating_add(fallback).saturating_add(children).saturating_add(inputs)
             .saturating_add(context_bytes(&self.fallback_context))
+            .saturating_add(self.fallback_reads.retained_bytes())
             .saturating_add(self.configuration.as_ref().and_then(|configuration| configuration.filename.as_ref()).map_or(0, String::capacity))
     }
 
@@ -579,14 +585,15 @@ impl SyntaxProvider for BackendProvider {
         {
             let mut context = VimSetupContext::from_input(&request.input);
             context.filename = request.configuration.filename.clone();
-            if self.fallback_context.as_ref() != Some(&context) {
+            if !self.fallback_context.as_ref()
+                .is_some_and(|previous| self.fallback_reads.matches(previous, &context)) {
                 self.fallback = None;
                 self.fallback_attempted = false;
                 self.fallback_failure.clear();
                 self.fallback_input = None;
                 self.fallback_work = 0;
-                self.fallback_context = Some(context);
             }
+            self.fallback_context = Some(context);
             let preserve_cap = self
                 .capped_parse
                 .as_mut()
@@ -865,11 +872,11 @@ fn analyze_child(
         let input = SyntaxInputSnapshot::new(request.input.identity(), tree);
         let mut context = VimSetupContext::from_input(&input);
         context.filename = request.configuration.filename.clone();
-        if child.fallback_context.as_ref() != Some(&context) {
+        if !child.fallback_context.as_ref()
+            .is_some_and(|previous| child.fallback_reads.matches(previous, &context)) {
             child.fallback = None;
             child.fallback_attempted = false;
             child.fallback_work = 0;
-            child.fallback_context = Some(context);
         } else if let (Some(old), Some(fallback)) = (&child.fallback_input, &mut child.fallback) {
             let (changed, replacement) = old
                 .text_tree()
@@ -877,11 +884,12 @@ fn analyze_child(
                 .unwrap_or((0..0, 0..0));
             let _ = fallback.apply_edit(old.identity(), input.identity(), changed, replacement.end);
         }
+        child.fallback_context = Some(context);
         child.fallback_input = Some(input);
     }
     if !child.fallback_attempted {
         if !request.configuration.vim_directory.is_empty() {
-            let loaded = VimProgram::load_directory_with_context(
+            let (loaded, reads) = VimProgram::load_directory_with_reads(
                 &request.configuration.vim_directory,
                 vim_language(&child.language),
                 VimLoadLimits::default(),
@@ -891,6 +899,7 @@ fn analyze_child(
                     .expect("embedded setup context"),
                 cancelled,
             );
+            child.fallback_reads = reads;
             if cancelled.load(Ordering::Relaxed) {
                 result.continuation = false;
                 return result;

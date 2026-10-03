@@ -1,4 +1,4 @@
-# Native Vim syntax profile 3
+# Native Vim syntax profile 4
 
 The native compiler evaluates the bounded setup language below and emits ordered
 syntax declarations. Compilation is atomic. An active unsupported command, option, pattern, include,
@@ -30,6 +30,11 @@ they cannot relabel already published exact text. Empty endpoints are retained,
 and zero-width matches are guarded against repeated starts at the same boundary.
 Legacy `lc` leading context may reuse preceding text without recoloring it;
 the effective match start still obeys the current scanning boundary.
+At a zero-width region start, a contained match at that same boundary can obscure
+the region's end; `keepend` retains end priority. Without a contained match, an
+end at that boundary still closes the region immediately.
+Transparent children retain the containing syntax state's highlight when they
+extend past a parent's match or highlight-offset boundary.
 
 The compiler accepts line continuations, trailing comments, bar-separated Ex
 statements, common command abbreviations, literal heredocs, and the usual
@@ -70,15 +75,33 @@ into equivalent bounded keyword rules, without increasing per-pattern limits.
 Concrete `highlight` attributes establish named-group/link precedence; visual
 properties come from the global Code stylesheet.
 
-Buffer-dependent setup receives only the first 32 complete logical lines,
-capped at 64 KiB, plus an optional document filename capped at 16 KiB. This allows `vim.vim` to select its
-Vim9 or legacy declarations. Workers compare that bounded prefix only when the
-input revision changes; setup reruns when the prefix changes. Other edits and
-viewport changes retain the compiled setup. This makes dialect selection
-independent of worker-session eviction. Prefix bytes and filename participate in the program
-generation, alongside transitive syntax files. Renaming a document invalidates
-filename-dependent setup even when the text and language are unchanged. Cancelled setup compilations
-remain retryable and never become cached syntax-load failures.
+Buffer-dependent setup receives an immutable normalized source snapshot, a
+prefix of the first 32 complete logical lines capped at 64 KiB, and an optional
+document filename capped at 16 KiB. The prefix supports Vim9/legacy dialect
+selection and range `getline()` queries confined to those 32 lines. With a
+snapshot, `line('$')` returns the actual Vim buffer line count and single-line
+`getline()` can read any numbered line, including the last one. One terminal
+line ending does not manufacture an extra Vim buffer line; preceding explicit
+blank lines remain. Each queried line is limited to 64 KiB, with at most 256
+queried lines and 256 KiB of retained query data per compilation.
+
+Setup `search()` uses a frozen origin at the first source byte and requires the
+non-moving `n` flag. It supports `c`, `w`, `W`, and a stop line without changing
+the user's caret. Each snapshot search has a 1 MiB inspected-prefix limit,
+one million matcher instructions, a maximum 100 ms deadline, and cancellation;
+all calls also share the compilation instruction budget. Exhaustion rejects the
+program with a diagnostic rather than returning a guessed no-match result.
+These queries neither alter source nor provide general editor access.
+
+Workers track queried line values, line counts, and inspected search prefixes,
+including dependencies of failed queries. Setup and cached failures survive
+unrelated edits; a changed dependency, prefix, or filename triggers compilation.
+After reuse, the context advances to the current snapshot instead of retaining
+an old source revision. Viewport changes alone do not rerun setup. Prefix bytes,
+filename, and successful query results participate in the program generation
+alongside transitive syntax files, so worker eviction preserves interpretation.
+Cancelled setup compilations remain retryable and never become cached
+syntax-load failures.
 Optional external editor capabilities are unavailable. Runtime globals
 start absent; declarations within a syntax package may assign bounded values.
 The Vim runtime's default embedded-language selections remain in effect.
@@ -114,10 +137,16 @@ immutable source tree in logarithmic time. Line assertions conservatively
 invalidate from the beginning after edits. Byte columns count UTF-8 bytes,
 independently of tabs, graphemes, and display width. String predicates follow
 Vim's string rules: line assertions fail and byte columns are string-relative.
+Numeric virtual-column (`\%Nv`) assertions and their `<`/`>` comparisons use
+portable Vim defaults: eight-column tab stops, Unicode cell widths with ambiguous
+characters one cell wide, and Vim control-character notation. A resumable,
+fuel-charged line-prefix scan shares work between increasing assertion positions;
+backtracking remains bounded by the same matcher budget. These columns are
+independent of native typography and have whole-hard-line edit dependencies.
 Numeric character escapes for 0 and 10 follow Vim's buffer/string distinction:
 they match NUL in source buffers and LF in string predicates; `\n` matches a
 source hard-line boundary. Numeric collection ranges preserve the same rule.
-Cursor, mark, Visual-selection, virtual-column, composing-character (`\Z`/`\%C`),
+Cursor, mark, Visual-selection, current virtual-column, composing-character (`\Z`/`\%C`),
 and substitution-dependent atoms are diagnosed. `setlocal iskeyword` and syntax's
 independent `iskeyword` override control keyword classes and boundaries. The final
 setup environment applies to all declarations, including dynamically expanded
@@ -237,7 +266,13 @@ filename or prefix. Independently compiled helper fragments may lack their
 owner's context. Compilation success does not establish highlighting equivalence;
 use the native Vim differential fixtures for execution parity.
 
-Setup expressions requiring total line count, the final line, or arbitrary
-document reads remain unsupported. Extending that context requires dependency
-tracking so unrelated edits do not trigger recompilation; do not substitute
-guessed counts or empty text for unavailable context.
+The runtime audit has no document snapshot, so setup requiring `line('$')` or
+reads beyond its supplied prefix can still report unavailable context. Provider
+regressions load the unchanged bundled `gitcommit.vim` and `diff.vim` with real
+snapshots to exercise summary, trailer, comment, scissors, and verbose-diff
+highlighting. The included Diff runtime also searches for Hebrew characters and
+unified-diff headers throughout the buffer. Large inputs without early matches
+can exceed setup's search budget even when a scissors line occurs near the top;
+those programs remain unavailable with a bounded diagnostic. Do not replace a
+capped search or unavailable context with a guessed no-match, line count, or
+empty value. Normal editing and source persistence remain available unchanged.

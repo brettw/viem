@@ -21,6 +21,10 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         blocks[index]["character"] = properties
         json["block_styles"] = blocks
         try configuration.saveStyleDefaults(JSONSerialization.data(withJSONObject: json), named: "markdown")
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (EVStyleTestFixtures.block("Block quote"), .characterSize, nil),
+            (EVStyleTestFixtures.block("Code Block"), .characterSize, nil),
+        ])
     }
 
     func testMarkdownDemoReadBeforeNativeViewAttachmentAppliesMargins() throws {
@@ -34,7 +38,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
                 let initial = EVConfigurationStore(directory: directory)
                 let settings = try XCTUnwrap(initial.selectedThemeURL)
-                if defaults == "valid" { try saveMarkdownSize(21, configuration: initial) }
+                if defaults == nil || defaults == "valid" { try saveMarkdownSize(21, configuration: initial) }
                 else if let defaults { try Data(defaults.utf8).write(to: settings) }
                 let saved = try Data(contentsOf: settings)
                 let configuration = EVConfigurationStore(directory: directory)
@@ -68,11 +72,21 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 let code = try XCTUnwrap(styles.definition(for: EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))))
                 XCTAssertEqual(quote.kind, .quote)
                 XCTAssertEqual(code.kind, .codeBlock)
-                let expectedSize: Float = defaults == "valid" ? 21 : 14
-                XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(expectedSize))
-                XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.blockPaddingLeft]?.effective, .float(0))
-                XCTAssertEqual(quote.properties[.characterSize]?.effective, .float(expectedSize))
-                XCTAssertEqual(code.properties[.characterSize]?.effective, .float(expectedSize))
+                if defaults == nil || defaults == "valid" {
+                    XCTAssertEqual(styles.definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(21))
+                    XCTAssertEqual(quote.properties[.characterSize]?.effective, .float(21))
+                    XCTAssertEqual(code.properties[.characterSize]?.effective, .float(21))
+                } else {
+                    // Failure must use the complete built-in stylesheet. Its
+                    // particular sizes belong to the preset, not this test.
+                    let fallbackDirectory = directory.appendingPathComponent("fallback")
+                    let fallback = EVConfigurationStore(directory: fallbackDirectory)
+                    try fallback.selectTheme(named: nil)
+                    let fallbackBackend = EVCoreDocumentBackend(configuration: fallback)
+                    try fallbackBackend.read(source: source, typeName: backend.sourceFormat == .markdownSource
+                        ? EVDocument.markdownSourceType : EVDocument.markdownType)
+                    XCTAssertEqual(styles.definitions, try fallbackBackend.styleSheetSnapshot().definitions)
+                }
                 XCTAssertNil(quote.nextStyleID)
                 XCTAssertNil(code.nextStyleID)
                 surface.view.frame = NSRect(x: 0, y: 0, width: 920, height: 655)

@@ -243,6 +243,9 @@ impl Setup<'_> {
                 .lookup(collection, key)?
                 .unwrap_or_else(|| default.clone()),
             ("getline", [Value::Number(line)]) => {
+                if self.input.is_some() {
+                    return self.buffer_line(*line).map(Value::Text);
+                }
                 if *line <= 0 {
                     return Ok(Value::Text(String::new()));
                 }

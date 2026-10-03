@@ -234,7 +234,6 @@ fn matcher_selection_prefixes_are_portable_and_position_failures_are_precise() {
         (r"\%#", "editor cursor-position"),
         (r"\%V", "editor Visual-selection"),
         (r"\%'m", "editor mark-position"),
-        (r"\%<51v", "display and tab context"),
         (r"\%>.l", "editor current-position"),
     ] {
         let error = VimPattern::compile(source, false, VimRegexLimits::default()).unwrap_err();
@@ -351,6 +350,121 @@ fn absolute_source_line_and_byte_column_assertions_are_resumable() {
 }
 
 #[test]
+fn virtual_columns_use_portable_vim_cells_and_resume_with_single_instruction_slices() {
+    for (source, text, expected) in [
+        (r"\%1v.", "x", Some(0..1)),
+        (r"\%0v.", "x", None),
+        (r"\%2v\t", "a\tx", Some(1..2)),
+        (r"\%3v.", "a\tx", None),
+        (r"\%9vx", "a\tx", Some(2..3)),
+        (r"\%>8vx", "\tx", Some(1..2)),
+        (r"\%<9vx", "\tx", None),
+        (r"\%2vx", "éx", Some(2..3)),
+        (r"\%3vx", "界x", Some(3..4)),
+        (r"\%3vx", "😀x", Some(4..5)),
+        (r"\%2vx", "e\u{301}x", Some(3..4)),
+        (r"\%2vx", "\u{301}x", Some(2..3)),
+        (r"\%2vx", "♥\u{fe0f}x", Some(6..7)),
+        (r"\%3vx", "\u{1}x", Some(1..2)),
+        (r"\%5vx", "\u{85}x", Some(2..3)),
+        (r"\%7vx", "\u{200b}x", Some(3..4)),
+        (r"\%2vx", "\u{ad}x", Some(2..3)),
+        (r"\%2vx", "\u{1160}x", Some(3..4)),
+        (r"\%3vx", "\u{1f1e6}x", Some(4..5)),
+        (r"\%2vx", "\u{e0020}x", Some(4..5)),
+        (r"\%9vx", "prefix\n\tx", Some(8..9)),
+        (r"\v%9vx", "\tx", Some(1..2)),
+        (r"\%(\%<3v.\)\+", "é界x", Some(0..5)),
+        (r"^.*\%3vx", "abx", Some(0..3)),
+        (r"\%(\%9v\)\@!x", "\tx x", Some(3..4)),
+        (r"\%4v$", "abc", Some(3..3)),
+    ] {
+        for slice in [1, 8192] {
+            assert_eq!(find(source, text, slice), expected, "{source} in {text:?}");
+        }
+    }
+    // Virtual columns are source-line-local; edits retain ordinary whole-line
+    // repair instead of forcing global syntax invalidation.
+    let pattern = VimPattern::compile(r"\%9vx", false, VimRegexLimits::default()).unwrap();
+    assert!(!pattern.multiline);
+    assert!(pattern.is_match_text("\tx", 100).unwrap());
+    // Vim string inputs treat LF as a displayed control, not a line boundary.
+    let string = VimPattern::compile(r"\%4vx", false, VimRegexLimits::default()).unwrap();
+    assert!(string.is_match_text("a\nx", 100).unwrap());
+}
+
+#[test]
+fn virtual_column_prefix_work_is_cached_metered_and_cancellable() {
+    let text = "x".repeat(2_048);
+    let input = SyntaxInputSnapshot::new(
+        crate::document::syntax::SyntaxInputIdentity {
+            document: 72,
+            revision: 1,
+            generation: 1,
+        },
+        crate::document::formatted_text::FormattedTextTree::try_from_text(text.as_str()).unwrap(),
+    );
+    let pattern = VimPattern::compile(r"\%<2049v.\+", false, VimRegexLimits::default()).unwrap();
+    // An assertion late in a hostile line cannot hide a prefix scan in one
+    // instruction, and cancellation retains its resumable scan position.
+    let mut continuation = pattern.start(text.len() - 1);
+    let mut fuel = 8;
+    assert_eq!(
+        pattern.resume(&mut continuation, &input, &mut fuel),
+        VimRegexProgress::Pending
+    );
+    assert_eq!(fuel, 0);
+    let mut fuel = 8;
+    assert_eq!(
+        pattern.resume_with_control(&mut continuation, &input, &mut fuel, &mut || true),
+        VimRegexProgress::Pending
+    );
+    assert_eq!(fuel, 8);
+    let mut fuel = 20_000;
+    assert!(matches!(
+        pattern.resume(&mut continuation, &input, &mut fuel),
+        VimRegexProgress::Complete(Some(_))
+    ));
+
+    // Git's repeated column guard must share its prefix work, not rescan every
+    // previous character at every next position (which would be quadratic).
+    let repeated =
+        VimPattern::compile(r"\%(\%<2049v.\)\+", false, VimRegexLimits::default()).unwrap();
+    let mut continuation = repeated.start(0);
+    let mut fuel = 80_000;
+    let result = repeated.resume(&mut continuation, &input, &mut fuel);
+    assert!(matches!(
+        result,
+        VimRegexProgress::Complete(Some(VimRegexMatch {
+            start: 0,
+            end: 2048,
+            ..
+        }))
+    ));
+    assert!(
+        fuel > 40_000,
+        "virtual columns rescanned unchanged prefixes"
+    );
+
+    let summary = VimPattern::compile(r"^.*\%<51v.", false, VimRegexLimits::default()).unwrap();
+    let mut continuation = summary.start(0);
+    let mut fuel = 25_000;
+    let result = summary.resume(&mut continuation, &input, &mut fuel);
+    assert!(matches!(
+        result,
+        VimRegexProgress::Complete(Some(VimRegexMatch {
+            start: 0,
+            end: 50,
+            ..
+        }))
+    ));
+    assert!(
+        fuel > 10_000,
+        "greedy summary backtracking rescanned line prefixes"
+    );
+}
+
+#[test]
 fn source_position_lookup_remains_bounded_at_a_million_lines() {
     let text = format!("{}éx", "a\n".repeat(1_000_000));
     let input = SyntaxInputSnapshot::new(
@@ -403,6 +517,28 @@ fn source_position_atoms_match_installed_vim_buffer_searches() {
         (r"\%2l\%3cx", "a\néx"),
         (r"\v%2l%3cx", "a\néx"),
         (r"\%(\%2l\)\@!foo", "foo\nfoo"),
+        (r"\%2v\t", "a\tx"),
+        (r"\%3v.", "a\tx"),
+        (r"\%9vx", "a\tx"),
+        (r"\%>8vx", "\tx"),
+        (r"\%<9vx", "\tx"),
+        (r"\%2vx", "éx"),
+        (r"\%3vx", "界x"),
+        (r"\%3vx", "😀x"),
+        (r"\%2vx", "e\u{301}x"),
+        (r"\%2vx", "\u{301}x"),
+        (r"\%2vx", "♥\u{fe0f}x"),
+        (r"\%3vx", "\u{1}x"),
+        (r"\%5vx", "\u{85}x"),
+        (r"\%7vx", "\u{200b}x"),
+        (r"\%2vx", "\u{ad}x"),
+        (r"\%2vx", "\u{1160}x"),
+        (r"\%3vx", "\u{1f1e6}x"),
+        (r"\%2vx", "\u{e0020}x"),
+        (r"\%9vx", "prefix\n\tx"),
+        (r"\%(\%<3v.\)\+", "é界x"),
+        (r"^.*\%3vx", "abx"),
+        (r"\%(\%9v\)\@!x", "\tx x"),
         (r"\%d0", "a\0b\nc"),
         (r"\%d10", "a\0b\nc"),
         (r"[\x00-\x09]", "a\0b\nc"),
@@ -498,7 +634,11 @@ fn bundled_j_number_pattern_has_resumable_semantics() {
     let pattern = VimPattern::compile(pattern, false, VimRegexLimits::default()).unwrap();
     for text in ["_3", "3r4", "2j3", "2ad90", "16bff", "1e_3", "_0.25"] {
         for fuel in [1, 8192] {
-            assert_eq!(find_pattern(&pattern, text, fuel), Some(0..text.len()), "{text}");
+            assert_eq!(
+                find_pattern(&pattern, text, fuel),
+                Some(0..text.len()),
+                "{text}"
+            );
         }
     }
 }
@@ -789,4 +929,23 @@ fn vim_regex_matches_installed_vim_oracle() {
         );
     }
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn gitcommit_trailer_pattern_keeps_multiline_lookbehind() {
+    let pattern = r"\n\@<=\n\%([[:alnum:]-]\+\s*:.*\|(cherry picked from commit .*\)\%(\n\s.*\|\n[[:alnum:]-]\+\s*:.*\|\n(cherry picked from commit .*\)*\%(\n\n*\%(#\)\|\n*\%$\)\@=";
+    let text = "Summary\n\nBody\n\nSigned-off-by: Writer <writer@example.test>\n\n# Please enter a message.\n";
+    let begin = text.find("\nSigned").unwrap();
+    let end = text.find("\n\n#").unwrap();
+    assert_eq!(find(pattern, text, 17), Some(begin..end));
+}
+
+#[test]
+fn newline_star_repeats_the_atom_before_a_line_start_anchor() {
+    for pattern in [r"a\n*b", r"\ma\n*b", r"\Ma\n\*b", r"\va\n*b"] {
+        assert_eq!(find(pattern, "ab", 3), Some(0..2), "{pattern}");
+        assert_eq!(find(pattern, "a\n\nb", 3), Some(0..4), "{pattern}");
+    }
+    assert_eq!(find(r"a\n*^b", "a\n\nb", 3), Some(0..4));
+    assert_eq!(find(r"a\n*^b", "ab", 3), None);
 }

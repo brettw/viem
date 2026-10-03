@@ -17,10 +17,22 @@ let package = Package(
     ],
     products: [
         .executable(name: "Viem", targets: ["Viem"]),
+        .executable(name: "blocking-viem", targets: ["BlockingViem"]),
         .library(name: "ViemAppShell", targets: ["ViemAppShell"]),
         .library(name: "ViemCoreTextProvider", targets: ["ViemCoreTextProvider"]),
     ],
     targets: [
+        .target(name: "ViemBlockingTransport", path: "src/mac/BlockingTransport"),
+        .executableTarget(
+            name: "BlockingViem",
+            dependencies: ["ViemBlockingTransport"],
+            path: "src/mac/Blocking"
+        ),
+        .testTarget(
+            name: "ViemBlockingTransportTests",
+            dependencies: ["ViemBlockingTransport"],
+            path: "src/mac/BlockingTransportTests"
+        ),
         .target(
             name: "CViemCore",
             path: "src/mac/CViemCore",
@@ -48,7 +60,7 @@ let package = Package(
         ),
         .target(
             name: "ViemAppShell",
-            dependencies: ["CViemCore"],
+            dependencies: ["CViemCore", "ViemBlockingTransport"],
             path: "src/mac/AppShell",
             linkerSettings: [
                 .linkedFramework("AppKit"),
@@ -79,7 +91,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ViemAppShellTests",
-            dependencies: ["ViemAppShell", "ViemNativeTestSupport"],
+            dependencies: ["ViemAppShell", "ViemBlockingTransport", "ViemNativeTestSupport"],
             path: "src/mac/AppShellTests"
         ),
         .testTarget(
@@ -89,7 +101,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ViemEditorTests",
-            dependencies: ["ViemEditor", "CViemCore", "ViemCoreTextProvider", "ViemNativeTestSupport"],
+            dependencies: ["ViemEditor", "CViemCore", "ViemCoreTextProvider", "ViemBlockingTransport", "ViemNativeTestSupport"],
             path: "src/mac/Editor/Tests"
         ),
     ],

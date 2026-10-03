@@ -60,6 +60,7 @@ endif
             &VimSetupContext {
                 prefix: prefix.into(),
                 filename: None,
+                input: None,
             },
             None,
         );

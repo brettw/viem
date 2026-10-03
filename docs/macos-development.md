@@ -44,6 +44,16 @@ sign `.build/Viem.app`. `make debug` (also the default for `make`) builds with
 debug information; `make release` builds an optimized application. Each replaces
 the same application bundle.
 
+Both configurations explicitly build `Viem` and `blocking-viem`. Release builds
+also package `.build/release-app/Viem.app`, which remains a release build after
+later debug builds. `make run` and `make run-release` build and launch this release
+bundle. Use its `Contents/MacOS/blocking-viem` for a release-only editor redirector;
+the complete bundle supplies the GUI's syntax runtime, fonts, and themes.
+
+The bundle also includes `Contents/MacOS/blocking-viem`, a command-line editor
+launcher that waits for its requested document to close. See
+[Blocking editor](blocking-editor.md) for Git setup and cancellation behavior.
+
 The bundle includes the shared desktop fonts and their attribution files from
 [`assets/fonts`](../assets/fonts/README.md) in `Contents/Resources/fonts`.
 Startup registers these fonts for Viem's process before opening font pickers or

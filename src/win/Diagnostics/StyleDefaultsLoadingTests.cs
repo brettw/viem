@@ -14,6 +14,19 @@ internal static class StyleDefaultsLoadingTests
     private static void Write(string path, JsonNode json) => File.WriteAllText(path, json.ToJsonString());
     private static JsonObject Read(string path) => JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
 
+    // Fallback tests compare the complete built-in theme contract. They do not
+    // freeze the font sizes or other editable numbers chosen by that preset.
+    internal static bool MatchesBuiltInTheme(Preferences preferences)
+    {
+        var builtin = JsonNode.Parse(CoreThemes.Defaults())!;
+        var appearance = builtin["theme"]!;
+        return preferences.Theme == Theme.Midnight
+            && preferences.Get("theme", "statusFontFamily", "") == appearance["statusFontFamily"]!.GetValue<string>()
+            && preferences.Get("theme", "statusFontSize", double.NaN) == appearance["statusFontSize"]!.GetValue<double>()
+            && new[] { (VIEM_FORMAT_PLAIN_TEXT, "text"), (VIEM_FORMAT_MARKDOWN, "markdown"), (VIEM_FORMAT_CODE, "code") }
+                .All(pair => JsonNode.DeepEquals(JsonNode.Parse(preferences.ThemeStyleDefaults(pair.Item1)), builtin["styles"]![pair.Item2]));
+    }
+
     internal static async Task Run(Preferences ownerPreferences)
     {
         string directory = Path.Combine(ownerPreferences.DirectoryPath, "theme-tests", Guid.NewGuid().ToString("N"));
@@ -42,7 +55,7 @@ internal static class StyleDefaultsLoadingTests
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
         preferences.Set("theme", "statusFontSize", JsonValue.Create(17d));
-        Check(preferences.StatusFontSize == 17 && new Preferences(directory).StatusFontSize == 11
+        Check(preferences.StatusFontSize == 17 && MatchesBuiltInTheme(new Preferences(directory))
             && File.ReadAllBytes(Path.Combine(directory, "config.json")).SequenceEqual(config)
             && File.ReadAllBytes(Path.Combine(preferences.ThemesDirectory, "Midnight.json")).SequenceEqual(midnight),
             "Default theme changes are memory only and leave named files and main config untouched");
@@ -111,7 +124,7 @@ internal static class StyleDefaultsLoadingTests
         string disappearedPath = preferences.SelectedThemePath!; File.Delete(disappearedPath);
         preferences.Set("theme", "statusFontSize", JsonValue.Create(20d));
         Check(preferences.SelectedTheme == null && preferences.StatusFontSize == 20 && !File.Exists(disappearedPath)
-            && new Preferences(directory).StatusFontSize == 11,
+            && MatchesBuiltInTheme(new Preferences(directory)),
             "editing after an active theme file disappears uses memory-only Default and never recreates the missing file");
 
         string invalid = Path.Combine(preferences.ThemesDirectory, "Broken.json"); File.WriteAllText(invalid, "{");
@@ -133,7 +146,7 @@ internal static class StyleDefaultsLoadingTests
         string[] retiredStyleFiles = ["text_style.json", "markdown_style.json", "code_style.json"];
         foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(legacyDirectory, file), "obsolete stylesheet");
         var ignored = new Preferences(legacyDirectory);
-        Check(ignored.SelectedTheme == null && ignored.StatusFontSize == 11 && ignored.SmartQuotes && ignored.Error == null
+        Check(ignored.SelectedTheme == null && MatchesBuiltInTheme(ignored) && ignored.SmartQuotes && ignored.Error == null
             && ignored.ThemeNames.Length == 0 && !Directory.Exists(ignored.ThemesDirectory)
             && File.ReadAllBytes(legacyConfigPath).SequenceEqual(legacyConfigBytes)
             && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(legacyDirectory, file)) == "obsolete stylesheet"),

@@ -42,26 +42,93 @@ internal static class StyleFontSizeTests
             $"{id} retains {percent}% while resolving to {points} points");
     }
 
+    private static readonly (string Name, uint Property, float Value)[] BlockMeasurements = [
+        ("Top margin", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, 21.5f),
+        ("Right margin", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT, 22.5f),
+        ("Bottom margin", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, 23.5f),
+        ("Left margin", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT, 24.5f),
+        ("Top padding", VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP, 15.5f),
+        ("Right padding", VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT, 16.5f),
+        ("Bottom padding", VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM, 17.5f),
+        ("Left padding", VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, 18.5f),
+        ("Top border weight", VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH, 2.5f),
+        ("Right border weight", VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH, 3.5f),
+        ("Bottom border weight", VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH, 4.5f),
+        ("Left border weight", VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, 5.5f),
+    ];
+
     private static async Task MeasurementClicks(StyleWindow inspector)
     {
         var tabs = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl)
             .Where(button => button.Content is "Character" or "Block").ToArray();
+        byte[] before = inspector.ThemeView.ExportStyleDefaults();
         foreach (string tab in new[] { "Character", "Block" }) {
             var button = tabs.Single(button => button.Content as string == tab);
             button.Focus(FocusState.Programmatic);
             await InputRoutingTests.Key(VirtualKey.Space);
-            var number = tab == "Character" ? inspector.FontSizeControl
-                : Children<NumberBox>(inspector.RootControl).Single(number => AutomationProperties.GetName(number) == "Left padding");
-            var input = Children<TextBox>(number).Single(input => input.Name == "InputBox");
-            Check(input.Text.Length > 0, tab + " measurement exposes its resolved numeric value");
-            await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
-            Check(input.SelectionStart == 0 && input.SelectionLength == input.Text.Length,
-                tab + " measurement first pointer click selects the whole value");
+            NumberBox[] numbers = tab == "Character" ? [inspector.FontSizeControl]
+                : BlockMeasurements.Select(measurement => Children<NumberBox>(inspector.RootControl)
+                    .Single(number => AutomationProperties.GetName(number) == measurement.Name)).ToArray();
+            foreach (var number in numbers) {
+                string label = AutomationProperties.GetName(number);
+                var input = Children<TextBox>(number).Single(input => input.Name == "InputBox");
+                Check(input.Text.Length > 0, label + " exposes an explicit numeric fixture");
+                button.Focus(FocusState.Programmatic);
+                await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
+                Check(input.SelectionStart == 0 && input.SelectionLength == input.Text.Length,
+                    label + " first pointer click selects the whole value after release");
+            }
+            // Exercise native editing on a representative field from each tab.
+            var representative = Children<TextBox>(numbers.Last()).Single(input => input.Name == "InputBox");
+            string name = AutomationProperties.GetName(numbers.Last());
             await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
-            await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
-            Check(input.SelectionLength == 0, tab + " measurement second pointer click places a caret");
+            await InputRoutingTests.Drag(inspector, representative, [new(.8, .5)], _ => { }, focusTarget: false);
+            Check(representative.SelectionLength == 0, name + " second pointer click places a caret");
+            representative.Select(1, 0);
+            await InputRoutingTests.Key(VirtualKey.Right, shift: true);
+            Check(representative.SelectionStart == 1 && representative.SelectionLength == 1,
+                name + " retains ordinary keyboard selection after its first click");
+            button.Focus(FocusState.Programmatic);
+            representative.Focus(FocusState.Keyboard);
+            representative.Select(1, 0);
+            await Task.Delay(60);
+            Check(representative.SelectionStart == 1 && representative.SelectionLength == 0,
+                name + " does not replace a keyboard-focused caret with deferred pointer selection");
+            button.Focus(FocusState.Programmatic);
+            await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
+            (int Start, int Length) nativeDragSelection = default;
+            await InputRoutingTests.Drag(inspector, representative, [new(.99, .5), new(.72, .5)], step => {
+                if (step == 1) nativeDragSelection = (representative.SelectionStart, representative.SelectionLength);
+            }, focusTarget: false);
+            Check(nativeDragSelection.Length > 0 && nativeDragSelection.Length < representative.Text.Length
+                && (representative.SelectionStart, representative.SelectionLength) == nativeDragSelection,
+                name + " entering with a drag preserves the native partial selection after release");
+            button.Focus(FocusState.Programmatic);
+            await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
+            await InputRoutingTests.Drag(inspector, representative, [new(.8, .5)], _ => { }, focusTarget: false);
+            Check(representative.SelectionStart == 0 && representative.SelectionLength == representative.Text.Length,
+                name + " selects the whole number again when the pointer reenters");
         }
-        tabs.Single(button => button.Content as string == "Character").IsChecked = true;
+        Check(inspector.ThemeView.ExportStyleDefaults().SequenceEqual(before),
+            "measurement focus, clicks and selection do not edit theme values");
+
+        // A real replacement should commit one new number, with no old digits
+        // retained. Restore the explicit fixture before the percentage tests.
+        await InputRoutingTests.Text("7");
+        await InputRoutingTests.Key(VirtualKey.Enter);
+        Check(Style(inspector.ThemeView, 1, "Paragraph").Value(VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH).number == 7,
+            "typing after a block measurement's entry click replaces its entire value");
+        inspector.ThemeView.EditStyle(Style(inspector.ThemeView, 1, "Paragraph"), VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, CoreView.Number(5.5f));
+        inspector.RefreshForTesting();
+        var character = tabs.Single(button => button.Content as string == "Character");
+        character.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
+        var size = Children<TextBox>(inspector.FontSizeControl).Single(input => input.Name == "InputBox");
+        await InputRoutingTests.Drag(inspector, size, [new(.8, .5)], _ => { }, focusTarget: false);
+        await InputRoutingTests.Text("27"); await InputRoutingTests.Key(VirtualKey.Enter);
+        Check(Style(inspector.ThemeView, 1, "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number == 27,
+            "typing after a font-size entry click replaces its entire value");
+        SetPoints(inspector.ThemeView, 1, "Paragraph", 20); inspector.RefreshForTesting();
     }
 
     internal static async Task Run(EditorPane pane, Preferences preferences)
@@ -70,8 +137,9 @@ internal static class StyleFontSizeTests
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         SetPoints(view, 1, "Paragraph", 20);
         SetPoints(view, 1, "Heading1", 24);
-        view.EditStyle(Style(view, 1, "Paragraph"), VIEM_STYLE_EDIT_SET_DECLARATION,
-            VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(18.5f));
+        foreach (var measurement in BlockMeasurements)
+            view.EditStyle(Style(view, 1, "Paragraph"), VIEM_STYLE_EDIT_SET_DECLARATION,
+                measurement.Property, CoreView.Number(measurement.Value));
         byte[] originalTheme = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         byte[] originalSource = document.Source(document.State.document_revision);

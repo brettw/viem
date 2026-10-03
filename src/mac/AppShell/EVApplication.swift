@@ -15,6 +15,7 @@ public enum EVApplication {
         )
         let instance: EVSingleInstance
         let launchArguments: EVLaunchArguments
+        let blockingCompletion: EVBlockingEditCompletion?
         do {
             // Development subprocess tests isolate their IPC endpoint just as
             // VIEM_CONFIG_DIR isolates settings; normal launches share one.
@@ -31,14 +32,17 @@ public enum EVApplication {
             case let .primary(primary):
                 instance = primary
             }
-            launchArguments = try parse(request)
+            let parsed = try parse(request)
+            launchArguments = parsed.arguments
+            blockingCompletion = parsed.completion
         } catch {
             FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             exit(EXIT_FAILURE)
         }
         let application = NSApplication.shared
         let delegate = EVApplicationDelegate(launchArguments: launchArguments,
-            launchDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true))
+            launchDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
+            blockingCompletion: blockingCompletion)
 
         application.setActivationPolicy(.regular)
         application.delegate = delegate
@@ -50,13 +54,12 @@ public enum EVApplication {
             application.finishLaunching()
             instance.setLaunchHandler { request in
                 do {
-                    let arguments = try parse(request)
+                    let parsed = try parse(request)
                     // Acknowledge acceptance before document recovery or open
                     // errors can enter a modal event loop in the editor.
-                    DispatchQueue.main.async {
-                        delegate.processLaunchArguments(arguments, workingDirectory:
-                            URL(fileURLWithPath: request.workingDirectory, isDirectory: true))
-                    }
+                    delegate.processLaunchArguments(parsed.arguments, workingDirectory:
+                        URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
+                        blockingCompletion: parsed.completion, deferOpening: true)
                     return nil
                 } catch { return error.localizedDescription }
             }
@@ -65,11 +68,17 @@ public enum EVApplication {
         }
     }
 
-    private static func parse(_ request: EVInstanceLaunchRequest) throws -> EVLaunchArguments {
+    private static func parse(_ request: EVInstanceLaunchRequest) throws
+        -> (arguments: EVLaunchArguments, completion: EVBlockingEditCompletion?) {
         // Older Launch Services versions add native process metadata to argv.
         var arguments = request.arguments
         if arguments.first?.hasPrefix("-psn_") == true { arguments.removeFirst() }
-        do { return try EVLaunchArguments.parse(arguments) }
+        if arguments.first == "--blocking-edit" {
+            guard arguments.count == 3 else { throw EVLaunchArgumentError("Invalid blocking editor launch request.") }
+            let parsed = try EVLaunchArguments.parse(["--", arguments[2]])
+            return (parsed, try EVBlockingEditCompletion.connect(endpoint: arguments[1]))
+        }
+        do { return (try EVLaunchArguments.parse(arguments), nil) }
         catch {
             throw EVLaunchArgumentError("\(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]")
         }
@@ -88,8 +97,9 @@ final class EVApplicationDelegate: NSObject,
     private let configuration: EVConfigurationStore
     private let launchArguments: EVLaunchArguments
     private let launchDirectory: URL
+    private var initialBlockingCompletion: EVBlockingEditCompletion?
     private var hasProcessedLaunchArguments = false
-    private var pendingLaunches: [(EVLaunchArguments, URL)] = []
+    private var pendingLaunches: [(EVLaunchArguments, URL, UUID?)] = []
     private var isProcessingLaunch = false
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
@@ -99,11 +109,13 @@ final class EVApplicationDelegate: NSObject,
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
-         launchDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)) {
+         launchDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
+         blockingCompletion: EVBlockingEditCompletion? = nil) {
         let configuration = configuration ?? .shared
         self.configuration = configuration
         self.launchArguments = launchArguments
         self.launchDirectory = launchDirectory
+        self.initialBlockingCompletion = blockingCompletion
         recordRecentDocument = { try? configuration.recordRecentDocument($0) }
         super.init()
     }
@@ -235,23 +247,36 @@ final class EVApplicationDelegate: NSObject,
         let hasLaunchOptions = !launchArguments.isEmpty
         guard !hasProcessedLaunchArguments else { return hasLaunchOptions }
         hasProcessedLaunchArguments = true
-        processLaunchArguments(launchArguments, workingDirectory: launchDirectory)
+        processLaunchArguments(launchArguments, workingDirectory: launchDirectory,
+            blockingCompletion: initialBlockingCompletion)
+        initialBlockingCompletion = nil
         return hasLaunchOptions
     }
 
     /// Startup and later executable invocations share this dispatch path.
     /// Serializing requests also prevents nested recovery panels from opening
     /// the same file twice before the first request has installed its window.
-    func processLaunchArguments(_ arguments: EVLaunchArguments, workingDirectory: URL) {
-        pendingLaunches.append((arguments, workingDirectory))
-        processNextLaunch()
+    func processLaunchArguments(_ arguments: EVLaunchArguments, workingDirectory: URL,
+                               blockingCompletion: EVBlockingEditCompletion? = nil,
+                               deferOpening: Bool = false) {
+        let token: UUID?
+        do { token = try blockingCompletion.map { try EVBlockingEditSessions.shared.begin($0) } }
+        catch {
+            blockingCompletion?.finish(exitCode: 1)
+            FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
+            return
+        }
+        pendingLaunches.append((arguments, workingDirectory, token))
+        if deferOpening { DispatchQueue.main.async { [self] in processNextLaunch() } }
+        else { processNextLaunch() }
     }
 
     private func processNextLaunch() {
         guard !isProcessingLaunch, !pendingLaunches.isEmpty else { return }
         isProcessingLaunch = true
-        let (arguments, workingDirectory) = pendingLaunches.removeFirst()
+        let (arguments, workingDirectory, blockingToken) = pendingLaunches.removeFirst()
         guard !arguments.isEmpty else {
+            if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             if hasNoOpenWindows {
                 launchPlaceholderDocument = createUntitledDocument()
             } else if let window = mainWindow() ?? applicationWindows().first(where: {
@@ -269,6 +294,7 @@ final class EVApplicationDelegate: NSObject,
         document.makeWindowControllers()
         launchPlaceholderDocument = document
         guard let controller = document.windowControllers.first as? EVDocumentWindowController else {
+            if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             document.showWindows()
             finishLaunch()
             return
@@ -283,8 +309,19 @@ final class EVApplicationDelegate: NSObject,
         }
         controller.openArgumentList(urls, splitCount: arguments.splitCount,
             initialLine: arguments.initialLine, vertical: arguments.verticalSplits) { [self] result in
+            if let blockingToken {
+                if case .success = result, let url = urls.first,
+                   let opened = EVDocumentIdentity.existingDocument(at: url),
+                   EVDocumentWindowController.hasOpenViews(of: opened) {
+                    EVBlockingEditSessions.shared.attach(blockingToken, to: opened)
+                } else {
+                    EVBlockingEditSessions.shared.fail(blockingToken)
+                    controller.close()
+                }
+            }
             if case let .failure(error) = result {
-                NSApplication.shared.presentError(error)
+                if blockingToken == nil { NSApplication.shared.presentError(error) }
+                else { FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8)) }
             }
             finishLaunch()
         }

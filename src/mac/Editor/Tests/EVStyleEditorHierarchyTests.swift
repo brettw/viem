@@ -62,8 +62,6 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
         let (backend, surface, editor) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
         let session = try XCTUnwrap(surface.session)
-        let initialSize = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: heading))
-            .properties[.characterSize]?.declared
         editor.beginContinuousStyleEditForTesting()
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(26)))
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(29)))
@@ -75,7 +73,7 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
             .properties[.characterSize]?.declared, .float(29))
         _ = try session.undo()
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?
-            .properties[.characterSize]?.declared, initialSize)
+            .properties[.characterSize]?.declared, .float(24))
         XCTAssertFalse(surface.canUndo, "Navigation must not introduce another undo operation")
     }
 
@@ -162,6 +160,9 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
 
     private func makeEditor() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController) {
         let configuration = isolatedConfiguration()
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (heading, .characterSize, .float(24)),
+        ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data("# Heading\n\nText".utf8), typeName: "public.markdown")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

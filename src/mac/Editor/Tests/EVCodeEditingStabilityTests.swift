@@ -119,13 +119,18 @@ final class EVCodeEditingStabilityTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil,
             bundleResourceURL: highlighting ? Bundle.main.resourceURL : directory.appendingPathComponent("missing-resources"))
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))),
+        ])
         let styles = try EVCodeStyleSession(configuration: configuration)
-        if commentSize != 14 {
-            let snapshot = try styles.snapshot()
-            let comment = try XCTUnwrap(snapshot.definitions.first { $0.name == "Comment" })
-            try styles.edit(key: comment.key, expected: snapshot.identity,
-                            mutation: .setDeclaration(.characterSize, .float(commentSize)))
-        }
+        let snapshot = try styles.snapshot()
+        let commentStyle = try XCTUnwrap(snapshot.definitions.first { $0.name == "Comment" })
+        try styles.edit(key: commentStyle.key, expected: snapshot.identity,
+                        mutation: .setDeclaration(.characterSize, .float(commentSize)))
         let comment = includeComments ? " // note" : ""
         let source = Data((0..<4_096).map { "fn item_\($0)() { let value = \($0); }\(comment)\n" }.joined().utf8)
         let backend = EVCoreDocumentBackend(configuration: configuration)

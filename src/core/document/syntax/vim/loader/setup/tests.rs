@@ -1,5 +1,101 @@
 use super::*;
 
+fn buffer_context(text: &str, revision: u64) -> VimSetupContext {
+    use crate::document::{
+        syntax::{SyntaxInputIdentity, SyntaxInputSnapshot},
+        FormattedTextTree,
+    };
+    VimSetupContext::from_input(&SyntaxInputSnapshot::new(
+        SyntaxInputIdentity {
+            document: 903,
+            revision,
+            generation: 1,
+        },
+        FormattedTextTree::try_from_text(text).unwrap(),
+    ))
+}
+
+#[test]
+fn setup_buffer_line_count_excludes_terminal_ending_and_tracks_real_tail() {
+    for (text, count, tail) in [
+        ("", 1, ""),
+        ("first", 1, "first"),
+        ("first\n", 1, "first"),
+        ("first\n\n", 2, ""),
+        ("first\n; comment\n", 2, "; comment"),
+    ] {
+        let context = buffer_context(text, 1);
+        let mut setup = Setup::new(&context, None);
+        assert_eq!(setup.evaluate("line('$')").unwrap(), Value::Number(count));
+        assert_eq!(
+            setup.evaluate("getline(line('$'))").unwrap(),
+            Value::Text(tail.into())
+        );
+    }
+    let before = buffer_context(&format!("{}; previous", "body\n".repeat(40)), 1);
+    let after = buffer_context(&format!("{}# current", "body\n".repeat(40)), 2);
+    let mut setup = Setup::new(&before, None);
+    setup.evaluate("getline(line('$'))").unwrap();
+    assert!(!setup.reads.matches(&before, &after));
+}
+
+#[test]
+fn setup_buffer_search_wraps_origin_and_honors_stop_lines() {
+    let context = buffer_context("marker\nnext\nmarker\n", 1);
+    for (expression, expected) in [
+        ("search('marker', 'cnW')", 1),
+        ("search('marker', 'nW')", 3),
+        ("search('marker', 'nw')", 3),
+        ("search('marker', 'nW', 2)", 0),
+        ("search('marker', 'nw', 2)", 0),
+        ("search('\\%^marker', 'nW')", 0),
+        ("search('\\%^marker', 'nw')", 1),
+    ] {
+        let mut setup = Setup::new(&context, None);
+        assert_eq!(
+            setup.evaluate(expression).unwrap(),
+            Value::Number(expected),
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn setup_absolute_start_search_does_not_scan_or_depend_on_large_suffix() {
+    let context = buffer_context(&format!("{}", "a".repeat(2 * 1024 * 1024)), 1);
+    let mut setup = Setup::new(&context, None);
+    assert_eq!(
+        setup.evaluate("search('\\%^z', 'cnW')").unwrap(),
+        Value::Number(0)
+    );
+    assert!(setup.reads.search_end.unwrap() < 8);
+    let mut changed = context.clone();
+    let input = changed.input.as_ref().unwrap();
+    changed.input = Some(crate::document::syntax::SyntaxInputSnapshot::new(
+        crate::document::syntax::SyntaxInputIdentity {
+            revision: 2,
+            ..input.identity()
+        },
+        input.text_tree().splice(1000..1001, "b").unwrap(),
+    ));
+    assert!(setup.reads.matches(&context, &changed));
+}
+
+#[test]
+fn failed_buffer_queries_retain_dependencies_for_retry() {
+    let context = buffer_context(&"a".repeat(2 * 1024 * 1024), 1);
+    let mut setup = Setup::new(&context, None);
+    assert!(setup.evaluate("search('z', 'cnW')").is_err());
+    let next = buffer_context(
+        &format!("{}z{}", "a".repeat(100), "a".repeat(2 * 1024 * 1024 - 101)),
+        2,
+    );
+    assert!(!setup.reads.matches(&context, &next));
+    let mut setup = Setup::new(&context, None);
+    assert!(setup.evaluate("getline(1)").is_err());
+    assert!(!setup.reads.matches(&context, &buffer_context("small", 2)));
+}
+
 #[test]
 fn deferred_declaration_queries_are_rejected_across_nested_calls() {
     let mut setup = Setup::new(&VimSetupContext::default(), None);
@@ -477,6 +573,7 @@ fn filename_and_prefix_queries_use_only_explicit_context() {
         &VimSetupContext {
             prefix: "# header\n# marker\nbody".into(),
             filename: Some("/project/article.tex".into()),
+            input: None,
         },
         None,
     );

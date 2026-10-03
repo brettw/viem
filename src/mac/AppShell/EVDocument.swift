@@ -210,6 +210,9 @@ public final class EVDocument: NSDocument {
         retiredRecoveryStores.removeAll()
         recoveryRequestedTarget = nil
         super.close()
+        if !EVDocumentWindowController.hasOpenViews(of: self) {
+            EVBlockingEditSessions.shared.released(self)
+        }
     }
 
     public override nonisolated func read(from url: URL, ofType typeName: String) throws {

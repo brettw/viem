@@ -138,6 +138,8 @@ pub(super) struct Setup<'a> {
     macros: BTreeMap<String, Macro>,
     global_functions: BTreeMap<String, (Rc<RefCell<ScriptScope>>, Function)>,
     prefix: String,
+    input: Option<crate::document::syntax::SyntaxInputSnapshot>,
+    pub(super) reads: super::super::VimSetupReads,
     filetype: String,
     filename: Option<String>,
     source_file: String,
@@ -159,6 +161,8 @@ impl<'a> Setup<'a> {
             macros: BTreeMap::new(),
             global_functions: BTreeMap::new(),
             prefix: context.prefix.clone(),
+            input: context.input.clone(),
+            reads: super::super::VimSetupReads::default(),
             filetype: String::new(),
             filename: context.filename.clone(),
             source_file: String::new(),
@@ -909,6 +913,13 @@ impl<'a> Setup<'a> {
             ("getline", [Value::Number(start), Value::Number(end)]) => {
                 if *start < 1 || *end < *start || *end > 32 {
                     return Err("setup getline is confined to the first 32 supplied lines".into());
+                }
+                if self.input.is_some() {
+                    let last = super::super::setup_line_count(self.input.as_ref().unwrap()) as i64;
+                    return (*start..=(*end).min(last))
+                        .map(|line| self.buffer_line(line).map(Value::Text))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map(Value::List);
                 }
                 Ok(Value::List(
                     self.prefix

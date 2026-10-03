@@ -1155,6 +1155,10 @@ fn bundled_runtime_matches_reference_colors_byte_for_byte() {
     std::fs::create_dir_all(&directory.0).unwrap();
     for (language, text) in [
         (
+            "gitcommit",
+            "Support Git commit highlighting\n\nKeep comments and the verbose patch visible.\n\nSigned-off-by: Writer <writer@example.test>\n\n# Please enter the commit message.\n# On branch topic\n# Changes to be committed:\n#\tmodified:   src/main.rs\n#\n# ------------------------ >8 ------------------------\n# Do not modify or remove the line above.\ndiff --git a/src/main.rs b/src/main.rs\nindex 1234567..abcdef0 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n",
+        ),
+        (
             "make",
             "# TODO: build\nCC := clang\nSOURCES = $(wildcard *.c)\n.PHONY: all clean\nall: app\n\t@echo \"building $(SOURCES)\"\napp: main.o\n\t$(CC) -o $@ $^\nclean:\n\trm -f app\ninclude config.mk\nifeq ($(DEBUG),1)\nCFLAGS += -g\nendif\n",
         ),
@@ -1232,5 +1236,44 @@ fn bundled_runtime_matches_reference_colors_byte_for_byte() {
             .filter_map(|((offset, byte), (actual, expected))| (actual != expected).then_some((offset, char::from(byte), actual, expected)))
             .take(16).collect::<Vec<_>>();
         assert!(mismatches.is_empty(), "bundled {language}.vim effective groups differ (byte, character, actual, expected): {mismatches:?}");
+    }
+}
+
+#[test]
+fn zero_width_region_start_allows_contained_match_to_obscure_end() {
+    for (extra, options, expected_file, expected_added) in [
+        ("syn match File /^diff.*/ contained", "", "File", "Added"),
+        ("syn match File /^diff.*/ contained", "keepend", "", ""),
+        ("", "", "", ""),
+    ] {
+        let p = program(&format!(r"
+{extra}
+syn match Added /^+.*/ contained
+syn region Diff start=/\%(^diff --\)\@=/ end=/^\%(diff --\|$\)\@=/ {options} contains=Added,File
+"));
+        let text = "diff --git a/file b/file\n+new\n\nafter\n";
+        let input = input(text, 1);
+        let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 100);
+        let groups = names(&result, text.len());
+        assert_eq!(groups[text.find("diff").unwrap()], expected_file);
+        assert_eq!(groups[text.find("+new").unwrap()], expected_added);
+        assert_eq!(groups[text.find("after").unwrap()], "");
+    }
+}
+
+#[test]
+fn transparent_region_retains_parent_color_past_parent_match_and_paint_offsets() {
+    for offset in ["", "he=e-1", "he=s+1"] {
+        let p = program(&format!(
+            "syn match Comment /#.*/{offset} contains=Detail\nsyn region Detail transparent start=/START/ end=/END/ contained\n"
+        ));
+        let text = "# START\nplain END\noutside\n";
+        let input = input(text, 1);
+        let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 31);
+        let groups = names(&result, text.len());
+        let start = text.find("plain").unwrap();
+        let end = text.find("\noutside").unwrap();
+        assert!(groups[start..end].iter().all(|name| name == "Comment"), "{offset}: {groups:?}");
+        assert_eq!(groups[text.find("outside").unwrap()], "");
     }
 }

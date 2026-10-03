@@ -47,6 +47,77 @@ fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
 }
 
 #[test]
+fn git_messages_open_as_literal_code_preserving_bytes_and_explicit_formats() {
+    let text = "Describe café\r\n\r\n# Changes to be committed:\r\n#\tmodified:   file.txt\r\n";
+    for filename in ["COMMIT_EDITMSG", "MERGE_MSG", "SQUASH_MSG", "TAG_EDITMSG", "NOTES_EDITMSG", "EDIT_DESCRIPTION"] {
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let source = encoded(text, encoding);
+            for (format, automatic, expected_format) in [
+                (Format::PlainText, true, Format::Code),
+                (Format::PlainText, false, Format::PlainText),
+                (Format::MarkdownSource, true, Format::MarkdownSource),
+            ] {
+                let document = Document::from_bytes_with_file_format(
+                    source.clone(), encoding, format, FileFormat::Dos,
+                ).unwrap();
+                let revision = document.revision();
+                let mut core = Core::<MockTextMeasurementProvider>::new(document);
+                core.initialize_code_detection(filename, automatic).unwrap();
+                assert_eq!(core.document().format(), expected_format, "{filename}");
+                assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some("gitcommit"), "{filename}");
+                assert_eq!(core.document().source_bytes(), source);
+                assert_eq!(core.document().revision(), revision);
+                assert_eq!(core.document().file_format(), FileFormat::Dos);
+                assert!(!core.document().is_dirty());
+            }
+        }
+    }
+}
+
+#[test]
+fn detected_git_commit_syntax_uses_custom_comments_after_crlf_decoding() {
+    use viem_core::document::{FormattedTextTree, syntax::{
+        Coverage, SyntaxInputIdentity, SyntaxInputSnapshot,
+        vim::{VimBudget, VimLoadLimits, VimProgram, VimSession, VimSetupContext},
+    }};
+    let source = format!("Commit summary\r\n\r\n{}; Please enter a message.\r\n", "Body line\r\n".repeat(40));
+    let document = Document::from_bytes_with_file_format(
+        source.as_bytes().to_vec(), Encoding::Utf8, Format::PlainText, FileFormat::Dos,
+    ).unwrap();
+    let mut core = Core::<MockTextMeasurementProvider>::new(document);
+    let filename = r"C:\project\.git\COMMIT_EDITMSG";
+    core.initialize_code_detection(filename, true).unwrap();
+    let language = core.code_language_detection().unwrap().language.as_deref().unwrap();
+    assert_eq!(language, "gitcommit");
+    let text = core.document().text();
+    assert_eq!(text, source.replace("\r\n", "\n"));
+    let input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity { document: 1, revision: 1, generation: 1 },
+        FormattedTextTree::try_from_text(text).unwrap(),
+    );
+    let mut context = VimSetupContext::from_input(&input);
+    context.filename = Some(filename.into());
+    let program = VimProgram::load_directory_with_context(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/vim/runtime/syntax"),
+        language, VimLoadLimits::default(), &context,
+        &std::sync::atomic::AtomicBool::new(false),
+    ).unwrap();
+    let mut session = VimSession::new(program);
+    let result = (0..256).find_map(|_| {
+        let result = session.highlight(&input, 0..text.len(), VimBudget { allow_provisional: false, ..Default::default() });
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        (!result.stats.yielded).then_some(result)
+    }).expect("commit syntax must finish within bounded slices");
+    assert_eq!(result.coverage, Coverage::Exact);
+    for (token, style) in [("Commit summary", "Keyword"), ("; Please enter", "Comment")] {
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style), "{token}: {:?}", result.runs);
+    }
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    assert!(!core.document().is_dirty());
+}
+
+#[test]
 fn html_opens_as_literal_code_preserving_encoding_endings_and_explicit_text() {
     let text = "<!doctype html>\r\n<h1 title=\"literal\">&amp; text</h1>\r\n<script>alert('x')</script>\r\n";
     for filename in ["page.html", "page.htm", "page.xhtml", "PAGE.HTML", "PAGE.HTM", "PAGE.XHTML"] {
