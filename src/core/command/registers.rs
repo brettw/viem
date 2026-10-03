@@ -681,6 +681,7 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 | Key::Right
                 | Key::WordLeft
                 | Key::WordRight
+                | Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph
                 | Key::Up
                 | Key::Down
                 | Key::Home
@@ -727,6 +728,9 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::Right) => text.push_str("<Right>"),
             InputEvent::Key(Key::WordLeft) => text.push_str("<C-Left>"),
             InputEvent::Key(Key::WordRight) => text.push_str("<C-Right>"),
+            InputEvent::Key(Key::ParagraphStart) => text.push_str("<ParagraphStart>"),
+            InputEvent::Key(Key::ParagraphEnd) => text.push_str("<ParagraphEnd>"),
+            InputEvent::Key(Key::NextParagraph) => text.push_str("<NextParagraph>"),
             InputEvent::Key(Key::Up) => text.push_str("<Up>"),
             InputEvent::Key(Key::Down) => text.push_str("<Down>"),
             InputEvent::Key(Key::Home) => text.push_str("<Home>"),

@@ -135,6 +135,40 @@ enum WordClass {
     Punctuation,
 }
 
+fn word_class(grapheme: &str, big: bool) -> WordClass {
+    if grapheme.chars().all(char::is_whitespace) {
+        WordClass::Space
+    } else if big || grapheme.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+        WordClass::Keyword
+    } else {
+        WordClass::Punctuation
+    }
+}
+
+/// Pointer word selection visits only the hit word, not the entire document
+/// or hard line. A line's trailing boundary selects its final word.
+pub(super) fn pointer_word_range(lines: &HardLineSnapshot, offset: usize) -> Option<Range<usize>> {
+    let line = lines.line_at_offset(offset).ok()?.content_range();
+    if line.is_empty() { return Some(line); }
+    let at = if offset == line.end { lines.previous_grapheme_boundary(offset)? } else { offset };
+    let class_at = |at| {
+        let range = lines.grapheme_range_at(at)?;
+        Some(word_class(&lines.slice_utf8(range).ok()?, false))
+    };
+    let class = class_at(at)?;
+    let mut start = at;
+    while start > line.start {
+        let previous = lines.previous_grapheme_boundary(start)?;
+        if class_at(previous)? != class { break; }
+        start = previous;
+    }
+    let mut end = lines.next_grapheme_boundary(at)?;
+    while end < line.end && class_at(end)? == class {
+        end = lines.next_grapheme_boundary(end)?;
+    }
+    Some(start..end)
+}
+
 #[derive(Clone, Debug)]
 struct WordRun {
     range: Range<usize>,
@@ -212,18 +246,7 @@ fn word_runs(text: &str, big: bool) -> Vec<WordRun> {
     let mut result: Vec<WordRun> = Vec::new();
     for (start, grapheme) in text.grapheme_indices(true) {
         let end = start + grapheme.len();
-        let class = if grapheme.chars().all(char::is_whitespace) {
-            WordClass::Space
-        } else if big {
-            WordClass::Keyword
-        } else {
-            let first = grapheme.chars().next().unwrap();
-            if first.is_alphanumeric() || first == '_' {
-                WordClass::Keyword
-            } else {
-                WordClass::Punctuation
-            }
-        };
+        let class = word_class(grapheme, big);
         if let Some(last) = result.last_mut().filter(|last| last.class == class) {
             last.range.end = end;
         } else {

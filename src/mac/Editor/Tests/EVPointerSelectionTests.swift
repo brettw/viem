@@ -122,6 +122,56 @@ final class EVPointerSelectionTests: XCTestCase {
       try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
   }
 
+  func testDoubleClickDragKeepsWholeWordsThroughDirectionChanges() throws {
+    let source = "first naïve e\u{301}lan final"
+    for command in ["", "i", "R"] {
+      let (backend, surface, window) = try makeSurface(source, width: 600)
+      defer { withExtendedLifetime(window) {} }
+      let session = try XCTUnwrap(surface.session)
+      if !command.isEmpty { surface.performInput { _ = try session.sendText(command) } }
+      try click(surface, at: 8, count: 2)
+      for (offset, selected) in [(UInt64(16), "naïve e\u{301}lan"), (2, "first naïve"), (10, "naïve")] {
+        let local = try point(surface, at: offset)
+        surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: local))
+        XCTAssertEqual(surface.editorView.selectedRange(), (source as NSString).range(of: selected))
+        XCTAssertFalse(surface.editorView.selectionRectsForDrawing(in: try XCTUnwrap(surface.layoutSnapshot)).isEmpty)
+      }
+      let local = try point(surface, at: 10)
+      surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: local))
+      XCTAssertEqual(surface.editorView.selectedRange(), (source as NSString).range(of: "naïve"))
+      surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+      XCTAssertEqual(try backend.formattedText(), "first X e\u{301}lan final")
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.formattedText(), source)
+    }
+  }
+
+  func testWordDragRetainsGranularityDuringAutoscrollThenNewClickResetsIt() throws {
+    let source = String(repeating: "alpha bravo charlie delta\n", count: 2_000)
+    let (_, surface, window) = try makeSurface(source, width: 400)
+    defer { withExtendedLifetime(window) {} }
+    let view = surface.editorView
+    try click(surface, at: 14, count: 2)
+    let outside = NSPoint(x: 90, y: view.bounds.maxY + 500)
+    view.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: outside))
+    for _ in 0..<5 {
+      XCTAssertTrue(view.performDragAutoscrollStep())
+      let range = view.selectedRange()
+      XCTAssertEqual(range.location, 12)
+      let end = NSMaxRange(range)
+      let text = source as NSString
+      XCTAssertFalse(CharacterSet.letters.contains(UnicodeScalar(text.character(at: end))!),
+        "The active endpoint must finish a whole word after autoscroll")
+    }
+    view.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: outside))
+    XCTAssertFalse(view.isDragAutoscrollActive)
+    surface.goToLine(1)
+    try click(surface, at: 1, count: 1)
+    view.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: point(surface, at: 3)))
+    XCTAssertEqual(view.selectedRange(), NSRange(location: 1, length: 2))
+    view.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: point(surface, at: 3)))
+  }
+
   func testTripleClickUsesSelectedVisualOrPhysicalLinePolicy() throws {
     let line = "first words continue for several wrapped rows of text"
     let source = line + "\nlast"
@@ -191,14 +241,7 @@ final class EVPointerSelectionTests: XCTestCase {
 
   @discardableResult
   private func click(_ surface: EVEditorSurfaceController, at offset: UInt64, count: Int) throws -> NSPoint {
-    surface.refreshPresentation()
-    let session = try XCTUnwrap(surface.session)
-    let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-    let geometry = try session.caretGeometry(
-      offset: offset, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
-    let rect = geometry.rect
-    let local = surface.editorView.viewPoint(
-      fromLayoutPoint: CGPoint(x: CGFloat(rect.x), y: CGFloat(rect.y + rect.height * 0.5)))
+    let local = try point(surface, at: offset)
     let point = surface.editorView.convert(local, to: nil)
     let event = try XCTUnwrap(
       NSEvent.mouseEvent(
@@ -207,6 +250,17 @@ final class EVPointerSelectionTests: XCTestCase {
         clickCount: count, pressure: 1))
     surface.editorView.mouseDown(with: event)
     return local
+  }
+
+  private func point(_ surface: EVEditorSurfaceController, at offset: UInt64) throws -> NSPoint {
+    surface.refreshPresentation()
+    let session = try XCTUnwrap(surface.session)
+    let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+    let geometry = try session.caretGeometry(
+      offset: offset, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+    let rect = geometry.rect
+    return surface.editorView.viewPoint(
+      fromLayoutPoint: CGPoint(x: CGFloat(rect.x), y: CGFloat(rect.y + rect.height * 0.5)))
   }
 
   private func pointerEvent(_ surface: EVEditorSurfaceController, type: NSEvent.EventType,

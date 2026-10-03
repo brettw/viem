@@ -3,6 +3,14 @@
 use super::{Block, Document, DocumentError};
 use std::ops::Range;
 
+impl Document {
+    /// The semantic paragraph owning a current formatted boundary. Internal
+    /// hard breaks and soft wrapping do not split this range.
+    pub fn paragraph_range_at(&self, at: usize) -> Result<Range<usize>, DocumentError> {
+        Ok(paragraph_at(self, at)?.map_or(at..at, |block| block.range))
+    }
+}
+
 pub(super) fn paragraph_at(document: &Document, at: usize) -> Result<Option<Block>, DocumentError> {
     document.text_point(at)?;
     Ok(document

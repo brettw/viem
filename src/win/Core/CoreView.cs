@@ -200,16 +200,16 @@ internal sealed unsafe partial class CoreView : IDisposable
             return viem_core_view_set_viewport_origin(Document.Handle, Id, &request, o);
         });
     }
-    public void Place(float x, float y, bool extend = false)
+    public void Place(float x, float y, bool extend = false, bool wholeWords = false)
     {
         var info = LayoutInfo(); var viewport = Viewport;
         var request = New<ViemLayoutHitTestRequestV1>(); request.identity = info.identity; request.x = x + viewport.left; request.y = y + viewport.top;
         var point = New<ViemLayoutCaretPointV1>(); Check(viem_core_view_layout_hit_test(Document.Handle, Id, &request, &point), "Place cursor");
-        Place(point.text_offset, point.affinity, point.document_revision, extend);
+        Place(point.text_offset, point.affinity, point.document_revision, extend, wholeWords);
     }
-    public void Place(ulong offset, uint affinity, ulong revision, bool extend = false) => Apply(o =>
+    public void Place(ulong offset, uint affinity, ulong revision, bool extend = false, bool wholeWords = false) => Apply(o =>
     {
-        var request = New<ViemPlaceCursorV1>(); request.text_offset = offset; request.affinity = affinity; request.document_revision = revision; request.flags = extend ? VIEM_PLACE_CURSOR_EXTEND_SELECTION : 0;
+        var request = New<ViemPlaceCursorV1>(); request.text_offset = offset; request.affinity = affinity; request.document_revision = revision; request.flags = (extend ? VIEM_PLACE_CURSOR_EXTEND_SELECTION : 0) | (wholeWords ? VIEM_PLACE_CURSOR_WORD_SELECTION : 0);
         return viem_core_view_place_cursor(Document.Handle, Id, &request, o);
     });
     public string CommandLine()

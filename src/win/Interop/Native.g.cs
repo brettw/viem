@@ -1435,6 +1435,9 @@ internal static unsafe partial class Native
     public const uint VIEM_KEY_WORD_RIGHT = 21u;
     public const uint VIEM_KEY_FUNCTION = 22u;
     public const uint VIEM_KEY_COPY_SELECTION = 23u;
+    public const uint VIEM_KEY_PARAGRAPH_START = 24u;
+    public const uint VIEM_KEY_PARAGRAPH_END = 25u;
+    public const uint VIEM_KEY_NEXT_PARAGRAPH = 26u;
     public const uint VIEM_KEY_MODIFIER_SHIFT = 1u;
     public const uint VIEM_KEY_MODIFIER_CONTROL = 2u;
     public const uint VIEM_KEY_MODIFIER_ALT = 4u;
@@ -1844,6 +1847,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE = ((uint)sizeof(ViemSemanticStylePresentationV1));
     public static readonly uint VIEM_SET_SEMANTIC_STYLE_V1_SIZE = ((uint)sizeof(ViemSetSemanticStyleV1));
     public const uint VIEM_PLACE_CURSOR_EXTEND_SELECTION = (1u << 0);
+    public const uint VIEM_PLACE_CURSOR_WORD_SELECTION = (1u << 1);
     public static readonly uint VIEM_PLACE_CURSOR_V1_SIZE = ((uint)sizeof(ViemPlaceCursorV1));
     public static readonly uint VIEM_SET_FILE_FORMAT_V1_SIZE = ((uint)sizeof(ViemSetFileFormatV1));
     public static readonly uint VIEM_SET_MARKDOWN_SOURCE_V1_SIZE = ((uint)sizeof(ViemSetMarkdownSourceV1));

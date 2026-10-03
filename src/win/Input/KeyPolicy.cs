@@ -45,7 +45,8 @@ internal static class KeyPolicy
             VirtualKey.Delete => VIEM_KEY_DELETE,
             VirtualKey.Left => control ? VIEM_KEY_WORD_LEFT : VIEM_KEY_LEFT,
             VirtualKey.Right => control ? VIEM_KEY_WORD_RIGHT : VIEM_KEY_RIGHT,
-            VirtualKey.Up => VIEM_KEY_UP, VirtualKey.Down => VIEM_KEY_DOWN,
+            VirtualKey.Up => control ? VIEM_KEY_PARAGRAPH_START : VIEM_KEY_UP,
+            VirtualKey.Down => control ? VIEM_KEY_NEXT_PARAGRAPH : VIEM_KEY_DOWN,
             VirtualKey.Home => control ? VIEM_KEY_DOCUMENT_START : VIEM_KEY_HOME,
             VirtualKey.End => control ? VIEM_KEY_DOCUMENT_END : VIEM_KEY_END,
             VirtualKey.PageUp => VIEM_KEY_PAGE_UP, VirtualKey.PageDown => VIEM_KEY_PAGE_DOWN,
@@ -53,7 +54,7 @@ internal static class KeyPolicy
         };
         bool movement = kind is VIEM_KEY_LEFT or VIEM_KEY_RIGHT or VIEM_KEY_UP or VIEM_KEY_DOWN
             or VIEM_KEY_HOME or VIEM_KEY_END or VIEM_KEY_PAGE_UP or VIEM_KEY_PAGE_DOWN
-            or VIEM_KEY_WORD_LEFT or VIEM_KEY_WORD_RIGHT or VIEM_KEY_DOCUMENT_START or VIEM_KEY_DOCUMENT_END;
+            or VIEM_KEY_WORD_LEFT or VIEM_KEY_WORD_RIGHT or VIEM_KEY_PARAGRAPH_START or VIEM_KEY_NEXT_PARAGRAPH or VIEM_KEY_DOCUMENT_START or VIEM_KEY_DOCUMENT_END;
         return new(kind, Modifiers: movement ? modifiers : 0);
     }
 }

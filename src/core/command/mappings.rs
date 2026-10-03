@@ -160,6 +160,9 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
             "pagedown" => Some(Key::PageDown),
             "c-left" => Some(Key::WordLeft),
             "c-right" => Some(Key::WordRight),
+            "paragraphstart" | "c-up" | "a-up" | "m-up" => Some(Key::ParagraphStart),
+            "paragraphend" | "a-down" | "m-down" => Some(Key::ParagraphEnd),
+            "nextparagraph" | "c-down" => Some(Key::NextParagraph),
             "c-home" => Some(Key::DocumentStart),
             "c-end" => Some(Key::DocumentEnd),
             _ => None,
@@ -181,7 +184,7 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
             tail = &tail[2..];
         }
         if modifiers != 0 {
-            let nav = match tail { "left" => Some(if modifiers & 6 != 0 { NavigationKey::WordLeft } else { NavigationKey::Left }), "right" => Some(if modifiers & 6 != 0 { NavigationKey::WordRight } else { NavigationKey::Right }), "up" => Some(NavigationKey::Up), "down" => Some(NavigationKey::Down), "home" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentStart } else { NavigationKey::Home }), "end" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentEnd } else { NavigationKey::End }), "pageup" => Some(NavigationKey::PageUp), "pagedown" => Some(NavigationKey::PageDown), _ => None };
+            let nav = match tail { "left" => Some(if modifiers & 6 != 0 { NavigationKey::WordLeft } else { NavigationKey::Left }), "right" => Some(if modifiers & 6 != 0 { NavigationKey::WordRight } else { NavigationKey::Right }), "up" => Some(if modifiers & 6 != 0 { NavigationKey::ParagraphStart } else { NavigationKey::Up }), "down" => Some(if modifiers & 4 != 0 { NavigationKey::ParagraphEnd } else if modifiers & 2 != 0 { NavigationKey::NextParagraph } else { NavigationKey::Down }), "paragraphstart" => Some(NavigationKey::ParagraphStart), "paragraphend" => Some(NavigationKey::ParagraphEnd), "nextparagraph" => Some(NavigationKey::NextParagraph), "home" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentStart } else { NavigationKey::Home }), "end" => Some(if modifiers & 2 != 0 { NavigationKey::DocumentEnd } else { NavigationKey::End }), "pageup" => Some(NavigationKey::PageUp), "pagedown" => Some(NavigationKey::PageDown), _ => None };
             if let Some(key) = nav { result.push(canonical_mapping_key(Key::ModifiedNavigation { key, modifiers })); continue; }
         }
         if let Some(number) = tail
@@ -209,7 +212,7 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
 
 fn canonical_mapping_key(key: Key) -> Key {
     match key {
-        Key::ModifiedNavigation { key: key @ (NavigationKey::WordLeft | NavigationKey::WordRight | NavigationKey::DocumentStart | NavigationKey::DocumentEnd), modifiers: 2 | 4 | 8 } => key.key(),
+        Key::ModifiedNavigation { key: key @ (NavigationKey::WordLeft | NavigationKey::WordRight | NavigationKey::ParagraphStart | NavigationKey::ParagraphEnd | NavigationKey::NextParagraph | NavigationKey::DocumentStart | NavigationKey::DocumentEnd), modifiers: 2 | 4 | 8 } => key.key(),
         Key::Ctrl('i' | 'I') => Key::Tab,
         Key::Ctrl('m' | 'M') => Key::Enter,
         Key::Ctrl('[') => Key::Escape,

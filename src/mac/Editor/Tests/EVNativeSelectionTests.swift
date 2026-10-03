@@ -74,6 +74,30 @@ final class EVNativeSelectionTests: XCTestCase {
         }
     }
 
+    func testOptionArrowsNavigateParagraphsAcrossWrappedRowsAndExtendSelection() throws {
+        let source = String(repeating: "wrapped words ", count: 30) + "\n\nsecond paragraph\nlast"
+        let (backend, surface, session, window) = try fixture(source)
+        defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 4, length: 0))
+        let firstEnd = (source as NSString).range(of: "\n").location
+        surface.editorView.keyDown(with: try arrow(125, [.option]))
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: firstEnd, length: 0))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        surface.editorView.keyDown(with: try arrow(126, [.option]))
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 0))
+        surface.editorView.keyDown(with: try arrow(125, [.option, .shift]))
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: firstEnd))
+        surface.editorView.keyDown(with: try arrow(125, [.option, .shift]))
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: firstEnd + 1))
+        surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfParagraphAndModifySelection(_:)))
+        let secondEnd = (source as NSString).range(of: "\nlast").location
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: secondEnd))
+        surface.editorView.keyDown(with: try arrow(126, [.option, .shift]))
+        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: firstEnd + 2))
+        XCTAssertEqual(try backend.formattedText(), source)
+    }
+
     func testAccessibilityRangesKeepExactEndsInSelectAndVisualModes() throws {
         for selectmode in ["mouse,key", ""] {
             let (_, surface, session, window) = try fixture("one 👩‍💻 end")

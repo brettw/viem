@@ -428,6 +428,14 @@ pub enum CoreEvent {
         affinity: BoundaryAffinity,
         extend_selection: bool,
     },
+    /// Begin or extend a pointer gesture in whole words, retaining its initial
+    /// word as the anchor when the drag changes direction.
+    SelectPointerWord {
+        document_revision: Revision,
+        text_offset: usize,
+        affinity: BoundaryAffinity,
+        extend_selection: bool,
+    },
     /// Select every logical content item in the exact document snapshot.
     /// Line policy and partial viewport layout do not limit this selection.
     SelectAll {
@@ -3984,6 +3992,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         text_offset: usize,
         affinity: BoundaryAffinity,
         extend_selection: bool,
+        word_selection: bool,
     ) -> Result<CoreOutcome, CoreError> {
         if document_revision != self.document.revision() {
             return Err(CoreError::Document(DocumentError::WrongSnapshot {
@@ -3992,6 +4001,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             }));
         }
         self.document.text_point(text_offset)?;
+
+        let word = if word_selection {
+            Some(CommandInterpreter::pointer_word_range(&self.document, text_offset)?)
+        } else { None };
 
         let mut composition_changes = Vec::new();
         if self
@@ -4008,13 +4021,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         // moving the invoking view.
         self.finalize_open_edit_group(view_id)?;
 
-        let placed = self
-            .views
-            .get_mut(&view_id)
-            .expect("view existence checked above")
-            .commands
-            .set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
-        debug_assert!(placed, "the boundary was validated before placement");
+        let commands = &mut self.views.get_mut(&view_id).expect("view existence checked above").commands;
+        if let Some(word) = word {
+            commands.select_pointer_word(&self.document, word, extend_selection);
+        } else {
+            let placed = commands.set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
+            debug_assert!(placed, "the boundary was validated before placement");
+        }
 
         // An on-screen pointer move changes selection, not text geometry. Keep
         // the exact snapshot when its caret row and viewport are already fully
@@ -5207,7 +5220,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                     text_offset,
                     affinity,
                     extend_selection,
+                    false,
                 );
+            }
+            CoreEvent::SelectPointerWord { document_revision, text_offset, affinity, extend_selection } => {
+                return self.place_cursor(view_id, document_revision, text_offset, affinity, extend_selection, true);
             }
             CoreEvent::SelectAll { document, revision } => {
                 return self.select_all(view_id, document, revision);
@@ -6386,7 +6403,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::Composition(_) => {
                 unreachable!("composition events return before ordinary dispatch")
             }
-            CoreEvent::PlaceCursor { .. } => {
+            CoreEvent::PlaceCursor { .. } | CoreEvent::SelectPointerWord { .. } => {
                 unreachable!("pointer placements return before ordinary dispatch")
             }
             CoreEvent::SelectAll { .. } => {

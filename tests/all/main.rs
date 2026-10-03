@@ -130,6 +130,7 @@ mod rich_lists;
 mod search_regex;
 mod select_all;
 mod select_mode;
+mod native_navigation;
 mod selection_delete_keys;
 mod special_registers;
 mod structural_caret_deletion_audit;

@@ -1310,9 +1310,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    func selectFromPointer(_ event: NSEvent, returningTo mode: UInt32) {
+    func selectLineFromPointer(_ event: NSEvent, returningTo mode: UInt32) {
         guard let session else { return }
-        performInput { try self.selectNativeRange(event.clickCount >= 3 ? ["V"] : ["v", "i", "w"], sender: event, session: session, returningTo: mode) }
+        performInput { try self.selectNativeRange(["V"], sender: event, session: session, returningTo: mode) }
     }
 
     private func selectNativeRange(_ characters: [Character], sender: Any?, session: EVCoreViewSession, returningTo mode: UInt32? = nil) throws {
