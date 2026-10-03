@@ -145,20 +145,21 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
         // of the preset's typography and colors or a runtime resource read.
         return Ok(include_bytes!("../../../assets/themes/Midnight.json").to_vec());
     }
-    let defaults = StyleSheet::default()
-        .default_configuration_json(&DocumentStyleAssignment::new("Paragraph".into()))
-        .map_err(|error| error.to_string())?;
-    let mut defaults: Value =
-        serde_json::from_slice(&defaults).map_err(|error| error.to_string())?;
-    // The preset itself is portable; native resolvers map this shared generic
-    // family to their system UI font. Document defaults remain platform-native.
-    if let Some(blocks) = defaults["block_styles"].as_array_mut() {
-        for block in blocks {
-            if block["id"] == "Paragraph" {
-                block["character"]["font_families"] = serde_json::json!(["system-ui"]);
+    let defaults = |format| -> Result<Value, String> {
+        let bytes = StyleSheet::for_format(format)
+            .default_configuration_json(&DocumentStyleAssignment::new("Paragraph".into()))
+            .map_err(|error| error.to_string())?;
+        let mut value: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        // Native resolvers map this portable family to their system UI font.
+        if let Some(blocks) = value["block_styles"].as_array_mut() {
+            for block in blocks {
+                if block["id"] == "Paragraph" {
+                    block["character"]["font_families"] = serde_json::json!(["system-ui"]);
+                }
             }
         }
-    }
+        Ok(value)
+    };
     // Both sheet schemas serialize the same normalized style records. A full
     // Code v3 image keeps preset files independent of future generated defaults.
     let mut code: Value = serde_json::from_slice(
@@ -173,8 +174,8 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
         version: 1,
         theme: Appearance::preset(preset == 1),
         styles: Styles {
-            text: Some(defaults.clone()),
-            markdown: Some(defaults.clone()),
+            text: Some(defaults(super::Format::PlainText)?),
+            markdown: Some(defaults(super::Format::Markdown)?),
             code: Some(code),
         },
     })
@@ -192,12 +193,10 @@ pub fn validate_json(bytes: &[u8]) -> Result<(), String> {
         return Err("Unsupported theme version".into());
     }
     file.theme.validate()?;
-    for style in [file.styles.text, file.styles.markdown]
-        .into_iter()
-        .flatten()
-    {
+    for (format, style) in [(super::Format::PlainText, file.styles.text), (super::Format::Markdown, file.styles.markdown)] {
+        let Some(style) = style else { continue; };
         let bytes = serde_json::to_vec(&style).map_err(|error| error.to_string())?;
-        let (_, diagnostics) = StyleSheet::default()
+        let (_, diagnostics) = StyleSheet::for_format(format)
             .with_default_json(&bytes)
             .map_err(|error| error.to_string())?;
         if !diagnostics.is_empty() {
@@ -240,9 +239,20 @@ mod tests {
     use super::*;
     #[test]
     fn builtins_and_packaged_presets_are_valid_and_midnight_matches_default() {
+        fn assert_plain_text_styles(bytes: &[u8]) {
+            let value: Value = serde_json::from_slice(bytes).unwrap();
+            let text = &value["styles"]["text"];
+            let blocks = text["block_styles"].as_array().unwrap();
+            let characters = text["character_styles"].as_array().unwrap();
+            assert_eq!(blocks.len(), 1);
+            assert_eq!(blocks[0]["id"], "Paragraph");
+            assert_eq!(characters.len(), 1);
+            assert_eq!(characters[0]["id"], "* Incremental match");
+        }
         for (preset, name) in [(0, "Midnight"), (1, "Paper")] {
             let bytes = default_json(preset).unwrap();
             validate_json(&bytes).unwrap();
+            assert_plain_text_styles(&bytes);
             let value: Value = serde_json::from_slice(&bytes).unwrap();
             assert!(!value["styles"]["code"]["character_styles"]
                 .as_array()
@@ -252,6 +262,7 @@ mod tests {
                 .join(format!("assets/themes/{name}.json"));
             let packaged = std::fs::read(path).unwrap();
             validate_json(&packaged).unwrap();
+            assert_plain_text_styles(&packaged);
             // Midnight defines the built-in Default. Other installed presets
             // can be customized independently of the emergency fallbacks.
             if preset == 0 {
@@ -259,10 +270,12 @@ mod tests {
                 assert_eq!(value, packaged);
             }
         }
-        for name in ["Midnight Mono", "Typewriter"] {
+        for name in ["Midnight Mono", "Midnight Proportional", "Typewriter"] {
             let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("assets/themes/{name}.json"));
-            validate_json(&std::fs::read(path).unwrap()).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            validate_json(&bytes).unwrap();
+            assert_plain_text_styles(&bytes);
         }
     }
     #[test]
@@ -312,7 +325,8 @@ mod tests {
             let sheet = if family == "code" {
                 code_style::parse_json(&bytes).unwrap()
             } else {
-                let (sheet, diagnostics) = StyleSheet::default().with_default_json(&bytes).unwrap();
+                let format = if family == "text" { super::super::Format::PlainText } else { super::super::Format::Markdown };
+                let (sheet, diagnostics) = StyleSheet::for_format(format).with_default_json(&bytes).unwrap();
                 assert!(diagnostics.is_empty(), "{diagnostics:?}");
                 sheet
             };

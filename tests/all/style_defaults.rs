@@ -4,6 +4,61 @@ fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }
 
+fn assert_plain_text_defaults(document: &Document) {
+    let sheet = document.projection().style_sheet();
+    assert_eq!(sheet.block_styles().map(|style| style.id.0.as_str()).collect::<Vec<_>>(), ["Paragraph"]);
+    assert_eq!(sheet.character_styles().map(|style| style.id.clone()).collect::<Vec<_>>(), [StyleId::incremental_match()]);
+    let saved: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+    assert_eq!(saved["block_styles"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["character_styles"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn plain_text_does_not_generate_rich_styles_on_open_load_edit_or_theme_replacement() {
+    let source = "# Literal heading\n\n- Literal list\n`literal code`";
+    let mut document = open(source, Format::PlainText);
+    assert_plain_text_defaults(&document);
+    document.initialize_style_defaults(br#"{"version":1}"#).unwrap();
+    assert_plain_text_defaults(&document);
+    let saved = document.export_style_defaults().unwrap();
+    document.insert(0, "Prefix ").unwrap();
+    assert_plain_text_defaults(&document);
+    assert!(document.undo());
+    assert_plain_text_defaults(&document);
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    document.replace_style_defaults(&saved).unwrap();
+    assert_plain_text_defaults(&document);
+    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+    assert_plain_text_defaults(&document);
+    viem_core::layout::DocumentLayoutStyles::resolve(document.projection()).unwrap();
+}
+
+#[test]
+fn plain_text_loads_and_exports_explicit_rich_definitions_without_filtering() {
+    let settings = serde_json::json!({"version":1,
+        "block_styles":[saved_block("Heading1", "Paragraph", Some("Paragraph")),
+            saved_block("Custom quote", "Quote", Some("Paragraph"))],
+        "character_styles":[saved_character("Code", None)]});
+    let mut document = open("Literal text", Format::PlainText);
+    assert!(document.initialize_style_defaults(&serde_json::to_vec(&settings).unwrap()).unwrap().is_empty());
+    document.insert(0, "More ").unwrap();
+    assert!(document.undo());
+    let saved = document.export_style_defaults().unwrap();
+    let mut reopened = open("Another document", Format::PlainText);
+    reopened.initialize_style_defaults(&saved).unwrap();
+    for doc in [&document, &reopened] {
+        let sheet = doc.projection().style_sheet();
+        assert_eq!(sheet.block_style(&"Heading1".into()).unwrap().role, BlockRole::Paragraph);
+        assert_eq!(sheet.block_style(&"Custom quote".into()).unwrap().role, BlockRole::Quote);
+        assert!(sheet.character_style(&"Code".into()).is_some());
+        assert!(sheet.block_style(&"Heading2".into()).is_none());
+    }
+    document.replace_style_defaults(&saved).unwrap();
+    assert!(document.projection().style_sheet().block_style(&"Custom quote".into()).is_some());
+    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+    assert_plain_text_defaults(&document);
+}
+
 #[test]
 fn theme_replacement_restores_markdown_defaults_and_automatic_styles() {
     let source = "# Heading\n\n[a link](https://example.com) and ~~struck text~~\n\n<!-- Comment -->\n\n[reference][unknown]\n\n```\ncode\n```";
@@ -251,7 +306,7 @@ fn saved_character_percentage_inheritance_keeps_each_valid_declaration() {
 }
 
 #[test]
-fn defaults_define_two_four_level_families_independent_of_used_depth() {
+fn markdown_defaults_define_two_four_level_families_independent_of_used_depth() {
     let expected = [
         "BulletedList1",
         "BulletedList2",
@@ -263,7 +318,6 @@ fn defaults_define_two_four_level_families_independent_of_used_depth() {
         "NumberedList4",
     ];
     for format in [
-        Format::PlainText,
         Format::Markdown,
         Format::MarkdownSource,
     ] {

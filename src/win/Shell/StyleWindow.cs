@@ -27,6 +27,10 @@ internal sealed partial class StyleWindow : Window
     private const int ClientWidth = 680;
     private readonly StackPanel root = new() { Padding = new(24, 16, 24, 14), Spacing = 6, Width = ClientWidth, VerticalAlignment = VerticalAlignment.Top };
     private readonly ComboBox stylePicker = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox documentPicker = new() { Width = 140, VerticalAlignment = VerticalAlignment.Center };
+    private readonly uint[] documentFormats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
+    private readonly Border selectorBox = new() { Padding = new(14, 12, 14, 12), BorderThickness = new(1), CornerRadius = new(6), Margin = new(0, 0, 0, 4) };
+    private readonly TextBlock styleType = new() { VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
     private readonly ComboBox parent = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox next = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Button visitParent = NavigationButton();
@@ -42,7 +46,7 @@ internal sealed partial class StyleWindow : Window
     public StyleWindow(CoreView initialView, Preferences preferences, bool followCaret = true)
     {
         documentView = initialView; this.preferences = preferences;
-        CreateThemeSession();
+        CreateThemeSession(initialView.Document.State.format);
         Title = ThemeStyleTitle;
         var scroll = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)) };
         Content = scroll;
@@ -50,10 +54,26 @@ internal sealed partial class StyleWindow : Window
         if (AppWindow.Presenter is OverlappedPresenter presenter) { presenter.IsResizable = false; presenter.IsMaximizable = false; }
         preview.ClearColor = preferences.Theme.Background;
         WindowSizing.Appearance(this, preferences.Midnight);
-        var properties = new Grid { RowSpacing = 5, ColumnSpacing = 10, Margin = new(12, 0, 12, 4) };
+        var selectors = new Grid { ColumnSpacing = 8 };
+        foreach (var width in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star) })
+            selectors.ColumnDefinitions.Add(new() { Width = width });
+        documentPicker.ItemsSource = new[] { "Plain Text", "Markdown", "Code" };
+        AutomationProperties.SetName(documentPicker, "Document");
+        AutomationProperties.SetName(stylePicker, "Style");
+        AutomationProperties.SetName(selectorBox, "Stylesheet selection");
+        var selectorControls = new FrameworkElement[] {
+            new TextBlock { Text = "Document", VerticalAlignment = VerticalAlignment.Center }, documentPicker,
+            new TextBlock { Text = "Style", VerticalAlignment = VerticalAlignment.Center, Margin = new(12, 0, 0, 0) }, stylePicker
+        };
+        for (int column = 0; column < selectorControls.Length; column++) {
+            Grid.SetColumn(selectorControls[column], column); selectors.Children.Add(selectorControls[column]);
+        }
+        selectorBox.Child = selectors; RefreshSelectorColors(); Add(selectorBox);
+        var properties = new Grid { RowSpacing = 8, ColumnSpacing = 10, Margin = new(12, 0, 12, 4) };
         properties.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); properties.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         stylePicker.VerticalAlignment = VerticalAlignment.Center;
-        Field(properties, "Style", stylePicker); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
+        Field(properties, "Style type", styleType); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
+        foreach (var row in properties.RowDefinitions) row.Height = new(28);
         Add(properties);
         Add(Separator());
         var tabs = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, Spacing = 2 };
@@ -73,6 +93,7 @@ internal sealed partial class StyleWindow : Window
         visitParent.Click += (_, _) => Navigate(new(selected.Namespace, selected.Parent));
         visitNext.Click += (_, _) => Navigate(new(1, selected.Next));
         stylePicker.SelectionChanged += (_, _) => { if (!loading && stylePicker.SelectedItem is StyleDefinition style) Navigate(style.Key); };
+        documentPicker.SelectionChanged += (_, _) => SelectDocument();
         parent.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = parent.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_PARENT : VIEM_STYLE_EDIT_SET_PARENT, 0, id); }); };
         next.SelectionChanged += (_, _) => { if (loading) return; Try(() => { string id = next.SelectedItem is StyleDefinition p ? p.Id : ""; view.EditStyleString(selected, id.Length == 0 ? VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE : VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, id); }); };
         AttachView(followCaret);
@@ -98,7 +119,7 @@ internal sealed partial class StyleWindow : Window
     {
         DismissColorPickers();
         DetachView();
-        documentView = nextView; CreateThemeSession(); AttachView(true);
+        documentView = nextView; CreateThemeSession(nextView.Document.State.format); AttachView(true);
         Load(followCaret: true);
     }
     internal void FollowActiveView(CoreView nextView)
@@ -106,6 +127,27 @@ internal sealed partial class StyleWindow : Window
         if (!closed && followsCaret && nextView.Id != 0 && documentView != nextView) Retarget(nextView);
     }
     private void Add(FrameworkElement item) => root.Children.Add(item);
+    private void RefreshSelectorColors()
+    {
+        selectorBox.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(48, 48, 48) : Theme.Rgb(255, 255, 255));
+        selectorBox.BorderBrush = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(68, 68, 68) : Theme.Rgb(210, 210, 210));
+    }
+    private void SelectDocument()
+    {
+        if (loading || closed || documentPicker.SelectedIndex < 0) return;
+        uint format = documentFormats[documentPicker.SelectedIndex];
+        DismissColorPickers();
+        try {
+            CreateThemeSession(format);
+            DetachView(); followsCaret = false;
+            error.Text = ""; error.Visibility = Visibility.Collapsed;
+            Load();
+        }
+        catch (Exception exception) {
+            error.Text = exception.Message; error.Visibility = Visibility.Visible;
+            Load(selected?.Key);
+        }
+    }
     private Border Separator() => new() { Height = 1, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(58, 58, 58) : Theme.Rgb(210, 210, 210)) };
     private static Button NavigationButton() => new() { Content = "↗", Width = 30, Padding = new(0), FontSize = 18, VerticalAlignment = VerticalAlignment.Center };
     private static Grid Relationship(ComboBox picker, Button visit)
@@ -165,22 +207,25 @@ internal sealed partial class StyleWindow : Window
             StyleLoads++;
 #endif
             Title = ThemeStyleTitle;
+            documentPicker.SelectedIndex = Array.IndexOf(documentFormats, styleDocument.State.format);
             restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();
             selected = chosen;
+            styleType.Text = selected.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? "Paragraph"
+                : selected.Namespace == 2 ? "Character" : "Container";
             if (!ReferenceEquals(catalogueSheet, sheet)) {
                 var catalogue = new List<object>();
-                foreach (var (title, entries) in new[] {
+                var sections = new[] {
                     ("Paragraph", styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)),
                     ("Container", styles.Where(s => s.Native.role >= VIEM_STYLE_ROLE_QUOTE)),
                     ("Character", styles.Where(s => s.Namespace == 2))
-                }) {
-                    var group = entries.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
-                    if (group.Length == 0) continue;
-                    catalogue.Add(new ComboBoxItem { Content = title, IsEnabled = false });
-                    catalogue.AddRange(group);
+                }.Select(section => (Title: section.Item1, Styles: section.Item2.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase).ToArray()))
+                    .Where(section => section.Styles.Length > 0).ToArray();
+                foreach (var section in sections) {
+                    if (sections.Length > 1) catalogue.Add(new ComboBoxItem { Content = section.Title, IsEnabled = false });
+                    catalogue.AddRange(section.Styles);
                 }
                 if (!SameChoices(stylePicker, catalogue)) stylePicker.ItemsSource = catalogue;
                 var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray();

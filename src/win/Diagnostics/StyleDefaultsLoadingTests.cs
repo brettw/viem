@@ -32,9 +32,9 @@ internal static class StyleDefaultsLoadingTests
         string directory = Path.Combine(ownerPreferences.DirectoryPath, "theme-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
-        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }),
-            "a fresh profile seeds all four bundled themes and selects Midnight");
-        foreach (string name in new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }) {
+        Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }),
+            "a fresh profile seeds all five bundled themes and selects Midnight");
+        foreach (string name in new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }) {
             string path = Path.Combine(preferences.ThemesDirectory, name + ".json");
             byte[] bundled = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", name + ".json"));
             Check(File.ReadAllBytes(path).SequenceEqual(bundled), $"first-run installation copies bundled {name} byte for byte");
@@ -170,7 +170,7 @@ internal static class StyleDefaultsLoadingTests
         string freshDirectory = Path.Combine(directory, "legacy-styles-only"); Directory.CreateDirectory(freshDirectory);
         foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(freshDirectory, file), "obsolete stylesheet");
         var fresh = new Preferences(freshDirectory);
-        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Paper", "Typewriter" }) && fresh.Error == null
+        Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }) && fresh.Error == null
             && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(freshDirectory, file)) == "obsolete stylesheet"),
             "obsolete top-level styles do not suppress fresh-profile presets or create an Imported theme");
 

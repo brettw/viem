@@ -11248,7 +11248,6 @@ mod tests {
         use super::*;
         use crate::document::Revision;
         for (format, source) in [
-            (Format::PlainText, "Text"),
             (Format::Markdown, "# Heading"),
             (Format::MarkdownSource, "# Heading"),
 
@@ -11285,7 +11284,13 @@ mod tests {
 
     #[test]
     fn style_sheet_export_is_exact_typed_and_two_pass_without_partial_writes() {
-        let handle = register_core(Core::new(Document::new("plain"))).unwrap();
+        // Supply a rich configuration explicitly; Plain Text generates only its base styles.
+        let mut document = Document::new("plain");
+        let sheet = crate::document::StyleSheet::default();
+        let configuration = sheet.default_configuration_json(
+            &crate::document::DocumentStyleAssignment::new(sheet.base_paragraph.clone())).unwrap();
+        document.initialize_style_defaults(&configuration).unwrap();
+        let handle = register_core(Core::new(document)).unwrap();
         let mut info = ViemStyleSheetInfoV1::default();
         assert_eq!(
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
@@ -11544,9 +11549,17 @@ mod tests {
         paragraph.block.line_spacing = Some(LineSpacing::Exact(19.0));
         paragraph.block.alignment = Some(ParagraphAlignment::Center);
         configure(&mut document, StyleDefinitionEdit::UpdateBlock(paragraph));
-        let mut code = document.projection().style_sheet().character_style(&"Code".into()).unwrap().clone();
-        code.properties.size = Some(super::FontSize::Percentage(90));
-        configure(&mut document, StyleDefinitionEdit::UpdateCharacter(code));
+        configure(&mut document, StyleDefinitionEdit::InsertCharacter {
+            style: crate::document::CharacterStyle {
+                id: "Smaller text".into(),
+                based_on: None,
+                properties: CharacterProperties {
+                    size: Some(super::FontSize::Percentage(90)),
+                    ..CharacterProperties::default()
+                },
+            },
+            metadata: crate::document::StyleDefinitionMetadata::generated("Smaller text"),
+        });
 
         let export = export_style_sheet(&document).unwrap();
         let kinds = export

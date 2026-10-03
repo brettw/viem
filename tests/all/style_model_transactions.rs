@@ -146,7 +146,7 @@ fn failed_and_stale_configuration_edits_publish_nothing() {
     assert_eq!(document.history_status(), before_history);
 
     let prepared = document
-        .prepare_style_request(update_heading_for_plain(&document, 18.0))
+        .prepare_style_request(update_base_for_plain(&document, 18.0))
         .unwrap();
     document.insert(0, "X").unwrap();
     let after_text_sheet = document.projection().style_sheet().clone();
@@ -157,17 +157,17 @@ fn failed_and_stale_configuration_edits_publish_nothing() {
     assert_eq!(document.projection().style_sheet(), &after_text_sheet);
 }
 
-fn update_heading_for_plain(document: &Document, size: f32) -> StyleModelRequest {
-    let mut heading = document
+fn update_base_for_plain(document: &Document, size: f32) -> StyleModelRequest {
+    let mut paragraph = document
         .projection()
         .style_sheet()
-        .block_style(&StyleId::from("Heading1"))
+        .block_style(&StyleId::from("Paragraph"))
         .unwrap()
         .clone();
-    heading.character.size = Some((size).into());
+    paragraph.character.size = Some((size).into());
     configure(
         document,
-        ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateBlock(heading)),
+        ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::UpdateBlock(paragraph)),
     )
 }
 
@@ -220,11 +220,10 @@ fn configured_sheet_and_document_root_survive_later_reprojection() {
 #[test]
 fn dependency_summary_names_descendants_but_not_unrelated_styles() {
     let mut document = Document::new("plain");
-    let base = StyleId::from("Code");
     for (id, parent) in [
-        ("Parent", base.clone()),
-        ("Child", StyleId::from("Parent")),
-        ("Unrelated", base.clone()),
+        ("Parent", None),
+        ("Child", Some(StyleId::from("Parent"))),
+        ("Unrelated", None),
     ] {
         document
             .apply_style_request(configure(
@@ -232,7 +231,7 @@ fn dependency_summary_names_descendants_but_not_unrelated_styles() {
                 ConfigurationStyleIntent::EditDefinition(StyleDefinitionEdit::InsertCharacter {
                     style: CharacterStyle {
                         id: StyleId::from(id),
-                        based_on: Some(parent),
+                        based_on: parent,
                         properties: CharacterProperties::default(),
                     },
                     metadata: StyleDefinitionMetadata::generated(id),

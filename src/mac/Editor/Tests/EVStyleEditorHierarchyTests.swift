@@ -100,12 +100,13 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
     }
 
     func testHeaderLabelsAlignWithNativeControlsAndNavigationButtonsStayBesidePopups() throws {
-        let (_, surface, editor) = try makeEditor()
+        let (_, surface, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 820),
-            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.contentViewController = editor
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        let window = try XCTUnwrap(coordinator.styleWindow)
+        let editor = try XCTUnwrap(window.contentViewController as? EVStyleEditorViewController)
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             window.appearance = try XCTUnwrap(NSAppearance(named: appearance))
             for (width, height) in [(CGFloat(700), CGFloat(545)), (1000, 820)] {
@@ -113,7 +114,9 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
                 editor.view.layoutSubtreeIfNeeded()
                 let allViews = descendants(of: editor.view)
                 for (title, accessibilityLabel) in [
+                    ("Document type", "Document type"),
                     ("Style", "Style"),
+                    ("Style type", "Style type"),
                     ("Based on", "Based on style"),
                     ("Next paragraph", "Following paragraph style"),
                 ] {
@@ -138,11 +141,18 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
                     XCTAssertGreaterThanOrEqual(buttonRect.minX, popupRect.maxX)
                     XCTAssertLessThanOrEqual(buttonRect.minX - popupRect.maxX, 10)
                     XCTAssertEqual(buttonRect.midY, popupRect.midY, accuracy: 1)
-                    let style = try XCTUnwrap(allViews.first { $0.accessibilityLabel() == "Style" })
-                    XCTAssertEqual(buttonRect.maxX, alignmentRect(of: style, in: editor.view).maxX, accuracy: 1,
-                                   "The popup and button should fill the header's control column")
+                    let otherButton = try self.button("Edit based on style", in: editor)
+                    XCTAssertEqual(buttonRect.maxX, alignmentRect(of: otherButton, in: editor.view).maxX, accuracy: 1,
+                                   "Relationship controls should share a right edge")
                     XCTAssertNotNil(button.image)
                 }
+                let rowCenters = try ["Style type", "Based on", "Next paragraph"].map { title in
+                    let label = try XCTUnwrap(allViews.compactMap { $0 as? NSTextField }
+                        .first { $0.stringValue == title })
+                    return alignmentRect(of: label, in: editor.view).midY
+                }
+                XCTAssertEqual(abs(rowCenters[0] - rowCenters[1]), abs(rowCenters[1] - rowCenters[2]), accuracy: 1,
+                               "The text-only Style type row must use the same spacing as the popup rows")
                 if width == 700,
                    let directory = ProcessInfo.processInfo.environment["VIEM_STYLE_EDITOR_SCREENSHOT_DIR"] {
                     window.displayIfNeeded()
@@ -161,6 +171,8 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
     private func makeEditor() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController) {
         let configuration = isolatedConfiguration()
         try EVStyleTestFixtures.configure(configuration, declarations: [
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
             (heading, .characterSize, .float(24)),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)

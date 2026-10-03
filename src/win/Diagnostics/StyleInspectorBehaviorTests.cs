@@ -63,10 +63,63 @@ internal static class StyleInspectorBehaviorTests
             return;
         }
         await CodeBlockBackground(pane, preferences);
+        DocumentPicker(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
     }
+    private static void DocumentPicker(EditorPane pane, Preferences preferences)
+    {
+        uint[] formats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
+        byte[][] original = formats.Select(preferences.ThemeStyleDefaults).ToArray();
+        byte[] source = "# Heading\n\nBody"u8.ToArray();
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN_SOURCE);
+        preferences.AttachThemeDocument(document);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences);
+        float Size() => inspector.ThemeView.Styles().Styles.Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)
+            .Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
+        try {
+            Check(inspector.DocumentPicker.Items.Cast<string>().SequenceEqual(new[] { "Plain Text", "Markdown", "Code" })
+                && inspector.DocumentPicker.SelectedIndex == 1, "Document picker groups Markdown views and uses Plain Text, Markdown, Code order");
+            var originalSizes = new float[formats.Length];
+            for (int index = 0; index < formats.Length; index++) {
+                byte[][] before = formats.Select(preferences.ThemeStyleDefaults).ToArray();
+                inspector.DocumentPicker.SelectedIndex = index;
+                if (formats[index] == VIEM_FORMAT_PLAIN_TEXT)
+                    Check(inspector.StylePicker.Items.Count == 1 && inspector.StylePicker.Items[0] is StyleDefinition { Id: "Paragraph" },
+                        "the single Plain Text paragraph section contains its style without a redundant heading");
+                Check(formats.Select((format, i) => before[i].AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(format))).All(same => same),
+                    "selecting a Document stylesheet makes no theme edit");
+                originalSizes[index] = Size();
+                Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 32 + index) && Size() == 32 + index,
+                    "Document picker targets editable theme definitions even without an open document of that format");
+                Check(formats.Select((format, i) => i == index || before[i].AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(format))).All(same => same),
+                    "style edits affect only the chosen Document family");
+                Move(view, 1); document.NotifyChanged(); inspector.FollowActiveView(view);
+                Check(inspector.DocumentPicker.SelectedIndex == index && !inspector.CaretFollowScheduled,
+                    "explicit Document selection remains independent of caret following");
+            }
+            for (int index = formats.Length - 1; index >= 0; index--) {
+                inspector.DocumentPicker.SelectedIndex = index;
+                Check(Size() == 32 + index, "returning to a Document stylesheet retains edits");
+                inspector.UndoThemeForTesting();
+                Check(Size() == originalSizes[index], "returning to a Document stylesheet retains its independent Undo");
+                inspector.RedoThemeForTesting();
+                Check(Size() == 32 + index, "Document stylesheet Redo restores the edit");
+            }
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && !document.IsDirty
+                && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                "Document stylesheet selection and editing preserve the open source and format");
+            inspector.Retarget(view);
+            Check(inspector.DocumentPicker.SelectedIndex == 1, "reopening Edit Styles resumes the active document family");
+        }
+        finally {
+            inspector.Close();
+            for (int index = 0; index < formats.Length; index++) preferences.SaveThemeStyles(formats[index], original[index]);
+        }
+    }
+
     private static unsafe void BlockPreview(EditorPane pane, Preferences preferences)
     {
         byte[] source = System.Text.Encoding.UTF8.GetBytes("> Preview source stays unchanged.");

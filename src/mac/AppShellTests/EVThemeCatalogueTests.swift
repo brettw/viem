@@ -35,7 +35,7 @@ final class EVThemeCatalogueTests: XCTestCase {
     try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
     var repo = URL(fileURLWithPath: #filePath)
     for _ in 0..<4 { repo.deleteLastPathComponent() }
-    let names = ["Midnight", "Midnight Mono", "Paper", "Typewriter"]
+    let names = ["Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter"]
     var bundled: [String: Data] = [:]
     for name in names {
       let data = try Data(contentsOf: repo.appendingPathComponent("assets/themes/\(name).json"))

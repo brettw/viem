@@ -19,19 +19,7 @@ pub fn snapshot() -> Arc<StyleSheet> {
 }
 
 pub fn default_sheet() -> StyleSheet {
-    let mut sheet = StyleSheet::default();
-    sheet
-        .block_styles
-        .retain(|id, _| *id == sheet.base_paragraph);
-    sheet
-        .block_metadata
-        .retain(|id, _| sheet.block_styles.contains_key(id));
-    sheet
-        .character_styles
-        .retain(|id, _| id.is_internal());
-    sheet
-        .character_metadata
-        .retain(|id, _| sheet.character_styles.contains_key(id));
+    let mut sheet = StyleSheet::plain_text();
     sheet
         .block_styles
         .get_mut(&sheet.base_paragraph)

@@ -187,6 +187,9 @@ candidate decoding on reopen and reject conversions that would change the
 logical sequence. This explicitly requested conversion may touch every break.
 Plain Text gives each logical break a paragraph boundary, preserves consecutive
 empty lines, and has no source-backed rich styles or hidden style sidecar.
+Its generated stylesheet contains only Base Paragraph and the internal
+Incremental match overlay. Themes may explicitly supply additional definitions;
+loading retains them rather than filtering by format.
 
 ### Position identity and incremental work
 
@@ -1353,10 +1356,15 @@ document source; Code retains global ownership. The inspector title identifies
 the active stylesheet family (Code, Markdown, or Plain Text) and theme. Use native
 role-sensitive controls and real resolved/shaped preview, without a private
 editable stylesheet.
+The Document picker selects Plain Text, Markdown, or Code theme definitions
+independently of open documents. An explicit family choice stops caret/document
+following until Edit Styles is invoked again; it never changes a document's format.
 The inspector customizes the available styles without creating, renaming, or
 deleting styles. Its title supplies family/theme context; omit routine save-status
 and availability guidance, retain actionable errors, and fit the window height
 to the remaining controls.
+Style pickers omit empty sections and omit section headings when only one
+nonempty section remains.
 [`docs/Word style.png`](<docs/Word style.png>) is a density/composition reference,
 not a template/automatic-update/Apply/OK/Cancel workflow.
 

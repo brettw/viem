@@ -116,7 +116,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   }
 
   @MainActor
-  func testLiveCoreCatalogueExposesEveryRoleAndDisablesUnsupportedPlainTextAssignment() throws {
+  func testLiveCoreCatalogueExposesOnlyBasePlainTextStylesAndDisablesAssignment() throws {
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data("plain text".utf8), typeName: "public.plain-text")
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -131,20 +131,14 @@ final class EVStyleMenuBridgeTests: XCTestCase {
     XCTAssertEqual(catalogue.entries.count, coreSnapshot.definitions.filter { !$0.flags.contains(.internalList) && !$0.flags.contains(.internalSyntax) }.count + 1)
     XCTAssertEqual(
       catalogue.entries.filter { $0.role == .character }.map(\.stableID),
-      [
-        "", "Code"
-      ])
+      [""])
     XCTAssertEqual(
       Set(catalogue.entries.filter { $0.role == .paragraph }.map(\.stableID)),
-      Set(
-        [
-          "Paragraph", "Block quote", "Code Block", "Bulleted List", "Numbered List", "List item", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6", "Table", "Table cell", "Table header",
-        ]))
+      Set(["Paragraph"]))
     XCTAssertFalse(catalogue.entries.contains { $0.displayName == "Base Document" || $0.displayName == "Base Character" })
     XCTAssertTrue(catalogue.entries.allSatisfy { !$0.presentation.isEnabled })
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "Paragraph" }?.presentation.state, .on)
     XCTAssertEqual(catalogue.entries.first { $0.stableID == "" }?.presentation.state, .on)
-    XCTAssertTrue(catalogue.entries.filter { !["Paragraph", ""].contains($0.stableID) }.allSatisfy { $0.presentation.state == .off })
     XCTAssertTrue(catalogue.canEditStyles)
   }
 

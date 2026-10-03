@@ -5225,7 +5225,7 @@ pub(super) fn project_plain(
         Vec::new(),
         provenance,
         decoding_diagnostics,
-        StyleSheet::default(),
+        StyleSheet::plain_text(),
         source_content_start,
         source_content_end,
     );
@@ -5290,7 +5290,7 @@ pub(crate) fn layout_test_plain_projection(text: String) -> FormattedDocument {
         Vec::new(),
         Vec::new(),
         Vec::new(),
-        StyleSheet::default(),
+        StyleSheet::plain_text(),
         0,
         text_len,
     )
