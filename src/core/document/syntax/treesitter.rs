@@ -1849,6 +1849,4 @@ fn coalesce(runs: Vec<RankedRun>) -> Vec<SyntaxRun> {
 }
 
 #[cfg(test)]
-mod performance;
-#[cfg(test)]
 mod tests;

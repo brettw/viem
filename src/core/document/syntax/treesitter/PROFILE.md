@@ -217,32 +217,26 @@ copy/edit/finalization operations cannot be forcibly preempted in process.
 Providers needing enforceable deadlines or comprehensive native memory limits
 require process isolation.
 
-The explicit release benchmark is:
+Native progress can grow with the number of unchanged top-level siblings despite
+constant input bytes supplied. Production repairs use bounded fallback when
+native edit preflight or repair limits are exceeded. The normal Rust suite
+checks incremental-versus-fresh highlighting, local input/query work, native
+allocation limits, and this fallback policy.
 
-    cargo test --release --offline --lib pinned_provider_performance -- --ignored --nocapture
-
-It emits target/treesitter-benchmark.json, with pinned fixture revision,
-hardware/compiler metadata, p50/p95/p99 and actual maximum slice/query timings,
-native peak bytes, deterministic input/progress/query ceilings, nine-language
-10k/100k/1m independent-function fixtures, wide-root statements, and a suspended
-100 MiB chunk-input case. It retains every gate failure before returning a
-failing test status. Native progress can grow with the number of unchanged
-top-level siblings despite constant input bytes supplied; these failures are
-reported explicitly and production repairs use the bounded fallback policy.
-Provider timing alone does not establish whole-editor input/scroll latency.
-
-The checked-in performance-baseline.json records the diagnostic run on Apple
-M1 Ultra (Mac13,2, 128 GiB RAM), macOS 26.6.2, Rust 1.98.1 in release mode.
-The diagnostic fixture explicitly disables the production warm preflight
-policy and uses a 768 MiB account allowance to expose native behavior. It
-records 11 failed exact-provider gates, including all nine million-line
+The historical [performance-baseline.json](performance-baseline.json) records a
+diagnostic run on Apple M1 Ultra (Mac13,2, 128 GiB RAM), macOS 26.6.2, Rust 1.98.1
+in release mode.
+That diagnostic disabled the production warm preflight policy and used a
+768 MiB account allowance to expose native behavior. It records 11 failed
+exact-provider gates, including all nine million-line
 function fixtures, Python's 100k-line fixture, and million-line wide C
 statements. Actual maximum native edit slices reached 146.1 ms; the 100 MiB
 cold-input case yielded in 4.02 ms after supplying 77,828 borrowed bytes in
 chunks of at most 4,096 bytes. These measurements are not a passing exact
-large-tree repair claim. The separate production-policy regression requires
-finite Vim/default fallback before these expensive edits and no repaint or
-unrelated-edit retry.
+large-tree repair claim. Its ignored test was removed because it required exact
+repairs beyond the supported production limits. The production-policy regression
+requires finite Vim/default fallback before these expensive edits and no repaint
+or unrelated-edit retry.
 
 The production policy report can be reproduced separately with:
 
@@ -251,5 +245,6 @@ The production policy report can be reproduced separately with:
 The checked-in production-policy-baseline.json records this passing policy
 regression. Its single elapsed-time sample is not a percentile benchmark; the
 assertions establish finite callbacks, explicit missing/default coverage, and
-suppression of retries after repaint and unrelated edits. The diagnostic native
-benchmark above remains a distinct failing exact-work gate.
+suppression of retries after repaint and unrelated edits. The historical native
+measurements do not establish current performance or whole-editor input/scroll
+latency.

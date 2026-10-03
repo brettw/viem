@@ -1,39 +1,4 @@
 use viem_core::{Document, Encoding, Format};
-use std::time::Instant;
-
-#[test]
-#[ignore = "manual timing of the current repository specification"]
-fn time_repository_markdown_switches() {
-    let path = std::env::var("VIEM_PROFILE_MARKDOWN_PATH").unwrap_or_else(|_| "AGENTS.md".into());
-    let source = std::fs::read(path).unwrap();
-    let start = Instant::now();
-    let mut document =
-        Document::from_bytes(source.clone(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-    eprintln!(
-        "OPEN {:?}, {} bytes, {} blocks",
-        start.elapsed(),
-        source.len(),
-        document.projection().blocks().len()
-    );
-    for format in [
-        Format::Markdown,
-        Format::MarkdownSource,
-        Format::Markdown,
-        Format::MarkdownSource,
-    ] {
-        let start = Instant::now();
-        document
-            .set_markdown_source(format == Format::MarkdownSource)
-            .unwrap();
-        eprintln!(
-            "SWITCH {format:?} {:?}, {} text bytes, {} blocks",
-            start.elapsed(),
-            document.text().len(),
-            document.projection().blocks().len()
-        );
-        assert_eq!(document.source_bytes(), source);
-    }
-}
 
 #[test]
 fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {

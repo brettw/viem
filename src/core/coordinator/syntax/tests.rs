@@ -480,7 +480,6 @@ fn platform_provider_factory_runs_on_workers_and_publishes_through_the_shared_co
 }
 
 #[test]
-#[ignore = "Full decoded 100 MiB/one-million-line Code pipeline performance gate; run release serially"]
 fn pinned_code_pipeline_performance() {
     let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
     let suspended = Suspension::all_workers();
@@ -520,6 +519,9 @@ fn pinned_code_pipeline_performance() {
         }
     }
     assert_eq!(suspended.calls.load(Ordering::SeqCst), WORKER_COUNT);
+    let Ok(path) = std::env::var("VIEM_CODE_PIPELINE_REPORT") else {
+        return;
+    };
     let command = |name: &str, args: &[&str]| {
         std::process::Command::new(name)
             .args(args)
@@ -530,9 +532,5 @@ fn pinned_code_pipeline_performance() {
             .unwrap_or_else(|| "unavailable".into())
     };
     let result = serde_json::json!({"fixture_revision":1,"hardware":command("sysctl",&["-n","hw.memsize","hw.model","machdep.cpu.brand_string"]),"compiler":command("rustc",&["--version"]),"provider_condition":"all worker callbacks controllably suspended; no foreground provider execution or waits","results":rows});
-    std::fs::write(
-        "target/code-pipeline-benchmark.json",
-        serde_json::to_vec_pretty(&result).unwrap(),
-    )
-    .unwrap();
+    std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }

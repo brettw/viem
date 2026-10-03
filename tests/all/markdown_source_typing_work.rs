@@ -1,5 +1,4 @@
 //! Typing ordinary prose in Markdown Source must stay local to the edit.
-use std::time::Instant;
 use viem_core::command::{CommandStatus, InputEvent, Key};
 use viem_core::document::{
     measure_document_work, BoundaryAffinity, Document, DocumentWorkStatistics, Encoding, Format,
@@ -323,26 +322,5 @@ fn markdown_source_enter_stays_regional_in_a_large_document() {
         let fresh = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::MarkdownSource)
             .unwrap();
         assert_eq!(projection_summary(core.document()), projection_summary(&fresh), "{line:?}");
-    }
-}
-
-#[test]
-#[ignore = "profile; run with --ignored --nocapture"]
-fn markdown_source_typing_profile() {
-    for chapters in [16, 4096] {
-        for line in LINES {
-            let (mut core, view) = fixture(chapters, line);
-            let start = Instant::now();
-            let work = type_text(&mut core, view, "x");
-            println!(
-                "chapters={chapters} line={line:?} elapsed_ms={:.2} full_projection={} regional_projection={} \
-                 projected_bytes={} decoded={}",
-                start.elapsed().as_secs_f64() * 1000.,
-                work.full_projection_candidates,
-                work.regional_projection_candidates,
-                work.projected_formatted_bytes,
-                work.source_decoded_bytes,
-            );
-        }
     }
 }
