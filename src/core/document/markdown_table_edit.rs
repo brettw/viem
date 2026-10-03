@@ -831,6 +831,7 @@ impl Document {
     pub(super) fn table_text_patches(
         &self,
         edit: &TextEdit,
+        affinity: Option<BoundaryAffinity>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
         if self.format() != Format::Markdown {
             return Ok(None);
@@ -882,9 +883,10 @@ impl Document {
         if !edit.replacement.contains(['|', '\n']) {
             return Ok(None);
         }
-        let in_code = self
-            .projection()
-            .markdown_replacement_begins_in_code(&edit.range);
+        let in_code = match affinity.filter(|_| edit.range.is_empty()) {
+            Some(affinity) => self.is_code_at(edit.range.start, affinity)?,
+            None => self.projection().markdown_replacement_begins_in_code(&edit.range),
+        };
         if in_code && edit.replacement.contains('\n') {
             return Err(unsupported(
                 "A literal code span cannot contain a table cell line break.",
@@ -896,11 +898,14 @@ impl Document {
             self.table_literal_text(&edit.replacement)
         };
         let source = if edit.range.is_empty() {
-            let at = super::super::source_edit::insertion_point(
+            let outside_code = if affinity == Some(BoundaryAffinity::Downstream) {
+                super::super::markdown_code::closing_boundary(self, edit.range.start)?.map(|closing| closing.end)
+            } else { None };
+            let at = outside_code.or_else(|| super::super::source_edit::insertion_point(
                 self.projection(),
                 edit.range.start,
-                None,
-            )
+                affinity,
+            ))
             .ok_or(DocumentError::AmbiguousProjection)?;
             at..at
         } else {

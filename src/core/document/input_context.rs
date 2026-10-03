@@ -60,8 +60,10 @@ impl Document {
             .hard_line_at_offset(at)
             .and_then(|line| projection.hard_line_range(line))
             .ok_or(DocumentError::AmbiguousProjection)?;
+        let outside_code = affinity == BoundaryAffinity::Downstream
+            && super::super::markdown_code::closing_boundary(self, at)?.is_some();
         let sample =
-            if at > line.start && (at == line.end || affinity == BoundaryAffinity::Upstream) {
+            if at > line.start && (!outside_code && at == line.end || affinity == BoundaryAffinity::Upstream) {
                 at - 1
             } else {
                 at

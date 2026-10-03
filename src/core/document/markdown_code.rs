@@ -3,6 +3,29 @@
 use super::{Document, DocumentError, Format, Revision, SemanticInlineStyle, StyleApplication};
 use std::ops::Range;
 
+/// The physical closing delimiter at an explicit downstream inline boundary.
+/// Unlike a paragraph's implicit insertion context, that side is outside the
+/// code span, including when a table cell or paragraph ends at this boundary.
+pub(super) fn closing_boundary(
+    document: &Document,
+    at: usize,
+) -> Result<Option<Range<usize>>, DocumentError> {
+    if document.format() != Format::Markdown {
+        return Ok(None);
+    }
+    if document.projection().markdown_replacement_begins_in_code(&(at..at)) {
+        return Ok(None);
+    }
+    let Some(span) = document.projection().style_spans_for_region(&(at.saturating_sub(1)..at))
+        .into_iter().find(|span| span.range.end == at && !span.range.is_empty()
+            && span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)) else {
+        return Ok(None);
+    };
+    let source = document.projection().source_range(span.range)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    Ok(delimiter_ranges(document, &source)?.map(|(_, closing)| closing))
+}
+
 pub(super) fn patches(
     document: &Document,
     range: &Range<usize>,

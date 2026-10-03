@@ -393,6 +393,7 @@ pub enum DecorationKind {
 pub enum DecorationOwner {
     Container(crate::document::ContainerIdentity),
     Paragraph(u64),
+    Table(u64),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3084,7 +3085,7 @@ fn refresh_partial_snapshot_after_height_change(
         translate_row_vertically(row, delta)?;
     }
     refreshed.row_intervals.translate(delta);
-    for cell in &mut refreshed.table_cells { cell.rect.y += delta; }
+    for cell in &mut refreshed.table_cells { cell.rect.y += delta; cell.table_row_rect.y += delta; }
     for table in &mut refreshed.tables { table.rect.y += delta; }
     let LayoutCoverage::PartialHardLines {
         vertical_range,
@@ -3125,7 +3126,10 @@ fn checked_layout_sum(left: f32, right: f32) -> Result<f32, ViewHeightIndexError
 /// refinements must therefore translate provider bounds along with the row and
 /// baseline used to draw them.
 fn translate_row_vertically(row: &mut VisualRow, delta: f32) -> Result<(), ViewHeightIndexError> {
-    if let Some(cell) = &mut row.table_cell { cell.rect.y = checked_layout_sum(cell.rect.y, delta)?; }
+    if let Some(cell) = &mut row.table_cell {
+        cell.rect.y = checked_layout_sum(cell.rect.y, delta)?;
+        cell.table_row_rect.y = checked_layout_sum(cell.table_row_rect.y, delta)?;
+    }
     row.y = checked_layout_sum(row.y, delta)?;
     row.baseline = checked_layout_sum(row.baseline, delta)?;
     for cluster in &mut row.clusters {
@@ -3917,11 +3921,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut local_context_ranges = Vec::with_capacity(line_slices.len());
         for line in line_slices {
             control.checkpoint()?;
-            line_paragraphs.push(resolve_line_paragraph(
+            line_paragraphs.push(resolve_flow_line_paragraph(
                 &line.full_range,
                 paragraph_styles,
                 &default_style,
-            ));
+                document_styles.table_context.as_ref(),
+            )?);
             local_line_ranges
                 .push((line.work_range.start - text_origin)..(line.work_range.end - text_origin));
             local_context_ranges.push(
@@ -3932,7 +3937,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         control.checkpoint()?;
         let following_paragraph = following_line_range
             .as_ref()
-            .map(|line| resolve_line_paragraph(line, paragraph_styles, &default_style));
+            .map(|line| resolve_flow_line_paragraph(line, paragraph_styles, &default_style,
+                document_styles.table_context.as_ref()))
+            .transpose()?;
 
         let render_run_policy = self.provider.render_run_policy();
         let line_inputs = line_slices
@@ -4067,11 +4074,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             control.checkpoint()?;
             let hard_line_index = line_slice.hard_line_index;
             if let Some(context) = &document_styles.table_context {
+                let paragraph = &line_paragraphs[line_offset];
+                let origin = if hard_line_index == 0 {
+                    (content_insets.top + block_box::before(&paragraph.style) * view.scale).max(0.)
+                } else { 0. };
                 if let Some((rows, height)) = self.table_line(context, &line_slice.full_range, document_id,
                     document_revision, view, hard_line_index, layout_revision, content_insets.left,
-                    if hard_line_index == 0 { content_insets.top } else { 0. }, false, &control)? {
-                    let height = height + if hard_line_index == 0 { content_insets.top } else { 0. }
-                        + if hard_line_index + 1 == document_hard_line_count { content_insets.bottom } else { 0. };
+                    origin, false, &control)? {
+                    let next = line_paragraphs.get(line_offset + 1).or(following_paragraph.as_ref());
+                    let height = table_line_flow_height(height + origin, &rows, paragraph,
+                        next, content_insets.bottom, view.scale);
                     lines.push(RegionalHardLineLayout { layout_revision, hard_line_index,
                         hard_line_range: line_slice.full_range.clone(), text_coverage: line_slice.full_range.clone(),
                         rows, height: f64::from(height), height_is_exact: true, next_checkpoint: None,
@@ -4657,11 +4669,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut line_paragraphs = Vec::with_capacity(hard_lines.len());
         for line in hard_lines {
             control.checkpoint()?;
-            line_paragraphs.push(resolve_line_paragraph(
+            line_paragraphs.push(resolve_flow_line_paragraph(
                 line,
                 &paragraph_styles,
                 &default_style,
-            ));
+                document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()),
+            )?);
         }
         let fragment_ranges: Vec<Vec<Range<usize>>> = hard_lines
             .iter()
@@ -4754,16 +4767,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
         for (hard_line_index, line_range) in hard_lines.iter().enumerate() {
             control.checkpoint()?;
-            if let Some(context) = document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()) {
-                if let Some((mut table_rows, height)) = self.table_line(context, line_range, document_id,
-                    document_revision, &whitespace_view, hard_line_index, layout_revision, content_insets.left, y, true, control)? {
-                    y += height;
-                    previous_row_start = table_rows.last().map(|row| row.y);
-                    rows.append(&mut table_rows);
-                    line_directions.push(false);
-                    continue;
-                }
-            }
             let paragraph = &line_paragraphs[hard_line_index];
             let begins_paragraph = !has_previous_paragraph
                 || paragraph.paragraph_index.is_none()
@@ -4778,7 +4781,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             previous_paragraph_index = paragraph.paragraph_index;
             previous_style = Some(&paragraph.style);
             has_previous_paragraph = true;
-
+            if let Some(context) = document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()) {
+                if let Some((mut table_rows, height)) = self.table_line(context, line_range, document_id,
+                    document_revision, &whitespace_view, hard_line_index, layout_revision, content_insets.left, y, true, control)? {
+                    y += height;
+                    previous_row_start = table_rows.last().map(|row| row.y);
+                    rows.append(&mut table_rows);
+                    line_directions.push(false);
+                    continue;
+                }
+            }
             let count = fragment_ranges[hard_line_index].len();
             let line_fragments = &shaped[fragment_cursor..fragment_cursor + count];
             fragment_cursor += count;
@@ -6031,6 +6043,98 @@ fn resolve_line_paragraph(
             base_direction: WritingDirection::Natural,
             default_shaping_style: fallback_style.clone(),
         },
+    }
+}
+
+/// Table cells own their internal boxes, while the table participates once in
+/// normal block flow. A row must not inherit a cell's paragraph margins or
+/// leave the preceding paragraph active across the table.
+fn resolve_flow_line_paragraph(
+    line: &Range<usize>,
+    paragraphs: &[ParagraphLayoutStyle],
+    fallback_style: &ResolvedTextStyle,
+    context: Option<&tables::TableLayoutContext>,
+) -> Result<LineParagraphLayout, LayoutError> {
+    let mut paragraph = resolve_line_paragraph(line, paragraphs, fallback_style);
+    let Some(context) = context else {
+        return Ok(paragraph);
+    };
+    let Some((table, row)) = context.row(line) else {
+        return Ok(paragraph);
+    };
+    let (first_cell, last_cell, row_count) = if context.source {
+        let cells = &table.source_rows[row].cells;
+        (cells.first(), cells.last(), table.source_rows.len())
+    } else {
+        let cells = &table.rows[row].cells;
+        (
+            cells.first().map(|cell| &cell.range),
+            cells.last().map(|cell| &cell.range),
+            table.rows.len(),
+        )
+    };
+    if let Some(first) = first_cell {
+        paragraph = resolve_line_paragraph(first, paragraphs, fallback_style);
+    }
+    let last = last_cell.map(|range| resolve_line_paragraph(range, paragraphs, fallback_style));
+    let table_style = context.table_style()?;
+    paragraph.paragraph_index = None;
+    paragraph.paragraph_id = None;
+    paragraph.is_first_hard_line = true;
+    paragraph.style.text_range = line.clone();
+    paragraph.style.margin_top = if row == 0 { table_style.margin_top } else { 0. };
+    paragraph.style.margin_bottom = if row + 1 == row_count {
+        table_style.margin_bottom
+    } else {
+        0.
+    };
+    paragraph.style.block_box = super::BlockBoxStyle::default();
+    paragraph.style.containers = paragraph
+        .style
+        .containers
+        .iter()
+        .map(|container| {
+            let mut container = container.clone();
+            container.starts_here &= row == 0;
+            container.ends_here = row + 1 == row_count
+                && last.as_ref().is_some_and(|last| {
+                    last.style
+                        .containers
+                        .iter()
+                        .any(|other| other.id == container.id && other.ends_here)
+                });
+            container
+        })
+        .collect();
+    Ok(paragraph)
+}
+
+/// Regional heights own the gap to their following block. Table borders and
+/// padding are already included in `height`; only external flow remains here.
+fn table_line_flow_height(
+    height: f32,
+    rows: &[VisualRow],
+    paragraph: &LineParagraphLayout,
+    next: Option<&LineParagraphLayout>,
+    bottom_inset: f32,
+    scale: f32,
+) -> f32 {
+    match next {
+        Some(next) if starts_new_paragraph(paragraph, next) => {
+            block_box::editable_flow_position(
+                rows.last().map(|row| row.y),
+                height + block_box::between(&paragraph.style, &next.style) * scale,
+                scale,
+            )
+            .0
+        }
+        Some(_) => height,
+        None => document_end_extent(
+            height,
+            rows.last(),
+            block_box::after(&paragraph.style) * scale,
+            bottom_inset,
+        ),
     }
 }
 

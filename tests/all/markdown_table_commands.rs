@@ -590,3 +590,196 @@ fn typed_digit_replaces_insert_and_replace_origin_cell_rectangles() {
         );
     }
 }
+
+#[test]
+fn code_span_boundary_affinity_matches_toolbar_and_typing_in_prose_and_cells() {
+    use viem_core::document::BoundaryAffinity;
+    for source in [
+        "prefix `c|d` tail",
+        "prefix `c|d`\n\nAfter",
+        "prefix `c|d`",
+        "| H | V |\n| - | - |\n| prefix `c\\|d` | z |\n\nAfter",
+        "| H | V |\n| - | - |\n| z | prefix `c\\|d` |",
+    ] {
+        let code = if source.starts_with('|') {
+            "`c\\|d`"
+        } else {
+            "`c|d`"
+        };
+        for at_end in [false, true] {
+            for affinity in [BoundaryAffinity::Downstream, BoundaryAffinity::Upstream] {
+                let (mut core, view) = editor(source);
+                let start = core.document().text().find("c|d").unwrap();
+                let at = start + if at_end { 3 } else { 0 };
+                core.handle(view, CoreEvent::Input(InputEvent::key('i')))
+                    .unwrap();
+                core.handle(
+                    view,
+                    CoreEvent::PlaceCursor {
+                        document_revision: core.document().revision(),
+                        text_offset: at,
+                        affinity,
+                        extend_selection: false,
+                    },
+                )
+                .unwrap();
+                let inside = at_end == (affinity == BoundaryAffinity::Upstream);
+                assert_eq!(
+                    core.selected_named_styles(view)
+                        .unwrap()
+                        .character
+                        .as_ref()
+                        .map(|id| id.0.as_str()),
+                    inside.then_some("Code"),
+                    "before input: {source:?}, end={at_end}, {affinity:?}"
+                );
+                assert_eq!(core.document().is_code_at(at, affinity).unwrap(), inside);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                for text in ["X", "Y"] {
+                    core.handle(view, CoreEvent::Input(InputEvent::text(text)))
+                        .unwrap();
+                }
+                let replacement = match (at_end, inside) {
+                    (true, false) => format!("{code}XY"),
+                    (true, true) => format!("{}XY`", &code[..code.len() - 1]),
+                    (false, false) => format!("XY{code}"),
+                    (false, true) => format!("`XY{}", &code[1..]),
+                };
+                let expected = source.replacen(code, &replacement, 1);
+                assert_eq!(
+                    core.document().source_bytes(),
+                    expected.as_bytes(),
+                    "{source:?}, end={at_end}, {affinity:?}"
+                );
+                assert_eq!(
+                    core.selected_named_styles(view)
+                        .unwrap()
+                        .character
+                        .as_ref()
+                        .map(|id| id.0.as_str()),
+                    inside.then_some("Code")
+                );
+                let reopened = Document::from_bytes(
+                    core.document().source_bytes(),
+                    Encoding::Utf8,
+                    Format::Markdown,
+                )
+                .unwrap();
+                assert_eq!(reopened.text(), core.document().text());
+                assert_eq!(
+                    reopened
+                        .is_code_at(at, BoundaryAffinity::Downstream)
+                        .unwrap(),
+                    inside
+                );
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+                    .unwrap();
+                core.handle(
+                    view,
+                    CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+                )
+                .unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle(
+                    view,
+                    CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
+                )
+                .unwrap();
+                assert_eq!(core.document().source_bytes(), expected.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn append_to_code_span_uses_upstream_typing_context_in_toolbar() {
+    use viem_core::document::BoundaryAffinity;
+    for source in [
+        "prefix `c|d`\n\nAfter",
+        "| H | V |\n| - | - |\n| prefix `c\\|d` | z |\n\nAfter",
+    ] {
+        for keys in ["a", "$a", "A"] {
+            let (mut core, view) = editor(source);
+            let end = core.document().text().find("c|d").unwrap() + 3;
+            core.handle(
+                view,
+                CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(),
+                    text_offset: end - 1,
+                    affinity: BoundaryAffinity::Downstream,
+                    extend_selection: false,
+                },
+            )
+            .unwrap();
+            for key in keys.chars() {
+                core.handle(view, CoreEvent::Input(InputEvent::key(key)))
+                    .unwrap();
+            }
+            assert_eq!(
+                core.selected_named_styles(view)
+                    .unwrap()
+                    .character
+                    .unwrap()
+                    .0,
+                "Code",
+                "{source:?}, {keys}"
+            );
+            core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+                .unwrap();
+            let expected = source.replacen("d`", "dX`", 1);
+            assert_eq!(core.document().source_bytes(), expected.as_bytes());
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+                .unwrap();
+            core.handle(
+                view,
+                CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+            )
+            .unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn downstream_code_exit_keeps_table_pipes_literal_and_following_input_outside_code() {
+    use viem_core::document::BoundaryAffinity;
+    let source = "| H | V |\n| - | - |\n| prefix `c\\|d` | z |";
+    let (mut core, view) = editor(source);
+    let end = core.document().text().find("c|d").unwrap() + 3;
+    core.handle(view, CoreEvent::Input(InputEvent::key('i')))
+        .unwrap();
+    core.handle(
+        view,
+        CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: end,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        },
+    )
+    .unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::text("|*")))
+        .unwrap();
+    let expected = source.replacen("d`", "d`\\|\\*", 1);
+    assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    assert_eq!(core.document().projection().tables()[0].columns.len(), 2);
+    assert!(!core
+        .document()
+        .is_code_at(end, BoundaryAffinity::Downstream)
+        .unwrap());
+    assert_eq!(
+        core.document().text()[end..]
+            .chars()
+            .take(2)
+            .collect::<String>(),
+        "|*"
+    );
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+        .unwrap();
+    core.handle(
+        view,
+        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
+    )
+    .unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}

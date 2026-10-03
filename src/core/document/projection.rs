@@ -5007,6 +5007,7 @@ pub(crate) fn splice_line_local_projection(
             row.range=map_range(&row.range,&text_spans);row.source_range=map_range(&row.source_range,&source_spans);row.source_body=map_range(&row.source_body,&source_spans);
             for cell in &mut row.cells {*cell=map_range(cell,&text_spans);}
             for cell in &mut row.source_cells {*cell=map_range(cell,&source_spans);}
+            for marker in &mut row.delimiter_markers {*marker=map_range(marker,&text_spans);}
             for pipe in &mut row.pipes {*pipe=map_point(*pipe,&text_spans,true);}
             replacement.push(row);
         }
@@ -5017,7 +5018,7 @@ pub(crate) fn splice_line_local_projection(
     for mut table in regional.tables.iter().cloned() {
         table.range=shift_region_range(&table.range,old_formatted.start)?;
         for row in &mut table.rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {cell.range=shift_region_range(&cell.range,old_formatted.start)?;}}
-        for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {*cell=shift_region_range(cell,old_formatted.start)?;}for pipe in &mut row.pipes {*pipe+=old_formatted.start;}}
+        for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {*cell=shift_region_range(cell,old_formatted.start)?;}for marker in &mut row.delimiter_markers {*marker=shift_region_range(marker,old_formatted.start)?;}for pipe in &mut row.pipes {*pipe+=old_formatted.start;}}
         tables.push(table);
     }
     tables.sort_by_key(|table|table.range.start);candidate.tables=tables.into();
@@ -5537,12 +5538,19 @@ fn project_markdown_lines(
                 let style = if source_row.delimiter || projected.rows.is_empty() { "Table header" } else { "Table cell" };
                 let mut cells = Vec::new();
                 let mut shown_cells = Vec::new();
+                let mut delimiter_markers = Vec::new();
                 if preserve_markers {
                     let mut previous = raw_start;
                     for cell in &source_row.cells {
                         let a = normalized_at(cell.start).min(raw_end); let b = normalized_at(cell.end).min(raw_end);
                         builder.emit_range(previous, a);
                         let start = builder.output.len(); builder.parse_inline(a,b);
+                        if source_row.delimiter {
+                            let spelling = &normalized.text[a..b];
+                            let leading = spelling.len() - spelling.trim_start_matches([' ', '\t']).len();
+                            let end = spelling.trim_end_matches([' ', '\t']).len();
+                            delimiter_markers.push(start + leading..start + end);
+                        }
                         shown_cells.push(start..builder.output.len()); previous = b;
                     }
                     builder.emit_range(previous, raw_end);
@@ -5573,7 +5581,7 @@ fn project_markdown_lines(
                         cells.push(super::MarkdownTableCell { id:0,range:shown,source_range:raw,missing:column>=source_row.cells.len() });
                     }
                 }
-                projected.source_rows.push(super::MarkdownTableSourceRow { range:row_start..row_end,source_range:source_row.range.clone(),source_body:source_row.body.clone(),cells:shown_cells,source_cells:source_row.cells.clone(),pipes:source_row.pipes.iter().map(|pipe| row_start+normalized_at(*pipe)-raw_start).collect(),delimiter:source_row.delimiter });
+                projected.source_rows.push(super::MarkdownTableSourceRow { range:row_start..row_end,source_range:source_row.range.clone(),source_body:source_row.body.clone(),cells:shown_cells,source_cells:source_row.cells.clone(),pipes:source_row.pipes.iter().map(|pipe| row_start+normalized_at(*pipe)-raw_start).collect(),delimiter_markers,delimiter:source_row.delimiter });
                 if !source_row.delimiter { projected.rows.push(super::MarkdownTableRow { id:0,range:row_start..row_end,source_range:source_row.range.clone(),cells }); }
                 if preserve_markers || !source_row.delimiter {
                     let last = source_row.range.end == table.rows.iter().rev().find(|row| preserve_markers || !row.delimiter).unwrap().range.end;

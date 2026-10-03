@@ -816,3 +816,59 @@ fn local_table_row_edit_preserves_unselected_malformed_bytes_and_diagnostics() {
         assert_eq!(document.source_bytes(), bytes);
     }
 }
+
+#[test]
+fn table_following_prose_has_independent_block_ownership_and_header_inherits_cell_box() {
+    use viem_core::document::{BlockProperties, CharacterProperties};
+    for (separator, following, style) in [
+        ("\n\n", "After", "Paragraph"),
+        ("\n", "## After", "Heading2"),
+    ] {
+        let source = format!("| H | V |\n| - | - |\n| x | y |{separator}{following}");
+        let document = doc(&source, Format::Markdown);
+        let at = document.text().find("After").unwrap();
+        let block = document
+            .projection()
+            .blocks()
+            .iter()
+            .find(|block| block.range.contains(&at))
+            .unwrap();
+        assert_eq!(block.style.0, style);
+        assert!(block.containers.is_empty());
+        assert!(document.projection().tables()[0].range.end < at);
+        let sheet = document.projection().style_sheet();
+        let header = sheet
+            .resolve_paragraph_style(
+                &"Paragraph".into(),
+                &"Table header".into(),
+                None,
+                &BlockProperties::default(),
+                &CharacterProperties::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            (
+                header.border_top_width,
+                header.border_bottom_width,
+                header.border_left_width,
+                header.border_right_width
+            ),
+            (1., 1., 1., 1.)
+        );
+        assert_eq!(
+            (
+                header.padding_top,
+                header.padding_bottom,
+                header.padding_left,
+                header.padding_right
+            ),
+            (6., 6., 10., 10.)
+        );
+    }
+    let document = doc("| H | V |\n| - | - |\n| x | y |\nAfter", Format::Markdown);
+    assert_eq!(
+        document.projection().tables()[0].rows.len(),
+        3,
+        "plain text without a blank line remains a GFM body row"
+    );
+}

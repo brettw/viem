@@ -1384,17 +1384,27 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
         if let Some(styles) = self.table_named_styles(view_id)? { return Ok(styles); }
         let selection = self.list_selection_identity(view_id)?;
+        let commands = &self.views[&view_id].commands;
+        let typing = selection.kind() == LogicalSelectionKind::None
+            && matches!(commands.mode(), Mode::Insert | Mode::Replace);
+        let affinity = if typing { commands.insertion_boundary_affinity() }
+            else { selection.active_affinity() };
         let mut selected = if self.document.format().is_code() {
             self.document.projection().selected_code_named_styles(
                 selection.range(),
-                selection.active_affinity(),
+                affinity,
             )
         } else {
             self.document.projection().selected_named_styles(
                 selection.range(),
-                selection.active_affinity(),
+                affinity,
             )
         };
+        if typing && selected.character.as_ref().is_some_and(|style| self.document.character_style_is_code(style))
+            && !self.document.is_code_at(commands.cursor(), affinity)? {
+            selected.character = None;
+            selected.character_mixed = false;
+        }
         if !self.document.format().is_code() && selection.kind() == LogicalSelectionKind::None {
             if let Some(named) = self.views[&view_id].commands.typing_named_style() {
                 selected.character = (!named.0.is_empty()).then(|| named.clone());

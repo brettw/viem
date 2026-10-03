@@ -7,6 +7,61 @@ import XCTest
 @MainActor
 final class EVBlockBackgroundDrawingTests: XCTestCase {
 
+    func testTableBorderColorsRefreshThroughThemeInspectorAndReachNativePixels() throws {
+        let source = "| Header | Other |\n| --- | --- |\n| body | value |"
+        let surface = try makeSurface(source)
+        let styles = try EVThemeStyleSession(configuration: surface.backend.configuration, format: .markdown)
+        let editor = EVStyleEditorViewController()
+        editor.retarget(settingsSession: styles)
+        let keys = ["Table", "Table header", "Table cell"].map {
+            EVStyleKey(namespace: .block, id: EVStyleID(rawValue: $0))
+        }
+        let widths: [EVStyleProperty] = [.blockBorderTopWidth, .blockBorderRightWidth,
+            .blockBorderBottomWidth, .blockBorderLeftWidth]
+        let colors: [EVStyleProperty] = [.blockBorderTopColor, .blockBorderRightColor,
+            .blockBorderBottomColor, .blockBorderLeftColor]
+        for key in keys {
+            editor.selectStyle(key)
+            XCTAssertTrue(editor.setPropertyForTesting(.characterForeground,
+                value: .color(EVStyleColor(red: 0, green: 1, blue: 0, alpha: 1))))
+            for property in widths { XCTAssertTrue(editor.setPropertyForTesting(property, value: .float(4))) }
+        }
+        surface.refreshPresentation()
+        var previous = try XCTUnwrap(surface.layoutSnapshot).info.identity
+        _ = try bitmap(surface.editorView) // Warm both the layout export and native paint path.
+
+        for color in [EVStyleColor(red: 1, green: 0, blue: 0, alpha: 1),
+                      EVStyleColor(red: 0, green: 0, blue: 1, alpha: 1)] {
+            for key in keys {
+                editor.selectStyle(key)
+                for property in colors {
+                    XCTAssertTrue(editor.setPropertyForTesting(property, value: .color(color)))
+                }
+            }
+            surface.refreshPresentation()
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            XCTAssertFalse(previous.isSameLayout(as: snapshot.info.identity),
+                "A paint-only theme change must retire native layout/decoration caches")
+            previous = snapshot.info.identity
+            let borders = snapshot.decorations.filter { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BORDER) != 0 }
+            XCTAssertFalse(borders.isEmpty)
+            let image = try bitmap(surface.editorView)
+            let expected = try composite([NSColor(srgbRed: CGFloat(color.red), green: CGFloat(color.green),
+                blue: CGFloat(color.blue), alpha: 1)])
+            for border in borders {
+                XCTAssertEqual(border.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND), 0,
+                    "An explicit border color must not resolve to the theme text color")
+                XCTAssertEqual(border.paint.foreground.red, color.red, accuracy: 0.001)
+                XCTAssertEqual(border.paint.foreground.green, color.green, accuracy: 0.001)
+                XCTAssertEqual(border.paint.foreground.blue, color.blue, accuracy: 0.001)
+                let visible = surface.editorView.viewRect(border.typographic_bounds).intersection(surface.editorView.bounds)
+                guard visible.width >= 1, visible.height >= 1 else { continue }
+                assertPixel(image, at: CGPoint(x: visible.midX, y: visible.midY), equals: expected)
+            }
+        }
+        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
     func testNestedQuoteBackgroundsCompositeOnceOverTheirParents() throws {
         let prior = EVThemeStore.shared.theme
         EVThemeStore.shared.update(.paper)

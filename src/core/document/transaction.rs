@@ -2290,7 +2290,15 @@ impl Document {
     ) -> Result<String, DocumentError> {
         let mut escaped = escape_markdown_insert_in_encoding(text, self.encoding());
         if self.format()==Format::Markdown {
-            if let Some(cell)=self.projection().tables().iter().flat_map(|table|table.rows.iter()).flat_map(|row|row.cells.iter()).find(|cell|cell.source_range.start<=source_at && source_at<=cell.source_range.end) {
+            let tables = self.projection().tables();
+            let cell = tables.partition_point(|table| table.source_range.start <= source_at)
+                .checked_sub(1).and_then(|index| tables.get(index))
+                .filter(|table| source_at <= table.source_range.end)
+                .and_then(|table| table.rows.partition_point(|row| row.source_range.start <= source_at)
+                    .checked_sub(1).and_then(|index| table.rows.get(index)))
+                .and_then(|row| row.cells.get(row.cells.partition_point(|cell| cell.source_range.end < source_at)))
+                .filter(|cell| cell.source_range.start <= source_at && source_at <= cell.source_range.end);
+            if let Some(cell)=cell {
                 escaped=escaped.replace('|',"\\|").replace('\n',"<br>");
                 if source_at==cell.source_range.start || source_at==cell.source_range.end {
                     let leading=escaped.len()-escaped.trim_start_matches([' ','\t']).len();

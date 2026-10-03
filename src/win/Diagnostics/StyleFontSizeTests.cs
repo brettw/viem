@@ -42,12 +42,36 @@ internal static class StyleFontSizeTests
             $"{id} retains {percent}% while resolving to {points} points");
     }
 
+    private static async Task MeasurementClicks(StyleWindow inspector)
+    {
+        var tabs = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl)
+            .Where(button => button.Content is "Character" or "Block").ToArray();
+        foreach (string tab in new[] { "Character", "Block" }) {
+            var button = tabs.Single(button => button.Content as string == tab);
+            button.Focus(FocusState.Programmatic);
+            await InputRoutingTests.Key(VirtualKey.Space);
+            var number = tab == "Character" ? inspector.FontSizeControl
+                : Children<NumberBox>(inspector.RootControl).Single(number => AutomationProperties.GetName(number) == "Left padding");
+            var input = Children<TextBox>(number).Single(input => input.Name == "InputBox");
+            Check(input.Text.Length > 0, tab + " measurement exposes its resolved numeric value");
+            await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
+            Check(input.SelectionStart == 0 && input.SelectionLength == input.Text.Length,
+                tab + " measurement first pointer click selects the whole value");
+            await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
+            await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
+            Check(input.SelectionLength == 0, tab + " measurement second pointer click places a caret");
+        }
+        tabs.Single(button => button.Content as string == "Character").IsChecked = true;
+    }
+
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         using var document = new CoreDocument("# Title\n\nBody"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         SetPoints(view, 1, "Paragraph", 20);
         SetPoints(view, 1, "Heading1", 24);
+        view.EditStyle(Style(view, 1, "Paragraph"), VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(18.5f));
         byte[] originalTheme = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         byte[] originalSource = document.Source(document.State.document_revision);
@@ -55,6 +79,7 @@ internal static class StyleFontSizeTests
         inspector.Activate(); await Task.Delay(150);
         try
         {
+            await MeasurementClicks(inspector);
             Check(((string[])inspector.FontSizeUnitControl.ItemsSource).SequenceEqual(new[] { "pt" })
                 && !inspector.FontSizeUnitControl.IsEnabled,
                 "Base Paragraph font size only offers points");

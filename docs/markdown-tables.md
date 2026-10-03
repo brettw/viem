@@ -165,11 +165,19 @@ outside these minima. Actual larger text and ink must fit without clipping.
 Explicit breaks increase height; ordinary text expands width. Align content at
 the top of a row and apply each column's left/center/right alignment to its text.
 
-Paint adjoining borders once. For conflicting cell edges, use the greater stroke
-width; ties prefer the header edge, then the upper/left cell. An explicitly set
-Table perimeter replaces the corresponding outer cell edge. Backgrounds follow
+Paint adjoining cell borders once. For conflicting cell edges, use the greater
+stroke width; ties prefer the header edge, then the upper/left cell. Reserve the
+resolved edge thickness before positioning each cell's text, including inherited
+header borders. The Table container surrounds the complete cell grid with its own
+padding and perimeter; its border does not replace a cell edge. Backgrounds follow
 the existing container-before-content compositing rules. Borders and padding do
 not create logical text or caret stops.
+
+The table participates in normal block flow as one container. Its external
+margins adjoin the surrounding blocks; cell paragraph margins do not become row
+gaps. A following paragraph or heading measures its margin, border, and padding
+from the table container's bottom, including when its syntax ends the table
+without a blank source line.
 
 An overwide table remains content-sized and horizontally scrollable. Whole-table
 centering must not place its leading edge beyond the reachable scroll range;
@@ -187,6 +195,10 @@ remain literal; Source displays the tag instead of breaking the visual row.
 
 In WYSIWYG Insert/Replace within a cell:
 
+- Inline code uses the same affinity policy as ordinary prose: an explicit
+  downstream caret at its closing boundary types outside Code, including at a
+  cell end. Upstream typing and Vim `a`/`A` continue Code; the toolbar reflects
+  the context the next input will use.
 - Enter and Shift-Enter insert a semantic hard break, serialized as `<br>`.
   They do not create a source row or a block paragraph. This is the Markdown
   adaptation of Word's in-cell paragraph/break behavior.
@@ -434,7 +446,15 @@ alignment adds geometry around it rather than consuming it.
 
 Use Table header styling for the header's structural pipes and the delimiter
 row's pipes, hyphens, and colons. Use Table cell styling for body-row structural
-pipes. Header/body source contents retain the corresponding cell typography and
+pipes. Explicit cell border colors also paint these source characters: outer
+pipes use their left/right edge, shared pipes use the thicker adjacent edge
+(the preceding cell wins ties), and delimiter hyphens/colons use the shared
+header-bottom/body-top edge (the header wins ties). A header-only table uses its
+header-bottom color. An unspecified winning edge color retains the character's
+normal text color. These paint-only changes preserve source and text metrics.
+WYSIWYG borders likewise use the resolved edge color, falling back to that
+edge's cell/container text color, including the active theme's default color.
+Header/body source contents retain the corresponding cell typography and
 normal Source inline-markup treatment. An escaped pipe is content, not a
 structural separator. Missing outer pipes or omitted body cells do not authorize
 drawing invented source characters. Excess body cells remain visible, selectable
