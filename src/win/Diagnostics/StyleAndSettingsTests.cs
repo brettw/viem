@@ -163,6 +163,13 @@ internal static class StyleAndSettingsTests
 
     private static async Task LineSpacingChecks(EditorPane pane, StyleWindow styles, byte[] sourceBeforeInspector)
     {
+        // The line-spacing interaction starts from a declared Normal value;
+        // bundled themes are free to choose a different multiplier.
+        styles.ThemeView.EditStyle((StyleDefinition)styles.StylePicker.SelectedItem, VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING,
+            CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, VIEM_STYLE_LINE_SPACING_NORMAL));
+        styles.CommitThemeForTesting();
+        await Task.Delay(100);
         var lineSpacing = Children<ComboBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing");
         var lineSpacingAmount = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing amount");
         var lineSpacingUnits = Children<TextBlock>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing units");
@@ -257,7 +264,8 @@ internal static class StyleAndSettingsTests
             Check(preferences.StatusFontFamily == "Consolas" && preferences.StatusFontSize == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
             settings.ThemePicker.SelectedItem = "Default"; await Task.Delay(100);
-            Check(preferences.Theme == Theme.Midnight && preferences.StatusFontSize == 11 && settings.StatusFont.Text == "System", "Default selection restores built-in colors and status typography");
+            Check(StyleDefaultsLoadingTests.MatchesBuiltInTheme(preferences)
+                && settings.StatusSize.Value == preferences.StatusFontSize, "Default selection restores built-in colors and status typography");
             for (int index = 0; index < 3; index++) {
                 settings.Categories.SelectedIndex = index; await Task.Delay(100);
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");

@@ -266,9 +266,48 @@ mod tests {
         }
     }
     #[test]
-    fn midnight_default_resolves_its_distinct_family_typography_and_table_palette() {
-        let value: Value = serde_json::from_slice(&default_json(0).unwrap()).unwrap();
-        for (family, weight) in [("text", 300), ("markdown", 350), ("code", 350)] {
+    fn aggregate_theme_fixture_resolves_family_typography_and_inherited_table_edges() {
+        let mut value: Value = serde_json::from_slice(&default_json(0).unwrap()).unwrap();
+        for (family, size, weight) in [
+            ("text", 13.0, 300_u16),
+            ("markdown", 17.0, 450),
+            ("code", 19.0, 600),
+        ] {
+            // Presets are editable examples. Supply every numeric declaration
+            // this resolution test relies on instead of freezing their values.
+            let blocks = value["styles"][family]["block_styles"]
+                .as_array_mut()
+                .unwrap();
+            let paragraph = blocks
+                .iter_mut()
+                .find(|block| block["id"] == "Paragraph")
+                .unwrap();
+            paragraph["character"] = serde_json::json!({
+                "font_families": ["Fixture font"], "size": size,
+                "weight": weight, "font_axes": {"wght": weight}
+            });
+            paragraph["block"] = serde_json::json!({
+                "line_spacing": {"Multiplier": 1.25}, "margin_top": 11.0, "margin_bottom": 7.0
+            });
+            if family == "markdown" {
+                let cell = blocks
+                    .iter_mut()
+                    .find(|block| block["id"] == "Table cell")
+                    .unwrap();
+                cell["based_on"] = "Paragraph".into();
+                cell["block"] = serde_json::json!({
+                    "padding_top": 6.0, "padding_right": 6.0,
+                    "padding_bottom": 6.0, "padding_left": 6.0,
+                    "border_top_width": 2.0, "border_bottom_width": 1.0,
+                    "border_top_color": {"red": 0.25, "green": 0.5, "blue": 0.75, "alpha": 1.0}
+                });
+                let header = blocks
+                    .iter_mut()
+                    .find(|block| block["id"] == "Table header")
+                    .unwrap();
+                header["based_on"] = "Table cell".into();
+                header["block"] = serde_json::json!({"border_bottom_width": 4.0});
+            }
             let bytes = serde_json::to_vec(&value["styles"][family]).unwrap();
             let sheet = if family == "code" {
                 code_style::parse_json(&bytes).unwrap()
@@ -278,19 +317,16 @@ mod tests {
                 sheet
             };
             let paragraph = sheet.default_paragraph_style().unwrap();
-            assert_eq!(
-                paragraph.character.font_families,
-                ["RecursiveMonoCsl-Light"]
-            );
-            assert_eq!(paragraph.character.size, 16.0);
+            assert_eq!(paragraph.character.font_families, ["Fixture font"]);
+            assert_eq!(paragraph.character.size, size as f32);
             assert_eq!(paragraph.character.weight, weight);
             assert_eq!(paragraph.character.font_axes["wght"], f32::from(weight));
             assert_eq!(
                 paragraph.line_spacing,
-                super::super::LineSpacing::Multiplier(1.1)
+                super::super::LineSpacing::Multiplier(1.25)
             );
+            assert_eq!((paragraph.margin_top, paragraph.margin_bottom), (11.0, 7.0));
             if family == "markdown" {
-                assert_eq!((paragraph.margin_top, paragraph.margin_bottom), (15.0, 2.0));
                 let header = sheet
                     .resolve_paragraph_style(
                         &"Paragraph".into(),
@@ -307,23 +343,24 @@ mod tests {
                         header.padding_bottom,
                         header.padding_left
                     ),
-                    (8.0, 8.0, 8.0, 8.0)
+                    (6.0, 6.0, 6.0, 6.0)
                 );
                 assert_eq!(
                     (header.border_top_width, header.border_bottom_width),
-                    (1.0, 3.0)
+                    (2.0, 4.0)
                 );
                 assert_eq!(
                     header.border_top_color,
                     Some(super::super::Color {
-                        red: 0.54029304,
-                        green: 0.540293,
-                        blue: 0.540293,
+                        red: 0.25,
+                        green: 0.5,
+                        blue: 0.75,
                         alpha: 1.0
                     })
                 );
             }
         }
+        validate_json(&serde_json::to_vec(&value).unwrap()).unwrap();
     }
     #[test]
     fn themes_require_the_current_code_stylesheet_version() {

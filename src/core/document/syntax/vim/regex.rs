@@ -40,7 +40,7 @@ impl Default for VimRegexLimits {
 pub struct VimPattern {
     keyword: VimKeyword,
     ignore_case: bool,
-    start_anchor: Option<regex_syntax::hir::Look>,
+    pub(super) start_anchor: Option<regex_syntax::hir::Look>,
     nfa: Option<Arc<NFA>>,
     advanced: Option<Arc<vm::Program>>,
     pub(super) external_groups: Vec<usize>,

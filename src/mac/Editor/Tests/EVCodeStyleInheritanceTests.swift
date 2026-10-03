@@ -48,6 +48,10 @@ final class EVCodeStyleInheritanceTests: XCTestCase {
 
     func testCommentParentEditsReachRustCapturesAndChildOverridesSurviveHistoryAndReload() async throws {
         let configuration = configuration()
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (EVStyleTestFixtures.character("syntax:Keyword"), .characterSize, .float(14)),
+        ])
         let source = Data("// Ordinary comment\n/// Documentation comment\nfn main() {}\n".utf8)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: source, typeName: EVDocument.plainTextType,

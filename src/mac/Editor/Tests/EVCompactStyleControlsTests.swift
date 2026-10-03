@@ -188,9 +188,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
         editor.selectStyle(heading)
         XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
         XCTAssertTrue(editor.useInheritedForTesting(.characterFontFamilies))
-        guard case let .float(inheritedSize)? = editor.inspection.preview.effectiveValues[.characterSize] else {
-            return XCTFail("Expected an inherited point size")
-        }
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         let family = try control(NSComboBox.self, label: "Font family", in: editor.view)
         let face = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
@@ -207,8 +204,8 @@ final class EVCompactStyleControlsTests: XCTestCase {
         override.performClick(nil)
         XCTAssertEqual(override.state, .on)
         XCTAssertTrue(size.isEnabled)
-        XCTAssertEqual(size.floatValue, inheritedSize)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(inheritedSize))
+        XCTAssertEqual(size.floatValue, 14)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: heading)?.properties[.characterSize]?.declared, .float(14))
         override.performClick(nil)
         XCTAssertEqual(override.state, .off)
         XCTAssertEqual(size.stringValue, "")
@@ -318,9 +315,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertTrue(editor.useInheritedForTesting(.characterSize))
         let before = try backend.styleSheetSnapshot()
-        guard case let .float(inheritedSize)? = editor.inspection.preview.effectiveValues[.characterSize] else {
-            return XCTFail("Expected an inherited point size")
-        }
         let size = try control(NSTextField.self, label: "Size", in: editor.view)
         XCTAssertFalse(size.isEnabled)
         XCTAssertEqual(size.stringValue, "")
@@ -335,7 +329,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertTrue(size.isEnabled)
         let fieldEditor = try XCTUnwrap(size.currentEditor() as? NSTextView,
             "The first click must enter the native text field")
-        XCTAssertEqual(size.floatValue, inheritedSize)
+        XCTAssertEqual(size.floatValue, 14)
         XCTAssertEqual(fieldEditor.selectedRange(), NSRange(location: 0, length: fieldEditor.string.utf16.count))
         XCTAssertTrue(editor.hasActiveStyleEditGroupForTesting)
         for text in ["18", "19"] {
@@ -463,10 +457,6 @@ final class EVCompactStyleControlsTests: XCTestCase {
     }
 
     private func makeEditor(theme: EVTheme = .paper) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController, EVThemeStore) {
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
         let suite = "viem-style-theme-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
@@ -475,6 +465,25 @@ final class EVCompactStyleControlsTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         let themeStore = EVThemeStore(configuration: configuration)
         themeStore.update(theme)
+        let heading = EVStyleTestFixtures.block("Heading1")
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string(EVFontVariations.encode([:]))),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .paragraphFirstLineIndent, .float(0)),
+            (.baseParagraph, .paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START))),
+            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_MULTIPLIER), value: 1.1))),
+            (heading, .characterSize, .float(24)),
+            (heading, .paragraphFirstLineIndent, nil),
+            (heading, .characterBold, nil),
+            (heading, .characterUnderline, nil),
+            (EVStyleTestFixtures.character("Code"), .characterSize, nil),
+        ])
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()
         editor.themeStore = themeStore
         editor.retarget(document: surface, styleKey: .baseParagraph)
@@ -814,20 +823,17 @@ final class EVCompactStyleControlsTests: XCTestCase {
             XCTAssertEqual(stepper.isEnabled, field.isEnabled)
             if field.isEnabled { XCTAssertEqual(stepper.doubleValue, field.doubleValue, accuracy: 0.0001) }
         }
-        guard case let .float(initialSize)? = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared else {
-            return XCTFail("Base Paragraph must declare an absolute point size")
-        }
         let size = try control(EVStyleStepper.self, label: "Adjust size", in: editor.view)
-        XCTAssertEqual(size.doubleValue, Double(initialSize), accuracy: 0.0001)
-        let expectedSize = initialSize + Float(size.increment)
+        XCTAssertEqual(size.doubleValue, 14, accuracy: 0.0001)
+        XCTAssertEqual(size.increment, 1)
         size.doubleValue += size.increment
         XCTAssertTrue(size.sendAction(try XCTUnwrap(size.action), to: size.target))
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(expectedSize))
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
         let baseOverride = try control(NSButton.self, label: "Override font size", in: editor.view)
         XCTAssertFalse(baseOverride.isEnabled)
         baseOverride.performClick(nil)
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(expectedSize))
-        XCTAssertEqual(size.doubleValue, Double(expectedSize), accuracy: 0.0001)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
+        XCTAssertEqual(size.doubleValue, 15, accuracy: 0.0001)
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
         XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
     }

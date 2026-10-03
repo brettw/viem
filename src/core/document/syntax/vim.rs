@@ -1,4 +1,4 @@
-//! Native Vim syntax profile v3: strict declaration loading and resumable,
+//! Native Vim syntax profile v4: strict declaration loading and resumable,
 //! fuel-metered regular matching. See `vim/PROFILE.md` for compatibility limits.
 mod checkpoints;
 mod loader;
@@ -11,18 +11,31 @@ pub use regex::{
 };
 use std::{collections::BTreeMap, ops::Range, path::Path, sync::Arc};
 
-pub const NATIVE_PROFILE_VERSION: u32 = 3;
+pub const NATIVE_PROFILE_VERSION: u32 = 4;
 
 /// Bounded, immutable input available while compiling a syntax program. This
 /// supplies runtime dialect detection without exposing editor commands or
 /// rescanning the document during highlighting.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct VimSetupContext {
     pub prefix: String,
     /// Caller-supplied document name; setup never reads the filesystem to find it.
     pub filename: Option<String>,
+    /// Immutable worker input for bounded setup queries outside the prefix.
+    pub input: Option<SyntaxInputSnapshot>,
 }
+impl PartialEq for VimSetupContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_configuration(other)
+            && self.input.as_ref().map(SyntaxInputSnapshot::identity)
+                == other.input.as_ref().map(SyntaxInputSnapshot::identity)
+    }
+}
+impl Eq for VimSetupContext {}
 impl VimSetupContext {
+    fn same_configuration(&self, other: &Self) -> bool {
+        self.prefix == other.prefix && self.filename == other.filename
+    }
     pub fn from_input(input: &SyntaxInputSnapshot) -> Self {
         let text = input.text_tree();
         let mut end = 0;
@@ -38,8 +51,66 @@ impl VimSetupContext {
         Self {
             prefix: input.slice(0..end).unwrap_or_default(),
             filename: None,
+            input: Some(input.clone()),
         }
     }
+}
+
+/// Results consumed by setup, rather than all buffer bytes. A search depends
+/// conservatively on every byte inspected before its first match; later text
+/// can change without recompiling a syntax program.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct VimSetupReads {
+    line_count: Option<usize>,
+    lines: BTreeMap<usize, Result<String, String>>,
+    search_end: Option<usize>,
+    search_results: Vec<usize>,
+    exhausted_reads: bool,
+}
+impl VimSetupReads {
+    pub(crate) fn matches(&self, previous: &VimSetupContext, next: &VimSetupContext) -> bool {
+        if !previous.same_configuration(next) {
+            return false;
+        }
+        let (Some(previous), Some(next)) = (&previous.input, &next.input) else {
+            return previous.input.is_none() && next.input.is_none();
+        };
+        if self.exhausted_reads && previous.identity() != next.identity() {
+            return false;
+        }
+        if self.line_count.is_some_and(|count| count != setup_line_count(next)) {
+            return false;
+        }
+        if let Some(end) = self.search_end {
+            if previous.text_tree().changed_extent(next.text_tree())
+                .is_some_and(|(changed, _)| changed.start <= end) {
+                return false;
+            }
+        }
+        self.lines.iter().all(|(&line, expected)| {
+            setup_line(next, line) == *expected
+        })
+    }
+    pub(crate) fn retained_bytes(&self) -> usize {
+        self.lines.values().map(|line| line.as_ref().unwrap_or_else(|error| error).capacity() + 64).sum::<usize>()
+            + self.search_results.capacity() * std::mem::size_of::<usize>()
+    }
+}
+
+fn setup_line_count(input: &SyntaxInputSnapshot) -> usize {
+    let count = input.text_tree().hard_line_count();
+    count - usize::from(count > 1 && input.chunk_at(input.byte_len() - 1).first() == Some(&b'\n'))
+}
+fn setup_line(input: &SyntaxInputSnapshot, line: usize) -> Result<String, String> {
+    if line == 0 || line > setup_line_count(input) {
+        return Ok(String::new());
+    }
+    let start = input.text_tree().hard_line_start(line - 1).map_err(|e| e.to_string())?;
+    let end = input.text_tree().hard_line_end(line - 1).map_err(|e| e.to_string())?;
+    if end - start > 64 * 1024 {
+        return Err("syntax setup line byte budget exceeded".into());
+    }
+    input.slice(start..end).map_err(|e| e.to_string())
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VimDiagnostic {
@@ -140,6 +211,17 @@ impl VimProgram {
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<Arc<Self>, Vec<VimDiagnostic>> {
         loader::directory_with_context(root.as_ref(), language, limits, context, Some(cancelled))
+    }
+    pub(crate) fn load_directory_with_reads(
+        root: impl AsRef<Path>,
+        language: &str,
+        limits: VimLoadLimits,
+        context: &VimSetupContext,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> (Result<Arc<Self>, Vec<VimDiagnostic>>, VimSetupReads) {
+        let mut reads = VimSetupReads::default();
+        let result = loader::directory_with_reads(root.as_ref(), language, limits, context, Some(cancelled), &mut reads);
+        (result, reads)
     }
     pub fn rule_count(&self) -> usize {
         self.rules.len()
@@ -1171,6 +1253,7 @@ impl VimSession {
     }
     fn probes(&self, j: &Job, _budget: VimBudget) -> Result<Probes, String> {
         let mut items = Vec::new();
+        let mut initial_ends = Vec::new();
         for (index, f) in j.frames.iter().enumerate().rev() {
             let o = &self.program.rules[f.rule].options;
             if index + 1 != j.frames.len()
@@ -1189,7 +1272,20 @@ impl VimSession {
                     items.push(Probe::template(ProbeKind::Skip { frame: index }, p));
                 }
                 for p in region.ends.iter().rev() {
-                    items.push(Probe::template(ProbeKind::End { frame: index }, p));
+                    let probe = Probe::template(ProbeKind::End { frame: index }, p);
+                    if !o.keepend
+                        && index + 1 == j.frames.len()
+                        && f.search_start == j.position
+                        && j.guard.contains(&f.rule)
+                    {
+                        // At a zero-width region start, a contained match at
+                        // that same boundary may obscure the end (e.g. Git's
+                        // included diffFile match). Without such a child, the
+                        // end still closes here. keepend retains end priority.
+                        initial_ends.push(probe);
+                    } else {
+                        items.push(probe);
+                    }
                 }
             }
         }
@@ -1279,6 +1375,7 @@ impl VimSession {
                 .unwrap_or(items.len());
             items.splice(first_start..first_start, keywords);
         }
+        items.extend(initial_ends);
         let dispatch = items.len()
             + self.program.rules.len()
             + items.iter().map(|p| p.offsets.lc).sum::<usize>();
@@ -1560,9 +1657,10 @@ impl VimSession {
         if range.is_empty() {
             return;
         }
+        let mut inherit = false;
         let Some((group, origin)) = j.frames.iter().rev().find_map(|f| {
             let r = &self.program.rules[f.rule];
-            if range.start < f.paint.start || range.start >= f.paint.end {
+            if !inherit && (range.start < f.paint.start || range.start >= f.paint.end) {
                 return None;
             }
             let delimiter = if range.start < f.start_end {
@@ -1573,6 +1671,10 @@ impl VimSession {
                 None
             };
             if r.options.transparent && delimiter.is_none() {
+                // A transparent child inherits its containing syntax state,
+                // including when it extends past a parent's match or paint
+                // offset. The parent remains live until this child closes.
+                inherit = true;
                 return None;
             }
             Some((delimiter.unwrap_or(&r.group), &r.group))

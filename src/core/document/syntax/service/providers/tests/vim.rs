@@ -1,5 +1,162 @@
 use super::*;
 
+fn gitcommit_request(text: &str, revision: u64) -> SyntaxRequest {
+    let mut req = request(text, "gitcommit", revision);
+    req.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    req.configuration.filename = Some("/writing/.git/COMMIT_EDITMSG".into());
+    req
+}
+
+fn assert_gitcommit_group(result: &SyntaxResult, text: &str, token: &str, expected: &str) {
+    let start = text.find(token).unwrap();
+    assert!(
+        result
+            .runs
+            .iter()
+            .any(|run| run.range.contains(&start) && run.name.as_str() == expected),
+        "{token:?} expected {expected}: {:?}; {:?}",
+        result.runs,
+        result.diagnostics
+    );
+}
+
+#[test]
+fn bundled_gitcommit_highlights_summary_comments_trailers_and_verbose_diff() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = "Support Git commit highlighting\n\nKeep comments and the verbose patch visible.\n\nSigned-off-by: Writer <writer@example.test>\n\n# Please enter the commit message.\n# On branch topic\n# Changes to be committed:\n#\tmodified:   src/main.rs\n#\n# ------------------------ >8 ------------------------\n# Do not modify or remove the line above.\ndiff --git a/src/main.rs b/src/main.rs\nindex 1234567..abcdef0 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new\n";
+    let result = finish(&mut BackendProvider::default(), &gitcommit_request(text, 1));
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    assert_gitcommit_group(&result, text, "Support Git", "Keyword");
+    assert_gitcommit_group(&result, text, "Signed-off-by:", "Label");
+    assert_gitcommit_group(&result, text, "# Please enter", "Comment");
+    assert_gitcommit_group(&result, text, "topic", "Special");
+    assert_gitcommit_group(&result, text, "src/main.rs", "Constant");
+    assert_gitcommit_group(&result, text, "+new", "Added");
+    assert_gitcommit_group(&result, text, "-old", "Removed");
+}
+
+#[test]
+fn bundled_gitcommit_uses_actual_tail_for_custom_comment_character() {
+    let _registry = treesitter::package_registry_test_guard();
+    for ending in ["", "\n"] {
+        let text = format!(
+            "A commit summary\n\n{}; Please enter a message.{ending}",
+            "body\n".repeat(40)
+        );
+        let result = finish(
+            &mut BackendProvider::default(),
+            &gitcommit_request(&text, 1),
+        );
+        assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+        assert_gitcommit_group(&result, &text, "; Please enter", "Comment");
+    }
+}
+
+#[test]
+fn bundled_gitcommit_setup_reuses_large_verbose_patch_after_scissors() {
+    let _registry = treesitter::package_registry_test_guard();
+    let prefix = "Summary\n\nBody ב\n; ------------------------ >8 ------------------------\n; Everything below is ignored.\ndiff --git a/file b/file\n@@ -1 +1 @@\n";
+    let text = format!("{prefix}{}", "unchanged patch body\n".repeat(70_000));
+    let fixture = Fixture::new(
+        "gitcommit",
+        include_str!("../../../../../../../assets/vim/runtime/syntax/gitcommit.vim"),
+    );
+    std::fs::write(
+        fixture.0.join("diff.vim"),
+        include_str!("../../../../../../../assets/vim/runtime/syntax/diff.vim"),
+    )
+    .unwrap();
+    let mut req = gitcommit_request(&text, 1);
+    req.configuration.vim_directory = fixture.0.to_str().unwrap().into();
+    req.range = 0..prefix.len();
+    let mut provider = BackendProvider::default();
+    let result = finish(&mut provider, &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    assert_gitcommit_group(&result, &text, "; Everything below", "Comment");
+    let setup = provider.fallback_context.clone();
+    std::fs::write(fixture.0.join("gitcommit.vim"), "unsupported command\n").unwrap();
+    let at = text.len() - 100;
+    req.input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity {
+            revision: 2,
+            ..req.input.identity()
+        },
+        req.input.text_tree().splice(at..at + 1, "X").unwrap(),
+    );
+    let result = finish(&mut provider, &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    assert_eq!(
+        provider.fallback_context.as_ref().unwrap().prefix,
+        setup.as_ref().unwrap().prefix
+    );
+    assert_eq!(
+        provider
+            .fallback_context
+            .as_ref()
+            .unwrap()
+            .input
+            .as_ref()
+            .unwrap()
+            .identity(),
+        req.input.identity()
+    );
+}
+
+#[test]
+fn vim_provider_retains_failed_setup_until_a_queried_tail_changes() {
+    let _registry = treesitter::package_registry_test_guard();
+    let source = "if getline(line('$')) ==# 'bad'\n unsupported command\nelse\n syn keyword Valid token\nendif\n";
+    let fixture = Fixture::new("fixture", source);
+    let text = format!("token\n{}bad", "body\n".repeat(40));
+    let mut req = request(&text, "fixture", 1);
+    req.configuration.vim_directory = fixture.0.to_str().unwrap().into();
+    let mut provider = BackendProvider::default();
+    let failed = finish(&mut provider, &req);
+    assert_eq!(failed.coverage, Coverage::Missing);
+    // A file reload would produce a different error. Editing unqueried body
+    // content must preserve the cached failure instead.
+    std::fs::write(fixture.0.join("fixture.vim"), "totally different failure\n").unwrap();
+    let at = text.len() - 8;
+    req.input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity {
+            revision: 2,
+            ..req.input.identity()
+        },
+        req.input.text_tree().splice(at..at + 1, "B").unwrap(),
+    );
+    assert_eq!(finish(&mut provider, &req).diagnostics, failed.diagnostics);
+    assert_eq!(
+        provider
+            .fallback_context
+            .as_ref()
+            .unwrap()
+            .input
+            .as_ref()
+            .unwrap()
+            .identity(),
+        req.input.identity()
+    );
+    std::fs::write(fixture.0.join("fixture.vim"), source).unwrap();
+    let end = req.input.byte_len();
+    req.input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity {
+            revision: 3,
+            ..req.input.identity()
+        },
+        req.input.text_tree().splice(end - 3..end, "good").unwrap(),
+    );
+    req.range = 0..req.input.byte_len();
+    let recovered = finish(&mut provider, &req);
+    assert_eq!(
+        recovered.coverage,
+        Coverage::Exact,
+        "{:?}",
+        recovered.diagnostics
+    );
+    assert_eq!(recovered.runs[0].name.as_str(), "Valid");
+}
+
 #[test]
 fn vim_provider_cancelled_compile_remains_retryable() {
     let _registry = treesitter::package_registry_test_guard();
@@ -101,6 +258,7 @@ fn vim_provider_filename_changes_recompile_setup_for_unchanged_input() {
             &VimSetupContext {
                 prefix: "token".into(),
                 filename: Some(filename.into()),
+                input: None,
             },
             &AtomicBool::new(false),
         )
@@ -180,7 +338,21 @@ fn vim_provider_position_assertions_repair_after_body_edits() {
             "{:?}",
             repaired.diagnostics
         );
-        assert_eq!(provider.fallback_context, setup);
+        assert_eq!(
+            provider.fallback_context.as_ref().unwrap().prefix,
+            setup.as_ref().unwrap().prefix
+        );
+        assert_eq!(
+            provider
+                .fallback_context
+                .as_ref()
+                .unwrap()
+                .input
+                .as_ref()
+                .unwrap()
+                .identity(),
+            req.input.identity()
+        );
         assert_eq!(
             ranges(&repaired),
             expected(after),
@@ -250,7 +422,8 @@ fn vim_provider_and_embedded_vim_ignore_registered_tree_sitter_packages() {
     assert!(provider.children[0].session.is_none());
     assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostics);
     assert_eq!(
-        output.runs[0].name.as_str(), "Modern",
+        output.runs[0].name.as_str(),
+        "Modern",
         "setup must see the embedded prefix"
     );
 }

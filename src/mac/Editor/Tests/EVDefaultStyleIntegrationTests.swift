@@ -19,6 +19,15 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     }
     let config = try configuration()
     try config.selectTheme(named: "Paper")
+    // These are deliberately different font fixtures, independent of either
+    // shipped preset's editable typography.
+    try EVStyleTestFixtures.configure(config, declarations: [
+      (.baseParagraph, .characterSize, .float(14)),
+      (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+      (.baseParagraph, .characterFontAxes, .string("{}")),
+      (.baseParagraph, .characterWeight, .unsigned(400)),
+      (EVStyleTestFixtures.block("Heading1"), .characterFontFamilies, nil),
+    ])
     try config.createTheme(named: "Recursive")
     let styles = try EVThemeStyleSession(configuration: config, format: .markdown)
     try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
@@ -77,6 +86,9 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       (.markdown, EVDocument.markdownType, "# Heading\n\nText"),
     ] {
       let config = try configuration()
+      try EVStyleTestFixtures.configure(config, format: format, declarations: [
+        (.baseParagraph, .characterSize, .float(14)),
+      ])
       let backends = [EVCoreDocumentBackend(configuration: config), EVCoreDocumentBackend(configuration: config)]
       let surfaces = try backends.map { backend -> EVEditorSurfaceController in
         try backend.read(source: Data(source.utf8), typeName: type)
@@ -99,7 +111,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
       XCTAssertFalse(reopened.persistenceState.isDirty)
       XCTAssertEqual(try reopened.serializedSource(typeName: type), Data(source.utf8))
       session.undoManager.undo()
-      XCTAssertNotEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
+      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(14))
       session.undoManager.redo()
       XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
     }

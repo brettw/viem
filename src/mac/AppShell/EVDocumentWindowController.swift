@@ -31,6 +31,12 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   static var hasOpenDocumentWindows: Bool {
     instances.contains { $0.value.map { !$0.isClosed } ?? false }
   }
+  static func hasOpenViews(of document: EVDocument) -> Bool {
+    instances.compactMap(\.value).contains { controller in
+      !controller.isClosed && controller.paneContainer.panes.contains { $0.document === document }
+    }
+  }
+  var terminateWithStatus: (Int32) -> Void = { exit($0) }
   var commandDidCloseWindow: () -> Void = {
     (NSApplication.shared.delegate as? EVApplicationDelegate)?.terminateAfterCommandClose()
   }
@@ -804,6 +810,15 @@ extension EVDocumentWindowController {
       }
       closeCurrentDocumentOrWindow(document)
       completion(.success(nil))
+
+    case .cquit:
+      // Publish failure before closing any document can publish success.
+      EVBlockingEditSessions.shared.abort(exitCode: request.exitStatus)
+      let documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }
+      for controller in Self.instances.compactMap(\.value) where !controller.isClosed { controller.close() }
+      for candidate in documents { candidate.close() }
+      completion(.success(nil))
+      terminateWithStatus(request.exitStatus)
 
     case .quitAll:
       var documents = NSDocumentController.shared.documents.compactMap { $0 as? EVDocument }

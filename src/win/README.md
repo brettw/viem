@@ -29,8 +29,8 @@ Ordinary discard/`:q!` completes successfully using the file's existing disk
 contents, so use `:cq` when Git should abort. Cancelling a close dialog keeps
 waiting. Launch/open failure or a GUI crash returns failure.
 
-This launcher is Windows-only. macOS blocking launch and `:cq` host handling
-remain deferred.
+macOS also ships a blocking helper inside its app bundle. See
+[Blocking editor](../../docs/blocking-editor.md) for both platforms.
 
 ## Build and run
 

@@ -83,7 +83,8 @@ final class EVStyleEditorTests: XCTestCase {
 
     @MainActor
     func testStyleMutationIsCoreOwnedSourcePreservingMultiViewAndUndoable() throws {
-        let backend = EVCoreDocumentBackend()
+        let configuration = try styleConfiguration()
+        let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Heading\nbody".utf8)
         try backend.read(source: source, typeName: "public.markdown")
         let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -577,20 +578,36 @@ final class EVStyleEditorTests: XCTestCase {
         source: String,
         style: EVStyleKey
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController) {
-        let backend = EVCoreDocumentBackend()
+        let configuration = try styleConfiguration()
+        let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(source.utf8), typeName: "public.markdown")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()
-        let themeSuite = "viem-style-editor-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: themeSuite))
-        let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
-        addTeardownBlock { try? FileManager.default.removeItem(at: configDirectory) }
-        let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
-        addTeardownBlock { defaults.removePersistentDomain(forName: themeSuite) }
         editor.themeStore = EVThemeStore(configuration: configuration)
         editor.retarget(document: surface, styleKey: style)
         return (backend, surface, editor)
+    }
+
+    @MainActor
+    private func styleConfiguration() throws -> EVConfigurationStore {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-style-editor-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .paragraphFirstLineIndent, .float(0)),
+            (.baseParagraph, .blockMarginTop, .float(0)),
+            (.baseParagraph, .blockMarginBottom, .float(0)),
+            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))),
+            (.baseParagraph, .paragraphAlignment, .paragraphAlignment(UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START))),
+            (EVStyleTestFixtures.block("Heading1"), .characterSize, .float(24)),
+            (EVStyleTestFixtures.block("Heading1"), .characterFontFamilies, nil),
+        ])
+        return configuration
     }
 
 }

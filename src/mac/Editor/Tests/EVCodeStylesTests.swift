@@ -17,8 +17,10 @@ final class EVCodeStylesTests: XCTestCase {
         var code = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(configuration.codeStyleSheet())) as? [String: Any])
         code["futureExtension"] = ["enabled": true]
         try configuration.saveCodeStyleSheet(JSONSerialization.data(withJSONObject: code))
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+        ])
         let session = try EVCodeStyleSession(configuration: configuration)
-        let original = try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared
         try session.beginGroup()
         for size: Float in [21, 25] {
             try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
@@ -27,7 +29,7 @@ final class EVCodeStylesTests: XCTestCase {
         }
         session.endGroup()
         session.undoManager.undo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, original)
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(14))
         XCTAssertFalse(session.undoManager.canUndo)
         session.undoManager.redo()
         XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(25))
@@ -37,6 +39,9 @@ final class EVCodeStylesTests: XCTestCase {
 
     func testGlobalEditorHasIndependentTargetUndoAndPersistence() throws {
         let configuration = configuration()
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+        ])
         let session = try EVCodeStyleSession(configuration: configuration)
         let editor = EVStyleEditorViewController()
         editor.retarget(settingsSession: session)
@@ -51,8 +56,6 @@ final class EVCodeStylesTests: XCTestCase {
         }
         let status = try XCTUnwrap(controls.first { $0.accessibilityLabel() == "Style editing status" })
         XCTAssertTrue(status.isHidden)
-        let initial = try session.snapshot()
-        let originalSize = initial.definition(for: .baseParagraph)?.properties[.characterSize]?.declared
         editor.beginContinuousStyleEditForTesting()
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
         XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)), editor.inspection.diagnostic)
@@ -61,7 +64,7 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
         let committedRevision = try session.snapshot().identity.styleSheetRevision
         session.undoManager.undo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, originalSize)
+        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(14))
         XCTAssertFalse(session.undoManager.canUndo, "The continuous edit is one settings transaction")
         XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, committedRevision)
         session.undoManager.redo()
@@ -149,6 +152,15 @@ final class EVCodeStylesTests: XCTestCase {
 
     func testGlobalMetricsChangesKeepViewportTextAnchoredAcrossTwoBuffers() throws {
         let configuration = configuration()
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))),
+            (.baseParagraph, .blockMarginTop, .float(0)),
+            (.baseParagraph, .blockMarginBottom, .float(0)),
+        ])
         let source = (0..<2_000).map { "Line \($0): a short code statement" }.joined(separator: "\n")
         let backends = [EVCoreDocumentBackend(configuration: configuration), EVCoreDocumentBackend(configuration: configuration)]
         let surfaces = try backends.enumerated().map { index, backend in

@@ -52,7 +52,9 @@ if [ ! -f "$link_stamp" ] || [ "$(cat "$link_stamp")" != "$current_fingerprint" 
     touch "$project_dir/src/mac/CViemCore/shim.c"
 fi
 
-VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration"
+# Build both launchers explicitly; packaging must never reuse a stale helper.
+VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --product Viem
+VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --product blocking-viem
 # Do not bless a link if another build changed the archive while Swift ran.
 if [ "$(shasum -a 256 "$rust_archive")" != "$archive_fingerprint" ]; then
     echo "Rust archive changed during Swift build; rerun the build." >&2
@@ -65,42 +67,54 @@ printf '%s\n%s\n' "$archive_fingerprint" "$binary_fingerprint" > "$link_stamp_ca
 mv -f "$link_stamp_candidate" "$link_stamp"
 trap - 0
 
-app_bundle="$project_dir/.build/Viem.app"
-contents_dir="$app_bundle/Contents"
-macos_dir="$contents_dir/MacOS"
-resources_dir="$contents_dir/Resources"
+package_app() {
+    app_bundle=$1
+    contents_dir="$app_bundle/Contents"
+    macos_dir="$contents_dir/MacOS"
+    resources_dir="$contents_dir/Resources"
 
-mkdir -p "$macos_dir" "$resources_dir"
-# A previous development build may still be running. Replace its executable
-# inode atomically instead of truncating bytes mapped by that process.
-cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
-mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
-cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
-cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
-# Theme presets are versioned resources. Profiles copy these when first made;
-# the core embeds Midnight as its fallback when runtime resources are missing.
-mkdir -p "$resources_dir/themes"
-cp "$project_dir/assets/themes/"*.json "$resources_dir/themes/"
-# App-local fonts and their original license/attribution files. Replace the
-# owned subtree so removed faces cannot survive a rebuild.
-rm -rf "$resources_dir/fonts"
-cp -R "$project_dir/assets/fonts" "$resources_dir/fonts"
-# Replace this owned subtree so removed upstream files cannot survive a rebuild.
-# All files, including the original license and provenance manifest, are sealed
-# into the application signature. No installed Vim is needed at build/run time.
-rm -rf "$resources_dir/vim"
-cp -R "$project_dir/assets/vim" "$resources_dir/vim"
-python3 "$script_dir/vim-runtime.py" verify "$resources_dir/vim"
+    mkdir -p "$macos_dir" "$resources_dir"
+    # A previous development build may still be running. Replace its executable
+    # inode atomically instead of truncating bytes mapped by that process.
+    cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
+    mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
+    cp "$swift_bin_dir/blocking-viem" "$macos_dir/blocking-viem.new"
+    mv -f "$macos_dir/blocking-viem.new" "$macos_dir/blocking-viem"
+    cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
+    cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
+    # Theme presets are versioned resources. Profiles copy these when first made;
+    # the core embeds Midnight as its fallback when runtime resources are missing.
+    mkdir -p "$resources_dir/themes"
+    cp "$project_dir/assets/themes/"*.json "$resources_dir/themes/"
+    # App-local fonts and their original license/attribution files. Replace the
+    # owned subtree so removed faces cannot survive a rebuild.
+    rm -rf "$resources_dir/fonts"
+    cp -R "$project_dir/assets/fonts" "$resources_dir/fonts"
+    # Replace this owned subtree so removed upstream files cannot survive a rebuild.
+    # All files, including the original license and provenance manifest, are sealed
+    # into the application signature. No installed Vim is needed at build/run time.
+    rm -rf "$resources_dir/vim"
+    cp -R "$project_dir/assets/vim" "$resources_dir/vim"
+    python3 "$script_dir/vim-runtime.py" verify "$resources_dir/vim"
 
-# The syntax queries are embedded in the Rust library; distribute their
-# upstream licenses and attribution inventory alongside the executable.
-query_source_dir="$project_dir/src/core/document/syntax/treesitter"
-query_license_dir="$resources_dir/Licenses/nvim-treesitter"
-mkdir -p "$query_license_dir"
-cp "$query_source_dir/"*.LICENSE "$query_source_dir/nvim.NOTICES.md" "$query_license_dir/"
+    # The syntax queries are embedded in the Rust library; distribute their
+    # upstream licenses and attribution inventory alongside the executable.
+    query_source_dir="$project_dir/src/core/document/syntax/treesitter"
+    query_license_dir="$resources_dir/Licenses/nvim-treesitter"
+    mkdir -p "$query_license_dir"
+    cp "$query_source_dir/"*.LICENSE "$query_source_dir/nvim.NOTICES.md" "$query_license_dir/"
 
-codesign --force --sign - "$app_bundle"
-# Nested resource updates do not change the bundle directory's modification
-# time. Refresh it so Launch Services notices icon and metadata changes.
-touch "$app_bundle"
-echo "$app_bundle"
+    codesign --force --sign - "$macos_dir/blocking-viem"
+    codesign --force --sign - "$app_bundle"
+    # Nested resource updates do not change the bundle directory's modification
+    # time. Refresh it so Launch Services notices icon and metadata changes.
+    touch "$app_bundle"
+    echo "$app_bundle"
+}
+
+# Preserve the established latest-build location for native tests and launchers.
+package_app "$project_dir/.build/Viem.app"
+if [ "$configuration" = release ]; then
+    # A debug build must not replace the app used by release-only redirectors.
+    package_app "$project_dir/.build/release-app/Viem.app"
+fi

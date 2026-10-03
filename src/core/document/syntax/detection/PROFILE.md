@@ -1,6 +1,6 @@
 # Portable language detection profile
 
-Profile version 3 uses decoded normalized physical source and never executes Vimscript,
+Profile version 4 uses decoded normalized physical source and never executes Vimscript,
 filetype autocommands, shell commands, regular expressions, or package callbacks.
 An explicit language (including None) precedes modelines, user filename rules,
 bundled filename rules with content disambiguation, shebangs, and finally content
@@ -29,6 +29,12 @@ run after recognized extensions: `Dockerfile.py` and `vimrc.py` select Python.
 Exact `.exrc`, `_exrc`, and `.netrwhist` names also select Vim. Compound suffixes
 include `.cmake.in` and specific MSBuild project `.user` files; generic `.user`,
 `.config`, and `.conf` files are not treated as project XML.
+
+Git's exact `COMMIT_EDITMSG`, `MERGE_MSG`, `SQUASH_MSG`, `TAG_EDITMSG`,
+`NOTES_EDITMSG`, and `EDIT_DESCRIPTION` basenames select Git Commit (`gitcommit`),
+including inside worktree Git directories. These names are case-sensitive and
+do not match backup suffixes or parent-directory names. Explicit formats,
+language choices, modelines, and user filename associations retain precedence.
 
 The audit deliberately leaves ambiguous suffixes such as `.tex`, `.r`, `.f`,
 `.d`, `.cl`, `.cls`, `.edn`, `.sc`, `.pp`, `.tf`, and `.reg` without new blanket

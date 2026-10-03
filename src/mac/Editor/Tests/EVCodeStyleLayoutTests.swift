@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class EVCodeStyleLayoutTests: XCTestCase {
     func testKeywordFontEditsReshapeTwoRustBuffersWithoutChangingSourceOrDocumentHistory() async throws {
-        let configuration = configuration()
+        let configuration = try configuration()
         let fixtures = try (0..<2).map { try makeRustSurface(configuration: configuration, index: $0) }
         for fixture in fixtures { try await waitForKeywordSize(14, fixture: fixture) }
         let before = try fixtures.map { try $0.backend.recoverySnapshot() }
@@ -74,7 +74,7 @@ final class EVCodeStyleLayoutTests: XCTestCase {
     }
 
     func testDistantRustSyntaxAndFontChangesKeepExactVisibleGeometryAndEstimatedScrollbar() async throws {
-        let configuration = configuration()
+        let configuration = try configuration()
         let fixture = try makeRustSurface(configuration: configuration, index: 0, lineCount: 8_192)
         let viewSession = try XCTUnwrap(fixture.surface.session)
         let styleSession = try EVCodeStyleSession(configuration: configuration)
@@ -126,10 +126,21 @@ final class EVCodeStyleLayoutTests: XCTestCase {
         let source: Data
     }
 
-    private func configuration() -> EVConfigurationStore {
+    private func configuration() throws -> EVConfigurationStore {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-style-layout-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        return EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))),
+            (EVStyleTestFixtures.character("syntax:Keyword"), .characterSize, .float(14)),
+            (EVStyleTestFixtures.character("syntax:Keyword"), .characterFontAxes, .string("{}")),
+            (EVStyleTestFixtures.character("syntax:Function"), .characterSize, .float(14)),
+        ])
+        return configuration
     }
 
     private func makeRustSurface(configuration: EVConfigurationStore, index: Int, lineCount: Int = 2_048) throws -> Fixture {

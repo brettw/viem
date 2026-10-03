@@ -6,6 +6,7 @@ use super::{
 };
 use regex_automata::util::look::Look;
 use regex_syntax::hir::{Class, Hir, HirKind};
+use unicode_width::UnicodeWidthChar;
 
 const LOOPS: usize = 32;
 const MAX_THREADS: usize = 4096;
@@ -19,6 +20,12 @@ pub(super) enum AssertionKind {
     },
     Atomic,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PositionKind {
+    Line,
+    ByteColumn,
+    VirtualColumn,
+}
 #[derive(Clone, Debug)]
 pub(super) enum Special {
     Assertion(AssertionKind),
@@ -27,7 +34,7 @@ pub(super) enum Special {
         negate: bool,
     },
     Position {
-        line: bool,
+        kind: PositionKind,
         comparison: std::cmp::Ordering,
         value: usize,
     },
@@ -39,7 +46,7 @@ enum Instruction {
     ControlClass(Vec<(u32, u32)>, bool, usize),
     Look(Look, usize),
     Position {
-        line: bool,
+        kind: PositionKind,
         comparison: std::cmp::Ordering,
         value: usize,
         next: usize,
@@ -119,6 +126,7 @@ impl Program {
             frames: vec![Frame::new(Thread::new(self.start, at, slots), None, 0)],
             alternatives: Vec::new(),
             retained: 1,
+            virtual_column: None,
             result: None,
         }
     }
@@ -234,7 +242,7 @@ impl Program {
                     }
                 }
                 Instruction::Position {
-                    line,
+                    kind,
                     comparison,
                     value,
                     next,
@@ -248,11 +256,58 @@ impl Program {
                         c.result = Some(error.clone());
                         return error;
                     };
-                    let actual = if *line { source_line } else { column };
+                    let actual = match kind {
+                        PositionKind::Line => source_line,
+                        PositionKind::ByteColumn => column,
+                        PositionKind::VirtualColumn => {
+                            let Some(line_start) = column
+                                .checked_sub(1)
+                                .and_then(|prefix| thread.position.checked_sub(prefix))
+                            else {
+                                return c.fail("invalid Vim virtual-column source position");
+                            };
+                            let cache = c.virtual_column.get_or_insert(VirtualColumn {
+                                line_start,
+                                at: line_start,
+                                column: 1,
+                            });
+                            if cache.line_start != line_start || cache.at > thread.position {
+                                *cache = VirtualColumn {
+                                    line_start,
+                                    at: line_start,
+                                    column: 1,
+                                };
+                            }
+                            // Widths cannot decrease. Once the known prefix is
+                            // past this constant, later positions have the same
+                            // comparison without reading the rest of the line.
+                            // This also keeps ^.*\%<51v. linear when its greedy
+                            // prefix backtracks through a long commit summary.
+                            if cache.at < thread.position && cache.column <= *value {
+                                // One scalar per VM dispatch keeps even hostile long
+                                // lines cancellable and charged to the shared budget.
+                                let Some((ch, bytes)) = scalar(cache.at, byte) else {
+                                    return c.fail("invalid UTF-8 in Vim virtual-column context");
+                                };
+                                cache.column =
+                                    cache.column.saturating_add(virtual_character_width(
+                                        ch,
+                                        cache.column,
+                                        cache.at == line_start,
+                                    ));
+                                cache.at += bytes;
+                                frame.current = Some(thread);
+                                continue;
+                            }
+                            cache.column
+                        }
+                    };
                     // Vim's string-match APIs have no buffer line context;
                     // their lookup uses line zero, which never satisfies a
                     // line assertion, including a '<' or '>' comparison.
-                    if !(*line && source_line == 0) && actual.cmp(value) == *comparison {
+                    if !(*kind == PositionKind::Line && source_line == 0)
+                        && actual.cmp(value) == *comparison
+                    {
                         thread.ip = *next;
                         frame.current = Some(thread);
                     } else {
@@ -487,10 +542,52 @@ pub(super) struct Continuation {
     frames: Vec<Frame>,
     alternatives: Vec<Thread>,
     retained: usize,
+    virtual_column: Option<VirtualColumn>,
     result: Option<VimRegexProgress>,
 }
 
+// A single immutable-input prefix cache shares work between forward assertions.
+// Constant comparisons can finish before reaching the requested byte position,
+// so gitcommit's greedy summary also reuses its bounded prefix on backtracking.
+#[derive(Clone, Debug)]
+struct VirtualColumn {
+    line_start: usize,
+    at: usize,
+    column: usize,
+}
+
+fn virtual_character_width(ch: char, column: usize, first: bool) -> usize {
+    // These are syntax's portable Vim defaults, not the native font's pixels.
+    match ch {
+        '\t' => 8 - (column - 1) % 8,
+        '\0'..='\u{1f}' | '\u{7f}' => 2, // ^A and other caret notation
+        '\u{80}'..='\u{9f}' => 4,        // <85>
+        '\u{ad}'
+        | '\u{1160}'..='\u{11ff}'
+        | '\u{d7b0}'..='\u{d7ff}'
+        | '\u{e0000}'..='\u{e007f}' => 1,
+        '\u{1f1e6}'..='\u{1f1ff}' => 2,
+        '\u{70f}'
+        | '\u{180b}'..='\u{180e}'
+        | '\u{200b}'..='\u{200f}'
+        | '\u{202a}'..='\u{202e}'
+        | '\u{2060}'..='\u{206f}'
+        | '\u{feff}'
+        | '\u{fff9}'..='\u{fffb}'
+        | '\u{fffe}'..='\u{ffff}' => 6, // <200b>
+        _ => ch.width().unwrap_or(1).max(usize::from(first)),
+    }
+}
+
 impl Continuation {
+    fn fail(&mut self, message: &str) -> VimRegexProgress {
+        let error = VimRegexProgress::Failed(message.into());
+        self.frames.clear();
+        self.alternatives.clear();
+        self.result = Some(error.clone());
+        error
+    }
+
     pub(super) fn retained_bytes(&self) -> usize {
         self.frames.capacity() * std::mem::size_of::<Frame>()
             + self.alternatives.capacity() * std::mem::size_of::<Thread>()
@@ -679,11 +776,11 @@ impl Compiler<'_> {
                             self.emit(Instruction::ControlClass(ranges, *negate, next))
                         }
                         Special::Position {
-                            line,
+                            kind,
                             comparison,
                             value,
                         } => self.emit(Instruction::Position {
-                            line: *line,
+                            kind: *kind,
                             comparison: *comparison,
                             value: *value,
                             next,

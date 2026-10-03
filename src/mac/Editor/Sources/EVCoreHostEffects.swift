@@ -165,6 +165,7 @@ struct EVExHostEffect: Equatable {
     var windowResizeMode: UInt32 = 0
     var argumentNavigation: EVArgumentNavigation? = nil
     var readAfterLine: UInt64? = nil
+    var exitStatus: UInt32? = nil
 }
 
 struct EVHostEffectBatch: Equatable {
@@ -420,6 +421,13 @@ private extension EVRawEffectBatch {
             } else {
                 argumentNavigation = nil
             }
+            let exitStatus: UInt32?
+            if request.kind == UInt32(VIEM_EX_FRONTEND_CQUIT) {
+                guard let code = UInt32(exactly: request.window_count) else {
+                    throw EVCoreFrontendError.invalidHostEffect
+                }
+                exitStatus = code
+            } else { exitStatus = nil }
             return EVExHostEffect(
                 kind: request.kind,
                 flags: request.flags,
@@ -438,7 +446,8 @@ private extension EVRawEffectBatch {
                 windowTarget: request.kind == UInt32(VIEM_EX_FRONTEND_WINDOW) && request.argument_count > 0 ? request.argument_count : nil,
                 windowResizeMode: request.argument_command,
                 argumentNavigation: argumentNavigation,
-                readAfterLine: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil
+                readAfterLine: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil,
+                exitStatus: exitStatus
             )
         }
 

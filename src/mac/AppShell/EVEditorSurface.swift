@@ -172,6 +172,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case saveAs
     case quit
     case quitAll
+    case cquit
     case writeQuit
     case xit
     case writeAll
@@ -189,6 +190,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let verticalSplit: Bool
   public let argumentNavigation: EVArgumentNavigation?
   public let readAfterLine: UInt64?
+  public let exitStatus: Int32
 
   public init(
     kind: Kind,
@@ -200,7 +202,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     initialHeightRows: Int? = nil,
     verticalSplit: Bool = false,
     argumentNavigation: EVArgumentNavigation? = nil,
-    readAfterLine: UInt64? = nil
+    readAfterLine: UInt64? = nil,
+    exitStatus: Int32 = 1
   ) {
     self.kind = kind
     self.documentID = documentID
@@ -212,6 +215,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.verticalSplit = verticalSplit
     self.argumentNavigation = argumentNavigation
     self.readAfterLine = readAfterLine
+    self.exitStatus = exitStatus
   }
 }
 

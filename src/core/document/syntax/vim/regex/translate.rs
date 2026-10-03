@@ -1,4 +1,4 @@
-use super::vm::{AssertionKind, Special};
+use super::vm::{AssertionKind, PositionKind, Special};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Magic {
@@ -122,11 +122,13 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             branch_start = true;
             continue;
         }
-        if operator && c == '*' && escaped && (branch_start || initial_anchor) {
+        // A newline permits a following line-start anchor, but remains a real
+        // preceding atom for repetition (notably Git commit trailer \n*).
+        if operator && c == '*' && escaped && (atom.is_none() || initial_anchor) {
             return Err("Vim repetition has no preceding atom".into());
         }
         if operator
-            && (matches!(c, '+' | '?' | '=' | '{') || c == '*' && !branch_start && !initial_anchor)
+            && (matches!(c, '+' | '?' | '=' | '{') || c == '*' && atom.is_some() && !initial_anchor)
         {
             if atom.is_none() {
                 return Err("Vim repetition has no preceding atom".into());
@@ -317,19 +319,20 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
                         .collect::<String>()
                         .parse::<usize>()
                         .map_err(|_| "Vim source-position number overflow")?;
-                    let line = match chars.get(i) {
-                        Some('l') => true,
-                        Some('c') => false,
+                    let kind = match chars.get(i) {
+                        Some('l') => PositionKind::Line,
+                        Some('c') => PositionKind::ByteColumn,
+                        Some('v') => PositionKind::VirtualColumn,
                         _ => return Err(percent_atom_error(&chars, begin)),
                     };
                     i += 1;
                     // Absolute line numbers change for every following line
                     // after an inserted/deleted line break. Column numbers
                     // need only the existing whole-hard-line dependencies.
-                    t.multiline |= line;
+                    t.multiline |= kind == PositionKind::Line;
                     let id = t.specials.len();
                     t.specials.push(Special::Position {
-                        line,
+                        kind,
                         comparison,
                         value,
                     });
@@ -433,7 +436,7 @@ fn percent_atom_error(chars: &[char], mut at: usize) -> String {
                 match chars.get(at) {
                     Some('l') => "absolute source-line assertion",
                     Some('c') => "absolute source-byte-column assertion",
-                    Some('v') => "virtual-column assertion requires display and tab context",
+                    Some('v') => "absolute virtual-column assertion",
                     _ => "unknown position assertion",
                 }
             }

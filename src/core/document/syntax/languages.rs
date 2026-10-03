@@ -23,6 +23,7 @@ pub fn display_name(id: &str) -> String {
         "vim" => "Vim Script", "make" => "Makefile", "cmake" => "CMake",
         "bash" => "Bash", "sh" => "Shell", "zsh" => "Zsh", "go" => "Go",
         "rust" => "Rust", "swift" => "Swift", "python" => "Python",
+        "gitcommit" => "Git Commit",
         "markdown" => "Markdown", "tex" => "TeX", "plaintex" => "Plain TeX",
         value => return value.chars().next().map(|first| first.to_uppercase().to_string() + &value[first.len_utf8()..]).unwrap_or_default(),
     }.into()

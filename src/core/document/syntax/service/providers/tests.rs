@@ -293,6 +293,7 @@ fn failed_child_tree_sitter_uses_vim_and_unknown_children_keep_host_colors() {
         failed: None,
         fallback_input: None,
         fallback_context: None,
+        fallback_reads: VimSetupReads::default(),
         fallback_work: 0,
         cache: None,
     };

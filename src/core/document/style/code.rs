@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock, RwLock};
 
 static GLOBAL: OnceLock<RwLock<Arc<StyleSheet>>> = OnceLock::new();
+// These groups previously materialized as unnamed-color roots. Saved
+// definitions with their own stable IDs remain authoritative when upgrading.
+const DIFF_STYLE_NAMES: &[&str] = &["DiffAdd", "Added", "DiffDelete", "Removed", "DiffChange", "Changed"];
 fn authority() -> &'static RwLock<Arc<StyleSheet>> {
     GLOBAL.get_or_init(|| RwLock::new(Arc::new(default_sheet())))
 }
@@ -173,6 +176,9 @@ pub fn default_sheet() -> StyleSheet {
             ],
             (80, 100, 140),
         ),
+        ("DiffAdd", &["DiffAdd", "Added"], (38, 132, 77)),
+        ("DiffDelete", &["DiffDelete", "Removed"], (200, 65, 65)),
+        ("DiffChange", &["DiffChange", "Changed"], (180, 125, 35)),
     ];
     for (root, names, (red, green, blue)) in families {
         // Canonical captures and Vim groups share one definition. Add missing
@@ -545,6 +551,40 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
         for id in file.suppressed_character_ids {
             sheet.character_styles.remove(&id);
             sheet.character_metadata.remove(&id);
+        }
+        // A suppressed new family must not be revived through its new alias,
+        // or leave that generated alias with a missing parent. Authored alias
+        // relationships below still replace this fallback unchanged.
+        for (alias, root) in [("Added", "DiffAdd"), ("Removed", "DiffDelete"), ("Changed", "DiffChange")] {
+            if !sheet.character_styles.contains_key(&StyleId(format!("syntax:{root}"))) {
+                if let Some(alias) = sheet.character_styles.get_mut(&StyleId(format!("syntax:{alias}"))) {
+                    alias.based_on = None;
+                }
+            }
+        }
+        // Older profiles may have edited/materialized these names before they
+        // had defaults. Keep the saved ID and declarations, and point new
+        // default aliases at that ID. Other duplicate names remain errors.
+        for entry in &file.character_styles {
+            if !DIFF_STYLE_NAMES.contains(&entry.name.as_str()) {
+                continue;
+            }
+            let default_id = StyleId(format!("syntax:{}", entry.name));
+            if entry.style.id == default_id || !sheet.character_styles.contains_key(&default_id) {
+                continue;
+            }
+            // Two explicitly saved definitions with this name are still
+            // invalid; the normal validation below diagnoses the duplicate.
+            if file.character_styles.iter().any(|saved| saved.style.id == default_id) {
+                continue;
+            }
+            sheet.character_styles.remove(&default_id);
+            sheet.character_metadata.remove(&default_id);
+            for style in sheet.character_styles.values_mut() {
+                if style.based_on.as_ref() == Some(&default_id) {
+                    style.based_on = Some(entry.style.id.clone());
+                }
+            }
         }
         let mut seen = BTreeSet::new();
         for entry in file.block_styles {

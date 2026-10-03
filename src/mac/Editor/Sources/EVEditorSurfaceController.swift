@@ -1696,8 +1696,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_FRONTEND_QUIT): kind = .quit
         case UInt32(VIEM_EX_FRONTEND_QUIT_ALL): kind = .quitAll
         case UInt32(VIEM_EX_FRONTEND_CQUIT):
-            // The blocking launcher and error-exit lifecycle are Windows-only for now.
-            throw EVCoreFrontendError.unsupportedHostEffect
+            guard effect.exitStatus != nil else { throw EVCoreFrontendError.invalidHostEffect }
+            kind = .cquit
         case UInt32(VIEM_EX_FRONTEND_WRITE_QUIT): kind = .writeQuit
         case UInt32(VIEM_EX_FRONTEND_XIT): kind = .xit
         case UInt32(VIEM_EX_FRONTEND_WRITE_ALL): kind = .writeAll
@@ -1735,7 +1735,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             initialHeightRows: initialHeightRows,
             verticalSplit: effect.flags & UInt32(VIEM_EX_FRONTEND_VERTICAL) != 0,
             argumentNavigation: effect.argumentNavigation,
-            readAfterLine: effect.readAfterLine
+            readAfterLine: effect.readAfterLine,
+            exitStatus: effect.exitStatus.map { Int32(bitPattern: $0) } ?? 1
         )
     }
 

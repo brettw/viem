@@ -93,6 +93,16 @@ pub(super) fn directory_with_context(
     context: &VimSetupContext,
     cancel: Option<&AtomicBool>,
 ) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
+    directory_with_reads(root, language, limits, context, cancel, &mut super::VimSetupReads::default())
+}
+pub(super) fn directory_with_reads(
+    root: &Path,
+    language: &str,
+    limits: VimLoadLimits,
+    context: &VimSetupContext,
+    cancel: Option<&AtomicBool>,
+    reads: &mut super::VimSetupReads,
+) -> Result<Arc<VimProgram>, Vec<VimDiagnostic>> {
     if language.is_empty()
         || !language
             .bytes()
@@ -146,6 +156,7 @@ pub(super) fn directory_with_context(
         l.program.generation = (l.program.generation ^ u64::from(b)).wrapping_mul(1099511628211);
     }
     l.file(&format!("{language}.vim"));
+    *reads = l.setup.reads.clone();
     l.finish()
 }
 impl<'a> Loader<'a> {
@@ -232,6 +243,13 @@ impl<'a> Loader<'a> {
             }
         }
         if self.errors.is_empty() {
+            // Queried source values participate in the same identity as the
+            // prefix and runtime files. Unread body bytes do not.
+            let reads = format!("{:?}", self.setup.reads);
+            for byte in reads.bytes() {
+                self.program.generation = (self.program.generation ^ u64::from(byte))
+                    .wrapping_mul(1099511628211);
+            }
             let strings = |values: &[String]| {
                 values
                     .iter()

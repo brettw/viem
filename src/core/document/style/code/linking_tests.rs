@@ -18,8 +18,13 @@ fn resolved(sheet: &StyleSheet, name: &str) -> ResolvedCharacterStyle {
 }
 
 #[test]
-fn links_preserve_the_default_palette_and_exact_name_lookup() {
-    let linked = default_sheet();
+fn links_follow_the_explicit_family_palette_and_exact_name_lookup() {
+    let mut linked = default_sheet();
+    for (name, color) in [("Comment", (115, 123, 130)), ("Statement", (170, 65, 153)), ("String", (38, 132, 77))] {
+        linked.character_styles.get_mut(&id(name)).unwrap().properties.foreground = Some(Color {
+            red: color.0 as f32 / 255., green: color.1 as f32 / 255., blue: color.2 as f32 / 255., alpha: 1.,
+        });
+    }
     validate(&linked).unwrap();
     for (name, color) in [("Comment", (115, 123, 130)), ("Keyword.function", (170, 65, 153)), ("String.escape", (38, 132, 77))] {
         assert_eq!(resolved(&linked, name).foreground, Color { red: color.0 as f32 / 255., green: color.1 as f32 / 255., blue: color.2 as f32 / 255., alpha: 1. });
@@ -53,6 +58,87 @@ fn links_preserve_the_default_palette_and_exact_name_lookup() {
             assert_eq!(linked.character_styles[id].based_on.as_ref(), resolve_name(&linked, parent));
         }
     }
+}
+
+#[test]
+fn diff_groups_have_sparse_aliases_that_follow_explicit_family_colors() {
+    let mut sheet = parse_json(br#"{"version":3}"#).unwrap();
+    for (index, (child, parent)) in [("Added", "DiffAdd"), ("Removed", "DiffDelete"), ("Changed", "DiffChange")].into_iter().enumerate() {
+        let root = &sheet.character_styles[&id(parent)];
+        assert!(root.properties.foreground.is_some(), "{parent} needs a visible syntax color");
+        assert_eq!(root.properties.background, None);
+        let alias = &sheet.character_styles[&id(child)];
+        assert_eq!(alias.based_on, Some(id(parent)));
+        assert_eq!(alias.properties, CharacterProperties::default());
+        let color = Color { red: 0.1 + index as f32 * 0.1, green: 0.4, blue: 0.7, alpha: 1. };
+        sheet.character_styles.get_mut(&id(parent)).unwrap().properties.foreground = Some(color);
+        assert_eq!(resolved(&sheet, child).foreground, color);
+        assert_eq!(resolved(&sheet, parent).foreground, color);
+    }
+    let reloaded = parse_json(&export_snapshot(&sheet).unwrap()).unwrap();
+    assert_eq!(reloaded.character_styles, sheet.character_styles);
+}
+
+#[test]
+fn legacy_diff_definitions_keep_their_saved_identity_color_and_clears() {
+    let color = Color { red: 0.3, green: 0.5, blue: 0.7, alpha: 1. };
+    for (name, saved_id, alias) in [
+        ("DiffAdd", "implicit:DiffAdd", Some("Added")),
+        ("DiffDelete", "custom:removals", Some("Removed")),
+        ("DiffChange", "implicit:DiffChange", Some("Changed")),
+        ("Added", "implicit:Added", None),
+        ("Removed", "custom:Removed", None),
+        ("Changed", "implicit:Changed", None),
+    ] {
+        for foreground in [None, Some(color)] {
+            let saved = CharacterStyle {
+                id: StyleId(saved_id.into()),
+                based_on: None,
+                properties: CharacterProperties { foreground, bold: Some(false), ..Default::default() },
+            };
+            let file = File {
+                version: 3, block_styles: vec![],
+                character_styles: vec![CharacterEntry { name: name.into(), style: saved.clone() }],
+                suppressed_character_ids: BTreeSet::new(),
+            };
+            let sheet = parse_json(&serde_json::to_vec(&file).unwrap()).unwrap();
+            assert_eq!(resolve_name(&sheet, name), Some(&saved.id));
+            assert_eq!(sheet.character_styles[&saved.id], saved, "{name}");
+            assert!(!sheet.character_styles.contains_key(&id(name)));
+            if let Some(alias) = alias {
+                assert_eq!(sheet.character_styles[&id(alias)].based_on, Some(saved.id.clone()));
+                assert_eq!(resolved(&sheet, alias), resolved(&sheet, name));
+            }
+            let reloaded = parse_json(&export_snapshot(&sheet).unwrap()).unwrap();
+            assert_eq!(sheet.character_styles, reloaded.character_styles);
+            assert_eq!(sheet.character_metadata, reloaded.character_metadata);
+        }
+    }
+}
+
+#[test]
+fn diff_defaults_preserve_suppressed_names_and_reject_duplicate_saved_definitions() {
+    let file = File {
+        version: 3, block_styles: vec![], character_styles: vec![],
+        suppressed_character_ids: [id("Added")].into_iter().collect(),
+    };
+    let sheet = parse_json(&serde_json::to_vec(&file).unwrap()).unwrap();
+    assert!(resolve_name(&sheet, "Added").is_none());
+    assert!(resolve_name(&sheet, "DiffAdd").is_some());
+    let mut file = file;
+    file.suppressed_character_ids = [id("DiffAdd")].into_iter().collect();
+    let sheet = parse_json(&serde_json::to_vec(&file).unwrap()).unwrap();
+    assert!(resolve_name(&sheet, "DiffAdd").is_none());
+    assert_eq!(sheet.character_styles[&id("Added")].based_on, None);
+    assert_eq!(sheet.character_styles[&id("Added")].properties, CharacterProperties::default());
+    file.suppressed_character_ids.clear();
+    for saved_id in ["implicit:Added", "syntax:Added"] {
+        file.character_styles.push(CharacterEntry {
+            name: "Added".into(),
+            style: CharacterStyle { id: StyleId(saved_id.into()), based_on: None, properties: Default::default() },
+        });
+    }
+    assert!(parse_json(&serde_json::to_vec(&file).unwrap()).is_err());
 }
 
 #[test]

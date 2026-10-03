@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import ViemAppShell
 import XCTest
 
 @testable import ViemEditor
@@ -216,7 +217,16 @@ final class EVAccessibilityIntegrationTests: XCTestCase {
         text: String,
         size: NSSize = NSSize(width: 520, height: 260)
     ) throws -> (EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-accessibility-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try EVStyleTestFixtures.configure(configuration, format: .plainText, declarations: [
+            (.baseParagraph, .characterSize, .float(14)),
+            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
+            (.baseParagraph, .characterFontAxes, .string("{}")),
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+        ])
+        let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
