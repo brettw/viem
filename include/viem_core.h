@@ -1892,6 +1892,13 @@ typedef struct ViemSetListStyleV1 {
 } ViemSetListStyleV1;
 #define VIEM_SET_LIST_STYLE_V1_SIZE ((uint32_t)sizeof(ViemSetListStyleV1))
 
+typedef struct ViemSetBlockQuoteV1 {
+  uint32_t struct_size;
+  uint32_t enabled;
+  ViemLogicalSelectionIdentityV1 expected_selection;
+} ViemSetBlockQuoteV1;
+#define VIEM_SET_BLOCK_QUOTE_V1_SIZE ((uint32_t)sizeof(ViemSetBlockQuoteV1))
+
 #define VIEM_LIST_CAN_INDENT 1u
 #define VIEM_LIST_CAN_UNINDENT 2u
 typedef struct ViemListIndentV1 {
@@ -2583,6 +2590,9 @@ ViemStatus viem_core_view_copy_table_selection_text(ViemCoreHandle core, ViemVie
 ViemStatus viem_core_view_copy_table_selection_ranges(ViemCoreHandle core, ViemViewId view,
     const ViemTableSelectionV1 *expected, ViemFormattedUtf8RangeV1 *output,
     uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_core_view_set_block_quote(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemSetBlockQuoteV1 *request, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_set_list_style(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetListStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
@@ -2687,6 +2697,10 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
 #define VIEM_SELECTED_STYLE_HAS_BULLETS (1u << 2)
 #define VIEM_SELECTED_STYLE_HAS_NUMBERING (1u << 3)
 #define VIEM_SELECTED_STYLE_HAS_NON_LIST (1u << 4)
+#define VIEM_SELECTED_STYLE_HAS_QUOTES (1u << 5)
+#define VIEM_SELECTED_STYLE_HAS_NON_QUOTE (1u << 6)
+#define VIEM_SELECTED_STYLE_HAS_TABLE (1u << 7)
+#define VIEM_SELECTED_STYLE_HAS_CODE_BLOCK (1u << 8)
 typedef struct ViemSelectedStylesInfoV1 {
   uint32_t struct_size;
   uint32_t flags;

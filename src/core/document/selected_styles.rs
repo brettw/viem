@@ -18,6 +18,11 @@ pub struct SelectedNamedStyles {
     pub has_bullets: bool,
     pub has_numbering: bool,
     pub has_non_list: bool,
+    pub has_quotes: bool,
+    pub has_non_quote: bool,
+    pub has_table: bool,
+    /// Structural code ownership, including quoted fences; excludes inline Code.
+    pub has_code_block: bool,
 }
 
 impl FormattedDocument {
@@ -90,6 +95,9 @@ impl FormattedDocument {
         let mut has_bullets = false;
         let mut has_numbering = false;
         let mut has_non_list = false;
+        let mut has_code_block = false;
+        let mut has_quotes = false;
+        let mut has_non_quote = false;
         for point in boundaries {
             if point == end && start != end {
                 break;
@@ -126,6 +134,10 @@ impl FormattedDocument {
                     } else { block.style.clone() }
                 })
                 .unwrap_or_else(|| self.style_sheet().base_paragraph.clone());
+            has_code_block |= block.is_some_and(|block| block.style.0 == "Code Block"
+                || block.containers.iter().any(|member| member.container.kind == super::ContainerKind::CodeBlock));
+            if block.is_some_and(|block| block.quote_depth > 0) { has_quotes = true; }
+            else { has_non_quote = true; }
             match block.map(|block| &block.kind) {
                 Some(super::BlockKind::ListItem { ordered: false, .. }) => has_bullets = true,
                 Some(super::BlockKind::ListItem { ordered: true, .. }) => has_numbering = true,
@@ -148,6 +160,10 @@ impl FormattedDocument {
             }
         }
         SelectedNamedStyles {
+            has_quotes,
+            has_non_quote,
+            has_code_block,
+            has_table: self.range_intersects_table(&range),
             has_bullets,
             has_numbering,
             has_non_list,
@@ -163,6 +179,26 @@ impl FormattedDocument {
 mod tests {
     use super::*;
     use crate::document::{Document, Encoding, Format};
+
+    #[test]
+    fn code_block_membership_survives_quotes_and_mixed_selections() {
+        for format in [Format::Markdown, Format::MarkdownSource] {
+            for code in ["```mermaid\ngraph LR\n```", "    graph LR", "> ```\n> graph LR\n> ```"] {
+                let source = format!("Before `inline`\n\n{code}\n\nAfter");
+                let doc = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
+                let projection = doc.projection();
+                let at = doc.text().find("graph").unwrap();
+                assert!(projection.selected_named_styles(at..at, BoundaryAffinity::Downstream).has_code_block,
+                    "{format:?}: {code}");
+                assert!(projection.selected_named_styles(0..doc.text().len(), BoundaryAffinity::Downstream).has_code_block);
+                assert!(!projection.selected_named_styles(0..6, BoundaryAffinity::Downstream).has_code_block);
+                let inline = doc.text().find("inline").unwrap();
+                assert!(!projection.selected_named_styles(inline..inline, BoundaryAffinity::Downstream).has_code_block);
+                let after = doc.text().find("After").unwrap();
+                assert!(!projection.selected_named_styles(after..after, BoundaryAffinity::Downstream).has_code_block);
+            }
+        }
+    }
 
     #[test]
     fn list_membership_ignores_depth_and_retains_mixed_non_list_content() {

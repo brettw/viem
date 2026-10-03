@@ -103,13 +103,14 @@ fn nested_list_markers_follow_the_four_structural_depth_styles() {
 
 #[test]
 fn alphabetic_and_roman_markers_format_ordinals_and_fall_back_safely() {
+    // Ordered children above one require a separator to interrupt prose.
     let document = markdown(
-        "1. root\n   26. z\n   27. aa\n       4. iv",
+        "1. root\n\n   26. z\n   27. aa\n\n       4. iv",
     );
     assert_eq!(laid_out_labels(&document), ["1.", "z.", "aa.", "iv."]);
 
     let roman_overflow = markdown(
-        "1. root\n   1. alpha\n      4000. fallback",
+        "1. root\n   1. alpha\n\n      4000. fallback",
     );
     assert_eq!(laid_out_labels(&roman_overflow), ["1.", "a.", "4000."]);
 }

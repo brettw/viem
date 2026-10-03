@@ -61,6 +61,16 @@ A separate numbered list can begin at a different number:
 7. A list may start at a number other than one.
 8. Its displayed numbers continue from that start.
 
+An ordered child starting above one needs a blank separator. Without it, the
+number stays visible as continuation text:
+
+- Parent prose
+  4. This is literal continuation text.
+- Another parent
+
+  4. This is a numbered child after a blank separator.
+  5. Its sibling continues the run.
+
 - This is a loose list.
 
 - Its items have paragraph spacing.
@@ -196,6 +206,18 @@ Header-only tables are valid too:
 
 Left | Center | Right
 :-- | :-: | --:
+
+Tables also retain the inset of their enclosing list or quotation:
+
+- A list item with a table
+
+  | Item | Value |
+  | --- | ---: |
+  | Inside the list | 4 |
+
+> | Quoted item | Value |
+> | --- | ---: |
+> | Inside the quotation | 7 |
 
 ## Unsupported GitHub features
 

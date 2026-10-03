@@ -185,6 +185,61 @@ fn enter_continues_a_quoted_prose_paragraph_with_exact_history() {
 }
 
 #[test]
+fn source_enter_after_quote_marker_keeps_following_body_quoted() {
+    for prefix in ["> ", ">> ", "> > "] {
+        for ending in ["\n", "\r\n"] {
+            for after_space in [false, true] {
+                let source = format!("{prefix}Foo{ending}{}{ending}{prefix}Bar", prefix.trim_end());
+                let mut core = Core::new(document(&source, Format::MarkdownSource));
+                let view = core.add_view(MockTextMeasurementProvider::new(), 500., 250.);
+                let at = core.document().text().find("Bar").unwrap() - usize::from(!after_space);
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
+                core.handle(view, CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(), text_offset: at,
+                    affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false,
+                }).unwrap();
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+                let saved = core.document().source_bytes();
+                let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+                let bar = reopened.projection().blocks().iter().find(|block| reopened.text()[block.range.clone()].contains("Bar")).unwrap();
+                assert_eq!(bar.quote_depth, prefix.matches('>').count(), "{source:?}: {:?}", String::from_utf8_lossy(&saved));
+                assert!(String::from_utf8_lossy(&saved).ends_with(&format!("{prefix}Bar")));
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u')))).unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+                assert_eq!(core.document().source_bytes(), saved);
+            }
+        }
+    }
+}
+
+#[test]
+fn native_quote_toggle_preserves_inner_treatments_and_exact_history() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for source in ["Words", "# Heading", "- Item", "```\ncode\n```"] {
+            let mut core = Core::new(document(source, format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 500., 250.);
+            let expected_source = source.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n");
+            for (enabled, expected_bytes) in [(true, expected_source.as_bytes()), (false, source.as_bytes())] {
+                let expected = core.list_selection_identity(view).unwrap();
+                core.handle(view, CoreEvent::SetBlockQuote { expected, enabled }).unwrap();
+                assert_eq!(core.document().source_bytes(), expected_bytes, "{format:?}: {source}");
+                let selected = core.selected_named_styles(view).unwrap();
+                assert_eq!(selected.has_quotes, enabled);
+                assert_eq!(selected.has_non_quote, !enabled);
+                let reopened = document(std::str::from_utf8(expected_bytes).unwrap(), format);
+                assert_eq!(reopened.text(), core.document().text());
+            }
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u')))).unwrap();
+            assert_eq!(core.document().source_bytes(), expected_source.as_bytes());
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
 fn quote_mapping_and_edits_preserve_utf16_bom_and_non_ascii_source() {
     for (encoding, little) in [(Encoding::Utf16Le, true), (Encoding::Utf16Be, false)] {
         let encode = |text: &str| {

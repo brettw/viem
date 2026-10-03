@@ -7,8 +7,8 @@ import XCTest
 @testable import ViemCoreTextProvider
 
 @MainActor final class EVCharacterStyleMenuTests: XCTestCase {
-    private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
-        let backend = EVCoreDocumentBackend()
+    private func surface(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
+        let backend = EVCoreDocumentBackend(configuration: configuration ?? EVConfigurationStore())
         try backend.read(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
@@ -111,20 +111,25 @@ import XCTest
 
     func testCharacterStyleInheritsEachParagraphFontSizeAndClearsToItsParagraph() throws {
         for (source, type) in [("body\n\n# title", EVDocument.markdownType)] {
-            let (backend, view, session) = try surface(source, type: type)
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-character-inheritance-\(UUID())")
+            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+            let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
             let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
             let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
             let green = EVStyleColor(red: 0, green: 0.5, blue: 0, alpha: 1)
-            for (key, property, value) in [
-                (EVStyleKey.baseParagraph, EVStyleProperty.characterFontFamilies, EVStyleValue.stringList(["Times New Roman"])),
+            try EVStyleTestFixtures.configure(configuration, declarations: [
+                (.baseParagraph, .characterFontFamilies, .stringList(["Times New Roman"])),
+                (.baseParagraph, .characterFontFace, .string("")),
                 (.baseParagraph, .characterSize, .float(12)),
                 (heading, .characterSize, .float(20)),
+                (heading, .characterFontFamilies, nil),
+                (heading, .characterFontFace, nil),
                 (code, .characterFontFamilies, .stringList(["Courier"])),
+                (code, .characterFontFace, .string("")),
+                (code, .characterSize, nil),
                 (code, .characterForeground, .color(green)),
-            ] {
-                _ = try session.editStyle(key: key, expected: backend.styleSheetSnapshot().identity,
-                    mutation: .setDeclaration(property, value))
-            }
+            ])
+            let (backend, view, session) = try surface(source, type: type, configuration: configuration)
             let sheet = try backend.styleSheetSnapshot()
             XCTAssertNil(sheet.definition(for: .defaultParagraph))
             XCTAssertNil(sheet.definition(for: code)?.parentKey)

@@ -216,7 +216,7 @@ fn disjoint_visual_block_deletions_keep_empty_rows_and_exact_history() {
                 let selected = resolve_block_selection(
                     selection,
                     core.layout(view).unwrap().snapshot().unwrap(),
-                    core.document().text(),
+                    &core.document().hard_line_snapshot(),
                 )
                 .unwrap();
                 let mut expected = core.document().text().to_owned();

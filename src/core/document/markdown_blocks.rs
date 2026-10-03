@@ -150,8 +150,14 @@ pub(super) fn marker_prefix_geometry(text: &str) -> Option<(usize, usize)> {
 }
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
+    classify_with_literal_markers(input).0
+}
+
+/// Literal list-looking lines remain prose for both ownership and soft breaks.
+pub(super) fn classify_with_literal_markers(input: &NormalizedText) -> (Vec<Option<ListLine>>, Vec<bool>) {
     let lines = super::paragraph_flow::source_lines(input);
     let mut result = vec![None; lines.len()];
+    let mut literal_markers = vec![false; lines.len()];
     let mut stack: Vec<Item> = Vec::new();
     let mut fence = None;
     let mut fenced_item: Option<Item> = None;
@@ -239,9 +245,17 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
             ordinary_prose = false;
             continue;
         }
-        let marker = marker(text, line.start).filter(|marker| {
-            (marker.indent <= stack.last().map_or(3, |item| item.content_indent + 3))
-                && (!ordinary_prose || !marker.ordered || marker.ordinal == 1 || !stack.is_empty())
+        let candidate = marker(text, line.start);
+        let interrupts_prose = candidate.as_ref().is_some_and(|marker| {
+            ordinary_prose && marker.ordered && marker.ordinal != 1
+                && !stack.iter().any(|item| {
+                    item.indent <= marker.indent && marker.indent < item.content_indent
+                })
+        });
+        literal_markers[index] = interrupts_prose;
+        let marker = candidate.filter(|marker| {
+            marker.indent <= stack.last().map_or(3, |item| item.content_indent + 3)
+                && !interrupts_prose
         });
         if let Some(marker) = marker {
             while stack.last().is_some_and(|item| marker.indent < item.indent) {
@@ -291,7 +305,10 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 fence = Some(open);
                 fenced_item = stack.last().cloned();
             }
-            ordinary_prose = false;
+            ordinary_prose = item_fence.is_none()
+                && !input.text[marker.content_start..line.end].trim().is_empty()
+                && matches!(markdown_block_prefix(&input.text, marker.content_start, line.end).1,
+                    BlockKind::Paragraph);
             continue;
         }
         let (indent_bytes, columns) = indentation(text);
@@ -302,10 +319,10 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
         {
             stack.pop();
         }
-        let structural = !matches!(
+        let structural = !interrupts_prose && (!matches!(
             markdown_block_prefix(&input.text, line.start, line.end).1,
             BlockKind::Paragraph
-        ) || markdown_fence(text).is_some();
+        ) || markdown_fence(text).is_some());
         if let Some(item) = stack
             .last_mut()
             .filter(|item| !structural && (columns >= item.content_indent || !item.after_blank))
@@ -330,11 +347,11 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
                 code: false,
                 content_indent: item.content_indent,
             });
-            ordinary_prose = false;
+            ordinary_prose = true;
         } else {
             stack.clear();
             ordinary_prose = !structural && columns < 4;
         }
     }
-    result
+    (result, literal_markers)
 }

@@ -377,6 +377,10 @@ pub enum CoreEvent {
         expected: LogicalSelectionIdentity,
         style: Option<crate::document::ListStyle>,
     },
+    SetBlockQuote {
+        expected: LogicalSelectionIdentity,
+        enabled: bool,
+    },
     TableEdit {
         document: DocumentId,
         revision: Revision,
@@ -4972,7 +4976,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 });
             }
         }
-        self.materialize_views_after_document_change(view_id, ImmediateLayoutIntent::RevealCaret);
+        self.materialize_views_after_document_change(view_id, ImmediateLayoutIntent::PreserveViewport);
+        if let Err(error) = self.reveal_history_change(view_id, &map, history_before.node) {
+            self.record_presentation_error(view_id, error);
+        }
         let commands = &self
             .views
             .get(&view_id)
@@ -5284,6 +5291,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                         style,
                     },
                 );
+            }
+            CoreEvent::SetBlockQuote { expected, enabled } => {
+                if self.list_selection_identity(view_id)? != expected {
+                    return Err(CoreError::StaleLogicalSelection);
+                }
+                self.reject_table_block_formatting(&expected)?;
+                return self.apply_native_model_request(view_id, ModelRequest::SetBlockQuote {
+                    document: expected.document(), revision: expected.revision(), range: expected.range(), enabled,
+                });
             }
             CoreEvent::SetParagraphStyle { expected, style } => {
                 if self.list_selection_identity(view_id)? != expected {
@@ -6317,9 +6333,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let presentation_result = if changed {
                     self.materialize_views_after_document_change(
                         view_id,
-                        command_presentation_intent,
+                        if history_navigation { ImmediateLayoutIntent::PreserveViewport } else { command_presentation_intent },
                     );
-                    Ok(())
+                    if history_navigation {
+                        self.reveal_history_change(view_id,
+                            outcome.position_map.as_ref().expect("changed history has a position map"),
+                            history_before.expect("history input captures its starting node").node)
+                    } else { Ok(()) }
                 } else if option_layout_changed || command_requests_relayout {
                     self.materialize_immediate_viewport(view_id, command_presentation_intent)
                 } else if command_requests_reveal {
@@ -6384,6 +6404,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetDocumentMode { .. }
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
+            | CoreEvent::SetBlockQuote { .. }
             | CoreEvent::TableEdit { .. }
             | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }
@@ -8239,7 +8260,7 @@ mod tests {
         let resolved = crate::command::visual_block::resolve_block_selection(
             selection,
             snapshot,
-            core.document().text(),
+            &core.document().hard_line_snapshot(),
         )
         .unwrap();
         let expected_register = resolved

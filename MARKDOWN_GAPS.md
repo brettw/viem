@@ -1,6 +1,6 @@
 # Markdown compatibility with GitHub
 
-Updated October 2, 2026. The target is GitHub's rendering of repository
+Updated October 3, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
 from deferred work. It does not claim complete GFM conformance.
@@ -21,11 +21,14 @@ from deferred work. It does not claim complete GFM conformance.
   lists, and list items have explicit owners; contained paragraphs retain
   their own styles. Each owner has its own background, margins, padding, and
   per-side borders, with normal-flow vertical margin collapsing. Removing one
-  treatment preserves the surrounding containers. One ordered-child interruption
-  case remains below.
+  treatment preserves the surrounding containers. Ordered children starting
+  above one need a blank separator before they can interrupt prose; otherwise
+  the marker remains visible continuation text through structural editing.
 - **Code fences:** opener-relative indentation is hidden, and closers permit
   at most three spaces relative to their container. Four-space-indented fence
-  lookalikes stay in the code body. Indented code remains supported.
+  lookalikes stay in the code body. Fences end with their containing quote;
+  a later unquoted fence starts an independent code block. Live edits and
+  reopened files keep those owners separate. Indented code remains supported.
 - **Headings and thematic breaks:** Setext underlines, optional closing ATX
   markers and horizontal rules, including the relevant block precedence.
 - **Strikethrough:** GFM single/double-tilde spans use the generated
@@ -44,6 +47,8 @@ from deferred work. It does not claim complete GFM conformance.
   uses content-sized cells; Source aligns the original syntax through geometry
   without adding source characters. Native insertion, row/column actions and
   rectangular cell editing follow the [table specification](docs/markdown-tables.md).
+  Nested tables honor enclosing list/quote insets and continuous container
+  borders/backgrounds in full, regional and progressive large-cell layout.
   Counted structured matrix puts are explicitly rejected; single puts retain
   the matrix instead of flattening it to text.
 
@@ -61,39 +66,30 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 
 1. **HTML tables.** Raw HTML tables retain literal source. Pipe-table support
    does not enable editing HTML tables, merged cells, or row/column spans.
-2. **Ordered children interrupting prose.** In `- parent\n  4. child\n- tail`,
-   GFM keeps `4. child` as literal continuation of the first item's paragraph;
-   an ordered child starting above 1 needs a blank separator first. Viem's
-   older line classifier still treats it as a nested numbered item, while the
-   grammar-derived container path follows GFM. The supported spelling is
-   `- parent\n\n  4. child\n- tail`. Aligning the classifier also requires
-   repairing Enter, Delete/Backspace, numbering, indentation, and conversion
-   around literal list-looking continuation text; changing recognition alone
-   causes valid edits to fail verification.
 
 ## P2 — deliberate presentation choices and deferred features
 
-3. **Task-list checkboxes.** `[ ]` and `[x]` stay literal bullet-item text;
+2. **Task-list checkboxes.** `[ ]` and `[x]` stay literal bullet-item text;
    there are no checkbox controls.
-4. **Fenced-code syntax highlighting.** Info strings remain preserved in source;
+3. **Fenced-code syntax highlighting.** Info strings remain preserved in source;
    code bodies use Code Block styling without language highlighting.
-5. **Image/reference presentation.** GitHub shows images or linked labels and
+4. **Image/reference presentation.** GitHub shows images or linked labels and
    hides definitions. Viem deliberately displays their source notation with
    Markdown reference styling instead.
-6. **Comments.** GitHub hides comments; Viem deliberately displays and styles
+5. **Comments.** GitHub hides comments; Viem deliberately displays and styles
    them so they remain directly editable.
-7. **Surplus blank separators.** Viem deliberately retains editable empty
+6. **Surplus blank separators.** Viem deliberately retains editable empty
    paragraphs from repeated separator pairs. Do not collapse them to GitHub's
    presentation.
-8. **Unsupported inline HTML.** `<sub>` and `<sup>` retain literal source syntax.
+7. **Unsupported inline HTML.** `<sub>` and `<sup>` retain literal source syntax.
 
 ## P3 — unchanged and not implemented in this pass
 
-9. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
+8. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
    titles, icons and treatments remain unsupported.
-10. **Math and diagrams.** Math expressions stay literal; Mermaid and other
+9. **Math and diagrams.** Math expressions stay literal; Mermaid and other
    diagram fences remain code.
-11. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Heading
+10. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Heading
    anchors/table-of-contents navigation, repository mentions, issue links and
    commit links are separate future work.
 
@@ -108,10 +104,6 @@ Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
 Table event, rendering, and accessibility adapters are implemented on both native
 frontends. macOS has automated native coverage and app interaction checks;
 Windows runtime validation remains outstanding on a Windows development host.
-
-WYSIWYG tables inside lists or block quotes retain their source ownership but
-do not yet apply the enclosing container’s horizontal inset. A table can align
-with the document edge while surrounding content remains indented.
 
 The shared bounded shaper does not yet carry distant explicit Unicode bidi
 embedding, override, or isolate controls into later text slices. A control such

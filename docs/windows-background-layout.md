@@ -1,57 +1,62 @@
-# Background layout follow-up
+# Native background layout
 
-Windows connects the portable speculative-layout policy to a native worker;
-macOS still needs that connection. Current references are
-[portable policy](../src/core/coordinator/prelayout.rs),
-[Windows scheduler](../src/win/Core/BackgroundLayout.cs),
-[Windows regression tests](../src/win/Diagnostics/BackgroundLayoutTests.cs), and
-[the C ABI](../include/viem_core.h). Use their current bounds and ownership
-contracts rather than reproducing a second policy in the frontend.
+macOS and Windows connect the [portable speculative-layout policy](../src/core/coordinator/prelayout.rs)
+to native workers. The core selects bounded gaps near the current viewport and
+validates every dependency when a result is installed. Both frontends keep the
+existing cache budgets and allow foreground input to proceed while workers run.
 
-## TODO(macOS): Connect the native scheduler
+## macOS ownership and scheduling
 
-The ownership point is `EVCoreViewSession` in
-[EVCoreDocument.swift](../src/mac/Editor/Sources/EVCoreDocument.swift).
-`CoreTextMeasurementProvider` permits worker shaping, but its callback response
-storage is not a safe shared UI/worker response lifetime merely because the
-provider is sendable. A second provider with an unrelated render registry is
-also insufficient, even if given the same measurement identity.
+Each `EVCoreViewSession` owns viewport pre-layout and table-width refinement
+instances of [EVBackgroundLayout](../src/mac/Editor/Sources/EVBackgroundLayout.swift).
+They share one serial utility queue across the app. Presentation refresh captures
+eligible work after initial layout and viewport/dependency changes. Caret-only
+movement does not restart idle work; there is no polling timer.
 
-- Give each session ownership of pending work. Trigger after initial layout and
-  relevant viewport/dependency changes, including
-  `EVEditorSurfaceController.refreshPresentation`. Skip composition/unavailable
-  layout; caret-only motion must not restart work and idle must not poll.
-- On the main actor, capture with `viem_core_view_prepare_prelayout` using travel
-  direction `+1` or `-1`; a zero handle means no eligible work. Compute off the
-  main actor with `viem_layout_work_compute`, using only the captured immutable
-  request and worker provider. Return to the main actor to install with
-  `viem_core_view_install_prelayout`.
-- Installation is cache-only: it must not clear presentation exports, change
-  the visible layout revision, move the viewport or request a redraw. Keep
-  visible-layout and speculative-job lifetimes independent. Capture can run
-  at low priority; bounded completed-result installation must not starve behind
-  later input, forcing already-computed geometry to be shaped again.
-- Give worker callbacks independent response arenas with compatible shared
-  measurement identity, metrics generation, render owner and glyph leases.
-  Audit font resolution, invalidation and final lease release. Draw on the main
-  thread, never hold a lock across shaping, and never make UI input wait for
-  the worker.
-- Reuse core selection/bounds and unchanged cache budgets. Keep one pending
-  chunk per view, one computing worker across the app and bounded retries per
-  viewport generation. Chain another chunk only after completion, recapturing
-  the nearest gap from the current viewport rather than retaining a queue.
-- Cancel on edits, resize/zoom/font changes, direction reversal, distant jumps,
-  detach and close. Use `viem_layout_work_cancel`; release requests and
-  uninstalled results with `viem_layout_work_release` exactly once. Installation
-  consumes its result, including stale rejection. Keep callback contexts and
-  leases alive through in-flight work and integrate retirement/deinitialization
-  without blocking the main actor.
+Capture and installation run on the main actor. Computation uses only an immutable
+request and a separately captured Core Text provider. Worker response arenas are
+independent; measurement identities and the native render registry are shared so
+accepted glyph leases remain drawable by the view. Closing a view cancels its
+request without waiting for computation, and retained work releases its request,
+provider and uninstalled result when completion arrives.
 
-Before closing this task, add native tests for worker-thread computation, idle
-scheduling, three prepared pages without foreground shaping, unchanged visible
-layout/caret/scroll position, equivalent Core Text pixels, stale-result rejection
-and resource release with queued or active work on close. Include bounded
-large-document/cache tests and ordinary/rapid paging comparisons with the same
-fixture bytes. Run the native Mac suite and build the app. The
-[performance guide](performance.md) describes the measurement tools and limits;
-old Windows timing results are not acceptance evidence for a Mac implementation.
+Viewport installation is cache-only: it does not clear presentation exports,
+change visible layout identity, move the caret or viewport, or request a redraw.
+Table-width refinement retains its separate visible-update behavior. Each
+scheduler chains one captured chunk at a time, recapturing from the current
+viewport after completion. Viewport work permits at most 32 captures per viewport
+or dependency change, including stale retries. Portable policy bounds the region
+and cache storage; the frontend does not enlarge those budgets.
+
+Edits, resize, metrics/configuration changes, direction reversal, distant jumps,
+composition and detach cancel obsolete work. Nearby movement in the same direction
+can retain useful work; installation still validates its complete identity and
+current eligibility. Rapid input may outrun preparation and synchronously shape
+visible content. It never waits for an offscreen worker.
+
+## Validation
+
+[Native Mac tests](../src/mac/Editor/Tests/EVBackgroundLayoutTests.swift) cover
+worker computation, idle scheduling, three prepared pages without foreground
+shaping, unchanged visible layout/caret/scroll/export state, foreground-versus-worker
+Core Text pixels, stale work after edits/resize/metrics changes, and release after
+close. Large-document fixtures check that unrelated suffix growth does not increase
+idle glyph retention. Ordinary and uninterrupted rapid paging compare the same
+bytes with scheduling enabled and disabled; input timings exclude idle waits.
+
+```sh
+scripts/test-mac.sh --filter EVBackgroundLayoutTests
+scripts/test-mac.sh
+```
+
+The wrapper also rebuilds the app. The [performance guide](performance.md)
+describes broader measurements and their limits. Glyph registry estimates and
+fixture checks are not complete native memory accounting or physical display
+latency measurements.
+
+Windows references remain the [scheduler](../src/win/Core/BackgroundLayout.cs),
+[regression tests](../src/win/Diagnostics/BackgroundLayoutTests.cs), and
+[development guide](../src/win/README.md). Both frontends use the same
+[C ABI](../include/viem_core.h): prepare captures a request, compute returns a
+candidate, install consumes that candidate even on stale rejection, and release
+retires requests or uninstalled candidates exactly once.

@@ -18,6 +18,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private(set) var commandButtons: [EVMenuCommand: NSButton] = [:]
   let characterCode = NSButton()
   let codeBlock = NSButton()
+  let blockQuote = NSButton()
   let formattedView = NSButton()
   let insertTable = EVInsertTableButton()
   private(set) var tablePicker: EVTablePickerController?
@@ -71,6 +72,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     characterGroup.addArrangedSubview(characterCode)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
+    configure(blockQuote, title: "Block Quote", toggle: true)
+    blockQuote.image = Self.blockQuoteImage()
+    blockQuote.action = #selector(toggleBlockQuote(_:))
+    blockGroup.addArrangedSubview(blockQuote)
     configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
     codeBlock.action = #selector(toggleCodeBlock(_:))
     blockGroup.addArrangedSubview(codeBlock)
@@ -142,6 +147,20 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       path.lineWidth = 1; path.stroke(); return true
     }
     image.isTemplate = true; return image
+  }
+
+  private static func blockQuoteImage() -> NSImage {
+    let image = NSImage(size: NSSize(width: 20, height: 14), flipped: false) { _ in
+      NSColor.black.setStroke()
+      NSColor.black.setFill()
+      let outline = NSBezierPath(rect: NSRect(x: 1.5, y: 1.5, width: 17, height: 11))
+      outline.lineWidth = 1
+      outline.stroke()
+      NSRect(x: 1, y: 1, width: 4, height: 12).fill()
+      return true
+    }
+    image.isTemplate = true
+    return image
   }
 
   func openTablePicker(event: NSEvent? = nil) {
@@ -228,10 +247,13 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     }
     refreshCode(characterCode, role: .character, id: "Code", catalogue: next)
     refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
-    if (tableContext?.flags ?? 0) & UInt32(VIEM_TABLE_IN_TABLE) != 0 {
+    blockQuote.state = selected?.quoteState ?? .off
+    blockQuote.isEnabled = selected?.hasCodeBlock == false && next?.entries.contains { $0.role == .paragraph && $0.stableID == "Block quote" && $0.presentation.isEnabled } == true
+    if selected?.hasTable == true {
       paragraphStyle.isEnabled = false
       for action in [EVMenuCommand.bulletedList, .numberedList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
       setHidden(true, for: codeBlock)
+      blockQuote.isEnabled = false
     }
   }
 
@@ -305,6 +327,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }
   @objc func toggleCodeBlock(_ sender: NSButton) { toggleStyle(role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender) }
+  @objc func toggleBlockQuote(_ sender: NSButton) {
+    guard let surface, let session = surface.session,
+          let selected = try? session.selectedNamedStyles(), !selected.hasTable, !selected.hasCodeBlock,
+          let selection = try? session.listSelection(),
+          surface.backend.sourceFormat == .markdown || surface.backend.sourceFormat == .markdownSource else { refresh(); return }
+    surface.performInput { _ = try session.setBlockQuote(selected.quoteState != .on, expected: selection) }
+    finishAction()
+  }
   @objc func toggleFormattedView(_ sender: NSButton) {
     guard let surface else { return }
     let editorWindow = window

@@ -149,13 +149,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         let range = selection.range();
         if selection.kind() == LogicalSelectionKind::Cells
-            || self.document.projection().tables().iter().any(|table| {
-                if range.is_empty() {
-                    table.range.start <= range.start && range.start <= table.range.end
-                } else {
-                    table.range.start < range.end && range.start < table.range.end
-                }
-            })
+            || self.document.projection().range_intersects_table(&range)
         {
             return Err(DocumentError::UnsupportedTableEdit(
                 "Table cells retain their structural paragraph style.",
@@ -195,6 +189,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                     value.has_bullets |= next.has_bullets;
                     value.has_numbering |= next.has_numbering;
                     value.has_non_list |= next.has_non_list;
+                    value.has_quotes |= next.has_quotes;
+                    value.has_non_quote |= next.has_non_quote;
+                    value.has_table |= next.has_table;
+                    value.has_code_block |= next.has_code_block;
                 } else {
                     combined = Some(next);
                 }

@@ -83,6 +83,9 @@ _Static_assert(VIEM_STYLE_ROLE_TABLE == {table_role}, "table style role");
 static ViemStatus (*prepare_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t *) = viem_core_view_prepare_table_refinement;
 static ViemStatus (*install_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t, uint8_t *) = viem_core_view_install_table_refinement;
 static ViemStatus (*table_context)(ViemCoreHandle, ViemViewId, ViemTableContextV1 *) = viem_core_view_table_context;
+_Static_assert(sizeof(ViemSetBlockQuoteV1) == {set_block_quote}, "quote request");
+_Static_assert(offsetof(ViemSetBlockQuoteV1, expected_selection) == {quote_selection}, "quote selection");
+static ViemStatus (*set_block_quote)(ViemCoreHandle, ViemViewId, const ViemSetBlockQuoteV1 *, ViemCoreOutcomeV1 *) = viem_core_view_set_block_quote;
 static ViemStatus (*table_context_at)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint64_t, ViemTableContextV1 *) = viem_core_view_table_context_at;
 static ViemStatus (*insert_table)(ViemCoreHandle, ViemViewId, const ViemInsertTableV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_table;
 static ViemStatus (*table_action)(ViemCoreHandle, ViemViewId, const ViemTableActionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_table_action;
@@ -752,6 +755,8 @@ static void typecheck(void) {{
         visual_selection_rectangle = std::mem::size_of::<ViemVisualSelectionRectangleV1>(),
         place_cursor = std::mem::size_of::<ViemPlaceCursorV1>(),
         assign_style = std::mem::size_of::<ViemAssignStyleV1>(),
+        set_block_quote = std::mem::size_of::<ViemSetBlockQuoteV1>(),
+        quote_selection = std::mem::offset_of!(ViemSetBlockQuoteV1, expected_selection),
         create_style = std::mem::size_of::<ViemCreateStyleV1>(),
         delete_style = std::mem::size_of::<ViemDeleteStyleV1>(),
         set_file_format = std::mem::size_of::<ViemSetFileFormatV1>(),

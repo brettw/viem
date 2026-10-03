@@ -78,6 +78,7 @@ internal sealed unsafe partial class CoreView
     public static ViemStyleEditValueV1 Number(float number) { var v = New<ViemStyleEditValueV1>(); v.kind = VIEM_STYLE_VALUE_FLOAT; v.number = number; return v; }
     public static ViemStyleEditValueV1 Enum(uint kind, uint value) { var v = New<ViemStyleEditValueV1>(); v.kind = kind; v.enum_value = value; return v; }
     public void SetParagraph(uint level) => Apply(o => { var r = New<ViemSetParagraphStyleV1>(); r.level = level; r.expected_selection = LogicalSelection(); return viem_core_view_set_paragraph_style(Document.Handle, Id, &r, o); });
+    public void SetBlockQuote(bool enabled) => Apply(o => { var r = New<ViemSetBlockQuoteV1>(); r.enabled = enabled ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_set_block_quote(Document.Handle, Id, &r, o); });
     public void SetList(uint style) => Apply(o => { var r = New<ViemSetListStyleV1>(); r.style = style; r.expected_selection = LogicalSelection(); return viem_core_view_set_list_style(Document.Handle, Id, &r, o); });
     public void IndentList(bool unindent) => Apply(o => { var r = New<ViemListIndentV1>(); r.unindent = unindent ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_indent_list(Document.Handle, Id, &r, o); });
     public uint ListCapabilities() { var selection = LogicalSelection(); uint caps = 0; Check(viem_core_view_list_indent_capabilities(Document.Handle, Id, &selection, &caps), "Read list actions"); return caps; }

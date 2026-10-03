@@ -185,6 +185,46 @@ internal static class FormattingToolbarTests
             Check(toolbar.Visibility == Visibility.Visible, "returning to Markdown restores its own toolbar preference");
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true); preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, true);
 
+            foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+            {
+                const string inner = "# Heading";
+                var quotedPane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes(inner), format: format));
+                var quotedView = await quotedPane.Ready;
+                await Click(toolbar, ToolbarAction.BlockQuote);
+                Check(State(toolbar, ToolbarAction.BlockQuote) == true && quotedPane.Document.FormattedText().Contains("Heading"), "quote toggle adds an enclosing container");
+                Check(Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == "> # Heading", "quote toggle preserves heading syntax");
+                await Click(toolbar, ToolbarAction.BlockQuote);
+                Check(State(toolbar, ToolbarAction.BlockQuote) == false && Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == inner, "quote toggle removes only quote treatment");
+                quotedView.Undo();
+                Check(State(toolbar, ToolbarAction.BlockQuote) == true, "quote toggle follows shared history");
+
+                const string code = "Before\n\n```mermaid\ngraph LR\n    Writing --> Editing\n```\n\nAfter";
+                var codePane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes(code), format: format));
+                var codeView = await codePane.Ready;
+                var codeText = codePane.Document.FormattedText();
+                codeView.Place((ulong)codeText.IndexOf("graph", StringComparison.Ordinal), VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, codePane.Document.State.document_revision);
+                toolbar.Refresh();
+                Check(toolbar.Buttons[ToolbarAction.BlockQuote].Visibility == Visibility.Visible && !toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled,
+                    "code blocks keep the quote toggle visible but disabled");
+                toolbar.Execute(ToolbarAction.BlockQuote);
+                Check(Encoding.UTF8.GetString(codePane.Document.Source(codePane.Document.State.document_revision)) == code,
+                    "unavailable quote action preserves code source");
+                codeView.Place((ulong)codeText.IndexOf("After", StringComparison.Ordinal), VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, codePane.Document.State.document_revision);
+                toolbar.Refresh();
+                Check(toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled, "quote toggle re-enables outside code");
+            }
+            var tablePane = window.AddPane(new CoreDocument("> | H | V |\n> | --- | ---: |\n> | body | 7 |"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN_SOURCE));
+            var tableView = await tablePane.Ready;
+            ulong delimiter = (ulong)tablePane.Document.FormattedText().IndexOf("---", StringComparison.Ordinal);
+            tableView.Place(delimiter, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, tablePane.Document.State.document_revision);
+            toolbar.Refresh();
+            Check(!toolbar.Paragraph.IsEnabled && !toolbar.Buttons[ToolbarAction.Bullets].IsEnabled && !toolbar.Buttons[ToolbarAction.Numbers].IsEnabled,
+                "source table delimiter disables paragraph and list formatting");
+            Check(toolbar.Buttons[ToolbarAction.BlockQuote].Visibility == Visibility.Visible && !toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled,
+                "source table delimiter keeps the quote toggle visible but disabled");
+            Check(toolbar.Buttons[ToolbarAction.CodeBlock].Visibility == Visibility.Collapsed,
+                "source table delimiter omits the code block toggle");
+
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
                 var literal = window.AddPane(new CoreDocument("text"u8.ToArray(), format: format)); await literal.Ready;

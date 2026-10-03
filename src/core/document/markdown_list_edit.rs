@@ -868,9 +868,16 @@ impl Document {
         let ending = self.file_format().spelling();
         let closing_end = fence.closing_content_end.unwrap_or(fence.body.end);
         let closed = fence.closing_text.is_some();
-        let closing_text = fence
+        let closing_marker = fence
             .closing_text
             .unwrap_or_else(|| (fence.delimiter as char).to_string().repeat(fence.width));
+        // Moving the closer must keep it inside the same quote/list container.
+        let prefix = if matches!(block.kind, BlockKind::ListItem { .. }) {
+            fence.body_prefix.len()
+        } else {
+            crate::document::markdown_quotes::prefix(&fence.body_prefix)
+        };
+        let closing_text = format!("{}{closing_marker}", &fence.body_prefix[..prefix]);
         let (range, syntax) = if after && at == block.range.end {
             let syntax = if closed {
                 let count = if at < self.text().len() {

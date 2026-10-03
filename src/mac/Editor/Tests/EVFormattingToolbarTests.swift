@@ -151,6 +151,138 @@ final class EVFormattingToolbarTests: XCTestCase {
     }
   }
 
+  func testBlockQuoteToolbarTogglesStructureAndPreservesInnerTreatments() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      for source in ["Words", "# Heading", "- Item"] {
+        let (backend, surface) = try surface(source, type: type)
+        let toolbar = surface.formattingToolbar
+        XCTAssertFalse(toolbar.blockQuote.isHidden)
+        XCTAssertEqual(toolbar.blockQuote.state, .off)
+        let group = try XCTUnwrap(toolbar.codeBlock.superview as? NSStackView)
+        let index = try XCTUnwrap(group.arrangedSubviews.firstIndex(of: toolbar.codeBlock))
+        XCTAssertTrue(group.arrangedSubviews[index - 1] === toolbar.blockQuote)
+        toolbar.blockQuote.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(toolbar.blockQuote.state, .on)
+        let quoted = source.split(separator: "\n", omittingEmptySubsequences: false).map { "> \($0)" }.joined(separator: "\n")
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(quoted.utf8))
+        toolbar.blockQuote.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(toolbar.blockQuote.state, .off)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(quoted.utf8))
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      }
+    }
+    let (_, mixed) = try surface("> One\n\nTwo", type: EVDocument.markdownType)
+    mixed.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 7))
+    mixed.formattingToolbar.refresh()
+    XCTAssertEqual(mixed.formattingToolbar.blockQuote.state, .mixed)
+    mixed.formattingToolbar.blockQuote.performClick(nil)
+    XCTAssertNil(mixed.commandOutput)
+    XCTAssertEqual(mixed.formattingToolbar.blockQuote.state, .on)
+  }
+
+  func testSourceTableDelimiterAndPrefixesDisableBlockFormatting() throws {
+    let source = "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7 |"
+    let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+    let toolbar = surface.formattingToolbar
+    let text = try backend.formattedText() as NSString
+    for offset in 0..<text.length {
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: offset, length: 0))
+      toolbar.refresh()
+      XCTAssertFalse(toolbar.paragraphStyle.isEnabled, "at \(offset)")
+      for command in [EVMenuCommand.bulletedList, .numberedList, .increaseIndent, .decreaseIndent] {
+        XCTAssertFalse(try XCTUnwrap(toolbar.commandButtons[command]).isEnabled, "\(command) at \(offset)")
+        XCTAssertFalse(surface.presentation(for: command).isEnabled)
+      }
+      XCTAssertTrue(toolbar.codeBlock.isHidden)
+      XCTAssertFalse(toolbar.blockQuote.isHidden)
+      XCTAssertFalse(toolbar.blockQuote.isEnabled)
+    }
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+    XCTAssertNil(surface.commandOutput)
+  }
+
+  func testBlockQuoteStaysVisibleButDisabledForCodeBlocksAndMixedSelections() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      for code in ["```mermaid\ngraph LR\n    Writing --> Editing\n```", "    indented code", "> ```\n> quoted code\n> ```", "```\n\n```"] {
+        let source = "Before\n\n\(code)\n\nAfter"
+        let (backend, surface) = try surface(source, type: type)
+        let toolbar = surface.formattingToolbar
+        let text = try backend.formattedText() as NSString
+        let start = text.range(of: "Before").length + 1
+        let end = text.range(of: "After").location
+        for range in [NSRange(location: start, length: 0), NSRange(location: 0, length: end)] {
+          surface.editorView.setAccessibilitySelectedTextRange(range)
+          toolbar.refresh()
+          XCTAssertFalse(toolbar.blockQuote.isHidden, code)
+          XCTAssertFalse(toolbar.blockQuote.isEnabled, code)
+          toolbar.toggleBlockQuote(toolbar.blockQuote)
+          XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+          XCTAssertFalse(surface.canUndo)
+        }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "After").location, length: 0))
+        toolbar.refresh()
+        XCTAssertTrue(toolbar.blockQuote.isEnabled)
+      }
+    }
+  }
+
+  func testUndoInDemoMermaidBlockPreservesVisibleTextPosition() throws {
+    let checkout = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent()
+    let source = try String(contentsOf: checkout.appendingPathComponent("docs/markdown_demo.md"), encoding: .utf8)
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      let (backend, surface) = try surface(source, type: type)
+      let session = try XCTUnwrap(surface.session)
+      let text = try backend.formattedText() as NSString
+      let at = text.range(of: "Writing --> Editing").location
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: at, length: 0))
+      func baseline() throws -> Float {
+        let caret = try session.presentation().cursor_utf8_offset
+        let row = try XCTUnwrap(try session.layoutExport().rows.first { $0.text_start <= caret && caret < $0.text_end })
+        return row.baseline - surface.viewportState.top
+      }
+      let rowBaseline = try baseline() + surface.viewportState.top
+      surface.requestVerticalViewport(top: CGFloat(rowBaseline - 120))
+      // The toolbar now forbids this, but existing undo history can contain it.
+      surface.performInput { _ = try session.setBlockQuote(true, expected: session.listSelection()) }
+      let before = try baseline()
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(try baseline(), before, accuracy: 0.1)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(try baseline(), before, accuracy: 0.1)
+    }
+  }
+
+  func testNativeSourceEnterBetweenQuoteMarkerAndSpaceContinuesQuote() throws {
+    let source = "> Foo\n>\n> Bar"
+    let (backend, surface) = try surface(source, type: EVDocument.markdownSourceType)
+    let session = try XCTUnwrap(surface.session)
+    surface.performInput { _ = try session.sendText("i") }
+    let text = try backend.formattedText() as NSString
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "Bar").location - 1, length: 0))
+    surface.editorView.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+    XCTAssertNil(surface.commandOutput)
+    let saved = try backend.serializedSource(typeName: EVDocument.markdownSourceType)
+    XCTAssertTrue(String(decoding: saved, as: UTF8.self).hasSuffix("> Bar"))
+    let (_, reopened) = try self.surface(String(decoding: saved, as: UTF8.self), type: EVDocument.markdownType)
+    let body = try reopened.backend.formattedText() as NSString
+    reopened.editorView.setAccessibilitySelectedTextRange(NSRange(location: body.range(of: "Bar").location, length: 0))
+    XCTAssertEqual(reopened.formattingToolbar.blockQuote.state, .on)
+    surface.perform(menuCommand: .undo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+    surface.perform(menuCommand: .redo, sender: nil)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), saved)
+  }
+
   func testMarkdownSourceListToolbarRemovalSeparatesTheMiddleParagraph() throws {
     for (command, marker) in [(EVMenuCommand.bulletedList, "- "), (.numberedList, "3. ")] {
       let source = "\(marker)Before\n\(marker)Middle\n\(marker)After"

@@ -2242,6 +2242,14 @@ impl ViewLayout {
         super::scroll::reveal_viewport_top(row, current, self.height, self.insets)
     }
 
+    /// Fit a complete changed area when possible, retaining the caret-only
+    /// origin for changes taller than the viewport.
+    pub(crate) fn reveal_fitting_vertical_bounds(&self, bounds: std::ops::Range<f32>) -> f32 {
+        if bounds.end - bounds.start > self.height { return self.viewport_top; }
+        let visible = super::scroll::reveal_vertical_range(self.height, self.insets, bounds.end - bounds.start);
+        self.viewport_top.max(bounds.end - visible.end).min(bounds.start - visible.start)
+    }
+
     pub(crate) fn reveal_viewport_left(&self, bounds: std::ops::Range<f32>, start: f32) -> f32 {
         super::scroll::reveal_viewport_left(bounds, start, self.viewport_left, self.width, self.insets)
     }
@@ -4061,10 +4069,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         // Discover active-row contributions before positioning any row, so a
         // later visible maximum cannot leave earlier cells at stale widths.
         if let Some(context) = &document_styles.table_context {
-            for slice in line_slices {
+            for (index, slice) in line_slices.iter().enumerate() {
                 if context.contains_line(&slice.full_range) {
                     self.table_line(context, &slice.full_range, document_id, document_revision, view,
-                        slice.hard_line_index, layout_revision, content_insets.left, 0., false, &control)?;
+                        slice.hard_line_index, layout_revision, content_insets, &line_paragraphs[index].style, 0., false, &control)?;
                 }
             }
         }
@@ -4079,12 +4087,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 let origin = if hard_line_index == 0 {
                     (content_insets.top + block_box::before(&paragraph.style) * view.scale).max(0.)
                 } else { 0. };
-                if let Some((rows, height)) = self.table_line(context, &line_slice.full_range, document_id,
-                    document_revision, view, hard_line_index, layout_revision, content_insets.left,
+                if let Some((mut rows, height)) = self.table_line(context, &line_slice.full_range, document_id,
+                    document_revision, view, hard_line_index, layout_revision, content_insets, &paragraph.style,
                     origin, false, &control)? {
                     let next = line_paragraphs.get(line_offset + 1).or(following_paragraph.as_ref());
-                    let height = table_line_flow_height(height + origin, &rows, paragraph,
+                    let (height, gap) = table_line_flow_height(height + origin, &rows, paragraph,
                         next, content_insets.bottom, view.scale);
+                    if let Some(row) = rows.first_mut().filter(|row| row.table_cell.is_some()) {
+                        decorate_block_row(row, &paragraph.style, gap, content_insets.left,
+                            usable_width, view.scale, paragraph.style.base_direction == WritingDirection::RightToLeft);
+                    }
                     lines.push(RegionalHardLineLayout { layout_revision, hard_line_index,
                         hard_line_range: line_slice.full_range.clone(), text_coverage: line_slice.full_range.clone(),
                         rows, height: f64::from(height), height_is_exact: true, next_checkpoint: None,
@@ -4761,7 +4773,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             for (index, range) in hard_lines.iter().enumerate() {
                 if context.contains_line(range) {
                     self.table_line(context, range, document_id, document_revision, &whitespace_view,
-                        index, layout_revision, content_insets.left, 0., true, control)?;
+                        index, layout_revision, content_insets, &line_paragraphs[index].style, 0., true, control)?;
                 }
             }
         }
@@ -4784,11 +4796,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             has_previous_paragraph = true;
             if let Some(context) = document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()) {
                 if let Some((mut table_rows, height)) = self.table_line(context, line_range, document_id,
-                    document_revision, &whitespace_view, hard_line_index, layout_revision, content_insets.left, y, true, control)? {
+                    document_revision, &whitespace_view, hard_line_index, layout_revision, content_insets, &paragraph.style, y, true, control)? {
                     y += height;
                     previous_row_start = table_rows.last().map(|row| row.y);
                     rows.append(&mut table_rows);
-                    line_directions.push(false);
+                    line_directions.push(paragraph.style.base_direction == WritingDirection::RightToLeft);
                     continue;
                 }
             }
@@ -4987,8 +4999,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if self.provider.metrics_generation() != metrics_generation {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
+        let mut decorated_table_line = None;
         for row in &mut rows {
-            if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(&row.hard_line_range)) { continue; }
+            if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(&row.hard_line_range)) {
+                if row.table_cell.is_none() || decorated_table_line == Some(row.hard_line_index) { continue; }
+                decorated_table_line = Some(row.hard_line_index);
+            }
             let paragraph = &line_paragraphs[row.hard_line_index];
             decorate_block_row(row, &paragraph.style, resolved_gaps[row.hard_line_index],
                 content_insets.left, usable_width, view.scale, line_directions[row.hard_line_index]);
@@ -6112,6 +6128,7 @@ fn resolve_flow_line_paragraph(
 
 /// Regional heights own the gap to their following block. Table borders and
 /// padding are already included in `height`; only external flow remains here.
+/// Return the total height and the following gap for enclosing box painting.
 fn table_line_flow_height(
     height: f32,
     rows: &[VisualRow],
@@ -6119,23 +6136,24 @@ fn table_line_flow_height(
     next: Option<&LineParagraphLayout>,
     bottom_inset: f32,
     scale: f32,
-) -> f32 {
+) -> (f32, f32) {
     match next {
         Some(next) if starts_new_paragraph(paragraph, next) => {
-            block_box::editable_flow_position(
+            let end = block_box::editable_flow_position(
                 rows.last().map(|row| row.y),
                 height + block_box::between(&paragraph.style, &next.style) * scale,
                 scale,
             )
-            .0
+            .0;
+            (end, end - height)
         }
-        Some(_) => height,
-        None => document_end_extent(
+        Some(_) => (height, 0.),
+        None => (document_end_extent(
             height,
             rows.last(),
             block_box::after(&paragraph.style) * scale,
             bottom_inset,
-        ),
+        ), 0.),
     }
 }
 
@@ -6176,8 +6194,18 @@ fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, sca
 /// let a bounded viewport draw its portion without laying out distant children.
 fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
     resolved_gap: f32, canvas_left: f32, canvas_width: f32, scale: f32, right_to_left: bool) {
-    let first = row.text_range.start == paragraph.text_range.start && row.fragment_index == 0;
-    let last = !row.wraps_to_next && row.text_range.end >= paragraph.text_range.end;
+    // A table row is one normal-flow slice, including its cell and table
+    // padding/borders. Individual cell text rows never own enclosing boxes.
+    let (first, last, start_y, end_y) = if let Some(cell) = &row.table_cell {
+        (true, true, cell.table_row_rect.y, cell.table_row_rect.y + cell.table_row_rect.height)
+    } else {
+        (row.text_range.start == paragraph.text_range.start && row.fragment_index == 0,
+            !row.wraps_to_next && row.text_range.end >= paragraph.text_range.end,
+            row.y, row.y + row.height())
+    };
+    // Parent owners must precede table/cell owners in paint order, so a quote
+    // background cannot paint over the table's own background or borders.
+    let mut child_decorations = if row.table_cell.is_some() { std::mem::take(&mut row.decorations) } else { Vec::new() };
     let (top, bottom) = block_box::vertical_extents(paragraph);
     let gap = if last { resolved_gap } else { 0. };
     let mut left = canvas_left;
@@ -6191,8 +6219,8 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
         right -= (style.margin.right + if right_to_left { style.inline_start } else { style.inline_end }) * scale;
         let is_top = first && starts;
         let is_bottom = last && ends;
-        let y = row.y - if is_top { top[index] * scale } else { 0. };
-        let end = row.y + row.height() + if is_bottom { bottom[index] * scale } else { gap };
+        let y = start_y - if is_top { top[index] * scale } else { 0. };
+        let end = end_y + if is_bottom { bottom[index] * scale } else { gap };
         let rect = LayoutRect { x: left, y, width: (right - left).max(0.), height: (end - y).max(0.) };
         let owner = paragraph.containers.get(index).map_or(DecorationOwner::Paragraph(paragraph.block_id),
             |container| DecorationOwner::Container(container.id));
@@ -6229,6 +6257,7 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
         left += (style.border.left + style.padding.left) * scale;
         right -= (style.border.right + style.padding.right) * scale;
     }
+    row.decorations.append(&mut child_decorations);
 }
 
 fn push_box_rectangle(row: &mut VisualRow, owner: DecorationOwner, kind: DecorationKind, rect: LayoutRect, paint: ResolvedTextPaint) {

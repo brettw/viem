@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 pub(super) fn scope(request: &ModelRequest) -> Option<Range<usize>> {
     match request {
         ModelRequest::SetListStyle { range, .. }
+        | ModelRequest::SetBlockQuote { range, .. }
         | ModelRequest::SetParagraphStyle { range, .. }
         | ModelRequest::AssignNamedStyle {
             range,

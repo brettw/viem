@@ -561,7 +561,9 @@ fn join_following_paragraph(
     let edit_start = if range.start == code.range.start {
         code_source.start
     } else {
-        projection.source_insertion_point(range.start, false)
+        // A line-start boundary is after its hidden container prefix. Keep
+        // that prefix so the joined body remains inside its quote or item.
+        projection.source_insertion_point(range.start, range.start != code.range.end)
             .ok_or(DocumentError::AmbiguousProjection)?
     };
     patches.push((
@@ -649,7 +651,7 @@ pub(super) struct FencedSource {
     pub(super) delimiter: u8,
     pub(super) width: usize,
     opening_marker: usize,
-    body_prefix: String,
+    pub(super) body_prefix: String,
 }
 
 fn is_fenced_paragraph(document: &Document, block: &super::Block) -> Result<bool, DocumentError> {

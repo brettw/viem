@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 mod scroll_endpoints;
 mod horizontal_reveal;
+mod history;
 
 const LINE: &str = "let value = 42; // comment\n";
 

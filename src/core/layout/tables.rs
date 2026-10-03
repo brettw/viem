@@ -119,7 +119,7 @@ impl TableLayoutContext {
             .map_err(LayoutError::from)
     }
 
-    pub(super) fn contains_line(&self, range: &Range<usize>) -> bool {
+    pub(in crate::layout) fn contains_line(&self, range: &Range<usize>) -> bool {
         self.row(range).is_some()
     }
 }
@@ -546,6 +546,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             paragraph.list_marker_decoration = None;
             paragraph.list_marker_range = None;
             paragraph.quote_border = false;
+            paragraph.quote_depth = 0;
             paragraph.thematic_break = false;
         }
         let lines = if context.source {
@@ -593,7 +594,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         view: &LayoutJobViewConfiguration,
         line_index: usize,
         layout_revision: LayoutRevision,
-        x: f32,
+        content_insets: EdgeInsets,
+        paragraph: &ParagraphLayoutStyle,
         y: f32,
         complete_columns: bool,
         control: &LayoutRunControl<'_>,
@@ -609,6 +611,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         if column_count == 0 {
             return Ok(None);
         }
+        // Cell boxes belong to the grid. Only enclosing list/quote boxes
+        // constrain the table's canvas; source markers retain literal geometry.
+        let (left, right) = if context.source {
+            (0., 0.)
+        } else {
+            block_box::horizontal_insets(paragraph,
+                paragraph.base_direction == WritingDirection::RightToLeft)
+        };
+        let x = content_insets.left + left * view.scale;
+        let right_inset = content_insets.right + right * view.scale;
         let cell_style = context.resolved_style("Table cell")?;
         let header_style = context.resolved_style("Table header")?;
         let table_style = context.table_style()?;
@@ -961,7 +973,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let total_width = column_widths.iter().sum::<f32>() + table_left + table_right;
         let available = (view.width
             - x
-            - view.insets.right
+            - right_inset
             - table_style.margin_left * view.scale
             - table_style.margin_right * view.scale)
             .max(0.);
@@ -1686,6 +1698,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for (index, range) in ranges.iter().enumerate() {
             control.checkpoint()?;
             if context.contains_line(range) {
+                let paragraph = resolve_flow_line_paragraph(range, &styles.paragraphs,
+                    &styles.default_shaping_style, Some(context))?;
                 self.table_line(
                     context,
                     range,
@@ -1694,7 +1708,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     view,
                     first + index,
                     revision,
-                    content_insets.left,
+                    content_insets,
+                    &paragraph.style,
                     0.,
                     false,
                     &control,
@@ -1728,7 +1743,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             } else {
                 0.
             };
-            if let Some((rows, height)) = self.table_line(
+            if let Some((mut rows, height)) = self.table_line(
                 context,
                 range,
                 document_id,
@@ -1736,12 +1751,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 view,
                 line_index,
                 revision,
-                content_insets.left,
+                content_insets,
+                &paragraph.style,
                 origin,
                 false,
                 &control,
             )? {
-                let height = table_line_flow_height(
+                let (height, gap) = table_line_flow_height(
                     height + origin,
                     &rows,
                     &paragraph,
@@ -1749,6 +1765,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     content_insets.bottom,
                     view.scale,
                 );
+                if let Some(row) = rows.first_mut().filter(|row| row.table_cell.is_some()) {
+                    decorate_block_row(row, &paragraph.style, gap, content_insets.left,
+                        usable_width(view.width, content_insets),
+                        view.scale, paragraph.style.base_direction == WritingDirection::RightToLeft);
+                }
                 lines.push(RegionalHardLineLayout {
                     layout_revision: revision,
                     hard_line_index: line_index,

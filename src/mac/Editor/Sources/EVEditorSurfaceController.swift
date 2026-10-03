@@ -397,6 +397,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             synchronizeSearchPolling(pending: nextSearchWorkPending)
             session.tableWidthRefinement.didInstall = { [weak self] in self?.refreshPresentation(advancingSearch: false) }
             session.tableWidthRefinement.update()
+            session.backgroundLayout.update()
             updateStatusBar()
             if isViewLoaded {
                 editorView.applyPresentation()

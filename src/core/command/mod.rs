@@ -57,6 +57,9 @@ pub use tables::TableSelectionExtent;
 pub use command_line_edit::{CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot};
 pub use line_mode::{LineLocation, LineMode};
 mod text;
+mod snapshot_motion;
+mod motion;
+use snapshot_motion::{matching_pair, move_sentence};
 
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
@@ -92,7 +95,7 @@ pub use registers::{
 use text::{
     advance_graphemes, find_character, first_non_blank, grapheme_column, grapheme_range_at,
     is_grapheme_boundary, last_grapheme_on_line, last_non_blank, line_count, line_end, line_range,
-    line_start, linewise_range, move_horizontal, move_paragraph, move_sentence, move_vertical,
+    line_start, linewise_range, move_horizontal, move_paragraph, move_vertical,
     move_word_backward, move_word_end, move_word_end_backward, move_word_forward,
     next_grapheme_boundary, next_line_start, normalize_normal_cursor,
     normalize_normal_cursor_snapshot, nth_line_start, position_at_column,
@@ -6415,9 +6418,9 @@ impl CommandInterpreter {
             .as_ref()
             .ok_or(VisualBlockError::EmptyLayout)?;
         if self.visual_to_line_end {
-            resolve_block_selection_to_line_end(selection, context.snapshot, document.text())
+            resolve_block_selection_to_line_end(selection, context.snapshot, &document.hard_line_snapshot())
         } else {
-            resolve_block_selection(selection, context.snapshot, document.text())
+            resolve_block_selection(selection, context.snapshot, &document.hard_line_snapshot())
         }
     }
 
@@ -7477,16 +7480,17 @@ impl CommandInterpreter {
         let selected = block_register_value(document, &resolved, register);
         let edits = match operator {
             Operator::Delete => delete_text_edits(&resolved),
-            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => resolved
-                .range_set
-                .segments
-                .iter()
-                .filter_map(|segment| {
-                    let old = &document.text()[segment.range.clone()];
-                    let replacement = change_case(old, operator);
-                    (old != replacement).then(|| TextEdit::new(segment.range.clone(), replacement))
-                })
-                .collect(),
+            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => {
+                let lines = document.hard_line_snapshot();
+                let mut edits = Vec::new();
+                for segment in &resolved.range_set.segments {
+                    let old = lines.slice_utf8(segment.range.clone())
+                        .map_err(DocumentError::FormattedTextStorage)?;
+                    let replacement = change_case(&old, operator);
+                    if old != replacement { edits.push(TextEdit::new(segment.range.clone(), replacement)); }
+                }
+                edits
+            },
             Operator::Yank => Vec::new(),
             _ => {
                 return Ok(CommandOutput::unsupported(
@@ -8896,6 +8900,20 @@ impl CommandInterpreter {
         if let Some(destination) = local_destination {
             return Some(MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise });
         }
+        if matches!(motion, OperatorMotion::Sentence(_) | OperatorMotion::MatchPair) {
+            let destination = match motion {
+                OperatorMotion::Sentence(forward) => move_sentence(&lines, origin, forward, count),
+                OperatorMotion::MatchPair => matching_pair(&lines, origin)?,
+                _ => unreachable!(),
+            };
+            let end = origin.max(destination);
+            return Some(MotionExtent {
+                range: origin.min(destination)..if motion == OperatorMotion::MatchPair {
+                    lines.next_grapheme_boundary(end).unwrap_or(end)
+                } else { end },
+                kind: MotionKind::Characterwise,
+            });
+        }
         let text = document.text();
         let characterwise = |destination: usize, inclusive: bool| {
             let (start, mut end) = if destination < origin {
@@ -8974,19 +8992,14 @@ impl CommandInterpreter {
                 }
                 Some(characterwise(last_non_blank(text, &lines, target), true))
             }
-            OperatorMotion::Sentence(forward) => Some(characterwise(
-                move_sentence(text, &lines, origin, forward, count),
-                false,
-            )),
+            OperatorMotion::Sentence(_) | OperatorMotion::MatchPair =>
+                unreachable!("snapshot motions returned before materializing text"),
             OperatorMotion::Paragraph(forward) => Some(exclusive_motion_extent(
                 text,
                 &lines,
                 origin,
                 move_paragraph(&lines, origin, forward, count),
             )),
-            OperatorMotion::MatchPair => {
-                matching_pair(text, &lines, origin).map(|target| characterwise(target, true))
-            }
             OperatorMotion::Percentage => {
                 let target = nth_line_start(&lines, percentage_line(&lines, count)?);
                 let first = line_start(&lines, origin.min(target));
@@ -9196,7 +9209,8 @@ impl CommandInterpreter {
                 unreachable!("reflow returned before register and extent policy")
             }
             Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => {
-                let old = document.text()[extent.range.clone()].to_owned();
+                let old = lines.slice_utf8(extent.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
                 let replacement = change_case(&old, operator);
                 if old == replacement {
                     return Ok(CommandOutput::complete());
@@ -9359,12 +9373,12 @@ impl CommandInterpreter {
         let origin = self.cursor.min(lines.text_length());
         match motion {
             OperatorMotion::Sentence(forward) => {
-                Some(move_sentence(document.text(), &lines, origin, forward, count))
+                Some(move_sentence(&lines, origin, forward, count))
             }
             OperatorMotion::Paragraph(forward) => {
                 Some(move_paragraph(&lines, origin, forward, count))
             }
-            OperatorMotion::MatchPair => matching_pair(document.text(), &lines, origin),
+            OperatorMotion::MatchPair => matching_pair(&lines, origin),
             OperatorMotion::Percentage => {
                 Some(nth_line_start(&lines, percentage_line(&lines, count)?))
             }
@@ -11709,14 +11723,20 @@ impl CommandInterpreter {
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
         let lines = document.hard_line_snapshot();
-        let end = advance_graphemes(document.text(), self.cursor, count)
-            .min(line_end(&lines, self.cursor));
+        let mut end = self.cursor;
+        let limit = line_end(&lines, self.cursor);
+        for _ in 0..count {
+            if end >= limit { break; }
+            let Some(next) = lines.next_grapheme_boundary(end) else { break; };
+            end = next.min(limit);
+        }
         if self.cursor == end {
             return Ok(CommandOutput::complete());
         }
         let start = self.cursor;
-        let replacement = change_case(&document.text()[start..end], Operator::ToggleCase);
-        let changed = replacement != document.text()[start..end];
+        let old = lines.slice_utf8(start..end).map_err(DocumentError::FormattedTextStorage)?;
+        let replacement = change_case(&old, Operator::ToggleCase);
+        let changed = replacement != old;
         if changed {
             document.replace(start..end, &replacement)?;
             if !self.replaying {
@@ -11736,7 +11756,7 @@ impl CommandInterpreter {
         self.cursor = if replacement_end < line_end(&lines, start) {
             replacement_end
         } else {
-            last_grapheme_on_line(document.text(), &lines, start)
+            normalize_normal_cursor_snapshot(&lines, line_end(&lines, start))
         };
         Ok(CommandOutput {
             document_changed: changed,
@@ -13446,7 +13466,7 @@ impl CommandInterpreter {
     fn match_pair_motion(&mut self, document: &Document) -> CommandOutput {
         let old = self.cursor;
         let Some(target) =
-            matching_pair(document.text(), &document.hard_line_snapshot(), self.cursor)
+            matching_pair(&document.hard_line_snapshot(), self.cursor)
         else {
             return CommandOutput {
                 status: CommandStatus::SearchNotFound,
@@ -13834,148 +13854,6 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             },
         }
-    }
-
-    fn move_cursor(&mut self, document: &Document, motion: Motion, count: usize) -> CommandOutput {
-        self.retire_typing_context();
-        let text = || document.text();
-        let lines = document.hard_line_snapshot();
-        let old = self.cursor;
-        let in_linear_visual = matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine);
-        let retain_visual_line_end = in_linear_visual && self.visual_to_line_end;
-        self.cursor = match motion {
-            Motion::Horizontal(amount) => move_horizontal(
-                &lines,
-                self.cursor,
-                directional_count(count, amount > 0),
-            ),
-            Motion::InsertionHorizontal(amount) => {
-                let mut position = self.cursor;
-                if amount > 0 {
-                    for _ in 0..count {
-                        let Some(next) = lines.next_grapheme_boundary(position) else {
-                            break;
-                        };
-                        position = next;
-                    }
-                } else {
-                    for _ in 0..count {
-                        let Some(previous) = lines.previous_grapheme_boundary(position) else {
-                            break;
-                        };
-                        position = previous;
-                    }
-                }
-                position
-            }
-            Motion::Vertical(amount) => {
-                let line_position = move_vertical(
-                    text(),
-                    &lines,
-                    self.cursor,
-                    directional_count(count, amount > 0),
-                );
-                if retain_visual_line_end {
-                    self.preferred_column = None;
-                    last_grapheme_on_line(text(), &lines, line_position)
-                } else {
-                    let desired = self
-                        .preferred_column
-                        .unwrap_or_else(|| grapheme_column(text(), &lines, self.cursor));
-                    self.preferred_column = Some(desired);
-                    position_at_column(text(), &lines, line_start(&lines, line_position), desired)
-                }
-            }
-            Motion::LineStart => line_start(&lines, self.cursor),
-            Motion::FirstNonBlank => first_nonblank_document(document, &lines, self.cursor),
-            Motion::LineEnd => {
-                let mut position = self.cursor;
-                for _ in 1..count {
-                    let Some(next) = next_line_start(&lines, position) else {
-                        break;
-                    };
-                    position = next;
-                }
-                last_grapheme_on_line(text(), &lines, position)
-            }
-            Motion::InsertionLineEnd => line_end(&lines, self.cursor),
-            Motion::WordForward(big) => {
-                let target = move_word_forward(text(), self.cursor, big, count);
-                if matches!(self.mode, Mode::Insert | Mode::Replace) { target }
-                else { normalize_normal_cursor(text(), &lines, target) }
-            },
-            Motion::WordEnd(big) => move_word_end(text(), self.cursor, big, count),
-            Motion::WordBackward(big) => move_word_backward(text(), self.cursor, big, count),
-            Motion::WordEndBackward(big) => move_word_end_backward(text(), self.cursor, big, count),
-            Motion::LastNonBlank => {
-                let mut position = self.cursor;
-                for _ in 1..count {
-                    let Some(next) = next_line_start(&lines, position) else {
-                        break;
-                    };
-                    position = next;
-                }
-                last_non_blank(text(), &lines, position)
-            }
-            Motion::Column(one_based) => position_at_column(
-                text(),
-                &lines,
-                line_start(&lines, self.cursor),
-                one_based.saturating_sub(1),
-            ),
-            Motion::LineOffsetFirstNonBlank(amount) => {
-                let line = move_vertical(
-                    text(),
-                    &lines,
-                    self.cursor,
-                    directional_count(count, amount > 0),
-                );
-                first_non_blank(text(), &lines, line)
-            }
-            Motion::Sentence(forward) => normalize_normal_cursor(
-                text(),
-                &lines,
-                move_sentence(text(), &lines, self.cursor, forward, count),
-            ),
-            Motion::Paragraph(forward) => normalize_normal_cursor(
-                text(),
-                &lines,
-                move_paragraph(&lines, self.cursor, forward, count),
-            ),
-        };
-        if !matches!(motion, Motion::Vertical(_)) {
-            self.preferred_column = None;
-        }
-        self.visual_to_line_end = in_linear_visual
-            && (matches!(motion, Motion::LineEnd)
-                || (matches!(motion, Motion::Vertical(_)) && retain_visual_line_end));
-        CommandOutput {
-            cursor_moved: old != self.cursor,
-            ..CommandOutput::complete()
-        }
-    }
-
-    fn move_cursor_as_jump(
-        &mut self,
-        document: &Document,
-        motion: Motion,
-        count: usize,
-    ) -> CommandOutput {
-        let origin = self.cursor;
-        let output = self.move_cursor(document, motion, count);
-        self.record_successful_jump(document, origin, output)
-    }
-
-    fn goto_line(&mut self, document: &Document, one_based: usize) -> CommandOutput {
-        let old = self.cursor;
-        let lines = document.hard_line_snapshot();
-        self.cursor = first_nonblank_document(document, &lines, nth_line_start(&lines, one_based));
-        self.preferred_column = None;
-        let output = CommandOutput {
-            cursor_moved: old != self.cursor,
-            ..CommandOutput::complete()
-        };
-        self.record_successful_jump(document, old, output)
     }
 
     fn push_count(&mut self, digit: char) -> CommandOutput {
@@ -15798,56 +15676,6 @@ fn keyword_range(text: &str, offset: usize) -> Option<Range<usize>> {
     Some(start..end)
 }
 
-fn matching_pair(text: &str, lines: &HardLineSnapshot, offset: usize) -> Option<usize> {
-    let line_limit = line_end(lines, offset);
-    let mut at = offset.min(text.len());
-    let (opening, closing, forward) = loop {
-        let character = text[at..].chars().next()?;
-        let pair = match character {
-            '(' => Some(('(', ')', true)),
-            '[' => Some(('[', ']', true)),
-            '{' => Some(('{', '}', true)),
-            ')' => Some(('(', ')', false)),
-            ']' => Some(('[', ']', false)),
-            '}' => Some(('{', '}', false)),
-            _ => None,
-        };
-        if let Some(pair) = pair {
-            break pair;
-        }
-        at += character.len_utf8();
-        if at >= line_limit {
-            return None;
-        }
-    };
-
-    if forward {
-        let mut depth = 0usize;
-        for (relative, character) in text[at..].char_indices() {
-            if character == opening {
-                depth += 1;
-            } else if character == closing {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(at + relative);
-                }
-            }
-        }
-    } else {
-        let mut depth = 0usize;
-        for (position, character) in text[..=at].char_indices().rev() {
-            if character == closing {
-                depth += 1;
-            } else if character == opening {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(position);
-                }
-            }
-        }
-    }
-    None
-}
 
 #[cfg(test)]
 mod tests {

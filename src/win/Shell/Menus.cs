@@ -19,6 +19,7 @@ internal sealed partial class EditorWindow
     private ToggleMenuFlyoutItem wrapItem = null!;
     private CoreView? View => ActivePane?.View;
     private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+    private bool CanFormatBlocks => Rich && View!.HasFormattingSelection && !View.SelectedNamedStyles().HasTable;
     private MenuFlyoutItem Item(string text, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
     {
         var item = new MenuFlyoutItem { Text = text, KeyboardAcceleratorTextOverride = shortcut };
@@ -83,8 +84,8 @@ internal sealed partial class EditorWindow
             Sub("Select", ActionItem("Word", () => Select("viw")), ActionItem("Sentence", () => Select("vis")), ActionItem("Paragraph", () => Select("vip")), ActionItem("Hard Line", () => Select("V")), ActionItem("Visual Block", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
             Separator(), Sub("Find", ActionItem("Find…", () => Select("/")), ActionItem("Find and Replace…", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", () => Select("n")), ActionItem("Find Previous", () => Select("N"))),
             Sub("Transformations", ActionItem("Make Uppercase", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
-        paragraphMenu = Sub("Paragraph", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => Rich), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => Rich), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => Rich),
-            ActionItem("Indent", () => View?.IndentList(false), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => View != null && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
+        paragraphMenu = Sub("Paragraph", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => CanFormatBlocks), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => CanFormatBlocks), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
+            ActionItem("Indent", () => View?.IndentList(false), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
         characterMenu = Sub("Character");
         validation.Add((paragraphMenu, () => Rich));
         validation.Add((characterMenu, () => Rich));
