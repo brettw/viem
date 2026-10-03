@@ -138,6 +138,13 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
     if preset > 1 {
         return Err("Unknown theme preset".into());
     }
+    if preset == 0 {
+        // Default must remain the complete shipped Midnight preset, including
+        // its independent Text, Markdown, and Code declarations. Embedding the
+        // canonical bytes keeps damaged bundles usable without a second copy
+        // of the preset's typography and colors or a runtime resource read.
+        return Ok(include_bytes!("../../../assets/themes/Midnight.json").to_vec());
+    }
     let defaults = StyleSheet::default()
         .default_configuration_json(&DocumentStyleAssignment::new("Paragraph".into()))
         .map_err(|error| error.to_string())?;
@@ -250,6 +257,71 @@ mod tests {
             if preset == 0 {
                 let packaged: Value = serde_json::from_slice(&packaged).unwrap();
                 assert_eq!(value, packaged);
+            }
+        }
+        for name in ["Midnight Mono", "Typewriter"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("assets/themes/{name}.json"));
+            validate_json(&std::fs::read(path).unwrap()).unwrap();
+        }
+    }
+    #[test]
+    fn midnight_default_resolves_its_distinct_family_typography_and_table_palette() {
+        let value: Value = serde_json::from_slice(&default_json(0).unwrap()).unwrap();
+        for (family, weight) in [("text", 300), ("markdown", 350), ("code", 350)] {
+            let bytes = serde_json::to_vec(&value["styles"][family]).unwrap();
+            let sheet = if family == "code" {
+                code_style::parse_json(&bytes).unwrap()
+            } else {
+                let (sheet, diagnostics) = StyleSheet::default().with_default_json(&bytes).unwrap();
+                assert!(diagnostics.is_empty(), "{diagnostics:?}");
+                sheet
+            };
+            let paragraph = sheet.default_paragraph_style().unwrap();
+            assert_eq!(
+                paragraph.character.font_families,
+                ["RecursiveMonoCsl-Light"]
+            );
+            assert_eq!(paragraph.character.size, 16.0);
+            assert_eq!(paragraph.character.weight, weight);
+            assert_eq!(paragraph.character.font_axes["wght"], f32::from(weight));
+            assert_eq!(
+                paragraph.line_spacing,
+                super::super::LineSpacing::Multiplier(1.1)
+            );
+            if family == "markdown" {
+                assert_eq!((paragraph.margin_top, paragraph.margin_bottom), (15.0, 2.0));
+                let header = sheet
+                    .resolve_paragraph_style(
+                        &"Paragraph".into(),
+                        &"Table header".into(),
+                        None,
+                        &Default::default(),
+                        &Default::default(),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    (
+                        header.padding_top,
+                        header.padding_right,
+                        header.padding_bottom,
+                        header.padding_left
+                    ),
+                    (8.0, 8.0, 8.0, 8.0)
+                );
+                assert_eq!(
+                    (header.border_top_width, header.border_bottom_width),
+                    (1.0, 3.0)
+                );
+                assert_eq!(
+                    header.border_top_color,
+                    Some(super::super::Color {
+                        red: 0.54029304,
+                        green: 0.540293,
+                        blue: 0.540293,
+                        alpha: 1.0
+                    })
+                );
             }
         }
     }

@@ -413,7 +413,7 @@
             "leading_indent" : null,
             "line_spacing" : null,
             "margin_bottom" : null,
-            "margin_left" : 30,
+            "margin_left" : 40,
             "margin_right" : null,
             "margin_top" : 14,
             "padding_bottom" : 10,
@@ -426,8 +426,12 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
-            "font_families" : null,
+            "font_axes" : {
+              "wght" : 300
+            },
+            "font_families" : [
+              "FlightlineCode-Normal_ExtraLight"
+            ],
             "foreground" : {
               "alpha" : 1,
               "blue" : 0,
@@ -442,7 +446,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : null
+            "weight" : 300
           },
           "id" : "Code Block",
           "name" : "Code Block",
@@ -1098,9 +1102,9 @@
             "direction" : "Natural",
             "font_axes" : {
               "CASL" : 0,
-              "CRSV" : 0.5,
+              "CRSV" : 1,
               "MONO" : 0,
-              "slnt" : 0,
+              "slnt" : -10,
               "wght" : 350
             },
             "font_families" : [
@@ -1121,6 +1125,150 @@
           },
           "id" : "Paragraph",
           "name" : "Base Paragraph",
+          "next_paragraph_style" : null,
+          "role" : "Paragraph"
+        },
+        {
+          "based_on" : "Paragraph",
+          "block" : {
+            "alignment" : null,
+            "background" : null,
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : null,
+            "border_left_color" : null,
+            "border_left_width" : null,
+            "border_right_color" : null,
+            "border_right_width" : null,
+            "border_top_color" : null,
+            "border_top_width" : null,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
+            "margin_left" : 40,
+            "margin_right" : null,
+            "margin_top" : 14,
+            "padding_bottom" : null,
+            "padding_left" : null,
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "underline" : null,
+            "weight" : null
+          },
+          "id" : "Table",
+          "name" : "Table",
+          "next_paragraph_style" : null,
+          "role" : "Table"
+        },
+        {
+          "based_on" : "Paragraph",
+          "block" : {
+            "alignment" : null,
+            "background" : null,
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : 1,
+            "border_left_color" : null,
+            "border_left_width" : 1,
+            "border_right_color" : null,
+            "border_right_width" : 1,
+            "border_top_color" : null,
+            "border_top_width" : 1,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
+            "margin_left" : null,
+            "margin_right" : null,
+            "margin_top" : null,
+            "padding_bottom" : 6,
+            "padding_left" : 10,
+            "padding_right" : 10,
+            "padding_top" : 6,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "underline" : null,
+            "weight" : null
+          },
+          "id" : "Table cell",
+          "name" : "Table cell",
+          "next_paragraph_style" : null,
+          "role" : "Paragraph"
+        },
+        {
+          "based_on" : "Table cell",
+          "block" : {
+            "alignment" : null,
+            "background" : null,
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : null,
+            "border_left_color" : null,
+            "border_left_width" : null,
+            "border_right_color" : null,
+            "border_right_width" : null,
+            "border_top_color" : null,
+            "border_top_width" : null,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
+            "margin_left" : null,
+            "margin_right" : null,
+            "margin_top" : null,
+            "padding_bottom" : null,
+            "padding_left" : null,
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : true,
+            "direction" : null,
+            "font_axes" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "underline" : null,
+            "weight" : null
+          },
+          "id" : "Table header",
+          "name" : "Table header",
           "next_paragraph_style" : null,
           "role" : "Paragraph"
         }
@@ -1161,9 +1309,11 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
+            "font_axes" : {
+              "wght" : 300
+            },
             "font_families" : [
-              "monospace"
+              "FlightlineCode-Normal"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -1179,7 +1329,7 @@
             "slant" : null,
             "strikethrough" : null,
             "underline" : null,
-            "weight" : null
+            "weight" : 300
           }
         },
         {

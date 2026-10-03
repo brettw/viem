@@ -78,7 +78,7 @@ mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
 cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
 # Theme presets are versioned resources. Profiles copy these when first made;
-# the core also carries an independent Midnight fallback for missing resources.
+# the core embeds Midnight as its fallback when runtime resources are missing.
 mkdir -p "$resources_dir/themes"
 cp "$project_dir/assets/themes/"*.json "$resources_dir/themes/"
 # App-local fonts and their original license/attribution files. Replace the

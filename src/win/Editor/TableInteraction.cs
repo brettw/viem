@@ -18,6 +18,8 @@ internal sealed partial class EditorPane
     private bool tableContextFromPointer;
     private ViemTableContextV1? tableContextTarget;
     private Rect tableActivation;
+    private TableHoverKind tableWidgetKind;
+    private ulong tableWidgetTableId, tableWidgetRow;
     private Point tableWidgetViewport;
     private bool tablePopupTracking;
     private ViemTableCellV1? tableDragAnchor;
@@ -42,26 +44,33 @@ internal sealed partial class EditorPane
     private void TableHover(Point point)
     {
         if (View == null || snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) { HideTableWidget(); return; }
+        if (point.X < 0 || point.Y < 0 || point.X >= Canvas.ActualWidth || point.Y >= Canvas.ActualHeight) { HideTableWidget(); return; }
+        Rect? retention = null;
         if (tableWidget?.Visibility == Visibility.Visible) {
-            var w = new Rect(tableWidget.Margin.Left, tableWidget.Margin.Top, tableWidget.Width, tableWidget.Height);
-            var path = new Rect(Math.Min(w.Left, tableActivation.Left) - 3, Math.Min(w.Top, tableActivation.Top) - 3,
-                Math.Max(w.Right, tableActivation.Right) - Math.Min(w.Left, tableActivation.Left) + 6,
-                Math.Max(w.Bottom, tableActivation.Bottom) - Math.Min(w.Top, tableActivation.Top) + 6);
-            if (path.Contains(point) || tablePopupTracking) return;
+            var widget = new Rect(tableWidget.Margin.Left, tableWidget.Margin.Top, tableWidget.Width, tableWidget.Height);
+            if (widget.Contains(point) || tablePopupTracking) return;
+            retention = TableHoverGeometry.RetentionPath(widget, tableActivation);
         }
+        var visible = new Rect(0, 0, Canvas.ActualWidth, Canvas.ActualHeight);
         foreach (var cell in snapshot.TableCells) {
             var rect = OffsetRect(cell.rect, viewport); var table = OffsetRect(cell.table_rect, viewport);
-            bool column = point.Y >= table.Top - 3 && point.Y <= table.Top + 1 && point.X >= rect.Left && (point.X < rect.Right || point.X == table.Right);
-            bool row = point.X >= table.Left - 20 && point.X <= table.Left + 1 && point.Y >= rect.Top && (point.Y < rect.Bottom || point.Y == table.Bottom);
-            if (!column && !row) continue;
+            if (TableHoverGeometry.Hit(point, rect, table, visible) is not { } kind) continue;
+            var activation = TableHoverGeometry.Activation(kind, rect, table);
+            if (retention != null && kind == tableWidgetKind && activation.Equals(tableActivation)) return;
+            // A flipped toolbar's bridge crosses the opposite gutter of the same row.
+            if (retention is { } rowPath && rowPath.Contains(point)
+                && kind != TableHoverKind.Column && tableWidgetKind != TableHoverKind.Column
+                && cell.table_id == tableWidgetTableId && cell.row == tableWidgetRow) return;
             var context = View.TableContextAt(cell.text_start, snapshot.Info.identity.document_id, snapshot.Info.identity.document_revision);
-            if ((context.flags & 2) != 0) ShowTableWidget(context, column, rect, table);
+            if ((context.flags & 2) != 0) ShowTableWidget(context, kind, rect, table);
             return;
         }
+        if (retention is { } path && path.Contains(point)) return;
         HideTableWidget();
     }
-    private void ShowTableWidget(ViemTableContextV1 context, bool column, Rect cell, Rect table)
+    private void ShowTableWidget(ViemTableContextV1 context, TableHoverKind kind, Rect cell, Rect table)
     {
+        bool column = kind == TableHoverKind.Column;
         if (tableWidget == null) {
             tableWidget = new Border { CornerRadius = new(5), Padding = new(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
             Children.Add(tableWidget);
@@ -93,16 +102,18 @@ internal sealed partial class EditorPane
             row.Children.Add(button);
         }
         double width = actions.Count * 28 + 6, height = 30;
-        double x = column ? cell.X + cell.Width / 2 - width / 2 : table.X - width - 4;
-        double y = column ? table.Y - height - 4 : cell.Y + cell.Height / 2 - height / 2;
-        if (!column && x < 0 && table.Right + width + 4 < Canvas.ActualWidth) x = table.Right + 4;
-        if (y < 0) y = cell.Bottom + 4;
-        x = Math.Clamp(x, 0, Math.Max(0, Canvas.ActualWidth - width)); y = Math.Clamp(y, 0, Math.Max(0, Canvas.ActualHeight - height));
-        tableWidget.Width = width; tableWidget.Height = height; tableWidget.Margin = new(x, y, 0, 0); tableWidget.Visibility = Visibility.Visible;
-        tableActivation = column ? new(cell.X, table.Y - 3, cell.Width, 4) : new(table.X - 20, cell.Y, 21, cell.Height);
+        var placement = TableHoverGeometry.Placement(kind, cell, table, new(width, height), new(Canvas.ActualWidth, Canvas.ActualHeight));
+        tableWidget.Width = width; tableWidget.Height = height; tableWidget.Margin = new(placement.X, placement.Y, 0, 0); tableWidget.Visibility = Visibility.Visible;
+        tableActivation = TableHoverGeometry.Activation(kind, cell, table); tableWidgetKind = kind;
+        tableWidgetTableId = context.table_id; tableWidgetRow = context.row;
         tableWidgetIdentity = snapshot!.Info.identity; tableWidgetViewport = new(viewport.left, viewport.top);
         tableWidgetSelection = context.selection;
     }
+#if DEBUG
+    internal void HoverTableForTest(Point point) => TableHover(point);
+    internal Border? VisibleTableWidgetForTest => tableWidget?.Visibility == Visibility.Visible ? tableWidget : null;
+#endif
+
     private void PerformTableAction(ViemTableContextV1 context, uint action, uint alignment = 0)
     {
         Run(() => View?.TableAction(action, context, alignment)); HideTableWidget(); FocusEditor();
