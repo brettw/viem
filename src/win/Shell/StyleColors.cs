@@ -44,6 +44,8 @@ internal sealed partial class StyleWindow
     {
         if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && style.UsesThemeForeground) return preferences.Theme.Foreground;
         var value = style.Value(property);
+        if (style.UsesTextColor(property))
+            return StyleColor(style, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
         if (value.kind != VIEM_STYLE_VALUE_COLOR) return Microsoft.UI.Colors.Transparent;
         static byte Channel(float channel) => (byte)Math.Round(Math.Clamp(channel, 0, 1) * 255);
         return Color.FromArgb(Channel(value.color.alpha), Channel(value.color.red), Channel(value.color.green), Channel(value.color.blue));
@@ -54,6 +56,18 @@ internal sealed partial class StyleWindow
         else if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
         else if (property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR)
             SetColor(property, NewBlockBackground());
+        else if (BlockRows.Any(row => row.Properties.Contains(property))) {
+            if (StyleDefinition.IsBorderColor(property)) {
+                bool followsText = selected.UsesTextColor(property);
+                if (followsText && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
+                else {
+                    var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0);
+                    value.color = selected.Value(followsText ? VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND : property).color;
+                    EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
+                }
+            }
+            else EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(selected.Value(property).number));
+        }
         else view.DeclareEffectiveStyle(selected, property, sheet);
     }
     private Color NewBlockBackground()
@@ -106,7 +120,7 @@ internal sealed partial class StyleWindow
         return swatch;
     }
 
-    private void ColorControl(Panel row, string label, uint property)
+    private void ColorControl(Panel row, string label, uint property, bool caption = true)
     {
         var well = new Border();
         var button = new Button { Content = ColorSwatch(well), Padding = new(0), MinWidth = 28, Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), BorderThickness = new(0) };
@@ -128,7 +142,7 @@ internal sealed partial class StyleWindow
         presenter.Setters.Add(new Setter(FrameworkElement.MaxWidthProperty, 600d));
         flyout.FlyoutPresenterStyle = presenter;
         button.Flyout = flyout;
-        Property(row, label, property, button);
+        Property(row, label, property, button, caption);
         bool open = false, assigning = false, didChange = false;
         Color committed = default;
         Color? pending = null;

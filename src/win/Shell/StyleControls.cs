@@ -42,7 +42,7 @@ internal sealed partial class StyleWindow
         enabled.Click += (_, _) => {
             if (loading) return;
             Try(() => { if (enabled.IsChecked == true) DeclareEffective(property);
-                else view.EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default); });
+                else EditLinkedProperty(VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default); });
         };
         return group;
     }
@@ -98,7 +98,7 @@ internal sealed partial class StyleWindow
         var group = Property(row, label, property, body, caption);
         if (caption) group.Width = groupWidth ?? 188;
         refreshFields.Add(() => value.Value = ShowsValue(property) ? selected.Value(property).number : double.NaN);
-        value.ValueChanged += (_, _) => { if (!loading && double.IsFinite(value.Value)) Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number((float)value.Value))); };
+        value.ValueChanged += (_, _) => { if (!loading && double.IsFinite(value.Value)) Try(() => EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number((float)value.Value))); };
     }
     private void Choice(Panel row, string label, uint property, uint valueKind, string[] choices, uint[] values)
     {
@@ -121,7 +121,7 @@ internal sealed partial class StyleWindow
     private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
     {
         var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); value.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f };
-        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, value, group);
+        EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, value, group);
     }
     private void BuildCharacter()
     {
@@ -133,22 +133,6 @@ internal sealed partial class StyleWindow
         character.Children.Add(Separator());
         row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2");
     }
-    private void BuildBlock()
-    {
-        ColorControl(Row(block), "Background color", VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND);
-        foreach (var side in new[] {
-            ("Top", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP, VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR),
-            ("Right", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT, VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR),
-            ("Bottom", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM, VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR),
-            ("Left", VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR) }) {
-            var row = Row(block);
-            Number(row, side.Item1 + " margin", side.Item2, width: 70, groupWidth: 138);
-            Number(row, side.Item1 + " padding", side.Item3, min: 0, width: 70, groupWidth: 138);
-            Number(row, side.Item1 + " border weight", side.Item4, min: 0, width: 70, groupWidth: 138);
-            ColorControl(row, side.Item1 + " border color", side.Item5);
-        }
-    }
-
     private void BuildParagraph()
     {
         var top = new Grid(); top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });

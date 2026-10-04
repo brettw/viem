@@ -62,6 +62,7 @@ internal static class StyleInspectorBehaviorTests
             await CacheRegressions(pane, preferences);
             return;
         }
+        await LinkedBlockControls(pane, preferences);
         await CodeBlockBackground(pane, preferences);
         DocumentPicker(pane, preferences);
         await Following(pane, preferences);
@@ -118,6 +119,50 @@ internal static class StyleInspectorBehaviorTests
             inspector.Close();
             for (int index = 0; index < formats.Length; index++) preferences.SaveThemeStyles(formats[index], original[index]);
         }
+    }
+
+    private static async Task LinkedBlockControls(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        using var document = new CoreDocument("> Block controls"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences, followCaret: false);
+        inspector.Activate(); await Task.Delay(150);
+        uint[] margins = [VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT, VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT, VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP, VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM];
+        uint[] colors = [VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR, VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR];
+        try {
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Block quote");
+            var selected = Selected(inspector);
+            for (int i = 0; i < margins.Length; i++) inspector.ThemeView.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, margins[i], CoreView.Number(new float[] { 0, -3, 8, 4 }[i]));
+            foreach (uint property in colors) inspector.ThemeView.EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default);
+            var foreground = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0);
+            foreground.color = new() { red = .2f, green = .4f, blue = .6f, alpha = 1 };
+            inspector.ThemeView.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, foreground);
+            inspector.RefreshForTesting();
+            var tab = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => Equals(b.Content, "Block"));
+            tab.IsChecked = true; inspector.RootControl.UpdateLayout();
+            var toggle = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Link block sides");
+            toggle.IsChecked = true;
+            Check(margins.All(p => Selected(inspector).Value(p).number == -3), "Block lock copies the first nonzero value in left, right, top, bottom order");
+            Check(colors.All(p => !Selected(inspector).Declares(p)), "Block lock preserves unspecified border colors");
+            var button = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Bottom border color");
+            Check(SwatchColor(button) == Color.FromArgb(255, 51, 102, 153), "Unspecified border swatches follow the style text color");
+            var bottom = Children<NumberBox>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Bottom margin");
+            bottom.Value = 3;
+            Check(margins.All(p => Selected(inspector).Value(p).number == 3), "A native bottom margin edit updates all linked margins");
+            inspector.UndoThemeForTesting();
+            Check(margins.All(p => Selected(inspector).Value(p).number == -3), "One theme Undo restores every linked side");
+            inspector.RedoThemeForTesting();
+            Check(margins.All(p => Selected(inspector).Value(p).number == 3), "Theme Redo reapplies every linked side");
+            toggle.IsChecked = false;
+            Check(margins.All(p => Selected(inspector).Value(p).number == 3), "Unlocking preserves side values");
+            bottom.Value = 7;
+            Check(Selected(inspector).Value(margins[3]).number == 7 && Selected(inspector).Value(margins[0]).number == 3,
+                "An unlocked native field changes only its side");
+            Check(!document.IsDirty, "Linked block controls leave source clean");
+        }
+        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
 
     private static unsafe void BlockPreview(EditorPane pane, Preferences preferences)
@@ -189,6 +234,24 @@ internal static class StyleInspectorBehaviorTests
         int exports = view.StyleExports;
         for (int i = 0; i < 40; i++) view.Styles();
         Check(view.StyleExports == exports, "Unchanged stylesheet reads perform no full exports");
+        foreach (uint property in new[] { VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR, VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR,
+            VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR, VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND })
+            view.EditStyle(quote, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default);
+        var baseStyle = view.Styles().Styles.Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+        view.EditStyle(baseStyle, VIEM_STYLE_EDIT_CLEAR_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, default);
+        view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, CoreView.Number(2));
+        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        foreach (var current in new[] { foreground, Color.FromArgb(255, 120, 60, 30) }) {
+            foreground = current;
+            preview.Update(sheet, quote, foreground);
+            var borders = preview.Layout(560, 300).Decorations.Where(d => (d.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) != 0).ToArray();
+            Check(borders.Length > 0 && borders.All(d => Math.Abs(d.paint.foreground.red - foreground.R / 255f) < .001f
+                && Math.Abs(d.paint.foreground.green - foreground.G / 255f) < .001f && Math.Abs(d.paint.foreground.blue - foreground.B / 255f) < .001f),
+                "Unspecified preview borders follow the current theme text color");
+            using var fresh = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
+            fresh.Update(sheet, quote, foreground);
+            Check(Pixels(preview).SequenceEqual(Pixels(fresh)), "Current text border fallback matches fresh preview pixels after a theme color change");
+        }
         Check(document.Source(document.State.document_revision).SequenceEqual(source),
             "Block preview leaves the inspected document source unchanged");
     }

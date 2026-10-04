@@ -15,6 +15,10 @@ internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, 
     public bool Has(uint capability) => (Native.capabilities & capability) != 0;
     public bool Declares(uint property) => Properties.TryGetValue(property, out var p) && (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0;
     public ViemStyleValueV1 Value(uint property) => Properties.TryGetValue(property, out var p) ? p.effective : default;
+    public static bool IsBorderColor(uint property) => property is VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR
+        or VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR or VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR or VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR;
+    public bool UsesTextColor(uint property) => IsBorderColor(property) && (!Properties.TryGetValue(property, out var value)
+        || !Declares(property) && value.contributor_style_id.length == 0 && value.contributor_kind == VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY);
     public bool UsesThemeForeground => !Properties.TryGetValue(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, out var property)
         || (!Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND) && property.contributor_style_id.length == 0
             && property.contributor_kind == VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY);

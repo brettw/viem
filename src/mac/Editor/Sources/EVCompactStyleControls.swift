@@ -146,6 +146,14 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var fontFaces: [EVFontFace] = []
     private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
     private let sectionSpacing = NSFont.systemFontSize
+    private let blockLock = NSButton()
+    // Physical order is also the precedence when linking existing values.
+    private static let blockRows: [(String, [EVStyleProperty])] = [
+        ("Margin", [.blockMarginLeft, .blockMarginRight, .blockMarginTop, .blockMarginBottom]),
+        ("Border weight", [.blockBorderLeftWidth, .blockBorderRightWidth, .blockBorderTopWidth, .blockBorderBottomWidth]),
+        ("Border color", [.blockBorderLeftColor, .blockBorderRightColor, .blockBorderTopColor, .blockBorderBottomColor]),
+        ("Padding", [.blockPaddingLeft, .blockPaddingRight, .blockPaddingTop, .blockPaddingBottom]),
+    ]
 
     /// Non-selectable divider row between the picker's two portable system
     /// entries and the sorted list of installed fonts. NSComboBox has no
@@ -265,33 +273,39 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         )
         configure(paragraphView, rows: [paraToolbar, separator(), indents, row([line, NSView()])])
 
-        // Each row describes one physical side of the CSS box. Reuse the same
-        // declaration-aware native controls and color chooser as text highlight.
-        let background = row([color(.blockBackground, title: "Background Color"), NSView()])
-        let sides: [(String, EVStyleProperty, EVStyleProperty, EVStyleProperty, EVStyleProperty)] = [
-            ("Top", .blockMarginTop, .blockPaddingTop, .blockBorderTopWidth, .blockBorderTopColor),
-            ("Right", .blockMarginRight, .blockPaddingRight, .blockBorderRightWidth, .blockBorderRightColor),
-            ("Bottom", .blockMarginBottom, .blockPaddingBottom, .blockBorderBottomWidth, .blockBorderBottomColor),
-            ("Left", .blockMarginLeft, .blockPaddingLeft, .blockBorderLeftWidth, .blockBorderLeftColor),
-        ]
-        let sideRows = sides.map { side, margin, padding, border, borderColor in
-            let label = NSTextField(labelWithString: side)
-            label.font = .systemFont(ofSize: 11, weight: .medium)
-            label.widthAnchor.constraint(equalToConstant: 42).isActive = true
-            return row([label,
-                numeric(margin, title: margin.displayName, width: 45, showsLabel: false),
-                numeric(padding, title: padding.displayName, width: 45, showsLabel: false),
-                numeric(border, title: border.displayName, width: 45, showsLabel: false),
-                color(borderColor, title: "", showsLabel: false), NSView()], spacing: 12)
+        blockLock.setButtonType(.pushOnPushOff)
+        blockLock.bezelStyle = .texturedRounded
+        blockLock.imagePosition = .imageOnly
+        blockLock.target = self
+        blockLock.action = #selector(blockLockChanged(_:))
+        blockLock.setAccessibilityLabel("Link block sides")
+        blockLock.widthAnchor.constraint(equalToConstant: 31).isActive = true
+        blockLock.heightAnchor.constraint(equalToConstant: 27).isActive = true
+        refreshBlockLock()
+        let background = row([color(.blockBackground, title: "Background Color"), NSView(),
+            labeled("", control: blockLock)])
+        func caption(_ text: String, width: CGFloat) -> NSTextField {
+            let label = NSTextField(labelWithString: text)
+            label.font = .systemFont(ofSize: 10, weight: .medium)
+            label.widthAnchor.constraint(equalToConstant: width).isActive = true
+            return label
         }
-        let columns = row([NSTextField(labelWithString: ""),
-            NSTextField(labelWithString: "Margin"), NSTextField(labelWithString: "Padding"),
-            NSTextField(labelWithString: "Border weight"), NSTextField(labelWithString: "Color"), NSView()], spacing: 12)
-        for (index, width) in [CGFloat(42), 109, 109, 109, 52].enumerated() {
-            columns.arrangedSubviews[index].widthAnchor.constraint(equalToConstant: width).isActive = true
-            (columns.arrangedSubviews[index] as? NSTextField)?.font = .systemFont(ofSize: 10, weight: .medium)
+        let columns = row([caption("", width: 82)] + ["Left", "Right", "Top", "Bottom"].map {
+            caption($0, width: 109)
+        } + [NSView()], spacing: 12)
+        let propertyRows = Self.blockRows.map { title, properties in
+            let cells = properties.map { property in
+                let control = EVStyleProperty.blockBorderColors.contains(property)
+                    ? color(property, title: "", showsLabel: false)
+                    : numeric(property, title: property.displayName, width: 45, showsLabel: false)
+                // A trailing spacer keeps color wells aligned with number fields.
+                let cell = row([control, NSView()], spacing: 0)
+                cell.widthAnchor.constraint(equalToConstant: 109).isActive = true
+                return cell as NSView
+            }
+            return row([caption(title, width: 82)] + cells + [NSView()], spacing: 12)
         }
-        configure(blockView, rows: [background, columns] + sideRows)
+        configure(blockView, rows: [background, columns] + propertyRows)
         blockView.spacing = 5
         blockView.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     }
@@ -305,6 +319,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         let wasUpdating = updating
         updating = true
         defer { updating = wasUpdating }
+        if self.definition?.key != definition?.key { blockLock.state = .off }
         if self.definition?.key != definition?.key || self.documentID != documentID {
             lastLineValues = [:]
             for well in wells.values { well.dismissColorControls() }
@@ -315,6 +330,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         self.allowsPercentageSize = allowsPercentageSize
         editable = definition?.capabilities.contains(.declarations) == true
         hasInvalidDraft = false
+        blockLock.isEnabled = editable && definition?.kind != .character
+        refreshBlockLock()
         refreshFontControls()
         fallbackButton.isEnabled = isOverridden(.characterFontFamilies)
         let fallbackCount = max(0, stringList(.characterFontFamilies).count - 1)
@@ -546,6 +563,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             let resolved = definition?.properties[property]
             if property == .characterForeground && (resolved?.usesThemeDefault == true || resolved == nil) {
                 well.color = theme.foreground.color
+            } else if EVStyleProperty.blockBorderColors.contains(property), (resolved?.usesTextColor == true || resolved?.effective == nil) {
+                well.color = currentTextColor.appKitColor
             } else if case let .color(value)? = resolved?.effective { well.color = value.appKitColor }
             else if property == .blockBackground { well.color = newBlockBackground.appKitColor }
             else { well.color = .clear }
@@ -763,6 +782,48 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             blue: Float(theme.background.blue), alpha: 1)
     }
 
+    private var currentTextColor: EVStyleColor {
+        let foreground = definition?.properties[.characterForeground]
+        if foreground?.usesThemeDefault != true, case let .color(value)? = foreground?.effective { return value }
+        let color = theme.foreground
+        return EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha))
+    }
+
+    private func refreshBlockLock() {
+        let linked = blockLock.state == .on
+        blockLock.image = NSImage(systemSymbolName: linked ? "lock.fill" : "lock.open", accessibilityDescription: nil)
+        blockLock.toolTip = linked ? "Unlink block sides" : "Link block sides"
+    }
+
+    @objc private func blockLockChanged(_ sender: NSButton) {
+        guard !updating, editable, definition?.kind != .character else { return }
+        sender.window?.makeFirstResponder(nil)
+        onEditEnded?()
+        refreshBlockLock()
+        guard sender.state == .on else { return }
+        // Gather from one snapshot before publication refreshes any controls.
+        // An entirely inherited row stays inherited, including currentColor.
+        let mutations: [EVStyleMutation] = Self.blockRows.flatMap { _, properties -> [EVStyleMutation] in
+            let declared = properties.filter { isOverridden($0) }
+            guard !declared.isEmpty else { return [] }
+            if EVStyleProperty.blockBorderColors.contains(properties[0]) {
+                let colors = properties.compactMap { property -> EVStyleValue? in
+                    guard let resolved = definition?.properties[property], !resolved.usesTextColor else { return nil }
+                    return resolved.effective
+                }
+                guard let value = colors.first(where: {
+                    if case let .color(color) = $0 { return color.alpha != 0 }
+                    return false
+                }) ?? colors.first else { return [] }
+                return properties.map { .setDeclaration($0, value) }
+            }
+            let value = properties.first(where: { number($0) != 0 }).map { number($0) } ?? 0
+            return properties.map { .setDeclaration($0, .float(value)) }
+        }
+        // Values are already expanded; do not expand the same rows a second time.
+        onMutations?(mutations)
+    }
+
     private func enableOverride(_ property: EVStyleProperty) {
         guard canEdit(property), !isOverridden(property) else { return }
         var value = definition?.properties[property]?.effective
@@ -770,8 +831,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         if property == .characterBackground, value == nil {
             value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 0))
         }
-        if EVStyleProperty.blockBorderColors.contains(property), value == nil {
-            value = .color(EVStyleColor(red: 0, green: 0, blue: 0, alpha: 1))
+        if EVStyleProperty.blockBorderColors.contains(property), value == nil || definition?.properties[property]?.usesTextColor == true {
+            value = .color(currentTextColor)
         }
         if EVStyleProperty.blockProperties.contains(property), value == nil { value = .float(0) }
         if property == .characterForeground, definition?.properties[property]?.usesThemeDefault == true {
@@ -879,7 +940,21 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         guard value.kind == multiplier else { return value.kind }
         return roundedLineSpacingValue(value.value) == 1 ? normal : multiplier
     }
-    private func send(_ mutations: [EVStyleMutation]) { guard !updating, editable else { return }; onMutations?(mutations) }
+    private func send(_ mutations: [EVStyleMutation]) {
+        guard !updating, editable else { return }
+        let linked = blockLock.state == .on
+        onMutations?(mutations.flatMap { mutation -> [EVStyleMutation] in
+            switch mutation {
+            case let .setDeclaration(property, value):
+                guard linked, let (_, properties) = Self.blockRows.first(where: { $0.1.contains(property) }) else { return [mutation] }
+                return properties.map { .setDeclaration($0, value) }
+            case let .clearDeclaration(property):
+                guard linked, let (_, properties) = Self.blockRows.first(where: { $0.1.contains(property) }) else { return [mutation] }
+                return properties.map { .clearDeclaration($0) }
+            default: return [mutation]
+            }
+        })
+    }
 
     @objc private func familyChanged(_ sender: Any?) {
         changeFamily(to: family.currentEditor()?.string ?? family.stringValue)

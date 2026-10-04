@@ -1416,6 +1416,15 @@ Closing never rolls back. Native font/color panels stay modeless and retain the
 same target and undo authority. External changes refresh controls/preview without
 manufacturing another edit.
 
+Block controls follow box order: margin, border weight, border color, padding,
+with sides ordered left, right, top, bottom. An optional inspector-local padlock
+links each parameter across all four sides, including its declaration checkbox.
+Enabling the lock copies each row's first nonzero value in side order (or zero
+if all are zero), using the first specified nontransparent border color, then an
+explicit transparent color if that is all the row specifies. Entirely inherited
+rows stay inherited. Unlocking preserves declarations and values. Unspecified
+border colors follow the style's resolved text color, including theme defaults.
+
 Overrides distinguish inheritance from explicit normal/zero/transparent values.
 Activation starts from resolved values; clicking a disabled supported control
 also performs its original action as one undo gesture, while captions only

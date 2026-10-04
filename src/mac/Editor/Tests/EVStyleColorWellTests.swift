@@ -147,6 +147,8 @@ final class EVStyleColorWellTests: XCTestCase {
         defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
         let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
         editor.selectStyle(key)
+        // This regression starts with an absent fill, independent of presets.
+        XCTAssertTrue(editor.useInheritedForTesting(.blockBackground))
         editor.selectTab(.block)
         editor.view.layoutSubtreeIfNeeded()
         let well = try colorWell("Block background", in: editor.view)
