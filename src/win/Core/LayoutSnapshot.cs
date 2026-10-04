@@ -62,6 +62,17 @@ internal sealed unsafe partial class CoreView
             Check(viem_core_view_copy_visual_selection(Document.Handle, Id, &identity, s, (ulong)segments.Length, r, (ulong)rectangles.Length, &info), "Copy selection");
         return (info, segments, rectangles);
     }
+    public ViemPointerCaretV1 PointerCaret(float x, float y, ViemLayoutSnapshotInfoV1 snapshot)
+    {
+        var request = New<ViemLayoutHitTestRequestV1>(); request.identity = snapshot.identity; request.x = x; request.y = y;
+        var result = New<ViemPointerCaretV1>();
+        Check(viem_core_view_pointer_caret(Document.Handle, Id, &request, &result), "Preview pointer caret"); return result;
+    }
+    public ViemLayoutCaretGeometryV1 CaretGeometryAt(ulong offset, uint affinity, ViemLayoutSnapshotInfoV1 snapshot)
+    {
+        var request = New<ViemLayoutCaretRequestV1>(); request.identity = snapshot.identity; request.text_offset = offset; request.affinity = affinity;
+        return CaretGeometry(request);
+    }
     public ViemLayoutCaretGeometryV1 CaretGeometry()
     {
         var p = Presentation;
@@ -69,6 +80,10 @@ internal sealed unsafe partial class CoreView
         var overlay = New<ViemCompositionOverlayInfoV1>();
         Check(viem_core_view_composition_overlay_info(Document.Handle, Id, &overlay), "Read composition caret");
         if ((overlay.flags & VIEM_COMPOSITION_OVERLAY_ACTIVE) != 0) { request.text_offset = overlay.selected_end; request.affinity = VIEM_BOUNDARY_AFFINITY_DOWNSTREAM; }
+        return CaretGeometry(request);
+    }
+    private ViemLayoutCaretGeometryV1 CaretGeometry(ViemLayoutCaretRequestV1 request)
+    {
         var result = New<ViemLayoutCaretGeometryV1>();
         uint status = viem_core_view_caret_geometry(Document.Handle, Id, &request, &result);
         // At a document edge only the content-facing affinity may have geometry.

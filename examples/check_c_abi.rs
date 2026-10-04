@@ -368,6 +368,10 @@ _Static_assert(sizeof(ViemLayoutCaretRequestV1) == {caret_request},
     "caret request");
 _Static_assert(VIEM_LAYOUT_HIT_TEST_POINTER_DOWN == {pointer_down_flag}, "pointer-down hit-test flag");
 _Static_assert(VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE == {pointer_gesture_flag}, "pointer gesture flag");
+_Static_assert(sizeof(ViemPointerCaretV1) == {pointer_caret_size}, "pointer caret size");
+_Static_assert(offsetof(ViemPointerCaretV1, text_start) == {pointer_caret_start}, "pointer caret range");
+_Static_assert(VIEM_POINTER_CARET_CURRENT == {pointer_caret_current}, "pointer caret current flag");
+static ViemStatus (*pointer_caret)(ViemCoreHandle, ViemViewId, const ViemLayoutHitTestRequestV1 *, ViemPointerCaretV1 *) = viem_core_view_pointer_caret;
 _Static_assert(offsetof(ViemLayoutHitTestRequestV1, flags) == {hit_test_flags}, "hit-test flags offset");
 _Static_assert(sizeof(ViemLayoutHitTestRequestV1) == {hit_test_request},
     "hit-test request");
@@ -738,6 +742,9 @@ static void typecheck(void) {{
         caret_request = std::mem::size_of::<ViemLayoutCaretRequestV1>(),
         pointer_down_flag = VIEM_LAYOUT_HIT_TEST_POINTER_DOWN,
         pointer_gesture_flag = VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE,
+        pointer_caret_size = std::mem::size_of::<ViemPointerCaretV1>(),
+        pointer_caret_start = std::mem::offset_of!(ViemPointerCaretV1, text_start),
+        pointer_caret_current = VIEM_POINTER_CARET_CURRENT,
         hit_test_flags = std::mem::offset_of!(ViemLayoutHitTestRequestV1, flags),
         hit_test_request = std::mem::size_of::<ViemLayoutHitTestRequestV1>(),
         caret_point = std::mem::size_of::<ViemLayoutCaretPointV1>(),

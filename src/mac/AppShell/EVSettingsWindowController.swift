@@ -29,6 +29,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var observer: NSObjectProtocol?
   private var editingObserver: NSObjectProtocol?
   private weak var markdownAutodetectCheckbox: NSButton?
+  private weak var caretHoverCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
@@ -255,6 +256,12 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       return
     }
     if selectedCategory == 2 {
+      let hover = NSButton(checkboxWithTitle: "Caret hover effect", target: self, action: #selector(changeCaretHoverEffect(_:)))
+      hover.state = editingPreferences.caretHoverEffect ? .on : .off
+      hover.setAccessibilityLabel("Caret hover effect")
+      hover.toolTip = "Preview the caret position under the mouse. Hidden while typing until the mouse moves."
+      caretHoverCheckbox = hover
+      stack.addArrangedSubview(hover)
       let checkbox = NSButton(checkboxWithTitle: "Use smart quotes", target: self, action: #selector(changeSmartQuotes(_:)))
       checkbox.state = editingPreferences.smartQuotes ? .on : .off
       checkbox.setAccessibilityLabel("Use smart quotes")
@@ -457,6 +464,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
 
   private func refreshEditingPreferences(error: String? = nil) {
     markdownAutodetectCheckbox?.state = editingPreferences.markdownAutodetect ? .on : .off
+    caretHoverCheckbox?.state = editingPreferences.caretHoverEffect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
@@ -681,6 +689,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   }
   @objc private func changeMarkdownAutodetect(_ sender: NSButton) {
     editingPreferences.setMarkdownAutodetect(sender.state == .on)
+    refreshEditingPreferences()
+  }
+  @objc private func changeCaretHoverEffect(_ sender: NSButton) {
+    editingPreferences.setCaretHoverEffect(sender.state == .on)
     refreshEditingPreferences()
   }
   @objc private func changeSmartQuotes(_ sender: NSButton) {

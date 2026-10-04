@@ -58,6 +58,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private ViemViewPresentationV1 presentation;
     private ViemViewportStateV1 viewport;
     private Rect caretRect;
+    private const double MinimumDragDistance = 4;
+    private Point? caretHoverLocation, caretHoverSuppressedAt;
+    internal Rect? CaretHoverRectangle { get; private set; }
+    private uint caretHoverMode;
+
     private Point dragPoint, pointerPress;
     private uint? pressedPointer;
     private Task inputQueue = Task.CompletedTask;
@@ -69,6 +74,15 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly TaskCompletionSource<CoreView> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     internal Task<CoreView> Ready => View is { } current ? Task.FromResult(current) : ready.Task;
     [DllImport("user32.dll")] private static extern uint GetCaretBlinkTime();
+    [StructLayout(LayoutKind.Sequential)] private struct PointerScreenPoint { public int X, Y; }
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out PointerScreenPoint point);
+    [DllImport("user32.dll")] private static extern bool ScreenToClient(nint hwnd, ref PointerScreenPoint point);
+    private Point? CurrentPointerLocation()
+    {
+        if (!GetCursorPos(out var point) || !ScreenToClient(window.Hwnd, ref point)) return null;
+        double scale = Canvas.XamlRoot?.RasterizationScale ?? 1;
+        return window.Content.TransformToVisual(Canvas).TransformPoint(new Point(point.X / scale, point.Y / scale));
+    }
 
     public EditorPane(EditorWindow window, CoreDocument document, Preferences preferences)
     {
@@ -103,6 +117,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += OnPointerMoved;
+        Canvas.PointerExited += (_, _) => { caretHoverLocation = null; SetCaretHover(null); };
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
             pressedPointer = null; dragging = false; wordSelectionDragging = false; Canvas.ReleasePointerCapture(e.Pointer);
@@ -123,7 +138,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
         Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } } catch (Exception error) { Report(error); } };
         input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(false); };
-        input.LostFocus += (_, _) => { caretVisible = true; Canvas.Invalidate(); };
+        input.LostFocus += (_, _) => { caretVisible = true; SetCaretHover(null); Canvas.Invalidate(); };
         input.PreviewKeyDown += OnKey;
         // TextChanging reliably signals input even for this nearly invisible
         // IME host. Drain after the native callback, coalescing a burst of text
@@ -134,6 +149,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             DispatcherQueue.TryEnqueue(CaptureCommittedText);
         };
         input.TextCompositionStarted += (_, _) => {
+            SuppressCaretHoverForInput();
             composing = true; compositionRejected = false;
             if (View is { } view && (view.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE || view.IsTextSelection))
                 Run(() => { try { view.BeginComposition(); } catch { compositionRejected = true; throw; } });
@@ -211,7 +227,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         snapshot = null; InvalidateDrawingCache(); Refresh();
     }
     private void DocumentChanged() { if (View != null) Run(() => { View.Refresh(); }); }
-    private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); }
+    private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); UpdateCaretHover(); }
     private void ApplyPreferences()
     {
         Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
@@ -251,6 +267,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private static bool Down(VirtualKey key) => (InputKeyboardSource.GetKeyStateForCurrentThread(key) & CoreVirtualKeyStates.Down) != 0;
     private void DeliverText(string text)
     {
+        SuppressCaretHoverForInput();
         if (View == null) return;
         uint mode = View.Presentation.mode;
         if (mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE or VIEM_MODE_COMMAND_LINE || CoreView.IsTextSelectionMode(mode)) View.Text(text);
@@ -258,6 +275,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private void OnKey(object sender, KeyRoutedEventArgs e)
     {
+        SuppressCaretHoverForInput();
         if (View == null) return;
         var key = e.Key; bool control = Down(VirtualKey.Control), shift = Down(VirtualKey.Shift), alt = Down(VirtualKey.Menu);
         var route = KeyPolicy.Route(key, control, shift, alt);
@@ -382,6 +400,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
+        caretHoverLocation = null; SetCaretHover(null);
         DismissCommandOutput(false);
         wordSelectionDragging = false;
         FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
@@ -393,7 +412,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (pressedPointer != e.Pointer.PointerId || View == null) { TableHover(e.GetCurrentPoint(Canvas).Position); return; }
+        if (pressedPointer != e.Pointer.PointerId || View == null) {
+            var location = e.GetCurrentPoint(Canvas).Position;
+            TableHover(location); MoveCaretHover(location); return;
+        }
         var point = e.GetCurrentPoint(Canvas);
         if (!point.Properties.IsLeftButtonPressed)
         {
@@ -404,7 +426,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         {
             // WinUI can report movement at the press point. Match the pane-bar
             // drag threshold so a click or small jitter keeps the editing mode.
-            if (Math.Abs(dragPoint.X - pointerPress.X) < 4 && Math.Abs(dragPoint.Y - pointerPress.Y) < 4) return;
+            if (Math.Abs(dragPoint.X - pointerPress.X) < MinimumDragDistance && Math.Abs(dragPoint.Y - pointerPress.Y) < MinimumDragDistance) return;
             dragging = true;
         }
         Run(() => { if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging); });
@@ -453,6 +475,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
             caretRect = CalculateCaret();
+            UpdateCaretHover();
             try { using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info); }
             catch (CoreException error) { whitespace = null; PresentationWarning("whitespace markers", error); }
             try { RefreshCompletion(); }
@@ -473,7 +496,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         catch (Exception e) {
             // A previous source/device snapshot cannot become the new frame
             // merely because exporting its replacement failed.
-            snapshot = null; whitespace = null; caretRect = new();
+            snapshot = null; whitespace = null; caretRect = new(); SetCaretHover(null);
             InvalidateDrawingCache(); Canvas.Invalidate(); Report(e);
         }
         finally { refreshing = false; scrollUpdating = false; }
@@ -499,22 +522,66 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (y + 220 > Canvas.ActualHeight) y = Math.Max(0, anchor.y - viewport.top - 220);
         Microsoft.UI.Xaml.Controls.Canvas.SetTop(completionBorder, y);
     }
-    private Rect CalculateCaret()
+    private Rect CalculateCaret() => CalculateCaret(presentation.caret_shape, presentation.caret_utf8_start,
+        () => View!.CaretGeometry(), View?.Composing == true);
+    private Rect CalculateCaret(uint shape, ulong offset, Func<ViemLayoutCaretGeometryV1> geometry, bool composing = false)
     {
         if (View == null || snapshot == null) return new();
-        if (!View.Composing && presentation.caret_shape == VIEM_CARET_SHAPE_CELL)
+        if (!composing && shape == VIEM_CARET_SHAPE_CELL)
         {
-            var cluster = snapshot.Clusters.FirstOrDefault(c => c.text_start <= presentation.caret_utf8_start && c.text_end > presentation.caret_utf8_start);
+            var cluster = snapshot.Clusters.FirstOrDefault(c => c.text_start <= offset && c.text_end > offset);
             if (cluster.text_end > cluster.text_start) return OffsetRect(cluster.typographic_bounds, viewport);
         }
         try
         {
-            var caret = View.CaretGeometry(); var rect = OffsetRect(caret.rect, viewport);
-            bool boundary = View.Composing || presentation.caret_shape == VIEM_CARET_SHAPE_BOUNDARY;
-            return new(rect.X, rect.Y, boundary ? 1.5 : Math.Max(6, rect.Height * .45), Math.Max(1, rect.Height));
+            var caret = geometry(); var rect = OffsetRect(caret.rect, viewport);
+            bool boundary = composing || shape == VIEM_CARET_SHAPE_BOUNDARY;
+            return new(rect.X, rect.Y, boundary ? 2 : Math.Max(6, rect.Height * .45), Math.Max(1, rect.Height));
         }
         catch (CoreException error) when (error.Status == VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
         { return new(); } // A manually scrolled viewport need not contain the caret.
+    }
+    internal void CaretHoverFocusChanged()
+    {
+        if (!window.IsWindowActive) { caretHoverLocation = null; SetCaretHover(null); }
+    }
+    internal void MoveCaretHover(Point point)
+    {
+        caretHoverLocation = point;
+        if (caretHoverSuppressedAt is Point origin
+            && Math.Max(Math.Abs(point.X - origin.X), Math.Abs(point.Y - origin.Y)) > MinimumDragDistance)
+            caretHoverSuppressedAt = null;
+        UpdateCaretHover();
+    }
+    internal void SuppressCaretHoverForInput()
+    {
+        // If no hover event arrived yet, remember the live pointer position so
+        // the first imperceptible move after typing cannot show the preview.
+        caretHoverSuppressedAt = caretHoverLocation ?? CurrentPointerLocation();
+        SetCaretHover(null);
+    }
+    private void SetCaretHover(Rect? rect)
+    {
+        if (CaretHoverRectangle == rect) return;
+        CaretHoverRectangle = rect; Canvas.Invalidate();
+    }
+    private void UpdateCaretHover()
+    {
+        if (!preferences.CaretHoverEffect || caretHoverSuppressedAt != null || pressedPointer != null
+            || composing || View == null || View.Composing || snapshot == null || !window.IsWindowActive
+            || completionBorder.Visibility == Visibility.Visible || caretHoverLocation is not Point point
+            || point.X < 0 || point.Y < 0 || point.X >= Canvas.ActualWidth || point.Y >= Canvas.ActualHeight)
+        { SetCaretHover(null); return; }
+        try {
+            var preview = View.PointerCaret((float)point.X + viewport.left, (float)point.Y + viewport.top, snapshot.Info);
+            if ((preview.flags & VIEM_POINTER_CARET_CURRENT) != 0) { SetCaretHover(null); return; }
+            var rect = CalculateCaret(preview.caret_shape, preview.text_start,
+                () => View.CaretGeometryAt(preview.text_start, preview.affinity, snapshot.Info));
+            caretHoverMode = preview.mode;
+            if (preview.mode == VIEM_MODE_INSERT) rect = new(rect.X, rect.Y, 2, rect.Height);
+            else if (preview.mode == VIEM_MODE_REPLACE) rect = new(rect.X, rect.Bottom - 2, Math.Max(6, rect.Width), 2);
+            SetCaretHover(rect.Height > 0 ? rect : null);
+        } catch (CoreException) { SetCaretHover(null); } // Await the next exact presentation.
     }
     private static Color Color(ViemRgbaV1 c) => global::Windows.UI.Color.FromArgb((byte)Math.Clamp(c.alpha * 255, 0, 255), (byte)Math.Clamp(c.red * 255, 0, 255), (byte)Math.Clamp(c.green * 255, 0, 255), (byte)Math.Clamp(c.blue * 255, 0, 255));
     private static Rect OffsetRect(ViemLayoutRectV1 r, ViemViewportStateV1 v) => new(r.x - v.left, r.y - v.top, Math.Max(0, r.width), Math.Max(0, r.height));
@@ -531,6 +598,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (tableSelection.active == 0) foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
         DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
+        if (CaretHoverRectangle is Rect hover && window.IsWindowActive) {
+            var color = theme.Caret; color.A = (byte)Math.Round(color.A * .2);
+            if (caretHoverMode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) drawing.FillRectangle(hover, color);
+            else drawing.DrawRectangle(new Rect(hover.X + .5, hover.Y + .5, Math.Max(0, hover.Width - 1), Math.Max(0, hover.Height - 1)), color, 1);
+        }
         bool focused = active && window.IsWindowActive && input.FocusState != FocusState.Unfocused;
         if (caretRect.Height > 0 && presentation.mode != VIEM_MODE_COMMAND_LINE && (!focused || caretVisible))
         {

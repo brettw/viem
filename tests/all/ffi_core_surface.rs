@@ -2249,6 +2249,28 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
         assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &request, &mut result) }, ViemStatus::Ok);
         assert_eq!(result.text_offset, expected);
     }
+    let mut preview = ViemPointerCaretV1::default();
+    let mut before_preview = ViemViewPresentationV1::default();
+    assert_eq!(unsafe { viem_core_view_presentation(core.handle, view, &mut before_preview) }, ViemStatus::Ok);
+    let preview_request = ViemLayoutHitTestRequestV1 { x: clusters[1].x + clusters[1].advance * 0.9, flags: 0, ..hit_request };
+    assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &preview_request, &mut preview) }, ViemStatus::Ok);
+    assert_eq!(preview.caret_shape, VIEM_CARET_SHAPE_CELL);
+    assert_eq!(preview.text_start, clusters[1].text_start);
+    assert_eq!(preview.text_end, clusters[1].text_end);
+    assert_eq!(preview.flags, 0);
+    let mut after_preview = ViemViewPresentationV1::default();
+    assert_eq!(unsafe { viem_core_view_presentation(core.handle, view, &mut after_preview) }, ViemStatus::Ok);
+    assert_eq!(before_preview, after_preview, "preview is observational");
+    let current = ViemLayoutHitTestRequestV1 { x: clusters[0].x + clusters[0].advance * 0.9, ..preview_request };
+    assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &current, &mut preview) }, ViemStatus::Ok);
+    assert_eq!(preview.flags, VIEM_POINTER_CARET_CURRENT);
+    let mut stale = preview_request; stale.identity.document_revision += 1;
+    assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &stale, &mut preview) }, ViemStatus::StaleRevision);
+    assert_eq!(preview, ViemPointerCaretV1::default());
+    let malformed = ViemLayoutHitTestRequestV1 { flags: 1, ..preview_request };
+    assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &malformed, &mut preview) }, ViemStatus::InvalidArgument);
+    assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &preview_request, ptr::null_mut()) }, ViemStatus::NullPointer);
+
     let invalid_hit = ViemLayoutHitTestRequestV1 { flags: 1 << 31, ..hit_request };
     assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &invalid_hit, &mut hit) }, ViemStatus::InvalidArgument);
     let invalid_gesture = ViemPlaceCursorV1 { struct_size: VIEM_PLACE_CURSOR_V1_SIZE,

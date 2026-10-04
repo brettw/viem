@@ -852,6 +852,19 @@ internal unsafe struct ViemLayoutCaretGeometryV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemPointerCaretV1
+{
+    public uint @struct_size;
+    public uint @flags;
+    public uint @mode;
+    public uint @caret_shape;
+    public uint @affinity;
+    public float @font_en_width;
+    public ulong @text_start;
+    public ulong @text_end;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemViewPresentationV1
 {
     public uint @struct_size;
@@ -1775,6 +1788,8 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_LAYOUT_CARET_POINT_V1_SIZE = ((uint)sizeof(ViemLayoutCaretPointV1));
     public const uint VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK = (1u << 0);
     public static readonly uint VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE = ((uint)sizeof(ViemLayoutCaretGeometryV1));
+    public const uint VIEM_POINTER_CARET_CURRENT = (1u << 0);
+    public static readonly uint VIEM_POINTER_CARET_V1_SIZE = ((uint)sizeof(ViemPointerCaretV1));
     public const uint VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR = (1u << 0);
     public const uint VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT = (1u << 1);
     public const uint VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK = (1u << 2);
@@ -1941,6 +1956,8 @@ internal static unsafe partial class Native
     public static extern uint viem_external_file_review_begin(ulong @handle, byte* @token, ulong @token_length, uint @can_reload, uint @is_dirty, uint* @out_flags);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_external_file_review_finish(ulong @handle, byte* @token, ulong @token_length, uint @acknowledge);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_pointer_caret(ulong @handle, ulong @view, ViemLayoutHitTestRequestV1* @request, ViemPointerCaretV1* @out_caret);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_abi_version();
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

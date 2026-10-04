@@ -2848,34 +2848,13 @@ impl CommandInterpreter {
             }
             self.mode = Mode::VisualCharacter;
         } else {
-            if matches!(
-                self.mode,
-                Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock | Mode::CommandLine
-            ) {
-                self.mode = Mode::Normal;
-            }
+            self.mode = self.plain_pointer_mode();
             self.visual_anchor = None;
             self.selection_behavior = SelectionBehavior::Visual;
             self.selection_exclusive = false;
         }
 
-        let (cursor, affinity) = if matches!(self.mode, Mode::Insert | Mode::Replace) || self.is_text_selection() {
-            (offset, affinity)
-        } else {
-            let cursor = normalize_normal_cursor_document(document, &lines, offset);
-            // A hit-test at the trailing edge of a non-empty hard line returns
-            // its end boundary with upstream affinity. Normal-mode storage
-            // addresses the associated grapheme by its start boundary, so the
-            // affinity must be canonicalized with the moved point. Retaining
-            // upstream here would visually associate the preceding grapheme a
-            // second time even though commands operate on `cursor`.
-            let affinity = if cursor == offset {
-                affinity
-            } else {
-                BoundaryAffinity::Downstream
-            };
-            (cursor, affinity)
-        };
+        let (cursor, affinity) = Self::pointer_position(document, offset, affinity, self.mode, self.is_text_selection());
         let mut cursor = cursor;
         if self.is_native_selection() {
             if let Some(origin) = character_origin {

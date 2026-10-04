@@ -25,6 +25,10 @@ Put `set` commands in `startup.viem` to retain them across launches.
   direction, including after reversal; Insert-origin drags retain their chosen
   insertion boundary. On Windows, stationary pointer events and small click jitter
   do not start a selection; dragging begins after four layout units of movement.
+- Settings > Editing > Caret hover effect defaults on. It previews the plain-click
+  caret with a thin line or hollow block at 20% opacity in the theme caret color
+  (Replace uses its underline). It hides at the current caret and while typing;
+  the mouse must move beyond the drag threshold to show it again.
 - Native selections are half-open insertion boundaries; Vim selections retain
   inclusive endpoints. Shift-Right at offset zero selects one character natively,
   but two with Vim `startsel`.

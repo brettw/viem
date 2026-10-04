@@ -18,6 +18,7 @@ public final class EVEditingPreferences {
   private var configurationObserver: NSObjectProtocol?
   private let center: NotificationCenter
   public private(set) var markdownAutodetect: Bool
+  public private(set) var caretHoverEffect: Bool
   public private(set) var smartQuotes: Bool
   /// Application default `textwidth` in columns for `gq`/`gw` reflow.
   public private(set) var textWidth: UInt32
@@ -29,6 +30,7 @@ public final class EVEditingPreferences {
     self.configuration = configuration
     self.center = center
     markdownAutodetect = configuration.markdownAutodetect
+    caretHoverEffect = configuration.caretHoverEffect
     smartQuotes = configuration.smartQuotes
     textWidth = configuration.textWidth
     indentation = configuration.indentation
@@ -50,9 +52,10 @@ public final class EVEditingPreferences {
 
   public func reloadFromConfiguration() {
     do { try configuration.reloadFromDisk() } catch { return }
-    let changed = markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || textWidth != configuration.textWidth
+    let changed = caretHoverEffect != configuration.caretHoverEffect || markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || textWidth != configuration.textWidth
       || indentation != configuration.indentation || whitespacePresentation != configuration.whitespacePresentation
     markdownAutodetect = configuration.markdownAutodetect
+    caretHoverEffect = configuration.caretHoverEffect
     smartQuotes = configuration.smartQuotes
     textWidth = configuration.textWidth
     indentation = configuration.indentation
@@ -95,6 +98,12 @@ public final class EVEditingPreferences {
   public func setMarkdownAutodetect(_ enabled: Bool) {
     guard enabled != markdownAutodetect else { return }
     do { try configuration.setMarkdownAutodetect(enabled) } catch { return }
+    reloadFromConfiguration()
+  }
+
+  public func setCaretHoverEffect(_ enabled: Bool) {
+    guard enabled != caretHoverEffect else { return }
+    do { try configuration.setCaretHoverEffect(enabled) } catch { return }
     reloadFromConfiguration()
   }
 

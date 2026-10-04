@@ -77,7 +77,7 @@ internal sealed partial class EditorWindow : Window
             if (!IsWindowActive) formattingToolbar.DismissPopups();
             if (IsWindowActive && ActivePane is { View: { } view } activePane)
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
-            foreach (var pane in Panes) pane.Canvas.Invalidate();
+            foreach (var pane in Panes) { pane.CaretHoverFocusChanged(); pane.Canvas.Invalidate(); }
         };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {

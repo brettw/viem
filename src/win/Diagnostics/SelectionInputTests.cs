@@ -56,6 +56,33 @@ internal static class SelectionInputTests
                     $"native input after a {label} click retains its command or typing behavior");
                 if (mode != VIEM_MODE_NORMAL) view.Undo();
             }
+            var preferences = App.Instance.Preferences;
+            bool hoverEnabled = preferences.CaretHoverEffect;
+            try {
+                preferences.Set("editing", "caretHoverEffect", true);
+                view.Key(VIEM_KEY_ESCAPE); view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, pane.Document.State.document_revision);
+                var fraction = PointAt(6, .9);
+                var hoverPoint = new global::Windows.Foundation.Point(fraction.X * pane.Canvas.ActualWidth, fraction.Y * pane.Canvas.ActualHeight);
+                pane.MoveCaretHover(hoverPoint);
+                Check(pane.CaretHoverRectangle != null && view.Presentation.cursor_utf8_offset == 0, "Hover previews without moving the caret");
+                var expected = pane.CaretHoverRectangle;
+                view.Place((float)hoverPoint.X, (float)hoverPoint.Y);
+                Check(expected == pane.CaretRectangle, "Hover geometry matches a normal-mode click");
+                pane.MoveCaretHover(hoverPoint);
+                Check(pane.CaretHoverRectangle == null, "Hover at the current caret is hidden");
+                view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, pane.Document.State.document_revision);
+                pane.MoveCaretHover(hoverPoint);
+                await InputRoutingTests.Text("i");
+                Check(pane.CaretHoverRectangle == null, "Typing hides the hover caret");
+                for (int dx = 0; dx <= 4; dx++) {
+                    pane.MoveCaretHover(new(hoverPoint.X + dx, hoverPoint.Y));
+                    Check(pane.CaretHoverRectangle == null, "Sub-threshold pointer jitter keeps the hover hidden");
+                }
+                pane.MoveCaretHover(new(hoverPoint.X + 5, hoverPoint.Y));
+                Check(pane.CaretHoverRectangle is { Width: 2 }, "Movement beyond the threshold restores the 2-DIP insertion preview");
+                preferences.Set("editing", "caretHoverEffect", false);
+                Check(pane.CaretHoverRectangle == null, "Disabling the setting immediately removes the hover");
+            } finally { preferences.Set("editing", "caretHoverEffect", hoverEnabled); view.Key(VIEM_KEY_ESCAPE); }
             foreach (double fraction in new[] { .1, .9 }) {
                 view.Key(VIEM_KEY_ESCAPE);
                 await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));

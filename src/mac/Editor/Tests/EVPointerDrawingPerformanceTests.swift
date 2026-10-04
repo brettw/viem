@@ -8,6 +8,47 @@ import XCTest
 
 @MainActor
 final class EVPointerDrawingPerformanceTests: XCTestCase {
+    func testHoverIsAHollowTwentyPercentOverlayAndPartialDamageMatchesFreshDrawing() throws {
+        let originalTheme = EVThemeStore.shared.theme
+        defer { EVThemeStore.shared.update(originalTheme) }
+        var theme = originalTheme; theme.caret = EVThemeColor(1, 1, 1)
+        EVThemeStore.shared.update(theme)
+        let (surface, window) = try makeSurface("a                  z")
+        defer { withExtendedLifetime(window) {} }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-hover-drawing-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let view = surface.editorView
+        view.editingPreferences = EVEditingPreferences(configuration: EVConfigurationStore(directory: directory))
+        let retained = try bitmap(for: view)
+        draw(view, in: retained, damage: [view.bounds])
+        let before = pixels(retained)
+        let cluster = try XCTUnwrap(surface.layoutSnapshot?.clusters.first { $0.text_start == 7 })
+        let local = view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(cluster.x + cluster.advance * 0.5),
+            y: CGFloat(cluster.typographic_bounds.y + cluster.typographic_bounds.height / 2)))
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: view.convert(local, to: nil), modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
+        view.mouseMoved(with: event)
+        let hover = try XCTUnwrap(view.caretHoverRect)
+        XCTAssertFalse(view.presentationDamageRects.contains(view.bounds))
+        draw(view, in: retained, damage: view.presentationDamageRects)
+        let after = pixels(retained)
+        let fresh = try bitmap(for: view)
+        draw(view, in: fresh, damage: [view.bounds])
+        XCTAssertEqual(after, pixels(fresh))
+        XCTAssertNotEqual(before, after)
+        let center = Int(hover.midY) * retained.bytesPerRow + Int(hover.midX) * 4
+        XCTAssertEqual(before[center ..< center + 4], after[center ..< center + 4], "The block interior remains unfilled")
+        var strongestOpacity = 0.0
+        for byte in before.indices where byte % 4 != 3 && before[byte] < 230 && after[byte] > before[byte] {
+            strongestOpacity = max(strongestOpacity, Double(after[byte] - before[byte]) / Double(255 - before[byte]))
+        }
+        XCTAssertGreaterThan(strongestOpacity, 0.1)
+        XCTAssertLessThanOrEqual(strongestOpacity, 0.21, "Only a 20% caret-color overlay may be added")
+        view.suppressCaretHoverForInput()
+        draw(view, in: retained, damage: view.presentationDamageRects)
+        XCTAssertEqual(pixels(retained), before, "Hiding the preview clears its old pixels")
+    }
+
     func testVisiblePointerSelectionUsesOneRefreshAndBoundedDamageInLargeDocument() throws {
         let source = String(repeating: "fifty riffraff with a tab\tand trailing spaces  \n", count: 20_000)
         let (surface, window) = try makeSurface(source)

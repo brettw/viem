@@ -96,6 +96,7 @@ internal sealed partial class SettingsWindow : Window
     }
     private void BuildEditing(StackPanel page)
     {
+        Check(page, "Caret hover effect", preferences.CaretHoverEffect, value => preferences.Set("editing", "caretHoverEffect", value));
         Check(page, "Smart quotes", preferences.SmartQuotes, value => preferences.Set("editing", "smartQuotes", value));
         Check(page, "Automatically format typed Markdown", preferences.MarkdownAutodetect, value => preferences.Set("editing", "markdownAutodetect", value));
         page.Children.Add(new TextBlock { Text = "In Markdown Formatted view, completed Markdown spans and block prefixes become formatting. Use Ctrl-Q before a character to keep it literal.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
