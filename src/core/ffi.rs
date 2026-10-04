@@ -1829,12 +1829,15 @@ pub struct ViemLayoutCaretRequestV1 {
 
 pub const VIEM_LAYOUT_CARET_REQUEST_V1_SIZE: u32 = size_of::<ViemLayoutCaretRequestV1>() as u32;
 
+/// Pointer-down queries use character cells when the view addresses characters.
+pub const VIEM_LAYOUT_HIT_TEST_POINTER_DOWN: u32 = 1 << 0;
+
 /// Revision-bound request for hit testing a document-layout coordinate.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutHitTestRequestV1 {
     pub struct_size: u32,
-    pub reserved: u32,
+    pub flags: u32,
     pub identity: ViemLayoutSnapshotIdentityV1,
     pub x: f32,
     pub y: f32,
@@ -2098,6 +2101,7 @@ pub const VIEM_SET_SEMANTIC_STYLE_V1_SIZE: u32 = size_of::<ViemSetSemanticStyleV
 pub const VIEM_PLACE_CURSOR_EXTEND_SELECTION: u32 = 1 << 0;
 /// Select whole words; EXTEND retains the gesture's original word.
 pub const VIEM_PLACE_CURSOR_WORD_SELECTION: u32 = 1 << 1;
+pub const VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE: u32 = 1 << 2;
 
 /// Revision-bound pointer-placement intention. `text_offset` is a formatted
 /// UTF-8 boundary returned by exact hit testing; affinity preserves the visual
@@ -8470,7 +8474,7 @@ pub unsafe extern "C" fn viem_core_view_layout_hit_test(
         }
         let request = unsafe { request.read() };
         if request.struct_size < VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE
-            || request.reserved != 0
+            || request.flags & !VIEM_LAYOUT_HIT_TEST_POINTER_DOWN != 0
             || request.identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
             || request.identity.reserved != 0
         {
@@ -8481,11 +8485,10 @@ pub unsafe extern "C" fn viem_core_view_layout_hit_test(
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
             validate_snapshot_identity(request.identity, snapshot, view_id)?;
-            snapshot
-                .hit_test(LayoutPoint {
-                    x: request.x,
-                    y: request.y,
-                })
+            let point = LayoutPoint { x: request.x, y: request.y };
+            let characters = request.flags & VIEM_LAYOUT_HIT_TEST_POINTER_DOWN != 0
+                && core.command_state(view_id).ok_or(ViemStatus::InvalidView)?.pointer_uses_character_cells();
+            if characters { snapshot.hit_test_character(point) } else { snapshot.hit_test(point) }
                 .map_err(layout_query_status)
         })?;
         unsafe { out_point.write(caret_point_to_ffi(point)?) };
@@ -9083,7 +9086,9 @@ pub unsafe extern "C" fn viem_core_view_place_cursor(
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
         if request.struct_size < VIEM_PLACE_CURSOR_V1_SIZE
-            || request.flags & !(VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION) != 0
+            || request.flags & !(VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION | VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE) != 0
+            || request.flags & VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE != 0
+                && request.flags & (VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION) != 0
             || request.reserved != 0
         {
             return Err(ViemStatus::InvalidArgument);
@@ -9101,6 +9106,8 @@ pub unsafe extern "C" fn viem_core_view_place_cursor(
                         document_revision: Revision(request.document_revision), text_offset, affinity,
                         extend_selection: request.flags & VIEM_PLACE_CURSOR_EXTEND_SELECTION != 0,
                     }
+                } else if request.flags & VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE != 0 {
+                    CoreEvent::BeginPointerGesture { document_revision: Revision(request.document_revision), text_offset, affinity }
                 } else {
                     CoreEvent::PlaceCursor {
                         document_revision: Revision(request.document_revision), text_offset, affinity,

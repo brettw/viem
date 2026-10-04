@@ -49,6 +49,83 @@ final class EVPointerSelectionTests: XCTestCase {
     }
   }
 
+  func testBothCharacterHalvesHitTheSameNormalCellButInsertKeepsNearestBoundaries() throws {
+    let source = "A W e\u{301} 👩‍💻 אב Z\n\n"
+    for insert in [false, true] {
+      let (backend, surface, window) = try makeSurface(source, width: 600)
+      defer { withExtendedLifetime(window) {} }
+      let session = try XCTUnwrap(surface.session)
+      if insert { surface.performInput { _ = try session.sendText("i") } }
+      for text in ["W", "e\u{301}", "👩‍💻", "א", "ב", "Z"] {
+        let range = try XCTUnwrap(source.range(of: text))
+        let offset = UInt64(source[..<range.lowerBound].utf8.count)
+        for fraction: CGFloat in [0.1, 0.9] {
+          let local = try cellPoint(surface, at: offset, fraction: fraction)
+          let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+          let boundary = try session.hitTest(surface.editorView.layoutPoint(fromViewPoint: local), in: snapshot.info)
+          surface.editorView.mouseDown(with: try pointerEvent(surface, type: .leftMouseDown, at: local))
+          surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: local))
+          XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, insert ? boundary.text_offset : offset,
+                         "\(text), fraction \(fraction), insert \(insert)")
+          XCTAssertEqual(surface.viewPresentation.mode, UInt32(insert ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
+        }
+      }
+      XCTAssertEqual(try backend.formattedText(), source)
+      XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+  }
+
+  func testNormalDragIncludesClickedGraphemeFromEitherHalfInBothDirectionsAndOnReversal() throws {
+    let source = "ab👩‍💻cde"
+    let end = UInt64("ab👩‍💻".utf8.count)
+    for fraction: CGFloat in [0.1, 0.9] {
+      for backwardsFirst in [false, true] {
+        let (backend, surface, window) = try makeSurface(source, width: 600)
+        defer { withExtendedLifetime(window) {} }
+        let local = try cellPoint(surface, at: 2, fraction: fraction)
+        surface.editorView.mouseDown(with: try pointerEvent(surface, type: .leftMouseDown, at: local))
+        let offsets: [UInt64] = backwardsFirst ? [0, end + 1, 2] : [end + 1, 0, 2]
+        for offset in offsets {
+          let target = try point(surface, at: offset)
+          surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: target))
+          XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+          let selected = try XCTUnwrap(surface.session).listSelection()
+          XCTAssertEqual(selected.text_start, min(2, offset))
+          XCTAssertEqual(selected.text_end, max(end, offset))
+        }
+        surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: local))
+        XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "👩‍💻")
+        surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(try backend.formattedText(), "abXcde")
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.formattedText(), source)
+      }
+    }
+  }
+
+  func testInsertDragRetainsTheBoundaryChosenOnTheRightHalf() throws {
+    let (_, surface, window) = try makeSurface("ABCDE", width: 600)
+    defer { withExtendedLifetime(window) {} }
+    let session = try XCTUnwrap(surface.session)
+    surface.performInput { _ = try session.sendText("i") }
+    let local = try cellPoint(surface, at: 2, fraction: 0.9)
+    surface.editorView.mouseDown(with: try pointerEvent(surface, type: .leftMouseDown, at: local))
+    XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 3)
+    let end = try cellPoint(surface, at: 4, fraction: 0.9)
+    surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: end))
+    surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: end))
+    XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "DE")
+  }
+
+  private func cellPoint(_ surface: EVEditorSurfaceController, at offset: UInt64, fraction: CGFloat) throws -> NSPoint {
+    surface.refreshPresentation()
+    let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+    let cluster = try XCTUnwrap(snapshot.clusters.first { $0.text_start == offset })
+    let row = try XCTUnwrap(snapshot.rows.first { $0.row_index == cluster.row_index })
+    return surface.editorView.viewPoint(fromLayoutPoint: CGPoint(
+      x: CGFloat(cluster.x) + CGFloat(cluster.advance) * fraction, y: CGFloat(row.y + row.ascent * 0.5)))
+  }
+
   func testOffscreenDragKeepsItsAnchorAndVisibleSelectionAcrossLongDocuments() throws {
     var checkout = URL(fileURLWithPath: #filePath)
     for _ in 0..<5 { checkout.deleteLastPathComponent() }

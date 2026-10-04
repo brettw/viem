@@ -2062,8 +2062,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         guard let snapshot = surface.layoutSnapshot else { return }
         let layoutPoint = layoutPoint(fromViewPoint: local)
         surface.performInput {
-            let point = try session.hitTest(layoutPoint, in: snapshot.info)
-            _ = try session.placeCursor(point, extendSelection: extending, wholeWords: wordSelectionDragging)
+            let point = try session.hitTest(layoutPoint, in: snapshot.info, pointerDown: !extending)
+            _ = try session.placeCursor(point, extendSelection: extending, wholeWords: wordSelectionDragging,
+                beginPointerGesture: !extending && !wordSelectionDragging)
         }
     }
 

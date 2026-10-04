@@ -662,6 +662,12 @@ occupies an actual grapheme or an insertion boundary; frontends must not infer
 this from offset and affinity. Affinity chooses the visual side of a boundary,
 not which character a block covers (especially after `$`/End).
 
+Pointer-down in character-addressing modes targets the containing visual cell
+across its full width; Insert retains nearest-boundary placement. A native drag
+started from a character includes the complete initially clicked grapheme in
+either direction, including reversals. Keep its origin anchored through edits;
+this must not broaden an Insert-origin drag or change logical Unicode boundaries.
+
 Use exact associated-item geometry, including indivisible shaping clusters,
 without expanding logical ranges or assuming fixed monospace cells. Empty
 lines/documents and EOF use resolved typing-font geometry with minimum half-em

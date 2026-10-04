@@ -22,12 +22,12 @@ internal static class SelectionInputTests
         window.Activate(); pane.FocusEditor();
         try
         {
-            global::Windows.Foundation.Point PointAt(ulong offset)
+            global::Windows.Foundation.Point PointAt(ulong offset, double fraction = .1)
             {
                 var layout = view.Layout(); var viewport = view.Viewport;
                 var cluster = layout.Clusters.First(c => c.text_start == offset);
                 var row = layout.Rows.First(r => r.row_index == cluster.row_index);
-                return new((cluster.x + cluster.advance * .1 - viewport.left) / pane.Canvas.ActualWidth,
+                return new((cluster.x + cluster.advance * fraction - viewport.left) / pane.Canvas.ActualWidth,
                     (row.baseline - viewport.top - 3) / pane.Canvas.ActualHeight);
             }
             foreach (var (command, mode, label) in new[] {
@@ -56,6 +56,25 @@ internal static class SelectionInputTests
                     $"native input after a {label} click retains its command or typing behavior");
                 if (mode != VIEM_MODE_NORMAL) view.Undo();
             }
+            foreach (double fraction in new[] { .1, .9 }) {
+                view.Key(VIEM_KEY_ESCAPE);
+                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, fraction) }, _ => { });
+                Check(view.Presentation.cursor_utf8_offset == 6, "Both halves of a normal-mode cell select that character");
+                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, fraction), PointAt(2), PointAt(9), PointAt(6) }, step => {
+                    if (step == 0) return;
+                    var range = view.LogicalSelection();
+                    var expected = step == 1 ? (2ul, 7ul) : step == 2 ? (6ul, 9ul) : (6ul, 7ul);
+                    Check(range.text_start == expected.Item1 && range.text_end == expected.Item2,
+                        "Normal-mode dragging includes the clicked character through direction changes");
+                });
+            }
+            view.Key(VIEM_KEY_ESCAPE); view.Command("i");
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, .9) }, _ => { });
+            Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 7,
+                "Insert-mode clicks still choose the nearest boundary on a character's right half");
             view.Key(VIEM_KEY_ESCAPE);
             await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
             await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(0), PointAt(6), PointAt(3) }, _ => { });

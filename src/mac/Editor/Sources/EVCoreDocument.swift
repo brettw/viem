@@ -1734,9 +1734,10 @@ final class EVCoreViewSession {
         return true
     }
 
-    func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> ViemLayoutCaretPointV1 {
+    func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1, pointerDown: Bool = false) throws -> ViemLayoutCaretPointV1 {
         var request = ViemLayoutHitTestRequestV1()
         request.struct_size = UInt32(MemoryLayout<ViemLayoutHitTestRequestV1>.size)
+        request.flags = pointerDown ? UInt32(VIEM_LAYOUT_HIT_TEST_POINTER_DOWN) : 0
         request.identity = snapshot.identity
         request.x = Float(point.x)
         request.y = Float(point.y)
@@ -1750,11 +1751,12 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func placeCursor(_ point: ViemLayoutCaretPointV1, extendSelection: Bool, wholeWords: Bool = false) throws -> ViemCoreOutcomeV1 {
+    func placeCursor(_ point: ViemLayoutCaretPointV1, extendSelection: Bool, wholeWords: Bool = false, beginPointerGesture: Bool = false) throws -> ViemCoreOutcomeV1 {
         var request = ViemPlaceCursorV1()
         request.struct_size = UInt32(MemoryLayout<ViemPlaceCursorV1>.size)
         request.flags = (extendSelection ? UInt32(VIEM_PLACE_CURSOR_EXTEND_SELECTION) : 0)
             | (wholeWords ? UInt32(VIEM_PLACE_CURSOR_WORD_SELECTION) : 0)
+            | (beginPointerGesture ? UInt32(VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE) : 0)
         request.document_revision = point.document_revision
         request.text_offset = point.text_offset
         request.affinity = point.affinity
