@@ -43,7 +43,7 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
                 { var bounds = r.LayoutBounds; bounds.X += left; bounds.Y += top; e.DrawingSession.FillRectangle(bounds, preferences.Theme.Selection); }
             e.DrawingSession.DrawTextLayout(layout, left, top, preferences.Theme.StatusBackground);
             int active = map.Utf16(checked((int)state.Active)) + prefixLength; var p = layout.GetCaretPosition(active, false);
-            if (caret) e.DrawingSession.DrawLine(p.X + left, top, p.X + left, top + (float)layout.LayoutBounds.Height, preferences.Theme.StatusBackground, 1.5f);
+            if (caret) e.DrawingSession.DrawLine(p.X + left, top, p.X + left, top + (float)layout.LayoutBounds.Height, preferences.Theme.StatusBackground, 2);
 #if DEBUG
             LastDrawnText = displayText;
 #endif

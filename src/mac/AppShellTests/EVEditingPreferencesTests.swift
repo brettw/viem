@@ -5,6 +5,28 @@ import XCTest
 
 @MainActor
 final class EVEditingPreferencesTests: XCTestCase {
+  func testCaretHoverDefaultsOnPersistsAndTracksSettingsCheckbox() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-hover-settings-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let configuration = EVConfigurationStore(directory: directory)
+    let preferences = EVEditingPreferences(configuration: configuration)
+    XCTAssertTrue(preferences.caretHoverEffect)
+    let settings = EVSettingsWindowController(store: EVThemeStore(configuration: configuration), editingPreferences: preferences)
+    defer { settings.close() }
+    settings.showWindow(nil)
+    let window = try XCTUnwrap(settings.window)
+    let sidebar = try XCTUnwrap(descendants(window.contentView).first { $0 is NSTableView } as? NSTableView)
+    sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+    let checkbox = try XCTUnwrap(descendants(window.contentView).first { $0.accessibilityLabel() == "Caret hover effect" } as? NSButton)
+    XCTAssertEqual(checkbox.state, .on)
+    checkbox.performClick(nil)
+    XCTAssertFalse(preferences.caretHoverEffect)
+    XCTAssertFalse(EVConfigurationStore(directory: directory).caretHoverEffect)
+    preferences.setCaretHoverEffect(true)
+    XCTAssertEqual(checkbox.state, .on)
+    XCTAssertTrue(EVConfigurationStore(directory: directory).caretHoverEffect)
+  }
+
   func testSmartQuotesDefaultsOffPersistsAndNotifiesOnlyOnChanges() throws {
     let suite = "viem-editing-test-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

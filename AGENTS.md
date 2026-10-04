@@ -655,7 +655,7 @@ text: show exact `hard line · visual row` if a global visual ordinal is unknown
 ### Carets and display-space selections
 
 Normal and Visual modes use a filled block; Insert, Select and native Selection
-use a thin caret; Replace uses an underline; command input has its own thin
+use a 2-DIP-wide caret; Replace uses an underline; command input has its own 2-DIP-wide
 caret. Escape cancels pending command state without partial edits. Native
 Selection is distinct from Vim Select/Visual. Core determines whether the cursor
 occupies an actual grapheme or an insertion boundary; frontends must not infer
@@ -679,6 +679,16 @@ retain their appearance beneath translucent fill and solid outline. Blinking
 must not repaint entire long paragraphs. Inactive carets are nonblinking hollow
 outlines at 75% opacity; active blinking follows accessibility preferences. Keys
 and motion reveal the caret and reset blinking.
+
+Caret hover effect defaults on and is an application setting. Preview the exact
+plain-click caret without mutating editor state: use the theme caret color at
+20% opacity, a 2-DIP-wide insertion line or hollow block (underline for Replace).
+Suppress a preview at the current caret, during pointer selection or composition,
+and after keyboard input. After input, require movement beyond the native drag
+threshold from a fixed pointer origin; jitter must not revive it. Reuse exact
+visible geometry without reshaping text; damage old/new overlay regions where
+partial drawing is supported. Discard stale previews after document, viewport,
+metrics, theme, focus, or preference changes.
 
 Visual Block uses a display-space rectangle with stable row anchors and x edges.
 Recompute exact row intersections after width/wrap changes; never retain row

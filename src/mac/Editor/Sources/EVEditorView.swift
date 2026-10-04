@@ -176,6 +176,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     var openLinkURL: (URL, @escaping @MainActor (Error?) -> Void) -> Void = EVLinkOpener.open
     private var caretAppearanceObserver: NSObjectProtocol?
     private var editingPreferencesObserver: NSObjectProtocol?
+    // Match the native pane drag threshold, in view points. Suppression keeps
+    // one fixed origin: several sub-threshold moves can accumulate beyond it.
+    static let caretHoverMovementThreshold: CGFloat = 4
+    private var caretHoverLocation: NSPoint?
+    private var caretHoverSuppressedAt: NSPoint?
+    private var caretHoverPointerPressed = false
+    private(set) var caretHoverRect: NSRect?
+    private(set) var caretHoverMode: UInt32 = UInt32(VIEM_MODE_NORMAL)
+    private var caretHoverIdentity: ViemLayoutSnapshotIdentityV1?
+
     private weak var configuredEditingSession: EVCoreViewSession?
     private var configuredMarkdownAutodetect: Bool?
     private var configuredSmartQuotes: Bool?
@@ -356,6 +366,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        caretHoverLocation = nil
+        setCaretHoverRect(nil)
         if newWindow == nil {
             completionPopup.hide()
             isActiveTextSurface = false
@@ -373,6 +385,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func refreshCaretActivity() {
+        updateCaretHover()
         surface?.completionFocusDidChange()
         updateCustomCaretPresentation()
         updateInsertionIndicator()
@@ -422,6 +435,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             if let paint { drawTextDecorations(snapshot, clusters: clusters, paint: paint) }
             drawWhitespaceMarkers(snapshot, dirtyRect: dirtyRect, in: context)
             drawMarkedText(snapshot, clusters: clusters, in: context)
+            drawCaretHover(snapshot, dirtyRect: dirtyRect)
             drawCustomCaret(snapshot, dirtyRect: dirtyRect, in: context)
             context.restoreGState()
         }
@@ -438,6 +452,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         reconcileMarkedTextWithCore()
         updateNativeTextInputAvailability()
         updateDocumentScrollbars()
+        updateCaretHover()
         updateCustomCaretPresentation()
         invalidatePresentationDamage()
         updateInsertionIndicator()
@@ -1510,6 +1525,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyDown(with event: NSEvent) {
+        suppressCaretHoverForInput()
         guard let surface else { return }
         surface.dismissCommandOutput()
         guard let session = surface.session else { return }
@@ -1653,6 +1669,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func doCommand(by selector: Selector) {
+        suppressCaretHoverForInput()
         guard let surface else { return }
         if selector == #selector(cancelOperation(_:)) {
             cancelOperation(nil)
@@ -1690,6 +1707,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
+        suppressCaretHoverForInput()
         guard let surface else { return }
         guard let session = surface.session, let value = plainText(from: string) else { return }
         // A late accent/IME replacement from the previous mode is not a Vim
@@ -2002,12 +2020,84 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         tableTrackingArea = area; addTrackingArea(area)
     }
 
-    override func mouseMoved(with event: NSEvent) { tables.moved(to: convert(event.locationInWindow, from: nil)) }
-    override func mouseExited(with event: NSEvent) { tables.hide() }
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        tables.moved(to: point)
+        caretHoverLocation = point
+        if let origin = caretHoverSuppressedAt,
+           hypot(point.x - origin.x, point.y - origin.y) > Self.caretHoverMovementThreshold {
+            caretHoverSuppressedAt = nil
+        }
+        updateCaretHover()
+    }
+    override func mouseExited(with event: NSEvent) {
+        tables.hide()
+        caretHoverLocation = nil
+        setCaretHoverRect(nil)
+    }
+
+    func suppressCaretHoverForInput() {
+        // Keep suppression across exit/reentry. If no move has been delivered,
+        // use the actual pointer location as the fixed post-typing origin.
+        caretHoverSuppressedAt = caretHoverLocation
+            ?? window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+        setCaretHoverRect(nil)
+    }
+
+    private func setCaretHoverRect(_ rect: NSRect?) {
+        let old = caretHoverRect
+        caretHoverRect = rect
+        if old == rect { return }
+        invalidateDrawing(in: [old, rect].compactMap { $0?.insetBy(dx: -1, dy: -1).integral })
+    }
+
+    private func updateCaretHover() {
+        guard editingPreferences.caretHoverEffect, !caretHoverPointerPressed,
+              caretHoverSuppressedAt == nil, !compositionActive, surface?.completion?.isActive != true,
+              window?.isKeyWindow == true, applicationIsActive(),
+              let point = caretHoverLocation, textViewportRect.contains(point),
+              let surface, let snapshot = surface.layoutSnapshot, let session = surface.session,
+              let preview = try? session.pointerCaret(layoutPoint(fromViewPoint: point), in: snapshot.info),
+              preview.flags & UInt32(VIEM_POINTER_CARET_CURRENT) == 0
+        else { setCaretHoverRect(nil); return }
+        let target: EVCaretTarget = preview.caret_shape == UInt32(VIEM_CARET_SHAPE_CELL)
+            ? .cell(preview.text_start ..< preview.text_end)
+            : .boundary(offset: preview.text_start, affinity: preview.affinity)
+        let geometry = caretItemGeometry(snapshot, target: target)
+        guard var rect = geometry.rect else { setCaretHoverRect(nil); return }
+        if geometry.cluster == nil || rect.width < 1 {
+            rect.size.width = minimumCaretWidth(near: geometry.cluster, in: snapshot, target: target,
+                fontEnWidth: CGFloat(preview.font_en_width))
+        }
+        caretHoverMode = preview.mode
+        caretHoverIdentity = snapshot.info.identity
+        rect = Self.inactiveCaretRect(rect, mode: preview.mode)
+        if EVSelectionModes.hasInsertionCaret(preview.mode) {
+            rect = rect.integral
+            rect.size.width = 2
+        }
+        setCaretHoverRect(rect)
+    }
+
+    private func drawCaretHover(_ snapshot: EVLayoutExport, dirtyRect: NSRect) {
+        guard let rect = caretHoverRect, let identity = caretHoverIdentity,
+              sameLayoutIdentity(identity, snapshot.info.identity),
+              rect.insetBy(dx: -1, dy: -1).intersects(dirtyRect) else { return }
+        let caretColor = EVCaretAppearanceResolver.shared.color(for: self)
+        let color = caretColor.withAlphaComponent(caretColor.alphaComponent * 0.2)
+        if EVSelectionModes.hasInsertionCaret(caretHoverMode) || caretHoverMode == UInt32(VIEM_MODE_REPLACE) {
+            color.setFill(); rect.fill()
+        } else {
+            color.setStroke()
+            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
+        setCaretHoverRect(nil)
         surface?.dismissCommandOutput()
         if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
+        caretHoverPointerPressed = true
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
@@ -2040,6 +2130,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        caretHoverPointerPressed = false
+        caretHoverLocation = nil
         wordSelectionDragging = false
         tables.endDrag()
         stopDragAutoscroll()
@@ -2156,6 +2248,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     // MARK: - NSTextInputClient
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        suppressCaretHoverForInput()
         guard let surface else { return }
         guard acceptsNativeTextInput else { return }
         guard let session = surface.session,
@@ -3483,10 +3576,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// indivisible ligature is covered whole. Everything else is an insertion
     /// boundary, where affinity picks the row. This deliberately does not look
     /// at the mode or re-derive the choice: `EVCaretTarget` already carries it.
-    func caretItemGeometry(_ snapshot: EVLayoutExport) -> (
+    func caretItemGeometry(_ snapshot: EVLayoutExport, target: EVCaretTarget? = nil) -> (
         rect: NSRect?, cluster: ViemPositionedClusterV1?
     ) {
-        let caret = presentationCaretTarget
+        let caret = target ?? presentationCaretTarget
         if case let .cell(range) = caret {
             let start = range.lowerBound
             if let cluster = snapshot.clusters.first(where: { cluster in
@@ -3578,8 +3671,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             insertionIndicator.isHidden = true
             return
         }
+        rect = rect.integral
         rect.size.width = 2
-        insertionIndicator.frame = rect.integral
+        insertionIndicator.frame = rect
         insertionIndicator.color = EVCaretAppearanceResolver.shared.color(for: self)
         insertionIndicator.isHidden = false
         insertionIndicator.displayMode = .automatic
@@ -3720,13 +3814,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func minimumCaretWidth(
         near associatedCluster: ViemPositionedClusterV1?,
-        in snapshot: EVLayoutExport
+        in snapshot: EVLayoutExport, target: EVCaretTarget? = nil, fontEnWidth: CGFloat? = nil
     ) -> CGFloat {
         guard let surface else {
             return ceil(Self.commandLineFont.pointSize / 2)
         }
-        let cursor = presentationCaretUTF8Offset
-        let affinity = presentationCaretAffinity
+        let cursor = target?.offset ?? presentationCaretUTF8Offset
+        let affinity = target?.affinity ?? presentationCaretAffinity
         let rowIndex = snapshot.carets.first {
             $0.text_offset == cursor
                 && $0.affinity == affinity
@@ -3753,7 +3847,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         {
             return ceil(max(width, 1))
         }
-        if let width = try? surface.session?.currentFontEnWidth() {
+        if let width = fontEnWidth ?? (try? surface.session?.currentFontEnWidth()) {
             return ceil(max(width * CGFloat(surface.zoomScale), 1))
         }
         return ceil(Self.commandLineFont.pointSize / 2)

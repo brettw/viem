@@ -1873,6 +1873,22 @@ pub struct ViemLayoutCaretGeometryV1 {
 
 pub const VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE: u32 = size_of::<ViemLayoutCaretGeometryV1>() as u32;
 
+pub const VIEM_POINTER_CARET_CURRENT: u32 = 1 << 0;
+/// Predicted plain-click caret in an exact snapshot. Never changes editor state.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViemPointerCaretV1 {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub mode: u32,
+    pub caret_shape: u32,
+    pub affinity: u32,
+    pub font_en_width: f32,
+    pub text_start: u64,
+    pub text_end: u64,
+}
+pub const VIEM_POINTER_CARET_V1_SIZE: u32 = size_of::<ViemPointerCaretV1>() as u32;
+
 pub const VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR: u32 = 1 << 0;
 pub const VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT: u32 = 1 << 1;
 pub const VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK: u32 = 1 << 2;
@@ -8492,6 +8508,60 @@ pub unsafe extern "C" fn viem_core_view_layout_hit_test(
                 .map_err(layout_query_status)
         })?;
         unsafe { out_point.write(caret_point_to_ffi(point)?) };
+        Ok(())
+    })
+}
+
+/// Predict an unmodified pointer-down caret, including line-end normalization.
+/// `request.flags` must be zero. This is a read-only, revision-bound query.
+///
+/// # Safety
+/// `request` and `out_caret` must be aligned, readable/writable, disjoint values.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_pointer_caret(
+    handle: ViemCoreHandle, view: ViemViewId,
+    request: *const ViemLayoutHitTestRequestV1, out_caret: *mut ViemPointerCaretV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if regions_overlap(typed_pointer_region(request, 1)?, typed_pointer_region(out_caret, 1)?) {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let request = unsafe { request.read() };
+        if request.struct_size < VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE || request.flags != 0
+            || request.identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE || request.identity.reserved != 0 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        unsafe { out_caret.write(ViemPointerCaretV1::default()) };
+        let caret = with_core(handle, |core| {
+            let view = ViewId(view);
+            let snapshot = current_ffi_layout_snapshot(core, view)?;
+            validate_snapshot_identity(request.identity, snapshot, view)?;
+            let commands = core.command_state(view).ok_or(ViemStatus::InvalidView)?;
+            let point = LayoutPoint { x: request.x, y: request.y };
+            let hit = if commands.pointer_uses_character_cells() { snapshot.hit_test_character(point) }
+                else { snapshot.hit_test(point) }.map_err(layout_query_status)?;
+            let (mode, target) = commands.pointer_caret_target(core.document(), hit.text_offset, hit.affinity);
+            let range = target.range();
+            let current = commands.caret_target(core.document());
+            // Opposite affinities at an ordinary insertion boundary can resolve
+            // to identical geometry. Keep the distinction at wraps and bidi joins.
+            let same_boundary = !target.is_cell() && !current.is_cell() && target.offset() == current.offset()
+                && snapshot.logical_endpoint_geometry(target.offset(), target.affinity()).ok()
+                    .zip(snapshot.logical_endpoint_geometry(current.offset(), current.affinity()).ok())
+                    .is_some_and(|(left, right)| left.rect == right.rect && left.row_index == right.row_index);
+            Ok(ViemPointerCaretV1 {
+                struct_size: VIEM_POINTER_CARET_V1_SIZE,
+                flags: if target == current || same_boundary { VIEM_POINTER_CARET_CURRENT } else { 0 },
+                mode: mode_to_ffi(mode, false, false),
+                caret_shape: if target.is_cell() { VIEM_CARET_SHAPE_CELL } else { VIEM_CARET_SHAPE_BOUNDARY },
+                affinity: affinity_to_ffi(target.affinity()),
+                font_en_width: crate::layout::DocumentLayoutStyles::semantic_character_at(core.document().projection(),
+                    range.start, target.affinity() == BoundaryAffinity::Upstream)
+                    .map_err(|_| ViemStatus::InvalidArgument)?.size / 2.0,
+                text_start: checked_export_count(range.start)?, text_end: checked_export_count(range.end)?,
+            })
+        })?;
+        unsafe { out_caret.write(caret) };
         Ok(())
     })
 }

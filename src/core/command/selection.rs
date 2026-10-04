@@ -128,6 +128,26 @@ pub(super) enum SelectionBehavior {
 }
 
 impl CommandInterpreter {
+    /// The same plain-click normalization used by placement, without changing
+    /// mode, selection, typing state, undo grouping, or document/layout state.
+    pub fn pointer_caret_target(&self, document: &Document, offset: usize, affinity: BoundaryAffinity) -> (Mode, super::caret::CaretTarget) {
+        let mode = self.plain_pointer_mode();
+        let (offset, affinity) = Self::pointer_position(document, offset, affinity, mode, false);
+        (mode, Self::caret_target_at(document, offset, affinity, mode, false))
+    }
+
+    pub(super) fn plain_pointer_mode(&self) -> Mode {
+        match self.mode { Mode::Insert | Mode::Replace => self.mode, _ => Mode::Normal }
+    }
+
+    pub(super) fn pointer_position(document: &Document, offset: usize, affinity: BoundaryAffinity, mode: Mode, text_selection: bool) -> (usize, BoundaryAffinity) {
+        if matches!(mode, Mode::Insert | Mode::Replace) || text_selection { return (offset, affinity); }
+        let cursor = super::normalize_normal_cursor_document(document, &document.hard_line_snapshot(), offset);
+        // A trailing line boundary normalizes to the final grapheme. Its
+        // upstream affinity must not then address the preceding grapheme.
+        (cursor, if cursor == offset { affinity } else { BoundaryAffinity::Downstream })
+    }
+
     pub fn pointer_uses_character_cells(&self) -> bool {
         self.mode.addresses_characters() && !self.is_text_selection()
     }

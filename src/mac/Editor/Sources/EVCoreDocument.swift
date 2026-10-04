@@ -1791,6 +1791,16 @@ final class EVCoreViewSession {
         }
     }
 
+    func pointerCaret(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> ViemPointerCaretV1 {
+        var request = ViemLayoutHitTestRequestV1()
+        request.struct_size = UInt32(MemoryLayout<ViemLayoutHitTestRequestV1>.size)
+        request.identity = snapshot.identity
+        request.x = Float(point.x); request.y = Float(point.y)
+        var result = ViemPointerCaretV1()
+        try checked(viem_core_view_pointer_caret(document.core, viewID, &request, &result), operation: "Preview pointer caret")
+        return result
+    }
+
     func caretGeometry(
         offset: UInt64,
         affinity: UInt32,

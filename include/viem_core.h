@@ -1509,6 +1509,24 @@ typedef struct ViemLayoutCaretGeometryV1 {
 #define VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE \
   ((uint32_t)sizeof(ViemLayoutCaretGeometryV1))
 
+/* Predicted plain-click caret; CURRENT means it already occupies this target. */
+#define VIEM_POINTER_CARET_CURRENT (1u << 0)
+typedef struct ViemPointerCaretV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint32_t mode;
+  uint32_t caret_shape;
+  uint32_t affinity;
+  float font_en_width;
+  uint64_t text_start;
+  uint64_t text_end;
+} ViemPointerCaretV1;
+#define VIEM_POINTER_CARET_V1_SIZE ((uint32_t)sizeof(ViemPointerCaretV1))
+
+/* Read-only plain-click prediction. Request flags must be zero. */
+ViemStatus viem_core_view_pointer_caret(ViemCoreHandle handle, ViemViewId view,
+    const ViemLayoutHitTestRequestV1 *request, ViemPointerCaretV1 *out_caret);
+
 #define VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR (1u << 0)
 #define VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT (1u << 1)
 #define VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK (1u << 2)

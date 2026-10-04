@@ -418,8 +418,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let x = Self.contentInset - commandScroll(command)
       + commandTextX(upTo: command.cursorUTF8Offset, in: command)
     return NSRect(
-      x: x, y: floor((bounds.height - lineHeight) / 2), width: 2, height: lineHeight
-    ).integral
+      x: floor(x), y: floor((bounds.height - lineHeight) / 2), width: 2, height: lineHeight
+    )
   }
 
   private func updateCommandCaret() {

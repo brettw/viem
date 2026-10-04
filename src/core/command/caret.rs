@@ -93,8 +93,13 @@ impl CommandInterpreter {
             Some(block) => (block.active.text_offset, block.active.affinity),
             None => (self.cursor(), self.boundary_affinity()),
         };
+        Self::caret_target_at(document, offset, affinity, self.mode(), self.is_text_selection())
+    }
+
+    pub(super) fn caret_target_at(document: &Document, offset: usize, affinity: BoundaryAffinity,
+        mode: Mode, text_selection: bool) -> CaretTarget {
         let boundary = CaretTarget::Boundary { offset, affinity };
-        if self.is_text_selection() || !self.mode().addresses_characters() {
+        if text_selection || !mode.addresses_characters() {
             return boundary;
         }
         let lines = document.hard_line_snapshot();
