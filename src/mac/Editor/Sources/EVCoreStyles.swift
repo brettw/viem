@@ -299,6 +299,12 @@ struct EVResolvedStyleProperty: Equatable {
 
     var isDeclared: Bool { declared != nil }
 
+    var usesTextColor: Bool {
+        EVStyleProperty.blockBorderColors.contains(property)
+            && declared == nil && contributor == nil
+            && contributorKind == UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY)
+    }
+
     var usesThemeDefault: Bool {
         [.characterForeground, .canvasBackground].contains(property)
             && declared == nil && contributor == nil

@@ -1086,6 +1086,7 @@ final class EVStyleEditorViewController: NSViewController {
         preview.apply(
             kind: definition.kind,
             effectiveValues: definition.properties.reduce(into: [:]) { values, entry in
+                if entry.value.usesTextColor { return }
                 if entry.value.usesThemeDefault && entry.key == .characterForeground {
                     let color = themeStore.theme.foreground
                     values[entry.key] = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))

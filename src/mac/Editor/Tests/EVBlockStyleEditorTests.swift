@@ -138,6 +138,182 @@ final class EVBlockStyleEditorTests: XCTestCase {
         }
     }
 
+    private let margins: [EVStyleProperty] = [.blockMarginLeft, .blockMarginRight, .blockMarginTop, .blockMarginBottom]
+    private let weights: [EVStyleProperty] = [.blockBorderLeftWidth, .blockBorderRightWidth, .blockBorderTopWidth, .blockBorderBottomWidth]
+    private let colors: [EVStyleProperty] = [.blockBorderLeftColor, .blockBorderRightColor, .blockBorderTopColor, .blockBorderBottomColor]
+    private let paddings: [EVStyleProperty] = [.blockPaddingLeft, .blockPaddingRight, .blockPaddingTop, .blockPaddingBottom]
+
+    func testBlockGridOrdersParametersAndSidesAndAlignsLockWithBackground() throws {
+        let (_, surface, editor) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectTab(.block)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 650),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = editor
+        defer { window.orderOut(nil) }
+        editor.view.layoutSubtreeIfNeeded()
+        var rows: [[NSRect]] = []
+        for properties in [margins, weights, colors, paddings] {
+            let frames = try properties.map { property in
+                let field = try control(NSControl.self, property.displayName, editor)
+                let frame = field.convert(field.bounds, to: editor.view)
+                XCTAssertTrue(editor.view.bounds.contains(frame), "Every side must fit the minimum dialog width")
+                XCTAssertGreaterThan(frame.width, 25)
+                return frame
+            }
+            for (left, right) in zip(frames, frames.dropFirst()) {
+                XCTAssertLessThan(left.maxX, right.minX)
+                XCTAssertEqual(left.midY, right.midY, accuracy: 1)
+            }
+            rows.append(frames)
+        }
+        for pair in zip(rows, rows.dropFirst()) {
+            for (above, below) in zip(pair.0, pair.1) {
+                XCTAssertEqual(above.minX, below.minX, accuracy: 1)
+                if editor.view.isFlipped { XCTAssertLessThan(above.maxY, below.minY) }
+                else { XCTAssertGreaterThan(above.minY, below.maxY) }
+            }
+        }
+        let lock = try control(NSButton.self, "Link block sides", editor)
+        let background = try control(NSColorWell.self, "Block background", editor)
+        let lockFrame = lock.convert(lock.bounds, to: editor.view)
+        let backgroundFrame = background.convert(background.bounds, to: editor.view)
+        XCTAssertEqual(lockFrame.midY, backgroundFrame.midY, accuracy: 1)
+        XCTAssertGreaterThan(lockFrame.minX, rows[0].last!.maxX)
+        XCTAssertNotNil(lock.image)
+    }
+
+    func testLockNormalizesFirstNonzeroValuesAsOneUndoGestureAndUnlockPreservesThem() throws {
+        let (backend, surface, editor) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let session = try XCTUnwrap(surface.session)
+        editor.selectTab(.block)
+        for (properties, values) in [(margins, [0, -3, 8, 4]), (weights, [0, 2, 4, 0]), (paddings, [0, 0, 0, 0])] {
+            for (property, value) in zip(properties, values) {
+                XCTAssertTrue(editor.setPropertyForTesting(property, value: .float(Float(value))))
+            }
+        }
+        for property in colors { XCTAssertTrue(editor.useInheritedForTesting(property)) }
+        let blue = EVStyleColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 0.5)
+        XCTAssertTrue(editor.setPropertyForTesting(.blockBorderRightColor, value: .color(blue)))
+        let before = try backend.styleSheetSnapshot().definition(for: quote)
+        let source = try backend.serializedSource(typeName: EVDocument.markdownType)
+        let lock = try control(NSButton.self, "Link block sides", editor)
+        XCTAssertEqual(lock.state, .off)
+        lock.performClick(nil)
+        let linked = try backend.styleSheetSnapshot().definition(for: quote)
+        for (properties, value) in [(margins, EVStyleValue.float(-3)), (weights, .float(2)), (paddings, .float(0)), (colors, .color(blue))] {
+            for property in properties { XCTAssertEqual(linked?.properties[property]?.declared, value) }
+        }
+        _ = try session.undo()
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote), before)
+        _ = try session.redo()
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote), linked)
+        lock.performClick(nil)
+        XCTAssertEqual(lock.state, .off)
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote), linked)
+        let bottom = try control(NSTextField.self, "Margin bottom", editor)
+        bottom.stringValue = "7"
+        bottom.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: bottom))
+        let unlinked = try backend.styleSheetSnapshot().definition(for: quote)
+        XCTAssertEqual(unlinked?.properties[.blockMarginBottom]?.declared, .float(7))
+        XCTAssertEqual(unlinked?.properties[.blockMarginLeft]?.declared, .float(-3))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+    }
+
+    func testLinkedNativeFieldsSteppersColorsAndOverridesUpdateOnlyTheirParameter() throws {
+        let (backend, surface, editor) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectTab(.block)
+        for property in margins + weights + paddings { XCTAssertTrue(editor.setPropertyForTesting(property, value: .float(1))) }
+        try control(NSButton.self, "Link block sides", editor).performClick(nil)
+        let bottom = try control(NSTextField.self, "Margin bottom", editor)
+        bottom.stringValue = "3"
+        bottom.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: bottom))
+        for property in margins { XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared, .float(3)) }
+        for property in weights + paddings { XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared, .float(1)) }
+        let stepper = try control(EVStyleStepper.self, "Adjust padding top", editor)
+        stepper.doubleValue = 6
+        XCTAssertTrue(stepper.sendAction(try XCTUnwrap(stepper.action), to: stepper.target))
+        for property in paddings { XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared, .float(6)) }
+        let toggle = try control(NSButton.self, "Override padding right", editor)
+        toggle.performClick(nil)
+        for property in paddings {
+            XCTAssertNil(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared)
+            XCTAssertEqual(try control(NSButton.self, "Override \(property.displayName.lowercased())", editor).state, .off)
+        }
+        toggle.performClick(nil)
+        for property in paddings { XCTAssertEqual(try control(NSButton.self, "Override \(property.displayName.lowercased())", editor).state, .on) }
+        let colorToggle = try control(NSButton.self, "Override border bottom color", editor)
+        if colorToggle.state == .off { colorToggle.performClick(nil) }
+        let well = try control(NSColorWell.self, "Border bottom color", editor)
+        well.color = NSColor(srgbRed: 0.3, green: 0.6, blue: 0.9, alpha: 0)
+        XCTAssertTrue(well.sendAction(try XCTUnwrap(well.action), to: well.target))
+        for property in colors {
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared,
+                .color(EVStyleColor(red: 0.3, green: 0.6, blue: 0.9, alpha: 0)))
+        }
+        colorToggle.performClick(nil)
+        for property in colors { XCTAssertNil(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared) }
+    }
+
+    func testUnspecifiedBorderColorsFollowTextInControlsAndPreviewUntilOverridden() throws {
+        let (backend, surface, editor) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        editor.selectTab(.block)
+        for property in colors { XCTAssertTrue(editor.useInheritedForTesting(property)) }
+        for property in weights { XCTAssertTrue(editor.setPropertyForTesting(property, value: .float(2))) }
+        try control(NSButton.self, "Link block sides", editor).performClick(nil)
+        for foreground in [EVStyleColor(red: 0.2, green: 0.4, blue: 0.7, alpha: 1), EVStyleColor(red: 0.7, green: 0.3, blue: 0.2, alpha: 1)] {
+            XCTAssertTrue(editor.setPropertyForTesting(.characterForeground, value: .color(foreground)))
+            for property in colors {
+                XCTAssertNil(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared)
+                XCTAssertEqual(try control(NSColorWell.self, property.displayName, editor).color, foreground.appKitColor)
+            }
+            let preview = editor.previewInspectionForTesting(layoutSize: CGSize(width: 560, height: 400))
+            XCTAssertNil(preview.blockPreviewError)
+            let borders = preview.boxes.filter { !$0.isBackground }
+            XCTAssertFalse(borders.isEmpty)
+            XCTAssertTrue(borders.allSatisfy { $0.color == foreground })
+        }
+        XCTAssertTrue(editor.useInheritedForTesting(.characterForeground))
+        let themeColor = editor.themeStore.theme.foreground
+        let expected = EVStyleColor(red: Float(themeColor.red), green: Float(themeColor.green), blue: Float(themeColor.blue), alpha: Float(themeColor.alpha))
+        for property in colors { XCTAssertEqual(try control(NSColorWell.self, property.displayName, editor).color, expected.appKitColor) }
+        let themePreview = editor.previewInspectionForTesting(layoutSize: CGSize(width: 560, height: 400))
+        XCTAssertTrue(themePreview.boxes.filter { !$0.isBackground }.allSatisfy { $0.color == expected })
+        let text = EVStyleValue.color(expected)
+        try control(NSButton.self, "Override border top color", editor).performClick(nil)
+        for property in colors { XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: quote)?.properties[property]?.declared, text) }
+    }
+
+    func testThemeUndoRetainsLinkSettingAndRestoresTheWholeRow() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-linked-theme-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let session = try EVThemeStyleSession(configuration: configuration, format: .markdown)
+        let editor = EVStyleEditorViewController()
+        editor.themeStore = EVThemeStore(configuration: configuration)
+        editor.retarget(settingsSession: session)
+        editor.selectStyle(quote)
+        editor.selectTab(.block)
+        for property in margins { XCTAssertTrue(editor.setPropertyForTesting(property, value: .float(1))) }
+        let lock = try control(NSButton.self, "Link block sides", editor)
+        lock.performClick(nil)
+        let before = try session.snapshot().definition(for: quote)
+        let bottom = try control(NSTextField.self, "Margin bottom", editor)
+        bottom.stringValue = "3"
+        bottom.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: bottom))
+        let changed = try session.snapshot().definition(for: quote)
+        for property in margins { XCTAssertEqual(changed?.properties[property]?.declared, .float(3)) }
+        session.undoManager.undo()
+        XCTAssertEqual(try session.snapshot().definition(for: quote), before)
+        XCTAssertEqual(lock.state, .on, "Theme history rebuilds its specimen without changing the linking preference")
+        session.undoManager.redo()
+        XCTAssertEqual(try session.snapshot().definition(for: quote), changed)
+        XCTAssertEqual(lock.state, .on)
+    }
+
     private func makeEditor() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-block-editor-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }

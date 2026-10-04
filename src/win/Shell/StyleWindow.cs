@@ -211,7 +211,10 @@ internal sealed partial class StyleWindow : Window
             restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
             var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
-            if (selected != null && (selected.Id != chosen.Id || selected.Namespace != chosen.Namespace)) DismissColorPickers();
+            if (selected != null && selected.Key != chosen.Key) {
+                DismissColorPickers();
+                blockLock.IsChecked = false;
+            }
             selected = chosen;
             styleType.Text = selected.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? "Paragraph"
                 : selected.Namespace == 2 ? "Character" : "Container";

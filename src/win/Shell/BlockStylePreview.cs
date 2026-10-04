@@ -75,12 +75,12 @@ internal sealed unsafe class BlockStylePreview : IDisposable
         if (appliedSheet == null || appliedForeground != foreground)
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, context);
         foreach (uint property in target.Properties.Keys) {
-            var effective = style.Value(property);
+            var effective = style.UsesTextColor(property) ? default : style.Value(property);
             if (appliedSheet != null && appliedStyle != null) {
                 bool same = property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND
                     && (style.UsesThemeForeground || appliedStyle.UsesThemeForeground)
                     ? style.UsesThemeForeground && appliedStyle.UsesThemeForeground && foreground == appliedForeground
-                    : SameValue(appliedSheet, appliedStyle.Value(property), sheet, effective);
+                    : SameValue(appliedSheet, appliedStyle.UsesTextColor(property) ? default : appliedStyle.Value(property), sheet, effective);
                 if (same) continue;
             }
 #if DEBUG
