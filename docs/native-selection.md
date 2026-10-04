@@ -19,7 +19,11 @@ Put `set` commands in `startup.viem` to retain them across launches.
 ## Deliberate behavior differences
 
 - A plain mouse click repositions the caret without leaving Normal, Insert, or
-  Replace mode. On Windows, stationary pointer events and small click jitter
+  Replace mode. Character-mode clicks target the character across its full
+  width; Insert clicks still choose the nearest insertion boundary. A native
+  drag begun on a character retains that whole initial grapheme in either
+  direction, including after reversal; Insert-origin drags retain their chosen
+  insertion boundary. On Windows, stationary pointer events and small click jitter
   do not start a selection; dragging begins after four layout units of movement.
 - Native selections are half-open insertion boundaries; Vim selections retain
   inclusive endpoints. Shift-Right at offset zero selects one character natively,

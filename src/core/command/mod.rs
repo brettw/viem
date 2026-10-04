@@ -1332,6 +1332,9 @@ pub struct CommandInterpreter {
     /// Initial whole word of the current pointer gesture; rebased with the
     /// selection anchors so dragging back across it can reverse direction.
     pointer_word_origin: Option<Range<usize>>,
+    /// Complete clicked grapheme, retained through native drag reversal and
+    /// rebased through document edits using inward-associated stable anchors.
+    pointer_character_origin: Option<Range<usize>>,
     /// Whether hard-line `$` established the moving edge of the active
     /// character/line Visual selection. Vim carries this sentinel through
     /// vertical extension and dot repeats it to the target line end.
@@ -1417,6 +1420,7 @@ pub(crate) struct CommandPositionAnchors {
     cursor: TextAnchor,
     visual_anchor: Option<TextAnchor>,
     pointer_word_origin: Option<(TextAnchor, TextAnchor)>,
+    pointer_character_origin: Option<(TextAnchor, TextAnchor)>,
     /// True when the invoking active Visual Character selection occupied one
     /// hard line. Vim retains the old byte columns for `gv` after a same-line
     /// destructive operator (clamped against the result), while cross-line
@@ -1477,6 +1481,7 @@ impl CommandInterpreter {
             preferred_column: None,
             visual_anchor: None,
             pointer_word_origin: None,
+            pointer_character_origin: None,
             visual_to_line_end: false,
             visual_block: None,
             active_visual_block: None,
@@ -1750,6 +1755,10 @@ impl CommandInterpreter {
                 Ok((make(range.start, Association::AfterInsertion, BoundaryAffinity::Downstream)?,
                     make(range.end, Association::BeforeInsertion, BoundaryAffinity::Upstream)?))
             }).transpose()?,
+            pointer_character_origin: self.pointer_character_origin.as_ref().map(|range| {
+                Ok((make(range.start, Association::AfterInsertion, BoundaryAffinity::Downstream)?,
+                    make(range.end, Association::BeforeInsertion, BoundaryAffinity::Upstream)?))
+            }).transpose()?,
             marks,
             jumps,
             last_visual,
@@ -1813,6 +1822,13 @@ impl CommandInterpreter {
         };
         next.cursor = cursor;
         next.pointer_word_origin = match anchors.pointer_word_origin {
+            Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
+                (Some(start), Some(end)) if start <= end => Some(start..end),
+                _ => None,
+            },
+            None => None,
+        };
+        next.pointer_character_origin = match anchors.pointer_character_origin {
             Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
                 (Some(start), Some(end)) if start <= end => Some(start..end),
                 _ => None,
@@ -1991,6 +2007,16 @@ impl CommandInterpreter {
 
         if self.pointer_word_origin == before.pointer_word_origin {
             next.pointer_word_origin = match anchors.pointer_word_origin {
+                Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
+                    (Some(start), Some(end)) if start <= end => Some(start..end),
+                    _ => None,
+                },
+                None => None,
+            };
+        }
+
+        if self.pointer_character_origin == before.pointer_character_origin {
+            next.pointer_character_origin = match anchors.pointer_character_origin {
                 Some((start, end)) => match (mapped_anchor(map, start)?, mapped_anchor(map, end)?) {
                     (Some(start), Some(end)) if start <= end => Some(start..end),
                     _ => None,
@@ -2479,6 +2505,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.command_line_state = None;
@@ -2666,6 +2693,7 @@ impl CommandInterpreter {
         self.mode = Mode::Normal;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_position = None;
@@ -2800,7 +2828,9 @@ impl CommandInterpreter {
         if !lines.is_grapheme_boundary(offset) {
             return false;
         }
+        let character_origin = extend_selection.then(|| self.pointer_character_origin.clone()).flatten();
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.table_cells = None;
         self.table_tab_selection = false;
 
@@ -2846,6 +2876,15 @@ impl CommandInterpreter {
             };
             (cursor, affinity)
         };
+        let mut cursor = cursor;
+        if self.is_native_selection() {
+            if let Some(origin) = character_origin {
+                let backwards = offset <= origin.start;
+                self.visual_anchor = Some(if backwards { origin.end } else { origin.start });
+                cursor = if backwards { offset.min(origin.start) } else { offset.max(origin.end) };
+                self.pointer_character_origin = Some(origin);
+            }
+        }
         self.cursor = cursor;
         self.position_revision = Some(document.revision());
         self.boundary_affinity = affinity;
@@ -2892,6 +2931,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -2938,6 +2978,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.clear_pending();
@@ -5735,6 +5776,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -6739,6 +6781,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = shape.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -6837,6 +6880,7 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_position = None;
         self.desired_x = None;
         self.preferred_column = None;
@@ -7673,6 +7717,7 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         self.desired_x = None;
@@ -7848,6 +7893,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = memory.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
         self.visual_block_rebind_error = None;
@@ -9834,6 +9880,7 @@ impl CommandInterpreter {
         self.update_visual_marks();
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         if operator != Operator::Change {
             self.mode = Mode::Normal;
@@ -9872,6 +9919,7 @@ impl CommandInterpreter {
         }
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.leave_visual();
         output.mode_changed = true;
         Ok(output)
@@ -10054,6 +10102,7 @@ impl CommandInterpreter {
         self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.leave_visual();
         let changed = document.revision() != before_revision;
         if changed && !self.replaying {
@@ -10094,6 +10143,7 @@ impl CommandInterpreter {
         self.cursor = extent.range.start;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.leave_visual();
         let before = document.revision();
         let mut output = self.join_hard_lines(document, count, count, insert_space)?;
@@ -12441,6 +12491,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.clear_pending();
     }
 
@@ -13019,6 +13070,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
         self.visual_block_insert = None;

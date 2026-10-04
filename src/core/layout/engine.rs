@@ -1447,6 +1447,33 @@ impl LayoutSnapshot {
     }
 
     pub fn hit_test(&self, point: LayoutPoint) -> Result<CaretPoint, LayoutError> {
+        let row = self.hit_test_row(point)?;
+        row.carets.iter().min_by(|left, right| {
+            (left.x - point.x).abs().total_cmp(&(right.x - point.x).abs())
+                .then_with(|| affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity)))
+        }).map(|caret| caret.point).ok_or(LayoutError::NoCaretStops)
+    }
+
+    /// Character-mode pointer placement uses the containing visual cell, not
+    /// the nearest insertion boundary. Shaper-provided stops split ligatures;
+    /// an indivisible cluster retains its first logical grapheme as its target.
+    pub fn hit_test_character(&self, point: LayoutPoint) -> Result<CaretPoint, LayoutError> {
+        let row = self.hit_test_row(point)?;
+        let nearest = nearest_caret(row, point.x).ok_or(LayoutError::NoCaretStops)?.point;
+        let Some(cluster) = row.clusters.iter().find(|cluster| {
+            cluster.x <= point.x && point.x < cluster.x + cluster.advance
+        }) else { return Ok(nearest) };
+        let rtl = cluster.bidi_level % 2 != 0;
+        let offset = row.carets.iter().filter(|caret| {
+            cluster.text_range.contains(&caret.point.text_offset)
+                && caret.x >= cluster.x && caret.x <= cluster.x + cluster.advance
+                && if rtl { caret.x >= point.x } else { caret.x <= point.x }
+        }).min_by(|left, right| (left.x - point.x).abs().total_cmp(&(right.x - point.x).abs()))
+            .map_or(cluster.text_range.start, |caret| caret.point.text_offset);
+        Ok(CaretPoint { text_offset: offset, affinity: BoundaryAffinity::Downstream, ..nearest })
+    }
+
+    fn hit_test_row(&self, point: LayoutPoint) -> Result<&VisualRow, LayoutError> {
         if !point.x.is_finite() || !point.y.is_finite() {
             return Err(LayoutError::InvalidGeometry);
         }
@@ -1500,20 +1527,7 @@ impl LayoutSnapshot {
         if !self.horizontal_geometry_is_materialized(row_index, point.x) {
             return Err(LayoutError::OutsideMaterializedCoverage);
         }
-        row.carets
-            .iter()
-            .min_by(|left, right| {
-                let left_distance = (left.x - point.x).abs();
-                let right_distance = (right.x - point.x).abs();
-                left_distance
-                    .partial_cmp(&right_distance)
-                    .unwrap_or(Ordering::Equal)
-                    .then_with(|| {
-                        affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity))
-                    })
-            })
-            .map(|caret| caret.point)
-            .ok_or(LayoutError::NoCaretStops)
+        Ok(row)
     }
 
     pub fn caret_geometry(&self, point: CaretPoint) -> Result<CaretGeometry, LayoutError> {
@@ -7798,6 +7812,51 @@ mod tests {
         assert_eq!(snapshot.rows.len(), 3);
         assert_eq!(snapshot.rows[1].text_range, 1..1 + family.len());
         assert_eq!(snapshot.rows[1].clusters.len(), 1);
+    }
+
+    #[test]
+    fn character_hit_testing_contains_both_halves_of_proportional_unicode_and_rtl_cells() {
+        let (_document, engine, view) = lay_out("Wi e\u{301} 👩‍💻 אב\n\nlast", 500.0);
+        let snapshot = view.snapshot().unwrap();
+        let shapes = engine.provider().request_calls();
+        for row in snapshot.rows.iter() {
+            for cluster in &row.clusters {
+                for fraction in [0.1, 0.9] {
+                    let point = LayoutPoint { x: cluster.x + cluster.advance * fraction, y: row.y + 1.0 };
+                    let hit = snapshot.hit_test_character(point).unwrap();
+                    assert_eq!(hit.text_offset, cluster.text_range.start, "{cluster:?}, fraction {fraction}");
+                    assert_eq!(hit.affinity, BoundaryAffinity::Downstream);
+                }
+            }
+        }
+        let empty = &snapshot.rows[1];
+        let point = LayoutPoint { x: 200.0, y: empty.y + 1.0 };
+        assert_eq!(snapshot.hit_test_character(point), snapshot.hit_test(point));
+        assert_eq!(engine.provider().request_calls(), shapes, "hit testing reuses the exact snapshot");
+        assert_eq!(snapshot.hit_test_character(LayoutPoint { x: f32::NAN, y: 1.0 }), Err(LayoutError::InvalidGeometry));
+    }
+
+    #[test]
+    fn character_hit_testing_keeps_ligature_targets_on_their_containing_cluster() {
+        let (_document, _engine, view) = lay_out("office", 500.0);
+        let snapshot = view.snapshot().unwrap();
+        let cluster = snapshot.rows[0].clusters.iter().find(|cluster| cluster.text_range == (1..4)).unwrap();
+        let point = LayoutPoint { x: cluster.x + cluster.advance * 0.9, y: snapshot.rows[0].y + 1.0 };
+        assert_eq!(snapshot.hit_test_character(point).unwrap().text_offset, 1);
+        assert_eq!(snapshot.hit_test(point).unwrap().text_offset, 4, "insertion still uses the closest boundary");
+
+        // A provider that exposes internal ligature stops makes those logical
+        // graphemes individually targetable, without evenly splitting glyphs.
+        let mut split = snapshot.clone();
+        let row = &mut Arc::make_mut(&mut split.rows)[0];
+        for (offset, fraction) in [(2, 0.25), (3, 0.6)] {
+            row.carets.push(PositionedCaret { point: CaretPoint {
+                text_offset: offset, affinity: BoundaryAffinity::Downstream, ..row.carets[0].point
+            }, x: cluster.x + cluster.advance * fraction, row_index: 0 });
+        }
+        for (fraction, expected) in [(0.1, 1), (0.5, 2), (0.9, 3)] {
+            assert_eq!(split.hit_test_character(LayoutPoint { x: cluster.x + cluster.advance * fraction, ..point }).unwrap().text_offset, expected);
+        }
     }
 
     #[test]

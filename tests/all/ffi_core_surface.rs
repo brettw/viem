@@ -2227,7 +2227,7 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
 
     let hit_request = ViemLayoutHitTestRequestV1 {
         struct_size: VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE,
-        reserved: 0,
+        flags: 0,
         identity: info.identity,
         x: logical.x,
         y: row.y + 1.0,
@@ -2241,6 +2241,20 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
     assert_eq!(hit.document_id, info.identity.document_id);
     assert_eq!(hit.document_revision, info.identity.document_revision);
     assert_eq!(hit.layout_revision, info.identity.layout_revision);
+
+    let first = &clusters[0];
+    for (flags, expected) in [(0, first.text_end), (VIEM_LAYOUT_HIT_TEST_POINTER_DOWN, first.text_start)] {
+        let request = ViemLayoutHitTestRequestV1 { flags, x: first.x + first.advance * 0.9, ..hit_request };
+        let mut result = ViemLayoutCaretPointV1::default();
+        assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &request, &mut result) }, ViemStatus::Ok);
+        assert_eq!(result.text_offset, expected);
+    }
+    let invalid_hit = ViemLayoutHitTestRequestV1 { flags: 1 << 31, ..hit_request };
+    assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &invalid_hit, &mut hit) }, ViemStatus::InvalidArgument);
+    let invalid_gesture = ViemPlaceCursorV1 { struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+        flags: VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE | VIEM_PLACE_CURSOR_EXTEND_SELECTION,
+        document_revision: info.identity.document_revision, ..Default::default() };
+    assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &invalid_gesture, &mut outcome) }, ViemStatus::InvalidArgument);
 
     let place = ViemPlaceCursorV1 {
         struct_size: VIEM_PLACE_CURSOR_V1_SIZE,

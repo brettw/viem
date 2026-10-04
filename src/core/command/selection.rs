@@ -128,6 +128,17 @@ pub(super) enum SelectionBehavior {
 }
 
 impl CommandInterpreter {
+    pub fn pointer_uses_character_cells(&self) -> bool {
+        self.mode.addresses_characters() && !self.is_text_selection()
+    }
+
+    pub(crate) fn begin_pointer_gesture(&mut self, document: &Document) {
+        self.pointer_character_origin = match self.caret_target(document) {
+            super::caret::CaretTarget::Cell { range } => Some(range),
+            super::caret::CaretTarget::Boundary { .. } => None,
+        };
+    }
+
     pub(crate) fn pointer_word_range(document: &Document, offset: usize) -> Result<Range<usize>, DocumentError> {
         document.text_point(offset)?;
         text_object::pointer_word_range(&document.hard_line_snapshot(), offset)
@@ -153,6 +164,7 @@ impl CommandInterpreter {
         self.selection_exclusive = self.is_native_selection();
         self.visual_to_line_end = false;
         self.pointer_word_origin = Some(origin);
+        self.pointer_character_origin = None;
     }
 
     pub(super) fn move_paragraph_boundary(&mut self, document: &Document, key: Key) -> Result<CommandOutput, DocumentError> {
@@ -308,6 +320,7 @@ impl CommandInterpreter {
         mut context: Option<&mut LayoutCommandContext<'_>>,
     ) -> Result<Option<CommandOutput>, DocumentError> {
         self.pointer_word_origin = None;
+        self.pointer_character_origin = None;
         if self.literal_input_pending()
             || self.mode == Mode::CommandLine
             || self.substitute_confirmation.is_some()

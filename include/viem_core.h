@@ -1470,9 +1470,12 @@ typedef struct ViemLayoutCaretRequestV1 {
 #define VIEM_LAYOUT_CARET_REQUEST_V1_SIZE \
   ((uint32_t)sizeof(ViemLayoutCaretRequestV1))
 
+/* Character-cell hit testing for pointer-down in character-addressing modes. */
+#define VIEM_LAYOUT_HIT_TEST_POINTER_DOWN (1u << 0)
+
 typedef struct ViemLayoutHitTestRequestV1 {
   uint32_t struct_size;
-  uint32_t reserved;
+  uint32_t flags;
   ViemLayoutSnapshotIdentityV1 identity;
   float x;
   float y;
@@ -1847,6 +1850,8 @@ typedef struct ViemSetSemanticStyleV1 {
 #define VIEM_PLACE_CURSOR_EXTEND_SELECTION (1u << 0)
 /* Select whole words; EXTEND retains the gesture's original word. */
 #define VIEM_PLACE_CURSOR_WORD_SELECTION (1u << 1)
+/* Seed a character-inclusive drag origin; incompatible with extend/word flags. */
+#define VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE (1u << 2)
 
 typedef struct ViemPlaceCursorV1 {
   uint32_t struct_size;

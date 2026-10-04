@@ -824,7 +824,7 @@ internal unsafe struct ViemLayoutCaretRequestV1
 internal unsafe struct ViemLayoutHitTestRequestV1
 {
     public uint @struct_size;
-    public uint @reserved;
+    public uint @flags;
     public ViemLayoutSnapshotIdentityV1 @identity;
     public float @x;
     public float @y;
@@ -1770,6 +1770,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
     public static readonly uint VIEM_LAYOUT_CARET_REQUEST_V1_SIZE = ((uint)sizeof(ViemLayoutCaretRequestV1));
+    public const uint VIEM_LAYOUT_HIT_TEST_POINTER_DOWN = (1u << 0);
     public static readonly uint VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE = ((uint)sizeof(ViemLayoutHitTestRequestV1));
     public static readonly uint VIEM_LAYOUT_CARET_POINT_V1_SIZE = ((uint)sizeof(ViemLayoutCaretPointV1));
     public const uint VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK = (1u << 0);
@@ -1848,6 +1849,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_SET_SEMANTIC_STYLE_V1_SIZE = ((uint)sizeof(ViemSetSemanticStyleV1));
     public const uint VIEM_PLACE_CURSOR_EXTEND_SELECTION = (1u << 0);
     public const uint VIEM_PLACE_CURSOR_WORD_SELECTION = (1u << 1);
+    public const uint VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE = (1u << 2);
     public static readonly uint VIEM_PLACE_CURSOR_V1_SIZE = ((uint)sizeof(ViemPlaceCursorV1));
     public static readonly uint VIEM_SET_FILE_FORMAT_V1_SIZE = ((uint)sizeof(ViemSetFileFormatV1));
     public static readonly uint VIEM_SET_MARKDOWN_SOURCE_V1_SIZE = ((uint)sizeof(ViemSetMarkdownSourceV1));

@@ -428,6 +428,13 @@ pub enum CoreEvent {
         affinity: BoundaryAffinity,
         extend_selection: bool,
     },
+    /// Place a pointer-down target and retain its complete character for a
+    /// later native drag. Programmatic boundary placements do not seed it.
+    BeginPointerGesture {
+        document_revision: Revision,
+        text_offset: usize,
+        affinity: BoundaryAffinity,
+    },
     /// Begin or extend a pointer gesture in whole words, retaining its initial
     /// word as the anchor when the drag changes direction.
     SelectPointerWord {
@@ -3993,6 +4000,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         affinity: BoundaryAffinity,
         extend_selection: bool,
         word_selection: bool,
+        begin_pointer_gesture: bool,
     ) -> Result<CoreOutcome, CoreError> {
         if document_revision != self.document.revision() {
             return Err(CoreError::Document(DocumentError::WrongSnapshot {
@@ -4027,6 +4035,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else {
             let placed = commands.set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
             debug_assert!(placed, "the boundary was validated before placement");
+            if begin_pointer_gesture { commands.begin_pointer_gesture(&self.document); }
         }
 
         // An on-screen pointer move changes selection, not text geometry. Keep
@@ -5221,10 +5230,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                     affinity,
                     extend_selection,
                     false,
+                    false,
                 );
             }
+            CoreEvent::BeginPointerGesture { document_revision, text_offset, affinity } => {
+                return self.place_cursor(view_id, document_revision, text_offset, affinity, false, false, true);
+            }
             CoreEvent::SelectPointerWord { document_revision, text_offset, affinity, extend_selection } => {
-                return self.place_cursor(view_id, document_revision, text_offset, affinity, extend_selection, true);
+                return self.place_cursor(view_id, document_revision, text_offset, affinity, extend_selection, true, false);
             }
             CoreEvent::SelectAll { document, revision } => {
                 return self.select_all(view_id, document, revision);
@@ -6403,7 +6416,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::Composition(_) => {
                 unreachable!("composition events return before ordinary dispatch")
             }
-            CoreEvent::PlaceCursor { .. } | CoreEvent::SelectPointerWord { .. } => {
+            CoreEvent::PlaceCursor { .. } | CoreEvent::BeginPointerGesture { .. } | CoreEvent::SelectPointerWord { .. } => {
                 unreachable!("pointer placements return before ordinary dispatch")
             }
             CoreEvent::SelectAll { .. } => {
@@ -12438,18 +12451,79 @@ mod tests {
     }
 
     #[test]
+    fn pointer_character_drag_keeps_the_whole_initial_grapheme_when_reversing() {
+        let source = "ab👩‍💻cde";
+        let mut core = Core::new(Document::new(source));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
+        let revision = core.document().revision();
+        core.handle(view, CoreEvent::BeginPointerGesture { document_revision: revision,
+            text_offset: 2, affinity: BoundaryAffinity::Downstream }).unwrap();
+        let end = 2 + "👩‍💻".len();
+        for (offset, expected) in [(end + 2, 2..end + 2), (1, 1..end), (2, 2..end), (end + 1, 2..end + 1)] {
+            core.handle(view, CoreEvent::PlaceCursor { document_revision: revision,
+                text_offset: offset, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
+            let commands = core.command_state(view).unwrap();
+            assert!(commands.is_native_selection());
+            let anchor = commands.visual_anchor().unwrap();
+            assert_eq!(anchor.min(commands.cursor())..anchor.max(commands.cursor()), expected);
+        }
+        core.handle(view, text("X")).unwrap();
+        assert_eq!(core.document().text(), "abXde");
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(view, key('u')).unwrap();
+        assert_eq!(core.document().text(), source);
+    }
+
+    #[test]
+    fn pointer_character_origin_rebases_across_another_views_edit_and_rejects_stale_placement() {
+        let mut core = Core::new(Document::new("abcde"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
+        let other = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
+        let old = core.document().revision();
+        core.handle(view, CoreEvent::BeginPointerGesture { document_revision: old,
+            text_offset: 2, affinity: BoundaryAffinity::Downstream }).unwrap();
+        core.handle(other, key('i')).unwrap();
+        core.handle(other, text("XX")).unwrap();
+        assert!(core.handle(view, CoreEvent::BeginPointerGesture { document_revision: old,
+            text_offset: 0, affinity: BoundaryAffinity::Downstream }).is_err());
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: 3, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
+        let commands = core.command_state(view).unwrap();
+        assert_eq!(commands.visual_anchor(), Some(5));
+        assert_eq!(commands.cursor(), 3);
+    }
+
+    #[test]
+    fn pointer_drag_from_insert_keeps_its_original_insertion_boundary() {
+        let mut core = Core::new(Document::new("abcde"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
+        core.handle(view, key('i')).unwrap();
+        let revision = core.document().revision();
+        core.handle(view, CoreEvent::BeginPointerGesture { document_revision: revision,
+            text_offset: 3, affinity: BoundaryAffinity::Upstream }).unwrap();
+        for offset in [1, 4] {
+            core.handle(view, CoreEvent::PlaceCursor { document_revision: revision,
+                text_offset: offset, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
+            assert_eq!(core.command_state(view).unwrap().visual_anchor(), Some(3));
+            assert_eq!(core.command_state(view).unwrap().cursor(), offset);
+        }
+    }
+
+    #[test]
     fn pointer_drag_reuses_visible_layout_in_a_large_document() {
         let mut core = Core::new(Document::new("alpha beta gamma\n".repeat(25_000)));
         let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 300.0);
         let revision = core.document().revision();
         let jobs = core.next_layout_job;
         let layout_revision = core.layout(view).unwrap().snapshot().unwrap().revision;
-        for offset in (0..100).chain((0..100).rev()) {
+        core.handle(view, CoreEvent::BeginPointerGesture { document_revision: revision,
+            text_offset: 0, affinity: BoundaryAffinity::Downstream }).unwrap();
+        for offset in (1..100).chain((0..100).rev()) {
             core.handle(view, CoreEvent::PlaceCursor {
                 document_revision: revision,
                 text_offset: offset,
                 affinity: BoundaryAffinity::Downstream,
-                extend_selection: offset != 0,
+                extend_selection: true,
             }).unwrap();
         }
         assert_eq!(core.next_layout_job, jobs, "dragging must not schedule visible reflow");
