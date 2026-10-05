@@ -467,6 +467,9 @@ mod tests {
             ("main.VB", "vb"), ("page.jsp", "jsp"), ("build.rake", "ruby"), ("main.F", "fortran"),
             ("settings.InI", "dosini"), ("messages.properties", "jproperties"), (".clang-tidy", "yaml"),
             ("diagram.dot", "dot"), ("diagram.gv", "dot"), ("diagram.mermaid", "mermaid"),
+            ("notes.md", "markdown"), ("notes.markdown", "markdown"),
+            ("notes.mdown", "markdown"), ("notes.mdwn", "markdown"),
+            ("notes.mkd", "markdown"), ("notes.mkdn", "markdown"),
         ] {
             let result = detect(&source, filename, &LanguageSelection::Automatic, &[]);
             assert_eq!(result.language.as_deref(), Some(expected), "{filename}");

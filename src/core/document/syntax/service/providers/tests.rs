@@ -9,6 +9,7 @@ use crate::document::{
 use std::sync::{atomic::AtomicUsize, Arc};
 
 mod vim;
+mod markdown;
 
 fn request(text: &str, language: &str, revision: u64) -> SyntaxRequest {
     SyntaxRequest {

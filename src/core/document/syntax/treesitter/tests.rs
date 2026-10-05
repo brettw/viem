@@ -90,6 +90,8 @@ fn every_bundled_grammar_compiles_queries_parses_and_highlights() {
         ("tsx", "const element: JSX.Element = <div>hello</div>;\n"),
         ("python", "def answer():\n    return 42\n"),
         ("json", "{\"answer\": 42, \"enabled\": true, \"items\": [null, \"text\"]}\n"),
+        ("markdown", "# Heading\n\n- [x] item\n"),
+        ("markdown_inline", "**bold** and *italic* with [link](https://example.com)"),
     ];
     for (language, text) in fixtures {
         let package =
@@ -254,6 +256,8 @@ fn all_nvim_packages_match_fresh_highlighting_after_incremental_edits() {
         ),
         ("python", "value = True\n", "True", "None"),
         ("json", "{\"value\": true}\n", "true", "null"),
+        ("markdown", "# Heading\n\n- [ ] item\n", "#", "##"),
+        ("markdown_inline", "**strong** and *italic*", "**strong**", "`strong`"),
     ] {
         let package = TreeSitterPackage::bundled(language).unwrap();
         let mut session = TreeSitterSession::new(package.clone()).unwrap();
@@ -409,7 +413,9 @@ fn neovim_ui_metadata_never_hides_source_or_accepts_unknown_properties() {
         concat!(
             "(identifier) @variable\n",
             "((identifier) @conceal (#set! conceal \"\"))\n",
+            "((identifier) @_node (#set! conceal_lines \"\"))\n",
             "((identifier) @_node (#set! @_node bo.commentstring \"// %s\"))\n",
+            "((identifier) @_node (#set! @_node url @_node))\n",
         ),
         QueryProfile::NeovimV1,
     );
@@ -419,9 +425,13 @@ fn neovim_ui_metadata_never_hides_source_or_accepts_unknown_properties() {
     assert_eq!(result.coverage, Coverage::Exact);
     assert_eq!(result.runs.len(), 1);
     assert_eq!(result.runs[0].name.as_str(), "Variable");
+    assert_eq!(snapshot.input().slice(0..10).unwrap(), "int value;");
     for query in [
         "((identifier) @name (#set! @name arbitrary \"x\"))",
         "((identifier) @name (#set! conceal))",
+        "((identifier) @name (#set! conceal_lines))",
+        "((identifier) @name (#set! @name url \"arbitrary\"))",
+        "((identifier) @name (#set! @name url))",
         "((identifier) @name (#set! bo.commentstring \"x\"))",
     ] {
         assert!(
@@ -494,6 +504,7 @@ fn queries_validate_host_capabilities_before_activation() {
         r#"((identifier) @name (#unknown! @name))"#,
         "; inherits: missing\n(identifier) @name",
         r#"((identifier) @name (#set! conceal "x"))"#,
+        r#"((identifier) @name (#set! conceal_lines ""))"#,
     ] {
         assert!(
             matches!(
@@ -1034,4 +1045,39 @@ fn combined_injections_discover_all_members_before_viewport_publication() {
         highlight(&snapshot, 0..7, &budget, &AtomicBool::new(false)).coverage,
         Coverage::Missing
     );
+}
+
+#[test]
+fn combined_and_regional_injections_keep_separate_scopes_and_share_limits() {
+    let package = TreeSitterPackage::compile(
+        "mixed-injections", 1, tree_sitter_c::LANGUAGE.into(), "(comment) @comment",
+        Some(concat!(
+            "((comment) @injection.content (#set! injection.language \"python\")",
+            " (#set! injection.combined) (#set! injection.include-children))\n",
+            "((identifier) @injection.content (#set! injection.language \"rust\"))\n",
+        )),
+        QueryProfile::Upstream, &generous(), None,
+    ).unwrap();
+    let mut costs = Vec::new();
+    for lines in [200, 2_000] {
+        let text = format!("// head\n{}// tail\n", "int value;\n".repeat(lines));
+        let mut session = TreeSitterSession::new(package.clone()).unwrap();
+        let (snapshot, _) = parsed(&mut session, input(&text, 0), &[]);
+        let output = highlight(&snapshot, 8..18, &generous(), &AtomicBool::new(false));
+        assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+        assert_eq!(output.injections.len(), 2);
+        assert_eq!(output.injections[0].ranges, vec![12..17]);
+        assert!(!output.injections[0].combined);
+        assert_eq!(output.injections[1].ranges, vec![0..7, text.len() - 8..text.len() - 1]);
+        assert!(output.injections[1].combined);
+        costs.push(output.work.query_matches);
+        let limited = highlight(&snapshot, 8..18, &TreeSitterBudget {
+            max_injections: 2, ..generous()
+        }, &AtomicBool::new(false));
+        assert_eq!(limited.coverage, Coverage::Exact, "{:?}", limited.diagnostic);
+        assert!(limited.injections_truncated);
+        assert_eq!(limited.injections.len(), 1);
+        assert!(limited.injections[0].combined);
+    }
+    assert_eq!(costs[0], costs[1], "offscreen regional matches must not consume query work");
 }

@@ -23,6 +23,8 @@ pins all transitive build inputs.
 | tsx | 0.23.2 | ECMA, TypeScript, JSX, then TSX |
 | python | 0.23.5 | Python |
 | json | 0.24.8 | JSON (including comments) |
+| markdown | 0.5.3 | Markdown blocks, with inline and fenced-language injections |
+| markdown_inline | 0.5.3 | Markdown inline grammar (injection helper) |
 
 All highlight and injection query files are copied unmodified from
 [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter/tree/f603a2f4da48728f80257fb5fbb90145fd1dc173/runtime/queries)
@@ -30,10 +32,11 @@ commit `f603a2f4da48728f80257fb5fbb90145fd1dc173`, except Swift's queries,
 which use compatible commit `13ddd4d7522ce3e5a1abc0ea34e10ec4e445908a`.
 The newer Swift queries require unreleased grammar nodes (including
 `nil_literal`); the compatible queries retain upstream's literal `"nil"` rule.
-Their Apache-2.0 license is adjacent as `nvim.LICENSE`. Rust and Python's
-highlight queries also retain MIT source notices, with the complete texts in
-`rust.LICENSE` and `python.LICENSE`. `nvim.NOTICES.md` maps every copied file
-to its origin. All four notice/license files are included in macOS and Windows
+Their Apache-2.0 license is adjacent as `nvim.LICENSE`. Rust, Python and Markdown
+queries also retain upstream source notices, with the complete texts in
+`rust.LICENSE`, `python.LICENSE`, `markdown.LICENSE` and `helix.LICENSE`.
+`nvim.NOTICES.md` maps every copied file to its origin.
+All notice/license files are included in macOS and Windows
 app output under `Resources/Licenses/nvim-treesitter` (inside `Contents` on
 macOS). All packages select the NeovimV1 profile.
 `bundled.rs` resolves each file's `; inherits:` dependencies recursively,
@@ -48,6 +51,15 @@ The remaining existing grammars compile the pinned queries without upgrades.
 C# directives such as `#if` and `#endif` emit `Keyword.directive`; `DEBUG` in
 `#if DEBUG` emits `Constant`. JSON and JSONC filename detection selects the
 JSON package, including inside language-tagged injections.
+
+Markdown uses the block and inline `LanguageFn` exports from `tree-sitter-md`
+0.5.3 with the existing 0.25.10 runtime; the crate's optional 0.26 parser wrapper
+is disabled. The inline grammar is an injection helper, not a separate menu
+language or filename target. Existing Markdown catalogue and filename rules
+(`.md`, `.markdown`, `.mdown`, `.mdwn`, `.mkd`, `.mkdn`) are unchanged. Selecting
+Code > Auto for a Markdown file, or Code > Markdown, uses these grammars solely
+for literal Code highlighting. Native Markdown Source and WYSIWYG retain their
+existing parser and presentation; ordinary Markdown opening remains unchanged.
 
 Queries may request child languages such as `comment`, `doxygen`, `printf`,
 `regex`, or `jsdoc`. A child is used only when a compatible Tree-sitter package
@@ -107,10 +119,14 @@ Malformed patterns reject the package. Neovim `contains?`, `any-contains?`,
 and their `not-` forms perform bounded literal substring searches with Neovim's
 all/any semantics. `injection.self` injects the package's own language.
 
-Known `conceal` metadata and capture-specific `bo.commentstring` metadata are
+Known `conceal`/`conceal_lines` metadata and capture-specific `bo.commentstring`
+and captured `url` metadata are
 accepted as presentation hints without applying them: Code always shows literal
-source, and comment continuation uses its portable language profiles. The
+source, comment continuation uses its portable language profiles, and link
+opening remains an explicit source-resolved action. The
 `conceal` capture never emits a visual style or overrides ordinary captures.
+Neovim injection content excludes named children by default, retaining anonymous
+punctuation for the injected parser; `injection.include-children` keeps both.
 Custom Lua, locals scopes, arbitrary metadata and unknown directives still
 reject the package; they do not become successful predicates.
 
@@ -147,9 +163,12 @@ only its frozen input, grammar, old tree and included ranges.
 
 An initial parse covers the full host region. A viewport request queries the
 completed tree. Declared included ranges preserve parent coordinates for child
-parsers. Combined injection discovery queries the complete host under the same
-bounded query budget and joins same-pattern, same-language members only after
-complete discovery. Incomplete discovery gives missing coverage. As in
+parsers. Combined injection patterns run separately from regional patterns with
+one shared work/range budget. Combined HTML groups still require document-wide
+discovery to preserve their shared parse context; unrelated Markdown inline
+paragraphs and fenced blocks are discovered only for the requested region.
+Combined discovery joins same-pattern, same-language members only after complete
+discovery. Incomplete combined discovery gives missing coverage. As in
 Neovim, an injection is kept only when its language has a Tree-sitter package
 or a Vim syntax program that loads; the answer is cached per provider and
 resolved outside the query's time slice. A captured language that cannot name

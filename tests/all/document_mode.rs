@@ -107,7 +107,7 @@ fn catalogue_is_complete_unique_sorted_and_excludes_runtime_utilities() {
     let ids = languages.iter().map(|language| language.id.as_str()).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ids.len(), languages.len());
     for id in ["rust", "swift", "c_sharp", "tsx", "vim", "markdown", "python", "bash"] { assert!(ids.contains(id), "{id}"); }
-    for id in ["2html", "syntax", "synload", "manual", "nosyntax", "syncolor"] { assert!(!ids.contains(id), "{id}"); }
+    for id in ["2html", "syntax", "synload", "manual", "nosyntax", "syncolor", "markdown_inline"] { assert!(!ids.contains(id), "{id}"); }
 }
 
 #[test]
