@@ -3191,7 +3191,7 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
                 cluster.ink_bounds.x + cluster.ink_bounds.width,
             ]
         })
-        .chain(row.decorations.iter().flat_map(|item| {
+        .chain(row.decorations.iter().filter(|item| item.kind == DecorationKind::Text).flat_map(|item| {
             [
                 item.x + item.advance,
                 item.ink_bounds.x + item.ink_bounds.width,
@@ -3199,11 +3199,18 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
         }))
         .chain(row.carets.iter().map(|caret| caret.x))
         .fold(row.paragraph_content_x, f32::max);
+    // Backgrounds and borders already include their owner's padding. Their
+    // absolute right edge must not acquire the text content box's trailing
+    // inset again, or fitting padded blocks create horizontal overflow.
+    let decoration_right = row.decorations.iter()
+        .filter(|item| item.kind != DecorationKind::Text)
+        .flat_map(|item| [item.x + item.advance, item.ink_bounds.x + item.ink_bounds.width])
+        .fold(viewport_width, f32::max);
     if let Some(cell) = &row.table_cell {
         // A cell content box is not the viewport's paragraph box. Treating
         // the space after it as canvas padding duplicates its trailing padding
         // and makes every fitting table spuriously horizontally scrollable.
-        return viewport_width.max(positioned_right).max(cell.table_x + cell.table_width);
+        return decoration_right.max(positioned_right).max(cell.table_x + cell.table_width);
     }
     let paragraph_box_right = row.paragraph_content_x + row.paragraph_content_width;
     let trailing_canvas = (viewport_width - paragraph_box_right).max(0.0);
@@ -3212,7 +3219,7 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
     // wrapped rows do not acquire a spurious horizontal scrollbar.
     let caret_right = row.carets.iter().map(|caret| caret.x + super::CARET_REVEAL_WIDTH)
         .fold(0.0, f32::max);
-    viewport_width.max(positioned_right + trailing_canvas).max(caret_right)
+    decoration_right.max(positioned_right + trailing_canvas).max(caret_right)
 }
 
 fn snapshot_hard_line_count(snapshot: &LayoutSnapshot) -> usize {

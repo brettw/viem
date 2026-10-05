@@ -91,3 +91,35 @@ fn terminal_document_extent_matches_full_regional_and_streamed_long_rows() {
         }
     }
 }
+
+#[test]
+fn padded_block_decorations_only_scroll_when_the_box_overflows() {
+    let document = Document::new("short");
+    let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+    styles.paragraphs[0].block_box = block_box::BlockBoxStyle {
+        padding: EdgeInsets { left: 12.0, right: 8.0, ..Default::default() },
+        border: EdgeInsets { right: 2.0, ..Default::default() },
+        background: Some(Color { red: 0.2, green: 0.3, blue: 0.4, alpha: 1.0 }),
+        ..Default::default()
+    };
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut view = ViewLayout::new(400.0, 100.0);
+    view.set_insets(EdgeInsets { left: 24.0, right: 24.0, ..Default::default() });
+    for width in [400.0, 320.0] {
+        view.resize(width, 100.0);
+        engine.relayout_styled_text(
+            document.id(), document.revision(), document.text(), styles.clone(), &mut view,
+        ).unwrap();
+        assert_eq!(view.maximum_viewport_left(), Some(0.0),
+            "fitting backgrounds and borders already include the block's padding");
+    }
+
+    // Keep genuine decoration overflow reachable even when the text fits.
+    styles.paragraphs[0].block_box.margin.right = -100.0;
+    engine.relayout_styled_text(
+        document.id(), document.revision(), document.text(), styles, &mut view,
+    ).unwrap();
+    assert_eq!(view.maximum_viewport_left(), Some(76.0));
+    view.set_viewport_left(f32::MAX).unwrap();
+    assert_eq!(view.viewport_left(), 76.0);
+}
