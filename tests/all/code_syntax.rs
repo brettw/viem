@@ -20,6 +20,63 @@ fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
 }
 
 #[test]
+fn markdown_tree_sitter_highlighting_requires_code_mode_and_preserves_native_views() {
+    use viem_core::DocumentMode;
+    let text = "# Heading\r\n\r\n**café** and *italic* [link](https://example.com)\r\n";
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for format in [Format::MarkdownSource, Format::Markdown] {
+            for mode in [DocumentMode::Automatic, DocumentMode::Code("markdown".into())] {
+                let bytes = encoded(text, encoding);
+                let document = Document::from_bytes_with_file_format(
+                    bytes.clone(), encoding, format, FileFormat::Dos,
+                ).unwrap();
+                let native_text = document.text().to_owned();
+                let native_spans = document.projection().style_spans().to_vec();
+                let mut core = Core::new(document);
+                core.initialize_code_detection("notes.md", true).unwrap();
+                let view = core.add_view(MockTextMeasurementProvider::new(), 900., 600.);
+                assert_eq!(core.document().format(), format);
+                assert_eq!(core.document().text(), native_text);
+                core.poll_syntax();
+                assert_eq!(core.syntax_statistics().requests, 0);
+                assert!(core.syntax_style_names().is_empty());
+
+                core.handle(view, CoreEvent::SetDocumentMode {
+                    document: core.document().id(), revision: core.document().revision(),
+                    mode, formatted_markdown: format == Format::Markdown,
+                }).unwrap();
+                assert_eq!(core.document().format(), Format::Code);
+                assert_eq!(core.document().text(), text.replace("\r\n", "\n"));
+                assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some("markdown"));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let expected = ["Markup.heading.1", "Markup.strong", "Markup.italic", "Markup.link.url"];
+                loop {
+                    core.poll_syntax();
+                    if expected.iter().all(|name| core.syntax_style_names().iter().any(|actual| actual == name)) {
+                        break;
+                    }
+                    assert!(std::time::Instant::now() < deadline,
+                        "{:?}: {}", core.syntax_style_names(), core.syntax_diagnostics());
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                assert_eq!(core.document().source_bytes(), bytes);
+                assert!(!core.document().is_dirty());
+                key(&mut core, view, Key::Char('u'));
+                assert_eq!(core.document().format(), format);
+                assert_eq!(core.document().text(), native_text);
+                assert_eq!(core.document().projection().style_spans(), native_spans);
+                let requests = core.syntax_statistics().requests;
+                core.poll_syntax();
+                assert_eq!(core.syntax_statistics().requests, requests);
+                assert!(core.syntax_style_names().is_empty());
+                assert_eq!(core.document().source_bytes(), bytes);
+                assert!(!core.document().is_dirty());
+            }
+        }
+    }
+}
+
+#[test]
 fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
     for (filename, source) in [
         (

@@ -41,6 +41,14 @@ fn source(id: &str, injection: bool) -> Result<&'static str, TreeSitterError> {
             include_str!("json.scm"),
             include_str!("json_injections.scm"),
         ),
+        "markdown" => (
+            include_str!("markdown.scm"),
+            include_str!("markdown_injections.scm"),
+        ),
+        "markdown_inline" => (
+            include_str!("markdown_inline.scm"),
+            include_str!("markdown_inline_injections.scm"),
+        ),
         "ecma" => (
             include_str!("ecma.scm"),
             include_str!("ecma_injections.scm"),
@@ -101,6 +109,8 @@ pub(super) fn package(id: &str) -> Result<Arc<TreeSitterPackage>, TreeSitterErro
         "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
         "python" => tree_sitter_python::LANGUAGE.into(),
         "json" => tree_sitter_json::LANGUAGE.into(),
+        "markdown" => tree_sitter_md::LANGUAGE.into(),
+        "markdown_inline" => tree_sitter_md::INLINE_LANGUAGE.into(),
         _ => return Err(TreeSitterError::UnsupportedLanguage(id.to_owned())),
     };
     TreeSitterPackage::compile(

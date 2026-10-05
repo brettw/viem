@@ -4,7 +4,7 @@
 
 use super::{Coverage, SyntaxInputIdentity, SyntaxInputSnapshot, SyntaxRun, SyntaxStyleName};
 use regex_automata::dfa::{dense, Automaton};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -39,6 +39,8 @@ pub const BUNDLED_LANGUAGES: &[&str] = &[
     "tsx",
     "python",
     "json",
+    "markdown",
+    "markdown_inline",
 ];
 
 const MAX_REGISTERED_PACKAGES: usize = 64;
@@ -370,6 +372,8 @@ struct Pattern {
 struct CompiledQuery {
     query: Query,
     patterns: Vec<Pattern>,
+    profile: QueryProfile,
+    combined: bool,
 }
 
 /// Dynamic loaders retain their library owner for every parser/tree/query use.
@@ -379,6 +383,7 @@ pub struct TreeSitterPackage {
     language: Language,
     highlights: CompiledQuery,
     injections: Option<CompiledQuery>,
+    combined_injections: Option<CompiledQuery>,
     native: Arc<native::Account>,
     _resource_owner: Option<Arc<dyn Send + Sync>>,
 }
@@ -429,14 +434,38 @@ impl TreeSitterPackage {
         parser
             .set_language(&language)
             .map_err(|_| TreeSitterError::IncompatibleGrammar)?;
+        let mut injections = injection_source
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| compile_query(&language, s, profile, true, budget))
+            .transpose()?;
+        // Compile disjoint native queries so a combined HTML injection does
+        // not force every Markdown inline region into global discovery. Query
+        // bytes, pattern indices and upstream semantics remain unchanged.
+        let combined_injections = if let Some(regional) = injections
+            .as_mut()
+            .filter(|query| query.patterns.iter().any(|pattern| pattern.combined))
+        {
+            let mut combined = compile_query(
+                &language, injection_source.unwrap(), profile, true, budget,
+            )?;
+            combined.combined = true;
+            for (index, pattern) in regional.patterns.iter().enumerate() {
+                if pattern.combined {
+                    regional.query.disable_pattern(index);
+                } else {
+                    combined.query.disable_pattern(index);
+                }
+            }
+            Some(combined)
+        } else {
+            None
+        };
         let package = Arc::new(Self {
             id,
             generation,
             highlights: compile_query(&language, highlight_source, profile, false, budget)?,
-            injections: injection_source
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| compile_query(&language, s, profile, true, budget))
-                .transpose()?,
+            injections,
+            combined_injections,
             language,
             native: native.clone(),
             _resource_owner: resource_owner,
@@ -670,15 +699,23 @@ fn compile_query(
                 }
                 "set!" => {
                     // These known Neovim UI hints do not change Code's literal
-                    // source or its portable comment-continuation policy.
+                    // source, comment continuation or explicit link-opening policy.
                     if profile == QueryProfile::NeovimV1
                         && !injection
                         && matches!(args.first(), Some(QueryPredicateArg::Capture(_)))
                         && args.len() == 3
-                        && string(args.get(1))? == "bo.commentstring"
                     {
-                        string(args.get(2))?;
-                        continue;
+                        match string(args.get(1))?.as_str() {
+                            "bo.commentstring" => {
+                                string(args.get(2))?;
+                                continue;
+                            }
+                            "url" => {
+                                capture(args.get(2))?;
+                                continue;
+                            }
+                            _ => {}
+                        }
                     }
                     let key = string(args.first())?;
                     let value = args.get(1).map(|v| string(Some(v))).transpose()?;
@@ -704,7 +741,7 @@ fn compile_query(
                         "injection.include-children" if injection => {
                             pattern.include_children = true
                         }
-                        "conceal"
+                        "conceal" | "conceal_lines"
                             if profile == QueryProfile::NeovimV1
                                 && !injection
                                 && value.is_some() => {}
@@ -724,7 +761,12 @@ fn compile_query(
         }
         patterns.push(pattern);
     }
-    Ok(CompiledQuery { query, patterns })
+    Ok(CompiledQuery {
+        query,
+        patterns,
+        profile,
+        combined: false,
+    })
 }
 
 pub struct ParseSnapshot {
@@ -1055,6 +1097,7 @@ struct Control<'a> {
     failure: RefCell<Option<TreeSitterError>>,
     native: &'a native::Account,
     dependencies: RefCell<Option<Range<usize>>>,
+    injection_ranges: Cell<usize>,
 }
 impl<'a> Control<'a> {
     fn new(
@@ -1070,6 +1113,7 @@ impl<'a> Control<'a> {
             failure: RefCell::default(),
             native,
             dependencies: RefCell::default(),
+            injection_ranges: Cell::new(0),
         }
     }
     fn fail(&self, error: TreeSitterError) -> bool {
@@ -1261,25 +1305,28 @@ pub fn highlight_injecting(
         if output_bytes > budget.max_output_bytes {
             return Err(TreeSitterError::Limit("query output bytes"));
         }
-        let injections = match &snapshot.package.injections {
-            Some(query) => {
-                // Combined groups require complete discovery, including members
-                // outside the viewport. Exhaustion makes coverage Missing.
-                let discovery = if query.patterns.iter().any(|p| p.combined) {
-                    0..snapshot.input.byte_len()
-                } else {
-                    range.clone()
-                };
-                let (_, injections, truncated) =
-                    execute_query(snapshot, query, &discovery, &control, Some(injectable))?;
-                (injections, truncated)
-            }
-            None => (Vec::new(), false),
+        // Complete combined groups first, under the same aggregate budget as
+        // the visible regional injections. A partial combined group is invalid.
+        let combined = if let Some(query) = &snapshot.package.combined_injections {
+            execute_query(
+                snapshot, query, &(0..snapshot.input.byte_len()), &control, Some(injectable),
+            )?.1
+        } else {
+            Vec::new()
         };
+        let mut injections = Vec::new();
+        let mut truncated = false;
+        if let Some(query) = &snapshot.package.injections {
+            let (_, regional, limited) =
+                execute_query(snapshot, query, &range, &control, Some(injectable))?;
+            injections.extend(regional);
+            truncated = limited;
+        }
+        injections.extend(combined);
         if control.check() {
             return Err(control.failure().unwrap());
         }
-        Ok((runs, injections))
+        Ok((runs, (injections, truncated)))
     })();
     match result {
         Ok((runs, (injections, truncated))) => {
@@ -1310,7 +1357,7 @@ fn execute_query(
         return Ok((Vec::new(), Vec::new(), false));
     }
     if injection
-        && compiled.patterns.iter().any(|p| p.combined)
+        && compiled.combined
         && (range.start != 0 || range.end != snapshot.input.byte_len())
     {
         return Err(TreeSitterError::Limit(
@@ -1334,7 +1381,6 @@ fn execute_query(
     let mut runs = Vec::new();
     let mut injections = Vec::new();
     let mut combined = BTreeMap::<(usize, String), InjectionRegion>::new();
-    let mut injection_ranges = 0usize;
     let mut truncated = false;
     let mut serial = 0;
     while let Some(found) = iterator.next() {
@@ -1366,16 +1412,18 @@ fn execute_query(
             if let Some(region) = injection_region(snapshot, compiled, pattern, found, control)?
                 .filter(|region| injectable(&region.language))
             {
-                injection_ranges = injection_ranges.saturating_add(region.ranges.len());
+                let injection_ranges = control.injection_ranges.get()
+                    .saturating_add(region.ranges.len());
                 if injection_ranges > control.budget.max_injections {
                     // A combined group must be complete; otherwise the regions
                     // already found stay valid and later ones keep parent runs.
-                    if compiled.patterns.iter().any(|p| p.combined) {
+                    if compiled.combined {
                         return Err(TreeSitterError::Limit("injections"));
                     }
                     truncated = true;
                     continue;
                 }
+                control.injection_ranges.set(injection_ranges);
                 if region.combined {
                     let key = (found.pattern_index, region.language.clone());
                     match combined.entry(key) {
@@ -1740,6 +1788,12 @@ fn injection_region(
                     let mut walk = capture.node.walk();
                     for child in capture.node.children(&mut walk) {
                         control.charge_predicate(1)?;
+                        // Neovim masks named children only. Anonymous Markdown
+                        // delimiters and code punctuation belong to the child
+                        // language's input and must remain available to parse.
+                        if compiled.profile == QueryProfile::NeovimV1 && !child.is_named() {
+                            continue;
+                        }
                         if at < child.start_byte().min(range.end) {
                             ranges.push(at..child.start_byte().min(range.end));
                         }
