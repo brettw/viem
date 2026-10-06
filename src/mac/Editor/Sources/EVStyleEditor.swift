@@ -50,7 +50,9 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private var activationObservers: [NSObjectProtocol] = []
     private var selectionObserver: NSObjectProtocol?
     private var familyObserver: NSObjectProtocol?
+    private var syntaxObserver: NSObjectProtocol?
     private weak var followedDocument: EVEditorSurfaceController?
+    private var followsCaretStyle = false
     private var selectionFollowTimer: Timer?
     private(set) var caretFollowQueryCount = 0
     private var globalSession: EVCodeStyleSession?
@@ -141,7 +143,10 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             }
             let content = EVStyleEditorViewController()
             content.onClose = { [weak self] in self?.controller?.close() }
-            content.onExplicitStyleSelection = { [weak self] in self?.cancelPendingSelectionFollow() }
+            content.onExplicitStyleSelection = { [weak self] in
+                self?.followsCaretStyle = false
+                self?.cancelPendingSelectionFollow()
+            }
             content.onDocumentSelection = { [weak self] format, configuration in
                 try self?.selectDocument(format, configuration: configuration)
             }
@@ -214,6 +219,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     private func followSelection(of document: EVEditorSurfaceController, globalCode: Bool) {
         stopFollowingSelection()
         followedDocument = document
+        followsCaretStyle = true
         familyObserver = NotificationCenter.default.addObserver(
             forName: .viemCoreDocumentDidChange, object: document.backend, queue: .main
         ) { [weak self, weak document] _ in
@@ -236,7 +242,22 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                     self.retargetFollowingFamily(of: document)
                     return
                 }
+                self.followsCaretStyle = true
                 self.scheduleSelectionFollow(of: document, globalCode: globalCode)
+            }
+        }
+        syntaxObserver = NotificationCenter.default.addObserver(
+            forName: .viemCoreSyntaxDidChange, object: document.backend, queue: .main
+        ) { [weak self, weak document] _ in
+            MainActor.assumeIsolated {
+                guard let self, let document, self.followedDocument === document,
+                      self.followsCaretStyle, document.backend.sourceFormat == .code,
+                      self.selectionFollowTimer == nil else { return }
+                // A mode switch or caret move can precede syntax publication.
+                // Finish that lookup when styles arrive, unless the user has
+                // since selected a definition explicitly. Do not restart an
+                // existing debounce timer for each background publication.
+                self.scheduleSelectionFollow(of: document, globalCode: true)
             }
         }
     }
@@ -298,6 +319,11 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 
     private func stopFollowingSelection() {
         cancelPendingSelectionFollow()
+        followsCaretStyle = false
+        if let syntaxObserver {
+            NotificationCenter.default.removeObserver(syntaxObserver)
+            self.syntaxObserver = nil
+        }
         if let familyObserver {
             NotificationCenter.default.removeObserver(familyObserver)
             self.familyObserver = nil
@@ -311,8 +337,9 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
 
     private func scheduleSelectionFollow(of document: EVEditorSurfaceController, globalCode: Bool) {
         cancelPendingSelectionFollow()
-        // Selection notifications already filter out unchanged presentations,
-        // scrolling, repainting, syntax results and stylesheet-only revisions.
+        // Selection notifications filter out unchanged presentations, scrolling,
+        // repainting and stylesheet-only revisions. Syntax publication can also
+        // complete a lookup that previously had no captures available.
         // Delay the named-style query itself, not only the control refresh.
         let timer = Timer(timeInterval: 0.5, repeats: false) { [weak self, weak document] _ in
             MainActor.assumeIsolated {

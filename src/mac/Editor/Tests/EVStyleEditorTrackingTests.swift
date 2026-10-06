@@ -116,6 +116,87 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         withExtendedLifetime((builder, owner, controller)) {}
     }
 
+    func testMarkdownCodeModeTransitionRetargetsOpenInspectorAndKeepsFollowing() async throws {
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let source = Data("# Title\n\n**bold** plain\n".utf8)
+            let backend = EVCoreDocumentBackend(configuration: configuration())
+            try backend.read(source: source, typeName: type, filename: "tracking.md", allowAutomaticCode: false)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            prepare(surface)
+            let host = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
+            let documentWindow = try XCTUnwrap(host.window)
+            XCTAssertTrue(documentWindow.makeFirstResponder(surface.editorView))
+            let coordinator = EVStyleEditorCoordinator.shared
+            coordinator.close()
+            coordinator.show(document: surface, sender: nil)
+            defer { coordinator.close(); documentWindow.orderOut(nil) }
+            let window = try XCTUnwrap(coordinator.styleWindow)
+            XCTAssertTrue(window.title.contains("Markdown"))
+            surface.selectDocumentMode(.code("markdown"), expected: try XCTUnwrap(surface.currentDocumentMode()))
+            XCTAssertEqual(backend.sourceFormat, .code)
+            XCTAssertTrue(window.title.contains("Code"), window.title)
+            XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
+            for _ in 0..<200 {
+                backend.pollSyntax()
+                surface.refreshPresentation()
+                if surface.currentStyleEditorKey() != .baseParagraph { break }
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, surface.currentStyleEditorKey(),
+                           "The inspector follows the syntax style that arrives after the mode switch without a caret move")
+            for (token, name) in [("bold", "Markup.strong"), ("plain", ""), ("Title", "Markup.heading.1")] {
+                let text = try backend.formattedText()
+                let offset = try XCTUnwrap(text.range(of: token)).lowerBound.utf16Offset(in: text)
+                let expected = name.isEmpty ? EVStyleKey.baseParagraph : try XCTUnwrap(
+                    EVCoreStyleBridge.copyStyleSheet(core: nil).definitions.first { $0.name == name }?.key)
+                moveCaret(offset, in: surface)
+                XCTAssertTrue(coordinator.selectionFollowScheduledForTesting, token)
+                coordinator.settleSelectionFollowForTesting()
+                XCTAssertEqual(coordinator.inspection?.selectedStyleKey, expected, token)
+                XCTAssertEqual(coordinator.inspection?.targetCoreDocumentID, 0)
+                XCTAssertTrue(coordinator.inspection?.mutationsEnabled == true)
+            }
+            let editor = try XCTUnwrap(window.contentViewController as? EVStyleEditorViewController)
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(27)), editor.inspection.diagnostic)
+            let selected = try XCTUnwrap(coordinator.inspection?.selectedStyleKey)
+            XCTAssertEqual(try EVCoreStyleBridge.copyStyleSheet(core: nil).definition(for: selected)?
+                .properties[.characterSize]?.declared, .float(27))
+            surface.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(backend.sourceFormat, type == EVDocument.markdownType ? .markdown : .markdownSource)
+            XCTAssertTrue(window.title.contains("Markdown"), window.title)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), source)
+            XCTAssertFalse(backend.persistenceState.isDirty)
+            XCTAssertTrue(coordinator.styleWindow === window)
+            coordinator.close()
+        }
+    }
+
+    func testDelayedCodeSyntaxPreservesExplicitStyleChoiceUntilCaretMoves() async throws {
+        let surface = try markdownSurface()
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        surface.selectDocumentMode(.code("markdown"), expected: try XCTUnwrap(surface.currentDocumentMode()))
+        coordinator.selectStyle(EVStyleKey.baseParagraph)
+        let count = coordinator.caretFollowQueryCount
+        for _ in 0..<200 {
+            surface.backend.pollSyntax()
+            if surface.currentStyleEditorKey() != .baseParagraph { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotEqual(surface.currentStyleEditorKey(), .baseParagraph)
+        XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+        coordinator.settleSelectionFollowForTesting()
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+        XCTAssertEqual(coordinator.caretFollowQueryCount, count,
+                       "Published syntax must not override an explicit definition choice")
+        moveCaret(3, in: surface)
+        coordinator.settleSelectionFollowForTesting()
+        XCTAssertEqual(coordinator.inspection?.selectedStyleKey, surface.currentStyleEditorKey())
+        XCTAssertNotEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+    }
+
     func testCaretFollowingPrefersNamedCharactersAndManualPickerSurvivesRefreshAndStyleEdits() throws {
         let surface = try markdownSurface()
         moveCaret(7, in: surface)

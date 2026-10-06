@@ -639,6 +639,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         if changed != 0 {
             // Presentation generations may change; no source transaction or document undo occurs.
             for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+            NotificationCenter.default.post(name: .viemCoreSyntaxDidChange, object: self)
         }
         // Providers can report a diagnostic without publishing different styles.
         // Bound text export to four times per second independently of frame polling.

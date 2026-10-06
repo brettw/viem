@@ -409,6 +409,46 @@ internal static class StyleInspectorBehaviorTests
         var standalone = new StyleWindow(codeView, preferences, followCaret: false);
         try { Move(codeView, 0); Check(!standalone.CaretFollowScheduled && standalone.CaretStyleQueries == 0, "standalone global Code inspectors never follow a document caret"); }
         finally { standalone.Close(); }
+        await MarkdownCodeFollowing(pane, preferences);
+    }
+    private static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
+    {
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        foreach (bool explicitChoice in new[] { false, true })
+        {
+            byte[] source = "# Heading\n\n**words**\n"u8.ToArray();
+            using var document = new CoreDocument(source, "tracking.md", format: format);
+            using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+            var inspector = new StyleWindow(view, preferences);
+            try
+            {
+                view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "markdown", false, DocumentModes.Read(document));
+                Check(inspector.DocumentPicker.SelectedIndex == 2, "a Markdown-to-Code menu transition retargets the open inspector");
+                StyleKey? manual = null;
+                if (explicitChoice)
+                {
+                    var choice = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Name == "Comment");
+                    inspector.StylePicker.SelectedItem = choice;
+                    manual = choice.Key;
+                }
+                for (int i = 0; i < 300; i++)
+                {
+                    document.PollSyntax(); view.Refresh();
+                    if (view.CurrentStyleEditorKey(view.Styles()) is { Namespace: 2 }) break;
+                    await Task.Delay(10);
+                }
+                var heading = view.CurrentStyleEditorKey(view.Styles());
+                Check(heading is { Namespace: 2 }, "Markdown Code syntax publishes the stationary caret's heading capture");
+                await Task.Delay(650);
+                Check(Selected(inspector).Key == (manual ?? heading),
+                    "delayed syntax completes mode-switch following while preserving an intervening explicit style choice");
+                Move(view, 4); await Task.Delay(650);
+                Check(Selected(inspector).Key == heading, "caret following continues after a Markdown-to-Code transition");
+                Check(source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty,
+                    "mode-switch style following preserves source and clean state");
+            }
+            finally { inspector.Close(); }
+        }
     }
     private static async Task ColorDragging(StyleWindow inspector, ColorPicker picker)
     {
