@@ -272,7 +272,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // scoped to its device/metrics generation. Workers own separate caches.
         var fontNames = new Dictionary<string, ViemUtf8Slice>(StringComparer.Ordinal);
         var markerFonts = new Dictionary<int, MarkerFont>();
-        var positions = new List<float>();
         int start = 0;
         var boundaries = new HashSet<int>(StringInfo.ParseCombiningCharacters(text)) { text.Length };
         var nativeClusters = layout.ClusterMetrics;
@@ -304,7 +303,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             }
 #endif
             var parts = capture.Extract(start, end, left, line.Baseline);
-            uint bidi = parts.Count == 0 ? 0 : parts[0].BidiLevel;
+            uint bidi = capture.BidiLevelAt(start) ?? (request.paragraph_base_direction == VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT ? 1u : 0u);
             var style = request.default_style;
             int styleIndex = -1;
             for (ulong r = 0; r < request.style_run_count; r++)
@@ -354,7 +353,6 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 cluster.render_run = new() { owner = owner, identifier = id, metrics_generation = Generation, threading = VIEM_RENDER_THREADING_ANY };
             }
             clusters.Add(cluster);
-            positions.Add(left);
             start = end;
         }
         ShapedCharacters += interior.Length;
@@ -363,7 +361,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             Interlocked.Add(ref shared.BackgroundCharacters, interior.Length);
             Volatile.Write(ref shared.BackgroundThread, Environment.CurrentManagedThreadId);
         }
-        ulong[] order = Enumerable.Range(0, clusters.Count).OrderBy(i => positions[i]).Select(i => (ulong)i).ToArray();
+        // Invisible controls can share an x position with several other
+        // clusters. UAX #9 L2 resolves those ties from embedding levels.
+        ulong[] order = VisualOrder(clusters.Select(c => c.bidi_level).ToArray());
         // One ABI caret allocation for the fragment, not one per character.
         var nativeStops = arena.Copy<ViemClusterCaretStopV1>(caretStops.AsSpan(0, clusters.Count * 2));
         var nativeGeometry = arena.Copy<ViemShapedClusterV1>(CollectionsMarshal.AsSpan(clusters));
@@ -376,6 +376,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             clusters = nativeGeometry, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
+    }
+
+    internal static ulong[] VisualOrder(IReadOnlyList<uint> levels)
+    {
+        var order = Enumerable.Range(0, levels.Count).Select(i => (ulong)i).ToArray();
+        uint maximum = levels.Count == 0 ? 0 : levels.Max();
+        if (maximum > 125) throw new InvalidOperationException("DirectWrite returned an unsupported bidi level.");
+        uint minimumOdd = levels.Where(level => (level & 1) != 0).DefaultIfEmpty(uint.MaxValue).Min();
+        if (minimumOdd == uint.MaxValue) return order;
+        for (uint level = maximum; level >= minimumOdd; level--)
+        {
+            int start = 0;
+            while (start < order.Length)
+            {
+                while (start < order.Length && levels[(int)order[start]] < level) start++;
+                int end = start;
+                while (end < order.Length && levels[(int)order[end]] >= level) end++;
+                Array.Reverse(order, start, end - start);
+                start = end;
+            }
+        }
+        return order;
     }
 
     // A fragment with published resources is released by their leases. Before
@@ -578,7 +600,7 @@ internal readonly record struct GlyphPart(GlyphFontMetadata Metadata, float Size
 [WinRT.GeneratedWinRTExposedType]
 internal sealed partial class GlyphCapture(Func<CanvasFontFace, GlyphFontMetadata> metadataFor) : ICanvasTextRenderer
 {
-    private sealed record Run(Vector2 Point, GlyphFontMetadata Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
+    private sealed record Run(Vector2 Point, GlyphFontMetadata? Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
     private readonly List<Run> runs = [];
     public int RunCount => runs.Count;
     public bool PixelSnappingDisabled => true;
@@ -586,23 +608,38 @@ internal sealed partial class GlyphCapture(Func<CanvasFontFace, GlyphFontMetadat
     public float Dpi => 96;
     public void DrawGlyphRun(Vector2 point, CanvasFontFace fontFace, float fontSize, CanvasGlyph[] glyphs, bool isSideways, uint bidiLevel, object brush, CanvasTextMeasuringMode measuringMode, string localeName, string textString, int[] clusterMapIndices, uint characterIndex, CanvasGlyphOrientation glyphOrientation)
     {
+        if (glyphs.Length == 0)
+        {
+            // DirectWrite's NO_VISUAL runs still map each control character,
+            // even though those map indices cannot index a glyph array.
+            runs.Add(new(point, null, fontSize, glyphs, bidiLevel, clusterMapIndices,
+                checked((int)characterIndex), [], [0]));
+            return;
+        }
         var boundaries = clusterMapIndices.Distinct().Order().Append(glyphs.Length).ToArray(); var ends = new Dictionary<int, int>();
         for (int i = 0; i + 1 < boundaries.Length; i++) ends[boundaries[i]] = boundaries[i + 1];
         var advances = new float[glyphs.Length + 1]; for (int i = 0; i < glyphs.Length; i++) advances[i + 1] = advances[i] + glyphs[i].Advance;
         runs.Add(new(point, metadataFor(fontFace), fontSize, glyphs, bidiLevel, clusterMapIndices, checked((int)characterIndex), ends, advances));
+    }
+    public uint? BidiLevelAt(int position)
+    {
+        foreach (var run in runs)
+            if (position >= run.Start && position - run.Start < run.Map.Length) return run.Bidi;
+        return null;
     }
     public List<GlyphPart> Extract(int start, int end, float left, float baseline)
     {
         var result = new List<GlyphPart>(1);
         foreach (var run in runs)
         {
+            if (run.Glyphs.Length == 0) continue;
             int first = Math.Max(start, run.Start) - run.Start, last = Math.Min(end, run.Start + run.Map.Length) - run.Start;
             if (last <= first) continue;
             int glyphStart = run.Map[first], finalStart = glyphStart;
             for (int i = first + 1; i < last; i++) { glyphStart = Math.Min(glyphStart, run.Map[i]); finalStart = Math.Max(finalStart, run.Map[i]); }
             int glyphEnd = run.Ends[finalStart];
             float offset = run.Advances[glyphStart] * ((run.Bidi & 1) == 0 ? 1 : -1);
-            result.Add(new(run.Font, run.Size, run.Glyphs[glyphStart..glyphEnd], run.Bidi, run.Point + new Vector2(offset - left, -baseline)));
+            result.Add(new(run.Font!, run.Size, run.Glyphs[glyphStart..glyphEnd], run.Bidi, run.Point + new Vector2(offset - left, -baseline)));
         }
         return result;
     }
@@ -611,6 +648,7 @@ internal sealed partial class GlyphCapture(Func<CanvasFontFace, GlyphFontMetadat
         foreach (var run in runs)
         {
             if (run.Bidi != 0 || start < run.Start || end > run.Start + run.Map.Length) continue;
+            if (run.Glyphs.Length == 0) { left = run.Point.X; return true; }
             int first = start - run.Start, last = end - run.Start;
             int glyph = run.Map[first];
             // Only whole, single native clusters have this simple origin.

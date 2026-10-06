@@ -53,7 +53,12 @@ internal unsafe partial class DirectWriteGlyphCapture(GlyphCapture capture) : ID
     public int DrawGlyphRun(nint context, float x, float y, uint mode, NativeGlyphRun* run, NativeGlyphDescription* description, nint effect)
     {
         try {
+            if (run == null) throw new InvalidOperationException("DirectWrite omitted the glyph run.");
             if (description == null) throw new InvalidOperationException("DirectWrite omitted the glyph cluster map.");
+            if (run->Count != 0 && (run->Indices == null || run->Advances == null || run->Face == 0))
+                throw new InvalidOperationException("DirectWrite omitted visible glyph data.");
+            if (description->Length != 0 && (description->Clusters == null || description->Text == null))
+                throw new InvalidOperationException("DirectWrite omitted the glyph run's text data.");
             var glyphs = new CanvasGlyph[run->Count];
             for (int i = 0; i < glyphs.Length; i++) glyphs[i] = new() {
                 Index = run->Indices[i], Advance = run->Advances[i],
@@ -62,7 +67,9 @@ internal unsafe partial class DirectWriteGlyphCapture(GlyphCapture capture) : ID
             };
             var clusters = new int[description->Length];
             for (int i = 0; i < clusters.Length; i++) clusters[i] = description->Clusters[i];
-            capture.DrawGlyphRun(new(x, y), FontFace(run->Face), run->Size, glyphs, run->Sideways != 0, run->Bidi,
+            // Formatting controls retain text and bidi information but have no
+            // glyphs. Their capture does not need a native font wrapper.
+            capture.DrawGlyphRun(new(x, y), glyphs.Length == 0 ? null! : FontFace(run->Face), run->Size, glyphs, run->Sideways != 0, run->Bidi,
                 null!, (CanvasTextMeasuringMode)mode, description->Locale == null ? "" : new string(description->Locale),
                 new string(description->Text, 0, checked((int)description->Length)), clusters, description->Position, CanvasGlyphOrientation.Upright);
             return 0;
