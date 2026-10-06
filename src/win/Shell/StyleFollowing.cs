@@ -8,6 +8,7 @@ namespace Viem.Windows.Shell;
 internal sealed partial class StyleWindow
 {
     private bool followsCaret;
+    private bool followsSyntaxStyle;
     private bool refreshAfterFollowing;
     // This snapshot is only compared with the next presentation to detect a
     // change, never resolved as a retained editing position.
@@ -17,9 +18,11 @@ internal sealed partial class StyleWindow
     private void AttachView(bool followCaret)
     {
         followsCaret = followCaret;
+        followsSyntaxStyle = followCaret;
         followedPresentation = documentView.Presentation;
         documentView.Changed += ViewChanged;
         documentView.Document.Changed += DocumentChanged;
+        documentView.Document.SyntaxChanged += SyntaxChanged;
         documentView.Disposed += SourceViewClosed;
     }
     private void DetachView()
@@ -27,6 +30,7 @@ internal sealed partial class StyleWindow
         CancelCaretFollow();
         documentView.Changed -= ViewChanged;
         documentView.Document.Changed -= DocumentChanged;
+        documentView.Document.SyntaxChanged -= SyntaxChanged;
         documentView.Disposed -= SourceViewClosed;
     }
     private void SourceViewClosed()
@@ -38,6 +42,7 @@ internal sealed partial class StyleWindow
     {
         caretFollowTimer?.Stop();
         refreshAfterFollowing = false;
+        followsSyntaxStyle = false;
     }
     private void ViewChanged()
     {
@@ -49,9 +54,19 @@ internal sealed partial class StyleWindow
         // A command that moves the caret also ends its core style edit group.
         // Drop queued colors before following the new editing context.
         DismissColorPickers(commit: false);
+        followsSyntaxStyle = true;
         caretFollowTimer ??= MakeCaretFollowTimer();
         caretFollowTimer.Stop();
         caretFollowTimer.Start();
+    }
+    private void SyntaxChanged()
+    {
+        if (closed || !followsCaret || !followsSyntaxStyle || documentView.Id == 0
+            || documentView.Document.State.format != VIEM_FORMAT_CODE) return;
+        // Complete the caret lookup when asynchronous captures arrive, while
+        // retaining explicit choices and allowing an existing timer to settle.
+        caretFollowTimer ??= MakeCaretFollowTimer();
+        if (!caretFollowTimer.IsRunning) caretFollowTimer.Start();
     }
     private DispatcherQueueTimer MakeCaretFollowTimer()
     {
@@ -88,7 +103,15 @@ internal sealed partial class StyleWindow
     private void DocumentChanged()
     {
         if (updating || closed || documentView.Id == 0) return;
-        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) { DismissColorPickers(commit: false); CreateThemeSession(documentView.Document.State.format); }
+        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) {
+            DismissColorPickers(commit: false);
+            CancelCaretFollow();
+            CreateThemeSession(documentView.Document.State.format);
+            followsSyntaxStyle = followsCaret;
+            followedPresentation = documentView.Presentation;
+            Load(followCaret: followsCaret);
+            return;
+        }
         if (openColorPickers.Count > 0 && !view.Styles().Identity.Equals(sheet.Identity))
             DismissColorPickers(commit: false);
         ViewChanged();

@@ -444,6 +444,7 @@ enum EVStyleBridgeError: LocalizedError, Equatable {
 
 extension Notification.Name {
     static let viemCoreDocumentDidChange = Notification.Name("EVCoreDocumentDidChange")
+    static let viemCoreSyntaxDidChange = Notification.Name("EVCoreSyntaxDidChange")
 }
 
 @MainActor

@@ -1415,7 +1415,9 @@ immediately, then follow actual caret/selection changes only in the active view:
 nondefault character style, otherwise paragraph style, otherwise Base Paragraph.
 Never infer style from fonts or choose an arbitrary first mixed style. Explicit
 choices survive unrelated refreshes. Coalesce following; never poll, parse, or
-scan large documents just to follow the caret.
+scan large documents just to follow the caret. When Code syntax arrives after a
+mode switch or caret move, finish following its current style without requiring
+another move; an intervening explicit style choice cancels that deferred follow.
 
 Track target and stable style identity; revalidate before every mutation and
 callback. Deleted selections fall back to Base Paragraph, never a reused menu
