@@ -1587,9 +1587,18 @@ windows/dialogs; document typography and native system pickers are independent.
   Ctrl-Shift-V pastes plain text. Ctrl-Q remains the Visual Block/literal-next
   alternative. Ctrl-S/Shift-S and Ctrl-Z/Shift-Z invoke Save/Save As and core
   Undo/Redo outside literal-next, including Insert mode. Never undo the input
-  host's private text. Ctrl-0 through Ctrl-5 assign paragraph/headings; preserve
-  Ctrl-6/Ctrl-^ for Vim. Other vi control keys must reach core, including
-  Ctrl-B/F/I/U/N/O/A/W. Preserve function-key modifiers and AltGr text entry.
+  host's private text. Ctrl-=/- zoom in/out outside literal-next, including Insert
+  mode; Ctrl-Shift-minus retains Vim's Ctrl-_. Ctrl-0 through Ctrl-5 assign
+  paragraph/headings; preserve Ctrl-6/Ctrl-^ for Vim. Other vi control keys must
+  reach core, including Ctrl-B/F/I/U/N/O/A/W. Preserve function-key modifiers and
+  AltGr text entry.
+- Fixed menu commands have native access keys, unique within each menu or
+  submenu, including Alt-F then O for Open and Alt-E then T for Cut. Nested
+  menus keep access-key navigation active; bare editor keys retain their Vim meaning.
+  When the menu bar is hidden, Alt temporarily reveals it and its keytips;
+  Alt plus a menu letter also opens that menu. Command completion, dismissal,
+  or window deactivation restores the hidden bar without changing its saved
+  visibility preference. Preserve Ctrl-Alt/AltGr text entry.
 - Use Windows system font defaults; SF Pro is available only if installed.
   Preserve unavailable authored families/faces and normal fallback. Startup and
   missing-font lookup must not enumerate all font faces or load picker lists

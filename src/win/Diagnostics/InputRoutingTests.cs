@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Editor;
+using Viem.Windows.Input;
 using Windows.System;
 using static Viem.Windows.Interop.Native;
 
@@ -120,10 +121,12 @@ internal static class InputRoutingTests
         foreach (char value in text) Post(0x0102, value, 1); // WM_CHAR, including UTF-16 pairs.
         await Task.Delay(100);
     }
-    internal static async Task Key(VirtualKey key, bool control = false, bool shift = false)
+    internal static async Task Key(VirtualKey key, bool control = false, bool shift = false, bool alt = false)
     {
+        bool altOnly = key == VirtualKey.Menu;
+        alt |= altOnly;
         byte[]? original = null;
-        if (control || shift)
+        if (control || shift || alt)
         {
             _ = NativeTarget();
             original = new byte[256];
@@ -133,18 +136,33 @@ internal static class InputRoutingTests
             // injected. Keep modifiers down until WinUI consumes the messages.
             modified[(int)VirtualKey.Control] = modified[(int)VirtualKey.LeftControl] = control ? (byte)0x80 : (byte)0;
             modified[(int)VirtualKey.Shift] = modified[(int)VirtualKey.LeftShift] = shift ? (byte)0x80 : (byte)0;
+            modified[(int)VirtualKey.Menu] = modified[(int)VirtualKey.LeftMenu] = alt ? (byte)0x80 : (byte)0;
             if (!SetKeyboardState(modified)) throw new InvalidOperationException("Cannot set the test thread's keyboard modifiers.");
         }
         try
         {
-            uint scan = MapVirtualKey((uint)key, 0);
-            Post(0x0100, (uint)key, (nint)(1u | scan << 16)); // WM_KEYDOWN
-            Post(0x0101, (uint)key, (nint)(0xC0000001u | scan << 16)); // WM_KEYUP
+            if (alt)
+            {
+                Post(0x0104, (uint)VirtualKey.Menu, (nint)(1u | MapVirtualKey((uint)VirtualKey.Menu, 0) << 16));
+                await Task.Delay(30);
+            }
+            if (!altOnly)
+            {
+                uint scan = MapVirtualKey((uint)key, 0);
+                uint context = alt ? 0x20000000u : 0;
+                Post(alt ? 0x0104u : 0x0100u, (uint)key, (nint)(1u | scan << 16 | context)); // WM_[SYS]KEYDOWN
+                Post(alt ? 0x0105u : 0x0101u, (uint)key, (nint)(0xC0000001u | scan << 16 | context)); // WM_[SYS]KEYUP
+            }
             await Task.Delay(100);
         }
         finally
         {
             if (original != null && !SetKeyboardState(original)) throw new InvalidOperationException("Cannot restore the test thread's keyboard state.");
+            if (alt)
+            {
+                Post(0x0105, (uint)VirtualKey.Menu, (nint)(0xC0000001u | MapVirtualKey((uint)VirtualKey.Menu, 0) << 16));
+                await Task.Delay(30);
+            }
         }
     }
     private static void Check(bool value, string name)
@@ -192,8 +210,50 @@ internal static class InputRoutingTests
         await Key(VirtualKey.Escape); await Key(VirtualKey.Z, control: true);
         await Text(":%d"); await Key(VirtualKey.Enter);
         Check(pane.Document.FormattedText() == "" && pane.LastError == null, "native input test leaves an empty document without routing errors");
+        await RunZoom(pane);
         pane.View.Wrap(true);
         await SelectionInputTests.Run(pane);
+    }
+    internal static async Task RunZoom(EditorPane pane)
+    {
+        var view = pane.View!;
+        var equal = (VirtualKey)187;
+        var minus = (VirtualKey)189;
+        foreach (var key in new[] { equal, minus })
+        {
+            Check(KeyPolicy.Route(key, false, false, false).Action == NativeAction.None
+                && KeyPolicy.Route(key, true, false, true).Action == NativeAction.None
+                && KeyPolicy.Route(key, true, true, false).Action == NativeAction.None,
+                $"zoom key {key} leaves unmodified, AltGr and shifted input available");
+        }
+        var underscore = KeyPolicy.Route(minus, true, true, false);
+        Check(underscore.Kind == VIEM_KEY_CONTROL_CHARACTER && underscore.Codepoint == '_',
+            "Ctrl+Shift+minus preserves Vim Ctrl+underscore");
+        view.Zoom(1);
+        foreach (uint mode in new[] { VIEM_MODE_NORMAL, VIEM_MODE_INSERT })
+        {
+            if (mode == VIEM_MODE_INSERT) await Text("i");
+            var before = view.Presentation;
+            ulong revision = pane.Document.State.document_revision;
+            byte[] source = pane.Document.Source(revision);
+            await Key(equal, control: true);
+            Check(Math.Abs(view.Viewport.scale - 1.1f) < .0001f, $"native Ctrl+= zooms in from mode {mode}");
+            await Key(minus, control: true);
+            Check(Math.Abs(view.Viewport.scale - 1) < .0001f, $"native Ctrl+- zooms out from mode {mode}");
+            Check(view.Presentation.mode == mode && view.Presentation.cursor_utf8_offset == before.cursor_utf8_offset
+                && pane.Document.State.document_revision == revision
+                && pane.Document.Source(revision).AsSpan().SequenceEqual(source),
+                $"native zoom shortcuts preserve mode {mode}, caret and source");
+        }
+        await Key(VirtualKey.Q, control: true); await Key(equal, control: true);
+        Check(pane.Document.FormattedText() == "<C-=>" && Math.Abs(view.Viewport.scale - 1) < .0001f
+            && (view.Presentation.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) == 0,
+            "literal-next Ctrl+= inserts its key representation without zooming");
+        await Key(VirtualKey.Q, control: true); await Key(minus, control: true);
+        Check(pane.Document.FormattedText() == "<C-=>\u001f" && Math.Abs(view.Viewport.scale - 1) < .0001f,
+            "literal-next Ctrl+- retains its control character without zooming");
+        await Key(VirtualKey.Escape); await Key(VirtualKey.Z, control: true);
+        Check(pane.Document.FormattedText() == "", "literal zoom-key input undoes as one Insert group");
     }
     public static async Task FocusPane(EditorPane pane, string text)
     {

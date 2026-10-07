@@ -3,7 +3,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Input;
 
-internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu }
+internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu, ZoomIn, ZoomOut }
 internal readonly record struct KeyRoute(uint Kind = 0, uint Codepoint = 0, uint Modifiers = 0, NativeAction Action = NativeAction.None);
 
 /// <summary>Reserve Windows shortcuts explicitly; preserve all other vi bindings.</summary>
@@ -23,6 +23,9 @@ internal static class KeyPolicy
             if (key == VirtualKey.V) return new(Action: shift ? NativeAction.PastePlain : NativeAction.Paste);
             if (!literal && key == VirtualKey.Z) return new(Action: shift ? NativeAction.Redo : NativeAction.Undo);
             if (!literal && key == VirtualKey.S) return new(Action: shift ? NativeAction.SaveAs : NativeAction.Save);
+            // OEM plus/minus are the main keyboard's =/- keys, not the numpad.
+            if (!shift && (int)key == 187) return literal ? new(VIEM_KEY_CONTROL_CHARACTER, '=') : new(Action: NativeAction.ZoomIn);
+            if (!literal && !shift && (int)key == 189) return new(Action: NativeAction.ZoomOut);
             // Ctrl+6/Ctrl+^ belongs to vi. Heading 6 remains a menu action.
             if (!literal && !shift && key >= VirtualKey.Number0 && key <= VirtualKey.Number5) return new(Codepoint: (uint)(key - VirtualKey.Number0), Action: NativeAction.Heading);
             if (key >= VirtualKey.A && key <= VirtualKey.Z) return new(VIEM_KEY_CONTROL_CHARACTER, (uint)('a' + key - VirtualKey.A));
