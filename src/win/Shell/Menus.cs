@@ -20,19 +20,19 @@ internal sealed partial class EditorWindow
     private CoreView? View => ActivePane?.View;
     private bool Rich => View != null && ActivePane!.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
     private bool CanFormatBlocks => Rich && View!.HasFormattingSelection && !View.SelectedNamedStyles().HasTable;
-    private MenuFlyoutItem Item(string text, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
+    private MenuFlyoutItem Item(string text, string accessKey, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
     {
-        var item = new MenuFlyoutItem { Text = text, KeyboardAcceleratorTextOverride = shortcut };
+        var item = new MenuFlyoutItem { Text = text, AccessKey = accessKey, KeyboardAcceleratorTextOverride = shortcut };
         item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(action);
         if (enabled != null) validation.Add((item, enabled));
         return item;
     }
-    private MenuFlyoutItem ActionItem(string text, Action action, string shortcut = "", Func<bool>? enabled = null)
-        => Item(text, () => { action(); ActivePane?.FocusEditor(); return Task.CompletedTask; }, shortcut, enabled);
-    private ToggleMenuFlyoutItem Toggle(string text, Action<bool> action, Func<bool>? state = null)
+    private MenuFlyoutItem ActionItem(string text, string accessKey, Action action, string shortcut = "", Func<bool>? enabled = null)
+        => Item(text, accessKey, () => { action(); ActivePane?.FocusEditor(); return Task.CompletedTask; }, shortcut, enabled);
+    private ToggleMenuFlyoutItem Toggle(string text, string accessKey, Action<bool> action, Func<bool>? state = null)
     {
-        var item = new ToggleMenuFlyoutItem { Text = text };
+        var item = new ToggleMenuFlyoutItem { Text = text, AccessKey = accessKey };
         item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(() => { action(item.IsChecked); ActivePane?.FocusEditor(); return Task.CompletedTask; });
         if (state != null) checks.Add((item, state));
@@ -40,69 +40,74 @@ internal sealed partial class EditorWindow
     }
     private MenuBarItem Top(string title, string accessKey, params MenuFlyoutItemBase[] items)
     {
-        var menu = new MenuBarItem { Title = title, AccessKey = accessKey };
+        var menu = new MenuBarItem { Title = title, AccessKey = accessKey, IsAccessKeyScope = true };
         // Validate on demand for pointer, keyboard, access-key and UI Automation
         // opening (the items' Loaded handler), rather than on every editor move.
         menu.PointerEntered += (_, _) => ValidateMenus();
         menu.GotFocus += (_, _) => ValidateMenus();
         menu.AccessKeyInvoked += (_, _) => ValidateMenus();
         foreach (var item in items) menu.Items.Add(item);
+        if (items.Length != 0) TrackMenuFlyout(menu, items[0]);
         Menu.Items.Add(menu); return menu;
     }
-    private static MenuFlyoutSubItem Sub(string title, params MenuFlyoutItemBase[] items)
-    { var menu = new MenuFlyoutSubItem { Text = title }; foreach (var i in items) menu.Items.Add(i); return menu; }
+    private static MenuFlyoutSubItem Sub(string title, string accessKey, params MenuFlyoutItemBase[] items)
+    {
+        var menu = new MenuFlyoutSubItem { Text = title, AccessKey = accessKey, IsAccessKeyScope = true, ExitDisplayModeOnAccessKeyInvoked = false };
+        foreach (var item in items) menu.Items.Add(item);
+        return menu;
+    }
     private static MenuFlyoutSeparator Separator() => new();
     private void BuildMenus()
     {
-        recentMenu = new() { Text = "Open Recent" };
+        recentMenu = Sub("Open Recent", "R");
         Top("File", "F",
-            Item("New", () => { NewWindow(null); return Task.CompletedTask; }), Item("Open…", OpenDialog), recentMenu, Separator(),
-            Item("Close", () => ActivePane == null ? Task.CompletedTask : ClosePane(ActivePane)),
-            Item("Save", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane), "Ctrl+S"),
-            Item("Save As…", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane, true), "Ctrl+Shift+S"),
-            Item("Export…", () => ActivePane == null ? Task.CompletedTask : Export(ActivePane), enabled: () => View != null),
-            Item("Duplicate", () => { if (ActivePane != null) NewWindow(NewDocument(ActivePane.Document.Source(ActivePane.Document.State.document_revision), format: ActivePane.Document.State.format)); return Task.CompletedTask; }),
-            Item("Revert to Last Saved…", () => ActivePane == null ? Task.CompletedTask : Reload(ActivePane), enabled: () => ActivePane?.Document.FilePath != null), Separator(),
-            Sub("Text Encoding", new[] { "UTF-8", "Latin-1", "UTF-16 LE", "UTF-16 BE" }.Select((s, i) => ActionItem(s, () => View?.SetEncoding((uint)i + 1))).ToArray()),
-            Sub("Line Endings", ActionItem("Unix (LF)", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", () => View?.FileFormat(3))),
-            Separator(), Item("Settings…", ShowSettings), Separator(), Item("Exit", RequestClose));
-        undoItem = ActionItem("Undo", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
-        redoItem = ActionItem("Redo", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
+            Item("New", "N", () => { NewWindow(null); return Task.CompletedTask; }), Item("Open…", "O", OpenDialog), recentMenu, Separator(),
+            Item("Close", "C", () => ActivePane == null ? Task.CompletedTask : ClosePane(ActivePane)),
+            Item("Save", "S", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane), "Ctrl+S"),
+            Item("Save As…", "A", () => ActivePane == null ? Task.CompletedTask : Save(ActivePane, true), "Ctrl+Shift+S"),
+            Item("Export…", "E", () => ActivePane == null ? Task.CompletedTask : Export(ActivePane), enabled: () => View != null),
+            Item("Duplicate", "D", () => { if (ActivePane != null) NewWindow(NewDocument(ActivePane.Document.Source(ActivePane.Document.State.document_revision), format: ActivePane.Document.State.format)); return Task.CompletedTask; }),
+            Item("Revert to Last Saved…", "V", () => ActivePane == null ? Task.CompletedTask : Reload(ActivePane), enabled: () => ActivePane?.Document.FilePath != null), Separator(),
+            Sub("Text Encoding", "T", new[] { (Name: "UTF-8", Key: "8"), (Name: "Latin-1", Key: "1"), (Name: "UTF-16 LE", Key: "L"), (Name: "UTF-16 BE", Key: "B") }.Select((s, i) => ActionItem(s.Name, s.Key, () => View?.SetEncoding((uint)i + 1))).ToArray()),
+            Sub("Line Endings", "L", ActionItem("Unix (LF)", "U", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", "W", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", "M", () => View?.FileFormat(3))),
+            Separator(), Item("Settings…", "G", ShowSettings), Separator(), Item("Exit", "X", RequestClose));
+        undoItem = ActionItem("Undo", "U", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
+        redoItem = ActionItem("Redo", "R", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
-            Item("Cut", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true),
-            Item("Copy", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true),
-            Item("Copy Source", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true),
-            Item("Paste", () => ActivePane?.Paste() ?? Task.CompletedTask, "Ctrl+V"),
-            Item("Paste and Match Style", () => ActivePane?.Paste(true) ?? Task.CompletedTask, "Ctrl+Shift+V"),
-            ActionItem("Delete", () =>
+            Item("Cut", "T", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true),
+            Item("Copy", "C", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true),
+            Item("Copy Source", "O", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true),
+            Item("Paste", "P", () => ActivePane?.Paste() ?? Task.CompletedTask, "Ctrl+V"),
+            Item("Paste and Match Style", "M", () => ActivePane?.Paste(true) ?? Task.CompletedTask, "Ctrl+Shift+V"),
+            ActionItem("Delete", "D", () =>
             {
                 if (View is not { } view) return;
                 if (view.IsTextSelection) view.Key(VIEM_KEY_DELETE);
                 else view.SelectionCommand("d");
             }, enabled: () => View?.HasSelection == true && ActivePane?.CanCut == true), Separator(),
-            Item("Select All", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
-            Sub("Select", ActionItem("Word", () => Select("viw")), ActionItem("Sentence", () => Select("vis")), ActionItem("Paragraph", () => Select("vip")), ActionItem("Hard Line", () => Select("V")), ActionItem("Visual Block", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
-            Separator(), Sub("Find", ActionItem("Find…", () => Select("/")), ActionItem("Find and Replace…", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", () => Select("n")), ActionItem("Find Previous", () => Select("N"))),
-            Sub("Transformations", ActionItem("Make Uppercase", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
-        paragraphMenu = Sub("Paragraph", ActionItem("Bulleted List", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => CanFormatBlocks), ActionItem("Numbered List", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => CanFormatBlocks), ActionItem("Remove List", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
-            ActionItem("Indent", () => View?.IndentList(false), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", () => View?.IndentList(true), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
-        characterMenu = Sub("Character");
+            Item("Select All", "A", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
+            Sub("Select", "S", ActionItem("Word", "W", () => Select("viw")), ActionItem("Sentence", "S", () => Select("vis")), ActionItem("Paragraph", "P", () => Select("vip")), ActionItem("Hard Line", "L", () => Select("V")), ActionItem("Visual Block", "B", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
+            Separator(), Sub("Find", "F", ActionItem("Find…", "F", () => Select("/")), ActionItem("Find and Replace…", "R", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", "N", () => Select("n")), ActionItem("Find Previous", "P", () => Select("N"))),
+            Sub("Transformations", "N", ActionItem("Make Uppercase", "U", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", "L", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", "T", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
+        paragraphMenu = Sub("Paragraph", "P", ActionItem("Bulleted List", "B", () => View?.SetList(VIEM_LIST_STYLE_BULLET), enabled: () => CanFormatBlocks), ActionItem("Numbered List", "N", () => View?.SetList(VIEM_LIST_STYLE_NUMBERED), enabled: () => CanFormatBlocks), ActionItem("Remove List", "R", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
+            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
+        characterMenu = Sub("Character", "C");
         validation.Add((paragraphMenu, () => Rich));
         validation.Add((characterMenu, () => Rich));
-        themeMenu = Sub("Theme"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
+        themeMenu = Sub("Theme", "T"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
         RefreshThemeMenu();
         Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
-        wrapItem = Toggle("Word Wrap", b => View?.Wrap(b));
+        wrapItem = Toggle("Word Wrap", "W", b => View?.Wrap(b));
         BuildDocumentModeMenu();
-        Top("View", "V", plainMode, markdownMode, codeMode, Separator(), Toggle("Show Status Bar", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
-            Toggle("Flow Source Paragraphs", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
-            Separator(), ActionItem("Zoom In", () => View?.StepZoom(true)), ActionItem("Zoom Out", () => View?.StepZoom(false)), ActionItem("Actual Size", () => View?.Zoom(1)),
-            Separator(), ActionItem("Full Screen", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
-        Top("Window", "W", ActionItem("Split Vertically", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),
-            Item("Close Other Panes", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_CLOSE_OTHERS, 1)), Item("Equalize Panes", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_EQUALIZE_HEIGHTS, 1)),
-            Separator(), ActionItem("New Window for Document", () => NewWindow(ActivePane?.Document)), ActionItem("Minimize", () => (AppWindow.Presenter as OverlappedPresenter)?.Minimize()));
-        Top("Help", "H", Item("Viem Help", () => Dialog("Viem", "A modal editor for writing.\n\nUse i to insert, Escape to return to Normal, : to enter commands, / to search, and u to undo.\n\nCtrl+C/X/V copy, cut and paste. Ctrl+Q starts Visual Block. Other vi control keys retain their meaning. Use the formatting toolbar for bold, italic and strikethrough.\n\nCtrl+W s splits the view. Ctrl+W w switches panes. :w saves; :q closes the pane.")),
-            Item("About Viem", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
+        Top("View", "V", plainMode, markdownMode, codeMode, Separator(), Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
+            Toggle("Flow Source Paragraphs", "F", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
+            Separator(), ActionItem("Zoom In", "Z", () => View?.StepZoom(true), "Ctrl+="), ActionItem("Zoom Out", "O", () => View?.StepZoom(false), "Ctrl+-"), ActionItem("Actual Size", "A", () => View?.Zoom(1)),
+            Separator(), ActionItem("Full Screen", "U", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
+        Top("Window", "W", ActionItem("Split Vertically", "V", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", "S", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", "E", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),
+            Item("Close Other Panes", "C", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_CLOSE_OTHERS, 1)), Item("Equalize Panes", "Q", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_EQUALIZE_HEIGHTS, 1)),
+            Separator(), ActionItem("New Window for Document", "N", () => NewWindow(ActivePane?.Document)), ActionItem("Minimize", "M", () => (AppWindow.Presenter as OverlappedPresenter)?.Minimize()));
+        Top("Help", "H", Item("Viem Help", "H", () => Dialog("Viem", "A modal editor for writing.\n\nUse i to insert, Escape to return to Normal, : to enter commands, / to search, and u to undo.\n\nCtrl+C/X/V copy, cut and paste. Ctrl+Q starts Visual Block. Other vi control keys retain their meaning. Use the formatting toolbar for bold, italic and strikethrough.\n\nCtrl+W s splits the view. Ctrl+W w switches panes. :w saves; :q closes the pane.")),
+            Item("About Viem", "A", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
         RefreshRecentMenu();
     }
     private void Select(string command) => View?.SelectFromCommand(command);
@@ -126,8 +131,8 @@ internal sealed partial class EditorWindow
         if (recentMenu == null) return;
         recentMenu.Items.Clear();
         foreach (string path in preferences.Recent)
-        { var item = Item(Path.GetFileName(path), () => OpenNative(path)); ToolTipService.SetToolTip(item, path); recentMenu.Items.Add(item); }
-        recentMenu.Items.Add(Separator()); recentMenu.Items.Add(ActionItem("Clear Menu", preferences.ClearRecent));
+        { var item = Item(Path.GetFileName(path), "", () => OpenNative(path)); ToolTipService.SetToolTip(item, path); recentMenu.Items.Add(item); }
+        recentMenu.Items.Add(Separator()); recentMenu.Items.Add(ActionItem("Clear Menu", "C", preferences.ClearRecent));
     }
     private void RefreshStyleMenus()
     {
@@ -164,7 +169,7 @@ internal sealed partial class EditorWindow
         }
     }
     private static StyleWindow? styleInspector;
-    private MenuFlyoutItem StyleEditorItem() => Item("Edit Styles…", () => { ShowStyles(); return Task.CompletedTask; }, "F8");
+    private MenuFlyoutItem StyleEditorItem() => Item("Edit Styles…", "E", () => { ShowStyles(); return Task.CompletedTask; }, "F8");
     internal void ShowStyles()
     {
         if (View == null) return;
@@ -187,11 +192,11 @@ internal sealed partial class EditorWindow
             themeMenu.Items.Add(item);
         }
         themeMenu.Items.Add(Separator());
-        var fallback = new ToggleMenuFlyoutItem { Text = "Default", IsChecked = preferences.SelectedTheme == null };
+        var fallback = new ToggleMenuFlyoutItem { Text = "Default", AccessKey = "D", IsChecked = preferences.SelectedTheme == null };
         fallback.Click += (_, _) => Safe(() => { preferences.SelectTheme(null); return Task.CompletedTask; });
         themeMenu.Items.Add(fallback);
-        themeMenu.Items.Add(Item("New theme…", () => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme)));
-        themeMenu.Items.Add(Item("Theme Settings…", ShowThemeSettings));
+        themeMenu.Items.Add(Item("New theme…", "N", () => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme)));
+        themeMenu.Items.Add(Item("Theme Settings…", "S", ShowThemeSettings));
     }
     private SettingsWindow? settingsWindow;
     internal Task ShowSettings() => ShowSettings(selectTheme: false);

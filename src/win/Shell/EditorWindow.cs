@@ -40,6 +40,7 @@ internal sealed partial class EditorWindow : Window
     internal Task RequestCloseForTesting() => RequestClose();
     internal Func<Task>? BeforePublishOpenForTesting { get; set; }
     internal Func<string, Task<string?>>? PickDirectoryFileForTesting { get; set; }
+    internal Func<Task>? OpenDialogForTesting { get; set; }
     internal bool HasSavedBaselineForTesting(CoreDocument document, byte[] source) =>
         savedSources.TryGetValue(document, out var baseline) && baseline.AsSpan().SequenceEqual(SHA256.HashData(source));
 #endif
@@ -73,7 +74,11 @@ internal sealed partial class EditorWindow : Window
         menuToggle.Click += (_, _) => Safe(() => { preferences.Set("windows", "showMenu", menuToggle.IsChecked == true); return Task.CompletedTask; });
         Activated += (_, e) =>
         {
+            // End this window's access-key session before relinquishing ownership
+            // of WinUI's thread-wide display mode to the newly active window.
+            if (e.WindowActivationState == WindowActivationState.Deactivated) HideTemporaryMenu();
             IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated;
+            if (IsWindowActive) RestoreMenuFocusAfterActivation(e.WindowActivationState);
             if (!IsWindowActive) formattingToolbar.DismissPopups();
             if (IsWindowActive && ActivePane is { View: { } view } activePane)
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
@@ -82,6 +87,7 @@ internal sealed partial class EditorWindow : Window
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
+            ReleaseMenuAccessKeys();
             settingsWindow?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
             foreach (var pane in Panes) pane.Dispose(); Panes.Clear(); paneGrid.Dispose();
@@ -90,6 +96,7 @@ internal sealed partial class EditorWindow : Window
         preferences.Changed += ApplyPreferences;
         preferences.RecentChanged += RefreshRecentMenu; preferences.ThemesChanged += RefreshThemeMenu;
         using (Diagnostics.StartupPerformance.Measure("window.menus")) BuildMenus();
+        ConfigureMenuAccessKeys();
         ApplyPreferences();
         if (openLaunchFiles && HasLaunchFiles())
         {
@@ -127,8 +134,7 @@ internal sealed partial class EditorWindow : Window
         updatingPreferences = true;
         root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
         root.Background = new SolidColorBrush(preferences.Theme.Background);
-        Menu.Visibility = preferences.ShowMenu ? Visibility.Visible : Visibility.Collapsed;
-        menuToggle.IsChecked = preferences.ShowMenu;
+        UpdateMenuVisibility();
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
@@ -263,6 +269,9 @@ internal sealed partial class EditorWindow : Window
     private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (OperationCanceledException) { } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }
     internal async Task OpenDialog()
     {
+#if DEBUG
+        if (OpenDialogForTesting is { } open) { await open(); return; }
+#endif
         var picker = new FileOpenPicker(); WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd); picker.FileTypeFilter.Add("*");
         var files = await picker.PickMultipleFilesAsync();
         foreach (var file in files) await OpenNative(file.Path);

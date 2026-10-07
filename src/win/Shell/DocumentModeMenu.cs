@@ -15,21 +15,21 @@ internal sealed partial class EditorWindow
 
     private void BuildDocumentModeMenu()
     {
-        ToggleMenuFlyoutItem Choice(string name, uint mode, string language = "")
-            => Toggle(name, _ => {
+        ToggleMenuFlyoutItem Choice(string name, string accessKey, uint mode, string language = "")
+            => Toggle(name, accessKey, _ => {
                 if (View is { } view && menuModeState is { } expected)
                     view.SetDocumentMode(mode, language, preferences.MarkdownFormattedView, expected);
                 menusDirty = true; ValidateMenus();
             });
-        plainMode = Choice("Plain text", VIEM_DOCUMENT_MODE_PLAIN_TEXT);
-        markdownMode = Choice("Markdown", VIEM_DOCUMENT_MODE_MARKDOWN);
-        autoMode = Choice("Auto (Plain Text)", VIEM_DOCUMENT_MODE_AUTO);
-        codeMode = Sub("Code", autoMode, Separator());
+        plainMode = Choice("Plain text", "P", VIEM_DOCUMENT_MODE_PLAIN_TEXT);
+        markdownMode = Choice("Markdown", "M", VIEM_DOCUMENT_MODE_MARKDOWN);
+        autoMode = Choice("Auto (Plain Text)", "A", VIEM_DOCUMENT_MODE_AUTO);
+        codeMode = Sub("Code", "C", autoMode, Separator());
         codeModeCheck = new FontIcon { FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"), Glyph = "", FontSize = 12, Width = 16 };
         codeMode.Icon = codeModeCheck;
         foreach (var language in DocumentModes.Languages)
         {
-            var item = Choice(language.Name, VIEM_DOCUMENT_MODE_CODE, language.Id);
+            var item = Choice(language.Name, "", VIEM_DOCUMENT_MODE_CODE, language.Id);
             languageModes.Add((item, language.Id)); codeMode.Items.Add(item);
         }
     }

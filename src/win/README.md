@@ -117,6 +117,11 @@ fullscreen bounds do not replace the saved normal frame.
 
 - Ctrl+C/X/V always copy/cut/paste; Ctrl+Shift+V pastes plain text.
 - Ctrl+Q retains Visual Block and literal-next input.
+- Alt activates menu access keys and their native keytip badges. Alt+F, then O
+  opens a file; fixed commands in each menu and submenu have their own keys.
+  When the menu bar is hidden, Alt temporarily reveals it; Alt+F also opens File
+  directly. Choosing a command, dismissing the menu, or leaving the window hides
+  it again without changing the saved Show menu bar setting. AltGr remains text input.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed/bundled variants such as Light or Bold.
 - The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
@@ -147,6 +152,8 @@ fullscreen bounds do not replace the saved normal frame.
   longer offered in the File menu.
 - Ctrl+Z / Ctrl+Shift+Z undo / redo, including from Insert mode, outside
   literal-next input. Normal-mode `u` and Ctrl+R remain available.
+- Ctrl+= / Ctrl+- zoom in / out, including from Insert mode, outside literal-next
+  input. These use the same zoom steps as the View menu and Ctrl+mouse wheel.
 - Ctrl+0–5 select Base Paragraph / Headings 1–5. Heading 6 is menu-only to
   preserve vi's Ctrl+6 / Ctrl+^.
 - Other vi control bindings remain available. Use the menus for native actions
@@ -201,6 +208,8 @@ per-font OpenType discovery are not claimed as implemented.
   core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
+Set `VIEM_TEST_ZOOM_ONLY=1` to run just native zoom shortcut checks.
+Set `VIEM_TEST_MENU_KEYS_ONLY=1` to run just native menu access-key checks.
 Set `VIEM_TEST_POINTER_ONLY=1` to run just native click mode preservation, click
 jitter, subsequent keyboard input, and drag-selection checks.
 Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,

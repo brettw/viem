@@ -294,6 +294,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.Paste: case NativeAction.PastePlain: await Paste(route.Action == NativeAction.PastePlain); break;
                 case NativeAction.Undo: View.Undo(); break;
                 case NativeAction.Redo: View.Redo(); break;
+                case NativeAction.ZoomIn: View.StepZoom(true); break;
+                case NativeAction.ZoomOut: View.StepZoom(false); break;
                 case NativeAction.Styles: window.ShowStyles(); break;
                 case NativeAction.ContextMenu:
                     Canvas.ContextFlyout?.ShowAt(Canvas, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions {

@@ -59,6 +59,8 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_ZOOM_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_MENU_KEYS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
@@ -80,6 +82,10 @@ internal sealed partial class EditorWindow
                             await Diagnostics.DirectoryOpenTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1")
                             await Diagnostics.SelectionInputTests.RunPointerPlacement(pane);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_ZOOM_ONLY") == "1")
+                            await Diagnostics.InputRoutingTests.RunZoom(pane);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_MENU_KEYS_ONLY") == "1")
+                            await Diagnostics.MenuAccessKeyTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
                             await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1")
@@ -138,6 +144,7 @@ internal sealed partial class EditorWindow
                     }
                     Diagnostics.StyleAndSettingsTests.StartupFontChecks();
                     await Diagnostics.InputRoutingTests.Run(pane);
+                    await Diagnostics.MenuAccessKeyTests.Run(preferences);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
                     await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                     await Diagnostics.BlockingEditTests.Run(preferences);
