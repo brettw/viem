@@ -45,6 +45,10 @@ internal static class ImageInteractionTests
                 "an image is an atomic layout object even beside a combining mark");
             Check(pane.ImagePopupVisible && !pane.ImageEditorVisible && pane.PendingImageLoads == 0 && pane.LocalImagePreviewCount == 0,
                 "remote images display a location popup and placeholder without submitting any resource load");
+            int remoteLoads = pane.ImagePreviewLoadAttempts;
+            pane.ReloadShownImage();
+            Check(pane.ImageReloadVisible && !pane.ImageReloadEnabled && pane.ImagePreviewLoadAttempts == remoteLoads,
+                "remote images expose a disabled reload action that never submits a fetch");
             var viewport = view.Viewport;
             Check(pane.SelectInlineImage(new Point(cluster.typographic_bounds.x + cluster.typographic_bounds.width - 2 - viewport.left,
                 cluster.typographic_bounds.y + cluster.typographic_bounds.height / 2 - viewport.top)) && view.Presentation.cursor_utf8_offset == 0,
@@ -83,6 +87,7 @@ internal static class ImageInteractionTests
                 view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 Check(view.ImageContext().Image?.Destination == "https://example.invalid/a.png" && pane.ImagePopupVisible,
                     "Source image markup activates the location popup at offset " + offset);
+                Check(!pane.ImageReloadVisible, "Source image popups omit the preview reload action");
             }
             view.SetMarkdownSource(false);
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
@@ -106,6 +111,9 @@ internal static class ImageInteractionTests
         await NestedPopups(preferences);
         await KeyboardSelection(preferences);
         await LocalPreview(preferences);
+        await PreviewLimits(preferences);
+        await ScrollDuringImageReload(preferences);
+        await ImageStyle(preferences);
         await CacheBudgets(preferences);
     }
 
@@ -170,14 +178,7 @@ internal static class ImageInteractionTests
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "wide.bmp");
         // A deterministic raster fixture needs no system asset or network.
-        using (var file = File.Create(path)) using (var writer = new BinaryWriter(file))
-        {
-            const int width = 1600, height = 800, bytes = width * height * 3;
-            writer.Write((ushort)0x4D42); writer.Write(54 + bytes); writer.Write(0); writer.Write(54);
-            writer.Write(40); writer.Write(width); writer.Write(height); writer.Write((ushort)1); writer.Write((ushort)24);
-            writer.Write(0); writer.Write(bytes); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
-            writer.Write(new byte[bytes]);
-        }
+        WriteBitmap(path, 1600, 800);
         const string source = "before ![local](wide.bmp) after";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
@@ -196,8 +197,40 @@ internal static class ImageInteractionTests
             Check(narrower.typographic_bounds.width < image.typographic_bounds.width
                 && Math.Abs(narrower.typographic_bounds.height / narrower.typographic_bounds.width - .5) < .001,
                 "resizing reflows the same cached image without changing its aspect ratio");
+            var viewport = view.Viewport;
+            pane.SelectInlineImage(new Point(narrower.typographic_bounds.x + 2 - viewport.left, narrower.typographic_bounds.y + 2 - viewport.top));
+            Check(pane.ImageReloadVisible && pane.ImageReloadEnabled, "a selected local image exposes Reload immediately before Delete");
+            async Task WaitForLoads(int attempts)
+            {
+                for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts < attempts || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+                Check(pane.ImagePreviewLoadAttempts >= attempts && pane.PendingImageLoads == 0, "the requested local image reload completes");
+            }
+            int reloadAttempt = pane.ImagePreviewLoadAttempts + 1;
+            WriteBitmap(path, 80, 120); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt);
+            var reloaded = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            Check(Math.Abs(reloaded.typographic_bounds.width - 80 * view.Viewport.scale) < .01
+                && Math.Abs(reloaded.typographic_bounds.height - 120 * view.Viewport.scale) < .01,
+                "Reload decodes changed file bytes and relayouts the image at its new intrinsic size");
+            float stableHeight = view.Layout().Info.total_height, stableTop = view.Viewport.top;
+            ulong stableGeneration = view.Provider.Generation;
+            pane.EvictImageBitmapsForTest();
+            Check(view.Provider.Generation == stableGeneration, "evicting raster textures preserves independent intrinsic dimensions");
+            pane.Refresh();
+            var immediate = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            Check(immediate.typographic_bounds.width == reloaded.typographic_bounds.width && immediate.typographic_bounds.height == reloaded.typographic_bounds.height
+                && Math.Abs(view.Layout().Info.total_height - stableHeight) < .01 && Math.Abs(view.Viewport.top - stableTop) < .01,
+                "revisiting an evicted image synchronously reuses known geometry without scrolling or extent changes");
+            await WaitForLoads(reloadAttempt + 1);
+            Check(Math.Abs(view.Layout().Info.total_height - stableHeight) < .01 && Math.Abs(view.Viewport.top - stableTop) < .01,
+                "a bitmap-only resource refresh preserves measured document extents");
+            File.Delete(path); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt + 2);
+            Check(pane.ImagePreviewIsBroken("wide.bmp") && pane.LocalImagePreviewCount == 0,
+                "reloading a missing local image replaces its raster with the broken-image icon and URL placeholder");
+            WriteBitmap(path, 40, 40); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt + 3);
+            Check(!pane.ImagePreviewIsBroken("wide.bmp") && pane.LocalImagePreviewCount == 1,
+                "Reload recovers a repaired local image after a failed preview");
             Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
-                "local image decoding and layout never modify document source or dirty state");
+                "local image decoding, reloading, and cache eviction never modify document source or dirty state");
         }
         finally
         {
@@ -205,6 +238,162 @@ internal static class ImageInteractionTests
             Directory.Delete(directory, recursive: true);
         }
         Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing a view releases decoded images and cancels its preview work");
+    }
+
+    private static void WriteBitmap(string path, int width, int height)
+    {
+        int stride = (width * 3 + 3) & ~3, bytes = stride * height;
+        using var file = File.Create(path); using var writer = new BinaryWriter(file);
+        writer.Write((ushort)0x4D42); writer.Write(54 + bytes); writer.Write(0); writer.Write(54);
+        writer.Write(40); writer.Write(width); writer.Write(height); writer.Write((ushort)1); writer.Write((ushort)24);
+        writer.Write(0); writer.Write(bytes); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
+        writer.Write(new byte[bytes]);
+    }
+
+    private static async Task PreviewLimits(Preferences preferences)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-image-limits-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "limit.bmp");
+        WriteBitmap(path, 5001, 1);
+        const string source = "![](limit.bmp)";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        try
+        {
+            async Task WaitForLoads(int attempts)
+            {
+                for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts < attempts || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+                Check(pane.ImagePreviewLoadAttempts == attempts && pane.PendingImageLoads == 0, "the image admission-limit fixture finishes its requested decode");
+            }
+            async Task Reload()
+            {
+                view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+                int attempts = pane.ImagePreviewLoadAttempts + 1;
+                pane.ReloadShownImage(); await WaitForLoads(attempts);
+            }
+            void CheckLimited(string name) => Check(pane.ImagePreviewIsLimited("limit.bmp")
+                && !pane.ImagePreviewIsBroken("limit.bmp") && pane.LocalImagePreviewCount == 0, name);
+            void CheckReady(string name) => Check(!pane.ImagePreviewIsLimited("limit.bmp")
+                && !pane.ImagePreviewIsBroken("limit.bmp") && pane.LocalImagePreviewCount == 1, name);
+            void PadFile(long bytes)
+            {
+                using var file = new FileStream(path, FileMode.Open, FileAccess.Write);
+                file.SetLength(bytes); file.Position = 2;
+                using var writer = new BinaryWriter(file); writer.Write(checked((int)bytes));
+            }
+
+            await WaitForLoads(1);
+            CheckLimited("a 5001-pixel-wide local image displays the URL without a broken-image icon");
+            int attempts = pane.ImagePreviewLoadAttempts;
+            pane.EvictImageBitmapsForTest();
+            for (int i = 0; i < 10; i++) pane.Refresh();
+            await Task.Delay(100);
+            Check(pane.ImagePreviewLoadAttempts == attempts && pane.ImagePreviewIsLimited("limit.bmp"),
+                "an image rejected by size limits stays terminal after bitmap eviction and passive refresh");
+
+            WriteBitmap(path, 5000, 1); await Reload();
+            CheckReady("Reload accepts a replacement whose width is exactly 5000 pixels");
+            var wide = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            Check(wide.typographic_bounds.width <= 1024.01 && wide.typographic_bounds.height <= 1024.01
+                && Math.Abs(wide.typographic_bounds.height / wide.typographic_bounds.width - 1.0 / 5000) < .00001,
+                "accepted wide images fit the 1024-DIP display limit while preserving aspect ratio");
+            WriteBitmap(path, 1, 5001); await Reload();
+            CheckLimited("a 5001-pixel-high local image displays the URL without a broken-image icon");
+            WriteBitmap(path, 1, 5000); await Reload();
+            CheckReady("Reload accepts a replacement whose height is exactly 5000 pixels");
+            var tall = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            Check(tall.typographic_bounds.width <= 1024.01 && tall.typographic_bounds.height <= 1024.01
+                && Math.Abs(tall.typographic_bounds.width / tall.typographic_bounds.height - 1.0 / 5000) < .00001,
+                "accepted tall images fit the 1024-DIP display limit while preserving aspect ratio");
+
+            WriteBitmap(path, 1, 1); PadFile(10_000_000); await Reload();
+            CheckReady("a local raster of exactly 10,000,000 bytes is admitted");
+            PadFile(10_000_001); await Reload();
+            CheckLimited("a local file above 10,000,000 bytes displays the URL without a broken-image icon");
+            Check(await LocalImagePreview.CanOpenFile(path), "preview limits do not block an explicit Open action on a local raster");
+            File.WriteAllText(path, "this is not an image"); await Reload();
+            Check(pane.ImagePreviewIsBroken("limit.bmp") && !pane.ImagePreviewIsLimited("limit.bmp") && pane.LocalImagePreviewCount == 0,
+                "a corrupt image remains distinct from size-limited previews and displays the broken-image icon");
+            WriteBitmap(path, 40, 40); await Reload();
+            CheckReady("Reload clears a terminal placeholder after replacing the file with a supported local raster");
+            Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "image admission limits and explicit reloads preserve document source and dirty state");
+        }
+        finally
+        {
+            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task ScrollDuringImageReload(Preferences preferences)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-image-scroll-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "scroll.bmp");
+        WriteBitmap(path, 200, 200);
+        string source = "caret stays here\n\n![scroll](scroll.bmp)\n\n"
+            + string.Join("\n\n", Enumerable.Repeat("Paragraphs keep the wheel viewport away from the document end.", 100));
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        try
+        {
+            for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts == 0 || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+            Check(pane.LocalImagePreviewCount == 1, "the scroll-anchor fixture loads its initial local image");
+            var image = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            view.Place(image.text_start, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            WriteBitmap(path, 200, 1000);
+            int attempts = pane.ImagePreviewLoadAttempts + 1;
+            pane.ReloadShownImage();
+            // Move and scroll synchronously before allowing the asynchronous
+            // decoder to publish. Its later Resize fallback must retain the
+            // wheel viewport rather than reveal this now-offscreen caret.
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            view.Scroll(0, image.typographic_bounds.y + 40);
+            float top = view.Viewport.top;
+            Check(top > image.typographic_bounds.y && view.Presentation.cursor_utf8_offset == 0,
+                "the image reload fixture has a wheel viewport inside the image and an offscreen caret");
+            for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts < attempts || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+            Check(pane.ImagePreviewLoadAttempts == attempts && pane.PendingImageLoads == 0 && pane.LastError == null,
+                "the image reload publishes through native resource refresh and layout recovery");
+            Check(Math.Abs(view.Viewport.top - top) < .01 && view.Presentation.cursor_utf8_offset == 0,
+                "asynchronous image growth preserves the wheel viewport without revealing an offscreen caret");
+        }
+        finally
+        {
+            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task ImageStyle(Preferences preferences)
+    {
+        const string source = "![alt](https://example.invalid/style.png)";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        try
+        {
+            await Task.Delay(100);
+            var style = view.Styles().Styles.Single(s => s.Id == "Image");
+            view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(23));
+            var cluster = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+            Check(Math.Abs(view.Provider.ImageLocationFontSize(cluster.render_run) - 23 * view.Viewport.scale) < .01,
+                "image URL labels inherit the Image style's resolved font rather than a fixed system size");
+            view.SetMarkdownSource(true);
+            var sourceCluster = view.Layout().Clusters.First(c => c.text_start == 0);
+            Check(Math.Abs(view.Provider.ImageLocationFontSize(sourceCluster.render_run) - 23 * view.Viewport.scale) < .01,
+                "Source image notation uses the same Image style font");
+            Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "Image style presentation retains the authored source spelling");
+        }
+        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
     private static async Task CacheBudgets(Preferences preferences)
@@ -230,8 +419,9 @@ internal static class ImageInteractionTests
             var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
             var window = new EditorWindow(preferences, document);
             App.Instance.Windows.Add(window); window.Activate();
-            var pane = window.ActivePane!; var view = await pane.Ready;
+            var pane = window.ActivePane!;
             if (budget is long limit) pane.SetImagePreviewByteBudgetForTest(limit);
+            var view = await pane.Ready;
             try
             {
                 for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts < attempts || pane.PendingImageLoads != 0); i++) await Task.Delay(25);

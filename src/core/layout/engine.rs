@@ -2537,8 +2537,45 @@ impl ViewLayout {
     /// snapshot remains available while its replacement is computed, but its
     /// heights are no longer advertised as exact for the new environment.
     pub fn invalidate_text_metrics(&mut self) {
-        self.invalidate_all_heights();
+        self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
+            .expect("retiring certainty preserves valid measurements");
         self.regional_cache = RegionalLayoutCache::default();
+    }
+
+    /// Resource publication retires every old-generation render handle. Keep
+    /// learned numeric extents so discovering one image cannot collapse all
+    /// offscreen image rows to a generic text-line estimate. The global provider
+    /// generation cannot prove individual image dependencies unchanged, so size
+    /// changes retire certainty until each requested region is measured again.
+    pub(crate) fn invalidate_image_metrics(
+        &mut self,
+        environment: MeasurementEnvironmentId,
+        generation: MetricsGeneration,
+        geometry_changed: bool,
+    ) {
+        let identity = self.regional_cache.identity.or_else(|| self.snapshot.as_ref().map(|snapshot|
+            RegionalCacheIdentity {
+                document_id: snapshot.document_id,
+                document_revision: snapshot.document_revision,
+                configuration_generation: snapshot.configuration_generation,
+                measurement_environment_id: snapshot.measurement_environment_id,
+                metrics_generation: snapshot.metrics_generation,
+                document_hard_line_count: snapshot_hard_line_count(snapshot),
+            }));
+        if geometry_changed || identity.is_some_and(|identity| identity.measurement_environment_id != environment) {
+            self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
+                .expect("retiring certainty preserves valid measurements");
+        }
+        self.regional_cache = identity.map_or_else(RegionalLayoutCache::default, |mut identity| {
+            identity.measurement_environment_id = environment;
+            identity.metrics_generation = generation;
+            RegionalLayoutCache::with_identity(identity)
+        });
+    }
+
+    pub(crate) fn height_metrics_match(&self, environment: MeasurementEnvironmentId, generation: MetricsGeneration) -> bool {
+        self.regional_cache.identity.is_some_and(|identity|
+            identity.measurement_environment_id == environment && identity.metrics_generation == generation)
     }
 
     /// A syntax/settings presentation revision is independent of text. Retain
@@ -2803,7 +2840,13 @@ impl ViewLayout {
             });
             if !installed_snapshot_matches {
                 let old_count = next_index.hard_line_count();
-                next_index.invalidate(0..old_count)?;
+                let metrics_only = self.snapshot.as_ref().is_some_and(|snapshot|
+                    snapshot.document_id == identity.document_id
+                        && snapshot.document_revision == identity.document_revision
+                        && snapshot.configuration_generation == identity.configuration_generation
+                        && snapshot_hard_line_count(snapshot) == identity.document_hard_line_count);
+                if metrics_only { next_index.invalidate_retaining_estimates(0..old_count)?; }
+                else { next_index.invalidate(0..old_count)?; }
             }
             reconcile_height_index_count(&mut next_index, region.document_hard_line_count)?;
         }
@@ -5857,15 +5900,16 @@ fn images_for_shaping_span(images: &[ShapeInlineImage], range: &Range<usize>)
     (global, relative)
 }
 
-/// GitHub image sizing: intrinsic size, no enlargement, max-width: 100% of
-/// the containing content box. This runs after width-independent shaping, so
-/// changing a view width reuses native resources and never reshapes prose.
+/// Intrinsic aspect ratio without enlargement, within the content width and
+/// a 1024-DIP square. The absolute display cap applies after document zoom.
+/// Width-independent shaping remains reusable across changes to the view width.
 fn fit_inline_images(clusters: &mut [ShapedCluster], images: &[ShapeInlineImage], max_width: f32) {
     if images.is_empty() { return; }
     for cluster in clusters {
         let i = images.partition_point(|image| image.text_range.start < cluster.text_range.start);
         if !images.get(i).is_some_and(|image| image.text_range == cluster.text_range) { continue; }
-        let ratio = (max_width.max(1.) / cluster.advance).min(1.);
+        let ratio = (max_width.max(1.).min(1024.) / cluster.advance)
+            .min(1024. / cluster.typographic_bounds.height).min(1.);
         if !ratio.is_finite() || ratio >= 1. { continue; }
         cluster.advance *= ratio;
         cluster.metrics.ascent *= ratio;

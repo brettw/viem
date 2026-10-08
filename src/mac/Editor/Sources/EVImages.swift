@@ -14,6 +14,14 @@ extension EVEditorSurfaceController {
         return item.destination
     }
 
+    func reloadImage(at target: EVLinkMenuTarget) {
+        do {
+            guard backend.sourceFormat == .markdown, let session,
+                  let location = try imageDestination(at: target) else { return }
+            _ = session.provider.reloadImage(location)
+        } catch { report(error) }
+    }
+
     /// Only an explicit location click launches anything. Preview loading uses
     /// the separate local-only raster reader and never calls this method.
     func openImage(at target: EVLinkMenuTarget) {

@@ -41,6 +41,102 @@ final class CoreTextImageResourcesTests: XCTestCase {
     XCTAssertNil(CoreTextImageResources.decode(svg, location: "external.svg"))
   }
 
+  func testPreviewFileLimitUsesDecimalMegabytesAndIncludesExactBoundary() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-byte-limit-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 32, height: 16)
+    var bytes = try Data(contentsOf: file)
+    XCTAssertLessThan(bytes.count, 10_000_000)
+    bytes.append(Data(count: 10_000_000 - bytes.count))
+    try bytes.write(to: file)
+    let accepted = try XCTUnwrap(CoreTextImageResources.decode(file, location: file.path))
+    XCTAssertEqual(accepted.state, .ready)
+    XCTAssertNotNil(accepted.image)
+    XCTAssertEqual(accepted.size, CGSize(width: 32, height: 16))
+
+    bytes.append(0)
+    try bytes.write(to: file)
+    let rejected = try XCTUnwrap(CoreTextImageResources.decode(file, location: file.path))
+    XCTAssertEqual(rejected.state, .limited, "A size limit is a plain location placeholder, not a broken image")
+    XCTAssertNil(rejected.image)
+    XCTAssertEqual(rejected.location, file.path)
+  }
+
+  func testPixelLimitsInclude5000AndReject5001InEitherDimension() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-pixel-limit-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    for (width, height, expected) in [(5000, 2, CoreTextInlineImage.State.ready), (2, 5000, .ready),
+                                     (5001, 2, .limited), (2, 5001, .limited)] {
+      try writePNG(file, width: width, height: height)
+      let value = try XCTUnwrap(CoreTextImageResources.decode(file, location: file.path))
+      XCTAssertEqual(value.state, expected, "\(width)×\(height)")
+      if expected == .ready {
+        XCTAssertNotNil(value.image)
+        XCTAssertEqual(value.size, CGSize(width: width, height: height))
+      } else {
+        XCTAssertNil(value.image)
+        XCTAssertEqual(value.size, CGSize(width: 300, height: 64), "Rejected dimensions must not become layout metrics")
+      }
+    }
+    try Data("This is not a valid image".utf8).write(to: file)
+    XCTAssertNil(CoreTextImageResources.decode(file, location: file.path), "Corruption remains the broken-image result")
+  }
+
+  @MainActor
+  func testLimitedImagesRemainStableUntilReloadAndRecoverWhenResourceFits() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-limited-reload-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 5001, height: 2)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    _ = cache.setVisibleLocations([file.path], viewportID: 1)
+    _ = cache.image(for: file.path)
+    drainUntil { cache.pendingLoadCount == 0 }
+    let limited = cache.image(for: file.path)
+    XCTAssertEqual(limited.state, .limited)
+    XCTAssertNil(limited.image)
+    XCTAssertEqual(cache.retainedRasterBytes, 0)
+    XCTAssertEqual(cache.retainedEntryCount, 0, "Terminal placeholders use metadata, not bitmap admission")
+    for viewport in 2...5 {
+      XCTAssertFalse(cache.setVisibleLocations([file.path], viewportID: UInt64(viewport)))
+      XCTAssertEqual(cache.image(for: file.path).identity, limited.identity)
+    }
+    XCTAssertEqual(cache.localLoadCount, 1)
+    try writePNG(file, width: 80, height: 40)
+    XCTAssertEqual(cache.image(for: file.path).state, .limited)
+    XCTAssertTrue(cache.reload(file.path))
+    XCTAssertEqual(cache.image(for: file.path).size, limited.size, "Reload keeps accepted metrics until completion")
+    drainUntil { cache.pendingLoadCount == 0 }
+    let accepted = cache.image(for: file.path)
+    XCTAssertEqual(accepted.state, .ready)
+    XCTAssertNotNil(accepted.image)
+    XCTAssertEqual(accepted.size, CGSize(width: 80, height: 40))
+    XCTAssertEqual(cache.localLoadCount, 2)
+    XCTAssertNotEqual(accepted.identity, limited.identity)
+  }
+
+  @MainActor
+  func testLimitKnowledgeResetsOnDocumentIdentityChangeAndCorruptionStaysBroken() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-limited-reset-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 2, height: 5001)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    _ = cache.image(for: file.path)
+    drainUntil { cache.pendingLoadCount == 0 }
+    XCTAssertEqual(cache.image(for: file.path).state, .limited)
+    XCTAssertEqual(cache.localLoadCount, 1)
+    try Data("corrupt".utf8).write(to: file)
+    XCTAssertTrue(cache.setDocumentURL(file.deletingLastPathComponent().appendingPathComponent("new.md")))
+    XCTAssertEqual(cache.image(for: file.path).state, .pending)
+    drainUntil { cache.pendingLoadCount == 0 }
+    XCTAssertEqual(cache.image(for: file.path).state, .broken)
+    XCTAssertEqual(cache.localLoadCount, 2)
+    XCTAssertFalse(cache.setVisibleLocations([file.path], viewportID: 1))
+    XCTAssertEqual(cache.image(for: file.path).state, .broken)
+    XCTAssertEqual(cache.localLoadCount, 2)
+  }
+
   @MainActor
   func testFullQueueBackpressureRetriesVisibleLoadsAfterFailures() {
     let probe = ImageDecodeProbe()
@@ -73,8 +169,10 @@ final class CoreTextImageResourcesTests: XCTestCase {
     XCTAssertFalse(cache.setVisibleLocations([location], viewportID: 1))
     _ = cache.image(for: location)
     XCTAssertEqual(cache.localLoadCount, 1)
-    XCTAssertTrue(cache.setVisibleLocations([location], viewportID: 2))
-    _ = cache.image(for: location)
+    XCTAssertFalse(cache.setVisibleLocations([location], viewportID: 2))
+    XCTAssertEqual(cache.image(for: location).state, .broken)
+    XCTAssertEqual(cache.localLoadCount, 1, "A failed file stays a stable broken placeholder until Reload")
+    XCTAssertTrue(cache.reload(location))
     drainUntil { cache.pendingLoadCount == 0 }
     XCTAssertEqual(cache.localLoadCount, 2)
   }
@@ -168,6 +266,80 @@ final class CoreTextImageResourcesTests: XCTestCase {
   }
 
   @MainActor
+  func testKnownIntrinsicSizeSurvivesBitmapEvictionSynchronously() throws {
+    let fixture = CoreTextInlineImage(location: "fixture", image: try raster(width: 2, height: 1),
+      size: CGSize(width: 1200, height: 600), identity: UUID())
+    let cache = CoreTextImageResources(decoder: { _, location in
+      CoreTextInlineImage(location: location, image: fixture.image, size: fixture.size, identity: UUID())
+    })
+    defer { cache.stop() }
+    for index in 0..<65 {
+      let location = "/tmp/eviction-\(index).png"
+      _ = cache.setVisibleLocations([location], viewportID: UInt64(index + 1))
+      _ = cache.image(for: location)
+      drainUntil { cache.pendingLoadCount == 0 }
+    }
+    XCTAssertEqual(cache.retainedEntryCount, 64)
+    let evicted = cache.image(for: "/tmp/eviction-0.png")
+    XCTAssertNil(evicted.image)
+    XCTAssertEqual(evicted.state, .ready)
+    XCTAssertEqual(evicted.size, fixture.size, "Metrics remain exact with no bitmap or disk access")
+    XCTAssertEqual(cache.localLoadCount, 65)
+    _ = cache.setVisibleLocations(["/tmp/eviction-0.png"], viewportID: 66)
+    XCTAssertEqual(cache.image(for: "/tmp/eviction-0.png").size, fixture.size)
+    drainUntil { cache.pendingLoadCount == 0 }
+  }
+
+  @MainActor
+  func testReloadReadsChangedDiskFileAndCanRecoverBrokenImages() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-reload-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    func write(_ width: Int, _ height: Int) throws {
+      let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil))
+      CGImageDestinationAddImage(destination, try raster(width: width, height: height), nil)
+      XCTAssertTrue(CGImageDestinationFinalize(destination))
+    }
+    try write(80, 40)
+    let cache = CoreTextImageResources(); defer { cache.stop() }
+    _ = cache.image(for: file.path)
+    drainUntil { cache.pendingLoadCount == 0 }
+    let original = cache.image(for: file.path)
+    XCTAssertEqual(original.size, CGSize(width: 80, height: 40))
+    try write(120, 30)
+    XCTAssertTrue(cache.reload(file.path))
+    XCTAssertEqual(cache.image(for: file.path).size, original.size, "Keep accepted size during reload")
+    drainUntil { cache.pendingLoadCount == 0 }
+    let replacement = cache.image(for: file.path)
+    XCTAssertEqual(replacement.size, CGSize(width: 120, height: 30))
+    XCTAssertNotEqual(replacement.identity, original.identity)
+    try FileManager.default.removeItem(at: file)
+    XCTAssertTrue(cache.reload(file.path))
+    drainUntil { cache.pendingLoadCount == 0 }
+    XCTAssertEqual(cache.image(for: file.path).state, .broken)
+    XCTAssertNil(cache.image(for: file.path).image)
+    try write(32, 16)
+    XCTAssertTrue(cache.reload(file.path))
+    drainUntil { cache.pendingLoadCount == 0 }
+    XCTAssertEqual(cache.image(for: file.path).state, .ready)
+    XCTAssertEqual(cache.image(for: file.path).size, CGSize(width: 32, height: 16))
+    let count = cache.localLoadCount
+    XCTAssertFalse(cache.reload("https://example.invalid/image.png"))
+    XCTAssertFalse(cache.canReload("https://example.invalid/image.png"))
+    XCTAssertEqual(cache.localLoadCount, count)
+  }
+
+  func testMetadataBudgetExhaustionStopsAdmissionRefreshRetries() {
+    let cache = CoreTextImageResources(metadataByteBudget: 0)
+    defer { cache.stop() }
+    let locations = ["/tmp/budget.png"]
+    XCTAssertTrue(cache.setVisibleLocations(locations, viewportID: 1))
+    XCTAssertNil(cache.image(for: locations[0]).image)
+    for _ in 0..<20 { XCTAssertFalse(cache.setVisibleLocations(locations, viewportID: 1)) }
+    XCTAssertEqual(cache.localLoadCount, 0)
+    XCTAssertEqual(cache.pendingLoadCount, 0)
+  }
+
+  @MainActor
   private func drainUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
     let deadline = Date().addingTimeInterval(5)
     while !condition() && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.005)) }
@@ -178,6 +350,12 @@ final class CoreTextImageResourcesTests: XCTestCase {
     let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
       bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
     return try XCTUnwrap(context.makeImage())
+  }
+
+  private func writePNG(_ file: URL, width: Int, height: Int) throws {
+    let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, try raster(width: width, height: height), nil)
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
   }
 
 }

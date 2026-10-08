@@ -1560,6 +1560,60 @@ impl FormattedDocument {
     pub fn has_inline_images_in_region(&self, range: &Range<usize>) -> bool {
         !self.inline_images.overlapping_index_span(range).is_empty()
     }
+
+    /// Image is a content-derived paragraph appearance. A prose paragraph
+    /// containing any ordinary text keeps its source-selected assignment;
+    /// headings, tables and list/quote treatment remain independent.
+    fn assign_image_paragraph_styles(&mut self) {
+        if self.inline_images.is_empty() { return; }
+        let assign = |blocks: &OrderedRangeStore<Block>| {
+            blocks.iter().map(|block| {
+                let mut block = block.clone();
+                if block.kind != BlockKind::Paragraph || block.style.0 != "Paragraph" {
+                    return block;
+                }
+                let images = self.inline_images.query_overlapping(&block.range);
+                if images.is_empty() { return block; }
+                let source_view = images[0].source_view;
+                let mut body = String::new();
+                let mut at = block.range.start;
+                for image in images {
+                    if image.range.start < at || image.range.end > block.range.end {
+                        return block;
+                    }
+                    let Ok(gap) = self.text.slice(at..image.range.start) else { return block; };
+                    if gap.contains('\u{fffc}') { return block; }
+                    body.push_str(&gap);
+                    body.push('\u{fffc}');
+                    at = image.range.end;
+                }
+                let Ok(tail) = self.text.slice(at..block.range.end) else { return block; };
+                if tail.contains('\u{fffc}') { return block; }
+                body.push_str(&tail);
+                let only_images = |text: &str| text.chars().all(|ch| ch == '\u{fffc}' || ch.is_whitespace());
+                // Source exposes link/emphasis delimiters around images. Test
+                // their visible body so the same paragraph receives Image in
+                // both views; known images are replaced before this bounded
+                // parse, so reference definitions need not be read again.
+                let image_only = if source_view {
+                    use pulldown_cmark::{Event, Options, Parser};
+                    Parser::new_ext(&body, Options::ENABLE_STRIKETHROUGH).all(|event| match event {
+                        Event::Text(text) | Event::Code(text) => only_images(&text),
+                        Event::Start(_) | Event::End(_) | Event::SoftBreak | Event::HardBreak => true,
+                        _ => false,
+                    })
+                } else { only_images(&body) };
+                if image_only {
+                    block.style = "Image".into();
+                }
+                block
+            }).collect()
+        };
+        let blocks = assign(&self.blocks);
+        let flow = self.flow_blocks.as_ref().map(assign);
+        self.blocks = OrderedRangeStore::new(blocks);
+        if let Some(flow) = flow { self.flow_blocks = Some(OrderedRangeStore::new(flow)); }
+    }
     pub fn tables(&self) -> &[super::MarkdownTable] { &self.tables }
     pub(super) fn extract_table_row(&self,index:usize,source_delta:i128,source:Range<usize>)
         -> Option<(Self,super::MarkdownTableRow,super::MarkdownTableSourceRow)> {
@@ -3472,7 +3526,7 @@ impl FormattedDocument {
     }
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
-        self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
+        (style.0 == "Image" && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
             || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
     }
 
@@ -3494,6 +3548,9 @@ impl FormattedDocument {
         let mut ranges = Vec::new();
         if block_styles.contains(&self.document_style.style) {
             ranges.push(0..self.text.byte_len());
+        }
+        if block_styles.contains(&StyleId::from("Image")) {
+            ranges.extend(self.inline_images.iter().map(|image| image.range.clone()));
         }
         ranges.extend(
             self.blocks
@@ -5474,6 +5531,7 @@ fn project_markdown(
         projected.install_paragraph_partition(paragraphs);
         projected.install_flow_ranges(flows);
         projected.install_source_containers(syntax.owners.clone());
+        projected.assign_image_paragraph_styles();
         return projected;
     }
     let (cooked, explicit) = super::paragraph_flow::markdown(normalized);
@@ -5527,6 +5585,7 @@ fn project_markdown(
         projected.install_paragraph_partition(paragraphs);
     }
     projected.install_source_containers(syntax.owners.clone());
+    projected.assign_image_paragraph_styles();
     projected
 }
 
@@ -6278,10 +6337,10 @@ impl<'a> MarkdownBuilder<'a> {
             if let Some(link) = super::links::markdown_inline_at(self.source_text, at, end) {
                 let output_start = self.output.len();
                 if self.preserve_markers {
-                    self.emit_range(link.range.start, link.range.end);
-                } else {
-                    self.parse_inline_depth(link.label.start, link.label.end, depth + 1);
+                    self.emit_range(link.range.start, link.label.start);
                 }
+                self.parse_inline_depth(link.label.start, link.label.end, depth + 1);
+                if self.preserve_markers { self.emit_range(link.label.end, link.range.end); }
                 if output_start < self.output.len() {
                     self.styles.push(StyleSpan {
                         range: output_start..self.output.len(),

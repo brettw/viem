@@ -3131,7 +3131,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 view.observed_metrics_generation != requirements.metrics_generation,
             )
         };
-        let dependency_changed = staged_layout.snapshot().is_some_and(|snapshot| {
+        let dependency_changed = !staged_layout.height_metrics_match(
+            requirements.measurement_environment_id, requirements.metrics_generation,
+        ) && staged_layout.snapshot().is_some_and(|snapshot| {
             snapshot.measurement_environment_id != requirements.measurement_environment_id
                 || snapshot.metrics_generation != requirements.metrics_generation
         });
@@ -5656,7 +5658,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                     // terminal viewport, where preserving the anchor inside a long
                     // final paragraph would publish its whole resumed slice.
                     let text_len = self.document.projection().text_tree().byte_len();
-                    let at_end = view.layout.snapshot().is_some_and(|snapshot| {
+                    // An acknowledged image publication uses the same-size
+                    // Resize entry point only to replace stale render geometry.
+                    // Growing an image must preserve the visible row's top,
+                    // even if its old placeholder happened to fit at EOF.
+                    let image_resource_refresh = same_size
+                        && view.layout.height_metrics_match(requirements.measurement_environment_id,
+                            requirements.metrics_generation)
+                        && view.layout.snapshot().is_some_and(|snapshot|
+                            snapshot.metrics_generation != requirements.metrics_generation);
+                    let at_end = !image_resource_refresh && view.layout.snapshot().is_some_and(|snapshot| {
                         snapshot.document_id == self.document.id()
                             && snapshot.document_revision == self.document.revision()
                             && snapshot

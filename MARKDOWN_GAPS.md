@@ -26,8 +26,16 @@ from deferred work. It does not claim complete GFM conformance.
   objects in WYSIWYG; Source retains full notation. Native Insert Image controls
   and location popups insert, edit, copy, open or remove images with ordinary
   undo. Local previews retain intrinsic aspect ratio and fit the content width
-  without upscaling. Remote URLs are text placeholders and are never fetched.
+  without upscaling, with a maximum displayed width or height of 1024
+  device-independent pixels even when document zoom increases. Remote URLs are
+  text placeholders and are never fetched.
   Explicitly opening a remote location launches the default browser.
+  The editable Image paragraph style supplies margins, padding and borders for
+  image-only ordinary paragraphs. Its font and color style image labels and
+  complete Source notation, including inline images within prose. Prose,
+  heading, list and table paragraphs retain their own geometry. Unavailable
+  local previews show their location with a broken-image indicator and can be
+  refreshed after the local resource changes without fetching remote images.
 - **Reference links:** full, collapsed and defined shortcut links and reference
   definitions keep their literal brackets in WYSIWYG, styled with the light-purple
   **Markdown reference** character style. Definition edits invalidate dependent
@@ -91,6 +99,10 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    code bodies use Code Block styling without language highlighting.
 4. **Image/reference presentation.** Remote images never load: Viem shows their
    URLs in boxes. Missing, unsupported or invalid local files use placeholders.
+   Local previews are limited to 10 MB (10,000,000 bytes) and 5000 source pixels
+   in each dimension; exactly those limits are allowed. Larger resources show
+   their location without the broken-image indicator and remain placeholders
+   until explicitly reloaded or their document resource identity changes.
    Native decoders support local raster formats; SVG and passive HTML `<img>`
    previews, authored HTML dimensions, animated playback and resizing handles
    remain unsupported. Reference links and definitions remain visible source

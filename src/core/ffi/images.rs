@@ -181,3 +181,35 @@ pub unsafe extern "C" fn viem_core_view_select_image(
         Ok(())
     })
 }
+
+/// Retire image render resources while preserving learned scroll extents.
+///
+/// # Safety
+/// `destinations` supplies `count` readable UTF-8 slices until return. Empty
+/// means pixels/status changed while every intrinsic dimension stayed equal.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_image_resources_changed(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    previous_metrics_generation: u64,
+    destinations: *const ViemUtf8Slice,
+    count: u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if count > 256 { return Err(ViemStatus::InvalidArgument); }
+        typed_pointer_region(destinations, count)?;
+        let values = if count == 0 { &[][..] } else {
+            unsafe { slice::from_raw_parts(destinations, checked_length(count)?) }
+        };
+        let mut total = 0u64;
+        for value in values {
+            total = total.checked_add(value.length).ok_or(ViemStatus::InvalidArgument)?;
+            if total > 1024 * 1024 { return Err(ViemStatus::InvalidArgument); }
+            str::from_utf8(unsafe { input_bytes(value.data, value.length)? })
+                .map_err(|_| ViemStatus::InvalidUtf8)?;
+        }
+        with_core_mut(handle, |core| core.image_resources_changed(
+            ViewId(view), MetricsGeneration(previous_metrics_generation), !values.is_empty(),
+        ).map_err(core_status))
+    })
+}

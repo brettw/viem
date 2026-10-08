@@ -19,7 +19,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public let renderRegistry: CoreTextRenderRegistry
   private let imageResources: CoreTextImageResources
   private let ownsImageResources: Bool
-  public var imagesDidChange: (@Sendable () -> Void)?
+  public var imagesDidChange: (@Sendable (UInt64, [String]) -> Void)?
 
   public func setImageDocumentURL(_ url: URL?) {
     if imageResources.setDocumentURL(url) { invalidateMetrics() }
@@ -30,6 +30,18 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public func updateVisibleImages(_ renderRuns: [(identifier: UInt64, metricsGeneration: UInt64)],
     viewportID: UInt64) -> Bool {
     imageResources.setVisibleLocations(renderRegistry.inlineImageLocations(in: renderRuns), viewportID: viewportID)
+  }
+
+  public func canReloadImage(_ destination: String) -> Bool { imageResources.canReload(destination) }
+
+  @discardableResult
+  public func reloadImage(_ destination: String) -> Bool { imageResources.reload(destination) }
+
+  /// Bitmap and admission changes preserve measured document heights. The
+  /// frontend acknowledges this resource-only generation before refreshing.
+  public func invalidateImageResources(_ changedDimensions: [String] = []) {
+    let change = advanceMetricsGeneration()
+    imagesDidChange?(change.previous, changedDimensions)
   }
 
   // Protects only generation publication and response-arena ownership. Core
@@ -77,10 +89,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     imageResources = sharedImageResources ?? CoreTextImageResources()
     ownsImageResources = sharedImageResources == nil
     if ownsImageResources {
-      imageResources.setChangeHandler { [weak self] in
-        guard let self else { return }
-        self.invalidateMetrics()
-        self.imagesDidChange?()
+      imageResources.setResourceChangeHandler { [weak self] destinations in
+        self?.invalidateImageResources(destinations)
       }
     }
 
@@ -139,13 +149,18 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   @discardableResult
   public func invalidateMetrics() -> UInt64 {
     EVFontCatalog.invalidate()
+    return advanceMetricsGeneration().current
+  }
+
+  private func advanceMetricsGeneration() -> (previous: UInt64, current: UInt64) {
     stateLock.lock()
+    let previous = generation
     generation = generation &+ 1
     if generation == 0 { generation = 1 }
     let current = generation
     renderRegistry.retireAll(forNewGeneration: current)
     stateLock.unlock()
-    return current
+    return (previous, current)
   }
 
   /// Ends all response and render-resource lifetimes after a view has been
@@ -313,7 +328,9 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
             let start16 = indexMap.utf16Offset(forUTF8: Int(start - contextStart)),
             let end16 = indexMap.utf16Offset(forUTF8: Int(end - contextStart)) else { throw ProviderError(Status.invalidArgument) }
       let image = imageResources.image(for: destination)
-      let box = InlineImageMetrics(width: image.size.width * CGFloat(request.scale), height: image.size.height * CGFloat(request.scale))
+      let style = styleAt(globalOffset: start, defaultStyle: defaultStyle, runs: styleRuns)
+      let size = imageLayoutSize(image, style: style, scale: CGFloat(request.scale))
+      let box = InlineImageMetrics(width: size.width, height: size.height)
       var callbacks = CTRunDelegateCallbacks(version: kCTRunDelegateVersion1,
         dealloc: { pointer in Unmanaged<InlineImageMetrics>.fromOpaque(pointer).release() },
         getAscent: { pointer in Unmanaged<InlineImageMetrics>.fromOpaque(pointer).takeUnretainedValue().height },
@@ -398,8 +415,10 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       if let (end, destination) = images[result.start] {
         guard end == result.end else { throw ProviderError(Status.providerFailure) }
         let image = imageResources.image(for: destination)
-        let width = Float(image.size.width) * request.scale
-        let height = Float(image.size.height) * request.scale
+        let style = styleAt(globalOffset: result.start, defaultStyle: defaultStyle, runs: styleRuns)
+        let size = imageLayoutSize(image, style: style, scale: CGFloat(request.scale))
+        let width = Float(size.width)
+        let height = Float(size.height)
         cluster.advance = width
         cluster.metrics.ascent = height; cluster.metrics.descent = 0; cluster.metrics.leading = 0
         cluster.typographic_bounds = ViemShapedBoundsV1(x: 0, y: -height, width: width, height: height)
@@ -407,8 +426,11 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         var first = ViemClusterCaretStopV1(); first.text_offset = result.start; first.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; first.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
         var last = ViemClusterCaretStopV1(); last.text_offset = result.end; last.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; last.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
         cluster.caret_stops = arena.storeCarets([first, last]); cluster.caret_stop_count = 2
-        let signature = Array(("image:" + image.identity.uuidString + ":" + String(request.scale)).utf8)
-        resource = CoreTextRenderRegistry.Resource(signature: signature, batches: [], isColorGlyph: false, inlineImage: image)
+        let imageSignature = ["image", image.identity.uuidString, String(request.scale),
+          CTFontCopyPostScriptName(style.font) as String, String(describing: style.size)].joined(separator: ":")
+        let signature = result.renderResource.signature + Array(imageSignature.utf8)
+        resource = CoreTextRenderRegistry.Resource(signature: signature, batches: [], isColorGlyph: false,
+          textAttributes: result.renderResource.textAttributes, inlineImage: image, inlineImageFont: style.font)
         identifier = stableHash(signature)
       }
 
@@ -531,6 +553,12 @@ private func decode(_ slice: ViemUtf8Slice) throws -> String {
 private func adding(_ lhs: UInt64, _ rhs: UInt64) -> UInt64? {
   let (result, overflow) = lhs.addingReportingOverflow(rhs)
   return overflow ? nil : result
+}
+
+private func imageLayoutSize(_ image: CoreTextInlineImage, style: ResolvedStyle, scale: CGFloat) -> CGSize {
+  let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+  if image.state == .ready { return size }
+  return CGSize(width: size.width, height: max(size.height, CTFontGetAscent(style.font) + CTFontGetDescent(style.font) + 16 * scale))
 }
 
 private struct ResolvedStyle {

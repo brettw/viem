@@ -21,6 +21,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     let destinationButton = NSButton()
     let copyButton = NSButton()
     let editButton = NSButton()
+    let reloadButton = NSButton()
     let removeButton = NSButton()
     let textField = NSTextField()
     let destinationField = NSTextField()
@@ -70,10 +71,12 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         summary.addSubview(destinationButton)
         configure(copyButton, title: "Copy destination", symbol: "square.on.square", action: #selector(copyDestination))
         configure(editButton, title: kind == .image ? "Edit image" : "Edit link", symbol: "pencil", action: #selector(edit))
+        configure(reloadButton, title: "Reload image from disk", symbol: "arrow.clockwise", action: #selector(reload))
+        reloadButton.isHidden = true
         configure(removeButton, title: kind == .image ? "Delete image" : "Remove link", symbol: kind == .image ? "trash" : "link.badge.minus", action: #selector(remove))
         // Draw the requested struck chain rather than relying on OS symbol availability.
         if kind == .link { removeButton.image = Self.unlinkImage() }
-        for button in [copyButton, editButton, removeButton] { summary.addSubview(button) }
+        for button in [copyButton, editButton, reloadButton, removeButton] { summary.addSubview(button) }
         // Native two-column form: regular labels, intrinsic control heights,
         // and a footer immediately below the fields. Validation has no empty slot.
         form.orientation = .vertical
@@ -271,16 +274,21 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         let screenRect = window.convertToScreen(surface.editorView.convert(anchor, to: nil))
         let visible = window.screen?.visibleFrame ?? screenRect.insetBy(dx: -600, dy: -400)
         let formSize = form.fittingSize
+        let showsReload = kind == .image && surface.backend.sourceFormat == .markdown
+        reloadButton.isHidden = !showsReload
+        reloadButton.isEnabled = context?.item.map { surface.session?.provider.canReloadImage($0.destination) == true } ?? false
+        let actions = showsReload ? [copyButton, editButton, reloadButton, removeButton] : [copyButton, editButton, removeButton]
+        let compactWidth = 278 + CGFloat(actions.count) * 32
         let size = isEditing ? NSSize(width: formSize.width + 28, height: formSize.height + 26)
-            : NSSize(width: 374, height: 34)
+            : NSSize(width: compactWidth, height: 34)
         let x = min(max(screenRect.minX, visible.minX + 4), visible.maxX - size.width - 4)
         let below = screenRect.minY - 5 - size.height
         let y = below >= visible.minY + 4 ? below : min(screenRect.maxY + 5, visible.maxY - size.height - 4)
         let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
-        summary.frame = NSRect(origin: .zero, size: NSSize(width: 374, height: 34))
+        summary.frame = NSRect(origin: .zero, size: NSSize(width: compactWidth, height: 34))
         if isEditing { form.frame = NSRect(x: 14, y: 12, width: formSize.width, height: formSize.height) }
         destinationButton.frame = NSRect(x: 6, y: 4, width: 263, height: 26)
-        for (index, button) in [copyButton, editButton, removeButton].enumerated() {
+        for (index, button) in actions.enumerated() {
             button.frame = NSRect(x: 273 + CGFloat(index) * 32, y: 4, width: 29, height: 26)
         }
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -351,6 +359,12 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     @objc func edit() {
         do { guard try currentTarget() != nil, context?.item?.editable == true else { close(); return }; beginEditing() }
         catch { surface?.report(error) }
+    }
+    @objc func reload() {
+        do {
+            guard kind == .image, let target = try currentTarget() else { close(); return }
+            surface?.reloadImage(at: target)
+        } catch { surface?.report(error) }
     }
     @objc func remove() { commit(action: 2) }
     @objc func apply() {
