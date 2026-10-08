@@ -22,12 +22,18 @@ from deferred work. It does not claim complete GFM conformance.
   default browser. Local document fragments target headings in the chosen view.
   Heading names use lowercase text with punctuation removed, hyphenated spaces
   and duplicate suffixes.
-- **Inline images:** Markdown images, including resolved references, are atomic
+- **Inline images:** Markdown images, including resolved references, and passive
+  HTML `<img src="…">` tags are atomic
   objects in WYSIWYG; Source retains full notation. Native Insert Image controls
   and location popups insert, edit, copy, open or remove images with ordinary
   undo. Local previews retain intrinsic aspect ratio and fit the content width
   without upscaling, with a maximum displayed width or height of 1024
-  device-independent pixels even when document zoom increases. Remote URLs are
+  device-independent pixels even when document zoom increases. HTML `width`
+  and `height` accept positive integer pixel dimensions and may enlarge a
+  preview; one dimension preserves intrinsic proportions, while both specify
+  the displayed proportions. Content width and the same display caps still
+  apply. Location edits preserve dimensions and other untouched attributes;
+  dimension controls are not exposed. Remote URLs are
   text placeholders and are never fetched.
   Explicitly opening a remote location launches the default browser.
   The editable Image paragraph style supplies margins, padding and borders for
@@ -103,8 +109,8 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    in each dimension; exactly those limits are allowed. Larger resources show
    their location without the broken-image indicator and remain placeholders
    until explicitly reloaded or their document resource identity changes.
-   Native decoders support local raster formats; SVG and passive HTML `<img>`
-   previews, authored HTML dimensions, animated playback and resizing handles
+   Native decoders support local raster formats; SVG previews,
+   animated playback and resizing handles
    remain unsupported. Reference links and definitions remain visible source
    notation with Markdown reference styling.
 5. **Comments.** GitHub hides comments; Viem deliberately displays and styles

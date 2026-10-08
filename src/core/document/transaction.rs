@@ -5652,7 +5652,7 @@ impl Document {
             // destination still depends on definitions outside this paragraph.
             // Regional reparsing must retain that global grammar dependency.
             if self.projection().blocks_for_region(&edit.range).iter().any(|block|
-                self.projection().inline_images_for_region(&block.range).iter().any(|image| !image.inline)) {
+                self.projection().inline_images_for_region(&block.range).iter().any(|image| !image.inline && !image.html)) {
                 return true;
             }
             if self

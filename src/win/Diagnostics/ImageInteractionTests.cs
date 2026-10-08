@@ -111,6 +111,7 @@ internal static class ImageInteractionTests
         await NestedPopups(preferences);
         await KeyboardSelection(preferences);
         await LocalPreview(preferences);
+        await HtmlImageDimensions(preferences);
         await PreviewLimits(preferences);
         await ScrollDuringImageReload(preferences);
         await ImageStyle(preferences);
@@ -238,6 +239,48 @@ internal static class ImageInteractionTests
             Directory.Delete(directory, recursive: true);
         }
         Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing a view releases decoded images and cancels its preview work");
+    }
+
+    private static async Task HtmlImageDimensions(Preferences preferences)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-html-image-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        WriteBitmap(Path.Combine(directory, "sized.bmp"), 120, 60);
+        try
+        {
+            foreach (var (attributes, width, height) in new[] {
+                ("width='240'", 240f, 120f),
+                ("height='160'", 320f, 160f),
+                ("width='80' height='180'", 80f, 180f),
+                ("width='1024' height='2048'", 512f, 1024f),
+            })
+            {
+                string source = "<img src='sized.bmp' " + attributes + " alt='preserved' title='untouched'>";
+                var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
+                var window = new EditorWindow(preferences, document);
+                App.Instance.Windows.Add(window); window.Activate();
+                var pane = window.ActivePane!; var view = await pane.Ready;
+                try
+                {
+                    view.Zoom(1);
+                    for (int i = 0; i < 200 && (pane.LocalImagePreviewCount == 0 || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+                    Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0,
+                        "an HTML image uses the existing relative local raster loader: " + attributes);
+                    view.Resize(650, 500);
+                    var image = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
+                    Check(document.FormattedText() == "\uFFFC" && Math.Abs(image.typographic_bounds.width - width) < .01
+                        && Math.Abs(image.typographic_bounds.height - height) < .01,
+                        "HTML image dimensions scale, preserve one-sided proportions, and obey the display cap: " + attributes);
+                    Check(view.Provider.ImageDestination(image.render_run) == "sized.bmp",
+                        "HTML images expose the decoded source to existing native image controls");
+                    view.SetMarkdownSource(true);
+                    Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                        "HTML dimensions and unrelated attributes survive native image loading and Source view: " + attributes);
+                }
+                finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+            }
+        }
+        finally { Directory.Delete(directory, recursive: true); }
     }
 
     private static void WriteBitmap(string path, int width, int height)

@@ -125,6 +125,92 @@ final class EVImageTests: XCTestCase {
         XCTAssertTrue(surface.imagePopover.isOpen)
     }
 
+    func testHTMLImageDimensionsUseLocalRasterAndPaintTheirLayoutRectangle() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-html-image-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: file) }
+        let context = try XCTUnwrap(CGContext(data: nil, width: 120, height: 60, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(try XCTUnwrap(CGColor(colorSpace: CGColorSpaceCreateDeviceRGB(), components: [1, 0, 0, 1])))
+        context.fill(CGRect(x: 0, y: 0, width: 120, height: 60))
+        let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(writer))
+
+        for (attributes, width, height) in [
+            ("width='240'", Float(240), Float(120)),
+            ("height='160'", Float(320), Float(160)),
+            ("width='80' height='180'", Float(80), Float(180)),
+            ("width='1024' height='2048'", Float(512), Float(1024)),
+        ] {
+            let source = "<img src='\(file.path)' \(attributes) alt='preserved' title='untouched'>"
+            let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+            defer { surface.imagePopover.close(); window.close() }
+            XCTAssertEqual(try backend.formattedText(), "\u{FFFC}")
+            let registry = try XCTUnwrap(surface.session?.provider.renderRegistry)
+            func painted(_ image: ViemPositionedClusterV1, width: Int, height: Int) throws -> NSBitmapImageRep {
+                let canvas = try XCTUnwrap(CGContext(data: nil, width: width + 4, height: height + 4,
+                    bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                XCTAssertTrue(registry.drawInlineImage(identifier: image.render_run.identifier,
+                    metricsGeneration: image.render_run.metrics_generation,
+                    in: CGRect(x: 2, y: 2, width: width, height: height),
+                    color: CGColor(gray: 0, alpha: 1), context: canvas))
+                return NSBitmapImageRep(cgImage: try XCTUnwrap(canvas.makeImage()))
+            }
+            func isRed(_ bitmap: NSBitmapImageRep, x: Int, y: Int) -> Bool {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                return color.redComponent > 0.95 && color.greenComponent < 0.05 && color.alphaComponent > 0.95
+            }
+            let deadline = Date(timeIntervalSinceNow: 5)
+            var loaded = false
+            while Date() < deadline {
+                if let image = surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster) {
+                    loaded = isRed(try painted(image, width: 4, height: 4), x: 3, y: 3)
+                    if loaded { break }
+                }
+                RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+            }
+            XCTAssertTrue(loaded, "The HTML image must reach the existing local raster provider")
+            let image = try XCTUnwrap(surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster))
+            XCTAssertEqual(image.advance, width, accuracy: 0.01, attributes)
+            XCTAssertEqual(image.typographic_bounds.width, width, accuracy: 0.01, attributes)
+            XCTAssertEqual(image.typographic_bounds.height, height, accuracy: 0.01, attributes)
+            XCTAssertLessThanOrEqual(image.advance, Float(surface.editorView.textViewportRect.width))
+            let bitmap = try painted(image, width: Int(image.typographic_bounds.width), height: Int(image.typographic_bounds.height))
+            XCTAssertTrue(isRed(bitmap, x: 3, y: 3))
+            XCTAssertTrue(isRed(bitmap, x: Int(width), y: Int(height)), "The raster fills both authored dimensions")
+            XCTAssertEqual(bitmap.colorAt(x: 0, y: 0)?.alphaComponent, 0, "Painting remains inside the final image rectangle")
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+            XCTAssertFalse(backend.persistenceState.isDirty)
+        }
+    }
+
+    func testRemoteHTMLImageUsesExistingPopupAndPreservesAttributes() throws {
+        let source = "before <img src='https://example.invalid/photo.png' width='240' height='120' alt='A picture' title='Original'> after"
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let (backend, surface, window) = try editor(source, type: type)
+            defer { surface.imagePopover.close(); window.close() }
+            if type == EVDocument.markdownType {
+                XCTAssertEqual(try backend.formattedText(), "before \u{FFFC} after")
+                let image = try XCTUnwrap(surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster))
+                XCTAssertEqual(image.advance, 240, accuracy: 0.01)
+                XCTAssertEqual(image.typographic_bounds.height, 120, accuracy: 0.01)
+            }
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
+            surface.imagePopover.refresh()
+            XCTAssertTrue(surface.imagePopover.isOpen)
+            XCTAssertEqual(surface.imagePopover.reloadButton.isHidden, type == EVDocument.markdownSourceType)
+            XCTAssertFalse(surface.imagePopover.reloadButton.isEnabled)
+            var opened: [URL] = []
+            surface.editorView.openLinkURL = { url, completion in opened.append(url); completion(nil) }
+            XCTAssertTrue(opened.isEmpty)
+            surface.imagePopover.destinationButton.performClick(nil)
+            XCTAssertEqual(opened.map(\.absoluteString), ["https://example.invalid/photo.png"])
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            XCTAssertFalse(backend.persistenceState.isDirty)
+        }
+    }
+
     func testSelectedImageCopiesPortableFallbackAndNativeBackspaceIsUndoable() throws {
         let source = "![alt](<local.png>)"
         let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)

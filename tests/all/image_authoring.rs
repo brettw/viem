@@ -9,6 +9,156 @@ fn apply(doc: &mut Document, intent: ImageEditIntent) {
     doc.commit_model_transaction(edit).unwrap();
 }
 #[test]
+fn html_image_location_edits_preserve_dimensions_and_other_attribute_bytes() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for (source, expected) in [
+            ("before <IMG width='0240' SRC = 'old.png' height=80 alt='a &amp; b' title=kept data-extra='x'> after",
+             "before <IMG width='0240' SRC = \"new file.png?a=1&amp;b=2\" height=80 alt='a &amp; b' title=kept data-extra='x'> after"),
+            ("<div><img src=old.png width=240 height='80' title='kept'></div>",
+             "<div><img src=\"new file.png?a=1&amp;b=2\" width=240 height='80' title='kept'></div>"),
+            ("<img\n  width='240'\n  src=old.png\n  height=80 />",
+             "<img\n  width='240'\n  src=\"new file.png?a=1&amp;b=2\"\n  height=80 />"),
+        ] {
+            let mut doc = document(source, format);
+            let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).remove(0);
+            let snapshot = doc.image_snapshot_at(doc.text_point(image.range.start).unwrap()).unwrap().unwrap();
+            apply(&mut doc, ImageEditIntent::Edit { range: snapshot.range, text: snapshot.text, destination: "new file.png?a=1&b=2".into() });
+            assert_eq!(doc.source_bytes(), expected.as_bytes(), "{format:?}: {source}");
+            let reopened = document(expected, format);
+            assert_eq!(doc.text(), reopened.text());
+            assert_eq!(doc.projection().inline_images_for_region(&(0..doc.text().len())), reopened.projection().inline_images_for_region(&(0..reopened.text().len())));
+            assert!(doc.undo());
+            assert_eq!(doc.source_bytes(), source.as_bytes());
+            assert!(doc.redo());
+            assert_eq!(doc.source_bytes(), expected.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn html_image_existing_alt_controls_keep_html_and_dimensions() {
+    for (source, expected) in [
+        ("a <img src=old.png width=120> z", "a <img alt=\"a &lt;cat&gt; &amp; &quot;dog&quot;\" src=old.png width=120> z"),
+        ("a <img alt src=old.png height=60> z", "a <img alt=\"a &lt;cat&gt; &amp; &quot;dog&quot;\" src=old.png height=60> z"),
+        ("a <img alt='old' src=old.png width=120 height=60/> z", "a <img alt=\"a &lt;cat&gt; &amp; &quot;dog&quot;\" src=old.png width=120 height=60/> z"),
+    ] {
+        let mut doc = document(source, Format::Markdown);
+        let image = doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
+        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: "a <cat> & \"dog\"".into(), destination: image.destination });
+        assert_eq!(doc.source_bytes(), expected.as_bytes());
+        assert_eq!(doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap().text, "a <cat> & \"dog\"");
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn html_image_removal_and_normal_delete_restore_exact_source_on_undo() {
+    use viem_core::command::InputEvent;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for source in ["a <img src='cat.png' width=240 height=80> z", "<div>a <img src='cat.png' width=240 height=80> z</div>"] {
+        let mut doc = document(source, Format::Markdown);
+        let image = doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
+        apply(&mut doc, ImageEditIntent::Remove { range: image.range });
+        assert_eq!(doc.text(), "a  z");
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        let mut core = Core::new(doc);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        core.handle(view, CoreEvent::Input(InputEvent::text("llx"))).unwrap();
+        assert_eq!(core.document().text(), "a  z");
+        core.handle(view, CoreEvent::Input(InputEvent::text("u"))).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn html_image_location_edits_copy_untouched_encoded_and_malformed_attributes() {
+    for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+        let encode = |value: &str| match encoding {
+            Encoding::Utf8 => value.as_bytes().to_vec(),
+            Encoding::Latin1 => value.chars().map(|ch| ch as u8).collect(),
+            Encoding::Utf16Le => value.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+            Encoding::Utf16Be => value.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+        };
+        let mut prefix = encode("a <img width='240' title='café ");
+        prefix.extend(match encoding {
+            Encoding::Utf8 => vec![0xff],
+            Encoding::Latin1 => vec![0xfe],
+            Encoding::Utf16Le => vec![0, 0xd8],
+            Encoding::Utf16Be => vec![0xd8, 0],
+        });
+        prefix.extend(encode("' src="));
+        let suffix = encode(" height=80> z");
+        let mut original = prefix.clone();
+        original.extend(encode("'old.png'"));
+        original.extend(&suffix);
+        let mut doc = Document::from_bytes(original.clone(), encoding, Format::Markdown).unwrap();
+        let image = doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
+        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into() });
+        let mut expected = prefix;
+        expected.extend(encode("\"new.png\""));
+        expected.extend(suffix);
+        assert_eq!(doc.source_bytes(), expected, "{encoding:?}");
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), original);
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), expected);
+    }
+}
+
+#[test]
+fn html_image_private_clipboard_retains_authored_dimensions() {
+    use viem_core::command::clipboard::{ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot, ClipboardTarget};
+    use viem_core::command::{InputEvent, Key, RegisterValue};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let tag = "<img src='cat.png' alt='cat' width='240' height=80 title='kept'>";
+    let doc = document(&format!("before {tag} after"), Format::Markdown);
+    let fragment = doc.clipboard_fragment(7..10).unwrap();
+    let content = ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap());
+    assert_eq!(content.plain_text(), "![cat](<cat.png>)");
+    let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(ClipboardTarget::Clipboard, ClipboardGeneration(1), content));
+    let mut core = Core::new(document("", Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+    for input in [InputEvent::key('i'), InputEvent::Key(Key::Ctrl('r')), InputEvent::key('+'), InputEvent::Key(Key::Escape)] {
+        core.handle(view, CoreEvent::InputWithClipboard { input, clipboard: context.clone() }).unwrap();
+    }
+    assert_eq!(core.document().source_bytes(), tag.as_bytes());
+    let images = core.document().projection().inline_images_for_region(&(0..3));
+    assert_eq!((images[0].width, images[0].height), (Some(240), Some(80)));
+    core.handle(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+    assert!(core.document().source_bytes().is_empty());
+}
+
+#[test]
+fn html_image_location_edits_preserve_multiline_quote_owners_and_endings() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
+            for source in [
+                "> <img\n> src='old.png'\n> width=240\n> height=80>",
+                "> > <img\n> > src='old.png'\n> > width=240\n> > height=80>",
+                "> <img src=\n> 'old.png' width=240 height=80>",
+                "> <img alt='a\n> cat' src='old.png' width=240 height=80>",
+                "> before <img\n> src='old.png'\n> width=240 height=80> after",
+            ] {
+                let original = source.replace('\n', ending);
+                let mut doc = Document::from_bytes_with_file_format(original.as_bytes().to_vec(), Encoding::Utf8, format, file_format).unwrap();
+                let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).into_iter().next()
+                    .unwrap_or_else(|| panic!("missing image {format:?} {file_format:?}: {source}"));
+                let (edit, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into() })
+                    .unwrap_or_else(|error| panic!("{format:?} {file_format:?}: {source}: {error:?}"));
+                doc.commit_model_transaction(edit).unwrap();
+                assert_eq!(doc.source_bytes(), original.replace("'old.png'", "\"new.png\"").as_bytes(), "{format:?} {file_format:?}: {source}");
+                assert!(doc.undo());
+                assert_eq!(doc.source_bytes(), original.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
 fn images_are_atomic_and_source_remains_literal_without_loading_resources() {
     let source = "before ![a **bold** cat](https://never-fetch.invalid/cat.png \"title\") after";
     let rich = document(source, Format::Markdown);
@@ -568,4 +718,34 @@ fn dragging_from_a_selected_image_retains_the_whole_origin_object() {
         );
     }
     assert_eq!(core.document().source_bytes(), b"A![cat](image.png)BC");
+}
+
+#[test]
+fn prose_edits_near_html_images_keep_projection_work_bounded_as_documents_grow() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for paragraphs in [10, 10_000] {
+            let source = format!(
+                "before <img src='cat.png' width=240 height=80> after\n\n{}",
+                "untouched paragraph\n\n".repeat(paragraphs),
+            );
+            let mut doc = document(&source, format);
+            let tail = doc.projection().hard_line_id(doc.line_count() - 1);
+            let prepared = doc.prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: doc.id(), revision: doc.revision(),
+                edits: vec![TextEdit::new(3..3, "x")],
+            }).unwrap();
+            let work = prepared.summary().projection_work();
+            assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines, "{format:?}: {work:?}");
+            assert!(work.decoded_source_bytes() < 1024, "{format:?}: {work:?}");
+            assert_eq!(work.full_text_bytes_materialized(), 0, "{format:?}: {work:?}");
+            doc.commit_model_transaction(prepared).unwrap();
+            assert_eq!(doc.projection().hard_line_id(doc.line_count() - 1), tail);
+            let fresh = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, format).unwrap();
+            assert_eq!(doc.text(), fresh.text());
+            let range = 0..doc.text().len();
+            assert_eq!(doc.projection().inline_images_for_region(&range), fresh.projection().inline_images_for_region(&range));
+            assert!(doc.undo());
+            assert_eq!(doc.source_bytes(), source.as_bytes());
+        }
+    }
 }

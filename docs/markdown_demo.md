@@ -212,6 +212,16 @@ The third uses underscores.
 
 Inline HTML supports <b>bold</b>, <em>emphasis</em>, <del>deleted text</del>, <code>code</code>, <kbd>keyboard text</kbd>, and <u>underlined text</u>.
 
+HTML images use the same local previews and remote location placeholders as
+Markdown images. A width or height alone preserves the image's proportions;
+both dimensions specify its shape. All images still fit the content width and
+the 1024-pixel display cap. Dimensions remain in the source when editing the
+image location.
+
+<img src="Word style.png" width="240" alt="Local image with proportional height">
+
+<img src="Word style.png" width="240" height="160" title="Preserved source attribute">
+
 A visible <!-- inline comment --> uses the Comment character style.
 
 <!-- A standalone comment remains visible and editable in Viem. -->

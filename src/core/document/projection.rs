@@ -289,9 +289,12 @@ pub struct InlineImage {
     pub range: Range<usize>,
     pub text: String,
     pub destination: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub source_view: bool,
     pub(super) source: Range<usize>,
     pub(super) inline: bool,
+    pub(super) html: bool,
 }
 impl RangedItem for InlineImage {
     fn range(&self) -> &Range<usize> { &self.range }
@@ -1552,6 +1555,9 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
+    pub(super) fn install_inline_images(&mut self, images: Vec<InlineImage>) {
+        self.inline_images = IntervalRangeStore::new(images);
+    }
     /// Indexed region query; does not scan or materialize unrelated images.
     pub fn inline_images_for_region(&self, range: &Range<usize>) -> Vec<InlineImage> {
         self.inline_images.query_overlapping(range)
@@ -1599,6 +1605,7 @@ impl FormattedDocument {
                     use pulldown_cmark::{Event, Options, Parser};
                     Parser::new_ext(&body, Options::ENABLE_STRIKETHROUGH).all(|event| match event {
                         Event::Text(text) | Event::Code(text) => only_images(&text),
+                        Event::Html(text) | Event::InlineHtml(text) => markdown_html::image_only_html(&text),
                         Event::Start(_) | Event::End(_) | Event::SoftBreak | Event::HardBreak => true,
                         _ => false,
                     })
@@ -5489,20 +5496,67 @@ fn project_markdown(
         // Source physical rows retain bytes, but image context spans a whole
         // soft-wrapped construct. Replace only that paragraph's image metadata.
         let mut images = projected.inline_images.to_vec();
+        let mut opaque_html_ranges = Vec::new();
         for flow in &flows {
             if !cooked.text[flow.clone()].contains('\n') || projected.blocks_for_region(flow).iter().any(|block| block.style.0 == "Code Block") { continue; }
-            for inline in super::markdown_syntax::inlines(&cooked.text, flow.clone(), &definitions).into_values() {
-                if let super::markdown_syntax::InlineKind::Image { destination, text, inline: is_inline } = inline.kind {
-                    if !cooked.text[inline.range.clone()].contains('\n') { continue; }
-                    let begin=cooked.units.partition_point(|unit|unit.normalized.end<=inline.range.start);
-                    let end=cooked.units.partition_point(|unit|unit.normalized.start<inline.range.end);
-                    if begin>=end {continue;}
+            let mut inlines = super::markdown_syntax::inlines(&cooked.text, flow.clone(), &definitions);
+            let excluded = markdown_html::quote_prefix_ranges(&cooked.text, &cooked.units, flow, &quote_context);
+            if !excluded.is_empty() {
+                let removed = super::html::without_ranges(&cooked.text[flow.clone()], &excluded);
+                inlines.retain(|_, inline| !matches!(inline.kind, super::markdown_syntax::InlineKind::Html));
+                for mut inline in super::markdown_syntax::inlines(&removed.text, 0..removed.text.len(), &definitions).into_values()
+                    .filter(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html)) {
+                    let range = removed.original_range(inline.range);
+                    inline.range = flow.start + range.start..flow.start + range.end;
+                    inline.inner = inline.range.clone();
+                    inlines.insert(inline.range.start, inline);
+                }
+            }
+            let has_html_image = projected.inline_images_for_region(flow).iter().any(|image| image.html)
+                || inlines.values().any(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html)
+                    && cooked.text[inline.range.clone()].get(..4).is_some_and(|prefix| prefix.eq_ignore_ascii_case("<img")));
+            let html_tokens = if has_html_image {
+                // Only grammar-recognized inline HTML can open a raw-text
+                // scope. A literal `<script>` in a code span must not hide a
+                // later image. Keep tag contents intact for attribute values.
+                let html_ranges: Vec<_> = inlines.values().filter(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html))
+                    .map(|inline| inline.range.clone()).collect();
+                let mut lexical = cooked.text[flow.clone()].as_bytes().to_vec();
+                let mut index = 0;
+                for (offset, byte) in lexical.iter_mut().enumerate().filter(|(_, byte)| **byte == b'<') {
+                    let at = flow.start + offset;
+                    while index < html_ranges.len() && html_ranges[index].end <= at { index += 1; }
+                    if !html_ranges.get(index).is_some_and(|range| range.contains(&at)) { *byte = b' '; }
+                }
+                super::html::tokenize_without_ranges(std::str::from_utf8(&lexical).unwrap(), &excluded)
+            } else { Vec::new() };
+            opaque_html_ranges.extend(html_tokens.iter().filter_map(|token| matches!(token.kind, super::html::TokenKind::Opaque)
+                .then_some(flow.start + token.range.start..flow.start + token.range.end)));
+            for inline in inlines.into_values() {
+                if !cooked.text[inline.range.clone()].contains('\n') { continue; }
+                let begin=cooked.units.partition_point(|unit|unit.normalized.end<=inline.range.start);
+                let end=cooked.units.partition_point(|unit|unit.normalized.start<inline.range.end);
+                if begin>=end {continue;}
+                let source=cooked.units[begin].source.start..cooked.units[end-1].source.end;
+                let image = if let super::markdown_syntax::InlineKind::Image { destination, text, inline: is_inline } = inline.kind {
+                    Some(InlineImage {range:inline.range.clone(),text,destination,source_view:true,
+                        source,inline:is_inline,width:None,height:None,html:false})
+                } else if matches!(inline.kind, super::markdown_syntax::InlineKind::Html) {
+                    html_tokens.get(html_tokens.partition_point(|token| flow.start + token.range.start < inline.range.start))
+                    .filter(|token| flow.start + token.range.start == inline.range.start && flow.start + token.range.end == inline.range.end).and_then(|token| {
+                        let super::html::TokenKind::Tag(tag) = &token.kind else { return None; };
+                        super::html::image_metadata(tag, inline.range.clone(), source, true)
+                    })
+                } else { None };
+                if let Some(image) = image {
+                    if image.html && !syntax.recognizes_inline_html(&image.source) { continue; }
                     images.retain(|image| image.range.end<=inline.range.start || inline.range.end<=image.range.start);
-                    images.push(InlineImage {range:inline.range,text,destination,source_view:true,
-                        source:cooked.units[begin].source.start..cooked.units[end-1].source.end,inline:is_inline});
+                    images.push(image);
                 }
             }
         }
+        images.retain(|image| !image.html || !opaque_html_ranges.get(opaque_html_ranges.partition_point(|range| range.end <= image.range.start))
+            .is_some_and(|range| range.start <= image.range.start && image.range.end <= range.end));
         images.sort_by_key(|image|image.range.start);
         projected.inline_images=IntervalRangeStore::new(images);
 
@@ -5617,6 +5671,7 @@ fn project_markdown_lines(
         &normalized.units,
         normalized.encoding,
         revision,
+        syntax,
     );
     builder.preserve_markers = preserve_markers;
     builder.reference_definitions = definitions.to_owned();
@@ -5752,16 +5807,24 @@ fn project_markdown_lines(
             let first = line_index;
             while input_lines.get(line_index + 1).is_some_and(|next| builder.unit_at(next.start).is_some_and(|unit| unit.source.start < html.range.end)) { line_index += 1; }
             let range = input_lines[first].start..input_lines[line_index].end;
-            if preserve_markers || normalized.text[range.clone()].starts_with("<!--") || normalized.text[range.clone()].to_ascii_lowercase().contains("<table") {
+            let contains_table = markdown_html::contains_table(&normalized.text[range.clone()]);
+            if preserve_markers || normalized.text[range.clone()].starts_with("<!--") || contains_table {
                 builder.emit_range(range.start, range.end);
+                if preserve_markers && !contains_table {
+                    builder.source_html_images(range.clone(), output_start, quote_context);
+                }
                 for ending in normalized.endings.iter().filter(|ending| range.contains(&ending.normalized.start)) {
                     hard_breaks.push(output_start + ending.normalized.start - range.start);
                 }
                 builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
+                builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
                 if normalized.text[range.clone()].starts_with("<!--") && output_start < builder.output.len() {
                     builder.styles.push(StyleSpan { range: output_start..builder.output.len(), application: StyleApplication::Automatic("Comment".into()) });
                 }
             } else {
+                // The grammar's HTML range begins after an enclosing list
+                // marker; that source prefix remains a list decoration.
+                let range = normalized_at(html.range.start).max(range.start)..range.end;
                 let fragment = markdown_html::block(normalized, range, revision);
                 builder.output.push_str(fragment.text());
                 builder.blocks.extend(fragment.blocks().iter().cloned().map(|mut block| {
@@ -5769,6 +5832,9 @@ fn project_markdown_lines(
                     block.kind = presented_kind(block.kind.clone()); block.quote_depth = quote_depth; block.markdown_html = true; block
                 }));
                 builder.styles.extend(fragment.style_spans().iter().cloned().map(|mut span| { span.range = span.range.start + output_start..span.range.end + output_start; span }));
+                builder.inline_images.extend(fragment.inline_images_for_region(&(0..fragment.text().len())).into_iter().map(|mut image| {
+                    image.range = image.range.start + output_start..image.range.end + output_start; image
+                }));
                 builder.provenance.extend(fragment.provenance().iter().cloned().map(|mut span| { span.formatted = span.formatted.start + output_start..span.formatted.end + output_start; span }));
                 for index in 0..fragment.hard_line_count().saturating_sub(1) { hard_breaks.push(output_start + fragment.hard_line_range(index).unwrap().end); }
             }
@@ -5959,6 +6025,21 @@ fn project_markdown_lines(
             builder.emit_range(content_start, content_end);
             if start < builder.output.len() { builder.styles.push(StyleSpan { range: start..builder.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) }); }
         } else {
+            if quoted && list.is_some() {
+                let limit = containers.iter().map(|container| normalized_at(container.range.end)).min().unwrap_or(content_end);
+                let mut start = content_start;
+                while let Some(mut image) = builder.multiline_image(start, content_end, limit, quote_context) {
+                    let last = image.range.end;
+                    if preserve_markers {
+                        image.range = output_start + image.range.start - line.start..output_start + last - line.start;
+                        builder.inline_images.push(image);
+                        break;
+                    }
+                    while input_lines.get(line_index + 1).is_some_and(|next| next.start < last) { line_index += 1; }
+                    content_end = input_lines[line_index].end;
+                    start = last;
+                }
+            }
             builder.parse_inline(content_start, content_end);
         }
         if preserve_markers { builder.emit_range(content_end, line.end); }
@@ -6114,8 +6195,10 @@ struct MarkdownBuilder<'a> {
     in_table: bool,
     preserve_markers: bool,
     html_stack: Vec<(String, usize, StyleApplication)>,
+    html_raw_text: Option<String>,
     inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
     reference_definitions: String,
+    source_syntax: &'a super::markdown_syntax::Blocks,
     source_text: &'a str,
     units: &'a [LogicalUnit],
     output: String,
@@ -6135,13 +6218,16 @@ impl<'a> MarkdownBuilder<'a> {
         units: &'a [LogicalUnit],
         encoding: super::Encoding,
         revision: Revision,
+        source_syntax: &'a super::markdown_syntax::Blocks,
     ) -> Self {
         Self {
             preserve_markers: false,
             in_table: false,
             html_stack: Vec::new(),
+            html_raw_text: None,
             inline_syntax: Default::default(),
             reference_definitions: String::new(),
+            source_syntax,
             source_text,
             units,
             output: String::new(),
@@ -6157,6 +6243,7 @@ impl<'a> MarkdownBuilder<'a> {
     }
 
     fn parse_inline(&mut self, start: usize, end: usize) {
+        self.html_raw_text = None;
         self.inline_syntax = super::markdown_syntax::inlines(self.source_text, start..end, &self.reference_definitions);
         let first_style = self.styles.len();
         self.parse_inline_depth(start, end, 0);
@@ -6210,7 +6297,8 @@ impl<'a> MarkdownBuilder<'a> {
                             self.provenance.push(ProvenanceSpan { formatted: output..self.output.len(), source: source.clone() });
                         }
                         self.inline_images.push(InlineImage { range: output..self.output.len(), text, destination,
-                            source_view: self.preserve_markers, source, inline: is_inline });
+                            source_view: self.preserve_markers, source, inline: is_inline,
+                            width: None, height: None, html: false });
                     }
                     InlineKind::Reference => {
                         self.emit_range(at, inline.range.end);
