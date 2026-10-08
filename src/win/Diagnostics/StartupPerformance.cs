@@ -48,10 +48,14 @@ internal static class StartupPerformance
         double processMilliseconds = (DateTime.Now - process.StartTime).TotalMilliseconds;
         bool fontPickerListLoaded = Rendering.FontCatalog.FamilyListLoaded;
         int fontFaceDescriptionsRead = Rendering.FontCatalog.FaceDescriptionsRead;
+        int bundledFontFilesLoaded = Rendering.FontCatalog.BundledFileCount;
+        int installedFontDesignsUsed = Rendering.FontCatalog.InstalledDesignCount;
+        int installedFontCandidatesChecked = Rendering.FontCatalog.InstalledCandidatesChecked;
         dispatcher.TryEnqueue(DispatcherQueuePriority.Low, async () => {
             await Task.Delay(1000);
             completed = true;
             File.WriteAllText(report, JsonSerializer.Serialize(new TraceReport(processMilliseconds, fontPickerListLoaded, fontFaceDescriptionsRead,
+                bundledFontFilesLoaded, installedFontDesignsUsed, installedFontCandidatesChecked,
                 !RuntimeFeature.IsDynamicCodeSupported, events, frames), StartupJsonContext.Default.TraceReport));
             if (Environment.GetEnvironmentVariable("VIEM_STARTUP_EXIT") == "1") App.Instance.Exit();
         });
@@ -69,7 +73,7 @@ internal static class StartupPerformance
         ulong revision, ulong configuration, long shaped, long fontMetadataReads, long glyphBoundsQueries, long glyphBoundsHits);
     internal sealed record Frame(double milliseconds, Geometry geometry);
     internal sealed record TraceReport(double processMilliseconds, bool fontPickerListLoaded, int fontFaceDescriptionsRead,
-        bool nativeAot, ConcurrentQueue<TraceEvent> events, List<Frame> frames);
+        int bundledFontFilesLoaded, int installedFontDesignsUsed, int installedFontCandidatesChecked, bool nativeAot, ConcurrentQueue<TraceEvent> events, List<Frame> frames);
     internal sealed record Failure(string error, ConcurrentQueue<TraceEvent> events);
 }
 

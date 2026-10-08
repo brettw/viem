@@ -80,9 +80,11 @@ It does not install file associations or an application package.
 Both build and publish also copy [`assets/fonts`](../../assets/fonts/README.md)
 to `Resources/fonts`, retaining the original fonts, licenses and attribution.
 The font picker includes these app-local families and variants alongside system
-fonts. DirectWrite resolves bundled files relative to the executable, including
-in previews and whitespace markers; saved styles retain portable font names.
-No systemwide font installation is required.
+fonts. Matching installed variable designs are reused after checking their
+original identity and variable-font metadata; other designs continue to resolve
+bundled files relative to the executable. Both paths retain the same portable
+names, presets, and separate italic designs in rendering, previews, and whitespace
+markers. No systemwide font installation is required.
 
 The first build restores the locked Cargo/NuGet dependencies. After restoration,
 `-Offline` uses cached dependencies and skips NuGet restore. If compiling native
@@ -254,8 +256,10 @@ The default scenario is `drag`.
 
 To measure empty-editor startup, run `scripts/test-win-startup.ps1` (add
 `-NoBuild` to reuse the Release build). It launches three separate processes
-with isolated empty profiles, checks that startup loads no font-picker lists
-or face descriptions, and writes JSON traces under `target/windows-validation`.
+with isolated empty profiles, checks that startup loads no font-picker lists,
+and writes JSON traces under `target/windows-validation`. Targeted face metadata
+for the active theme is allowed even for an empty document and is reported along
+with installed-design and bundled-file counts.
 `-Runs` changes the launch count. Timings end at the first editor draw callback;
 they measure elapsed startup time, not physical display presentation or a cold boot.
 Use `-ProfileDocument <path>` for a real command-line file open, `-ConfigFile
@@ -267,6 +271,11 @@ document and layout phases plus JIT CPU time; overlapping scopes are not additiv
 style defaults into each isolated test profile, leaving the original untouched.
 Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
+Set `VIEM_FORCE_BUNDLED_FONTS=1` to exercise the bundled fallback even when matching
+fonts are installed. This works in Release for startup comparisons and with
+`VIEM_TEST_STYLES_ONLY=variable` for the native font/preset/inspector regressions.
+Run both modes in fresh processes, preserve matching settings and document bytes,
+and include the installed-font check in measurements of the optimized path.
 Keep local measurement output under `target/windows-validation`; record the
 build, settings, document bytes and viewport when comparing runs. See the
 [measurement guide](../../docs/performance.md) for scope and interpretation.

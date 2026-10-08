@@ -23,12 +23,16 @@ internal static class StyleAndSettingsTests
     { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
     internal static void StartupFontChecks()
     {
-        Check(!FontCatalog.FamilyListLoaded && FontCatalog.FaceDescriptionsRead == 0,
-            "empty editor starts without loading font picker lists or enumerating font faces");
-        Check(FontCatalog.Resolve("system-ui")?.Family == "Segoe UI" && FontCatalog.Resolve("Segoe UI")?.Family == "Segoe UI",
-            "Windows default and generic system fonts resolve to Segoe UI");
+        // A theme can request a variable face even in an empty document. Its
+        // targeted metadata lookup is valid startup work; generic and missing
+        // family lookups must not enumerate any additional face descriptions.
+        int descriptions = FontCatalog.FaceDescriptionsRead;
+        Check(!FontCatalog.FamilyListLoaded, "empty editor starts without loading font picker lists");
+        Check(FontCatalog.Resolve("system-ui")?.Family == "Segoe UI" && FontCatalog.Resolve("Segoe UI")?.Family == "Segoe UI"
+            && FontCatalog.FaceDescriptionsRead == descriptions && !FontCatalog.FamilyListLoaded,
+            "Windows default and generic system fonts resolve to Segoe UI without reading face descriptions");
         Check(FontCatalog.Resolve("viem-missing-startup-font") == null
-            && FontCatalog.FaceDescriptionsRead == 0 && !FontCatalog.FamilyListLoaded,
+            && FontCatalog.FaceDescriptionsRead == descriptions && !FontCatalog.FamilyListLoaded,
             "missing document fonts do not trigger a system-wide face scan");
     }
     private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
@@ -54,7 +58,10 @@ internal static class StyleAndSettingsTests
         Check(styles.FontFamilyControl.ActualHeight is > 0 and <= 28 && window.Menu.ActualHeight <= 32,
             $"compact resources reach editor menus and inspector controls ({window.Menu.ActualHeight}, {styles.FontFamilyControl.ActualHeight})");
         Check(Children<TextBox>(styles.FontFamilyControl).Any(t => t.Text == styles.FontFamilyControl.Text && t.Text.Length > 0), "style font is visible in the native editable picker on first opening");
-        Check(styles.FontFamilyControl.Text == "System Default", "the default theme style displays the portable System Default font in the picker");
+        var configuredStyles = styles.ThemeView.Styles();
+        var baseParagraph = configuredStyles.Styles.Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+        string configuredFamily = configuredStyles.StringList(baseParagraph.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).First();
+        Check(styles.FontFamilyControl.Text == FontCatalog.DisplayFamily(configuredFamily), "the font picker displays the configured Base Paragraph family");
         bool sfProInstalled = FontCatalog.Families.Contains("SF Pro", StringComparer.OrdinalIgnoreCase);
         Check(sfProInstalled ? FontCatalog.Resolve("SF Pro")?.Family == "SF Pro" : FontCatalog.Resolve("SF Pro") == null && FontCatalog.Faces("SF Pro").Length == 0,
             "SF Pro resolves only when installed and never aliases Segoe UI");
@@ -294,7 +301,7 @@ internal static class StyleAndSettingsTests
             preferences.SetSections(new() { ["theme"] = json }); window.Activate(); pane.FocusEditor();
         }
     }
-    private static async Task FontChecks(EditorPane pane, Preferences preferences)
+    internal static async Task FontChecks(EditorPane pane, Preferences preferences)
     {
         Check(FontCatalog.Families.SequenceEqual(FontCatalog.Families.OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase)), "font family menus use culture-aware alphabetical order");
         var faces = FontCatalog.Faces("Segoe UI");
@@ -345,7 +352,7 @@ internal static class StyleAndSettingsTests
             var regular = faces.First(f => f.Weight == 400 && f.Slant == FontStyle.Normal);
             inspector.FontVariantControl.SelectedItem = regular; await Task.Delay(100);
             sheet = inspector.ThemeView.Styles(); style = sheet.Styles.Single(s => s.Id == id);
-            Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { regular.Name, "serif" })
+            Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { regular.PortableFamily, "serif" })
                 && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value == 0, "choosing a variant in the native picker applies its traits and preserves fallbacks");
             inspector.ThemeView.EditStyle(style, VIEM_STYLE_EDIT_CLEAR_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, default); inspector.RefreshForTesting();
             Check(inspector.FontFamilyControl.Text.Length == 0 && !inspector.FontFamilyControl.IsEnabled, "inherited font fields are empty until overridden");
@@ -400,29 +407,28 @@ internal static class StyleAndSettingsTests
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var style = view.Styles().Styles.Single(s => s.Id == "Code");
         view.SelectAll(); view.AssignStyle(2, "Code");
+        byte[] sourceAfterCodeAssignment = doc.Source(doc.State.document_revision);
         int count = 0;
         foreach (string family in families)
         {
-            Check(FontCatalog.Families.Contains(family), $"bundled {family} appears in the font picker");
+            Check(FontCatalog.Families.Contains(family), $"{family} appears in the font picker");
             var faces = FontCatalog.Faces(family);
-            Check(faces.Any(f => f.Slant == FontStyle.Normal) && faces.Any(f => f.Slant == FontStyle.Italic), $"bundled {family} exposes both variable designs");
+            Check(faces.Length == 2 && faces.Any(f => f.Slant == FontStyle.Normal) && faces.Any(f => f.Slant == FontStyle.Italic), $"{family} exposes exactly its two variable designs");
             foreach (var face in faces)
             {
-                Check(face.Source is { IsFile: true } && File.Exists(face.Source.LocalPath), $"{face.Name} resolves to a bundled file");
-                string rendering = FontCatalog.RenderingFamily(face.Family, face.Weight, face.Slant, face.Stretch);
-                Check(rendering == face.Source!.AbsoluteUri + "#" + face.Family, $"{face.Name} selects its bundled variant file");
+                VariableFontTests.SourceChecks(face, "flightline/FlightlineCode-" + (face.Slant == FontStyle.Normal ? "Regular" : "Italic") + "-VF.ttf");
                 view.EditStyleFont(style, [face.PortableFamily, "serif"], face);
                 style = view.Styles().Styles.Single(s => s.Id == "Code");
                 var layout = view.Layout();
                 Check(layout.Clusters.SelectMany(c => view.Provider.RenderedFontNames(c.render_run.identifier)).Contains(face.Name),
-                    $"DirectWrite shapes {face.Name} from app-local resources");
+                    $"DirectWrite shapes the original {face.Name} design");
                 count++;
             }
         }
-        Check(count > 0, "all native bundled Flightline variable faces render through the provider");
+        Check(count == 2, "both native Flightline variable designs render through the provider");
         VariableFontTests.FlightlineFontChecks(pane);
         VariableFontTests.RecursiveFontChecks(pane);
-        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual("Writing 0123"u8), "bundled font selection preserves document source");
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(sourceAfterCodeAssignment), "font selection preserves source after the explicit Code-style assignment");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),
             "saved font styles contain portable names rather than resource URIs");
     }
