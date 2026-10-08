@@ -8,7 +8,7 @@ fn gfm_inline_recognition_and_literal_references() {
         ("a * b * c", "a * b * c"),
         ("***both*** **strong *nested***", "both strong nested"),
         ("~~old~~ and ~also~", "old and also"),
-        ("![*alt*](picture.png)", "![*alt*](picture.png)"),
+        ("![*alt*](picture.png)", "\u{fffc}"),
         ("[label][ref]\n\n[ref]: https://example.com", "[label][ref]\n[ref]: https://example.com"),
         ("<https://example.com> <me@example.com>", "https://example.com me@example.com"),
         ("&amp; &copy; &#0; &#x80; &NotEqualTilde;", "& © � € ≂̸"),
@@ -20,7 +20,7 @@ fn gfm_inline_recognition_and_literal_references() {
         assert_eq!(doc.source_bytes(), source.as_bytes());
     }
     let doc = open("![alt](image.png) <!-- comment --> ~~old~~");
-    for name in ["Markdown reference", "Comment", "Strikethrough"] {
+    for name in ["Comment", "Strikethrough"] {
         assert!(doc.projection().style_spans().iter().any(|span| span.application == StyleApplication::Automatic(name.into())), "{name}");
     }
     assert!(open("***both***").projection().style_spans().iter().any(|s| s.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
@@ -143,7 +143,7 @@ fn quote_rules_and_loose_lists_invalidate_layout_and_keep_large_documents_local(
 #[test]
 fn reference_style_is_light_purple_and_definition_edits_refresh_other_paragraphs() {
     use viem_core::layout::DocumentLayoutStyles;
-    let doc = open("![alt](x.png)");
+    let doc = open("[alt][reference]\n\n[reference]: x.png");
     let color = DocumentLayoutStyles::character_at(doc.projection(), 2, false).unwrap().foreground;
     assert_eq!((color.red, color.green, color.blue), (0.65, 0.45, 0.82));
     let mut doc = Document::from_bytes(b"[label]\n\n[label]: /url".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
@@ -179,7 +179,7 @@ fn demo_loads_in_both_views_and_lays_out_without_changing_source() {
         assert!(!snapshot.rows.is_empty());
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(core.document().text().contains("Unsupported GitHub features"));
-        assert!(core.document().text().contains("![An example image]"));
+        assert!(if format.is_source_view() {core.document().text().contains("![An example image]")} else {!core.document().projection().inline_images_for_region(&(0..core.document().text().len())).is_empty()});
     }
 }
 

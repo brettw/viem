@@ -185,26 +185,26 @@ fn markdown_link_break_repairs_preserve_styles_destinations_source_and_history()
 }
 
 #[test]
-fn literal_boundary_repairs_remain_local_in_a_large_markdown_document() {
+fn image_object_deletion_remains_local_in_a_large_markdown_document() {
     let source = "Untouched paragraph.\n\n".repeat(10_000) + "a ![b](url) c";
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let untouched = document.projection().blocks()[5000].id;
-    let at = document.projection().text_tree().byte_len() - "![b](url) c".len();
+    let at = document.projection().text_tree().byte_len() - "\u{fffc} c".len();
     let prepared = document
         .prepare_model_request(ModelRequest::ApplyTextEdits {
             document: document.id(),
             revision: document.revision(),
-            edits: vec![TextEdit::new(at..at + 1, "")],
+            edits: vec![TextEdit::new(at..at + 3, "")],
         })
         .unwrap();
     let work = prepared.summary().projection_work();
     assert!(work.decoded_source_bytes() < 128, "{work:?}");
     assert_eq!(work.full_text_bytes_materialized(), 0);
-    assert_eq!(prepared.summary().source_patches().len(), 2);
+    assert_eq!(prepared.summary().source_patches().len(), 1);
     document.commit_model_transaction(prepared).unwrap();
     assert_eq!(document.projection().blocks()[5000].id, untouched);
-    assert!(document.text().ends_with("a [b](url) c"));
+    assert!(document.text().ends_with("a  c"));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
 }

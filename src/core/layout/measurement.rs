@@ -146,6 +146,17 @@ pub struct ShapeStyleRun {
     pub style: ResolvedTextStyle,
 }
 
+/// One atomic inline image in global formatted UTF-8 coordinates. Its source
+/// is passive metadata: providers may decode local files, never fetch URLs.
+/// Providers measure intrinsic pixel dimensions at the requested scale and
+/// return exactly one cluster with only its two endpoint caret stops. Layout
+/// applies the containing block's maximum width without changing this identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ShapeInlineImage {
+    pub text_range: Range<usize>,
+    pub destination: String,
+}
+
 /// A single item in a batch sent across the platform boundary.
 ///
 /// `text_range` is the requested stable ownership interior represented by
@@ -176,6 +187,8 @@ pub struct ShapeRequest<'a> {
     pub context_before: &'a str,
     pub context_after: &'a str,
     pub style_runs: &'a [ShapeStyleRun],
+    /// Includes images intersecting the ownership interior or bounded context.
+    pub inline_images: &'a [ShapeInlineImage],
     pub default_style: &'a ResolvedTextStyle,
     /// Base direction of the containing paragraph. This is distinct from the
     /// character-level direction override in [`ResolvedTextStyle`]: a natural
@@ -412,7 +425,7 @@ pub(crate) fn default_column_width<P: TextMeasurementProvider>(
     let request = ShapeRequest {
         document_id, document_revision, measurement_environment_id: environment,
         metrics_generation: generation, text_range: 0..1, text: "0",
-        context_before: "", context_after: "", style_runs: &[], default_style: style,
+        context_before: "", context_after: "", style_runs: &[], inline_images: &[], default_style: style,
         paragraph_base_direction: TextDirection::LeftToRight, scale,
         purpose: ShapePurpose::MetricsOnly, render_run_policy: None,
     };

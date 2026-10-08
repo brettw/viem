@@ -28,6 +28,8 @@ mod tables;
 pub use tables::*;
 mod links;
 pub use links::*;
+mod images;
+pub use images::*;
 mod quotes;
 pub use quotes::*;
 mod substitute_confirmation;
@@ -97,13 +99,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 /// Version of the C ABI implemented by this library.
 pub const VIEM_CORE_ABI_VERSION: u32 = 8;
 
-/// Adds paragraph base direction in the request's fixed-layout extension slot
-/// and the context-owned cluster contract, plus explicit fragment resource
-/// leases so evicting cached shaping can release native draw data.
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3: u32 = 3;
+/// Adds passive inline image metadata to the context-owned shaping contract.
+/// Image resources share the existing explicit fragment leases and metrics
+/// generations; local decoding remains a native provider responsibility.
+pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4: u32 = 4;
 /// Current version of the injected text-measurement provider vtable.
 pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION: u32 =
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
+    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4;
 
 /// Opaque process-local controller/core token. Zero is always invalid.
 pub type ViemCoreHandle = u64;
@@ -930,6 +932,15 @@ pub struct ViemShapingDiagnosticV1 {
 
 pub const VIEM_SHAPING_DIAGNOSTIC_V1_SIZE: u32 = size_of::<ViemShapingDiagnosticV1>() as u32;
 
+/// Passive inline image metadata borrowed during one shaping callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ViemInlineImageV1 {
+    pub text_start: u64,
+    pub text_end: u64,
+    pub destination: ViemUtf8Slice,
+}
+
 /// One immutable shaping request. Every pointer is borrowed only for the
 /// synchronous `shape_batch` callback. `text_start` and
 /// `text_end` delimit the stable ownership interior represented by `text`.
@@ -959,6 +970,8 @@ pub struct ViemShapeRequestV1 {
     pub render_run_threading: u32,
     /// The containing paragraph's `VIEM_TEXT_DIRECTION_*` value.
     pub paragraph_base_direction: u32,
+    pub inline_images: *const ViemInlineImageV1,
+    pub inline_image_count: u64,
 }
 
 pub const VIEM_SHAPE_REQUEST_V1_SIZE: u32 = size_of::<ViemShapeRequestV1>() as u32;
@@ -2869,6 +2882,7 @@ struct MarshalledRequest {
     default_style: MarshalledStyle,
     _run_styles: Vec<MarshalledStyle>,
     style_runs: Vec<ViemShapeStyleRunV1>,
+    inline_images: Vec<ViemInlineImageV1>,
 }
 
 impl MarshalledRequest {
@@ -2895,6 +2909,10 @@ impl MarshalledRequest {
             default_style,
             _run_styles: run_styles,
             style_runs,
+            inline_images: request.inline_images.iter().map(|image| ViemInlineImageV1 {
+                text_start: image.text_range.start as u64, text_end: image.text_range.end as u64,
+                destination: ffi_utf8_slice(&image.destination),
+            }).collect(),
         }
     }
 
@@ -2920,6 +2938,8 @@ impl MarshalledRequest {
             context_after: ffi_utf8_slice(request.context_after),
             style_runs: slice_pointer(&self.style_runs),
             style_run_count: self.style_runs.len() as u64,
+            inline_images: slice_pointer(&self.inline_images),
+            inline_image_count: self.inline_images.len() as u64,
             default_style: self.default_style.ffi,
             scale: request.scale,
             has_render_run_policy,
@@ -13312,6 +13332,7 @@ mod tests {
             context_before: "",
             context_after: "",
             style_runs: &[],
+            inline_images: &[],
             default_style: &style,
             paragraph_base_direction: TextDirection::RightToLeft,
             scale: 1.0,

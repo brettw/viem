@@ -17,6 +17,20 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public let measurementEnvironmentID: UInt64
   public let renderRunOwner: UInt64
   public let renderRegistry: CoreTextRenderRegistry
+  private let imageResources: CoreTextImageResources
+  private let ownsImageResources: Bool
+  public var imagesDidChange: (@Sendable () -> Void)?
+
+  public func setImageDocumentURL(_ url: URL?) {
+    if imageResources.setDocumentURL(url) { invalidateMetrics() }
+  }
+
+  /// The frontend refreshes metrics after installing its current immutable frame
+  /// when new visible locations need admission to the bounded preview queue.
+  public func updateVisibleImages(_ renderRuns: [(identifier: UInt64, metricsGeneration: UInt64)],
+    viewportID: UInt64) -> Bool {
+    imageResources.setVisibleLocations(renderRegistry.inlineImageLocations(in: renderRuns), viewportID: viewportID)
+  }
 
   // Protects only generation publication and response-arena ownership. Core
   // Text work deliberately runs outside this lock: font resolution may
@@ -51,6 +65,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     initialMetricsGeneration: UInt64,
     shapingDidBegin: (@Sendable () throws -> Void)?,
     sharedRegistry: CoreTextRenderRegistry? = nil,
+    sharedImageResources: CoreTextImageResources? = nil,
     observeFontChanges: Bool = true
   ) {
     self.measurementEnvironmentID = measurementEnvironmentID
@@ -59,6 +74,15 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     generation = max(initialMetricsGeneration, 1)
     renderRegistry = sharedRegistry ?? CoreTextRenderRegistry(generation: max(initialMetricsGeneration, 1))
     self.shapingDidBegin = shapingDidBegin
+    imageResources = sharedImageResources ?? CoreTextImageResources()
+    ownsImageResources = sharedImageResources == nil
+    if ownsImageResources {
+      imageResources.setChangeHandler { [weak self] in
+        guard let self else { return }
+        self.invalidateMetrics()
+        self.imagesDidChange?()
+      }
+    }
 
     guard observeFontChanges else { return }
     let notificationName = Notification.Name(
@@ -97,6 +121,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       initialMetricsGeneration: metricsGeneration,
       shapingDidBegin: nil,
       sharedRegistry: renderRegistry,
+      sharedImageResources: imageResources,
       observeFontChanges: false)
   }
 
@@ -127,6 +152,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   /// removed from core. The provider object itself must still outlive the C
   /// provider table installed for that view.
   public func retireResources() {
+    if ownsImageResources { imageResources.stop() }
     var retiredArenas: [ResponseArena] = []
     stateLock.lock()
     generation = generation &+ 1
@@ -152,7 +178,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public func makeProviderTable() -> ViemTextMeasurementProviderV1 {
     var table = ViemTextMeasurementProviderV1()
     table.struct_size = UInt32(MemoryLayout<ViemTextMeasurementProviderV1>.size)
-    table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3)
+    table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION)
     table.context = Unmanaged.passUnretained(self).toOpaque()
     table.measurement_environment_id = measurementEnvironmentID
     table.threading = UInt32(VIEM_PROVIDER_THREADING_ANY_WORKER)
@@ -253,7 +279,20 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       let contextEnd = adding(contextStart, UInt64(fullText.utf8.count)),
       let interiorLocalEnd = adding(UInt64(before.utf8.count), UInt64(interior.utf8.count))
     else { throw ProviderError(Status.invalidArgument) }
-    let indexMap = TextIndexMap(fullText)
+    guard request.inline_image_count <= 4096,
+      request.inline_image_count == 0 || request.inline_images != nil else { throw ProviderError(Status.invalidArgument) }
+    var images: [UInt64: (UInt64, String)] = [:]
+    let imageTextBytes = request.inline_image_count == 0 ? [] : Array(fullText.utf8)
+    for index in 0..<Int(request.inline_image_count) {
+      let image = request.inline_images![index]
+      guard image.text_start >= contextStart, image.text_end <= contextEnd,
+            image.text_start < image.text_end, image.text_end - image.text_start == 3,
+            imageTextBytes[Int(image.text_start - contextStart)..<Int(image.text_end - contextStart)].elementsEqual([0xEF, 0xBF, 0xBC])
+      else { throw ProviderError(Status.invalidArgument) }
+      images[image.text_start] = (image.text_end, try decode(image.destination))
+    }
+    let objectBoundaries = Set(images.flatMap { [Int($0.key - contextStart), Int($0.value.0 - contextStart)] })
+    let indexMap = TextIndexMap(fullText, forcedBoundaries: objectBoundaries)
     guard
       indexMap.utf16Offset(forUTF8: before.utf8.count) != nil,
       interiorLocalEnd <= UInt64(Int.max),
@@ -269,6 +308,24 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       styleRuns: styleRuns,
       paragraphDirection: request.paragraph_base_direction
     )
+    for (start, (end, destination)) in images {
+      guard start >= contextStart, end <= contextEnd,
+            let start16 = indexMap.utf16Offset(forUTF8: Int(start - contextStart)),
+            let end16 = indexMap.utf16Offset(forUTF8: Int(end - contextStart)) else { throw ProviderError(Status.invalidArgument) }
+      let image = imageResources.image(for: destination)
+      let box = InlineImageMetrics(width: image.size.width * CGFloat(request.scale), height: image.size.height * CGFloat(request.scale))
+      var callbacks = CTRunDelegateCallbacks(version: kCTRunDelegateVersion1,
+        dealloc: { pointer in Unmanaged<InlineImageMetrics>.fromOpaque(pointer).release() },
+        getAscent: { pointer in Unmanaged<InlineImageMetrics>.fromOpaque(pointer).takeUnretainedValue().height },
+        getDescent: { _ in 0 },
+        getWidth: { pointer in Unmanaged<InlineImageMetrics>.fromOpaque(pointer).takeUnretainedValue().width })
+      let retained = Unmanaged.passRetained(box).toOpaque()
+      guard let delegate = CTRunDelegateCreate(&callbacks, retained) else {
+        Unmanaged<InlineImageMetrics>.fromOpaque(retained).release(); throw ProviderError(Status.providerFailure)
+      }
+      attributed.addAttribute(NSAttributedString.Key(kCTRunDelegateAttributeName as String), value: delegate,
+        range: NSRange(location: start16, length: end16 - start16))
+    }
     let bidiLevels = resolvedBidiLevels(
       attributed,
       paragraphDirection: request.paragraph_base_direction
@@ -279,7 +336,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     let glyphRecordsByClusterStart = Dictionary(grouping: glyphRecords) { record in
       indexMap.graphemeStart(containingUTF16: record.stringIndex)
     }
-    let clusterBoundaries = clusterBoundaries(for: glyphRecords, map: indexMap)
+    let clusterBoundaries = Array(Set(clusterBoundaries(for: glyphRecords, map: indexMap))
+      .union(objectBoundaries.compactMap { indexMap.utf16Offset(forUTF8: $0) })).sorted()
 
     var clusters: [ClusterResult] = []
     var diagnostics: [DiagnosticResult] = []
@@ -311,7 +369,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       )
       clusters.append(result)
 
-      if records.contains(where: { $0.glyph == 0 }) {
+      if images[globalStart] == nil && records.contains(where: { $0.glyph == 0 }) {
         diagnostics.append(
           DiagnosticResult(
             start: globalStart,
@@ -335,14 +393,32 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       cluster.fallback_font = arena.storeUTF8(result.fallbackFont)
       cluster.caret_stops = arena.storeCarets(result.carets)
       cluster.caret_stop_count = UInt64(result.carets.count)
+      var resource = result.renderResource
+      var identifier = result.renderIdentifier
+      if let (end, destination) = images[result.start] {
+        guard end == result.end else { throw ProviderError(Status.providerFailure) }
+        let image = imageResources.image(for: destination)
+        let width = Float(image.size.width) * request.scale
+        let height = Float(image.size.height) * request.scale
+        cluster.advance = width
+        cluster.metrics.ascent = height; cluster.metrics.descent = 0; cluster.metrics.leading = 0
+        cluster.typographic_bounds = ViemShapedBoundsV1(x: 0, y: -height, width: width, height: height)
+        cluster.ink_bounds = cluster.typographic_bounds
+        var first = ViemClusterCaretStopV1(); first.text_offset = result.start; first.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; first.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        var last = ViemClusterCaretStopV1(); last.text_offset = result.end; last.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; last.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
+        cluster.caret_stops = arena.storeCarets([first, last]); cluster.caret_stop_count = 2
+        let signature = Array(("image:" + image.identity.uuidString + ":" + String(request.scale)).utf8)
+        resource = CoreTextRenderRegistry.Resource(signature: signature, batches: [], isColorGlyph: false, inlineImage: image)
+        identifier = stableHash(signature)
+      }
 
       if request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
         request.has_render_run_policy == 1
       {
         guard
           let identifier = renderRegistry.install(
-            result.renderResource,
-            preferredIdentifier: result.renderIdentifier,
+            resource,
+            preferredIdentifier: identifier,
             generation: callbackGeneration,
             pin: true
           )
@@ -611,7 +687,7 @@ private func makeAttributedString(
   defaultStyle: ResolvedStyle,
   styleRuns: [StyleRun],
   paragraphDirection: UInt32
-) throws -> NSAttributedString {
+) throws -> NSMutableAttributedString {
   let attributed = NSMutableAttributedString(string: text)
   let fullRange = NSRange(location: 0, length: indexMap.utf16Length)
   attributed.setAttributes(defaultStyle.attributes, range: fullRange)
@@ -769,6 +845,12 @@ public func resolveFont(
   return resolved
 }
 
+private final class InlineImageMetrics {
+  let width: CGFloat
+  let height: CGFloat
+  init(width: CGFloat, height: CGFloat) { self.width = width; self.height = height }
+}
+
 private final class TextIndexMap {
   struct Boundary {
     let utf8: Int
@@ -780,7 +862,7 @@ private final class TextIndexMap {
   private let utf8ToUTF16: [Int: Int]
   private let utf16ToUTF8: [Int: Int]
 
-  init(_ text: String) {
+  init(_ text: String, forcedBoundaries: Set<Int> = []) {
     var values: [Boundary] = []
     var utf8Offset = 0
     var utf16Offset = 0
@@ -790,6 +872,14 @@ private final class TextIndexMap {
       utf16Offset += character.utf16.count
     }
     values.append(Boundary(utf8: utf8Offset, utf16: utf16Offset))
+    if !forcedBoundaries.isEmpty {
+      var scalar8 = 0; var scalar16 = 0
+      for scalar in text.unicodeScalars {
+        if forcedBoundaries.contains(scalar8) { values.append(Boundary(utf8: scalar8, utf16: scalar16)) }
+        scalar8 += scalar.utf8.count; scalar16 += scalar.utf16.count
+      }
+      values = Dictionary(values.map { ($0.utf8, $0) }, uniquingKeysWith: { a, _ in a }).values.sorted { $0.utf8 < $1.utf8 }
+    }
     boundaries = values
     utf16Length = utf16Offset
     utf8ToUTF16 = Dictionary(uniqueKeysWithValues: values.map { ($0.utf8, $0.utf16) })

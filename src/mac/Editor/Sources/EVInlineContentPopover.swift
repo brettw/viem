@@ -10,8 +10,9 @@ private final class EVLinkPanel: NSPanel {
 
 /// Transient controls retain an exact core selection; the document owns all edits.
 @MainActor
-final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
+final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     private weak var surface: EVEditorSurfaceController?
+    private let kind: EVInlineContentKind
     private let panel = EVLinkPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                     backing: .buffered, defer: false)
     private let content = NSVisualEffectView()
@@ -26,11 +27,11 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
     let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
-    private var context: EVLinkContext?
+    private var context: EVInlineContentContext?
     private var expected: ViemLogicalSelectionIdentityV1?
     private var suppressed: ViemLogicalSelectionIdentityV1?
     private var cachedSelection: ViemLogicalSelectionIdentityV1?
-    private var cachedContext: EVLinkContext?
+    private var cachedContext: EVInlineContentContext?
     private weak var originWindow: NSWindow?
     private var eventMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -40,8 +41,9 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
     private var anchor = NSRect.zero
     var popupFrame: NSRect { panel.frame }
 
-    init(surface: EVEditorSurfaceController) {
+    init(surface: EVEditorSurfaceController, kind: EVInlineContentKind) {
         self.surface = surface
+        self.kind = kind
         super.init()
         panel.isReleasedWhenClosed = false
         panel.hasShadow = true
@@ -62,15 +64,15 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         destinationButton.contentTintColor = .linkColor
         destinationButton.alignment = .left
         destinationButton.cell?.lineBreakMode = .byTruncatingMiddle
-        destinationButton.setAccessibilityLabel("Open link")
+        destinationButton.setAccessibilityLabel(kind == .image ? "Open image location" : "Open link")
         destinationButton.target = self
         destinationButton.action = #selector(openDestination)
         summary.addSubview(destinationButton)
         configure(copyButton, title: "Copy destination", symbol: "square.on.square", action: #selector(copyDestination))
-        configure(editButton, title: "Edit link", symbol: "pencil", action: #selector(edit))
-        configure(removeButton, title: "Remove link", symbol: "link.badge.minus", action: #selector(remove))
+        configure(editButton, title: kind == .image ? "Edit image" : "Edit link", symbol: "pencil", action: #selector(edit))
+        configure(removeButton, title: kind == .image ? "Delete image" : "Remove link", symbol: kind == .image ? "trash" : "link.badge.minus", action: #selector(remove))
         // Draw the requested struck chain rather than relying on OS symbol availability.
-        removeButton.image = Self.unlinkImage()
+        if kind == .link { removeButton.image = Self.unlinkImage() }
         for button in [copyButton, editButton, removeButton] { summary.addSubview(button) }
         // Native two-column form: regular labels, intrinsic control heights,
         // and a footer immediately below the fields. Validation has no empty slot.
@@ -79,7 +81,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         form.spacing = 12
         form.detachesHiddenViews = true
         form.widthAnchor.constraint(equalToConstant: 360).isActive = true
-        let rows = [("Text", textField), ("Destination", destinationField)].map { label, field -> [NSView] in
+        let rows = [(kind == .image ? "Alt text" : "Text", textField), (kind == .image ? "Location" : "Destination", destinationField)].map { label, field -> [NSView] in
             let title = NSTextField(labelWithString: label + ":")
             title.font = .systemFont(ofSize: NSFont.systemFontSize)
             title.alignment = .right
@@ -101,7 +103,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         grid.column(at: 1).xPlacement = .fill
         grid.widthAnchor.constraint(equalToConstant: 360).isActive = true
         form.addArrangedSubview(grid)
-        destinationField.placeholderString = "https://…, document.md, or #heading"
+        destinationField.placeholderString = kind == .image ? "image.png or https://…" : "https://…, document.md, or #heading"
         errorLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 2
@@ -156,9 +158,9 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         return image
     }
 
-    private func readContext(session: EVCoreViewSession, selection: ViemLogicalSelectionIdentityV1) throws -> EVLinkContext {
+    private func readContext(session: EVCoreViewSession, selection: ViemLogicalSelectionIdentityV1) throws -> EVInlineContentContext {
         if let cachedSelection, cachedSelection.isSameSelection(as: selection), let cachedContext { return cachedContext }
-        let result = try session.linkContext()
+        let result = try session.inlineContentContext(kind)
         cachedSelection = selection; cachedContext = result
         return result
     }
@@ -167,7 +169,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         guard surface?.commandLine?.prompt == nil, let session = surface?.session, !session.hasActiveComposition,
               let selection = try? session.listSelection(),
               let context = try? readContext(session: session, selection: selection) else { return false }
-        return context.canInsert || context.link?.editable == true
+        return context.canInsert || context.item?.editable == true
     }
 
     func refresh() {
@@ -176,16 +178,19 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
               surface.backend.sourceFormat == .markdown || surface.backend.sourceFormat == .markdownSource,
               !session.hasActiveComposition, surface.commandLine?.prompt == nil,
               let selection = try? session.listSelection() else { close(); return }
+        if kind == .link, !isEditing, (try? session.inlineContentContext(.image).item) != nil { close(); return }
+        if kind == .image ? surface.linkPopover.isEditing : surface.imagePopover.isEditing { close(); return }
         if let suppressed, !suppressed.isSameSelection(as: selection) { self.suppressed = nil }
         if isEditing {
             guard let expected, expected.isSameSelection(as: selection), window === originWindow,
-                  anchorRect(for: context?.link) != nil else { close(); return }
+                  anchorRect(for: context?.item) != nil else { close(); return }
             position(animated: false)
             return
         }
-        guard window.isKeyWindow, window.firstResponder === surface.editorView, !surface.hasSelection,
+        guard window.isKeyWindow, window.firstResponder === surface.editorView,
               suppressed?.isSameSelection(as: selection) != true,
-              let next = try? readContext(session: session, selection: selection), let link = next.link,
+              let next = try? readContext(session: session, selection: selection), let link = next.item,
+              (!surface.hasSelection || (kind == .image && selection.text_start == link.start && selection.text_end == link.end)),
               let rect = anchorRect(for: link) else { close(); return }
         context = next; expected = selection; anchor = rect
         destinationButton.title = link.destination
@@ -201,8 +206,8 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         do {
             let selection = try session.listSelection()
             let next = try readContext(session: session, selection: selection)
-            guard next.link?.editable == true || next.canInsert,
-                  let rect = anchorRect(for: next.link) else { return }
+            guard next.item?.editable == true || next.canInsert,
+                  let rect = anchorRect(for: next.item) else { return }
             context = next; expected = selection; suppressed = nil; anchor = rect
             beginEditing()
         } catch { surface.report(error) }
@@ -210,8 +215,8 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
 
     private func beginEditing() {
         guard let context else { return }
-        textField.stringValue = context.link?.text ?? context.text
-        destinationField.stringValue = context.link?.destination ?? ""
+        textField.stringValue = context.item?.text ?? context.text
+        destinationField.stringValue = context.item?.destination ?? ""
         setValidationMessage("")
         updateValidation()
         show(editing: true)
@@ -221,6 +226,9 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
 
     private func show(editing: Bool) {
         guard let window = surface?.editorView.window else { return }
+        if editing {
+            if kind == .image { surface?.linkPopover.close() } else { surface?.imagePopover.close() }
+        }
         let animate = isOpen && !isEditing && editing
         isEditing = editing
         panel.takesKeyboardFocus = editing
@@ -235,7 +243,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         if !editing { panel.orderFront(nil) }
     }
 
-    private func anchorRect(for link: EVLinkContext.Link?) -> NSRect? {
+    private func anchorRect(for link: EVInlineContentContext.Item?) -> NSRect? {
         guard let surface, let session = surface.session, let snapshot = surface.layoutSnapshot,
               snapshot.info.identity.document_id == surface.viewPresentation.document_id,
               snapshot.info.identity.document_revision == surface.viewPresentation.document_revision else { return nil }
@@ -259,7 +267,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
 
     private func position(animated: Bool) {
         guard let surface, let window = originWindow else { return }
-        if let current = anchorRect(for: context?.link) { anchor = current }
+        if let current = anchorRect(for: context?.item) { anchor = current }
         let screenRect = window.convertToScreen(surface.editorView.convert(anchor, to: nil))
         let visible = window.screen?.visibleFrame ?? screenRect.insetBy(dx: -600, dy: -400)
         let formSize = form.fittingSize
@@ -320,7 +328,7 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
 
     private func currentTarget() throws -> EVLinkMenuTarget? {
         guard let surface, let session = surface.session, let expected, let context,
-              expected.isSameSelection(as: try session.listSelection()), let link = context.link else { return nil }
+              expected.isSameSelection(as: try session.listSelection()), let link = context.item else { return nil }
         return EVLinkMenuTarget(documentID: expected.document_id, revision: expected.document_revision, offset: link.start)
     }
 
@@ -328,25 +336,26 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
         do {
             guard let target = try currentTarget() else { close(); return }
             close(suppress: true)
-            surface?.openLink(at: target)
+            if kind == .image { surface?.openImage(at: target) }
+            else { surface?.openLink(at: target) }
         }
         catch { surface?.report(error) }
     }
     @objc func copyDestination() {
         do {
             guard let surface, let target = try currentTarget(),
-                  let destination = try surface.backend.linkDestination(at: target) else { close(); return }
+                  let destination = try (kind == .image ? surface.imageDestination(at: target) : surface.backend.linkDestination(at: target)) else { close(); return }
             _ = surface.pasteboard.viemWrite(EVClipboardRepresentations(plainText: destination))
         } catch { surface?.report(error) }
     }
     @objc func edit() {
-        do { guard try currentTarget() != nil, context?.link?.editable == true else { close(); return }; beginEditing() }
+        do { guard try currentTarget() != nil, context?.item?.editable == true else { close(); return }; beginEditing() }
         catch { surface?.report(error) }
     }
     @objc func remove() { commit(action: 2) }
     @objc func apply() {
         guard applyButton.isEnabled else { return }
-        commit(action: context?.link == nil ? 0 : 1)
+        commit(action: context?.item == nil ? 0 : 1)
     }
     private func commit(action: UInt32) {
         guard let surface, let session = surface.session, let context, let expected else { close(); return }
@@ -356,8 +365,8 @@ final class EVLinkPopoverController: NSObject, NSTextFieldDelegate {
             do {
                 let destination = destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if action != 2 { try EVLinkOpener.validateForAuthoring(destination) }
-                _ = try session.editLink(action: action, context: context, expected: expected,
-                    text: textField.stringValue.isEmpty ? destination : textField.stringValue, destination: destination)
+                _ = try session.editInlineContent(kind, action: action, context: context, expected: expected,
+                    text: kind == .link && textField.stringValue.isEmpty ? destination : textField.stringValue, destination: destination)
                 succeeded = true
             } catch {
                 setValidationMessage(error.localizedDescription)

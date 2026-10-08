@@ -78,11 +78,20 @@ fn label_contains_link(text: &str, start: usize, end: usize) -> bool {
 }
 
 pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option<InlineLink> {
+    markdown_bracket_at(text, start, end, false)
+}
+pub(super) fn markdown_image_at(text: &str, start: usize, end: usize) -> Option<InlineLink> {
+    if text.as_bytes().get(start) != Some(&b'!') || escaped(text.as_bytes(), start) { return None; }
+    let mut image = markdown_bracket_at(text, start + 1, end, true)?;
+    image.range.start = start;
+    Some(image)
+}
+fn markdown_bracket_at(text: &str, start: usize, end: usize, image: bool) -> Option<InlineLink> {
     let bytes = text.as_bytes();
     if end > bytes.len()
         || bytes.get(start) != Some(&b'[')
         || escaped(bytes, start)
-        || (start > 0 && bytes[start - 1] == b'!' && !escaped(bytes, start - 1))
+        || (!image && start > 0 && bytes[start - 1] == b'!' && !escaped(bytes, start - 1))
     {
         return None;
     }
@@ -223,7 +232,7 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
     }
     // A valid inner link makes the surrounding link label ineligible. The
     // bracket-depth limit above also bounds this recursive recognition.
-    if label_contains_link(text, start + 1, label_end) {
+    if !image && label_contains_link(text, start + 1, label_end) {
         return None;
     }
     Some(InlineLink {
@@ -653,7 +662,7 @@ pub enum LinkEditIntent {
     },
 }
 
-fn escape_label(text: &str) -> String {
+pub(super) fn escape_label(text: &str) -> String {
     let mut escaped = String::new();
     for ch in text.chars() {
         if ch.is_ascii_punctuation() {
@@ -663,7 +672,7 @@ fn escape_label(text: &str) -> String {
     }
     escaped
 }
-fn escape_destination(text: &str) -> String {
+pub(super) fn escape_destination(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

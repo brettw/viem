@@ -49,6 +49,8 @@ mod paragraph_flow;
 mod rich_text;
 pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
+mod images;
+pub use images::{ImageSnapshot, ImageEditIntent};
 mod links;
 pub use links::{LinkSnapshot, LinkEditIntent};
 mod persistence;
@@ -115,7 +117,7 @@ pub use position::{
     SourcePoint, SourceRange, Splice, TextAnchor, TextRange, UnresolvableAnchor,
 };
 pub use projection::{
-    Block, BlockDirectFormatting, BlockKind, Format, FormattedDocument, FormattedPayloadError, FormattedTextPayload,
+    Block, BlockDirectFormatting, BlockKind, Format, FormattedDocument, InlineImage, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };

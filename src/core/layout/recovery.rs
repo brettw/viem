@@ -169,6 +169,7 @@ mod tests {
             context_before: "a ",
             context_after: " z",
             style_runs: &runs,
+            inline_images: &[],
             default_style: &default,
             paragraph_base_direction: TextDirection::RightToLeft,
             scale: 1.5,

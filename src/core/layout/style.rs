@@ -162,6 +162,7 @@ pub struct DocumentLayoutStyles {
     pub canvas_background_is_default: bool,
     pub default_shaping_style: ResolvedTextStyle,
     pub shaping_runs: Vec<ShapeStyleRun>,
+    pub inline_images: Vec<super::ShapeInlineImage>,
     pub default_paint: ResolvedTextPaint,
     pub paint_runs: Vec<PaintStyleRun>,
     pub paragraphs: Vec<ParagraphLayoutStyle>,
@@ -441,6 +442,10 @@ impl DocumentLayoutStyles {
             source_table_paint::apply(document, &text_range, &mut styles)?;
             styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document, recovery_format.is_some_and(|format| format.is_source_view())));
         }
+        styles.inline_images = document.inline_images_for_region(&text_range).into_iter()
+            .filter(|image| !image.source_view)
+            .map(|image| super::ShapeInlineImage { text_range: image.range, destination: image.destination })
+            .collect();
         Ok(styles)
     }
 
@@ -658,6 +663,7 @@ impl DocumentLayoutStyles {
             canvas_background_is_default: resolved_document.background_is_default,
             default_shaping_style,
             shaping_runs,
+            inline_images: Vec::new(),
             default_paint,
             paint_runs,
             paragraphs,

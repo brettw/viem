@@ -153,7 +153,7 @@ impl ClipboardContent {
             return Self::from_plain_text(source);
         }
         Self {
-            plain_text: value.text.clone(),
+            plain_text: value.clipboard_fragment().and_then(|fragment|fragment.image_plain_text()).unwrap_or_else(||value.text.clone()),
             portable_register: Some(value),
         }
     }
@@ -166,7 +166,7 @@ impl ClipboardContent {
         let plain_text = plain_text.into();
         if portable_register
             .as_ref()
-            .is_some_and(|value| value.text != plain_text)
+            .is_some_and(|value| value.clipboard_fragment().and_then(|fragment|fragment.image_plain_text()).as_deref().unwrap_or(&value.text) != plain_text)
         {
             return Err(ClipboardContentError::PlainTextDoesNotMatchPortablePayload);
         }

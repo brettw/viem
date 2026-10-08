@@ -348,6 +348,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             isActiveTextSurface = true
             applyPresentation()
             surface?.linkPopover.refresh()
+            surface?.imagePopover.refresh()
             surface?.refreshStatusBarActivity()
             if let surface { EVStyleEditorCoordinator.shared.documentDidBecomeActive(surface) }
         }
@@ -360,6 +361,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if accepted {
             isActiveTextSurface = false
             if surface?.linkPopover.isEditing != true { surface?.linkPopover.close() }
+            if surface?.imagePopover.isEditing != true { surface?.imagePopover.close() }
             stopDragAutoscroll()
             applyPresentation()
             surface?.refreshStatusBarActivity()
@@ -372,6 +374,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         setCaretHoverRect(nil)
         if newWindow == nil {
             surface?.linkPopover.close()
+            surface?.imagePopover.close()
             completionPopup.hide()
             isActiveTextSurface = false
             surface?.completionFocusDidChange()
@@ -394,6 +397,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateInsertionIndicator()
         updateCompletionPopup()
         surface?.linkPopover.refresh()
+            surface?.imagePopover.refresh()
         invalidatePresentationDamage()
         surface?.refreshStatusBarActivity()
     }
@@ -560,6 +564,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func customCaretDamageRect(_ snapshot: EVLayoutExport) -> NSRect? {
+        if let image = selectedImageCluster(in: snapshot) { return viewRect(image.typographic_bounds) }
         guard let surface, surface.viewPresentation.mode != UInt32(VIEM_MODE_COMMAND_LINE),
               !(isCaretActive && EVSelectionModes.hasInsertionCaret(surface.viewPresentation.mode))
         else { return nil }
@@ -2157,6 +2162,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let layoutPoint = layoutPoint(fromViewPoint: local)
         surface.performInput {
             let point = try session.hitTest(layoutPoint, in: snapshot.info, pointerDown: !extending)
+            if !extending, let image = snapshot.clusters.first(where: { isImageCluster($0) && viewRect($0.typographic_bounds).contains(local) }) {
+                try session.selectImage(at: image.text_start, documentID: point.document_id, revision: point.document_revision)
+                return
+            }
             _ = try session.placeCursor(point, extendSelection: extending, wholeWords: wordSelectionDragging,
                 beginPointerGesture: !extending && !wordSelectionDragging)
         }
@@ -3219,6 +3228,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let baseline = viewPoint(
                 fromLayoutPoint: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline))
             )
+            if isImageCluster(cluster), surface.session?.provider.renderRegistry.drawInlineImage(
+                identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation,
+                in: viewRect(cluster.typographic_bounds), color: color.1, context: context) == true {
+                if let selection = surface.visualSelection,
+                   selection.info.identity.layout.isSameLayout(as: snapshot.info.identity),
+                   selection.segments.contains(where: { $0.text_start <= cluster.text_start && $0.text_end >= cluster.text_end }) {
+                    EVCaretAppearanceResolver.shared.color(for: self).setStroke()
+                    NSBezierPath(rect: viewRect(cluster.typographic_bounds).insetBy(dx: 0.5, dy: 0.5)).stroke()
+                }
+                continue
+            }
             let drewNative = cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
                 && surface.session?.provider.renderRegistry.draw(
                    identifier: cluster.render_run.identifier,
@@ -3483,11 +3503,41 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return rect
     }
 
+    func isImageCluster(_ cluster: ViemPositionedClusterV1) -> Bool {
+        cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
+            && surface?.session?.provider.renderRegistry.isInlineImage(identifier: cluster.render_run.identifier,
+                metricsGeneration: cluster.render_run.metrics_generation) == true
+    }
+
+    func selectedImageCluster(in snapshot: EVLayoutExport) -> ViemPositionedClusterV1? {
+        guard !compositionActive, let surface,
+              surface.viewPresentation.mode != UInt32(VIEM_MODE_COMMAND_LINE) else { return nil }
+        let presentation = surface.viewPresentation
+        if EVSelectionModes.isTextSelection(presentation.mode) {
+            guard let selection = surface.visualSelection,
+                  selection.info.identity.layout.isSameLayout(as: snapshot.info.identity),
+                  selection.segments.count == 1, let segment = selection.segments.first else { return nil }
+            return snapshot.clusters.first {
+                $0.text_start == segment.text_start && $0.text_end == segment.text_end && isImageCluster($0)
+            }
+        }
+        guard presentation.mode != UInt32(VIEM_MODE_INSERT),
+              presentation.mode != UInt32(VIEM_MODE_REPLACE) else { return nil }
+        return snapshot.clusters.first { $0.text_start == presentation.cursor_utf8_offset && isImageCluster($0) }
+    }
+
     private func drawCustomCaret(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
         guard let surface else { return }
         let mode = surface.viewPresentation.mode
         let active = isCaretActive
         if mode == UInt32(VIEM_MODE_COMMAND_LINE) { return }
+        if let image = selectedImageCluster(in: snapshot) {
+            let rect = viewRect(image.typographic_bounds)
+            guard rect.insetBy(dx: -1, dy: -1).intersects(dirtyRect) else { return }
+            EVCaretAppearanceResolver.shared.color(for: self).setStroke()
+            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            return
+        }
         if active && EVSelectionModes.hasInsertionCaret(mode) { return }
 
         let customPresentation: EVCustomCaretPresentation
@@ -3650,6 +3700,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func updateInsertionIndicator() {
+        if let snapshot = surface?.layoutSnapshot, selectedImageCluster(in: snapshot) != nil {
+            insertionIndicator.displayMode = .hidden
+            insertionIndicator.isHidden = true
+            return
+        }
         guard let surface else {
             insertionIndicator.displayMode = .hidden
             insertionIndicator.isHidden = true

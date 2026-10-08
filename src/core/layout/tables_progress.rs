@@ -281,6 +281,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             document,
             revision,
             table: 0,
+            image_max_width: if !context.source && context.projection.has_inline_images_in_region(&range) { view.width.to_bits() } else { 0 },
             source: context.source,
             metrics: self.provider.metrics_generation(),
             environment: self.provider.measurement_environment_id(),

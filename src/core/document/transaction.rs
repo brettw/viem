@@ -5648,6 +5648,13 @@ impl Document {
             return false;
         }
         edits.iter().any(|edit| {
+            // A reference image hides its brackets in WYSIWYG, but its
+            // destination still depends on definitions outside this paragraph.
+            // Regional reparsing must retain that global grammar dependency.
+            if self.projection().blocks_for_region(&edit.range).iter().any(|block|
+                self.projection().inline_images_for_region(&block.range).iter().any(|image| !image.inline)) {
+                return true;
+            }
             if self
                 .projection()
                 .style_spans_for_region(&edit.range)

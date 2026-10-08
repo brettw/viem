@@ -16,7 +16,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     lazy var formattingToolbar = EVFormattingToolbarView(surface: self)
-    lazy var linkPopover = EVLinkPopoverController(surface: self)
+    lazy var linkPopover = EVInlineContentPopoverController(surface: self, kind: .link)
+    lazy var imagePopover = EVInlineContentPopoverController(surface: self, kind: .image)
     public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
 
     let backend: EVCoreDocumentBackend
@@ -52,6 +53,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     /// Selection and caret updates have their own damage tracking in the view.
     private(set) var immutablePresentationGeneration: UInt64 = 0
     private var presentedWhitespaceCopyCount: UInt64 = 0
+    private var imageViewportID: UInt64 = 0
+    private var imageAdmissionRefreshPending = false
     // The offsets themselves remain scoped to viewPresentation's immutable
     // document revision. This associates that snapshot with its owning view.
     private var selectionPresentationViewID: ViemViewId?
@@ -216,6 +219,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     func detachFromCore() {
         linkPopover.close()
+        imagePopover.close()
         lastLayoutWarning = ""
         stopSearchPolling()
         completionTimer?.invalidate()
@@ -244,6 +248,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         EVStartupPerformance.mark("surface.refresh.begin")
         defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
         do {
+            session.provider.setImageDocumentURL(documentHostEffectHandler?.documentURL(for: self))
+            session.provider.imagesDidChange = { [weak self] in
+                Task { @MainActor [weak self] in self?.refreshPresentation(advancingSearch: false) }
+            }
             if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()
             if session.optionalPresentation("syntax highlighting", fallback: false, {
@@ -386,15 +394,21 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
 
             let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID)
-            if layoutSnapshot?.info.identity.isSameLayout(
+            let imageViewportChanged = selectionPresentationViewID != session.viewID
+                || documentState.document_id != nextDocumentState.document_id
+                || documentState.document_revision != nextDocumentState.document_revision
+                || viewportState.left != nextViewport.left || viewportState.top != nextViewport.top
+                || layoutSnapshot?.info.viewport_width != nextLayoutSnapshot?.info.viewport_width
+                || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
+            if imageViewportChanged { imageViewportID += 1 }
+            let immutableInputsChanged = layoutSnapshot?.info.identity.isSameLayout(
                 as: nextLayoutSnapshot?.info.identity ?? ViemLayoutSnapshotIdentityV1()) != true
                 || viewportState.left != nextViewport.left || viewportState.top != nextViewport.top
                 || layoutSnapshot?.info.viewport_width != nextLayoutSnapshot?.info.viewport_width
                 || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
                 || presentedWhitespaceCopyCount != session.presentationExportCounters.whitespaceCopies
-                || compositionOverlay?.info.identity.generation != nextCompositionOverlay?.info.identity.generation {
-                immutablePresentationGeneration &+= 1
-            }
+                || compositionOverlay?.info.identity.generation != nextCompositionOverlay?.info.identity.generation
+            if immutableInputsChanged { immutablePresentationGeneration &+= 1 }
             presentedWhitespaceCopyCount = session.presentationExportCounters.whitespaceCopies
             documentState = nextDocumentState
             formattedSnapshot = nextFormattedSnapshot
@@ -412,6 +426,28 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if nextCommandLine.prompt != nil { clearCommandOutput() }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
+            if immutableInputsChanged, let nextLayoutSnapshot {
+                let visible = CGRect(x: CGFloat(nextViewport.left), y: CGFloat(nextViewport.top),
+                    width: CGFloat(nextLayoutSnapshot.info.viewport_width), height: CGFloat(nextLayoutSnapshot.info.viewport_height))
+                let renderRuns = nextLayoutSnapshot.clusters.compactMap { cluster -> (identifier: UInt64, metricsGeneration: UInt64)? in
+                    let rect = cluster.typographic_bounds
+                    guard cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
+                          visible.intersects(CGRect(x: CGFloat(rect.x), y: CGFloat(rect.y),
+                              width: CGFloat(rect.width), height: CGFloat(rect.height))) else { return nil }
+                    return (cluster.render_run.identifier, cluster.render_run.metrics_generation)
+                }
+                if session.provider.updateVisibleImages(renderRuns, viewportID: imageViewportID), !imageAdmissionRefreshPending {
+                    imageAdmissionRefreshPending = true
+                    // Keep this frame's resource generation valid until the next
+                    // synchronous refresh installs the newly admitted previews.
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        self.imageAdmissionRefreshPending = false
+                        self.session?.provider.invalidateMetrics()
+                        self.refreshPresentation(advancingSearch: false)
+                    }
+                }
+            }
             synchronizeCompletionPolling()
             synchronizeSearchPolling(pending: nextSearchWorkPending)
             session.tableWidthRefinement.didInstall = { [weak self] in self?.refreshPresentation(advancingSearch: false) }
@@ -421,6 +457,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             if isViewLoaded {
                 editorView.applyPresentation()
                 linkPopover.refresh()
+                imagePopover.refresh()
             }
             // Warnings are optional presentation data. A warning-copy failure
             // must not suppress an otherwise verified frame or replay input.
@@ -1626,7 +1663,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             if let nativeCopyRepresentations { return nativeCopyRepresentations }
             if let json = write.fragmentJSON {
                 let fragment = try EVClipboardFragment.decode(json)
-                guard fragment.plainText == write.plainText else { throw EVCoreFrontendError.invalidHostEffect }
+                guard (fragment.imagePlainText ?? fragment.plainText) == write.plainText else { throw EVCoreFrontendError.invalidHostEffect }
                 return try fragment.representations(json: json)
             }
             return EVClipboardRepresentations(plainText: write.plainText)

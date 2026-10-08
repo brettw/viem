@@ -97,10 +97,10 @@ static ViemStatus (*table_selection)(ViemCoreHandle, ViemViewId, ViemTableSelect
 static ViemStatus (*select_table_cells)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_select_table_cells;
 static ViemStatus (*style_defaults)(ViemCoreHandle, uint64_t, const uint8_t *, uint64_t, ViemStyleDefaultsDiagnosticCallback, void *) = viem_core_initialize_style_defaults;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
-_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 == 3u,
-    "provider ABI v3");
+_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 == 4u,
+    "provider ABI v4");
 _Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION ==
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3, "current provider ABI");
+    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4, "current provider ABI");
 _Static_assert(VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT == 26u,
     "bounded-context refusal status");
 _Static_assert(VIEM_STATUS_LAYOUT_UNAVAILABLE == 28u,
@@ -300,6 +300,10 @@ _Static_assert(sizeof(ViemShapeStyleRunV1) == {style_run}, "style run");
 _Static_assert(sizeof(ViemShapedClusterV1) == {cluster}, "cluster");
 _Static_assert(sizeof(ViemShapingDiagnosticV1) == {diagnostic}, "diagnostic");
 _Static_assert(sizeof(ViemShapeRequestV1) == {request}, "request");
+_Static_assert(sizeof(ViemInlineImageV1) == {inline_image}, "inline image");
+_Static_assert(offsetof(ViemInlineImageV1, destination) == {inline_image_destination}, "image destination");
+_Static_assert(offsetof(ViemShapeRequestV1, inline_images) == {request_images}, "request images");
+_Static_assert(offsetof(ViemShapeRequestV1, inline_image_count) == {request_image_count}, "request image count");
 _Static_assert(sizeof(ViemShapeResponseV1) == {response}, "response");
 _Static_assert(sizeof(ViemTextMeasurementProviderV1) == {provider}, "provider");
 _Static_assert(sizeof(ViemViewOptionsV1) == {view_options}, "view options");
@@ -711,6 +715,10 @@ static void typecheck(void) {{
         cluster = std::mem::size_of::<ViemShapedClusterV1>(),
         diagnostic = std::mem::size_of::<ViemShapingDiagnosticV1>(),
         request = std::mem::size_of::<ViemShapeRequestV1>(),
+        inline_image = std::mem::size_of::<ViemInlineImageV1>(),
+        inline_image_destination = std::mem::offset_of!(ViemInlineImageV1, destination),
+        request_images = std::mem::offset_of!(ViemShapeRequestV1, inline_images),
+        request_image_count = std::mem::offset_of!(ViemShapeRequestV1, inline_image_count),
         response = std::mem::size_of::<ViemShapeResponseV1>(),
         provider = std::mem::size_of::<ViemTextMeasurementProviderV1>(),
         view_options = std::mem::size_of::<ViemViewOptionsV1>(),

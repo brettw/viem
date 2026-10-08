@@ -171,3 +171,4 @@ mod markdown_table_ffi;
 mod markdown_list_interruption;
 
 mod link_authoring;
+mod image_authoring;

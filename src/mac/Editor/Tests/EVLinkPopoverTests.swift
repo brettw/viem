@@ -111,9 +111,9 @@ final class EVLinkPopoverTests: XCTestCase {
         window.makeFirstResponder(surface.editorView)
         surface.linkPopover.refresh()
         let popup = surface.linkPopover
-        let context = try session.linkContext()
-        XCTAssertEqual(context.link?.start, 7)
-        XCTAssertEqual(context.link?.text, "label")
+        let context = try session.inlineContentContext(.link)
+        XCTAssertEqual(context.item?.start, 7)
+        XCTAssertEqual(context.item?.text, "label")
         XCTAssertTrue(popup.isOpen)
         XCTAssertFalse(popup.isEditing)
         XCTAssertTrue(window.firstResponder === surface.editorView)

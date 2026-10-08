@@ -196,9 +196,11 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   func testEmptyDocumentCaretWidthUsesCurrentTypingFont() throws {
     let surface = try makeSurface(text: "")
     let session = try XCTUnwrap(surface.session)
-    XCTAssertEqual(try session.currentFontEnWidth(), 7, accuracy: 0.001)
     let editor = EVStyleEditorViewController()
     editor.retarget(document: surface, styleKey: .baseParagraph)
+    // Numeric caret expectations belong to this fixture, not the bundled theme.
+    XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(14)))
+    XCTAssertEqual(try session.currentFontEnWidth(), 7, accuracy: 0.001)
     XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(48)))
     XCTAssertEqual(try session.currentFontEnWidth(), 24, accuracy: 0.001)
     XCTAssertEqual(try surface.backend.serializedSource(typeName: "public.plain-text"), Data())

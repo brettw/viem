@@ -557,6 +557,7 @@ fn retain_regional_styles(
     styles
         .shaping_runs
         .retain(|run| run.text_range.start < text_end && text_start < run.text_range.end);
+    styles.inline_images.retain(|image| image.text_range.start < text_end && text_start < image.text_range.end);
     styles
         .paint_runs
         .retain(|run| run.text_range.start < text_end && text_start < run.text_range.end);

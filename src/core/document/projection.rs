@@ -282,6 +282,26 @@ pub struct StyleSpan {
     pub application: StyleApplication,
 }
 
+/// Passive image metadata. The source remains the only persistence authority;
+/// these immutable records never load or retain native image resources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InlineImage {
+    pub range: Range<usize>,
+    pub text: String,
+    pub destination: String,
+    pub source_view: bool,
+    pub(super) source: Range<usize>,
+    pub(super) inline: bool,
+}
+impl RangedItem for InlineImage {
+    fn range(&self) -> &Range<usize> { &self.range }
+    fn owned_heap_bytes(&self) -> usize { self.text.capacity() + self.destination.capacity() }
+    fn with_range(&self, range: Range<usize>) -> Self { Self { range, ..self.clone() } }
+    fn with_transform(&self, range: Range<usize>, auxiliary_shift: i128, _: Option<u64>) -> Option<Self> {
+        Some(Self { range, source: shift_range_i128(&self.source, auxiliary_shift)?, ..self.clone() })
+    }
+}
+
 /// Character-style display names of a Code sheet, for run-name resolution.
 fn code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
     sheet
@@ -632,6 +652,7 @@ pub struct HardLineSnapshot {
     flat_text: Arc<OnceLock<Arc<str>>>,
     text_tree: FormattedTextTree,
     hard_lines: OrderedRangeStore<HardLine>,
+    inline_images: IntervalRangeStore<InlineImage>,
 }
 
 impl fmt::Debug for HardLineSnapshot {
@@ -654,6 +675,7 @@ impl HardLineSnapshot {
             flat_text: projection.flat_text.clone(),
             text_tree: projection.text.clone(),
             hard_lines: projection.hard_lines.clone(),
+            inline_images: projection.inline_images.clone(),
         }
     }
 
@@ -727,19 +749,19 @@ impl HardLineSnapshot {
     /// grapheme followed by a distinct hard-break item. An unmarked literal
     /// CRLF inside line content retains normal UAX #29 behavior.
     pub fn is_grapheme_boundary(&self, offset: usize) -> bool {
-        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, offset).unwrap_or(false)
+        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset).unwrap_or(false)
     }
 
     /// Return the next logical grapheme/item boundary after `offset`.
     pub fn next_grapheme_boundary(&self, offset: usize) -> Option<usize> {
-        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset)
             .ok()
             .flatten()
     }
 
     /// Return the preceding logical grapheme/item boundary before `offset`.
     pub fn previous_grapheme_boundary(&self, offset: usize) -> Option<usize> {
-        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset)
             .ok()
             .flatten()
     }
@@ -1004,21 +1026,21 @@ impl LogicalGraphemeSnapshot for HardLineSnapshot {
     }
 
     fn is_logical_grapheme_boundary(&self, offset: usize) -> Result<bool, FormattedTextError> {
-        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+        logical_is_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset)
     }
 
     fn next_logical_grapheme_boundary(
         &self,
         offset: usize,
     ) -> Result<Option<usize>, FormattedTextError> {
-        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+        logical_next_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset)
     }
 
     fn previous_logical_grapheme_boundary(
         &self,
         offset: usize,
     ) -> Result<Option<usize>, FormattedTextError> {
-        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, offset)
+        logical_previous_grapheme_boundary(&self.text_tree, &self.hard_lines, &self.inline_images, offset)
     }
 }
 
@@ -1073,11 +1095,16 @@ fn previous_semantic_item_boundary(
 fn logical_is_grapheme_boundary(
     text: &FormattedTextTree,
     hard_lines: &OrderedRangeStore<HardLine>,
+    inline_images: &IntervalRangeStore<InlineImage>,
     offset: usize,
 ) -> Result<bool, FormattedTextError> {
     if !text.is_char_boundary(offset)? {
         return Ok(false);
     }
+    // Only semantic image objects split adjacent combining/prepend text;
+    // an authored U+FFFC in a literal document retains Unicode segmentation.
+    if inline_images.query_touching(&(offset..offset)).iter().any(|image|
+        !image.source_view && (image.range.start==offset || image.range.end==offset)) { return Ok(true); }
     if is_semantic_item_boundary(hard_lines, offset) {
         return Ok(true);
     }
@@ -1087,12 +1114,18 @@ fn logical_is_grapheme_boundary(
 fn logical_next_grapheme_boundary(
     text: &FormattedTextTree,
     hard_lines: &OrderedRangeStore<HardLine>,
+    inline_images: &IntervalRangeStore<InlineImage>,
     offset: usize,
 ) -> Result<Option<usize>, FormattedTextError> {
     if !text.is_char_boundary(offset)? {
         return Err(FormattedTextError::NotCharBoundary(offset));
     }
-    let unicode = text.next_grapheme_boundary(offset)?;
+    let mut unicode = text.next_grapheme_boundary(offset)?;
+    if let Some(end)=unicode {
+        for image in inline_images.query_touching(&(offset..end)).iter().filter(|image|!image.source_view) {
+            for boundary in [image.range.start,image.range.end] { if offset<boundary && boundary<=end {unicode=Some(unicode.unwrap().min(boundary));} }
+        }
+    }
     let semantic = next_semantic_item_boundary(hard_lines, offset);
     Ok(match (unicode, semantic) {
         (Some(unicode), Some(semantic)) => Some(unicode.min(semantic)),
@@ -1105,12 +1138,18 @@ fn logical_next_grapheme_boundary(
 fn logical_previous_grapheme_boundary(
     text: &FormattedTextTree,
     hard_lines: &OrderedRangeStore<HardLine>,
+    inline_images: &IntervalRangeStore<InlineImage>,
     offset: usize,
 ) -> Result<Option<usize>, FormattedTextError> {
     if !text.is_char_boundary(offset)? {
         return Err(FormattedTextError::NotCharBoundary(offset));
     }
-    let unicode = text.previous_grapheme_boundary(offset)?;
+    let mut unicode = text.previous_grapheme_boundary(offset)?;
+    if let Some(start)=unicode {
+        for image in inline_images.query_touching(&(start..offset)).iter().filter(|image|!image.source_view) {
+            for boundary in [image.range.start,image.range.end] { if start<=boundary && boundary<offset {unicode=Some(unicode.unwrap().max(boundary));} }
+        }
+    }
     let semantic = previous_semantic_item_boundary(hard_lines, offset);
     Ok(match (unicode, semantic) {
         (Some(unicode), Some(semantic)) => Some(unicode.max(semantic)),
@@ -1451,6 +1490,7 @@ pub struct FormattedDocument {
     /// Their ranges retain every source character, including surrounding tags.
     flow_blocks: Option<OrderedRangeStore<Block>>,
     styles: IntervalRangeStore<StyleSpan>,
+    inline_images: IntervalRangeStore<InlineImage>,
     provenance: IntervalRangeStore<ProvenanceSpan>,
     /// Literal runs are divisible encoding mappings; rich contributors retain
     /// their existing indivisible/relational meaning.
@@ -1474,6 +1514,7 @@ impl PartialEq for FormattedDocument {
             && self.hard_lines == other.hard_lines
             && self.flow_lines == other.flow_lines
             && self.flow_blocks == other.flow_blocks
+            && self.inline_images == other.inline_images
             && self.styles == other.styles
             && self.provenance == other.provenance
             && self.literal_encoding == other.literal_encoding
@@ -1492,25 +1533,33 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
     }
 
     fn is_logical_grapheme_boundary(&self, offset: usize) -> Result<bool, FormattedTextError> {
-        logical_is_grapheme_boundary(&self.text, &self.hard_lines, offset)
+        logical_is_grapheme_boundary(&self.text, &self.hard_lines, &self.inline_images, offset)
     }
 
     fn next_logical_grapheme_boundary(
         &self,
         offset: usize,
     ) -> Result<Option<usize>, FormattedTextError> {
-        logical_next_grapheme_boundary(&self.text, &self.hard_lines, offset)
+        logical_next_grapheme_boundary(&self.text, &self.hard_lines, &self.inline_images, offset)
     }
 
     fn previous_logical_grapheme_boundary(
         &self,
         offset: usize,
     ) -> Result<Option<usize>, FormattedTextError> {
-        logical_previous_grapheme_boundary(&self.text, &self.hard_lines, offset)
+        logical_previous_grapheme_boundary(&self.text, &self.hard_lines, &self.inline_images, offset)
     }
 }
 
 impl FormattedDocument {
+    /// Indexed region query; does not scan or materialize unrelated images.
+    pub fn inline_images_for_region(&self, range: &Range<usize>) -> Vec<InlineImage> {
+        self.inline_images.query_overlapping(range)
+    }
+    /// Image ranges are disjoint, so existence is a logarithmic index query.
+    pub fn has_inline_images_in_region(&self, range: &Range<usize>) -> bool {
+        !self.inline_images.overlapping_index_span(range).is_empty()
+    }
     pub fn tables(&self) -> &[super::MarkdownTable] { &self.tables }
     pub(super) fn extract_table_row(&self,index:usize,source_delta:i128,source:Range<usize>)
         -> Option<(Self,super::MarkdownTableRow,super::MarkdownTableSourceRow)> {
@@ -1528,6 +1577,8 @@ impl FormattedDocument {
             .map(|item|item.with_transform(shift_range_i128(&item.formatted_range,-(range.start as i128))?,source_delta,None))
             .collect::<Option<Vec<_>>>()?;
         let mut projection=Self::from_parts(self.revision,text,blocks,styles,provenance,diagnostics,self.style_sheet.as_ref().clone(),source.start,source.end);
+        projection.inline_images=IntervalRangeStore::new(self.inline_images.query_overlapping(&range).into_iter()
+            .map(|image| image.with_transform(shift_range_i128(&image.range,-(range.start as i128))?,source_delta,None)).collect::<Option<Vec<_>>>()?);
         let lines=self.hard_lines.query_touching(&range).into_iter().filter(|line|range.start<=line.range.start && line.range.end<=range.end)
             .map(|line|shift_range_i128(&line.range,-(range.start as i128))).collect::<Option<Vec<_>>>()?;
         projection.install_hard_line_partition(lines);
@@ -1626,6 +1677,7 @@ impl FormattedDocument {
             }
         });
         if let Some(blocks) = &self.flow_blocks { blocks.visit_retained_memory(visitor); }
+        self.inline_images.visit_retained_memory(visitor);
         self.styles.visit_retained_memory(visitor);
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.provenance.visit_retained_memory(visitor);
@@ -1696,6 +1748,7 @@ impl FormattedDocument {
             flow_lines: None,
             flow_blocks: None,
             styles: IntervalRangeStore::new(styles),
+            inline_images: IntervalRangeStore::new(Vec::new()),
             provenance: IntervalRangeStore::new(provenance),
             literal_encoding: None,
             source_boundaries,
@@ -2352,6 +2405,7 @@ impl FormattedDocument {
             *flow = OrderedRangeStore::new(blocks);
             flow.reuse_equal_chunks(old);
         }
+        self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(())
     }
@@ -2451,6 +2505,7 @@ impl FormattedDocument {
         let next_id=self.install_table_ids(next_id,Some(previous))?;
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
         let next_id = self.reconcile_flow_block_ids(Some(previous), edits, next_id)?;
+        self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
     }
@@ -2574,7 +2629,8 @@ impl FormattedDocument {
             self.blocks.reuse_equal_chunks(&previous.blocks);
             self.hard_lines = OrderedRangeStore::new(lines);
             self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
-            self.styles.reuse_equal_chunks(&previous.styles);
+            self.inline_images.reuse_equal_chunks(&previous.inline_images);
+        self.styles.reuse_equal_chunks(&previous.styles);
             return self.reconcile_flow_block_ids(None, &[], next_id);
         }
         if previous_blocks.len() != previous.hard_lines.len()
@@ -2615,6 +2671,7 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         self.reconcile_flow_block_ids(None, &[], next_id)
     }
@@ -4688,6 +4745,14 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
+    let image_indices = contained_interval_indices(&previous.inline_images, &old_formatted)?;
+    let regional_images = regional.inline_images.as_slice().iter().map(|image| {
+        Ok(InlineImage { range: shift_region_range(&image.range, old_formatted.start)?, ..image.clone() })
+    }).collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    let inline_images = previous.inline_images.splice_transformed(image_indices, regional_images,
+        old_formatted.end, new_formatted_end, Some((old_source.end, new_source.end)), None, &mut range_stats)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
     let mut provenance_indices = if literal_mapping {
         let mut first = previous.provenance.partition_point_start(old_formatted.start);
         if first > 0 && previous.provenance.get(first - 1).is_some_and(|span| span.formatted.end > old_formatted.start) {
@@ -4941,6 +5006,7 @@ pub(crate) fn splice_line_local_projection(
         flow_lines,
         flow_blocks,
         styles,
+        inline_images,
         provenance,
         literal_encoding: regional.literal_encoding,
         source_boundaries,
@@ -5363,6 +5429,26 @@ fn project_markdown(
             }
         }
         projected.append_link_styles(multiline_links);
+        // Source physical rows retain bytes, but image context spans a whole
+        // soft-wrapped construct. Replace only that paragraph's image metadata.
+        let mut images = projected.inline_images.to_vec();
+        for flow in &flows {
+            if !cooked.text[flow.clone()].contains('\n') || projected.blocks_for_region(flow).iter().any(|block| block.style.0 == "Code Block") { continue; }
+            for inline in super::markdown_syntax::inlines(&cooked.text, flow.clone(), &definitions).into_values() {
+                if let super::markdown_syntax::InlineKind::Image { destination, text, inline: is_inline } = inline.kind {
+                    if !cooked.text[inline.range.clone()].contains('\n') { continue; }
+                    let begin=cooked.units.partition_point(|unit|unit.normalized.end<=inline.range.start);
+                    let end=cooked.units.partition_point(|unit|unit.normalized.start<inline.range.end);
+                    if begin>=end {continue;}
+                    images.retain(|image| image.range.end<=inline.range.start || inline.range.end<=image.range.start);
+                    images.push(InlineImage {range:inline.range,text,destination,source_view:true,
+                        source:cooked.units[begin].source.start..cooked.units[end-1].source.end,inline:is_inline});
+                }
+            }
+        }
+        images.sort_by_key(|image|image.range.start);
+        projected.inline_images=IntervalRangeStore::new(images);
+
         let mut paragraphs: Vec<Block> = Vec::new();
         let mut flow_index = 0;
         for block in projected.blocks() {
@@ -5882,6 +5968,7 @@ fn project_markdown_lines(
         source_content_start,
         source_content_end,
     );
+    projection.inline_images = IntervalRangeStore::new(builder.inline_images);
     let mut start = 0;
     let mut lines = Vec::with_capacity(hard_breaks.len() + 1);
     for at in hard_breaks {
@@ -5976,6 +6063,7 @@ struct MarkdownBuilder<'a> {
     inline_hard_breaks: Vec<usize>,
     blocks: Vec<Block>,
     styles: Vec<StyleSpan>,
+    inline_images: Vec<InlineImage>,
     provenance: Vec<ProvenanceSpan>,
     decoding_diagnostics: Vec<DecodingDiagnostic>,
     encoding: super::Encoding,
@@ -6001,6 +6089,7 @@ impl<'a> MarkdownBuilder<'a> {
             inline_hard_breaks: Vec::new(),
             blocks: Vec::new(),
             styles: Vec::new(),
+            inline_images: Vec::new(),
             provenance: Vec::new(),
             decoding_diagnostics: Vec::new(),
             encoding,
@@ -6055,6 +6144,15 @@ impl<'a> MarkdownBuilder<'a> {
                 use super::markdown_syntax::InlineKind;
                 let output = self.output.len();
                 match inline.kind {
+                    InlineKind::Image { destination, text, inline: is_inline } => {
+                        let source = self.unit_at(at).unwrap().source.start..self.unit_at(inline.range.end - 1).unwrap().source.end;
+                        if self.preserve_markers { self.emit_range(at, inline.range.end); } else {
+                            self.output.push('\u{fffc}');
+                            self.provenance.push(ProvenanceSpan { formatted: output..self.output.len(), source: source.clone() });
+                        }
+                        self.inline_images.push(InlineImage { range: output..self.output.len(), text, destination,
+                            source_view: self.preserve_markers, source, inline: is_inline });
+                    }
                     InlineKind::Reference => {
                         self.emit_range(at, inline.range.end);
                         self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) });
@@ -7135,6 +7233,7 @@ mod tests {
             },
             text_tree: FormattedTextTree::try_from_text(text).unwrap(),
             hard_lines: OrderedRangeStore::new(hard_lines),
+            inline_images: IntervalRangeStore::new(Vec::new()),
         };
         let start = LINES - REQUESTED;
         let (lines, stats) = snapshot.lines_with_stats(start..LINES).unwrap();

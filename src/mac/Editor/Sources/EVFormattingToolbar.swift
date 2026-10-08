@@ -22,6 +22,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let formattedView = NSButton()
   let insertTable = EVInsertTableButton()
   let insertLink = NSButton()
+  let insertImage = NSButton()
   private(set) var tablePicker: EVTablePickerController?
   private var pickerSelection: ViemLogicalSelectionIdentityV1?
   private let scroll = NSScrollView()
@@ -83,6 +84,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
     codeBlock.action = #selector(toggleCodeBlock(_:))
     blockGroup.addArrangedSubview(codeBlock)
+    configure(insertImage, title: "Insert Image", symbol: "photo", toggle: false)
+    insertImage.action = #selector(openImageEditor(_:))
+    blockGroup.addArrangedSubview(insertImage)
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
     add(.decreaseIndent, title: "Unindent", symbol: "decrease.indent", to: indentGroup, toggle: false)
     configure(insertTable, title: "Insert Table", toggle: false)
@@ -217,6 +221,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     setHidden(!markdown, for: insertTable)
     setHidden(!markdown, for: insertLink)
     insertLink.isEnabled = markdown && surface.linkPopover.canOpenEditor
+    setHidden(!markdown, for: insertImage)
+    insertImage.isEnabled = markdown && surface.imagePopover.canOpenEditor
     let tableContext = try? surface.session?.tableContext()
     insertTable.isEnabled = markdown && (tableContext?.flags ?? 0) & 1 != 0
     if let expected = pickerSelection, let current = tableContext?.selection,
@@ -331,6 +337,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     finishAction()
   }
 
+  @objc func openImageEditor(_ sender: NSButton) { surface?.imagePopover.openEditor() }
   @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.openEditor() }
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }

@@ -582,9 +582,17 @@ fn write_runs(
         boundaries.insert(link.range.start.max(range.start));
         boundaries.insert(link.range.end.min(range.end));
     }
+    let images = document.inline_images_for_region(&range);
+    for image in &images { boundaries.insert(image.range.start); boundaries.insert(image.range.end); }
     let boundaries = boundaries.into_iter().collect::<Vec<_>>();
     for pair in boundaries.windows(2) {
         if pair[0] == pair[1] {
+            continue;
+        }
+        if let Some(image)=images.iter().find(|image|image.range.start==pair[0] && image.range.end==pair[1]) {
+            // Export remains passive: an image location is explicit text, never
+            // an <img src> that could make an external reader fetch resources.
+            output.push_str(&escape(&format!("![{}]({})",image.text,image.destination)));
             continue;
         }
         let shape = styles

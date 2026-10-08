@@ -10,6 +10,7 @@ internal sealed record LayoutSnapshot(ViemLayoutSnapshotInfoV1 Info, ViemVisualR
     ViemLayoutDecorationV1[] Decorations, string Diagnostics)
 {
     internal ViemTableCellV1[] TableCells { get; init; } = [];
+    internal ViemVisualSelectionSegmentV1[] SelectionSegments { get; init; } = [];
 }
 
 internal sealed unsafe partial class CoreView
@@ -27,7 +28,10 @@ internal sealed unsafe partial class CoreView
         // Geometry and paint belong to an immutable, fully identified snapshot.
         // Selection changes independently and must still be exported each turn.
         if (cachedLayout is { } cached && SameLayout(cached.Info.identity, identity))
-            return cached with { Info = info, Selection = Selection().Rectangles };
+        {
+            var currentSelection = Selection();
+            return cached with { Info = info, Selection = currentSelection.Rectangles, SelectionSegments = currentSelection.Segments };
+        }
         var rows = new ViemVisualRowV1[checked((int)info.row_count)];
         var clusters = new ViemPositionedClusterV1[checked((int)info.cluster_count)];
         var carets = new ViemPositionedCaretV1[checked((int)info.caret_count)];
@@ -50,7 +54,7 @@ internal sealed unsafe partial class CoreView
             var expected = diagnosticsIdentity;
             return viem_core_view_copy_layout_diagnostics(Document.Handle, Id, &expected, p, n, r);
         })); } catch (CoreException) { }
-        return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations, diagnostics) { TableCells = TableCells(identity) };
+        return cachedLayout = new(info, rows, clusters, carets, paint, runs, selection.Rectangles, decorations, diagnostics) { TableCells = TableCells(identity), SelectionSegments = selection.Segments };
     }
     public (ViemVisualSelectionInfoV1 Info, ViemVisualSelectionSegmentV1[] Segments, ViemVisualSelectionRectangleV1[] Rectangles) Selection()
     {

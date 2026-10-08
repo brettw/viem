@@ -88,8 +88,11 @@ internal static class ClipboardFormats
             fixed (byte* input = bytes) return viem_import_clipboard_json(format, input, (ulong)bytes.Length, p, n, r);
         }));
         using var parsed = JsonDocument.Parse(fragment);
-        return (plain.Length == 0 ? parsed.RootElement.GetProperty("plain_text").GetString() ?? "" : plain, fragment);
+        return (plain.Length == 0 ? PlainText(parsed.RootElement) : plain, fragment);
     }
+    internal static string PlainText(JsonElement fragment) => fragment.TryGetProperty("image_plain_text", out var imageText)
+        && imageText.ValueKind == JsonValueKind.String ? imageText.GetString() ?? "" : fragment.GetProperty("plain_text").GetString() ?? "";
+
     public static void Write(string text, string fragment)
     {
         var data = new DataPackage(); data.SetText(text);
@@ -110,6 +113,11 @@ internal static class ClipboardFormats
     internal static string Html(string fragment)
     {
         using var document = JsonDocument.Parse(fragment); var root = document.RootElement;
+        // Image objects retain U+FFFC and logical indices in our private data.
+        // External representations use passive Markdown text, never <img>
+        // tags that could make the receiving application fetch a resource.
+        if (root.TryGetProperty("image_plain_text", out var imageText) && imageText.ValueKind == JsonValueKind.String)
+            return "<div style=\"white-space:pre-wrap\">" + WebUtility.HtmlEncode(imageText.GetString() ?? "") + "</div>";
         string text = root.GetProperty("plain_text").GetString() ?? ""; byte[] utf8 = Encoding.UTF8.GetBytes(text);
         var html = new StringBuilder("<div style=\"white-space:pre-wrap\">"); int cursor = 0;
         string Content(int start, int end) => WebUtility.HtmlEncode(Encoding.UTF8.GetString(utf8, start, end - start));

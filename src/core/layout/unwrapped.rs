@@ -43,6 +43,8 @@ struct SummaryKey {
     context_line: Range<usize>,
     default_style: ResolvedTextStyle,
     style_runs: Vec<ShapeStyleRun>,
+    inline_images: Vec<ShapeInlineImage>,
+    image_max_width: u32,
     direction: TextDirection,
     marker: Option<Range<usize>>,
     scale: u32,
@@ -108,6 +110,8 @@ impl UnwrappedSummaryCache {
             + summary.fragments.capacity() * std::mem::size_of::<FragmentSummary>()
             + summary.runs.capacity() * std::mem::size_of::<DirectionRun>()
             + key.style_runs.capacity() * std::mem::size_of::<ShapeStyleRun>()
+            + key.inline_images.capacity() * std::mem::size_of::<ShapeInlineImage>()
+            + key.inline_images.iter().map(|image| image.destination.capacity()).sum::<usize>()
             + key
                 .style_runs
                 .iter()
@@ -455,6 +459,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         line: &Range<usize>,
         default_style: &ResolvedTextStyle,
         style_runs: &[ShapeStyleRun],
+        inline_images: &[ShapeInlineImage],
+        image_max_width: f32,
         direction: TextDirection,
         view: &LayoutJobViewConfiguration,
         control: &LayoutRunControl<'_>,
@@ -469,6 +475,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &[0..text.len()],
             context.start,
             style_runs,
+            inline_images,
             std::slice::from_ref(default_style),
             &[direction],
             view.scale,
@@ -476,7 +483,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             self.provider.metrics_generation(),
             control,
         )?;
-        Ok(result.remove(0))
+        let mut fragment = result.remove(0);
+        fit_inline_images(&mut fragment.clusters, inline_images, image_max_width);
+        Ok(fragment)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -783,6 +792,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 base_direction(tree, full_range.clone(), &paragraph.style, &control)?
             };
             let direction = if right_to_left { TextDirection::RightToLeft } else { TextDirection::LeftToRight };
+            let (_, image_box) = paragraph_row_boxes(content_insets.left, usable_width,
+                &paragraph.style, right_to_left, view.scale);
+            let inline_images = images_for_shaping_span(&styles.inline_images, full_range).0;
+            let image_max_width = if inline_images.is_empty() { 0 } else { image_box.width.to_bits() };
             let summary_key = SummaryKey {
                 code_wrap: view.wrap && view.whitespace.format.is_code(),
                 whitespace_style: styles.whitespace_shaping_style.clone(),
@@ -800,6 +813,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 context_line: full_range.clone(),
                 default_style: shaping_style.clone(),
                 style_runs: style_runs.to_vec(),
+                inline_images,
+                image_max_width,
                 direction,
                 marker: paragraph.style.list_marker_range.clone(),
                 scale: view.scale.to_bits(),
@@ -837,6 +852,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         full_range,
                         shaping_style,
                         style_runs,
+                        &styles.inline_images,
+                        image_box.width,
                         direction,
                         view,
                         &control,
@@ -1121,6 +1138,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     full_range,
                     shaping_style,
                     style_runs,
+                    &styles.inline_images,
+                    image_box.width,
                     direction,
                     view,
                     &control,

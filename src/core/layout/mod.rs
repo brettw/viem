@@ -62,7 +62,7 @@ pub use measurement::{
     BoundaryAffinity, ClusterCaretStop, FontSlant, MeasurementEnvironmentId, MeasurementError,
     MetricsGeneration, OpenTypeFeature, ProviderThreading, RenderRunHandle, RenderRunOwner,
     RenderRunPolicy, RenderRunThreading, ResolvedTextStyle, ShapePurpose, ShapeRequest,
-    ShapeStyleRun, ShapedBounds, ShapedCluster, ShapedFragment, ShapingDiagnostic, TextDirection,
+    ShapeInlineImage, ShapeStyleRun, ShapedBounds, ShapedCluster, ShapedFragment, ShapingDiagnostic, TextDirection,
     TextMeasurementProvider, TextMetrics,
 };
 pub use mock::MockTextMeasurementProvider;
@@ -72,3 +72,6 @@ pub use style::{
     ParagraphLayoutStyle, ResolvedTextPaint,
 };
 pub use block_box::{BlockBoxStyle, ContainerLayoutStyle};
+
+#[cfg(test)]
+mod images_tests;

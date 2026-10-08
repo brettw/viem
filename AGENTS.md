@@ -341,9 +341,13 @@ characters use explicit cell border colors and otherwise retain their text color
 
 Deliberate presentation exceptions:
 
-- Images, reference links, and reference definitions retain literal bracket
-  syntax in WYSIWYG with the light-purple `Markdown reference` style (`#A673D1`);
-  image resources are never loaded.
+- Reference links and reference definitions retain literal bracket syntax in
+  WYSIWYG with the light-purple `Markdown reference` style (`#A673D1`). Images
+  are atomic inline objects in WYSIWYG; Source retains their full notation.
+  Only local image files may be decoded for previews. Never fetch remote image
+  resources; show a box containing their location instead. Local previews keep
+  intrinsic aspect ratio and shrink to the available content width without
+  enlarging smaller images, following GitHub's image sizing.
 - Comments remain visible with `Comment` styling. Surplus separator lines retain
   editable empty paragraphs rather than collapsing to GitHub's presentation.
 - Thematic rules are non-text furniture with an editable paragraph boundary.
@@ -370,6 +374,22 @@ unsaved edits; only documents without an open view receive a new Viem window.
 A local file's heading fragment navigates that chosen view. HTTP and HTTPS open
 the default browser. Native URL and document APIs perform these actions, never
 a shell. Preserve existing percent escapes and encode invalid bytes once.
+
+Markdown image insertion and location editing use native caret popups, with the
+image button beside Code Block. Selecting an image shows its location, explicit
+open/copy/edit/remove actions, and an outline matching the open-box caret. The
+edit transition follows the link popup's native controls and reduced-motion
+behavior. Clicking a WYSIWYG image selects its entire atomic range independently
+of automatic text-selection preferences. Source syntax remains ordinary editable
+text. Explicit Insert/Replace navigation onto an image selects its atomic range;
+subsequent arrow movement leaves that selection and resumes its typing mode.
+Normal-mode motion keeps Vim's mode and outlines the image cell. Image authoring
+preserves unrelated source, titles and undo; empty
+alternative text is valid. Resolved reference images render as objects, and
+editing one occurrence may replace only that occurrence with inline image syntax.
+Opening an image location is explicit native URL interaction, never a resource
+fetch for a preview. Clipboard plain-text image fallbacks and HTML export retain
+passive location text rather than creating automatic remote loads.
 
 Markdown Source and WYSIWYG share native link insertion, editing and removal.
 The caret popup uses Text and Destination fields, defaulting Text to the selected

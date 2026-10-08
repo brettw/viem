@@ -46,6 +46,7 @@ mod prelayout;
 mod formatting;
 mod tables;
 mod links;
+mod images;
 mod startup;
 mod ex_files;
 mod completion;
@@ -3388,6 +3389,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     local_change.as_ref(),
                 );
                 view.layout.rebase_document_change(&change);
+                view.engine.rebase_document_change(&change);
             }
             view.long_line_checkpoints
                 .rebase(&self.document, map, view.layout.paragraph_flow());
@@ -7406,6 +7408,11 @@ fn composition_layout_styles(
     if let Some(search) = &mut styles.search_paint_overlay {
         search.remap_ranges(|range| map_base_range_to_overlay(overlay, &range).ok());
     }
+    styles.inline_images = styles.inline_images.into_iter().filter_map(|mut image| {
+        if image.text_range.start < replaced.end && replaced.start < image.text_range.end { return None; }
+        image.text_range = map_base_range_to_overlay(overlay, &image.text_range).ok()?;
+        Some(image)
+    }).collect();
     styles.paragraphs = splice_paragraph_styles(styles.paragraphs, &replaced, &inserted, affinity)?;
     Ok(styles)
 }
