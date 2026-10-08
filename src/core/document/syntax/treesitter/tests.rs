@@ -772,6 +772,148 @@ fn nested_captures_keep_innermost_styles_and_ignore_spell_controls() {
 }
 
 #[test]
+#[ignore = "diagnostic regional-query timings; run serially in release mode"]
+fn regional_query_scroll_timings() {
+    let fixtures = [
+        ("rust", "fn example(value: usize) -> usize {\n    let next = value + 42; // comment\n    next\n}\n"),
+        ("typescript", "function example(value: number): number {\n    const next = value + 42; // comment\n    return next;\n}\n"),
+        ("python", "def example(value):\n    next_value = value + 42 # comment\n    return next_value\n"),
+    ];
+    for (language, fixture) in fixtures {
+        let text = fixture.repeat(4_000);
+        let mut session =
+            TreeSitterSession::new(TreeSitterPackage::bundled(language).unwrap()).unwrap();
+        let (snapshot, _) = parsed(&mut session, input(&text, 1), &[]);
+        let mut samples = Vec::new();
+        let mut captures = 0;
+        for _ in 0..7 {
+            let started = Instant::now();
+            for page in 0..40 {
+                let start = (2_000 + page * 20) * fixture.len();
+                let output = highlight(
+                    &snapshot,
+                    start..start + fixture.len() * 20,
+                    &generous(),
+                    &AtomicBool::new(false),
+                );
+                assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+                captures += output.work.query_captures;
+                std::hint::black_box(output);
+            }
+            samples.push(started.elapsed().as_secs_f64() * 1_000.0 / 40.0);
+        }
+        samples.sort_by(f64::total_cmp);
+        eprintln!("regional query {language}: median {:.3} ms/page, captures {captures}, samples {samples:?}", samples[3]);
+    }
+}
+
+#[test]
+fn capture_sweep_matches_priority_extent_pattern_and_serial_precedence() {
+    let names = ["comment", "Comment", "type.name"];
+    let mut seed = 7u64;
+    let mut next = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (seed >> 32) as usize
+    };
+    let mut runs = Vec::new();
+    for serial in 0..512 {
+        let start = next() % 128;
+        let length = next() % 16 + 1;
+        runs.push(RankedRun {
+            range: start..start + length,
+            name: names[next() % names.len()],
+            priority: (next() % 3) as i32 - 1,
+            pattern: next() % 4,
+            serial,
+            // Original captures can be wider than the requested viewport.
+            extent: length + next() % 3,
+        });
+    }
+    let expected: Vec<_> = (0..144)
+        .map(|at| {
+            runs.iter()
+                .filter(|run| run.range.contains(&at))
+                .max_by_key(|run| {
+                    (
+                        run.priority,
+                        std::cmp::Reverse(run.extent),
+                        run.pattern,
+                        run.serial,
+                    )
+                })
+                .map(|run| (run.name, run.priority))
+        })
+        .collect();
+    let budget = generous();
+    let cancelled = AtomicBool::new(false);
+    let native = native::Account::default();
+    let control = Control::new(&budget, &cancelled, &native);
+    let actual = coalesce(runs, "test", &control).unwrap();
+    for (at, expected) in expected.into_iter().enumerate() {
+        let actual = actual.iter().find(|run| run.range.contains(&at));
+        assert_eq!(
+            actual.map(|run| (&*run.origin, run.priority)),
+            expected
+                .map(|(name, priority)| (format!("treesitter:test:@{name}"), priority))
+                .as_ref()
+                .map(|(origin, priority)| (origin.as_str(), *priority)),
+            "byte {at}",
+        );
+    }
+    assert!(actual.windows(2).all(|pair| {
+        pair[0].range.end <= pair[1].range.start
+            && (pair[0].range.end != pair[1].range.start
+                || pair[0].origin != pair[1].origin
+                || pair[0].priority != pair[1].priority)
+    }));
+}
+
+#[test]
+fn capture_sweep_preserves_clipped_extents_merges_winners_and_honors_cancellation() {
+    let captures = || {
+        vec![
+            RankedRun {
+                range: 0..2,
+                name: "narrow",
+                priority: 1,
+                pattern: 0,
+                serial: 0,
+                extent: 2,
+            },
+            RankedRun {
+                range: 0..2,
+                name: "wide",
+                priority: 1,
+                pattern: 9,
+                serial: 1,
+                extent: 20,
+            },
+            RankedRun {
+                range: 2..4,
+                name: "narrow",
+                priority: 1,
+                pattern: 0,
+                serial: 2,
+                extent: 2,
+            },
+        ]
+    };
+    let budget = generous();
+    let cancelled = AtomicBool::new(false);
+    let native = native::Account::default();
+    let control = Control::new(&budget, &cancelled, &native);
+    let output = coalesce(captures(), "test", &control).unwrap();
+    assert_eq!(output.len(), 1);
+    assert_eq!(output[0].range, 0..4);
+    assert_eq!(output[0].name.as_str(), "Narrow");
+    cancelled.store(true, Ordering::Relaxed);
+    assert_eq!(
+        coalesce(captures(), "test", &control),
+        Err(TreeSitterError::Cancelled)
+    );
+}
+
+#[test]
 fn parse_yields_resumes_and_supersedes_only_frozen_inputs() {
     let mut session = TreeSitterSession::new(TreeSitterPackage::bundled("c").unwrap()).unwrap();
     let first = input(&"int x = 1;\n".repeat(20_000), 0);

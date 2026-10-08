@@ -114,6 +114,18 @@ fn oneline_leading_context_does_not_reuse_a_delimiter_behind_the_start() {
 }
 
 #[test]
+fn oneline_anchor_preflight_preserves_unicode_leading_context() {
+    let mut session = session("syn region Region start=/é/ end=/^éx/lc=1 oneline");
+    let text = "éx\n éx";
+    let input = input(text, 1);
+    let result = finish(&mut session, &input, 0..text.len());
+    assert_eq!(
+        names(&result, text.len()),
+        ["Region", "Region", "Region", "", "", "", "", ""]
+    );
+}
+
+#[test]
 fn leading_context_future_start_preserves_intervening_matches() {
     for text in ["abc", "aéc"] {
         let mut session = session(&format!(

@@ -45,6 +45,42 @@ fn find_pattern(pattern: &VimPattern, text: &str, slice: usize) -> Option<std::o
 }
 
 #[test]
+fn anchors_only_read_the_boundary_byte_they_depend_on() {
+    let text = "é\nλ";
+    let keyword = VimKeyword::default();
+    for (look, at, expected, maximum_reads) in [
+        (Look::Start, 0, true, 0),
+        (Look::Start, 3, false, 0),
+        (Look::End, 3, false, 0),
+        (Look::End, text.len(), true, 0),
+        (Look::StartLF, 0, true, 0),
+        (Look::StartLF, 2, false, 1),
+        (Look::StartLF, 3, true, 1),
+        (Look::EndLF, 2, true, 1),
+        (Look::EndLF, 3, false, 1),
+        (Look::EndLF, text.len(), true, 0),
+    ] {
+        let reads = std::cell::Cell::new(0);
+        let actual = look_matches(
+            look,
+            at,
+            text.len(),
+            &|position| {
+                reads.set(reads.get() + 1);
+                text.as_bytes().get(position).copied()
+            },
+            &keyword,
+        );
+        assert_eq!(actual, expected, "{look:?} at {at}");
+        assert!(
+            reads.get() <= maximum_reads,
+            "{look:?}: {} reads",
+            reads.get()
+        );
+    }
+}
+
+#[test]
 fn syntax_magic_modes_numeric_atoms_and_collection_escapes_are_resumable() {
     let cases = [
         (r"\V${", "${target}", Some(0..2)),

@@ -73,6 +73,58 @@ fn leading_context_reuses_previously_matched_unicode_content() {
     }
 }
 
+#[test]
+fn proven_start_anchors_avoid_full_attempts_and_preserve_sliced_output() {
+    let p = program("syn match Line /^target$/\n");
+    // Disable only the existing optimization metadata. The reference NFA
+    // still evaluates exactly the same anchor and match instructions.
+    let mut reference = (*p).clone();
+    for rule in &mut reference.rules {
+        if let RuleKind::Match(pattern) = &mut rule.kind {
+            pattern.start_anchor = None;
+        }
+    }
+    let text = format!(
+        "{}target\ntarget\n{}",
+        "é".repeat(1024),
+        "λ".repeat(1024)
+    );
+    let input = input(&text, 1);
+    let budget = VimBudget {
+        instructions: 1_000_000,
+        ..Default::default()
+    };
+    let optimized = VimSession::new(p.clone()).highlight(&input, 0..text.len(), budget);
+    let reference = VimSession::new(Arc::new(reference)).highlight(&input, 0..text.len(), budget);
+    assert_eq!(optimized.coverage, Coverage::Exact);
+    assert_eq!(optimized.covered, 0..text.len());
+    assert_eq!(optimized.runs, reference.runs);
+    assert_eq!(optimized.diagnostics, reference.diagnostics);
+    assert!(
+        optimized.stats.instructions * 2 < reference.stats.instructions,
+        "optimized {}, reference {}",
+        optimized.stats.instructions,
+        reference.stats.instructions
+    );
+    let sliced = finish(&mut VimSession::new(p), &input, 0..text.len(), 1);
+    assert_eq!(sliced.runs, optimized.runs);
+    let colored = text.find("\ntarget\n").unwrap() + 1;
+    assert_eq!(optimized.runs.len(), 1);
+    assert_eq!(optimized.runs[0].range, colored..colored + 6);
+}
+
+#[test]
+fn proven_start_anchor_uses_leading_context_not_the_current_position() {
+    let p = program("syn match Follow /^éx/lc=1\n");
+    let text = "éx\n éx\néx\n";
+    let input = input(text, 1);
+    let result = finish(&mut VimSession::new(p), &input, 0..text.len(), 1);
+    let groups = names(&result, text.len());
+    assert_eq!(groups[2], "Follow");
+    assert_eq!(groups[7], "");
+    assert_eq!(groups[11], "Follow");
+}
+
 fn finish(
     session: &mut VimSession,
     input: &SyntaxInputSnapshot,

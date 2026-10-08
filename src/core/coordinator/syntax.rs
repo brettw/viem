@@ -266,58 +266,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             .and_then(|map| self.document.layout_change_between(map.source_revision(), map.target_revision()))
             .map(|change| (change.old, change.new));
         self.syntax.service.rebase_input(input.clone(), map, hull);
+        // Drain completed coverage before enqueueing: requesting first could
+        // restart a finished regional query on every publication frame.
+        let completed = self.syntax.service.poll(input.identity());
         let mut requests = Vec::new();
         for view in self.views.values() {
-            let start = view
-                .layout
-                .hard_line_at_y(view.layout.viewport_top() as f64)
-                .ok()
-                .flatten()
-                .map(|hit| hit.hard_line())
-                .unwrap_or(0);
-            let last = view
-                .layout
-                .hard_line_at_y((view.layout.viewport_top() + view.layout.height()) as f64)
-                .ok()
-                .flatten()
-                .map(|hit| hit.hard_line() + 1)
-                .unwrap_or(start + 80);
-            let first_byte = input
-                .text_tree()
-                .hard_line_start(start.min(input.text_tree().hard_line_count() - 1))
-                .unwrap_or(0);
-            let mut range = first_byte
-                ..input
-                    .text_tree()
-                    .hard_line_start((last + 20).min(input.text_tree().hard_line_count()))
-                    .unwrap_or(input.byte_len());
-            // A huge wrapped line requests the displayed fragment, never a
-            // fabricated whole-line string or an intervening prefix scan.
-            if let Some(snapshot) = view
-                .layout
-                .snapshot()
-                .filter(|s| s.document_revision == self.document.revision())
-            {
-                let rows = snapshot
-                    .rows
-                    .iter()
-                    .filter(|r| {
-                        r.y + r.height() >= view.layout.viewport_top()
-                            && r.y <= view.layout.viewport_top() + view.layout.height()
-                    })
-                    .collect::<Vec<_>>();
-                if let (Some(first), Some(last)) = (rows.first(), rows.last()) {
-                    range = first.text_range.start..last.text_range.end;
-                }
-            }
-            if !requests.contains(&range) {
-                requests.push(range);
-            }
+            let range = self.visible_syntax_range(&input, view);
+            if !requests.contains(&range) { requests.push(range); }
         }
         for range in requests {
             self.syntax.service.request(input.clone(), range);
         }
-        let completed = self.syntax.service.poll(input.identity());
         let mut sheet = code_style::snapshot();
         let style_changed = sheet.revision != self.syntax.sheet.revision;
         let publication = (
@@ -339,6 +298,66 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.publish_code_presentation(sheet, &delta);
         self.syntax.published = Some(publication);
         true
+    }
+
+    /// Capture the current view's syntax request without waiting under the
+    /// coordinator lease. Frontends call this after materializing the viewport.
+    pub fn prepare_view_syntax_wait(
+        &mut self, view: ViewId, deadline: std::time::Instant,
+    ) -> Result<(bool, Option<crate::document::syntax::service::SyntaxWait>), CoreError> {
+        if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
+        let changed = self.poll_syntax();
+        if !self.document.format().is_code() { return Ok((changed, None)); }
+        let input = self.syntax_input();
+        let range = self.visible_syntax_range(&input, &self.views[&view]);
+        let state = &mut self.views.get_mut(&view).expect("validated view").syntax_wait;
+        Ok((changed, self.syntax.service.prepare_wait(input, range, state, deadline)))
+    }
+
+    fn visible_syntax_range(&self, input: &SyntaxInputSnapshot, view: &View<P>) -> std::ops::Range<usize> {
+        let start = view
+            .layout
+            .hard_line_at_y(view.layout.viewport_top() as f64)
+            .ok()
+            .flatten()
+            .map(|hit| hit.hard_line())
+            .unwrap_or(0);
+        let last = view
+            .layout
+            .hard_line_at_y((view.layout.viewport_top() + view.layout.height()) as f64)
+            .ok()
+            .flatten()
+            .map(|hit| hit.hard_line() + 1)
+            .unwrap_or(start + 80);
+        let first_byte = input
+            .text_tree()
+            .hard_line_start(start.min(input.text_tree().hard_line_count() - 1))
+            .unwrap_or(0);
+        let mut range = first_byte
+            ..input
+                .text_tree()
+                .hard_line_start((last + 20).min(input.text_tree().hard_line_count()))
+                .unwrap_or(input.byte_len());
+        // A huge wrapped line requests the displayed fragment, never a
+        // fabricated whole-line string or an intervening prefix scan.
+        if let Some(snapshot) = view
+            .layout
+            .snapshot()
+            .filter(|s| s.document_revision == self.document.revision())
+        {
+            let mut rows = snapshot
+                .rows
+                .iter()
+                .filter(|r| {
+                    r.y + r.height() >= view.layout.viewport_top()
+                        && r.y <= view.layout.viewport_top() + view.layout.height()
+                });
+            if let Some(first) = rows.next() {
+                let last = rows.last().unwrap_or(first);
+                range = first.text_range.start..last.text_range.end;
+            }
+        }
+        range
     }
 
     /// Whether the current Code sheet can change metrics through a run.

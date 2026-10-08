@@ -97,6 +97,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     public private(set) var configurationWarning: String?
     private var codeObservers: [NSObjectProtocol] = []
     private var syntaxTimer: Timer?
+    private var isPublishingSyntaxChange = false
     private let syntaxDiagnosticSource = UUID().uuidString
     private var lastSyntaxDiagnosticRefresh: TimeInterval = -.infinity
 
@@ -636,14 +637,31 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         guard core != 0, sourceFormat == .code else { return }
         var changed: UInt8 = 0
         guard viem_core_poll_syntax(core, &changed) == Status.ok else { return }
-        if changed != 0 {
-            // Presentation generations may change; no source transaction or document undo occurs.
-            for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
-            NotificationCenter.default.post(name: .viemCoreSyntaxDidChange, object: self)
-        }
+        if changed != 0 { publishSyntaxChange() }
         // Providers can report a diagnostic without publishing different styles.
         // Bound text export to four times per second independently of frame polling.
         if now - lastSyntaxDiagnosticRefresh >= 0.25 { refreshSyntaxDiagnostics(now: now) }
+    }
+
+    /// Give newly visible Code one bounded opportunity to acquire its colors
+    /// before exporting a frame. The shared core owns the deadline and request
+    /// identity; secondary panes and timer-driven publication never wait again.
+    func waitForSyntax(viewID: ViemViewId) throws -> Bool {
+        guard core != 0, sourceFormat == .code, !isPublishingSyntaxChange else { return false }
+        var changed: UInt8 = 0
+        try checked(viem_core_view_wait_for_syntax(core, viewID, &changed), operation: "Prepare syntax paint")
+        if changed != 0 { publishSyntaxChange(excluding: viewID) }
+        return changed != 0
+    }
+
+    private func publishSyntaxChange(excluding viewID: ViemViewId? = nil) {
+        isPublishingSyntaxChange = true
+        defer { isPublishingSyntaxChange = false }
+        // Presentation generations may change; no source transaction or document undo occurs.
+        for surface in surfaces.compactMap(\.value) where surface.session?.viewID != viewID {
+            surface.refreshPresentation()
+        }
+        NotificationCenter.default.post(name: .viemCoreSyntaxDidChange, object: self)
     }
 
     private func refreshSyntaxDiagnostics(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {

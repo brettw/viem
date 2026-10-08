@@ -46,6 +46,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = ViemViewportStateV1()
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
+    private var isRefreshingPresentation = false
     /// Changes only when the immutable text drawing inputs or viewport change.
     /// Selection and caret updates have their own damage tracking in the view.
     private(set) var immutablePresentationGeneration: UInt64 = 0
@@ -230,10 +231,19 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func refreshPresentation(advancingSearch: Bool = true) {
-        guard let session else { return }
+        guard let session, !isRefreshingPresentation else { return }
+        isRefreshingPresentation = true
+        defer { isRefreshingPresentation = false }
         do {
             if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()
+            if session.optionalPresentation("syntax highlighting", fallback: false, {
+                try backend.waitForSyntax(viewID: session.viewID)
+            }) {
+                // A syntax style may change metrics as well as paint. Capture
+                // geometry and colors only after installing the same result.
+                try session.refreshLayoutIfNeeded()
+            }
             let nextDocumentState = try backend.documentState()
             let nextFormattedSnapshot = try backend.formattedSnapshot()
             let nextPresentation = try session.presentation()

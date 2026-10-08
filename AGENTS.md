@@ -543,7 +543,11 @@ completed parse provisional. Unsupported query handlers or Vim atoms must report
 compatibility failures, not silently succeed with different semantics. Vim syntax
 patterns, Neovim query predicates and Viem Regex v2 are separate languages.
 
-Opening, drawing, editing and scrolling never wait for syntax work. Analysis,
+Before presenting newly visible Code text, native frontends may wait up to the
+shared 100 ms syntax grace-period constant for current visible coverage, without
+holding the core or provider locks. Ready coverage returns immediately; timeout
+or unavailable highlighting preserves ordinary asynchronous display. Repeated
+presentation of the same timed-out request must not restart the wait. Analysis,
 retries and retained state must be bounded, cancellable and shared across views;
 no document/giant-line flattening or whole-document highlighting for an exact
 scrollbar. Exact repair may reach EOF but must yield. Never truncate backend
@@ -1540,7 +1544,8 @@ Complexity and bounded work are release requirements:
   must not scale with total bytes, lines, anchors or visual rows.
 - Opening may scan for detection/indexing, but first interaction must not wait
   for unrelated full-document semantic projection, shaping or wrapping unless a
-  declared global dependency requires it. Syntax availability must not block it.
+  declared global dependency requires it. Syntax availability may delay presentation
+  only within the bounded visible grace period above.
 - Resize and distant scrolling perform bounded visible work, never eager
   whole-document invalidation or shaping the intervening prefix.
 - Test a million short lines, 100 MiB mixed-encoding documents, multi-megabyte

@@ -459,6 +459,12 @@ internal sealed partial class EditorPane : Grid, IDisposable
             presentation = View.Presentation;
             message.Text = View.SubstitutePrompt();
             UpdateStatusPresentation();
+            // Materialize the requested viewport before waiting, then export
+            // its geometry and colors together after syntax publication.
+            try { _ = View.LayoutInfo(); }
+            catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }
+            try { View.WaitForSyntax(); }
+            catch (CoreException error) { PresentationWarning("syntax highlighting", error); }
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;

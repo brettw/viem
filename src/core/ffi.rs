@@ -10431,6 +10431,7 @@ mod tests {
     mod view_restoration_tests;
     mod prelayout_tests;
     mod html_export_tests;
+    mod syntax_wait_tests;
     mod clipboard_import_tests;
     mod theme_tests;
     use super::{
@@ -13862,6 +13863,41 @@ pub unsafe extern "C" fn viem_core_poll_syntax(handle:ViemCoreHandle,changed:*mu
         typed_pointer_region(changed,1)?;
         let value=with_core_mut(handle,|core|Ok(core.poll_syntax()))?;
         unsafe{changed.write(u8::from(value));} Ok(())
+    })
+}
+
+/// Give the current visible syntax request one bounded grace period before
+/// presenting unstyled text. Provider work and waiting happen without a core
+/// lease; every publication revalidates the current input and configuration.
+/// A timeout keeps ordinary asynchronous publication available.
+/// # Safety
+/// changed points to one writable byte. Materialize the viewport before calling;
+/// if changed is set, refresh invalidated layout before exporting presentation.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_wait_for_syntax(
+    handle: ViemCoreHandle, view: ViemViewId, changed: *mut u8,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        use crate::document::syntax::service::SYNTAX_PRESENTATION_WAIT;
+        typed_pointer_region(changed, 1)?;
+        let deadline = std::time::Instant::now() + SYNTAX_PRESENTATION_WAIT;
+        let (mut published, mut waiting) = with_core_mut(handle, |core|
+            core.prepare_view_syntax_wait(ViewId(view), deadline).map_err(core_status))?;
+        while let Some(wait) = waiting {
+            // No registry/coordinator lease or provider lock crosses this wait.
+            if !wait.wait_until(deadline) { break; }
+            let (changed, next) = with_core_mut(handle, |core|
+                core.prepare_view_syntax_wait(ViewId(view), deadline).map_err(core_status))?;
+            published |= changed;
+            if std::time::Instant::now() >= deadline
+                || next.as_ref().is_some_and(|next| !wait.same_target(next)) { break; }
+            waiting = next;
+        }
+        // Include a completion that raced with the timeout, without waiting
+        // again or extending the request's grace period.
+        published |= with_core_mut(handle, |core| Ok(core.poll_syntax()))?;
+        unsafe { changed.write(u8::from(published)); }
+        Ok(())
     })
 }
 

@@ -1297,7 +1297,7 @@ pub fn highlight_injecting(
             &control,
             None,
         )?;
-        let runs = coalesce(captures.0);
+        let runs = coalesce(captures.0, &snapshot.package.id, &control)?;
         let output_bytes = runs
             .iter()
             .map(|run| std::mem::size_of::<SyntaxRun>() + run.name.0.len() + run.origin.len())
@@ -1345,13 +1345,13 @@ pub fn highlight_injecting(
     output
 }
 
-fn execute_query(
+fn execute_query<'a>(
     snapshot: &ParseSnapshot,
-    compiled: &CompiledQuery,
+    compiled: &'a CompiledQuery,
     range: &Range<usize>,
     control: &Control<'_>,
     mut injectable: Option<&mut dyn FnMut(&str) -> bool>,
-) -> Result<(Vec<RankedRun>, Vec<InjectionRegion>, bool), TreeSitterError> {
+) -> Result<(Vec<RankedRun<'a>>, Vec<InjectionRegion>, bool), TreeSitterError> {
     let injection = injectable.is_some();
     if range.is_empty() {
         return Ok((Vec::new(), Vec::new(), false));
@@ -1455,18 +1455,15 @@ fn execute_query(
                 continue;
             }
             control.charge_output(
-                std::mem::size_of::<RankedRun>()
+                std::mem::size_of::<RankedRun<'_>>()
                     .saturating_add(name.len().saturating_mul(2))
                     .saturating_add(snapshot.package.id.len())
                     .saturating_add(16),
             )?;
             runs.push(RankedRun {
-                run: SyntaxRun {
-                    range: start..end,
-                    name: SyntaxStyleName(crate::document::code_style::canonical_capture_name(name).into()),
-                    origin: format!("treesitter:{}:@{name}", snapshot.package.id).into(),
-                    priority: pattern.priority,
-                },
+                range: start..end,
+                name,
+                priority: pattern.priority,
                 pattern: found.pattern_index,
                 serial,
                 extent: node_range.len(),
@@ -1841,65 +1838,72 @@ fn injection_region(
     }))
 }
 
-struct RankedRun {
-    run: SyntaxRun,
+struct RankedRun<'a> {
+    range: Range<usize>,
+    name: &'a str,
+    priority: i32,
     pattern: usize,
     serial: usize,
     extent: usize,
 }
 
-/// Priority and tie ordering precede name lookup. Sweep events avoid quadratic
-/// behavior when many nested nodes produce overlapping captures.
-fn coalesce(runs: Vec<RankedRun>) -> Vec<SyntaxRun> {
-    let mut events: BTreeMap<usize, (Vec<usize>, Vec<usize>)> = BTreeMap::new();
+/// Priority and tie ordering precede name lookup. A contiguous event sweep
+/// avoids per-boundary allocations and quadratic overlapping-capture work.
+/// Only winning output receives owned style names; captures borrow the query.
+fn coalesce(
+    runs: Vec<RankedRun<'_>>,
+    package: &str,
+    control: &Control<'_>,
+) -> Result<Vec<SyntaxRun>, TreeSitterError> {
+    let mut events = Vec::with_capacity(runs.len().saturating_mul(2));
     for (id, run) in runs.iter().enumerate() {
-        events.entry(run.run.range.start).or_default().0.push(id);
-        events.entry(run.run.range.end).or_default().1.push(id);
+        if id % 256 == 0 && control.check() {
+            return Err(control.failure().unwrap());
+        }
+        events.push((run.range.start, id, true));
+        events.push((run.range.end, id, false));
     }
+    events.sort_unstable_by_key(|event| event.0);
     let mut active = BTreeSet::new();
     let mut output: Vec<SyntaxRun> = Vec::new();
+    let mut previous_name = "";
     let mut previous = 0;
-    for (at, (starts, ends)) in events {
+    for (event_index, (at, id, start)) in events.into_iter().enumerate() {
+        if event_index % 256 == 0 && control.check() {
+            return Err(control.failure().unwrap());
+        }
         if previous < at {
             if let Some((_, _, _, _, id)) = active.iter().next_back() {
-                let chosen: &RankedRun = &runs[*id];
+                let chosen: &RankedRun<'_> = &runs[*id];
                 if let Some(last) = output.last_mut().filter(|r| {
                     r.range.end == previous
-                        && r.name == chosen.run.name
-                        && r.origin == chosen.run.origin
-                        && r.priority == chosen.run.priority
+                        && previous_name == chosen.name
+                        && r.priority == chosen.priority
                 }) {
                     last.range.end = at;
                 } else {
-                    let mut next = chosen.run.clone();
-                    next.range = previous..at;
-                    output.push(next);
+                    output.push(SyntaxRun {
+                        range: previous..at,
+                        name: SyntaxStyleName(
+                            crate::document::code_style::canonical_capture_name(chosen.name).into(),
+                        ),
+                        origin: format!("treesitter:{package}:@{}", chosen.name).into(),
+                        priority: chosen.priority,
+                    });
+                    previous_name = chosen.name;
                 }
             }
         }
-        for id in ends {
-            let r = &runs[id];
-            active.remove(&(
-                r.run.priority,
-                std::cmp::Reverse(r.extent),
-                r.pattern,
-                r.serial,
-                id,
-            ));
-        }
-        for id in starts {
-            let r = &runs[id];
-            active.insert((
-                r.run.priority,
-                std::cmp::Reverse(r.extent),
-                r.pattern,
-                r.serial,
-                id,
-            ));
+        let r = &runs[id];
+        let rank = (r.priority, std::cmp::Reverse(r.extent), r.pattern, r.serial, id);
+        if start {
+            active.insert(rank);
+        } else {
+            active.remove(&rank);
         }
         previous = at;
     }
-    output
+    Ok(output)
 }
 
 #[cfg(test)]

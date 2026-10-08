@@ -248,6 +248,17 @@ impl VimPattern {
             |vm| vm.continuation_bytes(),
         )
     }
+    /// Reuse the compiler's proven prefix assertion before allocating an
+    /// anchored attempt. Advanced assertions deliberately have no such proof.
+    pub(super) fn allows_start(&self, input: &SyntaxInputSnapshot, at: usize) -> bool {
+        match self.start_anchor {
+            Some(regex_syntax::hir::Look::Start) => at == 0,
+            Some(regex_syntax::hir::Look::StartLF) => {
+                at == 0 || input.chunk_at(at - 1).first() == Some(&b'\n')
+            }
+            _ => true,
+        }
+    }
     pub fn start(&self, at: usize) -> VimRegexContinuation {
         VimRegexContinuation {
             advanced: self.advanced.as_ref().map(|vm| vm.start(at)),
@@ -467,7 +478,10 @@ impl VimPattern {
                 return VimRegexProgress::Complete(c.best.clone());
             } else {
                 c.position += 1;
-                c.stack = std::mem::take(&mut c.next);
+                // Both vectors are scratch space for this anchored attempt.
+                // Retain the emptied stack's allocation for the next byte
+                // instead of freeing and reallocating it on every transition.
+                std::mem::swap(&mut c.stack, &mut c.next);
                 c.stack.reverse();
             }
         }
@@ -614,24 +628,33 @@ fn look_matches(
     byte: &impl Fn(usize) -> Option<u8>,
     keyword: &VimKeyword,
 ) -> bool {
-    let mut before = at.saturating_sub(1);
-    while before > 0 && byte(before).is_some_and(|b| b & 0xc0 == 0x80) {
-        before -= 1;
-    }
-    let left = at > 0 && word_at(before, len, byte, keyword);
-    let right = word_at(at, len, byte, keyword);
+    // Anchors need no Unicode/keyword classification. On rope-backed input,
+    // decoding the unused neighbors would add several tree lookups to every
+    // failed line-anchor attempt.
     match look {
-        Look::Start => at == 0,
-        Look::End => at == len,
-        Look::StartLF => at == 0 || byte(at - 1) == Some(b'\n'),
-        Look::EndLF => at == len || byte(at) == Some(b'\n'),
-        Look::WordAscii | Look::WordUnicode => left != right,
-        Look::WordAsciiNegate | Look::WordUnicodeNegate => left == right,
-        Look::WordStartAscii | Look::WordStartUnicode => !left && right,
-        Look::WordEndAscii | Look::WordEndUnicode => left && !right,
-        Look::WordStartHalfAscii | Look::WordStartHalfUnicode => !left,
-        Look::WordEndHalfAscii | Look::WordEndHalfUnicode => !right,
-        Look::StartCRLF | Look::EndCRLF => false, // never emitted by this compiler
+        Look::Start => return at == 0,
+        Look::End => return at == len,
+        Look::StartLF => return at == 0 || byte(at - 1) == Some(b'\n'),
+        Look::EndLF => return at == len || byte(at) == Some(b'\n'),
+        Look::StartCRLF | Look::EndCRLF => return false, // never emitted by this compiler
+        _ => {}
+    }
+    let left = || {
+        let mut before = at.saturating_sub(1);
+        while before > 0 && byte(before).is_some_and(|b| b & 0xc0 == 0x80) {
+            before -= 1;
+        }
+        at > 0 && word_at(before, len, byte, keyword)
+    };
+    let right = || word_at(at, len, byte, keyword);
+    match look {
+        Look::WordAscii | Look::WordUnicode => left() != right(),
+        Look::WordAsciiNegate | Look::WordUnicodeNegate => left() == right(),
+        Look::WordStartAscii | Look::WordStartUnicode => !left() && right(),
+        Look::WordEndAscii | Look::WordEndUnicode => left() && !right(),
+        Look::WordStartHalfAscii | Look::WordStartHalfUnicode => !left(),
+        Look::WordEndHalfAscii | Look::WordEndHalfUnicode => !right(),
+        _ => unreachable!("anchors returned before word classification"),
     }
 }
 
