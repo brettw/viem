@@ -13,13 +13,13 @@ internal static class WindowPlacementTests
         var desktop = new WindowFrame(0, 30, 1600, 1000);
         var secondary = new WindowFrame(-1500, 50, 1400, 900);
         var saved = new WindowFrame(-1400, 250, 900, 600);
-        Check(DocumentWindowPlacement.Fitting(saved, [desktop, secondary]) == saved,
+        Check(DocumentWindowPlacement.Fitting(saved, (WindowFrame[])[desktop, secondary]) == saved,
             "window restoration preserves geometry on a monitor with negative coordinates");
-        Check(DocumentWindowPlacement.Fitting(saved, [desktop]) == new WindowFrame(0, 250, 900, 600),
+        Check(DocumentWindowPlacement.Fitting(saved, (WindowFrame[])[desktop]) == new WindowFrame(0, 250, 900, 600),
             "disconnected-monitor restoration translates before shrinking");
-        Check(DocumentWindowPlacement.Fitting(new(1500, -2000, 1900, 700), [desktop]) == new WindowFrame(0, 30, 1600, 700),
+        Check(DocumentWindowPlacement.Fitting(new(1500, -2000, 1900, 700), (WindowFrame[])[desktop]) == new WindowFrame(0, 30, 1600, 700),
             "window restoration shrinks only dimensions larger than the work area");
-        Check(DocumentWindowPlacement.Fitting(new(4000, 200, 900, 600), [desktop, new(2000, 0, 1400, 1000)]) == new WindowFrame(2500, 200, 900, 600),
+        Check(DocumentWindowPlacement.Fitting(new(4000, 200, 900, 600), (WindowFrame[])[desktop, new(2000, 0, 1400, 1000)]) == new WindowFrame(2500, 200, 900, 600),
             "offscreen restoration selects the nearest remaining monitor");
         Check(DocumentWindowPlacement.DesktopWorkArea(new(-1600, -900, 1600, 900), new(40, 30, 1560, 870)) == new WindowFrame(-1560, -870, 1560, 870),
             "monitor-relative work areas convert to desktop coordinates including taskbar offsets");

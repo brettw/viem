@@ -12,7 +12,7 @@ using static Viem.Windows.Interop.Native;
 namespace Viem.Windows.Shell;
 
 /// The window's native views follow the shared, bounded split tree.
-internal sealed unsafe class PaneStackPanel : Panel, IDisposable
+internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
 {
     private ulong handle;
     private readonly Dictionary<EditorPane, ulong> ids = [];
@@ -116,7 +116,7 @@ internal sealed unsafe class PaneStackPanel : Panel, IDisposable
     }
 }
 
-internal sealed class DragCursorGrid : Grid, IDisposable
+internal sealed partial class DragCursorGrid : Grid, IDisposable
 {
     private readonly InputSystemCursor cursor = InputSystemCursor.Create(InputSystemCursorShape.SizeNorthSouth);
     private bool dragging, hovering;
@@ -126,7 +126,7 @@ internal sealed class DragCursorGrid : Grid, IDisposable
     public void Dispose() { ProtectedCursor = null; cursor.Dispose(); }
 }
 
-internal sealed class VerticalSplitter : Grid, IDisposable
+internal sealed partial class VerticalSplitter : Grid, IDisposable
 {
     private readonly InputSystemCursor cursor = InputSystemCursor.Create(InputSystemCursorShape.SizeWestEast);
     private uint? pointer;

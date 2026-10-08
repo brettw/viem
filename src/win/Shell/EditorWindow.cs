@@ -52,14 +52,13 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
         paneGrid.Configure(preferences);
-        formattingToolbar = new();
+        titleBar.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         ConfigureFormattingToolbar();
-        menuToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
         Title = "Viem";
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(formattingToolbar); Grid.SetRow(formattingToolbar, 2); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 3);
+        root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 3);
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
@@ -76,10 +75,10 @@ internal sealed partial class EditorWindow : Window
         {
             // End this window's access-key session before relinquishing ownership
             // of WinUI's thread-wide display mode to the newly active window.
-            if (e.WindowActivationState == WindowActivationState.Deactivated) HideTemporaryMenu();
+            if (e.WindowActivationState == WindowActivationState.Deactivated) HideTemporaryMenu(deactivating: true);
             IsWindowActive = e.WindowActivationState != WindowActivationState.Deactivated;
             if (IsWindowActive) RestoreMenuFocusAfterActivation(e.WindowActivationState);
-            if (!IsWindowActive) formattingToolbar.DismissPopups();
+            if (!IsWindowActive) formattingToolbar?.DismissPopups();
             if (IsWindowActive && ActivePane is { View: { } view } activePane)
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
             foreach (var pane in Panes) { pane.CaretHoverFocusChanged(); pane.Canvas.Invalidate(); }
@@ -116,7 +115,7 @@ internal sealed partial class EditorWindow : Window
     }
     public new void Close()
     {
-        if (formattingToolbar.DismissPopups()) { closeAfterToolbarPopup = true; return; }
+        if (formattingToolbar?.DismissPopups() == true) { closeAfterToolbarPopup = true; return; }
         // WinUI's Closed event may run after the HWND is gone. Sample before
         // native teardown, including a move whose Changed callback is queued.
         capturePlacement();
@@ -138,7 +137,8 @@ internal sealed partial class EditorWindow : Window
         AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        titleBar.Background = Menu.Background = formattingToolbar.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
+        titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
+        if (formattingToolbar != null) formattingToolbar.Background = titleBar.Background;
         SynchronizeFormattingToolbar();
         updatingPreferences = false;
         RefreshRecentMenu();
@@ -193,6 +193,9 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        // Include any visible toolbar before attaching a canvas that can start
+        // its native resources and first document layout immediately.
+        PrepareFormattingToolbar(doc.State.format);
         if (!savedSources.ContainsKey(doc))
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => !w.closed

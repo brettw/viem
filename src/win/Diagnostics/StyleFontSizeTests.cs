@@ -74,7 +74,7 @@ internal static class StyleFontSizeTests
                 var input = Children<TextBox>(number).Single(input => input.Name == "InputBox");
                 Check(input.Text.Length > 0, label + " exposes an explicit numeric fixture");
                 button.Focus(FocusState.Programmatic);
-                await InputRoutingTests.Drag(inspector, input, [new(.8, .5)], _ => { }, focusTarget: false);
+                await InputRoutingTests.Drag(inspector, input, (global::Windows.Foundation.Point[])[new(.8, .5)], _ => { }, focusTarget: false);
                 Check(input.SelectionStart == 0 && input.SelectionLength == input.Text.Length,
                     label + " first pointer click selects the whole value after release");
             }
@@ -82,7 +82,7 @@ internal static class StyleFontSizeTests
             var representative = Children<TextBox>(numbers.Last()).Single(input => input.Name == "InputBox");
             string name = AutomationProperties.GetName(numbers.Last());
             await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
-            await InputRoutingTests.Drag(inspector, representative, [new(.8, .5)], _ => { }, focusTarget: false);
+            await InputRoutingTests.Drag(inspector, representative, (global::Windows.Foundation.Point[])[new(.8, .5)], _ => { }, focusTarget: false);
             Check(representative.SelectionLength == 0, name + " second pointer click places a caret");
             representative.Select(1, 0);
             await InputRoutingTests.Key(VirtualKey.Right, shift: true);
@@ -97,7 +97,7 @@ internal static class StyleFontSizeTests
             button.Focus(FocusState.Programmatic);
             await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
             (int Start, int Length) nativeDragSelection = default;
-            await InputRoutingTests.Drag(inspector, representative, [new(.99, .5), new(.72, .5)], step => {
+            await InputRoutingTests.Drag(inspector, representative, (global::Windows.Foundation.Point[])[new(.99, .5), new(.72, .5)], step => {
                 if (step == 1) nativeDragSelection = (representative.SelectionStart, representative.SelectionLength);
             }, focusTarget: false);
             Check(nativeDragSelection.Length > 0 && nativeDragSelection.Length < representative.Text.Length
@@ -105,7 +105,7 @@ internal static class StyleFontSizeTests
                 name + " entering with a drag preserves the native partial selection after release");
             button.Focus(FocusState.Programmatic);
             await Task.Delay((int)InputRoutingTests.GetDoubleClickTime() + 20);
-            await InputRoutingTests.Drag(inspector, representative, [new(.8, .5)], _ => { }, focusTarget: false);
+            await InputRoutingTests.Drag(inspector, representative, (global::Windows.Foundation.Point[])[new(.8, .5)], _ => { }, focusTarget: false);
             Check(representative.SelectionStart == 0 && representative.SelectionLength == representative.Text.Length,
                 name + " selects the whole number again when the pointer reenters");
         }
@@ -124,7 +124,7 @@ internal static class StyleFontSizeTests
         var character = tabs.Single(button => button.Content as string == "Character");
         character.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
         var size = Children<TextBox>(inspector.FontSizeControl).Single(input => input.Name == "InputBox");
-        await InputRoutingTests.Drag(inspector, size, [new(.8, .5)], _ => { }, focusTarget: false);
+        await InputRoutingTests.Drag(inspector, size, (global::Windows.Foundation.Point[])[new(.8, .5)], _ => { }, focusTarget: false);
         await InputRoutingTests.Text("27"); await InputRoutingTests.Key(VirtualKey.Enter);
         Check(Style(inspector.ThemeView, 1, "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number == 27,
             "typing after a font-size entry click replaces its entire value");

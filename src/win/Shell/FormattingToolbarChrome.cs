@@ -10,13 +10,12 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
-    private readonly FormattingToolbar formattingToolbar;
+    private FormattingToolbar? formattingToolbar;
     private readonly ToggleButton toolbarToggle = new() { Width = 40, Height = 30, MinHeight = 0, Padding = new(0), BorderThickness = new(0), Visibility = Visibility.Collapsed, AllowFocusOnInteraction = false };
     private bool closeAfterToolbarPopup;
 
     private void ConfigureFormattingToolbar()
     {
-        toolbarToggle.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         // The same thin rectangle and three square buttons as the Mac title bar.
         var geometry = new GeometryGroup();
         geometry.Children.Add(new RectangleGeometry { Rect = new Rect(1.5, 3.5, 21, 11) });
@@ -27,11 +26,37 @@ internal sealed partial class EditorWindow
         AutomationProperties.SetName(toolbarToggle, "Formatting toolbar");
         toolbarToggle.Click += (_, _) => Safe(() => {
             if (ActivePane != null) preferences.SetFormattingToolbar(ActivePane.Document.State.format, toolbarToggle.IsChecked == true);
-            SynchronizeFormattingToolbar(); formattingToolbar.RestoreEditorFocus(); return Task.CompletedTask;
+            SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
         });
-        formattingToolbar.PopupsClosed += () => {
-            if (closeAfterToolbarPopup && !formattingToolbar.HasOpenPopup) DispatcherQueue.TryEnqueue(Close);
+    }
+
+    private FormattingToolbar EnsureFormattingToolbar()
+    {
+        if (formattingToolbar != null) return formattingToolbar;
+        using var startup = Diagnostics.StartupPerformance.Measure("window.formattingToolbar");
+        var toolbar = new FormattingToolbar { Background = titleBar.Background };
+        formattingToolbar = toolbar;
+        toolbar.PopupsClosed += () => {
+            if (closeAfterToolbarPopup && !toolbar.HasOpenPopup) DispatcherQueue.TryEnqueue(Close);
         };
+        root.Children.Add(toolbar); Grid.SetRow(toolbar, 2);
+        return toolbar;
+    }
+
+    private void PrepareFormattingToolbar(uint format)
+    {
+        bool visible = (format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE) && preferences.ShowFormattingToolbar(format);
+        if (visible) EnsureFormattingToolbar();
+        if (formattingToolbar != null) formattingToolbar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void RestoreEditorFocusAfterControl()
+    {
+        var target = ActivePane;
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(16); timer.IsRepeating = false;
+        timer.Tick += (_, _) => { if (!closed && ActivePane == target && target?.View is { Id: not 0 }) target.FocusEditor(); };
+        timer.Start();
     }
 
     private void SynchronizeFormattingToolbar()
@@ -43,10 +68,12 @@ internal sealed partial class EditorWindow
         toolbarToggle.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;
         ToolTipService.SetToolTip(toolbarToggle, visible ? "Hide Formatting Toolbar" : "Show Formatting Toolbar");
-        formattingToolbar.Synchronize(ActivePane, visible);
+        if (visible) EnsureFormattingToolbar();
+        formattingToolbar?.Synchronize(ActivePane, visible);
     }
 #if DEBUG
-    internal FormattingToolbar Toolbar => formattingToolbar;
+    internal FormattingToolbar Toolbar => formattingToolbar ?? throw new InvalidOperationException("The formatting toolbar has not been needed.");
+    internal bool ToolbarCreated => formattingToolbar != null;
     internal ToggleButton ToolbarToggle => toolbarToggle;
     internal ToggleButton MenuToggle => menuToggle;
 #endif

@@ -45,7 +45,7 @@ internal static class InstalledFontTests
             "forced fallback indexes every packaged font without installed discovery");
         using var partial = FontCatalog.LoadFontResources(root, uprightSet);
         Check(partial.Installed.Length == 1 && partial.Installed[0].Face is { Source: null, Slant: FontStyle.Normal }
-            && partial.Sources.Select(s => Path.GetFileName(s.Uri.LocalPath)).ToHashSet().SetEquals([
+            && partial.Sources.Select(s => Path.GetFileName(s.Uri.LocalPath)).ToHashSet().SetEquals((string[])[
                 "FlightlineCode-Italic-VF.ttf", "Recursive_VF_1.085.ttf"]),
             "an installed upright design skips only its own resource and retains missing italic and Recursive files");
         using var opposite = FontCatalog.LoadFontResources(root, italicSet);

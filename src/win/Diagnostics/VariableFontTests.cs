@@ -284,7 +284,7 @@ internal static class VariableFontTests
         // path populated the catalogue first, nor on installed static copies.
         Check(FontCatalog.Resolve("Flightline Code", "Normal")?.Family == "Flightline Code", "portable Flightline family resolves before picker discovery");
         var faces = FontCatalog.Faces("Flightline Code");
-        Check(faces.Length == 2 && faces.Select(f => f.Name).ToHashSet().SetEquals(["FlightlineCode-Normal", "FlightlineCode-NormalItalic"]), "Flightline retains both original variable designs without duplicate installed static faces");
+        Check(faces.Length == 2 && faces.Select(f => f.Name).ToHashSet().SetEquals((string[])["FlightlineCode-Normal", "FlightlineCode-NormalItalic"]), "Flightline retains both original variable designs without duplicate installed static faces");
         var normal = FontCatalog.Match("Flightline Code", "Normal");
         var italic = FontCatalog.Match("Flightline Code", "Normal Italic");
         Check(normal is { Slant: FontStyle.Normal, Weight: 400 }
@@ -361,7 +361,7 @@ internal static class VariableFontTests
         Check(!File.Exists(Path.Combine(AppContext.BaseDirectory, "Resources/fonts/recursive/recursive-static-TTFs.ttc")), "rebuilding removes the old Recursive static collection");
         Check(FontCatalog.Families.Contains(face.Family), "the Recursive variable font appears in the font picker");
         var info = FontVariations.For(face);
-        Check(info.Axes.Select(a => a.Tag).ToHashSet().SetEquals(["MONO", "CASL", "wght", "slnt", "CRSV"]), "Recursive exposes all five variable axes");
+        Check(info.Axes.Select(a => a.Tag).ToHashSet().SetEquals((string[])["MONO", "CASL", "wght", "slnt", "CRSV"]), "Recursive exposes all five variable axes");
         var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
         Check(instances.Length == 64, "Recursive exposes all 64 named instances");
         byte[] source = "Writing MMMM iii 0123"u8.ToArray();

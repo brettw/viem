@@ -17,6 +17,10 @@ internal static class Program
         // Overlap it with native WinUI initialization, before creating controls.
         var preferences = Task.Run(() => new Preferences());
         using (StartupPerformance.Measure("runtime.comWrappers")) WinRT.ComWrappersSupport.InitializeComWrappers();
+        // These agile font indices need COM projections but no XAML controls.
+        // Start them before Application.Start so native font discovery overlaps
+        // framework initialization as well as construction of the first window.
+        Rendering.FontCatalog.PrepareFonts();
         StartupPerformance.Mark("application.start");
         Application.Start(parameters => {
             StartupPerformance.Mark("application.callback");

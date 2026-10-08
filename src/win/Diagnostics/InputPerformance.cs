@@ -29,7 +29,7 @@ internal static class InputPerformance
         bool scroll = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "scroll";
         string scenario = roundtrip ? "roundtrip" : scroll ? "scroll" : page ? "page" : resize ? "resize" : "drag";
         int count = roundtrip ? 120 : 100;
-        var steps = new List<object>();
+        var steps = new List<InputPerformanceStep>();
         float width = (float)pane.Canvas.ActualWidth, height = (float)pane.Canvas.ActualHeight;
         using var surface = new Microsoft.Graphics.Canvas.CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         view.Place(40f, 40f);
@@ -70,11 +70,11 @@ internal static class InputPerformance
                     }
                     using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
                 }
-                steps.Add(new { index = i, phase, milliseconds = Stopwatch.GetElapsedTime(started).TotalMilliseconds,
-                    gcPauseMilliseconds = (GC.GetTotalPauseDuration() - beforePause).TotalMilliseconds,
-                    allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - beforeAllocation,
-                    shapedCharacters = view.Provider.ShapedCharacters - beforeShape, drawingBuilds = pane.DrawingCacheBuilds - beforeBuild,
-                    top = view.Viewport.top, revision = view.Viewport.layout_revision });
+                steps.Add(new(i, phase, Stopwatch.GetElapsedTime(started).TotalMilliseconds,
+                    (GC.GetTotalPauseDuration() - beforePause).TotalMilliseconds,
+                    GC.GetAllocatedBytesForCurrentThread() - beforeAllocation,
+                    view.Provider.ShapedCharacters - beforeShape, pane.DrawingCacheBuilds - beforeBuild,
+                    view.Viewport.top, view.Viewport.layout_revision));
                 peakRenderResources = Math.Max(peakRenderResources, view.Provider.LiveResourceCount);
                 await Task.Delay(interval);
             }
@@ -85,15 +85,16 @@ internal static class InputPerformance
         var layout = view.Layout();
         var results = samples.ToDictionary(pair => pair.Key, pair => {
             var sorted = pair.Value.Order().ToArray();
-            return new { count = sorted.Length, mean = sorted.Average(), p50 = sorted[sorted.Length / 2], p95 = sorted[(int)(sorted.Length * .95)], max = sorted[^1] };
+            return new InputPerformanceStatistics(sorted.Length, sorted.Average(), sorted[sorted.Length / 2], sorted[(int)(sorted.Length * .95)], sorted[^1]);
         });
-        File.WriteAllText(report, JsonSerializer.Serialize(new { passed = true, scenario, count, steps, shapedCharacters = view.Provider.ShapedCharacters - shaped, fontMetadataReads = view.Provider.FontMetadataReads - metadata, drawingCacheBuilds = pane.DrawingCacheBuilds - builds,
-            width, height, dpi = pane.Canvas.Dpi, peakRenderResources, interval,
-            glyphBoundsQueries = view.Provider.GlyphBoundsQueries - boundsQueries, glyphBoundsHits = view.Provider.GlyphBoundsHits - boundsHits,
-            backgroundLayout = view.BackgroundLayout.Enabled, backgroundShapedCharacters = view.Provider.BackgroundShapedCharacters - backgroundShaped,
-            backgroundJobs = new { view.BackgroundLayout.Started, view.BackgroundLayout.Installed, view.BackgroundLayout.Discarded },
-            rows = layout.Rows.Length, clusters = layout.Clusters.Length, hardLines = layout.Info.coverage_hard_line_end - layout.Info.coverage_hard_line_start,
-            milliseconds = results }, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(report, JsonSerializer.Serialize(new InputPerformanceReport(true, scenario, count, steps,
+            view.Provider.ShapedCharacters - shaped, view.Provider.FontMetadataReads - metadata, pane.DrawingCacheBuilds - builds,
+            width, height, pane.Canvas.Dpi, peakRenderResources, interval,
+            view.Provider.GlyphBoundsQueries - boundsQueries, view.Provider.GlyphBoundsHits - boundsHits,
+            view.BackgroundLayout.Enabled, view.Provider.BackgroundShapedCharacters - backgroundShaped,
+            new(view.BackgroundLayout.Started, view.BackgroundLayout.Installed, view.BackgroundLayout.Discarded),
+            layout.Rows.Length, layout.Clusters.Length, layout.Info.coverage_hard_line_end - layout.Info.coverage_hard_line_start,
+            results), NativeTestJsonContext.Default.InputPerformanceReport));
     }
 #endif
 }

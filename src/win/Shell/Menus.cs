@@ -108,7 +108,6 @@ internal sealed partial class EditorWindow
             Separator(), ActionItem("New Window for Document", "N", () => NewWindow(ActivePane?.Document)), ActionItem("Minimize", "M", () => (AppWindow.Presenter as OverlappedPresenter)?.Minimize()));
         Top("Help", "H", Item("Viem Help", "H", () => Dialog("Viem", "A modal editor for writing.\n\nUse i to insert, Escape to return to Normal, : to enter commands, / to search, and u to undo.\n\nCtrl+C/X/V copy, cut and paste. Ctrl+Q starts Visual Block. Other vi control keys retain their meaning. Use the formatting toolbar for bold, italic and strikethrough.\n\nCtrl+W s splits the view. Ctrl+W w switches panes. :w saves; :q closes the pane.")),
             Item("About Viem", "A", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
-        RefreshRecentMenu();
     }
     private void Select(string command) => View?.SelectFromCommand(command);
     private static string HistoryCategory(uint value) => value switch { 1 => "Typing", 2 => "Style", 3 => "Line Endings", 4 => "Move Lines", 6 => "Document Format", _ => "Edit" };
@@ -154,7 +153,7 @@ internal sealed partial class EditorWindow
                     item.Click += (_, _) => Safe(() => {
                         if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
                             View?.ChooseStyle((StyleKey)item.Tag, identity);
-                        formattingToolbar.RestoreEditorFocus(); return Task.CompletedTask;
+                        RestoreEditorFocusAfterControl(); return Task.CompletedTask;
                     });
                     menu.Items.Add(item);
                 }

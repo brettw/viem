@@ -22,7 +22,9 @@ internal static class FrontendSmokeTests
     private static string? FindReportPath()
     { var args = Environment.GetCommandLineArgs(); int i = Array.IndexOf(args, "--self-test"); return i >= 0 && i + 1 < args.Length ? Path.GetFullPath(args[i + 1]) : null; }
     public static void WriteFailure(Exception error)
-    { try { if (ChildProcess is { HasExited: false }) ChildProcess.Kill(); } catch { } if (ReportPath != null) File.WriteAllText(ReportPath, JsonSerializer.Serialize(new { passed = false, error = error.ToString() }, new JsonSerializerOptions { WriteIndented = true })); }
+    { try { if (ChildProcess is { HasExited: false }) ChildProcess.Kill(); } catch { } if (ReportPath != null) File.WriteAllText(ReportPath, JsonSerializer.Serialize(new NativeTestFailure(false, error.ToString()), NativeTestJsonContext.Default.NativeTestFailure)); }
+    internal static void WriteSuccess(List<string> checks) => File.WriteAllText(ReportPath!,
+        JsonSerializer.Serialize(new NativeTestSuccess(true, checks.Count, checks, !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported), NativeTestJsonContext.Default.NativeTestSuccess));
     public static async Task FileChecks(CanvasDevice device, Microsoft.UI.Dispatching.DispatcherQueue dispatcher, string profile)
     {
         void Check(bool value, string name) { if (!value) throw new InvalidOperationException(name); UiChecks.Add(name); }
@@ -300,7 +302,7 @@ internal static class FrontendSmokeTests
             && KeyPolicy.Route(VirtualKey.A, true, true, true).Action == NativeAction.None,
             "shifted characters and AltGr text remain native text input");
         Check(KeyPolicy.Route(VirtualKey.Number6, true, false, false).Codepoint == '^', "preserve vi Ctrl+6/Ctrl+^");
-        File.WriteAllText(ReportPath!, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }, new JsonSerializerOptions { WriteIndented = true }));
+        WriteSuccess(checks);
     }
 }
 #endif

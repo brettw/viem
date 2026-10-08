@@ -13,7 +13,7 @@ namespace Viem.Windows.Shell;
 internal enum ToolbarAction { Bold, Italic, Strikethrough, CharacterCode, Bullets, Numbers, BlockQuote, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
-internal sealed class FormattingToolbar : UserControl
+internal sealed partial class FormattingToolbar : UserControl
 {
     internal readonly ScrollViewer Scroll = new() { HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private EditorPane? pane;
@@ -36,6 +36,7 @@ internal sealed class FormattingToolbar : UserControl
 
     internal FormattingToolbar()
     {
+        Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         tablePicker = new(InsertTable, RestoreEditorFocus);
         tablePicker.Closed += () => { pickerSelection = null; PopupsClosed?.Invoke(); };
         tablePicker.Start = e => {
@@ -51,7 +52,6 @@ internal sealed class FormattingToolbar : UserControl
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.Children.Add(Scroll); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
-        FormattedView.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         FormattedView.Content = FormattedViewIcon(FormattedView);
         AutomationProperties.SetName(FormattedView, "Formatted view");
         ToolTipService.SetToolTip(FormattedView, "Formatted view (WYSIWYG)");
@@ -100,7 +100,6 @@ internal sealed class FormattingToolbar : UserControl
         ButtonBase button = toggle ? new ToggleButton { IsThreeState = true } : new Button();
         button.Width = 28; button.Height = 26; button.MinWidth = 0; button.MinHeight = 0; button.Padding = new(0);
         button.IsTabStop = true; button.AllowFocusOnInteraction = false;
-        button.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         button.Content = action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
@@ -175,7 +174,9 @@ internal sealed class FormattingToolbar : UserControl
     {
         if (pane != active) { tablePicker.Close(); sheet = null; selected = null; choices = []; }
         pane = active;
-        Visibility = visible && View != null ? Visibility.Visible : Visibility.Collapsed;
+        // Reserve the visible toolbar row while the initial view attaches, so
+        // its first layout uses the final editor height.
+        Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (Visibility == Visibility.Visible) Refresh();
     }
 
@@ -188,20 +189,22 @@ internal sealed class FormattingToolbar : UserControl
         {
             FormattedView.IsChecked = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
             bool markdown = view.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+            bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
-            var tableContext = markdown ? view.TableContext() : default;
-            InsertTable.IsEnabled = markdown && (tableContext.flags & 1) != 0;
+            // Rectangular selections and prompts have no formatting identity.
+            // Disable their actions without asking selection-dependent APIs.
+            var tableContext = markdown && available ? view.TableContext() : default;
+            InsertTable.IsEnabled = markdown && available && (tableContext.flags & 1) != 0;
             if (pickerSelection is { } expected && !CoreView.SameSelection(expected, tableContext.selection)) tablePicker.Close();
             selected = view.SelectedNamedStyles();
             sheet = view.Styles(selected.Identity);
             choices = CoreView.StyleChoices(sheet, selected);
-            bool available = view.HasFormattingSelection;
             if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
             if (tracking == 0) { RefreshSelector(Paragraph, 1); RefreshSelector(Character, 2); }
             foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
             {
-                var state = view.SemanticStyle(semantic);
-                Set(action, state.state, (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
+                var state = available ? view.SemanticStyle(semantic) : default;
+                Set(action, state.state, available && (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
             }
             bool canStrike = view.CanFormatStrikethrough;
             Set(ToolbarAction.Strikethrough, canStrike ? view.StrikethroughState() : 0, canStrike);

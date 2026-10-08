@@ -28,7 +28,7 @@ internal static class DocumentModeMenuTests
             var markdown = (ToggleMenuFlyoutItem)menu.Items[1];
             var code = (MenuFlyoutSubItem)menu.Items[2];
             var auto = (ToggleMenuFlyoutItem)code.Items[0];
-            var python = code.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Python");
+            Check(code.Items.Count == 2, "startup retains Code Auto without constructing language menu controls");
             async Task Open() { peer.Expand(); await Task.Delay(40); }
             async Task Choose(ToggleMenuFlyoutItem item)
             {
@@ -37,6 +37,8 @@ internal static class DocumentModeMenuTests
                 peer.Collapse(); await Open();
             }
             await Open();
+            var python = code.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Python");
+            var languageItems = code.Items.Skip(2).ToArray();
             Check(plain.Text == "Plain text" && markdown.Text == "Markdown" && code.Text == "Code"
                 && menu.Items[3] is MenuFlyoutSeparator && code.Items[1] is MenuFlyoutSeparator,
                 "View starts with the three mode choices and separated Code Auto entry");
@@ -72,6 +74,7 @@ internal static class DocumentModeMenuTests
                 Check(!python.IsChecked, "changing active document refreshes the forced-language check");
                 peer.Collapse();
             }
+            Check(languageItems.SequenceEqual(code.Items.Skip(2)), "reopening View retains the populated language menu controls");
             Check(window.Panes.All(p => p.LastError == null), "view-mode scenarios leave no presentation errors");
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }

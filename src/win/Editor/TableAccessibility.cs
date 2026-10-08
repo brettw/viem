@@ -14,7 +14,7 @@ internal sealed partial class EditorPane
     protected override AutomationPeer OnCreateAutomationPeer() => new TableEditorPeer(this);
 
     /// <summary>Table nodes are views of the exact materialized core snapshot.</summary>
-    private sealed class TableEditorPeer(EditorPane pane) : FrameworkElementAutomationPeer(pane)
+    private sealed partial class TableEditorPeer(EditorPane pane) : FrameworkElementAutomationPeer(pane)
     {
         protected override string GetClassNameCore() => nameof(EditorPane);
         protected override IList<AutomationPeer> GetChildrenCore()
@@ -29,7 +29,7 @@ internal sealed partial class EditorPane
             return children;
         }
     }
-    private sealed class TablePeer : FrameworkElementAutomationPeer, IGridProvider, ITableProvider, ISelectionProvider
+    private sealed partial class TablePeer : FrameworkElementAutomationPeer, IGridProvider, ITableProvider, ISelectionProvider
     {
         internal readonly EditorPane Pane;
         internal readonly ViemTableContextV1 Context;
@@ -74,7 +74,7 @@ internal sealed partial class EditorPane
         public IRawElementProviderSimple[] GetSelection() => cells.Where(c => c.Selected).Select(ProviderFromPeer).ToArray();
         internal IRawElementProviderSimple Provider => ProviderFromPeer(this);
     }
-    private sealed class CellPeer(TablePeer table, ViemTableCellV1 cell) : FrameworkElementAutomationPeer(table.Pane), IGridItemProvider, ITableItemProvider, IInvokeProvider, IValueProvider, ISelectionItemProvider
+    private sealed partial class CellPeer(TablePeer table, ViemTableCellV1 cell) : FrameworkElementAutomationPeer(table.Pane), IGridItemProvider, ITableItemProvider, IInvokeProvider, IValueProvider, ISelectionItemProvider
     {
         internal ViemTableCellV1 Geometry => cell;
         public int Row => checked((int)cell.row);

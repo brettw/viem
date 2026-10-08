@@ -96,13 +96,15 @@ trace unless `VIEM_STARTUP_REPORT` is set.
 For Windows input, drawing, pre-layout and startup measurements:
 
 ```powershell
-.\scripts\test-win.ps1 -Optimized -ProfileDocument docs/markdown_demo.md -ProfileScenario page -ProfileIntervalMs 100
-.\scripts\test-win.ps1 -NoBuild -Optimized -ProfileDocument docs/markdown_demo.md -ProfileScenario page -ProfileIntervalMs 100 -DisablePrelayout
-.\scripts\test-win.ps1 -NoBuild -Optimized -ProfileDocument docs/markdown_demo.md -ProfileScenario scroll -ProfileIntervalMs 16
+.\scripts\test-win.ps1 -NativeAot -ProfileDocument docs/markdown_demo.md -ProfileScenario page -ProfileIntervalMs 100
+.\scripts\test-win.ps1 -NoBuild -NativeAot -ProfileDocument docs/markdown_demo.md -ProfileScenario page -ProfileIntervalMs 100 -DisablePrelayout
+.\scripts\test-win.ps1 -NoBuild -NativeAot -ProfileDocument docs/markdown_demo.md -ProfileScenario scroll -ProfileIntervalMs 16
 .\scripts\test-win-startup.ps1 -ProfileDocument docs/markdown_demo.md
 ```
 
 Windows scripts save reports and isolated profiles under `target/windows-validation`.
+The `-NativeAot` mode exercises the native publishing path used by Release;
+`-Optimized` alone measures the managed diagnostic build.
 Use a larger fixed fixture for large-document claims. Input profiles measure
 synchronous input/drawing work; startup ends at the first editor draw callback.
 Neither measures physical display latency or a cold boot. Separate first
