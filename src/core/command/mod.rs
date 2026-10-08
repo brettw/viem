@@ -53,6 +53,7 @@ mod registers;
 mod sort;
 mod typing_style;
 mod tables;
+mod native_link;
 pub use tables::TableSelectionExtent;
 pub use command_line_edit::{CommandLineEditAction, CommandLineEditRequest, CommandLineSnapshot};
 pub use line_mode::{LineLocation, LineMode};

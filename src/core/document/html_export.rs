@@ -197,6 +197,7 @@ fn export_links(
         {
             let email = link_type == LinkType::Email;
             candidates.push(InlineLink {
+                destination_range: None,
                 label: range.clone(),
                 range,
                 destination: if email {
@@ -228,6 +229,7 @@ fn export_links(
                 super::markdown_syntax::autolink(&input.text, at, input.text.len())
             {
                 candidates.push(InlineLink {
+                destination_range: None,
                     range: at..end,
                     label: at..end,
                     destination,

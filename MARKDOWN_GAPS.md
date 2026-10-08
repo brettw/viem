@@ -1,6 +1,6 @@
 # Markdown compatibility with GitHub
 
-Updated October 3, 2026. The target is GitHub's rendering of repository
+Updated October 8, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
 from deferred work. It does not claim complete GFM conformance.
@@ -12,6 +12,16 @@ from deferred work. It does not claim complete GFM conformance.
   source ranges; Viem retains the original bytes and editable provenance.
 - **Automatic links:** angle URLs and email addresses, and GFM bare HTTP(S),
   `www.` and email links, with punctuation and balanced-parenthesis handling.
+- **Inline link authoring and navigation:** the native toolbar inserts Markdown
+  links from Text and Destination fields, with selected text prefilled. Caret
+  popups open, copy, edit or remove inline links and automatic links; editing
+  an automatic link converts it to explicit inline syntax. Source treats the
+  complete `[text](destination)` notation as the link. Heading fragments navigate the
+  current document, local document links focus an existing view or pane when
+  available and otherwise open a new Viem window, and HTTP(S) links open the
+  default browser. Local document fragments target headings in the chosen view.
+  Heading names use lowercase text with punctuation removed, hyphenated spaces
+  and duplicate suffixes.
 - **Images and reference links:** full, collapsed and defined shortcut
   references, images and definitions keep their literal brackets in WYSIWYG,
   styled with the new light-purple **Markdown reference** character style.
@@ -89,9 +99,9 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    titles, icons and treatments remain unsupported.
 9. **Math and diagrams.** Math expressions stay literal; Mermaid and other
    diagram fences remain code.
-10. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Heading
-   anchors/table-of-contents navigation, repository mentions, issue links and
-   commit links are separate future work.
+10. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Repository
+   mentions, issue links, commit links, explicit HTML anchors and a generated
+   table of contents remain separate work; Markdown heading links are supported.
 
 ## Remaining conformance audit
 
@@ -100,6 +110,12 @@ GitHub's HTML sanitizer are broader than those fixtures. Continue differential
 coverage of malformed/container nesting, tabs at every depth, Unicode
 punctuation, autolink edge cases, HTML recovery and allowed-tag presentation.
 Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
+
+Link authoring is limited to a single paragraph outside code and passive HTML.
+Passive HTML anchors expose their destination but retain read-only editing
+controls; reference-link presentation remains literal. Email launching is
+unsupported. Link controls are implemented on both native frontends; Windows
+runtime validation remains outstanding on a Windows host.
 
 Table event, rendering, and accessibility adapters are implemented on both native
 frontends. macOS has automated native coverage and app interaction checks;

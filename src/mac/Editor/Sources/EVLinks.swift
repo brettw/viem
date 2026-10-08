@@ -34,12 +34,20 @@ extension EVCoreDocumentBackend {
 enum EVLinkError: LocalizedError {
     case unsupportedDestination
     case browserUnavailable
+    case missingFragment(String)
     var errorDescription: String? {
         switch self {
-        case .unsupportedDestination: "This link does not have a supported web or file destination."
+        case .unsupportedDestination: "This link does not have a supported heading, web, or file destination."
         case .browserUnavailable: "The default web browser could not be opened."
+        case .missingFragment(let fragment): "No heading matches the link destination \(fragment)."
         }
     }
+}
+
+enum EVLinkDestination: Equatable {
+    case fragment(String)
+    case document(URL, fragment: String?)
+    case web(URL)
 }
 
 @MainActor
@@ -69,9 +77,25 @@ enum EVLinkOpener {
         return String(decoding: result, as: UTF8.self)
     }
 
+    static func validateForAuthoring(_ destination: String) throws {
+        guard !destination.isEmpty,
+              !(destination.removingPercentEncoding ?? destination).unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let components = URLComponents(string: escapedURL(destination)) else {
+            throw EVLinkError.unsupportedDestination
+        }
+        if let scheme = components.scheme?.lowercased() {
+            guard ["http", "https", "file"].contains(scheme),
+                  scheme == "file" || components.host?.isEmpty == false else {
+                throw EVLinkError.unsupportedDestination
+            }
+        }
+    }
+
     static func destinationURL(_ destination: String, relativeTo base: URL?) throws -> URL {
-        guard !destination.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              let url = URL(string: escapedURL(destination), relativeTo: base)?.absoluteURL,
+        let resolvedBase = base ?? (destination.hasPrefix("/") ? URL(fileURLWithPath: "/", isDirectory: true) : nil)
+        guard !destination.isEmpty,
+              !destination.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let url = URL(string: escapedURL(destination), relativeTo: resolvedBase)?.absoluteURL,
               let scheme = url.scheme?.lowercased(),
               ["https", "http", "file"].contains(scheme),
               scheme == "file" || url.host?.isEmpty == false
@@ -79,7 +103,39 @@ enum EVLinkOpener {
         return url
     }
 
+    static func destination(_ destination: String, relativeTo base: URL?) throws -> EVLinkDestination {
+        guard !destination.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+        else { throw EVLinkError.unsupportedDestination }
+        if destination.hasPrefix("#") {
+            guard let components = URLComponents(string: escapedURL(destination)),
+                  let fragment = components.fragment,
+                  !fragment.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            else { throw EVLinkError.unsupportedDestination }
+            return .fragment(fragment)
+        }
+        let url = try destinationURL(destination, relativeTo: base)
+        if url.isFileURL {
+            guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            else { throw EVLinkError.unsupportedDestination }
+            let fragment = components.fragment
+            components.fragment = nil
+            // A query is not part of a local document's filesystem identity.
+            components.query = nil
+            guard let file = components.url,
+                  !file.path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+                  !(fragment ?? "").unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
+            else { throw EVLinkError.unsupportedDestination }
+            return .document(file.standardizedFileURL, fragment: fragment)
+        }
+        return .web(url)
+    }
+
     static func open(_ url: URL, completion: @escaping @MainActor (Error?) -> Void) {
+        guard ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false else {
+            completion(EVLinkError.unsupportedDestination)
+            return
+        }
         // URLs are passed as structured values. No shell, command string,
         // subprocess interpolation, or additional percent-decoding is involved.
         guard let browser = NSWorkspace.shared.urlForApplication(toOpen: URL(string: "https://example.com")!) else {

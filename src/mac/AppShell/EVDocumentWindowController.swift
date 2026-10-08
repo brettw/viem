@@ -1424,6 +1424,106 @@ extension EVDocumentWindowController {
 
 @MainActor
 extension EVDocumentWindowController {
+  public func openLinkedDocument(
+    _ url: URL, fragment: String?, from surface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    openLinkedDocument(url, fragment: fragment, from: surface, using: { url, finished in
+      EVDocumentIdentity.open(url, display: false, completion: finished)
+    }, completion: completion)
+  }
+
+  func openLinkedDocument(
+    _ url: URL, fragment: String?, from surface: any EVEditorSurface,
+    using open: @escaping @MainActor (URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    guard url.isFileURL else {
+      completion(.failure(EVDocumentHostError.invalidPath(url.absoluteString))); return
+    }
+    guard !isClosed, paneContainer.panes.contains(where: { $0.editorSurface === surface }) else {
+      completion(.failure(EVDocumentHostError.staleRequest)); return
+    }
+    if let target = existingLinkedDocumentView(at: url) {
+      target.controller.presentLinkedDocumentView(target.pane, fragment: fragment, completion: completion)
+      return
+    }
+    open(url) { [weak self, weak surface] opened, error in
+      guard let opened else {
+        completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return
+      }
+      guard let self, !self.isClosed, let surface,
+        self.paneContainer.panes.contains(where: { $0.editorSurface === surface }) else {
+        if opened.windowControllers.isEmpty && !Self.hasOpenViews(of: opened) { opened.close() }
+        completion(.failure(EVDocumentHostError.staleRequest)); return
+      }
+      // Another open may have published this file during asynchronous loading.
+      // Reuse its current buffer and view rather than displaying a duplicate.
+      if let target = self.existingLinkedDocumentView(at: url) {
+        if target.pane.document !== opened { self.closeIfUnrepresented(opened) }
+        target.controller.presentLinkedDocumentView(target.pane, fragment: fragment, completion: completion)
+        return
+      }
+      opened.addEditorWindowController()
+      guard let window = opened.windowControllers.last as? EVDocumentWindowController else {
+        completion(.failure(EVDocumentHostError.unsupportedRequest)); return
+      }
+      window.presentLinkedDocumentView(window.documentContentController, fragment: fragment, completion: completion)
+    }
+  }
+
+  private func existingLinkedDocumentView(at url: URL)
+    -> (controller: EVDocumentWindowController, pane: EVDocumentContentViewController)? {
+    // Prefer an already active view, with this window first and remaining
+    // windows in native front-to-back order. Hidden windows retain creation
+    // order. If only inactive panes match, use that same stable window order.
+    var controllers: [EVDocumentWindowController] = []
+    var seen = Set<ObjectIdentifier>()
+    for controller in [self] + NSApplication.shared.orderedWindows.compactMap({
+      $0.windowController as? EVDocumentWindowController
+    }) + Self.instances.compactMap(\.value) where !controller.isClosed {
+      if seen.insert(ObjectIdentifier(controller)).inserted { controllers.append(controller) }
+    }
+    func matches(_ pane: EVDocumentContentViewController) -> Bool {
+      pane.document?.fileURL.map { EVDocumentIdentity.sameFile($0, url) } ?? false
+    }
+    for controller in controllers {
+      let active = controller.paneContainer.activePane
+      if matches(active) { return (controller, active) }
+    }
+    for controller in controllers {
+      if let pane = controller.paneContainer.panes.first(where: matches) { return (controller, pane) }
+    }
+    return nil
+  }
+
+  private func presentLinkedDocumentView(
+    _ pane: EVDocumentContentViewController, fragment: String?,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    guard !isClosed, let index = paneContainer.panes.firstIndex(where: { $0 === pane }) else {
+      completion(.failure(EVDocumentHostError.staleRequest)); return
+    }
+    paneContainer.focusPane(at: index)
+    updateActiveDocumentChrome()
+    showWindow(nil)
+    do {
+      if let fragment {
+        guard let navigation = pane.editorSurface as? any EVLinkFragmentNavigating else {
+          throw EVDocumentHostError.unsupportedRequest
+        }
+        try navigation.navigateToLinkFragment(fragment)
+      }
+      if let document = pane.document, let url = document.fileURL {
+        document.recordRecentDocument(EVDocumentIdentity.canonicalURL(url))
+      }
+      completion(.success(()))
+    } catch {
+      pane.editorSurface.showDocumentMessage(error.localizedDescription)
+      completion(.failure(error))
+    }
+  }
+
   public func openDroppedFiles(
     _ urls: [URL], in targetSurface: any EVEditorSurface,
     completion: @escaping @MainActor (Result<Void, Error>) -> Void

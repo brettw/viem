@@ -105,6 +105,18 @@ number stays visible as continuation text:
 
 An ordinary [inline link](https://example.com "Example title") hides its destination in WYSIWYG and uses the Link style. A [**formatted link label**](https://example.com/path) can contain emphasis.
 
+Use the toolbar's Insert Link button to link selected text, or enter Text and
+Destination at the caret. Leaving Text blank uses the destination as its label.
+Placing the caret in an inline link shows its
+destination with Open, Copy, Edit and Remove actions. In Source view, the full
+`[text](destination)` notation activates that popup.
+
+Try [jumping to Literal code](#literal-code), opening the
+[Markdown compatibility notes](../MARKDOWN_GAPS.md) in Viem, or opening the
+[GFM specification](https://github.github.com/gfm/) in your browser. Local links
+focus an existing view of that document when it is already open; otherwise they
+open a new window.
+
 Angle autolinks: <https://example.com> and <writer@example.com>.
 
 Automatic links: https://example.com/path, www.example.com, and writer@example.com.
@@ -253,4 +265,4 @@ graph LR
 
 ### Other GitHub features
 
-Emoji shortcodes such as :smile: stay literal. Repository mentions such as @example, issue references such as #123, generated heading anchors, and a navigable table of contents are not implemented. Fenced language names do not enable syntax highlighting.
+Emoji shortcodes such as :smile: stay literal. Repository mentions such as @example, issue references such as #123, and a generated table of contents are not implemented. Heading links such as [Literal code](#literal-code) navigate within this document. Fenced language names do not enable syntax highlighting.

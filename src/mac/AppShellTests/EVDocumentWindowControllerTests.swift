@@ -8,7 +8,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
   private final class EditorTestView: NSView {
     override var acceptsFirstResponder: Bool { true }
   }
-  private final class Surface: EVEditorSurface {
+  private final class Surface: EVEditorSurface, EVLinkFragmentNavigating {
     let viewController: NSViewController = {
       let controller = NSViewController()
       controller.view = EditorTestView(frame: NSRect(x: 0, y: 0, width: 920, height: 655))
@@ -17,6 +17,8 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     var statusBarState = EVStatusBarState()
     var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     var performedCommands: [EVMenuCommand] = []
+    var linkedFragments: [String] = []
+    func navigateToLinkFragment(_ fragment: String) throws { linkedFragments.append(fragment) }
     var presentations: [EVMenuCommand: EVMenuItemPresentation] = [:]
 
     func perform(menuCommand: EVMenuCommand, sender _: Any?) {
@@ -397,6 +399,189 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     XCTAssertEqual(second.windowControllers.count, 1)
     XCTAssertTrue(controller.document === second)
     XCTAssertFalse(NSDocumentController.shared.documents.contains { $0 === first })
+  }
+
+  func testLocalLinkReusesExistingDocumentAndItsUnsavedContentWithoutBackingFile() throws {
+    let sourceBackend = Backend()
+    let source = EVDocument(editorBackend: sourceBackend)
+    source.makeWindowControllers()
+    let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+    let targetBackend = Backend()
+    targetBackend.persistenceState.isDirty = true
+    let target = EVDocument(editorBackend: targetBackend)
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    target.fileURL = url
+    target.makeWindowControllers()
+    NSDocumentController.shared.addDocument(target)
+    defer { source.close(); target.close() }
+
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: "heading-2", from: controller.editorSurface) { result = $0 }
+
+    _ = try XCTUnwrap(result).get()
+    XCTAssertTrue(controller.activeDocument === source)
+    XCTAssertEqual(source.windowControllers.count, 1)
+    XCTAssertEqual(target.windowControllers.count, 1)
+    XCTAssertEqual(targetBackend.surfaces.count, 1)
+    XCTAssertEqual(targetBackend.surfaces[0].linkedFragments, ["heading-2"])
+    XCTAssertTrue(targetBackend.persistenceState.isDirty)
+    XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    XCTAssertTrue(target.windowControllers[0].window?.isVisible == true)
+    XCTAssertTrue(target.windowControllers[0].window?.firstResponder === targetBackend.surfaces[0].viewController.view)
+  }
+
+  func testLocalLinkOpensUnopenedDocumentInNewWindow() throws {
+    let source = EVDocument(editorBackend: Backend())
+    source.makeWindowControllers()
+    let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+    let targetBackend = Backend()
+    let target = EVDocument(editorBackend: targetBackend)
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    target.fileURL = url
+    defer { source.close(); target.close() }
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: "new-heading", from: controller.editorSurface,
+      using: { _, completed in completed(target, nil) }) { result = $0 }
+    _ = try XCTUnwrap(result).get()
+    XCTAssertTrue(controller.activeDocument === source)
+    XCTAssertEqual(source.windowControllers.count, 1)
+    XCTAssertEqual(target.windowControllers.count, 1)
+    XCTAssertEqual(targetBackend.surfaces.count, 1)
+    XCTAssertEqual(targetBackend.surfaces[0].linkedFragments, ["new-heading"])
+    XCTAssertTrue(target.windowControllers[0].window?.isVisible == true)
+  }
+
+  func testLocalLinkFocusesExistingInactivePaneInSameOrOtherWindow() throws {
+    for fromOtherWindow in [false, true] {
+      let sourceBackend = Backend()
+      sourceBackend.persistenceState.documentID = 10
+      let targetBackend = Backend()
+      targetBackend.persistenceState.documentID = 20
+      let source = EVDocument(editorBackend: sourceBackend)
+      let target = EVDocument(editorBackend: targetBackend)
+      let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+      target.fileURL = url
+      for document in [source, target] { NSDocumentController.shared.addDocument(document) }
+      source.makeWindowControllers()
+      defer { source.close(); target.close() }
+      let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+      controller.showWindow(nil)
+      var split: Result<String?, Error>?
+      controller.perform(documentHostRequests: [.init(kind: .split, documentID: 10, documentRevision: 0, path: url.path)]) { split = $0 }
+      _ = try XCTUnwrap(split).get()
+      controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
+      XCTAssertTrue(controller.activeDocument === source)
+      let other = EVDocument(editorBackend: Backend())
+      defer { other.close() }
+      if fromOtherWindow { other.makeWindowControllers() }
+      let origin = fromOtherWindow
+        ? try XCTUnwrap(other.windowControllers.first as? EVDocumentWindowController) : controller
+      let originalSurface = origin.editorSurface
+      var result: Result<Void, Error>?
+      origin.openLinkedDocument(url, fragment: "existing-pane", from: originalSurface,
+        using: { _, _ in XCTFail("An existing pane must not reload its document") }) { result = $0 }
+      _ = try XCTUnwrap(result).get()
+      XCTAssertTrue(controller.activeDocument === target)
+      XCTAssertEqual(controller.paneCount, 2)
+      XCTAssertEqual(source.windowControllers.count, 1)
+      XCTAssertTrue(target.windowControllers.isEmpty)
+      XCTAssertEqual(targetBackend.surfaces.count, 1)
+      XCTAssertEqual(targetBackend.surfaces[0].linkedFragments, ["existing-pane"])
+      XCTAssertTrue(controller.window?.firstResponder === targetBackend.surfaces[0].viewController.view)
+      if fromOtherWindow { XCTAssertTrue(origin.activeDocument === other) }
+    }
+  }
+
+  func testLocalLinkPrefersExistingActivePaneAmongMultipleViews() throws {
+    let backend = Backend()
+    let document = EVDocument(editorBackend: backend)
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    document.fileURL = url
+    document.makeWindowControllers()
+    defer { document.close() }
+    let controller = try XCTUnwrap(document.windowControllers.first as? EVDocumentWindowController)
+    controller.showWindow(nil)
+    var split: Result<String?, Error>?
+    controller.perform(documentHostRequests: [.init(kind: .split, documentID: 0, documentRevision: 0)]) { split = $0 }
+    _ = try XCTUnwrap(split).get()
+    XCTAssertTrue(controller.editorSurface === backend.surfaces[1])
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: "active-pane", from: controller.editorSurface,
+      using: { _, _ in XCTFail("An existing active pane must not reload its document") }) { result = $0 }
+    _ = try XCTUnwrap(result).get()
+    XCTAssertEqual(document.windowControllers.count, 1)
+    XCTAssertEqual(backend.surfaces.count, 2)
+    XCTAssertEqual(backend.surfaces[0].linkedFragments, [])
+    XCTAssertEqual(backend.surfaces[1].linkedFragments, ["active-pane"])
+  }
+
+  func testLocalLinkReusesViewOpenedWhileItsLoadWasPending() throws {
+    let source = EVDocument(editorBackend: Backend())
+    source.makeWindowControllers()
+    let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    let loaded = EVDocument(editorBackend: Backend())
+    loaded.fileURL = url
+    let existingBackend = Backend()
+    existingBackend.persistenceState.isDirty = true
+    let existing = EVDocument(editorBackend: existingBackend)
+    existing.fileURL = url
+    defer { source.close(); loaded.close(); existing.close() }
+    var resume: (@MainActor (EVDocument?, Error?) -> Void)?
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: "current-content", from: controller.editorSurface,
+      using: { _, completed in resume = completed }) { result = $0 }
+    existing.makeWindowControllers()
+    try XCTUnwrap(resume)(loaded, nil)
+    _ = try XCTUnwrap(result).get()
+    XCTAssertTrue(loaded.windowControllers.isEmpty)
+    XCTAssertEqual(existing.windowControllers.count, 1)
+    XCTAssertEqual(existingBackend.surfaces.count, 1)
+    XCTAssertEqual(existingBackend.surfaces[0].linkedFragments, ["current-content"])
+    XCTAssertTrue(existingBackend.persistenceState.isDirty)
+  }
+
+  func testClosingSourceWindowCancelsPendingLocalLinkWindow() throws {
+    let source = EVDocument(editorBackend: Backend())
+    source.makeWindowControllers()
+    let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+    controller.showWindow(nil)
+    let incoming = EVDocument(editorBackend: Backend())
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    defer { source.close(); incoming.close() }
+    var resume: (@MainActor (EVDocument?, Error?) -> Void)?
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: nil, from: controller.editorSurface,
+      using: { _, completion in resume = completion }) { result = $0 }
+    controller.close()
+    try XCTUnwrap(resume)(incoming, nil)
+    XCTAssertThrowsError(try XCTUnwrap(result).get()) { error in
+      XCTAssertEqual(error as? EVDocumentHostError, .staleRequest)
+    }
+    XCTAssertTrue(incoming.windowControllers.isEmpty)
+  }
+
+  func testLocalLinkFailureAndForeignSurfaceCannotReplaceTheSource() throws {
+    let source = EVDocument(editorBackend: Backend())
+    source.makeWindowControllers()
+    let controller = try XCTUnwrap(source.windowControllers.first as? EVDocumentWindowController)
+    let url = URL(fileURLWithPath: "/tmp/viem-link-\(UUID().uuidString).md")
+    defer { source.close() }
+    var attempted = 0
+    var result: Result<Void, Error>?
+    controller.openLinkedDocument(url, fragment: nil, from: Surface(), using: { _, completion in
+      attempted += 1; completion(nil, EVDocumentHostError.invalidPath(url.path))
+    }) { result = $0 }
+    XCTAssertThrowsError(try XCTUnwrap(result).get())
+    XCTAssertEqual(attempted, 0)
+
+    controller.openLinkedDocument(url, fragment: nil, from: controller.editorSurface, using: { _, completion in
+      attempted += 1; completion(nil, EVDocumentHostError.invalidPath(url.path))
+    }) { result = $0 }
+    XCTAssertThrowsError(try XCTUnwrap(result).get())
+    XCTAssertEqual(attempted, 1)
+    XCTAssertTrue(controller.activeDocument === source)
+    XCTAssertEqual(source.windowControllers.count, 1)
   }
 
   func testFileDropReplacesExactCleanPaneAndOpensRemainingFilesInNewWindows() throws {

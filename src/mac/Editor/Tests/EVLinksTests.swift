@@ -20,6 +20,56 @@ final class EVLinksTests: XCTestCase {
         }
     }
 
+    func testLinkRoutesSeparateHeadingsDocumentsAndWebDestinations() throws {
+        XCTAssertEqual(try EVLinkOpener.destination("#caf%C3%A9-heading", relativeTo: nil), .fragment("café-heading"))
+        XCTAssertEqual(try EVLinkOpener.destination("#", relativeTo: nil), .fragment(""))
+        XCTAssertEqual(try EVLinkOpener.destination("../two%20words.md#part%202", relativeTo: URL(fileURLWithPath: "/tmp/docs/one.md")),
+                       .document(URL(fileURLWithPath: "/tmp/two words.md"), fragment: "part 2"))
+        XCTAssertEqual(try EVLinkOpener.destination("/tmp/two words.md", relativeTo: nil),
+                       .document(URL(fileURLWithPath: "/tmp/two words.md"), fragment: nil))
+        XCTAssertEqual(try EVLinkOpener.destination("https://example.com/a%20b#part", relativeTo: nil),
+                       .web(URL(string: "https://example.com/a%20b#part")!))
+        for destination in ["javascript:alert(1)", "data:text/plain,example", "#bad\nheading", "#bad%0Aheading", "/tmp/bad%0Afile.md", ""] {
+            XCTAssertThrowsError(try EVLinkOpener.destination(destination, relativeTo: nil))
+        }
+        var externalError: Error?
+        EVLinkOpener.open(URL(fileURLWithPath: "/tmp/example.md")) { externalError = $0 }
+        XCTAssertNotNil(externalError, "Local documents must never be routed through the browser opener")
+    }
+
+    func testHeadingLinkNavigatesCurrentDocumentWithoutChangingSourceAndRejectsStaleTarget() throws {
+        let source = "[Jump](#second-heading)\n\n# First heading\n\n# Second heading\n\nbody"
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 800, height: 350)
+        let window = NSWindow(contentRect: surface.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = surface.view
+        surface.viewDidLayout()
+        let session = try XCTUnwrap(surface.session)
+        let initial = surface.viewPresentation
+        let target = EVLinkMenuTarget(documentID: initial.document_id, revision: initial.document_revision, offset: 1)
+        var browserOpens = 0
+        surface.editorView.openLinkURL = { _, completed in browserOpens += 1; completed(nil) }
+        XCTAssertEqual(try backend.linkDestination(at: target), "#second-heading")
+        surface.openLink(at: target)
+        XCTAssertNil(surface.commandOutput, surface.statusBarState.message)
+        let presentedText = try backend.formattedText()
+        let heading = try XCTUnwrap(presentedText.range(of: "# Second heading"))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(presentedText[..<heading.lowerBound].utf8.count))
+        XCTAssertEqual(browserOpens, 0)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertFalse(surface.canUndo)
+        surface.performInput { _ = try session.sendText("iX") }
+        let afterEdit = surface.viewPresentation.cursor_utf8_offset
+        surface.openLink(at: target)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, afterEdit)
+        XCTAssertNotNil(surface.commandOutput)
+        withExtendedLifetime(window) {}
+    }
+
     func testContextMenuOpensCurrentLinkAndRejectsStaleMenuWithoutMovingSelection() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("before [label](https://example.com/a?x=1&y=2) after".utf8), typeName: EVDocument.markdownSourceType)

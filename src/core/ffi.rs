@@ -26,6 +26,8 @@ mod completion;
 pub use completion::*;
 mod tables;
 pub use tables::*;
+mod links;
+pub use links::*;
 mod quotes;
 pub use quotes::*;
 mod substitute_confirmation;

@@ -23,6 +23,7 @@ internal sealed partial class FormattingToolbar : UserControl
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
+    internal readonly Button InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
     private readonly TablePicker tablePicker;
     private ViemLogicalSelectionIdentityV1? pickerSelection;
     private StyleSheet? sheet;
@@ -87,6 +88,9 @@ internal sealed partial class FormattingToolbar : UserControl
         InsertTable.Content = TableIcon(InsertTable);
         AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
         row.Children.Add(InsertTable);
+        AutomationProperties.SetName(InsertLink, "Insert link"); ToolTipService.SetToolTip(InsertLink, "Insert link");
+        InsertLink.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertLink); };
+        row.Children.Add(InsertLink);
     }
 
     private static StackPanel Group(double spacing = 2) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
@@ -191,6 +195,8 @@ internal sealed partial class FormattingToolbar : UserControl
             bool markdown = view.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
             bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            InsertLink.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            InsertLink.IsEnabled = markdown && available && !view.Composing && !view.Document.IsReadOnly;
             // Rectangular selections and prompts have no formatting identity.
             // Disable their actions without asking selection-dependent APIs.
             var tableContext = markdown && available ? view.TableContext() : default;

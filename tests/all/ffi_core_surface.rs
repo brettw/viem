@@ -5040,3 +5040,26 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
     assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, after.document_revision), original);
     assert_eq!(call(&request, b""), ViemStatus::StaleRevision);
 }
+
+#[test]
+fn link_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
+    let core = create_core(b"selected", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let mut outcome = ViemCoreOutcomeV1::default();
+    assert_eq!(unsafe { test_send_text(core.handle, view, b"v$".as_ptr(), 2, &mut outcome) }, ViemStatus::Ok);
+    let mut selection = ViemLogicalSelectionIdentityV1::default();
+    assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
+    let mut required = 0;
+    assert_eq!(unsafe { viem_core_view_copy_link_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(unsafe { viem_core_view_copy_link_context(core.handle, view, bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+    let context: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(context["text"], "selected");
+    assert_eq!(context["canInsert"], true);
+    assert!(context["link"].is_null());
+    let text = ViemUtf8Slice { data: b"selected".as_ptr(), length: 8 };
+    let destination = ViemUtf8Slice { data: b"target.md".as_ptr(), length: 9 };
+    assert_eq!(unsafe { viem_core_view_edit_link(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_view_edit_link(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::StaleRevision);
+}

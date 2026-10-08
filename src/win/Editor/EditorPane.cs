@@ -53,7 +53,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
     private bool active;
-    public bool IsActive { get => active; set { active = value; Canvas.Invalidate(); } }
+    public bool IsActive { get => active; set { active = value; if (!value) DismissLinkPopup(suppress: false); Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
     private ViemViewPresentationV1 presentation;
     private ViemViewportStateV1 viewport;
@@ -137,7 +137,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.AllowDrop = true;
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
         Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } } catch (Exception error) { Report(error); } };
-        input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(false); };
+        input.GotFocus += (_, _) => { outputHadFocus = false; Focused?.Invoke(this); ResetBlink(); _ = RefreshClipboard(false); Run(RefreshLinkPopup); };
+        LostFocus += (_, _) => DispatcherQueue.TryEnqueue(DismissLinkPopupIfFocusLeft);
         input.LostFocus += (_, _) => { caretVisible = true; SetCaretHover(null); Canvas.Invalidate(); };
         input.PreviewKeyDown += OnKey;
         // TextChanging reliably signals input even for this nearly invisible
@@ -218,6 +219,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     internal void InstallReplacement(CoreDocument document, CoreView? prepared)
     {
+        DismissLinkPopup(suppress: false);
         Document.Changed -= DocumentChanged;
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
         Document = document; View = prepared;
@@ -308,6 +310,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;
                 default: if (route.Kind != 0) View.Key(route.Kind, route.Codepoint, route.Modifiers); break;
             }
+            if (key == VirtualKey.Escape) DismissLinkPopup();
         });
     }
     private void Enqueue(Func<Task> action)
@@ -402,6 +405,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
+        DismissLinkPopup(suppress: false);
         caretHoverLocation = null; SetCaretHover(null);
         DismissCommandOutput(false);
         wordSelectionDragging = false;
@@ -483,6 +487,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
             caretRect = CalculateCaret();
+            try { RefreshLinkPopup(); }
+            catch (CoreException error) { DismissLinkPopup(suppress: false); PresentationWarning("link popup", error); }
             UpdateCaretHover();
             try { using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info); }
             catch (CoreException error) { whitespace = null; PresentationWarning("whitespace markers", error); }
@@ -504,7 +510,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         catch (Exception e) {
             // A previous source/device snapshot cannot become the new frame
             // merely because exporting its replacement failed.
-            snapshot = null; whitespace = null; caretRect = new(); SetCaretHover(null);
+            snapshot = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false);
             InvalidateDrawingCache(); Canvas.Invalidate(); Report(e);
         }
         finally { refreshing = false; scrollUpdating = false; }
@@ -551,7 +557,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     internal void CaretHoverFocusChanged()
     {
-        if (!window.IsWindowActive) { caretHoverLocation = null; SetCaretHover(null); }
+        if (!window.IsWindowActive) { caretHoverLocation = null; SetCaretHover(null); DismissLinkPopup(suppress: false); }
+        else if (View != null) Run(RefreshLinkPopup);
     }
     internal void MoveCaretHover(Point point)
     {
@@ -662,6 +669,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public void Dispose()
     {
         if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
+        DismissLinkPopup(suppress: false);
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
         InvalidateDrawingCache();
         View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); Canvas.RemoveFromVisualTree();

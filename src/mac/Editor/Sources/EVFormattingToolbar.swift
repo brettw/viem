@@ -21,6 +21,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let blockQuote = NSButton()
   let formattedView = NSButton()
   let insertTable = EVInsertTableButton()
+  let insertLink = NSButton()
   private(set) var tablePicker: EVTablePickerController?
   private var pickerSelection: ViemLogicalSelectionIdentityV1?
   private let scroll = NSScrollView()
@@ -85,6 +86,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     insertTable.image = Self.tableImage()
     insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
     row.addArrangedSubview(insertTable)
+    configure(insertLink, title: "Insert Link", symbol: "link", toggle: false)
+    insertLink.action = #selector(openLinkEditor(_:))
+    row.addArrangedSubview(insertLink)
     scroll.drawsBackground = false
     scroll.borderType = .noBorder
     scroll.hasHorizontalScroller = true
@@ -211,6 +215,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     formattedView.isEnabled = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
     let markdown = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
     setHidden(!markdown, for: insertTable)
+    setHidden(!markdown, for: insertLink)
+    insertLink.isEnabled = markdown && surface.linkPopover.canOpenEditor
     let tableContext = try? surface.session?.tableContext()
     insertTable.isEnabled = markdown && (tableContext?.flags ?? 0) & 1 != 0
     if let expected = pickerSelection, let current = tableContext?.selection,
@@ -324,6 +330,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     surface.perform(menuCommand: removeList ? .removeList : command, sender: sender)
     finishAction()
   }
+
+  @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.openEditor() }
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }
   @objc func toggleCodeBlock(_ sender: NSButton) { toggleStyle(role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender) }

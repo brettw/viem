@@ -291,6 +291,26 @@ internal sealed partial class EditorWindow : Window
         if (File.Exists(path)) _ = await File.ReadAllBytesAsync(path);
         var window = NewWindow(null); await window.OpenPath(path);
     }
+    internal async Task OpenLinkedDocument(EditorPane origin, LinkDestination target)
+    {
+        if (!Panes.Contains(origin)) throw new InvalidOperationException("The link's document was closed.");
+        bool shared = App.Instance.Windows.Prepend(this).Distinct().Where(w => !w.closed).SelectMany(w => w.Panes)
+            .Any(p => p.Document.FilePath is string path && FileIdentity.Same(path, target.Value));
+        if (!shared && !File.Exists(target.Value)) throw new FileNotFoundException("The linked document could not be found.", target.Value);
+        await OpenPath(target.Value, targetPane: origin, newWindow: true, linkFragment: target.Fragment, reuseOpenDocument: true);
+    }
+    private async Task ShowLinkedPane(EditorPane pane, string? fragment)
+    {
+        if (closed || !Panes.Contains(pane)) return;
+        Activate(); FocusPane(pane);
+        if (string.IsNullOrEmpty(fragment)) return;
+        try
+        {
+            var view = await pane.Ready;
+            if (!closed && Panes.Contains(pane) && ReferenceEquals(pane.View, view)) view.GoToLinkFragment(fragment);
+        }
+        catch (Exception error) { if (!closed && Panes.Contains(pane)) pane.Report(error); }
+    }
     private async Task<string?> PickDirectoryFile(string directory)
     {
 #if DEBUG
@@ -301,7 +321,7 @@ internal sealed partial class EditorWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
-        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false)
+        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
@@ -340,21 +360,24 @@ internal sealed partial class EditorWindow : Window
             }
         }
         (EditorWindow Window, EditorPane Pane) FindExisting() => App.Instance.Windows.Prepend(this).Distinct()
-            .Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
+            .Where(w => !w.closed).SelectMany(w => w.Panes.OrderByDescending(p => p == w.ActivePane).Select(p => (Window: w, Pane: p)))
             .FirstOrDefault(x => x.Pane.Document.FilePath is string named && FileIdentity.Same(named, path));
         var existing = FindExisting();
-        bool ShowExisting()
+        async Task<bool> ShowExisting()
         {
-            if (existing.Pane == null || split || newWindow || pickedFile) return false;
-            existing.Window.Activate(); existing.Pane.FocusEditor(); preferences.Remember(path); return true;
+            if (existing.Pane == null || split || (newWindow && !reuseOpenDocument) || pickedFile) return false;
+            if (reuseOpenDocument) await existing.Window.ShowLinkedPane(existing.Pane, linkFragment);
+            else { existing.Window.Activate(); existing.Pane.FocusEditor(); }
+            preferences.Remember(path); return true;
         }
-        if (ShowExisting()) return;
+        if (await ShowExisting()) return;
         RequireReplacementAllowed();
         byte[] bytes;
-        using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = pickedFile || File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
+        using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = newWindow && existing.Pane != null ? []
+            : pickedFile || File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
         ValidateTarget();
         existing = FindExisting();
-        if (ShowExisting()) return;
+        if (await ShowExisting()) return;
         RecoverySnapshot? recovered = null; bool readOnly = false;
         if (existing.Pane == null)
         {
@@ -391,7 +414,7 @@ internal sealed partial class EditorWindow : Window
             if (existing.Pane != null)
             {
                 doc.Dispose();
-                if (ShowExisting()) return;
+                if (await ShowExisting()) return;
                 doc = existing.Pane.Document;
                 recovered = null; readOnly = false;
             }
@@ -407,6 +430,8 @@ internal sealed partial class EditorWindow : Window
             if (savedSources.TryGetValue(doc, out var baseline)) window.savedSources[doc] = baseline;
             if (!Panes.Any(p => p.Document == doc)) savedSources.Remove(doc);
             window.ActivePane!.RememberedArgument = old?.RememberedArgument ?? ulong.MaxValue;
+            if (reuseOpenDocument || !string.IsNullOrEmpty(linkFragment))
+                await window.ShowLinkedPane(window.ActivePane!, linkFragment);
         }
         else
         {

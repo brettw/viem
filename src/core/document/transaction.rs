@@ -1009,6 +1009,15 @@ impl Document {
         }
     }
 
+    pub(super) fn prepared_candidate_document(&self, prepared: &PreparedModelTransaction) -> Result<Document, DocumentError> {
+        if prepared.document != self.id() || prepared.before_revision != self.revision() { return Err(DocumentError::VerificationFailed); }
+        let mut scratch = self.scratch_document();
+        if let PreparedPublication::State(state) = &prepared.publication {
+            scratch.history = super::history::History::transient(state.clone());
+        } else if !prepared.is_no_op() { return Err(DocumentError::VerificationFailed); }
+        Ok(scratch)
+    }
+
     /// Validate a controller boundary in the prepared result before any source
     /// or history state is published. Position maps describe structural shifts;
     /// their numeric result alone does not prove a logical grapheme boundary.
@@ -1922,7 +1931,7 @@ impl Document {
         self.prepare_text_edits_with_patch_policy(edits, explicit_source_patches, false)
     }
 
-    fn prepare_text_edits_with_patch_policy(
+    pub(super) fn prepare_text_edits_with_patch_policy(
         &self,
         mut edits: Vec<TextEdit>,
         explicit_source_patches: Option<Vec<SourcePatch>>,

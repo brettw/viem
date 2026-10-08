@@ -9,6 +9,7 @@ pub(super) struct InlineLink {
     pub range: Range<usize>,
     pub label: Range<usize>,
     pub destination: String,
+    pub destination_range: Option<Range<usize>>,
 }
 
 fn escaped(bytes: &[u8], at: usize) -> bool {
@@ -139,6 +140,7 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
     while at < end && bytes[at].is_ascii_whitespace() {
         at += 1;
     }
+    let destination_begin = at;
     let destination;
     if bytes.get(at) == Some(&b'<') {
         at += 1;
@@ -184,6 +186,7 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
         }
         destination = decode_destination(&text[begin..at]);
     }
+    let destination_end = at;
     let before_space = at;
     while at < end && bytes[at].is_ascii_whitespace() {
         at += 1;
@@ -227,6 +230,7 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
         range: start..at + 1,
         label: start + 1..label_end,
         destination,
+        destination_range: Some(destination_begin..destination_end),
     })
 }
 
@@ -250,6 +254,7 @@ fn html_links_from_tokens(text_len: usize, tokens: &[super::html::Token]) -> Vec
                         range: start..token.range.start,
                         label: start..token.range.start,
                         destination,
+                        destination_range: None,
                     });
                 }
             }
@@ -266,6 +271,7 @@ fn html_links_from_tokens(text_len: usize, tokens: &[super::html::Token]) -> Vec
                 range: start..text_len,
                 label: start..text_len,
                 destination,
+                destination_range: None,
             });
         }
     }
@@ -339,10 +345,43 @@ fn link_boundary(document: &Document, source: usize, affinity: BoundaryAffinity)
     }
 }
 
+/// A link resolved from one exact document projection. `range` covers the
+/// complete inline construct in Source and its visible label in WYSIWYG.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkSnapshot {
+    pub range: Range<usize>,
+    pub text: String,
+    pub destination: String,
+    pub editable: bool,
+    source: Range<usize>,
+    label_source: Range<usize>,
+    destination_source: Option<Range<usize>>,
+}
+
+const MAX_LINK_QUERY_BYTES: usize = 64 * 1024;
+
+fn plain_label(source: &str) -> String {
+    use pulldown_cmark::Event;
+    let mut result = String::new();
+    for event in
+        pulldown_cmark::Parser::new_ext(source, pulldown_cmark::Options::ENABLE_STRIKETHROUGH)
+    {
+        match event {
+            Event::Text(text) | Event::Code(text) => result.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => result.push(' '),
+            _ => {}
+        }
+    }
+    result
+}
+
 impl Document {
-    /// Resolve a link from this exact snapshot's authored source on demand.
-    /// Literal documents take the constant-time path and retain no link index.
-    pub fn link_at(&self, point: TextPoint) -> Result<Option<String>, DocumentError> {
+    /// Bounded, source-local lookup. The projection's indexed Link interval is
+    /// authoritative; unrelated source is neither copied nor decoded.
+    pub fn link_snapshot_at(
+        &self,
+        point: TextPoint,
+    ) -> Result<Option<LinkSnapshot>, DocumentError> {
         if point.document() != self.id() {
             return Err(DocumentError::WrongDocument);
         }
@@ -356,128 +395,196 @@ impl Document {
         if !self.format().is_markdown() {
             return Ok(None);
         }
-        let link_styles: Vec<_> = self
+        let spans = self
             .projection()
-            .style_spans_for_region(&(point.offset()..point.offset().saturating_add(1)))
-            .into_iter()
-            .filter(|span| {
-                span.range.contains(&point.offset())
-                    && span.application == StyleApplication::Automatic("Link".into())
-            })
-            .collect();
-        if link_styles.is_empty() {
+            .style_spans_for_region(&(point.offset()..point.offset().saturating_add(1)));
+        let Some(span) = spans.iter().find(|span| {
+            span.range.contains(&point.offset())
+                && span.application == StyleApplication::Automatic("Link".into())
+        }) else {
+            return Ok(None);
+        };
+        let Some(first) = self
+            .projection()
+            .source_insertion_point(span.range.start, false)
+        else {
+            return Ok(None);
+        };
+        let Some(last) = self
+            .projection()
+            .source_insertion_point(span.range.end, true)
+        else {
+            return Ok(None);
+        };
+        if last.saturating_sub(first) > MAX_LINK_QUERY_BYTES - 2048 {
             return Ok(None);
         }
+        let mut start = first.saturating_sub(1024);
+        let mut end = last.saturating_add(1024).min(self.source_byte_len());
+        if matches!(self.encoding(), Encoding::Utf16Le | Encoding::Utf16Be) {
+            start -= start % 2;
+            end -= end % 2;
+        }
+        let bytes = self
+            .state()
+            .source
+            .bytes_in(start..end)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let decoded = self.encoding().decode_region(&bytes, start)?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        let source_range = |range: &Range<usize>| -> Option<Range<usize>> {
+            let begin = input
+                .units
+                .partition_point(|unit| unit.normalized.end <= range.start);
+            let end = input
+                .units
+                .partition_point(|unit| unit.normalized.start < range.end);
+            if begin < end {
+                Some(input.units[begin].source.start..input.units[end - 1].source.end)
+            } else if range.is_empty() {
+                input
+                    .units
+                    .get(begin)
+                    .map(|unit| unit.source.start..unit.source.start)
+                    .or_else(|| {
+                        input
+                            .units
+                            .last()
+                            .map(|unit| unit.source.end..unit.source.end)
+                    })
+            } else {
+                None
+            }
+        };
+        for (at, _) in input.text.match_indices('[') {
+            let Some(link) = markdown_inline_at(&input.text, at, input.text.len()) else {
+                continue;
+            };
+            let displayed = if self.format().is_source_view() {
+                &link.range
+            } else {
+                &link.label
+            };
+            let Some(physical) = source_range(displayed) else {
+                continue;
+            };
+            if link_boundary(self, physical.start, BoundaryAffinity::Downstream)
+                != Some(span.range.start)
+                || link_boundary(self, physical.end, BoundaryAffinity::Upstream)
+                    != Some(span.range.end)
+            {
+                continue;
+            }
+            let Some(source) = source_range(&link.range) else {
+                continue;
+            };
+            let Some(label_source) = source_range(&link.label) else {
+                continue;
+            };
+            let text = if self.format().is_source_view() {
+                plain_label(&input.text[link.range.clone()])
+            } else {
+                self.projection()
+                    .text_tree()
+                    .slice(span.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?
+            };
+            return Ok(Some(LinkSnapshot {
+                range: span.range.clone(),
+                text,
+                destination: link.destination,
+                editable: true,
+                source,
+                label_source,
+                destination_source: link.destination_range.as_ref().and_then(source_range),
+            }));
+        }
+        // Passive HTML and autolinks remain navigable. Inline Markdown editing
+        // requires explicit delimiters, so these retain a read-only popup.
         let Some(raw) = self
             .projection()
             .source_insertion_point(point.offset(), true)
         else {
             return Ok(None);
         };
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = super::line_endings::normalize(&decoded, self.file_format());
         let Some(unit) = input
             .units
-            .get(input.units.partition_point(|u| u.source.end <= raw))
+            .get(input.units.partition_point(|unit| unit.source.end <= raw))
         else {
             return Ok(None);
         };
         let at = unit.normalized.start;
-        let mut found: Option<InlineLink> = None;
-        for (start, _) in input.text.match_indices('[') {
-            if start > at {
-                break;
-            }
-            let Some(link) = markdown_inline_at(&input.text, start, input.text.len()) else {
-                continue;
-            };
-            if !link.range.contains(&at) {
-                continue;
-            }
-            // Only the projector knows whether syntax occurs in code or a
-            // different paragraph. Match the candidate's displayed extent to
-            // a Link interval from that exact projection before using its URL.
-            // WYSIWYG displays the label; Source displays the whole construct.
-            let displayed = if self.format().is_source_view() {
-                &link.range
-            } else {
-                &link.label
-            };
-            let begin = input
-                .units
-                .partition_point(|unit| unit.normalized.end <= displayed.start);
-            let end = input
-                .units
-                .partition_point(|unit| unit.normalized.start < displayed.end);
-            if begin >= end {
-                continue;
-            }
-            let Some(first) = link_boundary(
-                self,
-                input.units[begin].source.start,
-                BoundaryAffinity::Downstream,
-            ) else {
-                continue;
-            };
-            let Some(last) = link_boundary(
-                self,
-                input.units[end - 1].source.end,
-                BoundaryAffinity::Upstream,
-            ) else {
-                continue;
-            };
-            if !link_styles.iter().any(|span| span.range == (first..last)) {
-                continue;
-            }
-            // Prefer the narrowest authoritatively styled construct if more
-            // than one candidate recovers the same displayed boundaries.
-            if found
-                .as_ref()
-                .is_none_or(|previous| link.range.len() < previous.range.len())
-            {
-                found = Some(link);
-            }
-        }
-        if let Some(link) = found {
-            return Ok(Some(link.destination));
-        }
-        if let Some(link) = html_links(&input.text)
+        let mut destination = html_links(&input.text)
             .into_iter()
             .find(|link| link.range.contains(&at))
-        {
-            return Ok(Some(link.destination));
-        }
-        for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
-            if range.contains(&at) {
+            .map(|link| link.destination);
+        let mut autolink_range = None;
+        if destination.is_none() {
+            for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
+                if !range.contains(&at) {
+                    continue;
+                }
                 if let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
                     link_type,
                     dest_url,
                     ..
                 }) = event
                 {
-                    if link_type == pulldown_cmark::LinkType::Email {
-                        return Ok(Some(format!("mailto:{dest_url}")));
-                    }
-                    if link_type == pulldown_cmark::LinkType::Autolink {
-                        return Ok(Some(dest_url.into_string()));
+                    destination = match link_type {
+                        pulldown_cmark::LinkType::Email => Some(format!("mailto:{dest_url}")),
+                        pulldown_cmark::LinkType::Autolink => Some(dest_url.into_string()),
+                        _ => None,
+                    };
+                    if destination.is_some() {
+                        autolink_range = source_range(&range);
+                        break;
                     }
                 }
             }
         }
-        for (start, _) in input
-            .text
-            .char_indices()
-            .take_while(|(start, _)| *start <= at)
-        {
-            if let Some((end, destination)) =
-                super::markdown_syntax::autolink(&input.text, start, input.text.len())
+        if destination.is_none() {
+            for (start, _) in input
+                .text
+                .char_indices()
+                .take_while(|(start, _)| *start <= at)
             {
-                if start <= at && at < end {
-                    return Ok(Some(destination));
+                if let Some((end, value)) =
+                    super::markdown_syntax::autolink(&input.text, start, input.text.len())
+                {
+                    if start <= at && at < end {
+                        destination = Some(value);
+                        autolink_range = source_range(&(start..end));
+                        break;
+                    }
                 }
             }
         }
-        Ok(None)
+        Ok(destination.map(|destination| LinkSnapshot {
+            range: span.range.clone(),
+            text: if autolink_range.is_some() {
+                plain_label(
+                    &self
+                        .projection()
+                        .text_tree()
+                        .slice(span.range.clone())
+                        .unwrap_or_default(),
+                )
+            } else {
+                self.projection()
+                    .text_tree()
+                    .slice(span.range.clone())
+                    .unwrap_or_default()
+            },
+            destination,
+            editable: autolink_range.is_some(),
+            source: autolink_range.clone().unwrap_or(first..last),
+            label_source: autolink_range.unwrap_or(first..last),
+            destination_source: None,
+        }))
+    }
+
+    pub fn link_at(&self, point: TextPoint) -> Result<Option<String>, DocumentError> {
+        Ok(self.link_snapshot_at(point)?.map(|link| link.destination))
     }
 }
 
@@ -526,4 +633,442 @@ pub(super) fn markdown_links_in(text: &str, range: Range<usize>) -> Vec<InlineLi
         }
     }
     links
+}
+
+/// Native link authoring is a document intention, independent of Vim grammar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkEditIntent {
+    Insert {
+        range: Range<usize>,
+        text: String,
+        destination: String,
+    },
+    Edit {
+        range: Range<usize>,
+        text: String,
+        destination: String,
+    },
+    Remove {
+        range: Range<usize>,
+    },
+}
+
+fn escape_label(text: &str) -> String {
+    let mut escaped = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_punctuation() {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+fn escape_destination(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\\', "&#92;")
+}
+
+impl Document {
+    pub fn can_insert_link(&self, range: Range<usize>) -> bool {
+        if !self.format().is_markdown()
+            || self.is_read_only()
+            || range.start > range.end
+            || range.len() > MAX_LINK_QUERY_BYTES / 2
+            || self.text_point(range.start).is_err()
+            || self.text_point(range.end).is_err()
+            || self
+                .projection()
+                .markdown_replacement_begins_in_code(&range)
+            || self
+                .projection()
+                .has_decoding_diagnostic_overlapping(&range)
+        {
+            return false;
+        }
+        let Ok(text) = self.projection().text_tree().slice(range.clone()) else {
+            return false;
+        };
+        if text.contains(['\n', '\r']) {
+            return false;
+        }
+        if self
+            .projection()
+            .blocks_for_region(&range)
+            .iter()
+            .any(|block| block.markdown_html || block.thematic_break)
+        {
+            return false;
+        }
+        if self
+            .projection()
+            .style_spans_for_region(&range)
+            .iter()
+            .any(|span| {
+                span.application == StyleApplication::Automatic("Link".into())
+                    && if range.is_empty() {
+                        span.range.start < range.start && range.start < span.range.end
+                    } else {
+                        span.range.start < range.end && range.start < span.range.end
+                    }
+            })
+        {
+            return false;
+        }
+        self.projection().source_range(range).is_some()
+    }
+
+    /// Prepare exact local source patches, then verify the requested label,
+    /// destination and surrounding visible text before any history publication.
+    pub fn prepare_link_edit(
+        &self,
+        document: DocumentId,
+        revision: Revision,
+        intent: LinkEditIntent,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        if document != self.id() {
+            return Err(DocumentError::WrongDocument.into());
+        }
+        if revision != self.revision() {
+            return Err(DocumentError::WrongSnapshot {
+                expected: self.revision(),
+                actual: revision,
+            }
+            .into());
+        }
+        if self.is_read_only() || !self.format().is_markdown() {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let (range, text, destination, remove, existing) = match intent {
+            LinkEditIntent::Insert {
+                range,
+                text,
+                destination,
+            } => {
+                if !self.can_insert_link(range.clone()) {
+                    return Err(DocumentError::UnsupportedFormatting.into());
+                }
+                (range, text, destination, false, None)
+            }
+            LinkEditIntent::Edit {
+                range,
+                text,
+                destination,
+            } => {
+                let link = self
+                    .link_snapshot_at(self.text_point(range.start)?)?
+                    .filter(|link| link.editable && link.range == range)
+                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                (range, text, destination, false, Some(link))
+            }
+            LinkEditIntent::Remove { range } => {
+                let link = self
+                    .link_snapshot_at(self.text_point(range.start)?)?
+                    .filter(|link| link.editable && link.range == range)
+                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                (range, link.text.clone(), String::new(), true, Some(link))
+            }
+        };
+        if (!remove && text.is_empty())
+            || text.len() + destination.len() > MAX_LINK_QUERY_BYTES / 2
+            || text.contains(['\n', '\r'])
+            || destination.chars().any(char::is_control)
+        {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        if !remove
+            && existing
+                .as_ref()
+                .is_some_and(|link| link.text == text && link.destination == destination)
+        {
+            return Ok((
+                self.prepare_reprojected_source_patches(Vec::new())?,
+                range.end,
+            ));
+        }
+        let old_text = self
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let source_range = existing
+            .as_ref()
+            .map(|link| link.source.clone())
+            .or_else(|| self.projection().source_range(range.clone()))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let preserved_label = if let Some(link) = &existing {
+            (text == link.text).then(|| link.label_source.clone())
+        } else if !self.format().is_source_view() && text == old_text {
+            Some(source_range.clone())
+        } else {
+            None
+        };
+        let label_bytes = if let Some(label) = preserved_label {
+            self.state()
+                .source
+                .bytes_in(label)
+                .ok_or(DocumentError::VerificationFailed)?
+        } else if let Some(link) = existing
+            .as_ref()
+            .filter(|link| link.destination_source.is_some() && !link.text.is_empty())
+        {
+            self.replacement_link_label(link, &text)?
+        } else {
+            self.encoding().encode_fragment(&escape_label(&text))?
+        };
+        let mut replacement = Vec::new();
+        if let Some(link) = &existing {
+            if link.destination_source.is_none() {
+                let label = self.encoding().encode_fragment(&escape_label(&text))?;
+                if !remove {
+                    replacement.extend(self.encoding().encode_fragment("[")?);
+                }
+                replacement.extend(label);
+                if !remove {
+                    replacement.extend(
+                        self.encoding().encode_fragment(&format!(
+                            "](<{}>)",
+                            escape_destination(&destination)
+                        ))?,
+                    );
+                }
+            } else if !remove {
+                let dest = link
+                    .destination_source
+                    .clone()
+                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                replacement.extend(
+                    self.state()
+                        .source
+                        .bytes_in(source_range.start..link.label_source.start)
+                        .ok_or(DocumentError::VerificationFailed)?,
+                );
+                replacement.extend(label_bytes);
+                replacement.extend(
+                    self.state()
+                        .source
+                        .bytes_in(link.label_source.end..dest.start)
+                        .ok_or(DocumentError::VerificationFailed)?,
+                );
+                if destination == link.destination {
+                    replacement.extend(
+                        self.state()
+                            .source
+                            .bytes_in(dest.clone())
+                            .ok_or(DocumentError::VerificationFailed)?,
+                    );
+                } else {
+                    replacement.extend(
+                        self.encoding()
+                            .encode_fragment(&format!("<{}>", escape_destination(&destination)))?,
+                    );
+                }
+                replacement.extend(
+                    self.state()
+                        .source
+                        .bytes_in(dest.end..source_range.end)
+                        .ok_or(DocumentError::VerificationFailed)?,
+                );
+            } else {
+                let label = self.encoding().decode_region(&label_bytes, 0)?.text;
+                let mut protected = label.clone();
+                let code: Vec<_> = pulldown_cmark::Parser::new(&label)
+                    .into_offset_iter()
+                    .filter_map(|(event, range)| {
+                        matches!(event, pulldown_cmark::Event::Code(_)).then_some(range)
+                    })
+                    .collect();
+                let mut links = Vec::new();
+                let mut consumed = 0;
+                for (at, _) in label.char_indices() {
+                    if at < consumed || code.iter().any(|range| range.contains(&at)) {
+                        continue;
+                    }
+                    if let Some((end, _)) =
+                        super::markdown_syntax::autolink(&label, at, label.len())
+                    {
+                        links.push(at..end);
+                        consumed = end;
+                    }
+                }
+                for range in links.iter().rev() {
+                    protected.replace_range(range.clone(), &escape_label(&label[range.clone()]));
+                }
+                replacement.extend(self.encoding().encode_fragment(&protected)?);
+            }
+        } else {
+            replacement.extend(self.encoding().encode_fragment("[")?);
+            replacement.extend(label_bytes);
+            replacement.extend(
+                self.encoding()
+                    .encode_fragment(&format!("](<{}>)", escape_destination(&destination)))?,
+            );
+        }
+        let replacement_text = super::line_endings::normalize(
+            &self
+                .encoding()
+                .decode_region(&replacement, source_range.start)?,
+            self.file_format(),
+        )
+        .text;
+        let expected_replacement = if self.format().is_source_view() {
+            replacement_text
+        } else {
+            text.clone()
+        };
+        // The shared authored-syntax path verifies a persistent text splice and
+        // reparses the affected region, preserving unrelated document storage.
+        let prepared = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.clone(), expected_replacement.clone())],
+            Some(vec![SourcePatch::primary(
+                source_range.clone(),
+                replacement,
+            )]),
+            true,
+        )?;
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        if candidate
+            .projection()
+            .text_tree()
+            .slice(range.start..range.start + expected_replacement.len())
+            .map_err(DocumentError::FormattedTextStorage)?
+            != expected_replacement
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        if !remove {
+            let at = range.start;
+            let link = candidate
+                .link_snapshot_at(candidate.text_point(at)?)?
+                .ok_or(DocumentError::VerificationFailed)?;
+            if link.destination != destination
+                || link.text != text
+                || link.source.start != source_range.start
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+        }
+        let caret = range.start + expected_replacement.len();
+        self.prepared_text_point(&prepared, caret)?;
+        Ok((prepared, caret))
+    }
+
+    /// Run the existing semantic replacement policy on a bounded inline
+    /// fragment. The wrapper keeps label punctuation in inline context and
+    /// supplies a stable owner while the first character's styles are retained.
+    fn replacement_link_label(
+        &self,
+        link: &LinkSnapshot,
+        text: &str,
+    ) -> Result<Vec<u8>, ModelTransactionError> {
+        let mut bytes = self.encoding().encode_fragment("[")?;
+        bytes.extend(
+            self.state()
+                .source
+                .bytes_in(link.label_source.clone())
+                .ok_or(DocumentError::VerificationFailed)?,
+        );
+        bytes.extend(self.encoding().encode_fragment("](viem-label)")?);
+        let mut fragment = Document::from_bytes_with_file_format(
+            bytes,
+            self.encoding(),
+            Format::Markdown,
+            self.file_format(),
+        )?;
+        let range = 0..fragment.projection().text_tree().byte_len();
+        let inherited = fragment.replacement_typing_context(range.clone())?;
+        let payload = FormattedTextPayload::new(&fragment.hard_line_snapshot(), text, Vec::new())
+            .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let (prepared, _, _) = fragment.prepare_insertion_with_typing_context(
+            FormattedPayloadEdit::new(range, payload),
+            None,
+            &[],
+            inherited.as_ref(),
+        )?;
+        fragment.commit_model_transaction(prepared)?;
+        let label = fragment
+            .link_snapshot_at(fragment.text_point(0)?)?
+            .ok_or(DocumentError::VerificationFailed)?;
+        if label.text != text {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        fragment
+            .state()
+            .source
+            .bytes_in(label.label_source)
+            .ok_or(DocumentError::VerificationFailed.into())
+    }
+
+    /// Resolve GitHub-style heading fragments, including duplicate suffixes.
+    /// This explicit navigation query may visit headings; passive UI never does.
+    pub fn find_link_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {
+        if !self.format().is_markdown() {
+            return Ok(None);
+        }
+        if fragment.is_empty() {
+            return Ok(Some(0));
+        }
+        let decoded = self.encoding().decode(&self.source_bytes())?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        let mut headings = std::collections::HashMap::<String, usize>::new();
+        let mut current: Option<(usize, String)> = None;
+        use pulldown_cmark::{Event, Tag, TagEnd};
+        for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
+            match event {
+                Event::Start(Tag::Heading { .. }) => current = Some((range.start, String::new())),
+                Event::Text(text) | Event::Code(text) => {
+                    if let Some((_, label)) = &mut current {
+                        label.push_str(&text);
+                    }
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    if let Some((_, label)) = &mut current {
+                        label.push(' ');
+                    }
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    if let Some((start, label)) = current.take() {
+                        let base: String = label
+                            .trim()
+                            .to_lowercase()
+                            .chars()
+                            .filter_map(|ch| {
+                                if ch == ' ' {
+                                    Some('-')
+                                } else if ch == '-' || ch == '_' || ch.is_alphanumeric() {
+                                    Some(ch)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let mut slug = base.clone();
+                        let mut suffix = 0;
+                        while headings.contains_key(&slug) {
+                            suffix += 1;
+                            slug = format!("{base}-{suffix}");
+                        }
+                        headings.insert(slug.clone(), 1);
+                        if slug == fragment {
+                            let unit = input.units.get(
+                                input
+                                    .units
+                                    .partition_point(|unit| unit.normalized.end <= start),
+                            );
+                            if let Some(unit) = unit {
+                                return Ok(link_boundary(
+                                    self,
+                                    unit.source.start,
+                                    BoundaryAffinity::Downstream,
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
 }

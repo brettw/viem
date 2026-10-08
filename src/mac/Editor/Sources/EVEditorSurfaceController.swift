@@ -16,6 +16,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     lazy var formattingToolbar = EVFormattingToolbarView(surface: self)
+    lazy var linkPopover = EVLinkPopoverController(surface: self)
     public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
 
     let backend: EVCoreDocumentBackend
@@ -214,6 +215,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func detachFromCore() {
+        linkPopover.close()
         lastLayoutWarning = ""
         stopSearchPolling()
         completionTimer?.invalidate()
@@ -418,6 +420,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             updateStatusBar()
             if isViewLoaded {
                 editorView.applyPresentation()
+                linkPopover.refresh()
             }
             // Warnings are optional presentation data. A warning-copy failure
             // must not suppress an otherwise verified frame or replay input.

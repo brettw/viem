@@ -2261,6 +2261,12 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_redetect_code_language(ulong @core, byte* @filename, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_link_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_edit_link(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @link_start, ulong @link_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcomeV1* @outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_find_link_fragment(ulong @core, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, ulong* @offset, byte* @found);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_link_destination(ulong @core, ulong @document_id, ulong @revision, ulong @text_offset, byte* @output, ulong @capacity, ulong* @required, byte* @found);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_text_width_default(ulong @core, uint @width);
