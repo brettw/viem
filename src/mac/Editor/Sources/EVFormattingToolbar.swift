@@ -71,6 +71,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(characterCode, title: "Code (Character)", symbol: "chevron.left.forwardslash.chevron.right", toggle: true)
     characterCode.action = #selector(toggleCharacterCode(_:))
     characterGroup.addArrangedSubview(characterCode)
+    configure(insertLink, title: "Insert Link", symbol: "link", toggle: false)
+    insertLink.action = #selector(openLinkEditor(_:))
+    characterGroup.addArrangedSubview(insertLink)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
     configure(blockQuote, title: "Block Quote", toggle: true)
@@ -86,9 +89,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     insertTable.image = Self.tableImage()
     insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
     row.addArrangedSubview(insertTable)
-    configure(insertLink, title: "Insert Link", symbol: "link", toggle: false)
-    insertLink.action = #selector(openLinkEditor(_:))
-    row.addArrangedSubview(insertLink)
     scroll.drawsBackground = false
     scroll.borderType = .noBorder
     scroll.hasHorizontalScroller = true

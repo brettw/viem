@@ -77,6 +77,9 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(character, ToolbarAction.Italic, "Italic", "\uE8DB");
         Add(character, ToolbarAction.Strikethrough, "Strikethrough", "\uEDE0");
         Add(character, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
+        AutomationProperties.SetName(InsertLink, "Insert link"); ToolTipService.SetToolTip(InsertLink, "Insert link");
+        InsertLink.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertLink); };
+        character.Children.Add(InsertLink);
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
@@ -88,9 +91,6 @@ internal sealed partial class FormattingToolbar : UserControl
         InsertTable.Content = TableIcon(InsertTable);
         AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
         row.Children.Add(InsertTable);
-        AutomationProperties.SetName(InsertLink, "Insert link"); ToolTipService.SetToolTip(InsertLink, "Insert link");
-        InsertLink.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertLink); };
-        row.Children.Add(InsertLink);
     }
 
     private static StackPanel Group(double spacing = 2) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
