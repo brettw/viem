@@ -47,6 +47,7 @@ internal static class FormattingToolbarTests
         TablePickerTests.Run();
         await TableInteractionTests.Run(preferences);
         await LinkInteractionTests.Run(preferences);
+        await ImageInteractionTests.Run(preferences);
     }
 
     internal static async Task Run(Preferences preferences)

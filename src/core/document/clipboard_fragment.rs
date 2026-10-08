@@ -15,6 +15,8 @@ pub struct ClipboardFragment(Arc<str>);
 struct Export {
     schema_version: u32,
     plain_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_plain_text: Option<String>,
     hard_breaks: Vec<usize>,
     register_kind: u32,
     is_rich: bool,
@@ -61,6 +63,11 @@ impl ClipboardFragment {
         &self.0
     }
 
+    pub(crate) fn image_plain_text(&self) -> Option<String> {
+        let value: Export = serde_json::from_str(self.json()).expect("authored clipboard fragment");
+        value.image_plain_text
+    }
+
     pub(crate) fn source_mode_text(&self) -> Option<String> {
         let value: Export = serde_json::from_str(self.json()).expect("authored clipboard fragment");
         (!value.is_rich).then_some(value.source_text)
@@ -83,6 +90,7 @@ impl ClipboardFragment {
         let export = Export {
             schema_version: 1,
             plain_text: text.clone(),
+            image_plain_text: None,
             source_plain_text: text.clone(),
             hard_breaks: projection.hard_breaks_for_region(&range),
             register_kind: 1,
@@ -112,7 +120,7 @@ impl ClipboardFragment {
         let value: Export =
             serde_json::from_str(json).map_err(|_| DocumentError::UnsupportedFormatting)?;
         if value.schema_version != 1
-            || value.plain_text != plain_text
+            || (value.plain_text != plain_text && value.image_plain_text.as_deref() != Some(plain_text))
             || !matches!(value.register_kind, 1..=3)
             || value.source_plain_text != value.plain_text
                 && !(value.register_kind == 2
@@ -120,6 +128,15 @@ impl ClipboardFragment {
         {
             return Err(DocumentError::UnsupportedFormatting);
         }
+        if let Some(fallback) = &value.image_plain_text {
+            let (format,encoding,file_format)=value.pipeline()?;
+            let document=Document::from_bytes_with_file_format(value.source_bytes.clone(),encoding,format,file_format)?;
+            if document.text()!=value.source_plain_text {return Err(DocumentError::UnsupportedFormatting);}
+            let mut expected=document.image_plain_text_for_range(0..document.text().len())?.ok_or(DocumentError::UnsupportedFormatting)?;
+            if value.register_kind==2 && value.plain_text==format!("{}\n",value.source_plain_text) {expected.push('\n');}
+            if &expected!=fallback {return Err(DocumentError::UnsupportedFormatting);}
+        }
+        let plain_text=&value.plain_text;
         if !value.table_cells.is_empty() {
             let columns=value.table_cells[0].len();
             if columns==0 || value.table_cells.iter().any(|row|row.len()!=columns) {return Err(DocumentError::UnsupportedFormatting);}
@@ -304,6 +321,9 @@ impl ClipboardFragment {
     pub(crate) fn as_seen(&self) -> Self {
         let mut value: Export =
             serde_json::from_str(self.json()).expect("authored clipboard fragment");
+        if value.plain_text==format!("{}\n",value.source_plain_text) {
+            if let Some(fallback)=&mut value.image_plain_text {fallback.pop();}
+        }
         value.plain_text = value.source_plain_text.clone();
         if value.register_kind != 3 {
             value.register_kind = 1;
@@ -319,6 +339,9 @@ impl ClipboardFragment {
     pub(crate) fn with_register(&self, text: &str, kind: u32, breaks: &[usize]) -> Self {
         let mut value: Export =
             serde_json::from_str(self.json()).expect("authored clipboard fragment");
+        if text==format!("{}\n",value.plain_text) {
+            if let Some(fallback)=&mut value.image_plain_text {fallback.push('\n');}
+        } else if text!=value.plain_text {value.image_plain_text=None;}
         value.plain_text = text.to_owned();
         value.register_kind = kind;
         value.hard_breaks = breaks.to_vec();
@@ -410,6 +433,7 @@ impl Document {
             } else {
                 source_text.clone()
             },
+            image_plain_text: self.image_plain_text_for_range(range.clone())?,
             source_plain_text: captured.text().to_owned(),
             hard_breaks: captured.break_offsets().to_vec(),
             register_kind: 1,
@@ -462,6 +486,7 @@ impl Document {
                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
         export.register_kind = 3;
         export.plain_text.clear();
+        export.image_plain_text=None;
         export.source_text.clear();
         export.source_bytes.clear();
         export.inline_source_bytes.clear();
@@ -866,12 +891,19 @@ fn selected_source(
     let mut pieces = prefixes;
     pieces.push(hull);
     pieces.extend(suffixes);
+    let images=document.projection().inline_images_for_region(range);
     let mut result = Vec::new();
     let mut previous_end = 0;
     for mut piece in pieces {
         piece.start = piece.start.max(previous_end);
         if piece.start < piece.end {
-            result.extend_from_slice(&source[piece.clone()]);
+            let mut cursor=piece.start;
+            for image in images.iter().filter(|image|!image.inline && piece.start<=image.source.start && image.source.end<=piece.end) {
+                result.extend_from_slice(&source[cursor..image.source.start]);
+                result.extend(document.encoding().encode_fragment(&format!("![{}](<{}>)",super::super::links::escape_label(&image.text),super::super::links::escape_destination(&image.destination)))?);
+                cursor=image.source.end;
+            }
+            result.extend_from_slice(&source[cursor..piece.end]);
             previous_end = piece.end;
         }
     }
@@ -1330,8 +1362,29 @@ impl Document {
             strings.push(value.plain_text.clone());fragments.push(value);
         }texts.push(strings);cells.push(fragments);}
         let plain_text=tabular_text(&texts);
-        let export=Export {schema_version:1,plain_text:plain_text.clone(),source_plain_text:plain_text.clone(),hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
+        let export=Export {schema_version:1,plain_text:plain_text.clone(),image_plain_text:None,source_plain_text:plain_text.clone(),hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
         let json=serde_json::to_string(&export).map_err(|_|DocumentError::UnsupportedFormatting)?;
         Ok((ClipboardFragment(Arc::from(json)),plain_text))
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use super::super::super::Encoding;
+    #[test]
+    fn images_roundtrip_private_clipboard_with_passive_plain_text_fallback() {
+        for source in ["before ![cat](cat.png) after", "before ![cat][id] after\n\n[id]: cat.png"] {
+            let document=Document::from_bytes(source.as_bytes().to_vec(),Encoding::Utf8,Format::Markdown).unwrap();
+            let fragment=document.clipboard_fragment(7..10).unwrap();
+            let fallback=fragment.image_plain_text().unwrap();
+            assert_eq!(fallback,"![cat](<cat.png>)");
+            let imported=ClipboardFragment::from_json(fragment.json(),&fallback).unwrap();
+            let text=imported.register_parts().0;
+            let mut target=Document::from_bytes(Vec::new(),Encoding::Utf8,Format::Markdown).unwrap();
+            let prepared=target.prepare_clipboard_fragment(0..0,&imported,&text).unwrap().unwrap();
+            target.commit_model_transaction(prepared).unwrap();
+            assert_eq!(target.text(),"\u{fffc}");assert_eq!(target.image_snapshot_at(target.text_point(0).unwrap()).unwrap().unwrap().destination,"cat.png");
+        }
     }
 }

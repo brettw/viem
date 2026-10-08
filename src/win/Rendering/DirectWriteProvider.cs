@@ -90,7 +90,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     }
     public ViemTextMeasurementProviderV1 Table => new()
     {
-        struct_size = (uint)sizeof(ViemTextMeasurementProviderV1), abi_version = 3,
+        struct_size = (uint)sizeof(ViemTextMeasurementProviderV1), abi_version = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION,
         measurement_environment_id = owner, threading = VIEM_PROVIDER_THREADING_ANY_WORKER,
         has_render_run_policy = 1, render_run_owner = owner,
         render_run_threading = VIEM_RENDER_THREADING_ANY,
@@ -108,6 +108,20 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         measurement = next; device = replacement; InvalidateMetrics();
         previous.Dispose();
     }
+    public bool IsInlineImage(ViemRenderRunHandleV1 handle) => ImageDestination(handle) != null;
+    public string? ImageDestination(ViemRenderRunHandleV1 handle) => handle.owner == owner && handle.metrics_generation == Generation
+        && resources.TryGetValue(handle.identifier, out var resource) ? resource.ImageDestination : null;
+    public void UpdateImageDimensions(IReadOnlyDictionary<string, (uint Width, uint Height)> dimensions)
+    {
+        var previous = Volatile.Read(ref shared.ImageDimensions);
+        if (previous.Count == dimensions.Count && previous.All(pair => dimensions.TryGetValue(pair.Key, out var value) && pair.Value == value)) return;
+        // The view supplies only retained previews (at most 48). Publish an
+        // immutable metric dependency set instead of clearing a separate LRU
+        // that could forget dimensions of images still visible in the view.
+        Volatile.Write(ref shared.ImageDimensions, new Dictionary<string, (uint Width, uint Height)>(dimensions, StringComparer.Ordinal));
+        InvalidateMetrics();
+    }
+    public void ClearImageDimensions() => UpdateImageDimensions(new Dictionary<string, (uint Width, uint Height)>());
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
     public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
     {
@@ -133,7 +147,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         {
             if (!brushes.TryGetValue(color, out var brush)) brushes[color] = brush = new(drawing, color);
             if (handle.owner != provider.owner || handle.metrics_generation != provider.Generation
-                || !provider.resources.TryGetValue(handle.identifier, out var resource)) return;
+                || !provider.resources.TryGetValue(handle.identifier, out var resource) || resource.ImageDestination != null) return;
             if (!combine || resource.ColorGlyph)
             {
                 Flush(); provider.Draw(drawing, handle, baseline, color, brush); DrawCalls++;
@@ -173,7 +187,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
     {
-        if (handle.owner != owner || handle.metrics_generation != Generation || !resources.TryGetValue(handle.identifier, out var resource)) return;
+        if (handle.owner != owner || handle.metrics_generation != Generation || !resources.TryGetValue(handle.identifier, out var resource) || resource.ImageDestination != null) return;
         if (resource.ColorGlyph)
         {
             // DrawTextLayout performs DirectWrite's color-font translation.
@@ -218,6 +232,79 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     }
 
     private ViemShapeResponseV1 Shape(ViemShapeRequestV1 request)
+    {
+        var whole = ShapeText(request);
+        if (request.inline_image_count == 0) return whole;
+        var intervals = new HashSet<(ulong Start, ulong End)>();
+        for (ulong c = 0; c < whole.cluster_count; c++) intervals.Add((whole.clusters[c].text_start, whole.clusters[c].text_end));
+        bool atomic = true;
+        for (ulong i = 0; i < request.inline_image_count; i++)
+        {
+            var image = request.inline_images[i];
+            if (!intervals.Contains((image.text_start, image.text_end))) { atomic = false; break; }
+        }
+        if (atomic) return whole; // Keep paragraph bidi/shaping context in the normal case.
+        // U+FFFC is a model object boundary even next to combining marks. Split
+        // native shaping at each object so DirectWrite cannot merge its caret
+        // stops with adjacent prose, while retaining context at outer edges.
+        var clusters = new List<ViemShapedClusterV1>();
+        var stops = new List<ViemClusterCaretStopV1>();
+        ViemTextMetricsV1 metrics = default;
+        void Append(ulong start, ulong end, ViemInlineImageV1* image)
+        {
+            if (end <= start) return;
+            var part = request;
+            part.text_start = start; part.text_end = end;
+            part.text = new() { data = request.text.data + (start - request.text_start), length = end - start };
+            part.context_before = image == null && start == request.text_start ? request.context_before : default;
+            part.context_after = image == null && end == request.text_end ? request.context_after : default;
+            part.inline_images = image; part.inline_image_count = image == null ? 0u : 1u;
+            var shaped = ShapeText(part);
+            metrics.ascent = Math.Max(metrics.ascent, shaped.default_metrics.ascent);
+            metrics.descent = Math.Max(metrics.descent, shaped.default_metrics.descent);
+            metrics.leading = Math.Max(metrics.leading, shaped.default_metrics.leading);
+            for (ulong c = 0; c < shaped.cluster_count; c++)
+            {
+                var cluster = shaped.clusters[c];
+                // Preserve the whole paragraph's embedding level when a
+                // combining sequence needed a local object-boundary repair.
+                uint shapedBidi = cluster.bidi_level;
+                ulong lo = 0, hi = whole.cluster_count;
+                while (lo < hi) { ulong mid = lo + (hi - lo) / 2; if (whole.clusters[mid].text_start <= cluster.text_start) lo = mid + 1; else hi = mid; }
+                if (lo > 0 && whole.clusters[lo - 1].text_end > cluster.text_start) cluster.bidi_level = whole.clusters[lo - 1].bidi_level;
+                for (ulong stop = 0; stop < cluster.caret_stop_count; stop++)
+                {
+                    var value = cluster.caret_stops[stop];
+                    if ((shapedBidi & 1) != (cluster.bidi_level & 1)) value.inline_offset = cluster.advance - value.inline_offset;
+                    stops.Add(value);
+                }
+                clusters.Add(cluster);
+            }
+        }
+        ulong position = request.text_start;
+        for (ulong i = 0; i < request.inline_image_count; i++)
+        {
+            var image = request.inline_images + i;
+            Append(position, image->text_start, null);
+            Append(image->text_start, image->text_end, image);
+            position = image->text_end;
+        }
+        Append(position, request.text_end, null);
+        var nativeStops = arena.Copy<ViemClusterCaretStopV1>(CollectionsMarshal.AsSpan(stops));
+        var nativeClusters = arena.Copy<ViemShapedClusterV1>(CollectionsMarshal.AsSpan(clusters));
+        ulong stopOffset = 0;
+        for (int i = 0; i < clusters.Count; i++) { nativeClusters[i].caret_stops = nativeStops + stopOffset; stopOffset += nativeClusters[i].caret_stop_count; }
+        ulong[] order = VisualOrder(clusters.Select(c => c.bidi_level).ToArray());
+        return new() {
+            struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
+            measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
+            text_start = request.text_start, text_end = request.text_end, default_metrics = metrics,
+            clusters = nativeClusters, cluster_count = (ulong)clusters.Count,
+            visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
+        };
+    }
+
+    private ViemShapeResponseV1 ShapeText(ViemShapeRequestV1 request)
     {
         if (inkGeneration != Generation) { inkBounds.Clear(); fontMetadata.Clear(); inkGeneration = Generation; }
         string before = Text(request.context_before), interior = Text(request.text), after = Text(request.context_after);
@@ -267,6 +354,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0
         };
         var clusters = new List<ViemShapedClusterV1>();
+        var images = new Dictionary<ulong, (ulong End, string Destination)>();
+        for (ulong i = 0; i < request.inline_image_count; i++)
+        {
+            var image = request.inline_images[i];
+            images[image.text_start] = (image.text_end, Text(image.destination));
+        }
         // The same glyph occurs on many lines. Keep exact native face/size/run
         // arguments across fragments, bounded to 1,024 entries per shaper and
         // scoped to its device/metrics generation. Workers own separate caches.
@@ -334,6 +427,16 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 float x = Math.Min(previous.x, (float)ink.X), y = Math.Min(previous.y, (float)ink.Y);
                 cluster.ink_bounds = new() { x = x, y = y, width = Math.Max(previous.x + previous.width, (float)ink.Right) - x, height = Math.Max(previous.y + previous.height, (float)ink.Bottom) - y };
             }
+            string? imageDestination = null;
+            if (images.TryGetValue(cluster.text_start, out var image) && image.End == cluster.text_end)
+            {
+                imageDestination = image.Destination;
+                var dimensions = Volatile.Read(ref shared.ImageDimensions).TryGetValue(imageDestination, out var known) ? known : (300u, 64u);
+                float width = dimensions.Item1 * request.scale, height = dimensions.Item2 * request.scale;
+                cluster.advance = width;
+                cluster.metrics = new() { ascent = height };
+                cluster.typographic_bounds = cluster.ink_bounds = new() { y = -height, width = width, height = height };
+            }
             cluster.bidi_level = bidi;
             string family = (parts.Count == 0 ? null : parts[0].Metadata.Family) ?? ResolveFont(style).Family;
             if (!fontNames.TryGetValue(family, out var nativeName)) fontNames[family] = nativeName = arena.Utf8(family);
@@ -345,7 +448,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             {
                 ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
-                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline, cluster.ink_bounds, markerFont)))
+                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline, cluster.ink_bounds, markerFont) { ImageDestination = imageDestination }))
                     throw new InvalidOperationException("Duplicate glyph resource identity.");
                 Interlocked.Increment(ref fragment.References);
                 responseResources.Add(id);
@@ -537,10 +640,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         public long Generation = 1, NextResource, BackgroundCharacters;
         public int BackgroundThread;
         public readonly ConcurrentDictionary<ulong, Resource> Resources = new();
+        public IReadOnlyDictionary<string, (uint Width, uint Height)> ImageDimensions = new Dictionary<string, (uint Width, uint Height)>(StringComparer.Ordinal);
     }
     private sealed class Fragment(CanvasTextLayout layout) { public CanvasTextLayout Layout = layout; public int References; }
     private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBoundsV1 bounds, MarkerFont markerFont)
     {
+        public string? ImageDestination;
         public MarkerFont MarkerFont = markerFont;
         public Fragment Fragment = fragment; public List<GlyphPart> Parts = parts; public int References = 1;
         public float Left = left, Baseline = baseline; public ViemShapedBoundsV1 Bounds = bounds;

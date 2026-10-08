@@ -9,6 +9,7 @@ import ViemAppShell
 struct EVClipboardFragment: Decodable {
     let schemaVersion: UInt32
     let plainText: String
+    let imagePlainText: String?
     let hardBreaks: [Int]
     let isRich: Bool
     let sourceText: String
@@ -152,6 +153,9 @@ struct EVClipboardFragment: Decodable {
 
     @MainActor func representations(json: Data) throws -> EVClipboardRepresentations {
         guard isRich else { return EVClipboardRepresentations(plainText: sourceText) }
+        if let imagePlainText {
+            return EVClipboardRepresentations(plainText: imagePlainText, fragment: json)
+        }
         let attributed = try attributedText()
         let rtf = try attributed.data(from: NSRange(location: 0, length: attributed.length),
             documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf])

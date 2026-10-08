@@ -101,7 +101,7 @@ number stays visible as continuation text:
 > *These asterisks remain literal.*
 > ```
 
-## Links and visible references
+## Links, images and visible references
 
 An ordinary [inline link](https://example.com "Example title") hides its destination in WYSIWYG and uses the Link style. A [**formatted link label**](https://example.com/path) can contain emphasis.
 
@@ -121,9 +121,29 @@ Angle autolinks: <https://example.com> and <writer@example.com>.
 
 Automatic links: https://example.com/path, www.example.com, and writer@example.com.
 
-Viem intentionally keeps images and reference links visible, with their brackets, in the light-purple Markdown reference character style:
+Insert Image sits beside Code Block in the toolbar. In WYSIWYG, local images
+preview at their intrinsic size or shrink proportionally to fit the content
+width. Click an image or move the caret onto it to see its selection
+outline and location popup; Edit expands that popup to change its location and
+alternative text. Source exposes the complete image notation.
 
-![An example image](example-image.png "No image is loaded")
+This screenshot uses a same-directory path containing a space:
+
+![Word-style inspector reference](<Word style.png> "Local image in docs")
+
+The diagram below uses `../examples/markdown-image-flow.png`, resolved relative
+to this document in `docs/`:
+
+![Local image previews and remote URL placeholders](../examples/markdown-image-flow.png "Relative path to examples")
+
+Remote images display their URL inside a placeholder box. Viem never downloads
+these resources. Opening the location explicitly uses your default browser.
+Try the image's location popup or [open Google's favicon](http://google.com/favicon.ico).
+
+![Google favicon (remote URL placeholder)](http://google.com/favicon.ico)
+
+Reference links and definitions retain their visible brackets in the
+light-purple Markdown reference style. Resolved reference images still preview:
 
 [Full reference][example]
 
@@ -134,7 +154,7 @@ Viem intentionally keeps images and reference links visible, with their brackets
 ![Reference image][example-image]
 
 [example]: https://example.com "A reference definition"
-[example-image]: example-image.png
+[example-image]: <Word style.png>
 
 ## Literal code
 
@@ -233,7 +253,7 @@ Tables also retain the inset of their enclosing list or quotation:
 
 ## Unsupported GitHub features
 
-The following examples intentionally demonstrate features that Viem does not implement. Image and reference syntax above is also an intentional visible-syntax treatment, rather than GitHub's rendered images or resolved reference labels.
+The following examples intentionally demonstrate features that Viem does not implement. Remote-image placeholders and literal reference links above are deliberate presentation choices; local Markdown images preview without network access.
 
 ### Task-list checkboxes
 

@@ -9,9 +9,9 @@ extern "C" {
 #endif
 
 #define VIEM_CORE_ABI_VERSION 8u
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 3u
+#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 4u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
-  VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3
+  VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4
 
 typedef uint64_t ViemCoreHandle;
 /* Owned immutable command-turn effects; zero means no effects. */
@@ -761,6 +761,18 @@ typedef struct ViemShapingDiagnosticV1 {
 #define VIEM_SHAPING_DIAGNOSTIC_V1_SIZE \
   ((uint32_t)sizeof(ViemShapingDiagnosticV1))
 
+/* Passive source metadata. Never fetch an image destination. Local decoding is
+ * native-owned and bounded; unavailable and remote images use a 300 x 64 point
+ * placeholder. Return one cluster per object with intrinsic dimensions scaled
+ * by request.scale, bottom baseline, and only endpoint caret stops. Core clamps
+ * the cluster to the content width while preserving aspect ratio. Draw native
+ * image resources into the final exported cluster typographic bounds. */
+typedef struct ViemInlineImageV1 {
+  uint64_t text_start;
+  uint64_t text_end;
+  ViemUtf8Slice destination;
+} ViemInlineImageV1;
+
 typedef struct ViemShapeRequestV1 {
   uint32_t struct_size;
   uint32_t purpose;
@@ -789,6 +801,8 @@ typedef struct ViemShapeRequestV1 {
    * slices contain immediately adjacent complete grapheme sequences.
    */
   uint32_t paragraph_base_direction;
+  const ViemInlineImageV1 *inline_images;
+  uint64_t inline_image_count;
 } ViemShapeRequestV1;
 
 #define VIEM_SHAPE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemShapeRequestV1))
@@ -813,7 +827,7 @@ typedef struct ViemShapeResponseV1 {
 
 /*
  * A response echoes the request's text_start..text_end ownership interior.
- * Under provider ABI v3, returned cluster ends may extend into context_after;
+ * Under provider ABI v4, returned cluster ends may extend into context_after;
  * response bounds do not expand to include those cluster tails.
  */
 
@@ -845,7 +859,7 @@ typedef uint32_t (*ViemShapeBatchCallback)(
  * not invalidate response storage. Opaque render-run tokens follow the lease
  * and generation lifetime documented on ViemRenderRunHandleV1.
  *
- * A successful ABI-v3 response affirms that its ownership interior is stable
+ * A successful ABI-v4 response affirms that its ownership interior is stable
  * under arbitrary text outside the supplied bounded context. A provider that
  * cannot make that guarantee returns VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT from
  * shape_batch instead of returning partial or uncacheable measurements. Core
@@ -2867,6 +2881,23 @@ ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
                                    uint64_t link_end, ViemUtf8Slice text,
                                    ViemUtf8Slice destination,
                                    ViemCoreOutcomeV1 *outcome);
+/* Image popup has the link-context schema with "image" instead of "link".
+ * WYSIWYG range is one atomic U+FFFC object, Source range is full notation.
+ * No query fetches resources. Empty alternative text is allowed. */
+ViemStatus viem_core_view_copy_image_context(ViemCoreHandle core, ViemViewId view,
+                                            uint8_t *output, uint64_t capacity,
+                                            uint64_t *required);
+/* action: 0 inserts, 1 edits, 2 removes the whole image. */
+ViemStatus viem_core_view_edit_image(ViemCoreHandle core, ViemViewId view,
+                                    const ViemLogicalSelectionIdentityV1 *expected,
+                                    uint32_t action, uint64_t image_start,
+                                    uint64_t image_end, ViemUtf8Slice text,
+                                    ViemUtf8Slice destination,
+                                    ViemCoreOutcomeV1 *outcome);
+/* Select the complete WYSIWYG image independently of pointer preferences. */
+ViemStatus viem_core_view_select_image(ViemCoreHandle core, ViemViewId view,
+                                      uint64_t document_id, uint64_t revision,
+                                      uint64_t text_offset, ViemCoreOutcomeV1 *outcome);
 /* fragment is percent-decoded, excludes '#'; outputs name this exact revision. */
 ViemStatus viem_core_find_link_fragment(ViemCoreHandle core, uint64_t document_id,
                                        uint64_t revision, ViemUtf8Slice fragment,

@@ -102,6 +102,7 @@ internal sealed partial class EditorPane
 
     private void PresentInsertLink()
     {
+        DismissImagePopup(suppress: false);
         if (View is not { } view || !view.HasFormattingSelection || view.Composing) return;
         var context = view.LinkContext();
         if (!context.CanInsert && context.Link?.Editable != true)
@@ -180,8 +181,14 @@ internal sealed partial class EditorPane
             || !view.HasFormattingSelection || Document.State.format is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE))
         { DismissLinkPopup(suppress: false); return; }
         if (!HasLinkInteractionFocus()) { DismissLinkPopup(suppress: false); return; }
+        // A linked image has both contexts. Its object toolbar owns the passive
+        // surface, while an explicitly opened link editor retains its draft.
+        if (!editingLink && ImageEditorVisible)
+        { DismissLinkPopup(suppress: false); return; }
         if (view.HasSelection && !editingLink) { dismissedLink = null; DismissLinkPopup(suppress: false); return; }
         var context = view.LinkContext();
+        if (!editingLink && context.Link != null && view.ImageContext().Image != null)
+        { DismissLinkPopup(suppress: false); return; }
         if (dismissedLink != null && !SameLinkContext(dismissedLink, context)) dismissedLink = null;
         if (editingLink)
         {

@@ -22,10 +22,16 @@ from deferred work. It does not claim complete GFM conformance.
   default browser. Local document fragments target headings in the chosen view.
   Heading names use lowercase text with punctuation removed, hyphenated spaces
   and duplicate suffixes.
-- **Images and reference links:** full, collapsed and defined shortcut
-  references, images and definitions keep their literal brackets in WYSIWYG,
-  styled with the new light-purple **Markdown reference** character style.
-  No image resources are loaded. Definition edits invalidate dependent styling.
+- **Inline images:** Markdown images, including resolved references, are atomic
+  objects in WYSIWYG; Source retains full notation. Native Insert Image controls
+  and location popups insert, edit, copy, open or remove images with ordinary
+  undo. Local previews retain intrinsic aspect ratio and fit the content width
+  without upscaling. Remote URLs are text placeholders and are never fetched.
+  Explicitly opening a remote location launches the default browser.
+- **Reference links:** full, collapsed and defined shortcut links and reference
+  definitions keep their literal brackets in WYSIWYG, styled with the light-purple
+  **Markdown reference** character style. Definition edits invalidate dependent
+  image metadata as well as reference styling.
 - **Composed containers:** headings in lists, quotes inside lists, nested quote
   depth, and Code Block/heading presentation inside quotes. Quotes, code blocks,
   lists, and list items have explicit owners; contained paragraphs retain
@@ -83,9 +89,12 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    there are no checkbox controls.
 3. **Fenced-code syntax highlighting.** Info strings remain preserved in source;
    code bodies use Code Block styling without language highlighting.
-4. **Image/reference presentation.** GitHub shows images or linked labels and
-   hides definitions. Viem deliberately displays their source notation with
-   Markdown reference styling instead.
+4. **Image/reference presentation.** Remote images never load: Viem shows their
+   URLs in boxes. Missing, unsupported or invalid local files use placeholders.
+   Native decoders support local raster formats; SVG and passive HTML `<img>`
+   previews, authored HTML dimensions, animated playback and resizing handles
+   remain unsupported. Reference links and definitions remain visible source
+   notation with Markdown reference styling.
 5. **Comments.** GitHub hides comments; Viem deliberately displays and styles
    them so they remain directly editable.
 6. **Surplus blank separators.** Viem deliberately retains editable empty
@@ -114,7 +123,7 @@ Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
 Link authoring is limited to a single paragraph outside code and passive HTML.
 Passive HTML anchors expose their destination but retain read-only editing
 controls; reference-link presentation remains literal. Email launching is
-unsupported. Link controls are implemented on both native frontends; Windows
+unsupported. Link and image controls are implemented on both native frontends; Windows
 runtime validation remains outstanding on a Windows host.
 
 Table event, rendering, and accessibility adapters are implemented on both native

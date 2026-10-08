@@ -143,7 +143,8 @@ fn native_character_selection_deletes_every_legal_range_and_reopens_exactly() {
         }
     }
     eprintln!("checked {checked} native character-selection deletions");
-    assert!(checked >= 976);
+    // Images contribute one logical object rather than editable bracket bytes.
+    assert!(checked >= 724);
     assert!(
         failures.is_empty(),
         "{} of {checked} deletions failed:\n{}",
@@ -184,7 +185,7 @@ fn insert_mode_caret_deletion_handles_structural_edges_without_edit_errors() {
         }
     }
     eprintln!("checked {checked} Insert-mode caret deletions");
-    assert!(checked >= 138);
+    assert!(checked >= 126);
     assert!(
         failures.is_empty(),
         "{} of {checked} deletions failed:\n{}",

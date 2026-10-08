@@ -23,6 +23,7 @@ internal sealed partial class FormattingToolbar : UserControl
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
+    internal readonly Button InsertImage = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uEB9F", FontSize = 14 } };
     internal readonly Button InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
     private readonly TablePicker tablePicker;
     private ViemLogicalSelectionIdentityV1? pickerSelection;
@@ -85,6 +86,9 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
         Add(block, ToolbarAction.BlockQuote, "Block Quote", "");
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
+        AutomationProperties.SetName(InsertImage, "Insert image"); ToolTipService.SetToolTip(InsertImage, "Insert image");
+        InsertImage.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertImage); };
+        block.Children.Add(InsertImage);
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
@@ -195,6 +199,8 @@ internal sealed partial class FormattingToolbar : UserControl
             bool markdown = view.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
             bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            InsertImage.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            InsertImage.IsEnabled = markdown && available && !view.Composing && !view.Document.IsReadOnly;
             InsertLink.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertLink.IsEnabled = markdown && available && !view.Composing && !view.Document.IsReadOnly;
             // Rectangular selections and prompts have no formatting identity.

@@ -614,6 +614,7 @@ pub(super) struct LineLayoutInputs {
     /// paragraph's space before; `None` at the document end.
     next: Option<(bool, f32)>,
     runs: Vec<ShapeStyleRun>,
+    inline_images: Vec<ShapeInlineImage>,
 }
 
 pub(super) fn line_layout_inputs(
@@ -655,6 +656,7 @@ pub(super) fn line_layout_inputs(
         is_first_hard_line: paragraph.is_first_hard_line,
         next: next.map(|next| (starts_new_paragraph(paragraph, next), block_box::between(&paragraph.style, &next.style))),
         runs,
+        inline_images: images_for_shaping_span(&document_styles.inline_images, line).1,
     }
 }
 
@@ -3407,6 +3409,7 @@ struct ShapeCacheEntry {
     context_before: String,
     context_after: String,
     style_runs: Vec<ShapeStyleRun>,
+    inline_images: Vec<ShapeInlineImage>,
     default_style: ResolvedTextStyle,
     paragraph_base_direction: TextDirection,
     scale_bits: u32,
@@ -3506,6 +3509,8 @@ impl ShapeCacheEntry {
             + self.context_before.capacity()
             + self.context_after.capacity()
             + self.style_runs.capacity() * std::mem::size_of::<ShapeStyleRun>()
+            + self.inline_images.capacity() * std::mem::size_of::<ShapeInlineImage>()
+            + self.inline_images.iter().map(|image| image.destination.capacity()).sum::<usize>()
             + style_heap(&self.default_style)
             + std::mem::size_of::<RelativeFragment>()
             + 2 * std::mem::size_of::<usize>() // Arc control words
@@ -3541,6 +3546,8 @@ struct PendingShape<'a> {
     context_after: &'a str,
     global_style_runs: Vec<ShapeStyleRun>,
     relative_style_runs: Vec<ShapeStyleRun>,
+    global_inline_images: Vec<ShapeInlineImage>,
+    relative_inline_images: Vec<ShapeInlineImage>,
     default_style: ResolvedTextStyle,
     paragraph_base_direction: TextDirection,
 }
@@ -3618,6 +3625,11 @@ pub struct LayoutEngine<P: TextMeasurementProvider> {
 }
 
 impl<P: TextMeasurementProvider> LayoutEngine<P> {
+    /// Source edits can change image metrics without changing visible text.
+    /// Reuse the transaction's exact old ranges to retire table contributions.
+    pub(crate) fn rebase_document_change(&mut self, change: &DocumentLayoutChange) {
+        self.table_cache.rebase_document_change(change);
+    }
     pub(crate) fn table_measurements(&self) -> tables::TableMeasurementCache { self.table_cache.clone() }
     pub(crate) fn install_table_measurements(&mut self, cache: tables::TableMeasurementCache) { self.table_cache = cache; }
     pub fn new(provider: P) -> Self {
@@ -4060,6 +4072,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &fragment_line_bounds,
             text_origin,
             style_runs,
+            &document_styles.inline_images,
             &fragment_default_styles,
             &fragment_base_directions,
             view.scale,
@@ -4177,6 +4190,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
                 view.scale,
             );
+            fit_inline_images(&mut clusters, &document_styles.inline_images, continuation_box.width);
             let first_row_box = if line_slice.checkpoint.is_none() && paragraph.is_first_hard_line {
                 list_first_row_box(
                     paragraph_first_box,
@@ -4748,6 +4762,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &flat_fragment_ranges,
             &fragment_line_bounds,
             &style_runs,
+            document_styles.as_ref().map_or(&[], |styles| styles.inline_images.as_slice()),
             &fragment_default_styles,
             &fragment_base_directions,
             view.scale,
@@ -4851,6 +4866,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
                 view.scale,
             );
+            fit_inline_images(&mut clusters,
+                document_styles.as_ref().map_or(&[], |styles| styles.inline_images.as_slice()),
+                continuation_box.width);
             let first_row_box = if paragraph.is_first_hard_line {
                 list_first_row_box(
                     paragraph_first_box,
@@ -5115,6 +5133,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         ranges: &[Range<usize>],
         hard_line_bounds: &[Range<usize>],
         style_runs: &[ShapeStyleRun],
+        inline_images: &[ShapeInlineImage],
         default_styles: &[ResolvedTextStyle],
         paragraph_base_directions: &[TextDirection],
         scale: f32,
@@ -5130,6 +5149,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             hard_line_bounds,
             0,
             style_runs,
+            inline_images,
             default_styles,
             paragraph_base_directions,
             scale,
@@ -5173,6 +5193,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &[0..text.len()],
             &[0..text.len()],
             0,
+            &[],
             &[],
             std::slice::from_ref(&style),
             &[TextDirection::LeftToRight],
@@ -5244,6 +5265,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         hard_line_bounds: &[Range<usize>],
         coordinate_origin: usize,
         style_runs: &[ShapeStyleRun],
+        inline_images: &[ShapeInlineImage],
         default_styles: &[ResolvedTextStyle],
         paragraph_base_directions: &[TextDirection],
         scale: f32,
@@ -5312,12 +5334,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let context_after = &text[context_after_range];
             let (global_style_runs, relative_style_runs) =
                 styles_for_shaping_span(style_runs, &shaping_range);
+            let (global_inline_images, relative_inline_images) =
+                images_for_shaping_span(inline_images, &shaping_range);
 
             if let Some(relative) = self.cache_lookup(
                 text_slice,
                 context_before,
                 context_after,
                 &relative_style_runs,
+                &relative_inline_images,
                 default_style,
                 *base_direction,
                 scale,
@@ -5342,6 +5367,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     context_after,
                     global_style_runs,
                     relative_style_runs,
+                    global_inline_images,
+                    relative_inline_images,
                     default_style: default_style.clone(),
                     paragraph_base_direction: *base_direction,
                 });
@@ -5363,6 +5390,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         context_before: item.context_before,
                         context_after: item.context_after,
                         style_runs: &item.global_style_runs,
+                        inline_images: &item.global_inline_images,
                         default_style: &item.default_style,
                         paragraph_base_direction: item.paragraph_base_direction,
                         scale,
@@ -5394,6 +5422,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         context_before: item.context_before.to_owned(),
                         context_after: item.context_after.to_owned(),
                         style_runs: item.relative_style_runs.clone(),
+                        inline_images: item.relative_inline_images.clone(),
                         default_style: item.default_style.clone(),
                         paragraph_base_direction: item.paragraph_base_direction,
                         scale_bits: scale.to_bits(),
@@ -5423,6 +5452,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         context_before: &str,
         context_after: &str,
         style_runs: &[ShapeStyleRun],
+        inline_images: &[ShapeInlineImage],
         default_style: &ResolvedTextStyle,
         paragraph_base_direction: TextDirection,
         scale: f32,
@@ -5436,6 +5466,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 && entry.context_before == context_before
                 && entry.context_after == context_after
                 && entry.style_runs == style_runs
+                && entry.inline_images == inline_images
                 && entry.default_style == *default_style
                 && entry.paragraph_base_direction == paragraph_base_direction
                 && entry.scale_bits == scale.to_bits()
@@ -5629,7 +5660,7 @@ fn validate_response(
     shaping_text.push_str(request.context_before);
     shaping_text.push_str(request_text);
     shaping_text.push_str(request.context_after);
-    let grapheme_boundaries: BTreeSet<usize> = std::iter::once(context_start)
+    let mut grapheme_boundaries: BTreeSet<usize> = std::iter::once(context_start)
         .chain(
             shaping_text
                 .grapheme_indices(true)
@@ -5637,6 +5668,25 @@ fn validate_response(
         )
         .chain(std::iter::once(context_end))
         .collect();
+    for image in request.inline_images {
+        if image.text_range.start < context_start || image.text_range.end > context_end
+            || image.text_range.len() != 3
+            || shaping_text.get(image.text_range.start - context_start..image.text_range.end - context_start) != Some("\u{fffc}") {
+            return Err(LayoutError::MalformedMeasurement("invalid inline image range"));
+        }
+        grapheme_boundaries.extend([image.text_range.start, image.text_range.end]);
+        if request.text_range.contains(&image.text_range.start) {
+            let index = response.clusters.partition_point(|cluster| cluster.text_range.start < image.text_range.start);
+            let Some(cluster) = response.clusters.get(index).filter(|cluster| cluster.text_range == image.text_range) else {
+                return Err(LayoutError::MalformedMeasurement("image must be one atomic cluster"));
+            };
+            if cluster.advance <= 0. || cluster.typographic_bounds.width <= 0.
+                || cluster.typographic_bounds.height <= 0.
+                || cluster.caret_stops.iter().any(|caret| caret.text_offset != image.text_range.start && caret.text_offset != image.text_range.end) {
+                return Err(LayoutError::MalformedMeasurement("invalid inline image geometry"));
+            }
+        }
+    }
     let mut previous_owned_end = None;
     for cluster in &response.clusters {
         if cluster.text_range.start < request.text_range.start
@@ -5790,6 +5840,43 @@ pub(crate) fn fragment_visual_order(clusters: &[ShapedCluster]) -> Vec<usize> {
         }
     }
     order
+}
+
+/// Return relative image dependencies for both shaping and line-cache keys.
+fn images_for_shaping_span(images: &[ShapeInlineImage], range: &Range<usize>)
+    -> (Vec<ShapeInlineImage>, Vec<ShapeInlineImage>)
+{
+    let first = images.partition_point(|image| image.text_range.end <= range.start);
+    let global: Vec<_> = images[first..].iter()
+        .take_while(|image| image.text_range.start < range.end).cloned().collect();
+    let relative = global.iter().map(|image| ShapeInlineImage {
+        text_range: image.text_range.start.saturating_sub(range.start)
+            ..image.text_range.end.saturating_sub(range.start),
+        destination: image.destination.clone(),
+    }).collect();
+    (global, relative)
+}
+
+/// GitHub image sizing: intrinsic size, no enlargement, max-width: 100% of
+/// the containing content box. This runs after width-independent shaping, so
+/// changing a view width reuses native resources and never reshapes prose.
+fn fit_inline_images(clusters: &mut [ShapedCluster], images: &[ShapeInlineImage], max_width: f32) {
+    if images.is_empty() { return; }
+    for cluster in clusters {
+        let i = images.partition_point(|image| image.text_range.start < cluster.text_range.start);
+        if !images.get(i).is_some_and(|image| image.text_range == cluster.text_range) { continue; }
+        let ratio = (max_width.max(1.) / cluster.advance).min(1.);
+        if !ratio.is_finite() || ratio >= 1. { continue; }
+        cluster.advance *= ratio;
+        cluster.metrics.ascent *= ratio;
+        cluster.metrics.descent *= ratio;
+        cluster.metrics.leading *= ratio;
+        for bounds in [&mut cluster.typographic_bounds, &mut cluster.ink_bounds] {
+            bounds.x *= ratio; bounds.y *= ratio;
+            bounds.width *= ratio; bounds.height *= ratio;
+        }
+        for caret in &mut cluster.caret_stops { caret.inline_offset *= ratio; }
+    }
 }
 
 fn flatten_line_fragments(
@@ -8652,6 +8739,7 @@ mod tests {
             context_before: "",
             context_after: "",
             style_runs: &[],
+            inline_images: &[],
             default_style: &style,
             paragraph_base_direction: TextDirection::Auto,
             scale: 1.0,
@@ -8770,6 +8858,7 @@ mod tests {
             context_before: "",
             context_after: "i",
             style_runs: &[],
+            inline_images: &[],
             default_style: &style,
             paragraph_base_direction: TextDirection::Auto,
             scale: 1.0,

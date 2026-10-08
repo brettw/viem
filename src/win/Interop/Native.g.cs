@@ -368,6 +368,14 @@ internal unsafe struct ViemShapingDiagnosticV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemInlineImageV1
+{
+    public ulong @text_start;
+    public ulong @text_end;
+    public ViemUtf8Slice @destination;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemShapeRequestV1
 {
     public uint @struct_size;
@@ -389,6 +397,8 @@ internal unsafe struct ViemShapeRequestV1
     public ulong @render_run_owner;
     public uint @render_run_threading;
     public uint @paragraph_base_direction;
+    public ViemInlineImageV1* @inline_images;
+    public ulong @inline_image_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1328,8 +1338,8 @@ internal unsafe struct ViemSetDocumentModeV1
 internal static unsafe partial class Native
 {
     public const uint VIEM_CORE_ABI_VERSION = 8u;
-    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3 = 3u;
-    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V3;
+    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 = 4u;
+    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4;
     public const uint VIEM_STATUS_OK = 0u;
     public const uint VIEM_STATUS_INVALID_ARGUMENT = 1u;
     public const uint VIEM_STATUS_NULL_POINTER = 2u;
@@ -2264,6 +2274,12 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_copy_link_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_edit_link(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @link_start, ulong @link_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcomeV1* @outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_copy_image_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_edit_image(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @image_start, ulong @image_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcomeV1* @outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_select_image(ulong @core, ulong @view, ulong @document_id, ulong @revision, ulong @text_offset, ViemCoreOutcomeV1* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_find_link_fragment(ulong @core, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, ulong* @offset, byte* @found);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

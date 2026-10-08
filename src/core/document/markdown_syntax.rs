@@ -1,11 +1,12 @@
 //! CommonMark recognition with source ranges. The editor owns projection and
 //! reverse edits; the grammar parser never serializes or replaces source.
-use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Clone, Debug)]
 pub(super) enum InlineKind {
     Emphasis, Strong, Strike, Reference, Autolink, Html,
+    Image { destination: String, text: String, inline: bool },
 }
 #[derive(Clone, Debug)]
 pub(super) struct Inline {
@@ -19,14 +20,28 @@ pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTr
     // marker. A harmless prefix prevents the block parser reinterpreting it.
     let source = format!("x {}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
-    for (event, span) in Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter() {
+    let mut events=Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter();
+    while let Some((event, span)) = events.next() {
         if span.start < 2 || span.end > range.len() + 2 { continue; }
         let raw = &source[span.clone()];
         let (kind, padding) = match event {
             Event::Start(Tag::Emphasis) => (InlineKind::Emphasis, 1),
             Event::Start(Tag::Strong) => (InlineKind::Strong, 2),
             Event::Start(Tag::Strikethrough) => (InlineKind::Strike, raw.bytes().take_while(|b| *b == b'~').count().min(2)),
-            Event::Start(Tag::Image { .. }) => (InlineKind::Reference, 0),
+            Event::Start(Tag::Image { dest_url, link_type, .. }) => {
+                let mut alt = String::new();
+                let mut depth=1;
+                for (event,_) in events.by_ref() {
+                    match event {
+                        Event::Start(Tag::Image {..}) => depth+=1,
+                        Event::End(TagEnd::Image) => {depth-=1;if depth==0 {break;}},
+                        Event::Text(text) | Event::Code(text) => alt.push_str(&text),
+                        Event::SoftBreak | Event::HardBreak => alt.push(' '),
+                        _ => {},
+                    }
+                }
+                (InlineKind::Image { destination: dest_url.into_string(), text: alt, inline: link_type == LinkType::Inline }, 0)
+            },
             Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. }) => (InlineKind::Autolink, 1),
             Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => continue,
             Event::Start(Tag::Link { .. }) => (InlineKind::Reference, 0),

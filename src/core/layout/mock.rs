@@ -330,7 +330,18 @@ impl MockTextMeasurementProvider {
             }
             direction => direction,
         };
-        let graphemes: Vec<(usize, &str)> = shaping_text.grapheme_indices(true).collect();
+        let mut boundaries: std::collections::BTreeSet<usize> = shaping_text.grapheme_indices(true)
+            .map(|(start,_)| start).chain(std::iter::once(shaping_text.len())).collect();
+        for image in request.inline_images {
+            for edge in [image.text_range.start, image.text_range.end] {
+                if let Some(at) = edge.checked_sub(context_start).filter(|at| *at <= shaping_text.len()) {
+                    boundaries.insert(at);
+                }
+            }
+        }
+        let boundaries: Vec<_> = boundaries.into_iter().collect();
+        let graphemes: Vec<(usize, &str)> = boundaries.windows(2)
+            .map(|pair| (pair[0], &shaping_text[pair[0]..pair[1]])).collect();
         let mut clusters = Vec::new();
         let mut fonts = std::collections::BTreeMap::<String, std::sync::Arc<str>>::new();
         let mut index = 0;
@@ -399,14 +410,21 @@ impl MockTextMeasurementProvider {
             } else {
                 None
             };
-            let advance = (Self::cluster_advance(cluster_text, style, request.scale)
+            let mut advance = (Self::cluster_advance(cluster_text, style, request.scale)
                 + Self::kerning_adjustment(cluster_text, next, style, request.scale))
             .max(0.0);
             let bidi_level =
                 Self::bidi_level(cluster_text, style, paragraph_base_direction);
-            let metrics = Self::metrics(style, request.scale);
-            let (typographic_bounds, ink_bounds) =
+            let mut metrics = Self::metrics(style, request.scale);
+            let (mut typographic_bounds, mut ink_bounds) =
                 Self::bounds(advance, &metrics, style, request.scale);
+            if request.inline_images.iter().any(|image| image.text_range == (global_start..global_end)) {
+                advance = 300. * request.scale;
+                metrics = TextMetrics { ascent: 64. * request.scale, descent: 0., leading: 0. };
+                typographic_bounds = ShapedBounds { x: 0., y: -metrics.ascent,
+                    width: advance, height: metrics.ascent };
+                ink_bounds = typographic_bounds;
+            }
             let (start_inline, end_inline) = if bidi_level % 2 == 0 {
                 (0.0, advance)
             } else {

@@ -95,6 +95,7 @@ internal sealed partial class EditorPane
             for (ulong index = row.first_cluster; index < row.first_cluster + row.cluster_count; index++)
             {
                 var cluster = snapshot.Clusters[checked((int)index)];
+                if (View.Provider.IsInlineImage(cluster.render_run)) { glyphs.Flush(); continue; }
                 if (cluster.ink_bounds.x + cluster.ink_bounds.width < viewport.left - 4 || cluster.ink_bounds.x > viewport.left + Canvas.ActualWidth + 4) continue;
                 var paint = PaintFor(cluster.text_start);
                 var bounds = OffsetRect(cluster.typographic_bounds, viewport);

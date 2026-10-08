@@ -2997,6 +2997,8 @@ impl CommandInterpreter {
         }
         if let Some(output) = self.handle_mapping(document, &event)? { return Ok(output); }
         let event = self.normalized_input_event(event);
+        let image_navigation = self.is_inline_image_navigation(&event);
+        let image_navigation_revision = document.revision();
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
         if !self.literal_input_pending() && matches!(
@@ -3028,6 +3030,10 @@ impl CommandInterpreter {
                 Some(output) => Ok(output),
                 None => self.dispatch_event(document, event),
             }
+        });
+        let result = result.and_then(|mut output| {
+            self.select_image_after_navigation(document, &checkpoint, image_navigation_revision, image_navigation, &mut output)?;
+            Ok(output)
         });
         match result {
             Ok(mut output) => {
@@ -3084,9 +3090,15 @@ impl CommandInterpreter {
         let edit_group_depth = document.edit_group_depth();
         let viewport = context.viewport;
         context.viewport_command = false;
+        let image_navigation = self.is_inline_image_navigation(&event);
+        let image_navigation_revision = document.revision();
         self.line_layout = Some(context.snapshot.clone());
         let result = self.handle_with_layout_inner(document, event, context);
         self.line_layout = None;
+        let result = result.and_then(|mut output| {
+            self.select_image_after_navigation(document, &checkpoint, image_navigation_revision, image_navigation, &mut output)?;
+            Ok(output)
+        });
         match result {
             Ok(mut output) => {
                 if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {

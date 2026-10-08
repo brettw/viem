@@ -135,6 +135,7 @@ struct WidthKey {
     scale: f32,
     style_revision: StyleSheetRevision,
     override_style: Option<ResolvedTextStyle>,
+    image_max_width: u32,
 }
 #[derive(Clone, Debug)]
 struct Widths {
@@ -360,6 +361,47 @@ pub(crate) struct TableMeasurementCache {
     pub(super) measured_text_bytes: usize,
 }
 impl TableMeasurementCache {
+    pub(super) fn rebase_document_change(&mut self, change: &DocumentLayoutChange) {
+        let DocumentLayoutChange::Local { old_revision, old_hull, .. } = change else {
+            self.clear(); return;
+        };
+        self.progress.clear();
+        // Each entry owns an exact projection. Obsolete entries cannot be
+        // compared to this transaction's coordinates and are disposable.
+        self.entries.retain(|entry| entry.key.revision == *old_revision);
+        for entry in &mut self.entries {
+            let Some(table) = entry.projection.table_at(entry.source_range_start) else { continue; };
+            if old_hull.end < table.range.start || table.range.end < old_hull.start { continue; }
+            if entry.aggregate_only {
+                // An aggregate has intentionally discarded cell identities.
+                // Reset its finite discovery rather than retaining a stale max.
+                let widths = Arc::make_mut(entry);
+                widths.measured = MeasuredCells::default(); widths.next = 0;
+                widths.widths.fill(0.); widths.row_heights.clear();
+                continue;
+            }
+            let mut changed = Vec::new();
+            if entry.key.source {
+                let first = table.source_rows.partition_point(|row| row.range.end < old_hull.start);
+                for (row, value) in table.source_rows.iter().enumerate().skip(first)
+                    .take_while(|(_, row)| row.range.start <= old_hull.end) {
+                    for (column, cell) in value.cells.iter().enumerate().take(table.columns.len()) {
+                        if cell.start <= old_hull.end && old_hull.start <= cell.end { changed.push((row,column)); }
+                    }
+                }
+            } else {
+                let first = table.rows.partition_point(|row| row.range.end < old_hull.start);
+                for (row, value) in table.rows.iter().enumerate().skip(first)
+                    .take_while(|(_, row)| row.range.start <= old_hull.end) {
+                    for (column, cell) in value.cells.iter().enumerate() {
+                        if cell.range.start <= old_hull.end && old_hull.start <= cell.range.end { changed.push((row,column)); }
+                    }
+                }
+            }
+            let widths = Arc::make_mut(entry);
+            for (row,column) in changed { widths.remove(row,column); widths.dirty.push_back((row,column)); }
+        }
+    }
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.progress.clear();
@@ -557,7 +599,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut cell_view = view.clone();
         cell_view.wrap = false;
         cell_view.insets = EdgeInsets::default();
-        cell_view.width = 1.;
+        cell_view.width = view.width;
         cell_view.cached_lines.clear();
         let snapshot = self.layout_hard_line_region_cancellable(
             document_id,
@@ -643,6 +685,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &[0..0],
             &[0..0],
             &[],
+            &[],
             &[default_style],
             &[TextDirection::LeftToRight],
             view.scale,
@@ -692,6 +735,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             document: document_id,
             revision,
             table: table.id,
+            image_max_width: if !context.source && context.projection.has_inline_images_in_region(&table.range) { view.width.to_bits() } else { 0 },
             source: context.source,
             metrics: self.provider.metrics_generation(),
             environment: self.provider.measurement_environment_id(),

@@ -71,3 +71,83 @@ impl CommandInterpreter {
         }
     }
 }
+
+impl CommandInterpreter {
+    pub(crate) fn select_inline_image_from_pointer(
+        &mut self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+    ) -> Result<(), DocumentError> {
+        self.select_inline_image(document, range.clone())?;
+        self.pointer_character_origin = Some(range);
+        Ok(())
+    }
+
+    pub(crate) fn select_inline_image(
+        &mut self,
+        document: &Document,
+        range: std::ops::Range<usize>,
+    ) -> Result<(), DocumentError> {
+        document.text_point(range.start)?;
+        document.text_point(range.end)?;
+        let return_mode = self.plain_pointer_mode();
+        self.set_cursor_from_pointer(document, range.start, BoundaryAffinity::Downstream, false);
+        self.mode = Mode::VisualCharacter;
+        self.visual_anchor = Some(range.end);
+        self.cursor = range.start;
+        self.selection_exclusive = true;
+        self.selection_behavior = SelectionBehavior::Native;
+        self.selection_return_mode = return_mode;
+        self.visual_to_line_end = false;
+        Ok(())
+    }
+}
+
+impl CommandInterpreter {
+    /// Only navigation entered while typing selects a newly reached image.
+    /// Mode entry, typing, undo and native selection collapse keep their own
+    /// semantics, including an insertion boundary immediately before an image.
+    pub(crate) fn is_inline_image_navigation(&self, event: &InputEvent) -> bool {
+        if !matches!(self.mode, Mode::Insert | Mode::Replace) || self.literal_input_pending() {
+            return false;
+        }
+        match event {
+            InputEvent::Key(Key::ModifiedNavigation { modifiers, .. }) => modifiers & 1 == 0,
+            InputEvent::Key(key) => {
+                NavigationKey::from_key(self.normalized_input_key(*key)).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn select_image_after_navigation(
+        &mut self,
+        document: &mut Document,
+        before: &Self,
+        revision: Revision,
+        navigation: bool,
+        output: &mut CommandOutput,
+    ) -> Result<(), DocumentError> {
+        if !navigation
+            || output.status != CommandStatus::Complete
+            || !output.cursor_moved
+            || self.cursor == before.cursor
+            || document.revision() != revision
+            || !document.format().is_wysiwyg()
+            || !matches!(self.mode, Mode::Insert | Mode::Replace)
+        {
+            return Ok(());
+        }
+        let Some(image) = document.image_snapshot_at(document.text_point(self.cursor)?)? else {
+            return Ok(());
+        };
+        // The motion already committed the preceding typing unit and opened
+        // an empty continuation. Retire that continuation without Escape-time
+        // count replay or source cleanup; selection replacement starts its own.
+        document.end_edit_group();
+        self.insert_session = None;
+        self.select_inline_image(document, image.range)?;
+        output.mode_changed = true;
+        Ok(())
+    }
+}

@@ -34,13 +34,15 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     let batches: [GlyphBatch]
     let isColorGlyph: Bool
     let textAttributes: CoreTextRenderAttributes
+    let inlineImage: CoreTextInlineImage?
 
     init(signature: [UInt8], batches: [GlyphBatch], isColorGlyph: Bool,
-      textAttributes: CoreTextRenderAttributes = .init()) {
+      textAttributes: CoreTextRenderAttributes = .init(), inlineImage: CoreTextInlineImage? = nil) {
       self.signature = signature
       self.batches = batches
       self.isColorGlyph = isColorGlyph
       self.textAttributes = textAttributes
+      self.inlineImage = inlineImage
     }
   }
 
@@ -62,7 +64,7 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
   var estimatedBytesForTesting: Int {
     lock.lock(); defer { lock.unlock() }
     return resources.values.reduce(0) { total, resource in
-      total + 128 + resource.signature.count + resource.batches.reduce(0) {
+      total + 128 + resource.signature.count + (resource.inlineImage?.cost ?? 0) + resource.batches.reduce(0) {
         $0 + 64 + $1.glyphs.count * MemoryLayout<CGGlyph>.stride
           + $1.positions.count * MemoryLayout<CGPoint>.stride
       }
@@ -313,6 +315,62 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
       }
     }
     context.restoreGState()
+    return true
+  }
+
+  public func isInlineImage(identifier: UInt64, metricsGeneration: UInt64) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    return generation == metricsGeneration && resources[identifier]?.inlineImage != nil
+  }
+
+  /// Reads only currently leased immutable resources. Visibility admission does
+  /// not inspect source text or touch the filesystem.
+  public func inlineImageLocations(in renderRuns: [(identifier: UInt64, metricsGeneration: UInt64)]) -> [String] {
+    lock.lock(); defer { lock.unlock() }
+    var locations: [String] = []
+    var seen = Set<String>()
+    for run in renderRuns where run.metricsGeneration == generation {
+      guard let location = resources[run.identifier]?.inlineImage?.location,
+        seen.insert(location).inserted else { continue }
+      locations.append(location)
+      if locations.count == 256 { break }
+    }
+    return locations
+  }
+
+  /// Images use the final, width-constrained layout rectangle, not their
+  /// intrinsic shaping size. No file or network access occurs while drawing.
+  public func drawInlineImage(identifier: UInt64, metricsGeneration: UInt64,
+    in rect: CGRect, color: CGColor, context: CGContext) -> Bool {
+    lock.lock()
+    let image = generation == metricsGeneration ? resources[identifier]?.inlineImage : nil
+    lock.unlock()
+    guard let image else { return false }
+    context.saveGState()
+    defer { context.restoreGState() }
+    context.clip(to: rect)
+    if let raster = image.image {
+      context.interpolationQuality = .high
+      context.translateBy(x: rect.minX, y: rect.maxY)
+      context.scaleBy(x: 1, y: -1)
+      context.draw(raster, in: CGRect(origin: .zero, size: rect.size))
+    } else {
+      context.setStrokeColor(color.copy(alpha: 0.35) ?? color)
+      context.setLineWidth(1)
+      context.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
+      let font = CTFontCreateWithName("Helvetica" as CFString, min(13, max(8, rect.height / 5)), nil)
+      let attributes: [NSAttributedString.Key: Any] = [
+        NSAttributedString.Key(kCTFontAttributeName as String): font,
+        NSAttributedString.Key(kCTForegroundColorAttributeName as String): color]
+      let line = CTLineCreateWithAttributedString(NSAttributedString(string: String(image.location.prefix(2048)), attributes: attributes))
+      let token = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
+      let fitted = CTLineCreateTruncatedLine(line, max(1, rect.width - 16), .middle, token) ?? line
+      context.textMatrix = .identity
+      context.translateBy(x: rect.minX + 8, y: rect.midY + CTFontGetAscent(font) / 2 - 1)
+      context.scaleBy(x: 1, y: -1)
+      context.textPosition = .zero
+      CTLineDraw(fitted, context)
+    }
     return true
   }
 
