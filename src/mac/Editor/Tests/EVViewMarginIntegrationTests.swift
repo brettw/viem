@@ -2,6 +2,7 @@ import AppKit
 import CViemCore
 @testable import ViemAppShell
 import XCTest
+@testable import ViemCoreTextProvider
 @testable import ViemEditor
 
 @MainActor
@@ -161,6 +162,49 @@ final class EVViewMarginIntegrationTests: XCTestCase {
             XCTAssertEqual(try backend.formattedText(), "First words")
             XCTAssertNil(surface.commandOutput)
         }
+    }
+
+    func testLargeWrappedDocumentAppliesMarginsInItsOnlyInitialLayout() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-startup-margins-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        let margins = EVViewMargins(top: 23, left: 31, bottom: 17, right: 29)
+        try configuration.setViewMargins(margins)
+        try saveMarkdownSize(18, configuration: configuration)
+        let preferences = EVViewPreferences(configuration: configuration)
+        let source = Data((0..<500).map { index in
+            "Paragraph \(index): " + String(repeating: "one two three four five ", count: 45) + "\n\n"
+        }.joined().utf8)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: source, typeName: EVDocument.markdownType)
+
+        // Compare native surface preparation with one direct attachment at its
+        // final size and margins. The surface must not add another shaping pass.
+        let surface = EVEditorSurfaceController(backend: backend, viewPreferences: preferences)
+        let session = try XCTUnwrap(surface.session)
+        defer { surface.detachFromCore() }
+        let viewport = EVEditorView.layoutViewportSize(for: NSSize(width: 920, height: 655))
+        let reference = try EVCoreViewSession(document: backend, width: viewport.width,
+            height: viewport.height, margins: margins)
+        defer { reference.detach() }
+        let snapshot = try session.layoutSnapshotInfo()
+        let expected = try reference.layoutSnapshotInfo()
+        XCTAssertGreaterThan(session.provider.shapeBatchCallCount, 0)
+        XCTAssertEqual(session.provider.shapeBatchCallCount, reference.provider.shapeBatchCallCount)
+        XCTAssertEqual(snapshot.coverage_hard_line_end, expected.coverage_hard_line_end)
+        XCTAssertLessThan(snapshot.coverage_hard_line_end * 10, snapshot.document_hard_line_count,
+            "Initial presentation must stay bounded to the visible part of a large document")
+        XCTAssertEqual(snapshot.content_insets.top, Float(margins.top))
+        XCTAssertEqual(snapshot.content_insets.left, Float(margins.left))
+        XCTAssertEqual(snapshot.content_insets.bottom, Float(margins.bottom))
+        XCTAssertEqual(snapshot.content_insets.right, Float(margins.right))
+        let shapeCalls = session.provider.shapeBatchCallCount
+        try session.setViewMargins(margins)
+        XCTAssertEqual(session.provider.shapeBatchCallCount, shapeCalls)
+        XCTAssertTrue(try session.layoutSnapshotInfo().identity.isSameLayout(as: snapshot.identity))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
     func testHiddenLegacyHorizontalScrollbarDoesNotClipTheBottomTextBand() throws {

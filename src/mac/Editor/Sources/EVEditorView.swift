@@ -438,6 +438,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             drawCaretHover(snapshot, dirtyRect: dirtyRect)
             drawCustomCaret(snapshot, dirtyRect: dirtyRect, in: context)
             context.restoreGState()
+            if EVStartupPerformance.isEnabled, let surface, window?.isVisible == true {
+                EVStartupPerformance.firstDraw(
+                    document: surface.documentHostEffectHandler?.documentURL(for: surface),
+                    width: bounds.width, height: bounds.height)
+            }
         }
     }
 

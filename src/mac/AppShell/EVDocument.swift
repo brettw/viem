@@ -243,6 +243,7 @@ public final class EVDocument: NSDocument {
                 recovered = false
             case .cancel: return
             }
+            EVStartupPerformance.mark("document.backend.read")
             try self.setReadOnly(decision == .readOnly)
             self.wasRecovered = recovered
             if let original = try? original.get() { self.recordFileBaseline(original, at: target) }
@@ -250,10 +251,13 @@ public final class EVDocument: NSDocument {
             self.recoveryTimer?.cancel()
             self.recoveryGeneration &+= 1
             self.recoveryRequestedTarget = target
+            EVStartupPerformance.mark("document.baseline.recorded")
             self.beginRecovery(for: target)
+            EVStartupPerformance.mark("document.recovery.claimed")
             self.synchronizeEditedState(self.editorBackend.persistenceState)
             if self.wasRecovered { self.updateChangeCount(.changeDone) }
             self.recordRecentDocument(target)
+            EVStartupPerformance.mark("document.recent.recorded")
         }
     }
 

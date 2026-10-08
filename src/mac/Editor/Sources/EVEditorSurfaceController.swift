@@ -21,8 +21,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     let backend: EVCoreDocumentBackend
     private var sourcedLineRequests: [EVDocumentHostRequest]?
     private(set) var session: EVCoreViewSession?
-    var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize) throws -> EVCoreViewSession = { document, size in
-        try EVCoreViewSession(document: document, width: size.width, height: size.height)
+    var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins) throws -> EVCoreViewSession = { document, size, margins in
+        try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins)
     }
     private(set) var formattedSnapshot: EVFormattedSnapshot?
     private(set) var layoutTextSlices: [EVFormattedTextSlice] = []
@@ -145,12 +145,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public override func loadView() {
+        EVStartupPerformance.mark("surface.load.begin")
+        defer { EVStartupPerformance.mark("surface.load.end") }
         view = EVEditorView(surface: self)
         refreshPresentation()
         if !lastErrorMessage.isEmpty { publishHostMessage(lastErrorMessage) }
     }
 
     public override func viewDidLayout() {
+        EVStartupPerformance.mark("surface.layout.begin")
+        defer { EVStartupPerformance.mark("surface.layout.end") }
         super.viewDidLayout()
         guard view.bounds.width > 0, view.bounds.height > 0 else { return }
         do {
@@ -185,11 +189,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func prepareSession(for document: EVCoreDocumentBackend) throws -> EVCoreViewSession {
+        EVStartupPerformance.mark("surface.session.begin")
+        defer { EVStartupPerformance.mark("surface.session.end") }
         let size = isViewLoaded ? view.bounds.size : NSSize(width: 920, height: 655)
         let viewportSize = isViewLoaded ? editorView.layoutViewportSize : EVEditorView.layoutViewportSize(for: size)
-        let prepared = try makeCoreViewSession(document, viewportSize)
-        try prepared.setViewMargins(viewPreferences.margins)
-        return prepared
+        // Initial padding belongs in the first layout request. Applying it
+        // afterward discards measured heights and reshapes the opening viewport.
+        return try makeCoreViewSession(document, viewportSize, viewPreferences.margins)
     }
 
     func installPreparedSession(_ attachedSession: EVCoreViewSession) {
@@ -233,7 +239,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func refreshPresentation(advancingSearch: Bool = true) {
         guard let session, !isRefreshingPresentation else { return }
         isRefreshingPresentation = true
-        defer { isRefreshingPresentation = false }
+        EVStartupPerformance.mark("surface.refresh.begin")
+        defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
         do {
             if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()

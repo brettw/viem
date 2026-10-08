@@ -540,11 +540,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     private func createCore(publishDiagnostics: Bool = true) throws {
+        EVStartupPerformance.mark("core.begin.\(typeName)")
         configurationWarning = configuration.lastError
         if !isStylePreview {
             do { try EVCodeStyleSession.initialize(configuration: configuration) }
             catch { configurationWarning = error.localizedDescription }
         }
+        EVStartupPerformance.mark("core.codeStyles.ready")
         var options = ViemDocumentOptions()
         options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         // Opening policy belongs to the portable encoding projection. The
@@ -564,12 +566,14 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 &revision
             )
         }
+        EVStartupPerformance.mark("core.document.created")
         try checked(status, operation: "Open document")
         core = handle
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
         if isStylePreview { return }
         configureSyntax()
+        EVStartupPerformance.mark("core.syntax.configured")
         try configureOptional("text width") {
             try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
         }
@@ -608,12 +612,14 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             let warning = "Could not load saved styles from \(defaultStyleFile.path). Using built-in defaults. \(error.localizedDescription)"
             configurationWarning = ([configurationWarning].compactMap { $0 } + [warning]).joined(separator: "\n")
         }
+        EVStartupPerformance.mark("core.styles.loaded")
         let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
         try configureOptional("selection settings") { try EVSelectionPreferences.attach(self) }
         if !startupDiagnostics.isEmpty {
             configurationWarning = ([configurationWarning].compactMap { $0 } + startupDiagnostics).joined(separator: "\n")
         }
         if publishDiagnostics { refreshSyntaxDiagnostics() }
+        EVStartupPerformance.mark("core.ready")
     }
 
     private static func openingType(for format: EVSourceFormat) -> String {
@@ -948,11 +954,14 @@ final class EVCoreViewSession {
     var compositionStateDidChange: ((Bool) -> Void)?
     private var mappingTimer: Timer?
 
-    init(document: EVCoreDocumentBackend, width: CGFloat, height: CGFloat) throws {
+    init(document: EVCoreDocumentBackend, width: CGFloat, height: CGFloat,
+         margins: EVViewMargins = EVViewMargins(top: 0, left: 0, bottom: 0, right: 0)) throws {
         self.document = document
         coreHandle = document.core
         provider = CoreTextMeasurementProvider()
-        try attach(width: width, height: height)
+        EVStartupPerformance.mark("surface.provider.created")
+        try attach(width: width, height: height, margins: margins)
+        EVStartupPerformance.mark("surface.view.attached")
     }
 
     /// The staged core keeps its identity when ownership transfers from the
@@ -984,13 +993,17 @@ final class EVCoreViewSession {
         provider.retireResources()
     }
 
-    func attach(width: CGFloat, height: CGFloat) throws {
+    func attach(width: CGFloat, height: CGFloat, margins: EVViewMargins) throws {
         guard viewID == 0 else { return }
         var options = ViemViewOptionsV1()
         options.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
         options.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
         options.width = Float(max(width, 1))
         options.height = Float(max(height, 1))
+        options.padding_top = Float(margins.top)
+        options.padding_left = Float(margins.left)
+        options.padding_bottom = Float(margins.bottom)
+        options.padding_right = Float(margins.right)
         var table = provider.makeProviderTable()
         var newView: ViemViewId = 0
         var outcome = ViemCoreOutcomeV1()

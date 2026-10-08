@@ -297,6 +297,8 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   }
 
   public override func showWindow(_ sender: Any?) {
+    EVStartupPerformance.mark("window.show.begin")
+    defer { EVStartupPerformance.mark("window.show.end") }
     guard let window else {
       super.showWindow(sender)
       return
@@ -357,12 +359,22 @@ extension EVDocumentWindowController {
   /// Already represented files keep their windows and panes; only new files
   /// occupy this initially hidden window. Later arguments stay lazy unless
   /// requested by `-o`, including when the first file was already open.
+  /// A freshly loaded first document can already own the initial surface;
+  /// accept only that exact document and filename instead of a pristine blank.
   public func openArgumentList(
     _ urls: [URL], splitCount: Int?, initialLine: UInt64?, vertical: Bool = false,
+    preparedFirstDocument: EVDocument? = nil,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     guard !isClosed, !isPerformingDocumentHostEffect,
-      let original = activeDocument, Self.isPristineUntitled(original) else {
+      let original = activeDocument else {
+      completion(.failure(EVDocumentHostError.operationAlreadyInProgress)); return
+    }
+    let hasPreparedFirstDocument = preparedFirstDocument === original && paneCount == 1
+      && urls.first.map { first in
+        original.fileURL.map { EVDocumentIdentity.sameFile($0, first) } ?? false
+      } == true
+    guard preparedFirstDocument == nil ? Self.isPristineUntitled(original) : hasPreparedFirstDocument else {
       completion(.failure(EVDocumentHostError.operationAlreadyInProgress)); return
     }
     let pane = documentContentController
@@ -436,14 +448,15 @@ extension EVDocumentWindowController {
         }
         let targetController: EVDocumentWindowController
         let targetPane: EVDocumentContentViewController
-        if opened !== original, let controller = Self.windowShowing(document: opened)?.windowController
+        if opened !== original || installedNewPane,
+          let controller = Self.windowShowing(document: opened)?.windowController
           as? EVDocumentWindowController,
           let existingPane = controller.paneContainer.panes.first(where: { $0.document === opened }) {
           targetController = controller
           targetPane = existingPane
         } else {
           guard installedNewPane || (canReplace(pane, document: original, expected: state)
-            && Self.isPristineUntitled(original)) else {
+            && (hasPreparedFirstDocument || Self.isPristineUntitled(original))) else {
             closeIfUnrepresented(opened)
             finish(.failure(EVDocumentHostError.staleRequest)); return
           }
@@ -483,7 +496,9 @@ extension EVDocumentWindowController {
         openNext(index + 1)
       }
 
-      if list.urls.indices.contains(index) {
+      if index == 0 && hasPreparedFirstDocument {
+        installed(original, nil)
+      } else if list.urls.indices.contains(index) {
         loadArgumentDocument(list.urls[index], fallback: nil, completion: installed)
       } else if index == 0 {
         installed(original, nil)
@@ -1375,6 +1390,8 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func replacePane(_ old: EVDocumentContentViewController, with document: EVDocument) {
+    EVStartupPerformance.mark("window.replacePane.begin")
+    defer { EVStartupPerformance.mark("window.replacePane.end") }
     let next = makePane(document: document)
     next.argumentList = old.argumentList
     let previousIndex = old.argumentList?.index(of: old.document?.fileURL, preferring: old.argumentIndex)
