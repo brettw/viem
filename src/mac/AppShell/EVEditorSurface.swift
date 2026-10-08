@@ -235,6 +235,13 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
  
   func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface)
 
+  /// Link activation focuses an existing view of the target document, including
+  /// an inactive pane. A document without an open view receives a new window.
+  func openLinkedDocument(
+    _ url: URL, fragment: String?, from surface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  )
+
   /// A file drop targets the receiving surface, which may be an inactive pane.
   /// The host owns document identity, dirty-state review, and native windows.
   func openDroppedFiles(
@@ -247,12 +254,26 @@ extension EVDocumentHostEffectHandling {
   public func documentURL(for surface: any EVEditorSurface) -> URL? { nil }
   public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {}
 
+  public func openLinkedDocument(
+    _ url: URL, fragment: String?, from surface: any EVEditorSurface,
+    completion: @escaping @MainActor (Result<Void, Error>) -> Void
+  ) {
+    completion(.failure(EVDocumentHostError.unsupportedRequest))
+  }
+
   public func openDroppedFiles(
     _ urls: [URL], in targetSurface: any EVEditorSurface,
     completion: @escaping @MainActor (Result<Void, Error>) -> Void
   ) {
     completion(.failure(EVDocumentHostError.unsupportedRequest))
   }
+}
+
+/// Optional navigation capability used when a local document link has a heading
+/// fragment. The editor resolves it against the newly opened document snapshot.
+@MainActor
+public protocol EVLinkFragmentNavigating: AnyObject {
+  func navigateToLinkFragment(_ fragment: String) throws
 }
 
 /// Optional editor-surface capability used by the AppKit shell to install the

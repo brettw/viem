@@ -45,6 +45,7 @@ mod input_layout;
 mod prelayout;
 mod formatting;
 mod tables;
+mod links;
 mod startup;
 mod ex_files;
 mod completion;

@@ -347,6 +347,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if accepted {
             isActiveTextSurface = true
             applyPresentation()
+            surface?.linkPopover.refresh()
             surface?.refreshStatusBarActivity()
             if let surface { EVStyleEditorCoordinator.shared.documentDidBecomeActive(surface) }
         }
@@ -358,6 +359,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let accepted = super.resignFirstResponder()
         if accepted {
             isActiveTextSurface = false
+            if surface?.linkPopover.isEditing != true { surface?.linkPopover.close() }
             stopDragAutoscroll()
             applyPresentation()
             surface?.refreshStatusBarActivity()
@@ -369,6 +371,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         caretHoverLocation = nil
         setCaretHoverRect(nil)
         if newWindow == nil {
+            surface?.linkPopover.close()
             completionPopup.hide()
             isActiveTextSurface = false
             surface?.completionFocusDidChange()
@@ -390,6 +393,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateCustomCaretPresentation()
         updateInsertionIndicator()
         updateCompletionPopup()
+        surface?.linkPopover.refresh()
         invalidatePresentationDamage()
         surface?.refreshStatusBarActivity()
     }
@@ -1419,7 +1423,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    private var textViewportRect: NSRect {
+    var textViewportRect: NSRect {
         NSRect(
             x: Self.canvasInsets.left,
             y: Self.canvasInsets.top,
@@ -1995,14 +1999,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     @objc func openLink(_ sender: NSMenuItem) {
         guard let surface, let target = sender.representedObject as? EVLinkMenuTarget else { return }
-        do {
-            guard let destination = try surface.backend.linkDestination(at: target) else { return }
-            let base = surface.documentHostEffectHandler?.documentURL(for: surface)
-            let url = try EVLinkOpener.destinationURL(destination, relativeTo: base)
-            openLinkURL(url) { [weak surface] error in
-                if let error { surface?.report(error) }
-            }
-        } catch { surface.report(error) }
+        surface.openLink(at: target)
     }
 
     private func showEditorContextMenu(_ event: NSEvent) {

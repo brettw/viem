@@ -46,6 +46,7 @@ internal static class FormattingToolbarTests
         await LazyConstruction(preferences);
         TablePickerTests.Run();
         await TableInteractionTests.Run(preferences);
+        await LinkInteractionTests.Run(preferences);
     }
 
     internal static async Task Run(Preferences preferences)

@@ -169,3 +169,5 @@ mod markdown_table_commands;
 mod markdown_table_ffi;
 
 mod markdown_list_interruption;
+
+mod link_authoring;

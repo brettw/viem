@@ -364,8 +364,21 @@ semantic styling, and the absence of resource loading.
 
 Only explicit Open link interaction launches a target. Resolve it from current
 source and relative to the document URL; reject stale targets, control characters,
-and executable schemes. HTTP, HTTPS, and file targets use native URL APIs, never
+and executable schemes. Heading fragments navigate the current document. Local
+file targets focus an existing view or pane of that document, preserving its
+unsaved edits; only documents without an open view receive a new Viem window.
+A local file's heading fragment navigates that chosen view. HTTP and HTTPS open
+the default browser. Native URL and document APIs perform these actions, never
 a shell. Preserve existing percent escapes and encode invalid bytes once.
+
+Markdown Source and WYSIWYG share native link insertion, editing and removal.
+The caret popup uses Text and Destination fields, defaulting Text to the selected
+text. A link's compact toolbar sits below its text, aligned to its left edge,
+and offers explicit open, copy destination, edit and remove actions. Edit expands
+into the same fields with a transition that honors reduced motion. In Source,
+the complete inline link notation belongs to the popup's active range. Link
+mutations verify the retained selection and source revision before publication,
+share ordinary undo, and preserve unselected text and label formatting.
 
 ## Markdown authoring and structural editing
 

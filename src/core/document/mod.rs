@@ -50,6 +50,7 @@ mod rich_text;
 pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
 mod links;
+pub use links::{LinkSnapshot, LinkEditIntent};
 mod persistence;
 mod pipeline;
 mod position;

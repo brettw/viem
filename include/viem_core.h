@@ -2853,6 +2853,25 @@ ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, co
 /* selection: Automatic=0, None=1, Language=2. Only Language takes a nonempty name. */
 ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, const uint8_t *language, uint64_t length);
 ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
+/* Link popup JSON: selection {viewId,documentId,revision,start,end,kind,anchor,
+ * active,affinity}, canInsert, text, link null or {start,end,text,destination,
+ * editable}. Query work is bounded to the active source region. */
+ViemStatus viem_core_view_copy_link_context(ViemCoreHandle core, ViemViewId view,
+                                           uint8_t *output, uint64_t capacity,
+                                           uint64_t *required);
+/* action: 0 inserts at expected selection, 1 edits, 2 removes active link.
+ * Every mutation validates the complete expected logical selection identity. */
+ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
+                                   const ViemLogicalSelectionIdentityV1 *expected,
+                                   uint32_t action, uint64_t link_start,
+                                   uint64_t link_end, ViemUtf8Slice text,
+                                   ViemUtf8Slice destination,
+                                   ViemCoreOutcomeV1 *outcome);
+/* fragment is percent-decoded, excludes '#'; outputs name this exact revision. */
+ViemStatus viem_core_find_link_fragment(ViemCoreHandle core, uint64_t document_id,
+                                       uint64_t revision, ViemUtf8Slice fragment,
+                                       uint64_t *offset, uint8_t *found);
+
 /* Exact snapshot, two-pass UTF-8. Outputs must be disjoint. found distinguishes
  * no link from a link with an empty destination. No source or view mutation. */
 ViemStatus viem_core_copy_link_destination(ViemCoreHandle core,
