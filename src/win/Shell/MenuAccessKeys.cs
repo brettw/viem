@@ -97,22 +97,30 @@ internal sealed partial class EditorWindow
         FrameworkElementAutomationPeer.CreatePeerForElement(menu) is MenuBarItemAutomationPeer
             { ExpandCollapseState: ExpandCollapseState.Expanded });
 
-    private void HideTemporaryMenu(bool restoreFocus = false)
+    private void HideTemporaryMenu(bool restoreFocus = false, bool deactivating = false)
     {
         if (!temporaryMenu) return;
-        temporaryMenu = pendingMenuAlt = false;
-        if (IsWindowActive && AccessKeyManager.IsDisplayModeEnabled) AccessKeyManager.ExitDisplayMode();
+        // Exiting native access-key mode can unload the popup and move focus
+        // to the title bar. Capture menu ownership before that transition so
+        // deactivation retains the original editor focus for keyboard return.
         var focused = root.XamlRoot == null ? null : FocusManager.GetFocusedElement(root.XamlRoot) as DependencyObject;
         bool focusInMenu = false;
         for (var element = focused; element != null; element = VisualTreeHelper.GetParent(element))
             if (element == Menu || element is MenuFlyoutPresenter && openMenus.Count != 0)
             { focusInMenu = true; break; }
+        // WinUI can close the flyout before reporting window deactivation.
+        // A live keyboard session still owns its saved return target in that
+        // case; pointer reactivation below deliberately never restores it.
+        bool returnAfterActivation = deactivating && (focusInMenu
+            || menuFlyoutOpened && menuReturnFocus?.TryGetTarget(out _) == true);
+        temporaryMenu = pendingMenuAlt = false;
+        if (IsWindowActive && AccessKeyManager.IsDisplayModeEnabled) AccessKeyManager.ExitDisplayMode();
         UpdateMenuVisibility();
         if (restoreFocus && IsWindowActive && focusInMenu)
             RestoreMenuFocus();
         // Focusing during deactivation would reactivate this window. Retain the
         // target for keyboard activation; mouse activation must follow its click.
-        restoreMenuFocusOnActivation = !restoreFocus && focusInMenu;
+        restoreMenuFocusOnActivation = returnAfterActivation;
         if (!restoreMenuFocusOnActivation) menuReturnFocus = null;
     }
 
@@ -144,4 +152,7 @@ internal sealed partial class EditorWindow
         menuReturnFocus = null;
         openMenus.Clear();
     }
+#if DEBUG
+    internal string MenuFocusForTesting => $"active={IsWindowActive}, temporary={temporaryMenu}, restore={restoreMenuFocusOnActivation}, return={(menuReturnFocus?.TryGetTarget(out var target) == true ? target.GetType().Name : "none")}, open={openMenus.Count}, focus={(root.XamlRoot == null ? null : FocusManager.GetFocusedElement(root.XamlRoot)?.GetType().Name)}, keytips={AccessKeyManager.IsDisplayModeEnabled}";
+#endif
 }

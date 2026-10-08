@@ -14,7 +14,7 @@ internal sealed partial class StyleWindow
         Width = 52, MinWidth = 0, Padding = new Thickness(4, 0, 4, 0),
     };
 
-    private sealed class FontSizeUnitPicker : ComboBox
+    private sealed partial class FontSizeUnitPicker : ComboBox
     {
         protected override void OnApplyTemplate()
         {

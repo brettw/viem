@@ -28,10 +28,10 @@ internal static unsafe class FontVariations
     internal static Dictionary<string, float> Decode(string json)
     {
         if (string.IsNullOrEmpty(json)) return [];
-        try { return JsonSerializer.Deserialize<Dictionary<string, float>>(json) ?? []; }
+        try { return JsonSerializer.Deserialize(json, FontAxesJsonContext.Default.Axes) ?? []; }
         catch (JsonException) { return []; }
     }
-    internal static string Encode(Dictionary<string, float> values) => JsonSerializer.Serialize(values);
+    internal static string Encode(Dictionary<string, float> values) => JsonSerializer.Serialize(values, FontAxesJsonContext.Default.Axes);
     internal static uint Tag(string tag) => (uint)tag[0] | ((uint)tag[1] << 8) | ((uint)tag[2] << 16) | ((uint)tag[3] << 24);
     private static FontVariationInfo Read(FontFace face)
     {

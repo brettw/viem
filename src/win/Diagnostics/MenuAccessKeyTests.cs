@@ -73,6 +73,17 @@ internal static class MenuAccessKeyTests
             Check(document.State.document_revision == revision && document.FormattedText() == "alpha\nbeta",
                 "menu access keys do not enter document text or change its revision");
 
+            var viewMenu = window.Menu.Items.Single(menu => menu.Title == "View");
+            var code = viewMenu.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Code");
+            Check(code.Items.Count == 2, "opening File leaves the deferred Code languages unconstructed");
+            pane.FocusEditor(); await Task.Delay(80);
+            await InputRoutingTests.Key(VirtualKey.V, alt: true);
+            await InputRoutingTests.Key(VirtualKey.C);
+            Check(code.Items.Count == DocumentModes.Languages.Count + 2 && code.Items[0].IsLoaded,
+                "first native Alt+V then C opens the complete deferred language submenu");
+            await InputRoutingTests.Key(VirtualKey.Escape);
+            await InputRoutingTests.Key(VirtualKey.Escape);
+
             pane.FocusEditor(); await Task.Delay(80);
             var endings = file.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Line Endings");
             var unix = endings.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Unix (LF)");
@@ -178,21 +189,25 @@ internal static class MenuAccessKeyTests
                 "a second Escape dismisses the parent menu and restores the hidden preference");
 
             await InputRoutingTests.Key(VirtualKey.F, alt: true);
+            string beforeDeactivation = window.MenuFocusForTesting, whileDeactivated = "";
             var otherWindow = new Window { Title = "Viem menu activation test", Content = new TextBox() };
             try
             {
                 otherWindow.Activate(); await Task.Delay(150);
                 Check(!window.IsWindowActive && window.Menu.Visibility == Visibility.Collapsed && !preferences.ShowMenu,
                     "deactivating a window dismisses its temporary menu without changing the hidden preference");
+                whileDeactivated = window.MenuFocusForTesting;
             }
             finally
             {
                 otherWindow.Close(); window.Activate(); await Task.Delay(150);
             }
+            string afterReactivation = window.MenuFocusForTesting;
             await InputRoutingTests.Text("i");
             await InputRoutingTests.Text("z");
             Check(document.FormattedText() == "zalpha\nbeta",
-                "keyboard reactivation restores the editor focus held before the temporary menu");
+                "keyboard reactivation restores the editor focus held before the temporary menu",
+                $"before={beforeDeactivation}; deactivated={whileDeactivated}; reactivated={afterReactivation}; after input={window.MenuFocusForTesting}; text={document.FormattedText().Replace("\n", "\\n")}; mode={pane.View.Presentation.mode}");
             await InputRoutingTests.Key(VirtualKey.Escape);
             pane.View.Undo();
             openKeytipShown = false;

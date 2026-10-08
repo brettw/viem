@@ -29,7 +29,6 @@ public partial class App : Application
         Diagnostics.StartupPerformance.Mark("app.launched");
         try { LaunchInvocation = OpenInvocation.FromCommandLine(Environment.GetCommandLineArgs().Skip(1).ToArray(), Environment.CurrentDirectory); }
         catch (Exception error) { _ = MessageBox(0, error.Message, "Viem could not open the file", 0x10); Exit(); return; }
-        Rendering.FontCatalog.PrepareFonts();
         using (Diagnostics.StartupPerformance.Measure("instance.broker")) broker = new InstanceBroker(Preferences.DirectoryPath);
         if (!broker.IsPrimary)
         {

@@ -77,15 +77,15 @@ internal static class PaneLayoutTests
             Check(rejected && window.Panes.Count == 3, "splitting a collapsed editor fails without adding a pane");
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
             uint mode = view.CurrentLineMode;
-            await InputRoutingTests.Drag(window, first.LocationToggleControl, [new(.5, .5), new(.5, .5)], _ => { });
+            await InputRoutingTests.Drag(window, first.LocationToggleControl, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5, .5)], _ => { });
             Check(view.CurrentLineMode != mode, "a plain eye click toggles line mode");
             mode = view.CurrentLineMode; double start = Bars()[0];
             await InputRoutingTests.Drag(window, first.LocationToggleControl,
-                [new(.5, .5), new(.5, .5 + 40 / first.LocationToggleControl.ActualHeight)], _ => { });
+                (global::Windows.Foundation.Point[])[new(.5, .5), new(.5, .5 + 40 / first.LocationToggleControl.ActualHeight)], _ => { });
             Check(view.CurrentLineMode == mode && Math.Abs(Bars()[0] - start - 40) < 2,
                 "dragging the eye resizes panes and consumes its click");
             double fixedBottom = Bars()[2];
-            await InputRoutingTests.Drag(window, third.StatusControl, [new(.3, .5), new(.3, -.5)], _ => { });
+            await InputRoutingTests.Drag(window, third.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, -.5)], _ => { });
             Check(Bars()[2] == fixedBottom, "native pointer dragging cannot move the bottom status bar");
             view.Ex("only"); await window.PendingEffectsForTesting;
             window.FocusPane(first);
@@ -101,7 +101,7 @@ internal static class PaneLayoutTests
             var splitter = window.PaneStack.Splitters.Single();
             Check(Math.Abs(splitter.ActualWidth - 5) < .01, "vertical splitter occupies five DIPs");
             double width = first.ActualWidth;
-            await InputRoutingTests.Drag(window, splitter, [new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
+            await InputRoutingTests.Drag(window, splitter, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
             Check(Math.Abs(first.ActualWidth - width - 40) < 2 && window.ActivePane == first,
                 "native vertical dragging moves the divider and preserves pane focus");
             window.PaneStack.ResizeWidth(right, 1);
@@ -109,7 +109,7 @@ internal static class PaneLayoutTests
             rejected = false;
             try { window.SplitPane(right, first.Document, vertical: true); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
             Check(rejected && window.Panes.Count == 2, "a vertical split without 205 DIPs fails before adding a view");
-            await InputRoutingTests.Drag(window, right.StatusControl, [new(.3, .5), new(.3, .5)], _ => { });
+            await InputRoutingTests.Drag(window, right.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, .5)], _ => { });
             Check(window.ActivePane == right, "a plain status-bar click focuses its buffer");
             right.View!.Ex("vnew"); await window.PendingEffectsForTesting;
             Check(window.Panes.Count == 2, "vnew obeys the same admission check before creating a document");

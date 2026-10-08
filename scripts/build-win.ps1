@@ -15,8 +15,8 @@ try {
     $executableDirectory = Join-Path $projectRoot "target/windows/Viem.Windows/bin/x64/$Configuration/net10.0-windows10.0.26100.0/win-x64"
     $dotnetArguments = @('build', 'src/win/Viem.Windows.csproj', '-c', $Configuration, '--nologo', '-p:RestoreLockedMode=true')
     if ($Configuration -eq 'Release') {
-        # ReadyToRun is a publish step. Keep the existing executable location so
-        # launch scripts and user shortcuts run the precompiled Release build.
+        # NativeAOT is a publish step. Keep the existing executable location so
+        # launch scripts and user shortcuts run the native Release build.
         $dotnetArguments[0] = 'publish'
         $dotnetArguments += @('--output', $executableDirectory)
     }

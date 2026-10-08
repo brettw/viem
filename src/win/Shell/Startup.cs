@@ -57,7 +57,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
-                        || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") is "1" or "startup"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_ZOOM_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_MENU_KEYS_ONLY") == "1"
@@ -96,6 +96,8 @@ internal sealed partial class EditorWindow
                             await Diagnostics.BlockingEditTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1")
                             await Diagnostics.DocumentCloseReviewTests.Run(preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "startup")
+                            await Diagnostics.FormattingToolbarTests.RunStartup(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") == "1")
                             await Diagnostics.FormattingToolbarTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLES_ONLY") == "variable")
@@ -130,7 +132,7 @@ internal sealed partial class EditorWindow
                         else
                             await Diagnostics.VimRuntimeTests.Run(pane.Canvas.Device, DispatcherQueue, preferences.DirectoryPath);
                         var checks = Diagnostics.FrontendSmokeTests.UiChecks;
-                        File.WriteAllText(Diagnostics.FrontendSmokeTests.ReportPath, JsonSerializer.Serialize(new { passed = true, count = checks.Count, checks }));
+                        Diagnostics.FrontendSmokeTests.WriteSuccess(checks);
                         Environment.Exit(0);
                         return;
                     }

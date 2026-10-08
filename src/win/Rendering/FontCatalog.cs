@@ -21,7 +21,10 @@ internal static class FontCatalog
     // The agile, read-only font index is shared for the same process lifetime
     // as the name caches. Build it while the shell loads; never enumerate its
     // Fonts collection to resolve a family or populate the font picker.
-    private static readonly Lazy<Task<CanvasFontSet>> systemFonts = new(() => Task.Run(CanvasFontSet.GetSystemFontSet));
+    private static readonly Lazy<Task<CanvasFontSet>> systemFonts = new(() => Task.Run(() => {
+        using var startup = Diagnostics.StartupPerformance.Measure("fonts.systemIndex");
+        return CanvasFontSet.GetSystemFontSet();
+    }));
     internal static void PrepareFonts() { _ = systemFonts.Value; _ = bundledFonts.Value; }
     private static CanvasFontSet SystemFonts => systemFonts.Value.GetAwaiter().GetResult();
     // App-local sets, like the system index, are immutable and retained for the

@@ -50,6 +50,7 @@ From the repository root in PowerShell:
 .\scripts\run-win.ps1
 .\scripts\build-win.ps1 -Configuration Debug -Run
 .\scripts\test-win.ps1
+.\scripts\test-win.ps1 -NativeAot
 cargo test --locked
 ```
 
@@ -59,11 +60,20 @@ to use already-restored dependencies. `build-win.ps1 -Configuration Debug -Run`
 builds and launches Debug. Both launch paths preserve the invoking PowerShell
 directory as the application's working directory.
 
-Release uses `dotnet publish` and ReadyToRun compilation to precompile Viem and
-its managed WinUI/Win2D projections. The script preserves the executable path
-below. A direct `dotnet build -c Release` does not perform this precompilation;
-use the build script for startup measurements. The first online restore also
-fetches the SDK's matching Crossgen2 compiler; later `-Offline` builds reuse it.
+Release uses `dotnet publish` and NativeAOT compilation, including Viem's
+WinUI/Win2D projections, to eliminate startup JIT compilation. The script
+preserves the executable path below. A direct `dotnet build -c Release` still
+produces a managed build; use the build script for startup measurements.
+Ordinary Debug builds remain managed and debuggable. The first online restore
+also fetches the SDK's native compiler/runtime packs; later `-Offline` builds
+reuse them. The pinned Windows SDK .NET projection supplies the C#/WinRT
+runtime support required for Win2D's non-blittable font and line-metric arrays.
+
+Use `test-win.ps1 -NativeAot` to publish the native UI diagnostics with optimized
+C# and Rust code into `target/windows-native-tests`, including the blocking
+launcher. This exercises NativeAOT behavior with the same native rendering and
+UI checks as the managed tests. `-NoBuild -NativeAot` reuses that test build;
+`-Optimized` alone retains the managed optimized test mode.
 
 The executable is under
 `target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe`
@@ -74,7 +84,8 @@ Both `dotnet build` and `dotnet publish` verify and replace that runtime subtree
 publishing with `--no-build` also packages it. No installed Vim is required.
 Resource lookup uses the executable directory, so the app can be relocated or
 launched from another working directory. Windows App SDK
-is self-contained; this development build uses the installed .NET 10 runtime.
+is self-contained. The published Release editor includes its .NET runtime;
+managed Debug builds and the blocking launcher use the installed .NET 10 runtime.
 It does not install file associations or an application package.
 
 Both build and publish also copy [`assets/fonts`](../../assets/fonts/README.md)
@@ -271,6 +282,11 @@ document and layout phases plus JIT CPU time; overlapping scopes are not additiv
 style defaults into each isolated test profile, leaving the original untouched.
 Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
+Font indexing overlaps WinUI initialization. Hidden formatting toolbars are
+created only when shown; visible Markdown reserves their space before the first
+editor layout. The full Code language menu is populated on its first opening.
+`VIEM_TEST_TOOLBAR_ONLY=startup` selects the focused native startup/toolbar checks;
+use `VIEM_TEST_MENU_KEYS_ONLY=1` for access-key and window-focus coverage.
 Set `VIEM_FORCE_BUNDLED_FONTS=1` to exercise the bundled fallback even when matching
 fonts are installed. This works in Release for startup comparisons and with
 `VIEM_TEST_STYLES_ONLY=variable` for the native font/preset/inspector regressions.

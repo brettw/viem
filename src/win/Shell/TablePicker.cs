@@ -11,7 +11,7 @@ using Windows.System;
 
 namespace Viem.Windows.Shell;
 
-internal sealed class TableInsertButton : Button
+internal sealed partial class TableInsertButton : Button
 {
     internal Action<PointerRoutedEventArgs>? Pressed, Moved, Released, CaptureLost, Canceled;
     protected override void OnPointerPressed(PointerRoutedEventArgs e) {
@@ -44,10 +44,10 @@ internal sealed class TablePickerState
     }
 }
 
-internal sealed class TablePickerGrid : Canvas
+internal sealed partial class TablePickerGrid : Canvas
 {
     protected override AutomationPeer OnCreateAutomationPeer() => new GridPeer(this);
-    private sealed class GridPeer(TablePickerGrid owner) : FrameworkElementAutomationPeer(owner)
+    private sealed partial class GridPeer(TablePickerGrid owner) : FrameworkElementAutomationPeer(owner)
     {
         protected override string GetClassNameCore() => "TableDimensionsPicker";
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Group;
