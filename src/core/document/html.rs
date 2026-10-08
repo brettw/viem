@@ -16,6 +16,7 @@ pub(super) struct Tag {
     pub name: String,
     pub end: bool,
     pub attributes: Vec<(String, String)>,
+    pub attribute_ranges: Vec<(String, Range<usize>)>,
 }
 impl Tag {
     pub(super) fn attribute(&self, name: &str) -> Option<&str> {
@@ -24,6 +25,32 @@ impl Tag {
             .find(|(key, _)| key == name)
             .map(|(_, value)| value.as_str())
     }
+    pub(super) fn attribute_range(&self, name: &str) -> Option<Range<usize>> {
+        self.attribute_ranges.iter().find(|(key, _)| key == name).map(|(_, range)| range.clone())
+    }
+}
+
+/// Image attributes are passive metadata; dimensions are positive integer
+/// pixel requests, whose display bounds are enforced by layout.
+pub(super) fn image_metadata(
+    tag: &Tag,
+    range: Range<usize>,
+    source: Range<usize>,
+    source_view: bool,
+) -> Option<super::InlineImage> {
+    if tag.end || tag.name != "img" { return None; }
+    let destination = tag.attribute("src")?.trim_matches(|ch: char| ch.is_ascii_whitespace());
+    if destination.is_empty() { return None; }
+    let dimension = |name| {
+        let value = tag.attribute(name)?;
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) { return None; }
+        let value = value.bytes().fold(0u32, |value, byte| value.saturating_mul(10).saturating_add(u32::from(byte - b'0')));
+        (value > 0).then_some(value)
+    };
+    Some(super::InlineImage {
+        range, text: tag.attribute("alt").unwrap_or_default().to_owned(), destination: destination.to_owned(),
+        width: dimension("width"), height: dimension("height"), source_view, source, inline: false, html: true,
+    })
 }
 #[derive(Clone, Debug)]
 pub(super) enum TokenKind {
@@ -105,6 +132,9 @@ pub(super) fn hidden(name: &str) -> bool {
         name,
         "head" | "script" | "style" | "template" | "title" | "noscript"
     )
+}
+pub(super) fn raw_text(name: &str) -> bool {
+    matches!(name, "script" | "style" | "title" | "textarea" | "xmp" | "iframe" | "noembed" | "noframes")
 }
 pub(super) fn atomic(name: &str) -> bool {
     matches!(
@@ -249,6 +279,7 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
         }
         let name = input[name_start..at].to_ascii_lowercase();
         let mut attributes = Vec::new();
+        let mut attribute_ranges = Vec::new();
         while at < bytes.len() && bytes[at] != b'>' {
             if space(bytes[at]) || bytes[at] == b'/' {
                 at += 1;
@@ -259,6 +290,7 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
                 at += 1;
             }
             let key = input[key_start..at].to_ascii_lowercase();
+            let mut attribute_range = at..at;
             while at < bytes.len() && space(bytes[at]) {
                 at += 1;
             }
@@ -268,6 +300,7 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
                 while at < bytes.len() && space(bytes[at]) {
                     at += 1;
                 }
+                attribute_range.start = at;
                 let quote = bytes.get(at).copied().filter(|q| matches!(q, b'\'' | b'"'));
                 if quote.is_some() {
                     at += 1;
@@ -285,8 +318,10 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
                 if quote.is_some() && at < bytes.len() {
                     at += 1;
                 }
+                attribute_range.end = at;
             }
             if !key.is_empty() {
+                attribute_ranges.push((key.clone(), attribute_range));
                 attributes.push((key, value));
             }
         }
@@ -299,19 +334,7 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
             break;
         }
         at += 1;
-        if !end
-            && matches!(
-                name.as_str(),
-                "script"
-                    | "style"
-                    | "title"
-                    | "textarea"
-                    | "xmp"
-                    | "iframe"
-                    | "noembed"
-                    | "noframes"
-            )
-        {
+        if !end && raw_text(&name) {
             raw = Some(name.clone());
         }
         tokens.push(Token {
@@ -320,10 +343,58 @@ pub(super) fn tokenize(input: &str) -> Vec<Token> {
                 name,
                 end,
                 attributes,
+                attribute_ranges,
             }),
         });
     }
     tokens
+}
+
+/// Interpret HTML after removing known Markdown owner prefixes. Both tag and
+/// attribute value ranges still address the original decoded spelling. Callers
+/// supply sorted, disjoint character-boundary ranges from source ownership.
+pub(super) fn tokenize_without_ranges(input: &str, excluded: &[Range<usize>]) -> Vec<Token> {
+    if excluded.is_empty() { return tokenize(input); }
+    let removed = without_ranges(input, excluded);
+    tokenize(&removed.text).into_iter().map(|mut token| {
+        token.range = removed.original_range(token.range);
+        if let TokenKind::Tag(tag) = &mut token.kind {
+            for (_, range) in &mut tag.attribute_ranges { *range = removed.original_range(range.clone()); }
+        }
+        token
+    }).collect()
+}
+
+pub(super) struct RemovedPrefixes {
+    pub text: String,
+    segments: Vec<(Range<usize>, usize)>,
+    original_len: usize,
+}
+impl RemovedPrefixes {
+    pub(super) fn original_range(&self, range: Range<usize>) -> Range<usize> {
+        let first = self.segments.partition_point(|(segment, _)| segment.end <= range.start);
+        let start = self.segments.get(first).map_or(self.original_len, |(segment, original)| original + range.start - segment.start);
+        if range.is_empty() { return start..start; }
+        let last = self.segments.partition_point(|(segment, _)| segment.start < range.end) - 1;
+        let (segment, original) = &self.segments[last];
+        start..original + range.end - segment.start
+    }
+}
+
+pub(super) fn without_ranges(input: &str, excluded: &[Range<usize>]) -> RemovedPrefixes {
+    let mut text = String::new();
+    let mut segments = Vec::new();
+    let mut at = 0;
+    for range in excluded.iter().cloned().chain(std::iter::once(input.len()..input.len())) {
+        assert!(at <= range.start && range.start <= range.end && range.end <= input.len());
+        if at < range.start {
+            let start = text.len();
+            text.push_str(&input[at..range.start]);
+            segments.push((start..text.len(), at));
+        }
+        at = range.end;
+    }
+    RemovedPrefixes { text, segments, original_len: input.len() }
 }
 
 #[derive(Clone)]
@@ -486,6 +557,7 @@ fn project_tokens(
     }
     list_editable &= list_stack.is_empty();
     let mut builder = Builder::new(input, revision);
+    let mut inline_images = Vec::new();
     builder.list_indent_support = Some((list_editable, list_editable));
     let mut stack = vec![Frame::default()];
     let mut owners: Vec<super::containers::SourceContainer> = Vec::new();
@@ -655,6 +727,7 @@ fn project_tokens(
                         builder.emit(" ", range, &pending_space_style);
                         builder.named_character = named;
                     }
+                    let output_start = builder.text.len();
                     builder.emit(
                         "\u{fffc}",
                         atomic_extents
@@ -663,6 +736,12 @@ fn project_tokens(
                             .unwrap_or(token.range.clone()),
                         &stack.last().unwrap().character,
                     );
+                    if markdown_references {
+                        if let Some(image) = image_metadata(&tag, output_start..builder.text.len(),
+                            builder.source_range(token.range.clone()), false) {
+                            inline_images.push(image);
+                        }
+                    }
                     paragraph_seen = true;
                 }
                 if tag.name == "br" && !frame.hidden && !frame.opaque {
@@ -998,6 +1077,7 @@ fn project_tokens(
         }
     }
     let mut result = builder.finish(start, end);
+    result.install_inline_images(inline_images);
     result.install_source_containers(owners);
     super::links::style_html_links(&mut result, input, &lexical_tokens);
     result

@@ -484,7 +484,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             control,
         )?;
         let mut fragment = result.remove(0);
-        fit_inline_images(&mut fragment.clusters, inline_images, image_max_width);
+        fit_inline_images(&mut fragment.clusters, inline_images, image_max_width, view.scale);
         Ok(fragment)
     }
 

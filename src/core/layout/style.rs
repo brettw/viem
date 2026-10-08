@@ -456,7 +456,10 @@ impl DocumentLayoutStyles {
         }
         styles.inline_images = regional_images.into_iter()
             .filter(|image| !image.source_view)
-            .map(|image| super::ShapeInlineImage { text_range: image.range, destination: image.destination })
+            .map(|image| super::ShapeInlineImage {
+                text_range: image.range, destination: image.destination,
+                width: image.width, height: image.height,
+            })
             .collect();
         Ok(styles)
     }

@@ -898,7 +898,10 @@ fn selected_source(
         piece.start = piece.start.max(previous_end);
         if piece.start < piece.end {
             let mut cursor=piece.start;
-            for image in images.iter().filter(|image|!image.inline && piece.start<=image.source.start && image.source.end<=piece.end) {
+            // Reference images need a self-contained destination when their
+            // definition is outside the selection. HTML tags already contain
+            // it, and their authored dimensions and other attributes are source.
+            for image in images.iter().filter(|image|!image.inline && !image.html && piece.start<=image.source.start && image.source.end<=piece.end) {
                 result.extend_from_slice(&source[cursor..image.source.start]);
                 result.extend(document.encoding().encode_fragment(&format!("![{}](<{}>)",super::super::links::escape_label(&image.text),super::super::links::escape_destination(&image.destination)))?);
                 cursor=image.source.end;

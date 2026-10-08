@@ -4233,7 +4233,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 right_to_left,
                 view.scale,
             );
-            fit_inline_images(&mut clusters, &document_styles.inline_images, continuation_box.width);
+            fit_inline_images(&mut clusters, &document_styles.inline_images, continuation_box.width, view.scale);
             let first_row_box = if line_slice.checkpoint.is_none() && paragraph.is_first_hard_line {
                 list_first_row_box(
                     paragraph_first_box,
@@ -4911,7 +4911,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             );
             fit_inline_images(&mut clusters,
                 document_styles.as_ref().map_or(&[], |styles| styles.inline_images.as_slice()),
-                continuation_box.width);
+                continuation_box.width, view.scale);
             let first_row_box = if paragraph.is_first_hard_line {
                 list_first_row_box(
                     paragraph_first_box,
@@ -5896,30 +5896,46 @@ fn images_for_shaping_span(images: &[ShapeInlineImage], range: &Range<usize>)
         text_range: image.text_range.start.saturating_sub(range.start)
             ..image.text_range.end.saturating_sub(range.start),
         destination: image.destination.clone(),
+        width: image.width,
+        height: image.height,
     }).collect();
     (global, relative)
 }
 
-/// Intrinsic aspect ratio without enlargement, within the content width and
-/// a 1024-DIP square. The absolute display cap applies after document zoom.
+/// Use authored dimensions when present, otherwise retain intrinsic size. One
+/// authored dimension preserves the intrinsic aspect ratio; two set that ratio.
+/// Fit the result proportionally within the content width and a 1024-DIP square
+/// after document zoom. Only explicit authored dimensions may enlarge an image.
 /// Width-independent shaping remains reusable across changes to the view width.
-fn fit_inline_images(clusters: &mut [ShapedCluster], images: &[ShapeInlineImage], max_width: f32) {
+fn fit_inline_images(clusters: &mut [ShapedCluster], images: &[ShapeInlineImage], max_width: f32, scale: f32) {
     if images.is_empty() { return; }
     for cluster in clusters {
         let i = images.partition_point(|image| image.text_range.start < cluster.text_range.start);
-        if !images.get(i).is_some_and(|image| image.text_range == cluster.text_range) { continue; }
-        let ratio = (max_width.max(1.).min(1024.) / cluster.advance)
-            .min(1024. / cluster.typographic_bounds.height).min(1.);
-        if !ratio.is_finite() || ratio >= 1. { continue; }
-        cluster.advance *= ratio;
-        cluster.metrics.ascent *= ratio;
-        cluster.metrics.descent *= ratio;
-        cluster.metrics.leading *= ratio;
+        let Some(image) = images.get(i).filter(|image| image.text_range == cluster.text_range) else { continue; };
+        let intrinsic_width = cluster.advance;
+        let intrinsic_height = cluster.typographic_bounds.height;
+        if intrinsic_width <= 0. || intrinsic_height <= 0. { continue; }
+        let width = image.width.filter(|width| *width > 0).map(|width| width as f32 * scale);
+        let height = image.height.filter(|height| *height > 0).map(|height| height as f32 * scale);
+        let (width, height) = match (width, height) {
+            (Some(width), Some(height)) => (width, height),
+            (Some(width), None) => (width, intrinsic_height * (width / intrinsic_width)),
+            (None, Some(height)) => (intrinsic_width * (height / intrinsic_height), height),
+            (None, None) => (intrinsic_width, intrinsic_height),
+        };
+        let ratio = (max_width.max(1.).min(1024.) / width).min(1024. / height).min(1.);
+        let horizontal = width * ratio / intrinsic_width;
+        let vertical = height * ratio / intrinsic_height;
+        if !horizontal.is_finite() || !vertical.is_finite() { continue; }
+        cluster.advance *= horizontal;
+        cluster.metrics.ascent *= vertical;
+        cluster.metrics.descent *= vertical;
+        cluster.metrics.leading *= vertical;
         for bounds in [&mut cluster.typographic_bounds, &mut cluster.ink_bounds] {
-            bounds.x *= ratio; bounds.y *= ratio;
-            bounds.width *= ratio; bounds.height *= ratio;
+            bounds.x *= horizontal; bounds.y *= vertical;
+            bounds.width *= horizontal; bounds.height *= vertical;
         }
-        for caret in &mut cluster.caret_stops { caret.inline_offset *= ratio; }
+        for caret in &mut cluster.caret_stops { caret.inline_offset *= horizontal; }
     }
 }
 

@@ -150,11 +150,16 @@ pub struct ShapeStyleRun {
 /// is passive metadata: providers may decode local files, never fetch URLs.
 /// Providers measure intrinsic pixel dimensions at the requested scale and
 /// return exactly one cluster with only its two endpoint caret stops. Layout
-/// applies the containing block's maximum width without changing this identity.
+/// applies authored dimensions and the containing block's maximum width without
+/// changing this identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShapeInlineImage {
     pub text_range: Range<usize>,
     pub destination: String,
+    /// Authored pixel dimensions before document zoom. With one dimension, the
+    /// other follows the provider's intrinsic aspect ratio.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// A single item in a batch sent across the platform boundary.

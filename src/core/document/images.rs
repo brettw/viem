@@ -12,6 +12,8 @@ pub struct ImageSnapshot {
     pub editable: bool,
     source: Range<usize>,
     inline: bool,
+    html: bool,
+    quote_depth: usize,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ImageEditIntent {
@@ -51,12 +53,18 @@ impl Document {
             .into_iter()
             .find(|image| image.range.contains(&point.offset()))
             .map(|image| ImageSnapshot {
+                quote_depth: self
+                    .projection()
+                    .blocks_for_region(&(image.range.start..image.range.start.saturating_add(1)))
+                    .first()
+                    .map_or(0, |block| block.quote_depth),
                 range: image.range,
                 text: image.text,
                 destination: image.destination,
                 editable: image.source.len() <= MAX_IMAGE_BYTES && !self.is_read_only(),
                 source: image.source,
                 inline: image.inline,
+                html: image.html,
             }))
     }
     pub fn can_insert_image(&self, range: Range<usize>) -> bool {
@@ -120,7 +128,8 @@ impl Document {
             }
         };
         if text.len() + destination.len() > MAX_IMAGE_BYTES
-            || text.contains(['\n', '\r'])
+            || (text.contains(['\n', '\r'])
+                && !existing.as_ref().is_some_and(|image| image.html && image.text == text))
             || destination.chars().any(char::is_control)
             || (!remove && destination.is_empty())
         {
@@ -141,40 +150,58 @@ impl Document {
             .map(|image| image.source.clone())
             .or_else(|| self.projection().source_range(range.clone()))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let spelling = if remove {
-            String::new()
-        } else if let Some(image) = existing.as_ref().filter(|image| image.inline) {
+        let replacement = if let Some(image) =
+            existing.as_ref().filter(|image| image.html && !remove)
+        {
             let bytes = self
                 .state()
                 .source
                 .bytes_in(source.clone())
                 .ok_or(DocumentError::VerificationFailed)?;
-            let decoded = self.encoding().decode_region(&bytes, 0)?;
-            // Raw decoded offsets preserve existing title, whitespace and label syntax.
-            let parsed = super::links::markdown_image_at(&decoded.text, 0, decoded.text.len())
-                .ok_or(DocumentError::VerificationFailed)?;
-            let destination_range = parsed
-                .destination_range
-                .ok_or(DocumentError::VerificationFailed)?;
-            let mut value = decoded.text.clone();
-            if image.destination != destination {
-                value.replace_range(
-                    destination_range,
-                    &format!("<{}>", super::links::escape_destination(&destination)),
-                );
-            }
-            if image.text != text {
-                value.replace_range(parsed.label, &super::links::escape_label(&text));
-            }
-            value
+            edit_html_image(
+                &bytes,
+                self.encoding(),
+                self.file_format(),
+                image,
+                &text,
+                &destination,
+            )?
         } else {
-            format!(
-                "![{}](<{}>)",
-                super::links::escape_label(&text),
-                super::links::escape_destination(&destination)
-            )
+            let spelling = if remove {
+                String::new()
+            } else if let Some(image) = existing.as_ref().filter(|image| image.inline) {
+                let bytes = self
+                    .state()
+                    .source
+                    .bytes_in(source.clone())
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let decoded = self.encoding().decode_region(&bytes, 0)?;
+                // Raw decoded offsets preserve existing title, whitespace and label syntax.
+                let parsed = super::links::markdown_image_at(&decoded.text, 0, decoded.text.len())
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let destination_range = parsed
+                    .destination_range
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let mut value = decoded.text.clone();
+                if image.destination != destination {
+                    value.replace_range(
+                        destination_range,
+                        &format!("<{}>", super::links::escape_destination(&destination)),
+                    );
+                }
+                if image.text != text {
+                    value.replace_range(parsed.label, &super::links::escape_label(&text));
+                }
+                value
+            } else {
+                format!(
+                    "![{}](<{}>)",
+                    super::links::escape_label(&text),
+                    super::links::escape_destination(&destination)
+                )
+            };
+            self.encoding().encode_fragment(&spelling)?
         };
-        let replacement = self.encoding().encode_fragment(&spelling)?;
         let expected = if self.format().is_source_view() {
             super::line_endings::normalize(
                 &self.encoding().decode_region(&replacement, source.start)?,
@@ -188,7 +215,16 @@ impl Document {
         };
         let prepared = self.prepare_text_edits_with_patch_policy(
             vec![TextEdit::new(range.clone(), expected.clone())],
-            Some(vec![SourcePatch::primary(source.clone(), replacement)]),
+            if remove
+                && self.format().is_wysiwyg()
+                && existing.as_ref().is_some_and(|image| image.html)
+            {
+                // HTML whitespace may need local protection after removing an
+                // object. Use the ordinary verified deletion repair path.
+                None
+            } else {
+                Some(vec![SourcePatch::primary(source.clone(), replacement)])
+            },
             true,
         )?;
         let candidate = self.prepared_candidate_document(&prepared)?;
@@ -208,6 +244,111 @@ impl Document {
         self.prepared_text_point(&prepared, caret)?;
         Ok((prepared, caret))
     }
+}
+
+/// Change only the requested HTML attribute values. In particular, authored
+/// dimensions, titles, unknown attributes and surrounding whitespace survive.
+fn edit_html_image(
+    bytes: &[u8],
+    encoding: Encoding,
+    file_format: FileFormat,
+    image: &ImageSnapshot,
+    text: &str,
+    destination: &str,
+) -> Result<Vec<u8>, DocumentError> {
+    let decoded = encoding.decode_region(bytes, 0)?;
+    let source = &decoded.text;
+    let mut excluded = Vec::new();
+    let separator = if file_format == FileFormat::Mac {
+        '\r'
+    } else {
+        '\n'
+    };
+    let mut at = 0;
+    for line in source.split_inclusive(separator) {
+        if at > 0 && image.quote_depth > 0 {
+            let mut prefix = 0;
+            for _ in 0..image.quote_depth {
+                let tail = &line[prefix..];
+                if super::markdown_quotes::prefix(tail) == 0 {
+                    break;
+                }
+                prefix += tail.find('>').ok_or(DocumentError::VerificationFailed)? + 1;
+                if line
+                    .as_bytes()
+                    .get(prefix)
+                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
+                {
+                    prefix += 1;
+                }
+            }
+            if prefix > 0 {
+                excluded.push(at..at + prefix);
+            }
+        }
+        at += line.len();
+    }
+    let tokens = super::html::tokenize_without_ranges(source, &excluded);
+    let Some(super::html::Token {
+        kind: super::html::TokenKind::Tag(tag),
+        range,
+    }) = tokens.first()
+    else {
+        return Err(DocumentError::VerificationFailed);
+    };
+    if tag.name != "img" || tag.end || range != &(0..source.len()) {
+        return Err(DocumentError::VerificationFailed);
+    }
+    let mut edits = Vec::new();
+    for (name, old, new) in [
+        ("src", image.destination.as_str(), destination),
+        ("alt", image.text.as_str(), text),
+    ] {
+        if old == new {
+            continue;
+        }
+        let quoted = format!(
+            "\"{}\"",
+            new.replace('&', "&amp;")
+                .replace('"', "&quot;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        );
+        if let Some(range) = tag.attribute_range(name) {
+            let has_equals = !range.is_empty()
+                || source[..range.start]
+                    .char_indices()
+                    .rev()
+                    .find(|(at, ch)| {
+                        !ch.is_whitespace() && !excluded.iter().any(|range| range.contains(at))
+                    })
+                    .is_some_and(|(_, ch)| ch == '=');
+            edits.push((
+                range,
+                if has_equals {
+                    quoted
+                } else {
+                    format!("={quoted}")
+                },
+            ));
+        } else {
+            // Inserting after the tag name avoids changing self-closing syntax
+            // or unquoted values at the end of a tag.
+            edits.push((4..4, format!(" {name}={quoted}")));
+        }
+    }
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut result = bytes.to_owned();
+    for (range, value) in edits {
+        let start = decoded
+            .source_boundary(range.start)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let end = decoded
+            .source_boundary(range.end)
+            .ok_or(DocumentError::VerificationFailed)?;
+        result.splice(start..end, encoding.encode_fragment(&value)?);
+    }
+    Ok(result)
 }
 
 impl Document {

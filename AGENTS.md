@@ -347,8 +347,13 @@ Deliberate presentation exceptions:
   Only local image files may be decoded for previews. Never fetch remote image
   resources; show a box containing their location instead. Local previews keep
   intrinsic aspect ratio and shrink to the available content width without
-  enlarging smaller images. Displayed images never exceed 1024 device-independent
-  pixels in either direction, including at higher document zoom. Preview only
+  enlarging smaller images unless passive HTML `<img>` specifies a size.
+  HTML image `width` and `height` are positive integer pixel dimensions; one
+  dimension preserves intrinsic proportions, while both specify the displayed
+  proportions. Apply document zoom and then fit within the content width and
+  existing display caps. Preserve authored dimensions through image location
+  edits without exposing dimension controls. Displayed images never exceed 1024
+  device-independent pixels in either direction, including at higher document zoom. Preview only
   files of at most 10 MB (10,000,000 bytes), with source width and height each at
   most 5000 pixels. Check file size before reading bytes and dimensions before
   pixel decoding. Larger files or dimensions show a plain location placeholder

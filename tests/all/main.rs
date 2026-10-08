@@ -173,5 +173,6 @@ mod markdown_list_interruption;
 mod link_authoring;
 mod image_authoring;
 mod image_styles;
+mod html_images;
 
 mod native_arrows;

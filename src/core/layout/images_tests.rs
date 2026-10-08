@@ -215,3 +215,125 @@ fn images_fit_a_1024_dip_square_after_zoom_and_keep_small_intrinsic_sizes() {
     assert!((tall.advance - 80.).abs() < 0.001);
     assert!((tall.typographic_bounds.height - 400.).abs() < 0.001);
 }
+
+#[test]
+fn html_image_dimensions_size_each_axis_and_preserve_atomic_geometry() {
+    for (attributes, expected) in [
+        ("", (40., 20.)),
+        ("width=200", (200., 100.)),
+        ("height=200", (400., 200.)),
+        ("width=200 height=80", (200., 80.)),
+        ("width=5000 height=2500", (1024., 512.)),
+        ("width=200 height=5000", (40.96, 1024.)),
+    ] {
+        let source = format!("<img src=small.png {attributes}>");
+        let document = document(&source);
+        let mut engine = LayoutEngine::new(Images::new());
+        let mut view = ViewLayout::new(5_000., 2_000.);
+        engine.relayout(&document, &mut view).unwrap();
+        let snapshot = view.snapshot().unwrap();
+        let cluster = image(snapshot, 0);
+        assert!((cluster.advance - expected.0).abs() < 0.001, "{attributes}");
+        assert!((cluster.typographic_bounds.height - expected.1).abs() < 0.001, "{attributes}");
+        assert_eq!(cluster.typographic_bounds, cluster.ink_bounds);
+        assert!(snapshot.rows[0].height() >= expected.1);
+        assert!(snapshot.rows[0].carets.iter().all(|caret| [0, 3].contains(&caret.point.text_offset)));
+        for fraction in [0.1, 0.5, 0.9] {
+            let hit = snapshot.hit_test_character(LayoutPoint {
+                x: cluster.x + cluster.advance * fraction,
+                y: cluster.typographic_bounds.y + cluster.typographic_bounds.height / 2.,
+            }).unwrap();
+            assert_eq!(hit.text_offset, 0, "{attributes}");
+        }
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn html_image_dimensions_obey_zoom_and_content_caps_in_wrapped_and_unwrapped_regions() {
+    for wrap in [true, false] {
+        let document = document("<img src=small.png width=800 height=400>");
+        let mut engine = LayoutEngine::new(Images::new());
+        let mut view = ViewLayout::new(5_000., 2_000.);
+        view.set_wrap(wrap);
+        view.set_scale(2.).unwrap();
+        let candidate = region(&document, &mut view, &mut engine, 1, 0..1);
+        let cluster = &candidate.regional_snapshot().lines()[0].rows()[0].clusters[0];
+        assert_eq!((cluster.advance, cluster.typographic_bounds.height), (1024., 512.));
+        let requests = engine.provider().inner.request_calls();
+        view.resize(200., 1_000.);
+        let candidate = region(&document, &mut view, &mut engine, 2, 0..1);
+        let cluster = &candidate.regional_snapshot().lines()[0].rows()[0].clusters[0];
+        assert_eq!((cluster.advance, cluster.typographic_bounds.height), (200., 100.));
+        assert_eq!(engine.provider().inner.request_calls(), requests);
+    }
+}
+
+#[test]
+fn html_image_dimension_only_edits_invalidate_cached_shapes_and_rows() {
+    for wrap in [true, false] {
+        let source = "before\n\n<img src=small.png width=200 height=80>\n\nafter";
+        let mut document = document(source);
+        let mut engine = LayoutEngine::new(Images::new());
+        let mut view = ViewLayout::new(700., 500.);
+        view.set_wrap(wrap);
+        let first = region(&document, &mut view, &mut engine, 1, 1..2);
+        assert_eq!(first.regional_snapshot().lines()[0].rows()[0].clusters[0].advance, 200.);
+        let text = document.text().to_string();
+        let at = source.find("200").unwrap();
+        document.replace_physical_source(at..at + 3, "100").unwrap();
+        assert_eq!(document.text(), text);
+        assert!(matches!(install_layout_job(&mut view, LayoutInstallTarget {
+            document_id: document.id(), document_revision: document.revision(),
+            measurement_environment_id: engine.provider().measurement_environment_id(),
+            metrics_generation: engine.provider().metrics_generation(),
+        }, first), Err(LayoutJobInstallRejection::StaleDocumentRevision { .. })));
+        let second = region(&document, &mut view, &mut engine, 2, 1..2);
+        let cluster = &second.regional_snapshot().lines()[0].rows()[0].clusters[0];
+        assert_eq!((cluster.advance, cluster.typographic_bounds.height), (100., 80.));
+        assert!(document.undo());
+        let undone = region(&document, &mut view, &mut engine, 3, 1..2);
+        let cluster = &undone.regional_snapshot().lines()[0].rows()[0].clusters[0];
+        assert_eq!((cluster.advance, cluster.typographic_bounds.height), (200., 80.));
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn html_image_dimension_only_change_retires_offscreen_table_width_contribution() {
+    let source = "| Image |\n| --- |\n| <img src=small.png width=600 height=80> |\n| <img src=small.png> |\n";
+    let mut document = document(source);
+    let image_at = document.text().find('\u{fffc}').unwrap();
+    let mut engine = LayoutEngine::new(Images::new());
+    let mut view = ViewLayout::new(700., 500.);
+    engine.relayout(&document, &mut view).unwrap();
+    assert!(view.snapshot().unwrap().tables()[0].rect.width >= 600.);
+    let old_revision = document.revision();
+    let old_lines = document.line_count();
+    let at = source.find("600").unwrap();
+    document.replace_physical_source(at..at + 3, "40").unwrap();
+    engine.rebase_document_change(&super::engine::DocumentLayoutChange::Local {
+        old_revision, new_revision: document.revision(), old_hull: image_at..image_at + 3,
+        new_hull: image_at..image_at + 3, old_line_count: old_lines,
+        new_line_count: document.line_count(), invalidated_lines: 1..2,
+    });
+    let candidate = region(&document, &mut view, &mut engine, 1, 2..3);
+    assert!(candidate.regional_snapshot().lines()[0].rows()[0].table_cell.as_ref().unwrap().table_width < 150.);
+}
+
+#[test]
+fn large_html_image_document_shapes_only_requested_region_with_authored_dimensions() {
+    let source = (0..10_000).map(|i| format!("<img src=local-{i}.png width=100 height=40>\n\n")).collect::<String>();
+    let document = document(&source);
+    let mut engine = LayoutEngine::new(Images::new());
+    let mut view = ViewLayout::new(200., 300.);
+    let candidate = region(&document, &mut view, &mut engine, 1, 7000..7003);
+    assert_eq!(candidate.regional_snapshot().lines().len(), 3);
+    assert_eq!(engine.provider().destinations.len(), 3);
+    assert!(engine.provider().observed_bytes <= 9);
+    for line in candidate.regional_snapshot().lines() {
+        let cluster = &line.rows()[0].clusters[0];
+        assert!((cluster.advance - 100.).abs() < 0.001);
+        assert!((cluster.typographic_bounds.height - 40.).abs() < 0.001);
+    }
+}

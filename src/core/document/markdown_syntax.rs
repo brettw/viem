@@ -158,6 +158,7 @@ pub(super) struct Blocks {
     pub definitions: Vec<Range<usize>>,
     pub tables: Vec<super::markdown_tables::TableSyntax>,
     pub code: Vec<CodeSyntax>,
+    pub inline_html: Vec<Range<usize>>,
 }
 impl Blocks {
     pub fn parse(text: &str) -> Self {
@@ -172,6 +173,7 @@ impl Blocks {
         let mut active = None;
         let mut active_code = None;
         for (event, range) in parser.into_offset_iter() {
+            if matches!(event, Event::InlineHtml(_)) { result.inline_html.push(range.clone()); }
             match event {
                 Event::Start(Tag::BlockQuote(_)) => {
                     quotes += 1;
@@ -266,7 +268,13 @@ impl Blocks {
         for code in &mut self.code { code.range = at(code.range.start)..at(code.range.end); code.body_end = at(code.body_end); }
         for container in &mut self.containers { container.range = at(container.range.start)..at(container.range.end); }
         for range in &mut self.definitions { *range = at(range.start)..at(range.end); }
+        for range in &mut self.inline_html { *range = at(range.start)..at(range.end); }
         self
+    }
+
+    pub(super) fn recognizes_inline_html(&self, source: &Range<usize>) -> bool {
+        self.inline_html.binary_search_by_key(&source.start, |range| range.start).ok()
+            .is_some_and(|index| self.inline_html[index] == *source)
     }
 }
 

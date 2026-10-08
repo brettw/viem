@@ -182,7 +182,10 @@ fn demo_loads_in_both_views_and_lays_out_without_changing_source() {
         let images = core.document().projection().inline_images_for_region(&(0..core.document().text().len()));
         assert!(!images.is_empty());
         if format.is_source_view() {
-            assert!(images.iter().all(|image| core.document().text()[image.range.clone()].starts_with("![")));
+            assert!(images.iter().all(|image| {
+                let notation = &core.document().text()[image.range.clone()];
+                notation.starts_with("![") || notation.starts_with("<img")
+            }));
         }
     }
 }

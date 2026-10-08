@@ -423,6 +423,7 @@ fn flatten(root: &Handle, output: &mut Vec<Token>) {
                 let tag = Tag {
                     name: name.local.to_string(),
                     end: false,
+                    attribute_ranges: Vec::new(),
                     attributes: attrs
                         .borrow()
                         .iter()
