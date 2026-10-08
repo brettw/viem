@@ -169,6 +169,16 @@ internal sealed unsafe partial class CoreView : IDisposable
         var captured = state;
         Apply(outcome => { var copy = captured; return viem_core_view_restore(Document.Handle, Id, target.document_id, target.document_revision, &copy, outcome); });
     }
+    // The core owns the bounded deadline and current viewport identity.
+    // Publication refreshes all panes; those secondary refreshes must not wait.
+    public bool WaitForSyntax()
+    {
+        if (Document.IsPublishingSyntaxChange) return false;
+        byte changed = 0;
+        Check(viem_core_view_wait_for_syntax(Document.Handle, Id, &changed), "Prepare syntax paint");
+        if (changed != 0) Document.PublishSyntaxChange();
+        return changed != 0;
+    }
     public void Refresh() => Apply(o => viem_core_view_state(Document.Handle, Id, o));
     public void Resize(float width, float height) => Apply(o => viem_core_view_resize(Document.Handle, Id, Math.Max(1, width), Math.Max(1, height), o));
     public void Undo() => Apply(o => viem_core_view_undo(Document.Handle, Id, o));

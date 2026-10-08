@@ -2874,6 +2874,10 @@ ViemStatus viem_core_view_copy_whitespace_markers(ViemCoreHandle core, ViemViewI
     const ViemLayoutSnapshotIdentityV1 *expected, const ViemLayoutRectV1 *expected_viewport,
     uint8_t *output, uint64_t capacity, uint64_t *out_length);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
+/* Wait up to the shared 100 ms syntax grace period, without holding the core.
+ * Materialize the viewport first; refresh invalidated layout when changed.
+ * Repeated presentation of the same timed-out request does not wait again. */
+ViemStatus viem_core_view_wait_for_syntax(ViemCoreHandle core, ViemViewId view, uint8_t *changed);
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read up to 8 KiB of distinct warnings for this exact immutable layout.
  * Standard two-pass UTF-8 output; stale snapshots are rejected, never replaced. */

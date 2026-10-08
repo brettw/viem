@@ -857,6 +857,7 @@ fn document_layout_change(
 struct View<P: TextMeasurementProvider> {
     commands: CommandInterpreter,
     search: search::SearchViewState,
+    syntax_wait: crate::document::syntax::service::SyntaxWaitState,
     layout: ViewLayout,
     engine: LayoutEngine<P>,
     composition: Option<CompositionSession>,
@@ -1908,6 +1909,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 completion: None,
                 composition_layout: None,
                 search: Default::default(),
+                syntax_wait: Default::default(),
                 viewport_anchor: None,
                 immediate_layout_context,
                 observed_metrics_generation,

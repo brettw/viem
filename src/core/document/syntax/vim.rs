@@ -819,6 +819,23 @@ impl VimSession {
             if probes.index < probes.items.len() {
                 let probe = &probes.items[probes.index];
                 if probes.active.is_none() {
+                    if fuel == 0 {
+                        break;
+                    }
+                    let start = leading_context_start(
+                        &job.input,
+                        job.position,
+                        probe.offsets.lc,
+                    );
+                    if !probe.pattern.allows_start(&job.input, start) {
+                        // Dispatch already charges leading-context work. A
+                        // proven impossible anchor needs only this bounded
+                        // check, without allocating/initializing the full NFA.
+                        fuel -= 1;
+                        result.stats.input_bytes += usize::from(start > 0);
+                        probes.index += 1;
+                        continue;
+                    }
                     if probe.pattern.continuation_bytes() > budget.continuation_bytes {
                         result.diagnostics.push(VimDiagnostic::new(
                             "syntax execution",
@@ -827,11 +844,7 @@ impl VimSession {
                         ));
                         break;
                     }
-                    probes.active = Some(probe.pattern.start(leading_context_start(
-                        &job.input,
-                        job.position,
-                        probe.offsets.lc,
-                    )));
+                    probes.active = Some(probe.pattern.start(start));
                 }
                 let c = probes.active.as_mut().unwrap();
                 let inspected = c.inspected_end;
@@ -1513,14 +1526,21 @@ impl VimSession {
                 if *pending > 0 {
                     return Ok(None);
                 }
+                if *fuel == 0 {
+                    return Ok(None);
+                }
+                let start = leading_context_start(input, check.position, template.offsets.lc);
+                if !pattern.allows_start(input, start) {
+                    *fuel -= 1;
+                    stats.input_bytes += usize::from(start > 0);
+                    check.context_fuel = None;
+                    check.index += 1;
+                    continue;
+                }
                 if pattern.continuation_bytes() > budget.continuation_bytes {
                     return Err("regex continuation byte budget exceeded".into());
                 }
-                check.active = Some(pattern.start(leading_context_start(
-                    input,
-                    check.position,
-                    template.offsets.lc,
-                )));
+                check.active = Some(pattern.start(start));
                 check.context_fuel = None;
             }
             let c = check.active.as_mut().unwrap();

@@ -141,7 +141,10 @@ Registry capacity is 64 packages.
 
 Capture overlaps resolve by priority, narrower original capture extent,
 pattern order, and stable capture order
-before stylesheet lookup. The effective style name is the canonical capture
+before stylesheet lookup. Regional queries sort one contiguous boundary buffer
+and construct owned style names only for winning output, avoiding per-boundary
+allocations and names for losing captures without retaining additional state.
+The effective style name is the canonical capture
 name; origin retains package and capture identity. A name without a definition
 takes its nearest defined dotted ancestor's appearance and gets an implicit
 definition; it never reveals a losing capture or another provider. Empty completed
@@ -200,7 +203,9 @@ and nesting depth 3. Parser
 repair is capped at 4,096 total native progress callbacks; cold work is capped
 at two million, with at most 4,096 worker slices. Query exhaustion publishes no
 partial exact captures. Vim fallback has a finite total instruction allowance.
-Failure leaves Vim/default styling and never blocks a required foreground frame.
+Failure leaves Vim/default styling. Presentation may wait for visible syntax up
+to the shared 100 ms grace period; it then proceeds with available styling while
+bounded provider work continues asynchronously.
 
 Before an incremental native edit, the default preflight policy rejects trees
 with more than 500,000 nodes or 16,384 root children. These limits are
@@ -267,3 +272,13 @@ assertions establish finite callbacks, explicit missing/default coverage, and
 suppression of retries after repaint and unrelated edits. The historical native
 measurements do not establish current performance or whole-editor input/scroll
 latency.
+
+The uncached regional-query diagnostic can be run separately from compilation
+or other benchmarks:
+
+    cargo test --release --offline --lib regional_query_scroll_timings -- --ignored --nocapture --test-threads=1
+
+It reports seven samples of 40 distinct viewport queries each for Rust,
+TypeScript and Python on existing completed trees. Package construction and
+parsing are outside these timings; each query recomputes its captures and
+injections. These are provider timings, not whole-editor scroll latency.

@@ -66,6 +66,7 @@ _Static_assert(offsetof(ViemSetDocumentModeV1, formatted_markdown) == {set_mode_
 _Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, source) == {set_markdown_source}, "format operation offset");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_document}, "format document offset");
+static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
 static ViemStatus (*strikethrough_state)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_strikethrough_state;
 static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint8_t, ViemCoreOutcomeV1 *) = viem_core_view_set_strikethrough;

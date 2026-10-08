@@ -13,6 +13,7 @@ internal sealed unsafe class CoreDocument : IDisposable
     public string Name => FilePath == null ? "Untitled" : Path.GetFileName(FilePath);
     public event Action? Changed;
     public event Action? SyntaxChanged;
+    internal bool IsPublishingSyntaxChange { get; private set; }
     public event Action? Disposed;
     public string StartupDiagnostics { get; private set; } = "";
     private readonly List<string> configurationDiagnostics = [];
@@ -172,8 +173,14 @@ internal sealed unsafe class CoreDocument : IDisposable
     public bool PollSyntax()
     {
         byte changed = 0; Check(viem_core_poll_syntax(Handle, &changed), "Update syntax");
-        if (changed != 0) { NotifyChanged(); SyntaxChanged?.Invoke(); }
+        if (changed != 0) PublishSyntaxChange();
         return changed != 0;
+    }
+    internal void PublishSyntaxChange()
+    {
+        IsPublishingSyntaxChange = true;
+        try { NotifyChanged(); SyntaxChanged?.Invoke(); }
+        finally { IsPublishingSyntaxChange = false; }
     }
     public string SyntaxDiagnostics => Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_syntax_diagnostics(Handle, p, n, r)));
     public void Dispose()

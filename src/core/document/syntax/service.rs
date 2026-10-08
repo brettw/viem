@@ -9,6 +9,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Condvar, Mutex, OnceLock, Weak,
     },
+    time::{Duration, Instant},
 };
 
 mod providers;
@@ -25,6 +26,8 @@ pub const MAX_IDLE_PROVIDER_SESSIONS: usize = 8;
 /// Native active work remains subject to the separate cooperative native cap.
 pub const MAX_IDLE_PROVIDER_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_CONTINUATION_SLICES: usize = 4096;
+/// Maximum grace period before presenting newly visible text without syntax.
+pub const SYNTAX_PRESENTATION_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SyntaxConfiguration {
@@ -105,6 +108,7 @@ pub trait SyntaxProvider: Send {
 pub type SyntaxProviderFactory = Arc<dyn Fn() -> Box<dyn SyntaxProvider> + Send + Sync>;
 type Factory = SyntaxProviderFactory;
 struct Slot {
+    progress: Arc<Condvar>,
     factory: Factory,
     pending: Option<SyntaxRequest>,
     active: Option<SyntaxRequest>,
@@ -117,6 +121,60 @@ struct Slot {
     continuation_slices: usize,
 }
 type Mailbox = Arc<Mutex<Slot>>;
+
+/// A snapshot-specific wait handle. It owns no core/view state and must only be
+/// used after releasing the coordinator lease. Condvar waiting releases the
+/// mailbox lock, so provider completion and cancellation remain independent.
+pub struct SyntaxWait {
+    mailbox: Mailbox,
+    request: SyntaxRequest,
+    cancellation: Arc<AtomicBool>,
+    deadline: Instant,
+}
+
+/// View-local scheduling state, containing no text or cached highlighting.
+/// A repaint of the same viewport cannot restart an expired grace period, and
+/// another view cannot overwrite its deadline.
+#[derive(Default)]
+pub struct SyntaxWaitState {
+    target: Option<(SyntaxInputIdentity, SyntaxConfiguration, Range<usize>, Instant)>,
+}
+impl SyntaxWaitState {
+    fn deadline(&mut self, request: &SyntaxRequest, deadline: Instant) -> Instant {
+        if let Some((input, configuration, range, deadline)) = &self.target {
+            if *input == request.input.identity() && *configuration == request.configuration
+                && *range == request.range { return *deadline; }
+        }
+        let deadline = deadline.min(Instant::now() + SYNTAX_PRESENTATION_WAIT);
+        self.target = Some((request.input.identity(), request.configuration.clone(), request.range.clone(), deadline));
+        deadline
+    }
+}
+impl SyntaxWait {
+    pub fn same_target(&self, other: &Self) -> bool {
+        self.request.same(&other.request)
+    }
+
+    /// Wait for one publication, cancellation, or the caller's total deadline.
+    /// Continuation slices never reset that deadline.
+    pub fn wait_until(&self, deadline: Instant) -> bool {
+        let deadline = deadline.min(self.deadline);
+        let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+        let progress = slot.progress.clone();
+        loop {
+            if slot.closed || self.cancellation.load(Ordering::Acquire) { return false; }
+            if slot.ready.is_some() { return true; }
+            let pending = slot.pending.as_ref().is_some_and(|r| r.same(&self.request));
+            let active = slot.active.as_ref().is_some_and(|r| r.same(&self.request));
+            if !pending && !active { return false; }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            slot = progress.wait_timeout(slot, remaining)
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+}
 struct IdleProvider {
     mailbox: Weak<Mutex<Slot>>,
     provider: Box<dyn SyntaxProvider>,
@@ -329,6 +387,7 @@ impl Pool {
             if slot.pending.is_some() && !slot.queued {
                 slot.queued = self.enqueue(&mailbox);
             }
+            slot.progress.notify_all();
             drop(slot);
             // Native destruction is worker-only and outside every lock.
             drop(retired);
@@ -430,6 +489,7 @@ impl SyntaxService {
     pub fn with_factory(factory: Factory) -> Self {
         Self {
             mailbox: Arc::new(Mutex::new(Slot {
+                progress: Arc::new(Condvar::new()),
                 factory,
                 pending: None,
                 active: None,
@@ -484,35 +544,53 @@ impl SyntaxService {
         slot.cancellation.store(true, Ordering::Release);
         slot.pending = None;
         slot.ready = None;
+        slot.progress.notify_all();
     }
-    pub fn request(&mut self, input: SyntaxInputSnapshot, mut range: Range<usize>) {
+    fn request_range(input: &SyntaxInputSnapshot, mut range: Range<usize>) -> Option<Range<usize>> {
+        if range.start > range.end || range.end > input.byte_len()
+            || !input.text_tree().is_char_boundary(range.start).unwrap_or(false) {
+            return None;
+        }
+        range.end = range.end.min(range.start.saturating_add(MAX_REGION_BYTES));
+        while range.end > range.start
+            && !input.text_tree().is_char_boundary(range.end).unwrap_or(false) {
+            range.end -= 1;
+        }
+        Some(range)
+    }
+    fn has_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
+        self.cache.iter().any(|r| r.input == input
+            && r.configuration == self.configuration
+            && r.range.start <= range.start && r.range.end >= range.end)
+    }
+    /// Request only missing visible coverage and return a detached wait handle.
+    /// Exact empty captures and terminal failure both count as ready: neither
+    /// should impose another grace period on subsequent frames.
+    pub fn prepare_wait(&mut self, input: SyntaxInputSnapshot, range: Range<usize>, state: &mut SyntaxWaitState, deadline: Instant) -> Option<SyntaxWait> {
+        let range = Self::request_range(&input, range)?;
+        if range.is_empty() || self.configuration.language.is_none() { return None; }
+        self.request(input.clone(), range.clone());
+        if self.has_coverage(input.identity(), &range) { return None; }
+        let request = SyntaxRequest {
+            input, configuration: self.configuration.clone(), range,
+        };
+        let deadline = state.deadline(&request, deadline);
+        if Instant::now() >= deadline { return None; }
+        let cancellation = self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).cancellation.clone();
+        Some(SyntaxWait { mailbox: self.mailbox.clone(), request, cancellation, deadline })
+    }
+    pub fn request(&mut self, input: SyntaxInputSnapshot, range: Range<usize>) {
         let registry = super::treesitter::package_registry_generation();
         if registry != self.registry_generation {
             self.registry_generation = registry;
             self.configuration.registry_generation = registry;
             self.invalidate_configuration();
         }
-        if range.start > range.end || range.end > input.byte_len() {
-            return;
-        }
-        range.end = range.end.min(range.start.saturating_add(MAX_REGION_BYTES));
-        while range.end > range.start
-            && !input
-                .text_tree()
-                .is_char_boundary(range.end)
-                .unwrap_or(false)
-        {
-            range.end -= 1;
-        }
+        let Some(range) = Self::request_range(&input, range) else { return; };
         if self.current != Some(input.identity()) {
             self.rebase_input(input.clone(), None, None);
         }
-        if self.cache.iter().any(|r| {
-            r.input == input.identity()
-                && r.configuration == self.configuration
-                && r.range.start <= range.start
-                && r.range.end >= range.end
-        }) {
+        if self.has_coverage(input.identity(), &range) {
             self.statistics.cache_hits += 1;
             return;
         }
@@ -522,6 +600,14 @@ impl SyntaxService {
             range,
         };
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+        // Completion may race the coordinator's preceding poll. Leave that
+        // ready result for publication instead of rerunning identical coverage.
+        if slot.ready.as_ref().is_some_and(|ready| {
+            ready.input == request.input.identity()
+                && ready.configuration == request.configuration
+                && ready.range.start <= request.range.start
+                && ready.range.end >= request.range.end
+        }) { return; }
         if slot.pending.as_ref().is_some_and(|r| r.same(&request)) {
             // A full shared queue leaves the coalesced request in its mailbox.
             // A later frame must retry admission instead of stranding it.
@@ -548,6 +634,7 @@ impl SyntaxService {
         if !slot.running && !slot.queued {
             slot.queued = pool().enqueue(&self.mailbox);
         }
+        slot.progress.notify_all();
     }
     pub fn poll(&mut self, input: SyntaxInputIdentity) -> bool {
         let result = self
@@ -627,11 +714,15 @@ impl Drop for SyntaxService {
         slot.cancellation.store(true, Ordering::Release);
         slot.pending = None;
         slot.ready = None;
+        slot.progress.notify_all();
         if let Some(pool) = POOL.get() {
             pool.available.notify_all();
         }
     }
 }
+
+#[cfg(test)]
+mod wait_tests;
 
 #[cfg(test)]
 mod tests {
@@ -672,7 +763,7 @@ mod tests {
             }
         }
     }
-    fn input(revision: u64) -> SyntaxInputSnapshot {
+    pub(super) fn input(revision: u64) -> SyntaxInputSnapshot {
         SyntaxInputSnapshot::new(
             SyntaxInputIdentity {
                 document: 7,

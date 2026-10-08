@@ -102,6 +102,48 @@ internal static class VimRuntimeTests
         }
         await Paint("sample.rs", "fn main() { let value = 42; }\n", 2);
         await Paint("sample.cc", "// comment\nint main() { return 0; }\n", 10);
+
+        async Task ScrollPaint(string filename, Func<int, string> line)
+        {
+            byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 1_024).Select(line)));
+            var document = new CoreDocument(source, Path.Combine(directory, filename));
+            var window = new EditorWindow(new Preferences(directory), document);
+            App.Instance.Windows.Add(window); window.Activate();
+            try
+            {
+                var pane = window.ActivePane!; var view = await pane.Ready;
+                bool ColoredVisible()
+                {
+                    var layout = view.Layout(); var viewport = view.Viewport;
+                    var rows = layout.Rows.Where(row => row.y + Math.Max(row.line_advance, 1) > viewport.top
+                        && row.y < viewport.top + layout.Info.viewport_height).ToArray();
+                    return rows.Length > 0 && layout.PaintRuns.Any(run => run.text_end > rows[0].text_start
+                        && run.text_start < rows[^1].text_end
+                        && (run.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0);
+                }
+                // Let cold provider setup finish. The subsequent scroll must
+                // publish its first frame without yielding to the syntax timer.
+                for (int attempt = 0; attempt < 500 && !ColoredVisible(); attempt++)
+                { document.PollSyntax(); pane.Refresh(); await Task.Delay(10); }
+                Check(ColoredVisible(), filename + " completes cold syntax setup");
+                var wait = System.Diagnostics.Stopwatch.StartNew();
+                view.Scroll(0, 8_192);
+                if (!ColoredVisible())
+                {
+                    // Real providers may exceed the shared 100 ms grace period.
+                    Check(wait.Elapsed.TotalMilliseconds >= 80, filename + " gives pending syntax its presentation grace period");
+                    for (int attempt = 0; attempt < 500 && !ColoredVisible(); attempt++)
+                    { document.PollSyntax(); pane.Refresh(); await Task.Delay(10); }
+                }
+                Check(ColoredVisible(), filename + " installs visible syntax before or after the bounded wait");
+                Check(view.Viewport.top > 0 && pane.LastError == null, filename + " scrolling retains exact native presentation");
+                Check(!document.IsDirty && document.Source(document.State.document_revision).AsSpan().SequenceEqual(source),
+                    filename + " bounded syntax wait preserves source and clean state");
+            }
+            finally { App.Instance.Windows.Remove(window); window.Close(); }
+        }
+        await ScrollPaint("scroll.rs", i => $"fn item_{i}() {{ let value = {i}; }}\n");
+        if (!missing) await ScrollPaint("scroll.vim", i => $"set number \" row {i}\n");
     }
 }
 #endif
