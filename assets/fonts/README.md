@@ -18,10 +18,13 @@ does not install them for other applications or embed file paths in saved styles
   Saved styles use the portable family and subfamily names with independent
   base weights and variation coordinates. Lookup does not rewrite configuration.
 
-Font binaries are copied byte-for-byte. macOS registers them with Core Text at
-process scope before creating editor UI. Windows indexes the bundled files with
-Win2D alongside system fonts, and selects a file URI only when rendering. Keep
-all faces and attribution files together when updating a family.
+Font binaries are copied byte-for-byte. Before creating editor UI, macOS checks
+the available PostScript names and uses installed faces when they cover every
+face in a packaged font file. This is a name-only match, without comparing font
+versions or bytes. Files with missing faces are registered with Core Text at
+process scope. Windows indexes the bundled files with Win2D alongside system
+fonts, and selects a file URI only when rendering. Keep all faces and attribution
+files together when updating a family.
 
 DirectWrite may synthesize the same PostScript name for separate variable
 designs. Windows retains each bundled design's original `name` table identity
