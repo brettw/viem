@@ -1,6 +1,7 @@
 import AppKit
 import CViemCore
 import CoreGraphics
+import CoreText
 import ViemCoreTextProvider
 import ViemAppShell
 import Foundation
@@ -2218,8 +2219,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     /// AppKit reports trackpad deltas in points, but traditional wheel deltas
-    /// in abstract line units. Use the exact row intersecting the viewport so
-    /// one non-precise unit remains readable with mixed fonts and zoom.
+    /// in abstract line units. Text rows follow their exact line spacing;
+    /// image rows use their typography so a wheel unit never becomes a picture-
+    /// height jump, including while a lazy preview changes dimensions.
     private func discreteWheelScrollDistance(in snapshot: EVLayoutExport) -> CGFloat {
         guard let surface else { return 1 }
         let viewportTop = CGFloat(surface.viewportState.top)
@@ -2227,9 +2229,22 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let advance = max(CGFloat(row.line_advance), 1)
             return CGFloat(row.y) + advance > viewportTop
         }) {
-            let advance = CGFloat(row.line_advance)
-            if advance.isFinite, advance > 0 {
-                return advance
+            let clusters = snapshot.clusters.dropFirst(Int(row.first_cluster)).prefix(Int(row.cluster_count))
+            if clusters.contains(where: isImageCluster) {
+                let fontHeight = clusters.compactMap { cluster -> CGFloat? in
+                    guard let font = surface.session?.provider.renderRegistry.resolvedFont(
+                        identifier: cluster.render_run.identifier,
+                        metricsGeneration: cluster.render_run.metrics_generation
+                    ) else { return nil }
+                    let height = CTFontGetAscent(font) + CTFontGetDescent(font) + CTFontGetLeading(font)
+                    return height.isFinite && height > 0 ? height : nil
+                }.max()
+                if let fontHeight { return max(fontHeight, 1) }
+            } else {
+                let advance = CGFloat(row.line_advance)
+                if advance.isFinite, advance > 0 {
+                    return advance
+                }
             }
         }
 

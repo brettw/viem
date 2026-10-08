@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import CoreText
 import ImageIO
 import ViemAppShell
 import XCTest
@@ -7,8 +8,8 @@ import XCTest
 
 @MainActor
 final class EVImageTests: XCTestCase {
-    private func editor(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow) {
-        let backend = EVCoreDocumentBackend()
+    private func editor(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow) {
+        let backend = configuration.map { EVCoreDocumentBackend(configuration: $0) } ?? EVCoreDocumentBackend()
         try backend.read(source: Data(source.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
@@ -48,6 +49,8 @@ final class EVImageTests: XCTestCase {
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
         surface.imagePopover.refresh()
         XCTAssertTrue(surface.imagePopover.isOpen)
+        XCTAssertFalse(surface.imagePopover.reloadButton.isHidden)
+        XCTAssertFalse(surface.imagePopover.reloadButton.isEnabled)
         XCTAssertFalse(surface.linkPopover.isOpen)
         XCTAssertNotNil(surface.editorView.selectedImageCluster(in: try XCTUnwrap(surface.layoutSnapshot)))
         XCTAssertTrue(opened.isEmpty)
@@ -74,6 +77,7 @@ final class EVImageTests: XCTestCase {
             XCTAssertEqual(String(decoding: inserted, as: UTF8.self), "before ![](<local.png>) after")
             surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
             popup.refresh(); XCTAssertTrue(popup.isOpen)
+            XCTAssertEqual(popup.reloadButton.isHidden, type == EVDocument.markdownSourceType)
             popup.editButton.performClick(nil)
             popup.destinationField.stringValue = "https://example.invalid/new.png"
             popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -168,6 +172,100 @@ final class EVImageTests: XCTestCase {
         XCTAssertNil(surface.editorView.selectedImageCluster(in: try XCTUnwrap(surface.layoutSnapshot)))
         try key("\u{F702}", code: 123)
         XCTAssertEqual(surface.selectedUTF8Ranges(), [1..<4])
+    }
+
+    func testImageParagraphStyleControlsNativeLabelAndSourceFontsAndBoxes() throws {
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-image-style-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+            let source = "![alt](https://example.invalid/image.png)"
+            let (backend, surface, window) = try editor(source, type: type, configuration: configuration)
+            defer { surface.imagePopover.close(); window.close() }
+            let style = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Image"))
+            let inspector = EVStyleEditorViewController()
+            inspector.themeStore = EVThemeStore(configuration: configuration)
+            inspector.retarget(document: surface, styleKey: style)
+            XCTAssertTrue(inspector.inspection.blockTabEnabled)
+            XCTAssertTrue(inspector.setPropertyForTesting(.characterFontFamilies, value: .stringList(["Helvetica"])))
+            XCTAssertTrue(inspector.setPropertyForTesting(.characterSize, value: .float(30)))
+            XCTAssertTrue(inspector.setPropertyForTesting(.blockPaddingLeft, value: .float(12)))
+            XCTAssertTrue(inspector.setPropertyForTesting(.blockBorderLeftWidth, value: .float(3)))
+            surface.refreshPresentation()
+            let cluster = try XCTUnwrap(surface.layoutSnapshot?.clusters.first)
+            let font = try XCTUnwrap(surface.session?.provider.renderRegistry.resolvedFont(
+                identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation))
+            XCTAssertEqual(CTFontGetSize(font), 30, accuracy: 0.01)
+            XCTAssertTrue((CTFontCopyFamilyName(font) as String).contains("Helvetica"))
+            XCTAssertGreaterThanOrEqual(cluster.typographic_bounds.x, 15)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            try preview(type == EVDocument.markdownType ? "image-style-label" : "image-style-source", surface.view)
+        }
+    }
+
+    func testNormalArrowsTraverseStandaloneImageInBothDirections() throws {
+        let (_, surface, window) = try editor("before\n\n![alt](https://example.invalid/a.png)\n\nafter", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 5, length: 0))
+        func arrow(_ right: Bool) throws {
+            let text = right ? "\u{F703}" : "\u{F702}"
+            surface.editorView.keyDown(with: try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text,
+                isARepeat: false, keyCode: right ? 124 : 123)))
+        }
+        try arrow(true)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+        XCTAssertNotNil(surface.editorView.selectedImageCluster(in: try XCTUnwrap(surface.layoutSnapshot)))
+        try arrow(true)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 11)
+        try arrow(false)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+        try arrow(false)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 5)
+    }
+
+    func testReloadRefreshesChangedFileAndBrokenPlaceholderWithoutEditingSource() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-reload-ui-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: file) }
+        func write(_ width: Int, _ height: Int) throws {
+            let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.7, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(destination))
+        }
+        func wait(_ predicate: () -> Bool) {
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while !predicate() && Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01)) }
+            XCTAssertTrue(predicate())
+        }
+        try write(200, 100)
+        let source = "![Reload fixture](\(file.path))"
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        func imageHeight() -> Float? { surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster)?.typographic_bounds.height }
+        wait { imageHeight() == 100 }
+        surface.imagePopover.refresh()
+        XCTAssertFalse(surface.imagePopover.reloadButton.isHidden)
+        XCTAssertTrue(surface.imagePopover.reloadButton.isEnabled)
+        XCTAssertLessThan(surface.imagePopover.reloadButton.frame.minX, surface.imagePopover.removeButton.frame.minX)
+        try preview("image-toolbar", try XCTUnwrap(surface.imagePopover.destinationButton.window?.contentView))
+        let revision = try backend.documentState().document_revision
+        try write(200, 160)
+        surface.imagePopover.reloadButton.performClick(nil)
+        wait { imageHeight() == 160 }
+        XCTAssertEqual(try backend.documentState().document_revision, revision)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        try FileManager.default.removeItem(at: file)
+        surface.imagePopover.reloadButton.performClick(nil)
+        wait { imageHeight() == 64 }
+        try preview("broken-image", surface.view)
+        try write(200, 120)
+        surface.imagePopover.reloadButton.performClick(nil)
+        wait { imageHeight() == 120 }
+        XCTAssertEqual(try backend.documentState().document_revision, revision)
     }
 
     func testNestedLinkedImagePrefersImagePopupAndRetainsEditingFocus() throws {

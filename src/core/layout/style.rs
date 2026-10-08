@@ -10,7 +10,7 @@ use crate::document::{
     Block, CharacterProperties, Color, DocumentStyleAssignment, FontSlant, FormattedDocument,
     FormattedTextError, FormattedTextTree, LineSpacing, ParagraphAlignment, ResolvedCharacterStyle,
     SemanticInlineStyle, StyleApplication, StyleError, StyleId, StyleSheet, StyleSheetRevision,
-    StyleSpan, WritingDirection,
+    StyleSpan, WritingDirection, InlineImage,
 };
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -203,6 +203,7 @@ impl<'a> From<&'a FormattedDocument> for DocumentStyleInput<'a> {
 struct StyleCascadeInput<'a> {
     blocks: &'a [Block],
     style_spans: &'a [StyleSpan],
+    inline_images: &'a [InlineImage],
     style_sheet: &'a StyleSheet,
     document_style: &'a DocumentStyleAssignment,
     search_matches: &'a [Range<usize>],
@@ -213,6 +214,7 @@ impl<'a> From<DocumentStyleInput<'a>> for StyleCascadeInput<'a> {
         Self {
             blocks: input.blocks,
             style_spans: input.style_spans,
+            inline_images: &[],
             style_sheet: input.style_sheet,
             document_style: input.document_style,
             search_matches: &[],
@@ -313,6 +315,11 @@ impl DocumentLayoutStyles {
                 .character);
         };
         let range = at..end.min(block.range.end);
+        let images = if automatic { document.inline_images_for_region(&range) } else { Vec::new() };
+        let mut block = block.clone();
+        if !automatic && block.style.0 == "Image" {
+            block.style = document.style_sheet().base_paragraph.clone();
+        }
         let mut spans = document.style_spans_for_region(&range);
         if !automatic {
             spans.retain(|span| {
@@ -326,11 +333,12 @@ impl DocumentLayoutStyles {
             StyleCascadeInput {
                 blocks: &blocks,
                 style_spans: &spans,
+                inline_images: &images,
                 style_sheet: document.style_sheet(),
                 document_style: document.document_style(),
                 search_matches: &[],
             },
-            block,
+            &block,
             range,
         )
     }
@@ -348,9 +356,11 @@ impl DocumentLayoutStyles {
         let Some(blocks) = document.flow_blocks_for_region(&range) else {
             return Ok(None);
         };
+        let images = document.inline_images_for_region(&range);
         let resolved = Self::resolve_for_presentation(StyleCascadeInput {
             blocks: &blocks,
             style_spans: &[],
+            inline_images: &images,
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
             search_matches: &[],
@@ -418,11 +428,13 @@ impl DocumentLayoutStyles {
         let regional_blocks =
             flow_blocks.unwrap_or_else(|| document.blocks_for_region(&text_range));
         let regional_spans = document.style_spans_for_region(&text_range);
+        let regional_images = document.inline_images_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
         let input = StyleCascadeInput {
             blocks: &regional_blocks,
             style_spans: &regional_spans,
+            inline_images: &regional_images,
             style_sheet: document.style_sheet(),
             document_style: document.document_style(),
             search_matches,
@@ -442,7 +454,7 @@ impl DocumentLayoutStyles {
             source_table_paint::apply(document, &text_range, &mut styles)?;
             styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document, recovery_format.is_some_and(|format| format.is_source_view())));
         }
-        styles.inline_images = document.inline_images_for_region(&text_range).into_iter()
+        styles.inline_images = regional_images.into_iter()
             .filter(|image| !image.source_view)
             .map(|image| super::ShapeInlineImage { text_range: image.range, destination: image.destination })
             .collect();
@@ -743,6 +755,11 @@ fn resolve_block_runs(
     }
 
     let mut boundaries = BTreeSet::from([block.range.start, block.range.end]);
+    let first_image = input.inline_images.partition_point(|image| image.range.end <= block.range.start);
+    for image in input.inline_images[first_image..].iter().take_while(|image| image.range.start < block.range.end) {
+        boundaries.insert(image.range.start.max(block.range.start));
+        boundaries.insert(image.range.end.min(block.range.end));
+    }
     let mut events = Vec::new();
     for (index, span) in input.style_spans.iter().enumerate() {
         let start = span.range.start.max(block.range.start);
@@ -827,6 +844,18 @@ fn resolve_character_spans_at<'a>(
     active: impl Iterator<Item = &'a StyleSpan>,
 ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
     let sheet = input.style_sheet;
+    let image_index = input.inline_images.partition_point(|image| image.range.end <= range.start);
+    if input.inline_images.get(image_index).is_some_and(|image|
+        image.range.start <= range.start && range.end <= image.range.end) {
+        // The Image paragraph definition also owns labels on inline image
+        // objects and their complete Source notation. It is presentation,
+        // not a character assignment inherited by surrounding typed prose.
+        let id = StyleId::from("Image");
+        let style = if sheet.block_style(&id).is_some() { &id } else { &sheet.base_paragraph };
+        return sheet.resolve_assigned_paragraph_style(input.document_style, style,
+            &Default::default(), &Default::default(), None, &Default::default())
+            .map(|paragraph| paragraph.character).map_err(Into::into);
+    }
     let mut named: Option<&StyleId> = None;
     let mut semantic = CharacterProperties::default();
     let mut direct = CharacterProperties::default();
@@ -1073,7 +1102,7 @@ mod tests {
                     ..Default::default()
                 }) }
         }).collect::<Vec<_>>();
-        let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans,
+        let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
             style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
         let actual = DocumentLayoutStyles::resolve_validated(input).unwrap();
         let mut shapes = Vec::new();

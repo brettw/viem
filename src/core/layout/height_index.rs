@@ -209,8 +209,10 @@ impl ViewHeightIndex {
         let mut hard_line = 0usize;
         let mut line_top = 0.0;
         let mut prefix_is_exact = true;
+        let mut stale = false;
 
         while let Some(current) = node {
+            stale |= current.stale_descendants;
             let left_height = subtree_height(&current.left);
             if remaining_y < left_height {
                 node = current.left.as_deref();
@@ -223,7 +225,7 @@ impl ViewHeightIndex {
             hard_line = hard_line
                 .checked_add(subtree_lines(&current.left))
                 .expect("a prefix cannot exceed the validated line count");
-            prefix_is_exact &= subtree_exact(&current.left);
+            prefix_is_exact &= subtree_exact(&current.left) && !(stale && left_height > 0.);
 
             let run_height = current.run.total_height();
             if remaining_y < run_height {
@@ -237,14 +239,14 @@ impl ViewHeightIndex {
                 line_top = checked_height_sum(line_top, offset_height)
                     .expect("a run prefix cannot exceed the validated total height");
                 if offset > 0 {
-                    prefix_is_exact &= current.run.exact;
+                    prefix_is_exact &= current.run.exact && !stale;
                 }
                 return Ok(Some(HardLineHeightHit {
                     hard_line,
                     line_top,
                     line_height: current.run.height,
                     prefix_is_exact,
-                    line_is_exact: current.run.exact,
+                    line_is_exact: current.run.exact && !stale,
                 }));
             }
 
@@ -254,7 +256,7 @@ impl ViewHeightIndex {
             hard_line = hard_line
                 .checked_add(current.run.line_count)
                 .expect("a prefix cannot exceed the validated line count");
-            prefix_is_exact &= current.run.exact;
+            prefix_is_exact &= current.run.exact && !stale;
             node = current.right.as_deref();
         }
 
@@ -413,6 +415,23 @@ impl ViewHeightIndex {
         self.replace_range(range, replacement)
     }
 
+    /// Retire certainty without discarding learned flow or painted extents.
+    /// A deferred subtree flag makes whole-document retirement O(1), while a
+    /// partial range touches only the logarithmic split/join paths.
+    pub(crate) fn invalidate_retaining_estimates(&mut self, range: Range<usize>) -> Result<(), ViewHeightIndexError> {
+        self.validate_range(&range)?;
+        if range.is_empty() { return Ok(()); }
+        if range == (0..self.hard_line_count()) {
+            if let Some(root) = self.root.as_mut() { Arc::make_mut(root).mark_estimated(); }
+        } else {
+            let (left, rest) = split(self.root.clone(), range.start);
+            let (mut middle, right) = split(rest, range.end - range.start);
+            if let Some(root) = middle.as_mut() { Arc::make_mut(root).mark_estimated(); }
+            self.root = join(join(left, middle), right);
+        }
+        Ok(())
+    }
+
     /// Delete `removed` and insert `inserted_hard_lines` estimated entries at
     /// its start. The implicit tree avoids touching or renumbering its suffix.
     pub fn splice(
@@ -535,6 +554,7 @@ struct Node {
     subtree_height: f64,
     subtree_extent: f64,
     subtree_exact: bool,
+    stale_descendants: bool,
     subtree_runs: usize,
     subtree_depth: usize,
 }
@@ -553,8 +573,22 @@ impl Node {
             subtree_height: run.total_height(),
             subtree_extent: run.total_extent(),
             subtree_exact: run.exact,
+            stale_descendants: false,
             subtree_runs: 1,
             subtree_depth: 1,
+        }
+    }
+
+    fn mark_estimated(&mut self) {
+        self.run.exact = false;
+        self.subtree_exact = false;
+        self.stale_descendants = true;
+    }
+
+    fn push_estimated(&mut self) {
+        if !std::mem::take(&mut self.stale_descendants) { return; }
+        for child in [&mut self.left, &mut self.right].into_iter().flatten() {
+            Arc::make_mut(child).mark_estimated();
         }
     }
 
@@ -573,7 +607,7 @@ impl Node {
                 subtree_height(&self.left) + self.run.total_height() + subtree_extent(&self.right),
             );
         self.subtree_exact =
-            subtree_exact(&self.left) && self.run.exact && subtree_exact(&self.right);
+            !self.stale_descendants && subtree_exact(&self.left) && self.run.exact && subtree_exact(&self.right);
         self.subtree_runs = subtree_runs(&self.left)
             .checked_add(1)
             .and_then(|runs| runs.checked_add(subtree_runs(&self.right)))
@@ -662,6 +696,7 @@ fn split(mut tree: Link, at: usize) -> (Link, Link) {
     };
     // Only the split path is copied when a prior snapshot still owns it.
     let mut root = Arc::unwrap_or_clone(root);
+    root.push_estimated();
     debug_assert!(at <= root.subtree_lines);
     let left_lines = subtree_lines(&root.left);
     let run_end = left_lines
@@ -743,11 +778,13 @@ fn join_with_run(left: Link, run: HeightRun, right: Link) -> Link {
     let right_depth = subtree_depth(&right);
     if left_depth > right_depth.saturating_add(1) {
         let mut root = Arc::unwrap_or_clone(left.expect("a positive depth has a root"));
+        root.push_estimated();
         root.right = join_with_run(root.right.take(), run, right);
         return Some(rebalance(root));
     }
     if right_depth > left_depth.saturating_add(1) {
         let mut root = Arc::unwrap_or_clone(right.expect("a positive depth has a root"));
+        root.push_estimated();
         root.left = join_with_run(left, run, root.left.take());
         return Some(rebalance(root));
     }
@@ -783,11 +820,13 @@ fn rebalance(mut root: Node) -> Arc<Node> {
 }
 
 fn rotate_left(mut root: Node) -> Arc<Node> {
+    root.push_estimated();
     let pivot = root
         .right
         .take()
         .expect("a left rotation requires a right child");
     let mut pivot = Arc::unwrap_or_clone(pivot);
+    pivot.push_estimated();
     root.right = pivot.left.take();
     root.refresh();
     pivot.left = Some(Arc::new(root));
@@ -796,11 +835,13 @@ fn rotate_left(mut root: Node) -> Arc<Node> {
 }
 
 fn rotate_right(mut root: Node) -> Arc<Node> {
+    root.push_estimated();
     let pivot = root
         .left
         .take()
         .expect("a right rotation requires a left child");
     let mut pivot = Arc::unwrap_or_clone(pivot);
+    pivot.push_estimated();
     root.left = pivot.right.take();
     root.refresh();
     pivot.right = Some(Arc::new(root));
@@ -810,6 +851,7 @@ fn rotate_right(mut root: Node) -> Arc<Node> {
 
 fn pop_last(root: Arc<Node>) -> (Link, HeightRun) {
     let mut root = Arc::unwrap_or_clone(root);
+    root.push_estimated();
     if let Some(right) = root.right.take() {
         let (new_right, run) = pop_last(right);
         root.right = new_right;
@@ -822,6 +864,7 @@ fn pop_last(root: Arc<Node>) -> (Link, HeightRun) {
 
 fn pop_first(root: Arc<Node>) -> (HeightRun, Link) {
     let mut root = Arc::unwrap_or_clone(root);
+    root.push_estimated();
     if let Some(left) = root.left.take() {
         let (run, new_left) = pop_first(left);
         root.left = new_left;
@@ -833,17 +876,21 @@ fn pop_first(root: Arc<Node>) -> (HeightRun, Link) {
 }
 
 fn leftmost_run(mut node: &Node) -> HeightRun {
+    let mut stale = node.stale_descendants;
     while let Some(left) = node.left.as_deref() {
         node = left;
+        stale |= node.stale_descendants;
     }
-    node.run
+    HeightRun { exact: node.run.exact && !stale, ..node.run }
 }
 
 fn rightmost_run(mut node: &Node) -> HeightRun {
+    let mut stale = node.stale_descendants;
     while let Some(right) = node.right.as_deref() {
         node = right;
+        stale |= node.stale_descendants;
     }
-    node.run
+    HeightRun { exact: node.run.exact && !stale, ..node.run }
 }
 
 fn measure_range(tree: &Link, start: usize, end: usize) -> InternalMeasurement {
@@ -891,6 +938,7 @@ fn measure_range(tree: &Link, start: usize, end: usize) -> InternalMeasurement {
             end - run_end,
         ));
     }
+    result.exact &= !node.stale_descendants;
     result
 }
 
@@ -919,6 +967,39 @@ fn checked_height_sum(left: f64, right: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_invalidation_retains_extents_lazily_and_remeasures_only_local_paths() {
+        let mut heights = ViewHeightIndex::new_estimated(10_000, 20.).unwrap();
+        let values = (0..10_000).map(|i| (100. + (i % 2) as f64, 130. + (i % 2) as f64)).collect::<Vec<_>>();
+        heights.set_exact_heights_with_extents(0, &values).unwrap();
+        let original = heights.clone();
+        let before = heights.total_extent().height();
+        heights.invalidate_retaining_estimates(0..10_000).unwrap();
+        assert_eq!(heights.total_extent().height(), before);
+        assert!(!heights.total_extent().is_exact());
+        assert!(original.total_extent().is_exact());
+        assert!(Arc::ptr_eq(heights.root.as_ref().unwrap().left.as_ref().unwrap(),
+            original.root.as_ref().unwrap().left.as_ref().unwrap()), "global retirement clones only the root");
+        assert!(heights.prefix_height(0).unwrap().is_exact());
+        for index in [0, 4_999, 9_999] {
+            assert!(!heights.range_height(index..index+1).unwrap().is_exact());
+            let hit = heights.hard_line_at_y(heights.prefix_height(index).unwrap().height()).unwrap().unwrap();
+            assert_eq!(hit.hard_line(), index);
+            assert!(!hit.line_is_exact());
+        }
+        heights.set_exact_heights_with_extents(4_999, &[values[4_999]]).unwrap();
+        assert!(heights.range_height(4_999..5_000).unwrap().is_exact());
+        assert!(!heights.range_height(5_000..5_001).unwrap().is_exact());
+        assert!(!heights.prefix_height(4_999).unwrap().is_exact());
+        assert_eq!(heights.total_extent().height(), before);
+        heights.set_exact_heights_with_extents(0, &values).unwrap();
+        heights.invalidate_retaining_estimates(100..103).unwrap();
+        assert!(heights.prefix_height(100).unwrap().is_exact());
+        assert!(!heights.range_height(100..103).unwrap().is_exact());
+        assert!(heights.range_height(103..10_000).unwrap().is_exact());
+        assert_eq!(heights.total_extent().height(), before);
+    }
 
     fn assert_close(actual: f64, expected: f64) {
         let tolerance = expected.abs().max(1.0) * 1.0e-10;

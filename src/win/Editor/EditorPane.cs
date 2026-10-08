@@ -188,7 +188,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
-        if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
+        if (View != null) { ResetImagePreviews(forgetDimensions: false); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         View.Changed += Refresh; View.Effects += ApplyEffects;

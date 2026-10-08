@@ -179,7 +179,11 @@ fn demo_loads_in_both_views_and_lays_out_without_changing_source() {
         assert!(!snapshot.rows.is_empty());
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(core.document().text().contains("Unsupported GitHub features"));
-        assert!(if format.is_source_view() {core.document().text().contains("![An example image]")} else {!core.document().projection().inline_images_for_region(&(0..core.document().text().len())).is_empty()});
+        let images = core.document().projection().inline_images_for_region(&(0..core.document().text().len()));
+        assert!(!images.is_empty());
+        if format.is_source_view() {
+            assert!(images.iter().all(|image| core.document().text()[image.range.clone()].starts_with("![")));
+        }
     }
 }
 

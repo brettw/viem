@@ -348,7 +348,7 @@ pub(super) fn resolved_character_at_with_style_context(
 ) -> Option<super::ResolvedCharacterStyle> {
     let blocks = document.blocks_for_region(&(at..at));
     let block = blocks.iter().find(|block| block.range.contains(&at))?;
-    let paragraph_style = &block.style;
+    let paragraph_style = if block.style.0 == "Image" { &style_sheet.base_paragraph } else { &block.style };
     let paragraph_defaults = &block.direct_default_character;
     let mut direct = CharacterProperties::default();
     let mut semantic = CharacterProperties::default();

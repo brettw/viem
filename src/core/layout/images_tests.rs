@@ -193,3 +193,25 @@ fn destination_only_change_retires_offscreen_table_width_contribution() {
     let candidate=region(&document,&mut view,&mut engine,1,2..3);
     assert!(candidate.regional_snapshot().lines()[0].rows()[0].table_cell.as_ref().unwrap().table_width<150.);
 }
+
+#[test]
+fn images_fit_a_1024_dip_square_after_zoom_and_keep_small_intrinsic_sizes() {
+    let document = document("![wide](wide.png) ![tall](tall.png) ![small](small.png)");
+    let mut engine = LayoutEngine::new(Images::new());
+    let mut view = ViewLayout::new(5_000., 300.);
+    view.set_scale(3.).unwrap();
+    engine.relayout(&document, &mut view).unwrap();
+    let offsets = document.text().match_indices('\u{fffc}').map(|(offset, _)| offset).collect::<Vec<_>>();
+    let wide = image(view.snapshot().unwrap(), offsets[0]);
+    assert_eq!((wide.advance, wide.typographic_bounds.height), (1024., 512.));
+    let tall = image(view.snapshot().unwrap(), offsets[1]);
+    assert!((tall.advance - 204.8).abs() < 0.001);
+    assert_eq!(tall.typographic_bounds.height, 1024.);
+    let small = image(view.snapshot().unwrap(), offsets[2]);
+    assert_eq!((small.advance, small.typographic_bounds.height), (120., 60.));
+    view.resize(80., 300.);
+    engine.relayout(&document, &mut view).unwrap();
+    let tall = image(view.snapshot().unwrap(), offsets[1]);
+    assert!((tall.advance - 80.).abs() < 0.001);
+    assert!((tall.typographic_bounds.height - 400.).abs() < 0.001);
+}

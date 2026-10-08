@@ -347,7 +347,23 @@ Deliberate presentation exceptions:
   Only local image files may be decoded for previews. Never fetch remote image
   resources; show a box containing their location instead. Local previews keep
   intrinsic aspect ratio and shrink to the available content width without
-  enlarging smaller images, following GitHub's image sizing.
+  enlarging smaller images. Displayed images never exceed 1024 device-independent
+  pixels in either direction, including at higher document zoom. Preview only
+  files of at most 10 MB (10,000,000 bytes), with source width and height each at
+  most 5000 pixels. Check file size before reading bytes and dimensions before
+  pixel decoding. Larger files or dimensions show a plain location placeholder
+  without a broken-image indicator; exactly these limits remain eligible.
+- Image-only ordinary paragraphs use the editable Image paragraph style for
+  margins, borders and padding. Inline images keep their surrounding paragraph
+  geometry. Image's font and text appearance apply to remote or unavailable
+  image labels and complete image notation in Source; these presentation
+  choices never modify Markdown bytes or become formatting on replacement
+  prose. Missing or invalid local images show their location and a broken-image
+  indicator. Reload an image only from an explicit local-resource refresh or a
+  changed resource identity; keep prior viewport estimates while its metrics
+  are refreshed, and never fetch a remote destination for presentation. Limit
+  rejections remain stable until Reload or a document resource-identity change;
+  scrolling must not repeatedly read or decode them.
 - Comments remain visible with `Comment` styling. Surplus separator lines retain
   editable empty paragraphs rather than collapsing to GitHub's presentation.
 - Thematic rules are non-text furniture with an editable paragraph boundary.
@@ -383,7 +399,9 @@ behavior. Clicking a WYSIWYG image selects its entire atomic range independently
 of automatic text-selection preferences. Source syntax remains ordinary editable
 text. Explicit Insert/Replace navigation onto an image selects its atomic range;
 subsequent arrow movement leaves that selection and resumes its typing mode.
-Normal-mode motion keeps Vim's mode and outlines the image cell. Image authoring
+Normal-mode motion keeps Vim's mode and outlines the image cell. Native Left and
+Right arrow keys cross hard-line boundaries, including image-only paragraphs;
+Vim `h`/`l` and operator motions keep their line-boundary rules. Image authoring
 preserves unrelated source, titles and undo; empty
 alternative text is valid. Resolved reference images render as objects, and
 editing one occurrence may replace only that occurrence with inline image syntax.

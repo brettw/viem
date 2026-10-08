@@ -39,6 +39,14 @@ internal sealed unsafe partial class CoreView
         if (!SameSelection(current.Selection, expected.Selection) || current.Image != expected.Image)
             throw new InvalidOperationException("The document or selection changed. Select the image again.");
     }
+    public void ImageResourcesChanged(ulong previousGeneration, string[] destinations)
+    {
+        using var arena = new NativeArena();
+        var locations = destinations.Select(arena.Utf8).ToArray();
+        var native = arena.Copy<ViemUtf8Slice>(locations);
+        Check(viem_core_image_resources_changed(Document.Handle, Id, previousGeneration, native, (ulong)locations.Length), "Refresh image resources");
+        Refresh();
+    }
     public void SelectImage(ulong offset, ulong revision)
     {
         ulong documentId = Document.State.document_id;

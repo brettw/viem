@@ -249,8 +249,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
         do {
             session.provider.setImageDocumentURL(documentHostEffectHandler?.documentURL(for: self))
-            session.provider.imagesDidChange = { [weak self] in
-                Task { @MainActor [weak self] in self?.refreshPresentation(advancingSearch: false) }
+            session.provider.imagesDidChange = { [weak self] previous, destinations in
+                // Cache publication and its metrics acknowledgement form one
+                // main-thread operation; no frame sees a partially installed size.
+                MainActor.assumeIsolated {
+                    guard let self, let current = self.session else { return }
+                    do { try current.imageResourcesChanged(previousMetricsGeneration: previous, destinations: destinations) }
+                    catch { self.report(error) }
+                    self.refreshPresentation(advancingSearch: false)
+                }
             }
             if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()
@@ -443,8 +450,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     Task { @MainActor [weak self] in
                         guard let self else { return }
                         self.imageAdmissionRefreshPending = false
-                        self.session?.provider.invalidateMetrics()
-                        self.refreshPresentation(advancingSearch: false)
+                        self.session?.provider.invalidateImageResources()
                     }
                 }
             }

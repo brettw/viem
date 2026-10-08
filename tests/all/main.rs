@@ -172,3 +172,6 @@ mod markdown_list_interruption;
 
 mod link_authoring;
 mod image_authoring;
+mod image_styles;
+
+mod native_arrows;

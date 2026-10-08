@@ -2,6 +2,8 @@ namespace Viem.Windows.Shell;
 
 internal static class ImageLocation
 {
+    internal static bool IsWeb(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
+
     internal static void Validate(string value)
     {
         LinkDestination.Validate(value);

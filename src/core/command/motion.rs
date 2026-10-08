@@ -18,6 +18,9 @@ impl CommandInterpreter {
             Motion::Horizontal(amount) => {
                 move_horizontal(&lines, self.cursor, directional_count(count, amount > 0))
             }
+            Motion::ArrowHorizontal(amount) => {
+                text::move_arrow_horizontal(&lines, self.cursor, directional_count(count, amount > 0))
+            }
             Motion::InsertionHorizontal(amount) => {
                 let mut position = self.cursor;
                 if amount > 0 {

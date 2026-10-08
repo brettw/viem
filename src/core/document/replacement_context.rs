@@ -36,7 +36,10 @@ impl Document {
             return Ok(None);
         };
         let paragraph = ReplacementParagraphStyle {
-            style: owner.style.clone(),
+            // Image appearance is derived from the paragraph's contents. Once
+            // replacement turns it into prose there is no image-only owner to
+            // restore in source.
+            style: if owner.style.0 == "Image" { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
             quote_depth: owner.quote_depth,
         };
         // Paragraph separators have no character style of their own. Skip

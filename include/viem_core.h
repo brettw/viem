@@ -2546,6 +2546,17 @@ ViemStatus viem_core_view_set_viewport_origin(
 /* Theme padding is presentation-only and scrolls with the document canvas. */
 ViemStatus viem_core_view_set_padding(ViemCoreHandle core, ViemViewId view,
     float top, float left, float bottom, float right);
+/* Notify one published image resource generation before refreshing the view.
+ * The provider has advanced once from previous_metrics_generation. Destinations
+ * names images whose intrinsic dimensions changed (at most 256 UTF-8 slices,
+ * total at most 1 MiB). An empty array means pixels/status-only changes and
+ * preserves exact measured heights. Geometry changes keep old numeric heights
+ * as estimates until each requested region is measured. No resource I/O occurs. */
+ViemStatus viem_core_image_resources_changed(ViemCoreHandle core, ViemViewId view,
+                                             uint64_t previous_metrics_generation,
+                                             const ViemUtf8Slice *destinations,
+                                             uint64_t count);
+
 ViemStatus viem_core_view_resize(ViemCoreHandle core, ViemViewId view,
                                  float width, float height,
                                  ViemCoreOutcomeV1 *out_outcome);

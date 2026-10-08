@@ -127,6 +127,11 @@ width. Click an image or move the caret onto it to see its selection
 outline and location popup; Edit expands that popup to change its location and
 alternative text. Source exposes the complete image notation.
 
+Standalone images use the **Image** paragraph style. Edit that style to change
+margins, borders and padding; its font also applies to image location labels and
+image notation in Source. Inline images keep the surrounding paragraph layout.
+In WYSIWYG, Reload (beside Delete) rereads a local image after it changes on disk.
+
 This screenshot uses a same-directory path containing a space:
 
 ![Word-style inspector reference](<Word style.png> "Local image in docs")
@@ -141,6 +146,11 @@ these resources. Opening the location explicitly uses your default browser.
 Try the image's location popup or [open Google's favicon](http://google.com/favicon.ico).
 
 ![Google favicon (remote URL placeholder)](http://google.com/favicon.ico)
+
+This deliberately missing local file shows a broken-image icon followed by its
+destination. Create the file later and click Reload in the image popup to retry:
+
+![Missing local image](../examples/missing-image.png "Broken local image test")
 
 Reference links and definitions retain their visible brackets in the
 light-purple Markdown reference style. Resolved reference images still preview:

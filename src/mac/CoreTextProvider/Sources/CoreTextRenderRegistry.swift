@@ -35,14 +35,16 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     let isColorGlyph: Bool
     let textAttributes: CoreTextRenderAttributes
     let inlineImage: CoreTextInlineImage?
+    let inlineImageFont: CTFont?
 
     init(signature: [UInt8], batches: [GlyphBatch], isColorGlyph: Bool,
-      textAttributes: CoreTextRenderAttributes = .init(), inlineImage: CoreTextInlineImage? = nil) {
+      textAttributes: CoreTextRenderAttributes = .init(), inlineImage: CoreTextInlineImage? = nil, inlineImageFont: CTFont? = nil) {
       self.signature = signature
       self.batches = batches
       self.isColorGlyph = isColorGlyph
       self.textAttributes = textAttributes
       self.inlineImage = inlineImage
+      self.inlineImageFont = inlineImageFont
     }
   }
 
@@ -153,7 +155,7 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
   public func resolvedFont(identifier: UInt64, metricsGeneration: UInt64) -> CTFont? {
     lock.lock()
     defer { lock.unlock() }
-    return generation == metricsGeneration ? resources[identifier]?.batches.first?.font : nil
+    return generation == metricsGeneration ? (resources[identifier]?.inlineImageFont ?? resources[identifier]?.batches.first?.font) : nil
   }
 
   /// Read-only typography from the exact retained render resource. Markers
@@ -168,7 +170,7 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
   /// This intentionally checks native draw resources, not the requested family.
   func resolvedFontFamily(identifier: UInt64, metricsGeneration: UInt64) -> String? {
     lock.lock()
-    let font = generation == metricsGeneration ? resources[identifier]?.batches.first?.font : nil
+    let font = generation == metricsGeneration ? (resources[identifier]?.inlineImageFont ?? resources[identifier]?.batches.first?.font) : nil
     lock.unlock()
     return font.map { CTFontCopyFamilyName($0) as String }
   }
@@ -343,9 +345,9 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
   public func drawInlineImage(identifier: UInt64, metricsGeneration: UInt64,
     in rect: CGRect, color: CGColor, context: CGContext) -> Bool {
     lock.lock()
-    let image = generation == metricsGeneration ? resources[identifier]?.inlineImage : nil
+    let resource = generation == metricsGeneration ? resources[identifier] : nil
     lock.unlock()
-    guard let image else { return false }
+    guard let resource, let image = resource.inlineImage else { return false }
     context.saveGState()
     defer { context.restoreGState() }
     context.clip(to: rect)
@@ -355,23 +357,48 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
       context.scaleBy(x: 1, y: -1)
       context.draw(raster, in: CGRect(origin: .zero, size: rect.size))
     } else {
-      context.setStrokeColor(color.copy(alpha: 0.35) ?? color)
-      context.setLineWidth(1)
-      context.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
-      let font = CTFontCreateWithName("Helvetica" as CFString, min(13, max(8, rect.height / 5)), nil)
+      let font = resource.inlineImageFont ?? CTFontCreateWithName("Helvetica" as CFString, 14, nil)
+      var labelLeft = rect.minX + 4
+      if image.state == .broken {
+        let iconSize = min(rect.height - 12, max(24, CTFontGetSize(font) * 1.8))
+        Self.drawBrokenImage(in: CGRect(x: labelLeft, y: rect.midY - iconSize / 2,
+          width: iconSize, height: iconSize), color: color, context: context)
+        labelLeft += iconSize + 4
+      }
       let attributes: [NSAttributedString.Key: Any] = [
         NSAttributedString.Key(kCTFontAttributeName as String): font,
-        NSAttributedString.Key(kCTForegroundColorAttributeName as String): color]
+        NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
+        NSAttributedString.Key(kCTKernAttributeName as String): resource.textAttributes.letterSpacing]
       let line = CTLineCreateWithAttributedString(NSAttributedString(string: String(image.location.prefix(2048)), attributes: attributes))
       let token = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
-      let fitted = CTLineCreateTruncatedLine(line, max(1, rect.width - 16), .middle, token) ?? line
+      let fitted = CTLineCreateTruncatedLine(line, max(1, rect.maxX - labelLeft - 4), .middle, token) ?? line
       context.textMatrix = .identity
-      context.translateBy(x: rect.minX + 8, y: rect.midY + CTFontGetAscent(font) / 2 - 1)
+      context.translateBy(x: labelLeft, y: rect.midY + (CTFontGetAscent(font) - CTFontGetDescent(font)) / 2)
       context.scaleBy(x: 1, y: -1)
       context.textPosition = .zero
       CTLineDraw(fitted, context)
     }
     return true
+  }
+
+  /// A folded picture page with a broken corner, drawn with the same simple
+  /// strokes as native toolbar icons. The URL follows it in the Image font.
+  private static func drawBrokenImage(in rect: CGRect, color: CGColor, context: CGContext) {
+    guard rect.width > 0, rect.height > 0 else { return }
+    context.saveGState(); defer { context.restoreGState() }
+    context.translateBy(x: rect.minX, y: rect.minY)
+    context.scaleBy(x: rect.width / 28, y: rect.height / 28)
+    context.setStrokeColor(color); context.setLineWidth(1.3); context.setLineJoin(.round); context.setLineCap(.round)
+    let page = CGMutablePath()
+    page.move(to: CGPoint(x: 3, y: 2)); page.addLine(to: CGPoint(x: 18, y: 2))
+    page.addLine(to: CGPoint(x: 25, y: 9)); page.addLine(to: CGPoint(x: 25, y: 19))
+    page.addLine(to: CGPoint(x: 20, y: 18)); page.addLine(to: CGPoint(x: 22, y: 23))
+    page.addLine(to: CGPoint(x: 17, y: 26)); page.addLine(to: CGPoint(x: 3, y: 26)); page.closeSubpath()
+    page.move(to: CGPoint(x: 18, y: 2)); page.addLine(to: CGPoint(x: 18, y: 9)); page.addLine(to: CGPoint(x: 25, y: 9))
+    page.move(to: CGPoint(x: 6, y: 21)); page.addLine(to: CGPoint(x: 11, y: 15))
+    page.addLine(to: CGPoint(x: 15, y: 19)); page.addLine(to: CGPoint(x: 18, y: 16)); page.addLine(to: CGPoint(x: 20, y: 18))
+    context.addPath(page); context.strokePath()
+    context.strokeEllipse(in: CGRect(x: 7, y: 8, width: 4, height: 4))
   }
 
   func install(_ resource: Resource, preferredIdentifier: UInt64, generation: UInt64,

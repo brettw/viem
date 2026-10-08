@@ -1418,6 +1418,12 @@ impl StyleSheet {
         }
         let mut sheet = Self::default();
         if format.is_markdown() {
+            sheet.block_styles.insert("Image".into(), BlockStyle {
+                id: "Image".into(), based_on: Some(sheet.base_paragraph.clone()),
+                next_paragraph_style: Some(sheet.base_paragraph.clone()), role: BlockRole::Paragraph,
+                character: CharacterProperties::default(), block: BlockProperties::default(),
+            });
+            sheet.block_metadata.insert("Image".into(), StyleDefinitionMetadata::generated("Image"));
             sheet.character_styles.insert("Link".into(), CharacterStyle {
                 id: "Link".into(), based_on: None,
                 properties: CharacterProperties {

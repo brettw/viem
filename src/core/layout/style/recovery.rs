@@ -84,6 +84,7 @@ impl DocumentLayoutStyles {
         let mut styles = Self::resolve_validated(StyleCascadeInput {
             blocks: &blocks,
             style_spans: &spans,
+            inline_images: input.inline_images,
             style_sheet: &sheet,
             document_style: &assignment,
             search_matches: &[],

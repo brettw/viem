@@ -25,6 +25,22 @@ struct EVInlineContentContext: Decodable {
 }
 
 extension EVCoreViewSession {
+    func imageResourcesChanged(previousMetricsGeneration: UInt64, destinations: [String]) throws {
+        let encoded = destinations.map { Array($0.utf8) }
+        let bytes = encoded.flatMap { $0 }
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            var offset = 0
+            let slices = encoded.map { value -> ViemUtf8Slice in
+                defer { offset += value.count }
+                return ViemUtf8Slice(data: buffer.baseAddress?.advanced(by: offset), length: UInt64(value.count))
+            }
+            return slices.withUnsafeBufferPointer {
+                viem_core_image_resources_changed(document.core, viewID, previousMetricsGeneration, $0.baseAddress, UInt64($0.count))
+            }
+        }
+        guard status == 0 else { throw EVCoreFrontendError.core(operation: "Refresh image layout", status: status) }
+    }
+
     func selectImage(at offset: UInt64, documentID: UInt64, revision: UInt64) throws {
         var outcome = ViemCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)

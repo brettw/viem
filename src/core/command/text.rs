@@ -247,6 +247,38 @@ pub(crate) fn move_horizontal(
     position
 }
 
+/// Native arrows traverse hard-line boundaries while Normal/Visual endpoints
+/// remain on characters. Vim h/l and operator motions keep their own clamping.
+pub(crate) fn move_arrow_horizontal(
+    lines: &HardLineSnapshot,
+    offset: usize,
+    amount: isize,
+) -> usize {
+    let mut position = normalize_normal_cursor_snapshot(lines, offset);
+    for _ in 0..amount.unsigned_abs() {
+        let line = lines.line_at_offset(position).expect("normalized command boundary");
+        let range = line.content_range();
+        let target = if amount > 0 {
+            match lines.next_grapheme_boundary(position) {
+                Some(next) if next < range.end => Some(next),
+                _ => lines.line(line.index().saturating_add(1)).map(|next| next.content_range().start),
+            }
+        } else if position > range.start {
+            lines.previous_grapheme_boundary(position)
+        } else {
+            line.index().checked_sub(1).and_then(|index| lines.line(index)).map(|previous| {
+                let range = previous.content_range();
+                if range.is_empty() { range.start }
+                else { lines.previous_grapheme_boundary(range.end).unwrap_or(range.start) }
+            })
+        };
+        let Some(target) = target else { break; };
+        if target == position { break; }
+        position = target;
+    }
+    position
+}
+
 pub(crate) fn move_vertical(
     text: &str,
     lines: &HardLineSnapshot,

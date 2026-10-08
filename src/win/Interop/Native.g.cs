@@ -2121,6 +2121,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_padding(ulong @core, ulong @view, float @top, float @left, float @bottom, float @right);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_image_resources_changed(ulong @core, ulong @view, ulong @previous_metrics_generation, ViemUtf8Slice* @destinations, ulong @count);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_resize(ulong @core, ulong @view, float @width, float @height, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_adjacent_zoom_scale(float @scale, uint @increasing, float* @out_scale);

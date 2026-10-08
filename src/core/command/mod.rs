@@ -4821,10 +4821,12 @@ impl CommandInterpreter {
             }
             Key::Ctrl('o' | 'O') => self.navigate_jump(document, false, count),
             Key::Ctrl('i' | 'I') => self.navigate_jump(document, true, count),
-            Key::Char('h') | Key::Left | Key::Backspace => {
+            Key::Left => self.move_cursor(document, Motion::ArrowHorizontal(-1), count),
+            Key::Right => self.move_cursor(document, Motion::ArrowHorizontal(1), count),
+            Key::Char('h') | Key::Backspace => {
                 self.move_cursor(document, Motion::Horizontal(-1), count)
             }
-            Key::Char('l') | Key::Right | Key::Char(' ') => {
+            Key::Char('l') | Key::Char(' ') => {
                 self.move_cursor(document, Motion::Horizontal(1), count)
             }
             Key::Char('j') | Key::Down => self.move_cursor(document, Motion::Vertical(1), count),
@@ -5098,10 +5100,12 @@ impl CommandInterpreter {
                 self.pending = Pending::ReplaceVisual;
                 CommandOutput::pending()
             }
-            Key::Char('h') | Key::Left => {
+            Key::Left => self.move_cursor(document, Motion::ArrowHorizontal(-1), count),
+            Key::Right => self.move_cursor(document, Motion::ArrowHorizontal(1), count),
+            Key::Char('h') => {
                 self.move_cursor(document, Motion::Horizontal(-1), count)
             }
-            Key::Char('l') | Key::Right | Key::Char(' ') => {
+            Key::Char('l') | Key::Char(' ') => {
                 self.move_cursor(document, Motion::Horizontal(1), count)
             }
             Key::Char('j') | Key::Down => self.move_cursor(document, Motion::Vertical(1), count),
@@ -14142,6 +14146,7 @@ enum InsertLayoutMotion {
 #[derive(Clone, Copy, Debug)]
 enum Motion {
     Horizontal(isize),
+    ArrowHorizontal(isize),
     InsertionHorizontal(isize),
     Vertical(isize),
     LineStart,

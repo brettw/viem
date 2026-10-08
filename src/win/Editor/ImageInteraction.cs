@@ -23,12 +23,14 @@ internal sealed partial class EditorPane
     private Button? imageDestinationButton;
     private TextBox? imageText, imageDestination;
     private TextBlock? imageError;
-    private Button? imageApply;
+    private Button? imageApply, imageReload;
     private ImageContext? shownImage, dismissedImage;
     private bool editingImage;
     private Rect imageAnchor;
     internal bool ImagePopupVisible => imagePopup?.Visibility == Visibility.Visible;
     internal bool ImageEditorVisible => ImagePopupVisible && editingImage;
+    internal bool ImageReloadVisible => ImagePopupVisible && !editingImage && imageReload?.Visibility == Visibility.Visible;
+    internal bool ImageReloadEnabled => imageReload?.IsEnabled == true;
     internal string ImageTextValue { get => imageText?.Text ?? ""; set { EnsureImagePopup(); imageText!.Text = value; } }
     internal string ImageDestinationValue { get => imageDestination?.Text ?? ""; set { EnsureImagePopup(); imageDestination!.Text = value; } }
 
@@ -49,6 +51,7 @@ internal sealed partial class EditorPane
         }
         Action("Copy image location", "\uE8C8", CopyShownImage);
         Action("Edit image", "\uE70F", () => BeginImageEditor(animate: true));
+        imageReload = Action("Reload image", "\uE72C", ReloadShownImage);
         Action("Delete image", "\uE74D", RemoveShownImage);
         imageText = new TextBox { Header = "Alt text", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
         imageDestination = new TextBox { Header = "Location", PlaceholderText = "image.png or https://…", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
@@ -190,6 +193,7 @@ internal sealed partial class EditorPane
         AutomationProperties.SetName(imageDestinationButton, "Open " + context.Image.Destination);
         ToolTipService.SetToolTip(imageDestinationButton, context.Image.Destination);
         foreach (var button in imageActions!.Children.OfType<Button>().Skip(2)) button.IsEnabled = context.Image.Editable;
+        imageReload!.IsEnabled = ImageLocation.LocalPreviewPath(context.Image.Destination, Document.FilePath) != null;
         imageActions.Visibility = Visibility.Visible; imageEditor!.Visibility = Visibility.Collapsed;
         imagePopup!.Visibility = Visibility.Visible; PositionImagePopup();
     }
@@ -236,8 +240,10 @@ internal sealed partial class EditorPane
         imagePopup.BorderBrush = new SolidColorBrush(preferences.Theme.StatusForeground);
         imageError!.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         imagePopup.Padding = editingImage ? new(10) : new(5);
+        imageReload!.Visibility = Document.State.format == VIEM_FORMAT_MARKDOWN ? Visibility.Visible : Visibility.Collapsed;
         imagePopup.Width = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
-        imageDestinationButton!.Width = Math.Max(48, imagePopup.Width - imagePopup.Padding.Left - imagePopup.Padding.Right - 98);
+        double actionsWidth = imageActions!.Children.OfType<Button>().Skip(1).Count(button => button.Visibility == Visibility.Visible) * 32 + 2;
+        imageDestinationButton!.Width = Math.Max(48, imagePopup.Width - imagePopup.Padding.Left - imagePopup.Padding.Right - actionsWidth);
         ((TextBlock)imageDestinationButton.Content).MaxWidth = imageDestinationButton.Width - 12;
         imagePopup.Measure(new Size(imagePopup.Width, double.PositiveInfinity));
         double height = imagePopup.DesiredSize.Height;

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Immutable;
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -111,17 +112,17 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public bool IsInlineImage(ViemRenderRunHandleV1 handle) => ImageDestination(handle) != null;
     public string? ImageDestination(ViemRenderRunHandleV1 handle) => handle.owner == owner && handle.metrics_generation == Generation
         && resources.TryGetValue(handle.identifier, out var resource) ? resource.ImageDestination : null;
-    public void UpdateImageDimensions(IReadOnlyDictionary<string, (uint Width, uint Height)> dimensions)
+    public void SetImageDimensions(string destination, uint width, uint height)
     {
-        var previous = Volatile.Read(ref shared.ImageDimensions);
-        if (previous.Count == dimensions.Count && previous.All(pair => dimensions.TryGetValue(pair.Key, out var value) && pair.Value == value)) return;
-        // The view supplies only retained previews (at most 48). Publish an
-        // immutable metric dependency set instead of clearing a separate LRU
-        // that could forget dimensions of images still visible in the view.
-        Volatile.Write(ref shared.ImageDimensions, new Dictionary<string, (uint Width, uint Height)>(dimensions, StringComparer.Ordinal));
+        var dimensions = Volatile.Read(ref shared.ImageDimensions);
+        Volatile.Write(ref shared.ImageDimensions, dimensions.SetItem(destination, (width, height)));
+    }
+    public void ClearImageDimensions()
+    {
+        if (Volatile.Read(ref shared.ImageDimensions).IsEmpty) return;
+        Volatile.Write(ref shared.ImageDimensions, ImmutableDictionary<string, (uint Width, uint Height)>.Empty.WithComparers(StringComparer.Ordinal));
         InvalidateMetrics();
     }
-    public void ClearImageDimensions() => UpdateImageDimensions(new Dictionary<string, (uint Width, uint Height)>());
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
     public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
     {
@@ -640,7 +641,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         public long Generation = 1, NextResource, BackgroundCharacters;
         public int BackgroundThread;
         public readonly ConcurrentDictionary<ulong, Resource> Resources = new();
-        public IReadOnlyDictionary<string, (uint Width, uint Height)> ImageDimensions = new Dictionary<string, (uint Width, uint Height)>(StringComparer.Ordinal);
+        public ImmutableDictionary<string, (uint Width, uint Height)> ImageDimensions = ImmutableDictionary<string, (uint Width, uint Height)>.Empty.WithComparers(StringComparer.Ordinal);
     }
     private sealed class Fragment(CanvasTextLayout layout) { public CanvasTextLayout Layout = layout; public int References; }
     private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBoundsV1 bounds, MarkerFont markerFont)
