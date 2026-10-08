@@ -88,7 +88,8 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertFalse(resizeCursor(at: empty), "the command area retains pointer selection")
     bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "Output"))
     bar.layoutSubtreeIfNeeded()
-    let output = bar.outputTextView.convert(bar.outputTextView.bounds, to: bar)
+    let text = try XCTUnwrap(bar.outputTextView)
+    let output = text.convert(text.bounds, to: bar)
     XCTAssertFalse(resizeCursor(at: NSPoint(x: output.minX + 2, y: output.midY)))
     bar.apply(EVStatusBarState(location: "Ln 12, Col 34"))
     bar.layoutSubtreeIfNeeded()
@@ -235,6 +236,66 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertLessThan(inside.minX, caret.minX)
   }
 
+  func testOrdinaryStatusAndCommandPromptsDoNotConstructOutputControls() throws {
+    let bar = makeBar()
+    bar.dragDidMove = { _ in }
+    for state in [
+      EVStatusBarState(mode: "INSERT", message: "Saved", location: "Ln 12, Col 34"),
+      EVStatusBarState(commandLine: EVStatusCommandLine(prompt: ":", text: "set", cursorUTF8Offset: 3), isActive: true),
+      EVStatusBarState(),
+    ] {
+      bar.apply(state)
+      bar.layoutSubtreeIfNeeded()
+      _ = bar.resizeCursorRects
+      XCTAssertFalse(bar.isCommandOutputFocused)
+      XCTAssertNil(bar.commandOutputPresentation(for: .copy))
+      XCTAssertFalse(bar.performCommandOutputAction(.copy))
+      XCTAssertNil(bar.outputTextView)
+      XCTAssertFalse(descendants(bar).contains { $0 is NSTextView || $0 is NSScrollView })
+    }
+  }
+
+  func testDeferredOutputUsesCurrentThemeAndPreservesSelectionAcrossStatusUpdates() throws {
+    let previousTheme = EVThemeStore.shared.theme
+    defer { EVThemeStore.shared.update(previousTheme) }
+    let bar = makeBar()
+    var theme = previousTheme
+    theme.statusFontFamily = "System"
+    theme.statusFontSize = 15
+    theme.statusForeground = EVThemeColor(0.2, 0.6, 0.8)
+    EVThemeStore.shared.update(theme)
+    XCTAssertNil(bar.outputTextView, "a theme change must not initialize hidden output")
+    bar.apply(EVStatusBarState(commandOutput: "Selected output", isActive: true))
+    bar.layoutSubtreeIfNeeded()
+    let text = try XCTUnwrap(bar.outputTextView)
+    XCTAssertEqual(text.font?.pointSize, 15)
+    XCTAssertEqual(text.textColor, theme.statusForeground.color)
+    text.setSelectedRange(NSRange(location: 0, length: 8))
+
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "Selected output"))
+    XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 8))
+    let location = try XCTUnwrap(try locationWidget(bar) as? NSButton)
+    XCTAssertEqual(location.attributedTitle.string, "Ln 12, Col 34")
+    XCTAssertEqual((location.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 15)
+
+    theme.statusFontSize = 17
+    theme.statusForeground = EVThemeColor(0.8, 0.4, 0.1)
+    EVThemeStore.shared.update(theme)
+    XCTAssertEqual(text.font?.pointSize, 17)
+    XCTAssertEqual(text.textColor, theme.statusForeground.color)
+    XCTAssertEqual((location.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 17)
+    XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 8))
+
+    bar.apply(EVStatusBarState())
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertTrue(text.isHiddenOrHasHiddenAncestor)
+    bar.apply(EVStatusBarState(commandOutput: "Selected output"))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertTrue(bar.outputTextView === text)
+    XCTAssertFalse(text.isHiddenOrHasHiddenAncestor)
+    XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 8))
+  }
+
   func testOutputUsesNormalColorsWithLeftCloseAndNeverCoversPosition() throws {
     for width in [260.0, 600.0] {
       let bar = makeBar(width: width)
@@ -242,7 +303,7 @@ final class EVStatusLineTests: XCTestCase {
         location: "Ln 12, Col 34", commandOutput: String(repeating: "long output 🙂 ", count: 40)))
       bar.layoutSubtreeIfNeeded()
       let location = try locationWidget(bar)
-      let text = bar.outputTextView
+      let text = try XCTUnwrap(bar.outputTextView)
       let scroll = try XCTUnwrap(text.enclosingScrollView)
       let close = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }
         .first { $0.accessibilityLabel() == "Close command output" })
@@ -273,7 +334,7 @@ final class EVStatusLineTests: XCTestCase {
       commandLine: EVStatusCommandLine(prompt: ":", text: "w", cursorUTF8Offset: 1),
       commandOutput: "previous output", isActive: true))
     bar.layoutSubtreeIfNeeded()
-    XCTAssertTrue(bar.outputTextView.isHiddenOrHasHiddenAncestor)
+    XCTAssertTrue(try XCTUnwrap(bar.outputTextView).isHiddenOrHasHiddenAncestor)
     XCTAssertNotNil(bar.commandCaretRect())
   }
 }

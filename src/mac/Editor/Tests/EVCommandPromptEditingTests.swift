@@ -113,8 +113,8 @@ import XCTest
         let bar = try statusBar(in: window)
         let frame = surface.view.frame
         let viewport = surface.editorView.layoutViewportSize
-        let text = try outputTextView(in: bar)
         surface.publishHostMessage("first\nsecond")
+        let text = try outputTextView(in: bar)
         XCTAssertEqual(surface.statusBarState.commandOutput, "first\nsecond")
         XCTAssertFalse(text.isHiddenOrHasHiddenAncestor)
         XCTAssertFalse(text.isEditable)
@@ -137,9 +137,9 @@ import XCTest
     func testOutputSelectionCopiesExactMultilineUnicodeAndSurvivesPresentationRefresh() throws {
         let (backend, surface, _, window) = try makeSurface()
         let bar = try statusBar(in: window)
-        let text = try outputTextView(in: bar)
         let message = "café 🙂\nsecond line"
         surface.publishHostMessage(message)
+        let text = try outputTextView(in: bar)
         window.makeFirstResponder(text)
         surface.perform(menuCommand: .selectAll, sender: nil)
         XCTAssertTrue(surface.presentation(for: .copy).isEnabled)
@@ -172,10 +172,10 @@ import XCTest
     func testOutputTimeoutUsesNewMessageDeadlineAndPreservesOtherFocus() throws {
         let (_, surface, _, window) = try makeSurface()
         let bar = try statusBar(in: window)
-        let text = try outputTextView(in: bar)
         var now: TimeInterval = 100
         surface.commandOutputClock = { now }
         surface.publishHostMessage("old")
+        let text = try outputTextView(in: bar)
         XCTAssertEqual(surface.commandOutputDeadline, 130)
         surface.expireCommandOutput(at: 129.9)
         XCTAssertEqual(surface.commandOutput, "old")

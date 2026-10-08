@@ -86,9 +86,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   private let leftGroup = NSStackView()
   private var leftGroupTrailingConstraint: NSLayoutConstraint!
   private let commandCaret = NSTextInsertionIndicator(frame: .zero)
-  private let outputScroll = NSScrollView()
-  let outputTextView = EVStatusOutputTextView()
-  private let outputCloseButton = NSButton()
+  @MainActor
+  private struct OutputControls {
+    let scroll = NSScrollView()
+    let text = EVStatusOutputTextView()
+    let close = NSButton()
+  }
+  private var outputControls: OutputControls?
+  var outputTextView: EVStatusOutputTextView? { outputControls?.text }
 
   public override init(frame frameRect: NSRect) {
     super.init(frame: frameRect)
@@ -146,37 +151,6 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     addSubview(leftGroup)
     addSubview(locationLabel)
     addSubview(commandCaret)
-    outputTextView.isEditable = false
-    outputTextView.isSelectable = true
-    outputTextView.isRichText = false
-    outputTextView.drawsBackground = false
-    outputTextView.textContainerInset = .zero
-    outputTextView.textContainer?.lineFragmentPadding = 0
-    outputTextView.textContainer?.widthTracksTextView = false
-    outputTextView.textContainer?.containerSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-    outputTextView.isHorizontallyResizable = true
-    outputTextView.isVerticallyResizable = true
-    outputTextView.maxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-    outputTextView.didReceiveEditorKey = { [weak self] event in
-      self?.commandOutputDidReceiveKey?(event)
-    }
-    outputTextView.setAccessibilityLabel("Command output")
-    outputScroll.documentView = outputTextView
-    outputScroll.drawsBackground = false
-    outputScroll.borderType = .noBorder
-    outputScroll.hasHorizontalScroller = false
-    outputScroll.hasVerticalScroller = false
-    addSubview(outputScroll)
-    outputCloseButton.image = NSImage(
-      systemSymbolName: "xmark", accessibilityDescription: "Close command output")
-    outputCloseButton.imagePosition = .imageOnly
-    outputCloseButton.isBordered = false
-    outputCloseButton.target = self
-    outputCloseButton.action = #selector(dismissCommandOutput(_:))
-    outputCloseButton.setAccessibilityLabel("Close command output")
-    addSubview(outputCloseButton)
     heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
     leftGroupTrailingConstraint = leftGroup.trailingAnchor.constraint(
       lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14)
@@ -202,6 +176,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
         self?.preferredHeightDidChange?()
       }
     }
+    applyTheme()
     apply(EVStatusBarState())
   }
 
@@ -210,31 +185,84 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
   }
 
+  /// Ordinary editing needs no TextKit document. Create the read-only output
+  /// surface on its first message, retaining it for subsequent selections.
+  private func ensureOutputControls() {
+    guard outputControls == nil else { return }
+    let controls = OutputControls()
+    controls.text.isEditable = false
+    controls.text.isSelectable = true
+    controls.text.isRichText = false
+    controls.text.drawsBackground = false
+    controls.text.textContainerInset = .zero
+    controls.text.textContainer?.lineFragmentPadding = 0
+    controls.text.textContainer?.widthTracksTextView = false
+    controls.text.textContainer?.containerSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    controls.text.isHorizontallyResizable = true
+    controls.text.isVerticallyResizable = true
+    controls.text.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    controls.text.didReceiveEditorKey = { [weak self] event in
+      self?.commandOutputDidReceiveKey?(event)
+    }
+    controls.text.setAccessibilityLabel("Command output")
+    controls.scroll.documentView = controls.text
+    controls.scroll.drawsBackground = false
+    controls.scroll.borderType = .noBorder
+    controls.scroll.hasHorizontalScroller = false
+    controls.scroll.hasVerticalScroller = false
+    addSubview(controls.scroll)
+    controls.close.image = NSImage(
+      systemSymbolName: "xmark", accessibilityDescription: "Close command output")
+    controls.close.imagePosition = .imageOnly
+    controls.close.isBordered = false
+    controls.close.target = self
+    controls.close.action = #selector(dismissCommandOutput(_:))
+    controls.close.setAccessibilityLabel("Close command output")
+    addSubview(controls.close)
+    outputControls = controls
+    applyOutputTheme(EVThemeStore.shared.theme)
+  }
+
+  private func applyOutputTheme(_ theme: EVTheme) {
+    guard let controls = outputControls else { return }
+    controls.text.font = commandFont
+    controls.text.textColor = theme.statusForeground.color
+    controls.text.insertionPointColor = .clear
+    controls.close.contentTintColor = theme.statusForeground.color
+  }
+
+  private func updateLocationTitle() {
+    locationLabel.attributedTitle = NSAttributedString(
+      string: currentState.location,
+      attributes: [.font: locationLabel.font ?? EVThemeStore.shared.theme.statusFont,
+                   .foregroundColor: EVThemeStore.shared.theme.statusForeground.color])
+    locationLabel.invalidateIntrinsicContentSize()
+  }
+
   private func applyTheme() {
     let theme = EVThemeStore.shared.theme
+    let font = theme.statusFont
     layer?.backgroundColor = theme.statusBackground.color.cgColor
-    modeLabel.font = theme.statusFont
-    messageLabel.font = theme.statusFont
-    filePathLabel.font = theme.statusFont
+    modeLabel.font = font
+    messageLabel.font = font
+    filePathLabel.font = font
     filePathLabel.textColor = theme.statusForeground.color
     modeWidthConstraint.constant = ceil([
       "NORMAL", "INSERT", "REPLACE", "VISUAL", "VISUAL LINE", "VISUAL BLOCK",
       "SELECTION", "SELECT", "SELECT LINE", "SELECT BLOCK", "COMMAND",
-    ].map { ($0 as NSString).size(withAttributes: [.font: theme.statusFont]).width }.max() ?? 0) + 4
+    ].map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 4
     modeLabel.textColor = theme.statusForeground.color
     messageLabel.textColor = theme.statusForeground.color.withAlphaComponent(0.75)
-    locationLabel.font = theme.statusFont
+    locationLabel.font = font
     locationLabel.contentTintColor = theme.statusForeground.color
-    locationLabel.attributedTitle = NSAttributedString(
-      string: currentState.location,
-      attributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
-    locationLabel.invalidateIntrinsicContentSize()
-    outputTextView.font = commandFont
-    outputTextView.textColor = theme.statusForeground.color
-    outputTextView.insertionPointColor = .clear
-    outputCloseButton.contentTintColor = theme.statusForeground.color
+    updateLocationTitle()
+    applyOutputTheme(theme)
     heightConstraint.constant = Self.preferredHeight
+    needsLayout = true
     needsDisplay = true
+    updateCommandCaret()
   }
 
   public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
@@ -274,16 +302,17 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   @objc private func dismissCommandOutput(_ sender: Any?) { commandOutputDidDismiss?() }
 
   public var isCommandOutputFocused: Bool {
-    !outputScroll.isHidden && window?.firstResponder === outputTextView
+    guard let controls = outputControls else { return false }
+    return !controls.scroll.isHidden && window?.firstResponder === controls.text
   }
 
   /// Native menu commands must copy the selected message, even though the
   /// application menu normally routes editor commands through the core.
   public func commandOutputPresentation(for command: EVMenuCommand) -> EVMenuItemPresentation? {
-    guard isCommandOutputFocused else { return nil }
+    guard isCommandOutputFocused, let text = outputControls?.text else { return nil }
     switch command {
     case .copy, .copySource:
-      return EVMenuItemPresentation(isEnabled: outputTextView.selectedRange().length > 0)
+      return EVMenuItemPresentation(isEnabled: text.selectedRange().length > 0)
     case .selectAll: return .enabled
     case .cut, .delete: return .disabled
     default: return nil
@@ -291,10 +320,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   }
 
   public func performCommandOutputAction(_ command: EVMenuCommand) -> Bool {
-    guard isCommandOutputFocused else { return false }
+    guard isCommandOutputFocused, let text = outputControls?.text else { return false }
     switch command {
-    case .copy, .copySource: outputTextView.copy(nil)
-    case .selectAll: outputTextView.selectAll(nil)
+    case .copy, .copySource: text.copy(nil)
+    case .selectAll: text.selectAll(nil)
     case .cut, .delete: break // Output is read-only, including menu actions.
     default: return false
     }
@@ -457,8 +486,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   /// selection retain their usual hover cursors.
   var resizeCursorRects: [NSRect] {
     guard dragDidMove != nil, !isHiddenOrHasHiddenAncestor else { return [] }
-    let controls: [NSView] = [modeLabel, filePathLabel, messageLabel, locationLabel,
-                              outputCloseButton, outputScroll]
+    var controls: [NSView] = [modeLabel, filePathLabel, messageLabel, locationLabel]
+    if let outputControls { controls += [outputControls.close, outputControls.scroll] }
     var exclusions = controls.filter { !$0.isHiddenOrHasHiddenAncestor }.map { control in
       var rect = control.bounds
       if let label = control as? NSTextField {
@@ -500,39 +529,47 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     // width, so a compressed position widget recovers when widened.
     locationLabel.invalidateIntrinsicContentSize()
     super.layout()
-    let area = commandAreaRect
-    let inset = Self.contentInset
-    let buttonWidth = min(20, max(0, area.width - inset))
-    outputCloseButton.frame = NSRect(
-      x: inset, y: 0, width: buttonWidth, height: bounds.height)
-    let textStart = min(area.maxX, outputCloseButton.frame.maxX + 6)
-    let font = commandFont
-    let lineHeight = ceil(font.ascender - font.descender + font.leading)
-    outputScroll.frame = NSRect(
-      x: textStart, y: floor((bounds.height - lineHeight) / 2),
-      width: max(0, area.maxX - textStart), height: lineHeight)
-    outputTextView.minSize = outputScroll.contentSize
-    outputTextView.sizeToFit()
+    if let controls = outputControls, !controls.scroll.isHidden {
+      let area = commandAreaRect
+      let inset = Self.contentInset
+      let buttonWidth = min(20, max(0, area.width - inset))
+      controls.close.frame = NSRect(
+        x: inset, y: 0, width: buttonWidth, height: bounds.height)
+      let textStart = min(area.maxX, controls.close.frame.maxX + 6)
+      let font = commandFont
+      let lineHeight = ceil(font.ascender - font.descender + font.leading)
+      controls.scroll.frame = NSRect(
+        x: textStart, y: floor((bounds.height - lineHeight) / 2),
+        width: max(0, area.maxX - textStart), height: lineHeight)
+      controls.text.minSize = controls.scroll.contentSize
+      controls.text.sizeToFit()
+    }
     updateCommandCaret()
     window?.invalidateCursorRects(for: self)
   }
 
   public func apply(_ state: EVStatusBarState) {
+    let previous = currentState
     currentState = state
     let showingOutput = state.commandLine == nil && state.commandOutput != nil
     setLeftGroupHidden(state.commandLine != nil || showingOutput || bounds.width < 320)
-    outputScroll.isHidden = !showingOutput
-    outputCloseButton.isHidden = !showingOutput
-    if let output = state.commandOutput, outputTextView.string != output {
-      outputTextView.string = output
-      outputTextView.setSelectedRange(NSRange(location: 0, length: 0))
-      outputTextView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    if state.commandOutput != nil { ensureOutputControls() }
+    if let controls = outputControls {
+      controls.scroll.isHidden = !showingOutput
+      controls.close.isHidden = !showingOutput
+      if let output = state.commandOutput, controls.text.string != output {
+        controls.text.string = output
+        controls.text.setSelectedRange(NSRange(location: 0, length: 0))
+        controls.text.scrollRangeToVisible(NSRange(location: 0, length: 0))
+      }
     }
     modeLabel.stringValue = state.mode
     messageLabel.stringValue = state.message
     messageLabel.isHidden = state.message.isEmpty
-    locationLabel.title = state.location
-    locationLabel.image = Self.lineIcon(state.lineMode)
+    if previous.location != state.location { updateLocationTitle() }
+    if previous.lineMode != state.lineMode || locationLabel.image == nil {
+      locationLabel.image = Self.lineIcon(state.lineMode)
+    }
     locationLabel.toolTip =
       (state.lineMode == .visual
         ? "Visual lines · click for physical source lines"
@@ -550,8 +587,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     } else {
       setAccessibilityLabel("Editor status")
     }
-    applyTheme()
     needsLayout = true
+    needsDisplay = true
     updateCommandCaret()
   }
 

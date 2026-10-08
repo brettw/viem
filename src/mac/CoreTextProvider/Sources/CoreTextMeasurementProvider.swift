@@ -274,6 +274,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       paragraphDirection: request.paragraph_base_direction
     )
     let line = CTLineCreateWithAttributedString(attributed)
+    let caretOffsets = CoreTextLineCaretOffsets(line)
     let glyphRecords = extractGlyphRecords(line)
     let glyphRecordsByClusterStart = Dictionary(grouping: glyphRecords) { record in
       indexMap.graphemeStart(containingUTF16: record.stringIndex)
@@ -302,7 +303,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         globalEnd: globalEnd,
         utf16Start: start16,
         utf16End: end16,
-        line: line,
+        caretOffsets: caretOffsets,
         records: records,
         style: style,
         bidiLevel: bidiLevels[start16],
@@ -932,21 +933,66 @@ private struct DiagnosticResult {
   let message: String
 }
 
+/// A single traversal supplies the ordinary caret edges of this shaped line.
+/// Core Text adjusts split bidi carets independently of the enumerated edges
+/// (including tracking), so resolve those boundaries through its exact query.
+/// Line endpoints also use the query: the paragraph direction can introduce a
+/// secondary terminal caret without a corresponding enumerated edge.
+/// This storage lives only for the current shape request.
+struct CoreTextLineCaretOffsets {
+  struct Pair {
+    let primary: CGFloat
+    let secondary: CGFloat
+  }
+
+  private let line: CTLine
+  private let range: CFRange
+  private let values: [Int: Pair]
+
+  init(_ line: CTLine) {
+    self.line = line
+    range = CTLineGetStringRange(line)
+    var edges: [Int: Pair] = [:]
+    CTLineEnumerateCaretOffsets(line) { offset, index, leadingEdge, _ in
+      // A trailing edge names the final UTF-16 unit of its character.
+      let boundary = leadingEdge ? index : index + 1
+      if let previous = edges[boundary] {
+        if previous.primary != offset {
+          edges[boundary] = Pair(primary: previous.primary, secondary: offset)
+        }
+      } else {
+        edges[boundary] = Pair(primary: offset, secondary: offset)
+      }
+    }
+    values = edges
+  }
+
+  func offsets(at index: Int) -> Pair {
+    if index != range.location, index != range.location + range.length,
+      let pair = values[index], pair.primary == pair.secondary { return pair }
+    var secondary: CGFloat = 0
+    let primary = CTLineGetOffsetForStringIndex(line, index, &secondary)
+    return Pair(primary: primary, secondary: secondary)
+  }
+}
+
 private func makeCluster(
   globalStart: UInt64,
   globalEnd: UInt64,
   utf16Start: Int,
   utf16End: Int,
-  line: CTLine,
+  caretOffsets: CoreTextLineCaretOffsets,
   records: [GlyphRecord],
   style: ResolvedStyle,
   bidiLevel: UInt8,
   request: ViemShapeRequestV1
 ) -> ClusterResult {
-  var secondaryStart: CGFloat = 0
-  var secondaryEnd: CGFloat = 0
-  let startOffset = CTLineGetOffsetForStringIndex(line, utf16Start, &secondaryStart)
-  let endOffset = CTLineGetOffsetForStringIndex(line, utf16End, &secondaryEnd)
+  let start = caretOffsets.offsets(at: utf16Start)
+  let end = caretOffsets.offsets(at: utf16End)
+  let startOffset = start.primary
+  let secondaryStart = start.secondary
+  let endOffset = end.primary
+  let secondaryEnd = end.secondary
   // A bidi boundary has two caret positions. Core Text's primary positions
   // at the two string endpoints may belong to opposite directional runs;
   // subtracting them can measure an entire run instead of this cluster.

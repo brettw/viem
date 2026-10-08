@@ -70,6 +70,29 @@ macOS presentation/cache regression checks use the native test wrapper:
 scripts/test-mac.sh --filter 'EVPresentationCacheIntegrationTests|EVPointerDrawingPerformanceTests|EVBackgroundLayoutTests'
 ```
 
+Measure macOS startup through the requested document's first editor draw in
+fresh release processes:
+
+```sh
+scripts/build-mac-app.sh release
+python3 scripts/measure-mac-startup.py --document AGENTS.md --profile-directory ~/.viem --output target/mac-startup
+```
+
+The runner copies the source and profile into temporary directories and isolates
+the single-instance endpoint and recovery files. It never closes an existing
+editor. Omit `--profile-directory` for default settings; use `--executable` to
+compare a preserved app bundle. JSON reports include binary/source hashes,
+process-to-first-draw timing (including loader startup), main-to-first-draw
+timing, and opt-in native milestones. Milestones overlap; do not add their
+durations. This measures the draw callback, not physical display latency or a
+cold boot. Report the first launch of newly built output separately from
+repeated launches, and run without concurrent compilation.
+
+For stack investigation, use a separate output directory with `--runs 1
+--sample --sample-delay 0.2`. Sampling can substantially delay dynamic library
+loading; sampled runs are not timing comparisons. The app retains no startup
+trace unless `VIEM_STARTUP_REPORT` is set.
+
 For Windows input, drawing, pre-layout and startup measurements:
 
 ```powershell

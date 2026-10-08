@@ -39,11 +39,14 @@ public enum EVApplication {
             FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             exit(EXIT_FAILURE)
         }
+        EVStartupPerformance.mark("instance.ready")
         let application = NSApplication.shared
+        EVStartupPerformance.mark("application.created")
         let delegate = EVApplicationDelegate(launchArguments: launchArguments,
             launchDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
             blockingCompletion: blockingCompletion)
 
+        EVStartupPerformance.mark("configuration.loaded")
         application.setActivationPolicy(.regular)
         application.delegate = delegate
         withExtendedLifetime((delegate, instance)) {
@@ -121,11 +124,15 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Direct SwiftPM startup can receive this again when run() follows
+        // finishLaunching(). Menu construction has process-wide side effects.
+        guard menuBuilder == nil else { return }
         let builder = EVMenuBuilder(owner: self, recentDocumentURLs: { [configuration] in
             configuration.recentDocumentURLs
         }, themeStore: themeStore)
         NSApplication.shared.mainMenu = builder.buildMainMenu(for: NSApplication.shared)
         menuBuilder = builder
+        EVStartupPerformance.mark("menus.created")
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -288,10 +295,33 @@ final class EVApplicationDelegate: NSObject,
             finishLaunch()
             return
         }
-        let document = documentFactory()
+        let urls = arguments.filenames.map {
+            URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
+        }
+        var preparedFirstDocument: EVDocument?
+        if let first = urls.first, EVDocumentIdentity.existingDocument(at: first) == nil {
+            do {
+                // Build the first surface from the requested document. A blank
+                // surface would be immediately discarded after doing its own
+                // layout, font resolution and native control initialization.
+                preparedFirstDocument = try loadLaunchDocument(at: first)
+            } catch {
+                if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
+                else { launchPlaceholderDocument = createUntitledDocument() }
+                if (error as? CocoaError)?.code != .userCancelled {
+                    if blockingToken == nil { NSApplication.shared.presentError(error) }
+                    else { FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8)) }
+                }
+                finishLaunch()
+                return
+            }
+        }
+        let document = preparedFirstDocument ?? documentFactory()
+        if preparedFirstDocument == nil { EVStartupPerformance.mark("placeholder.created") }
         document.recordRecentDocument = recordRecentDocument
-        NSDocumentController.shared.addDocument(document)
+        if preparedFirstDocument == nil { NSDocumentController.shared.addDocument(document) }
         document.makeWindowControllers()
+        EVStartupPerformance.mark("window.created")
         launchPlaceholderDocument = document
         guard let controller = document.windowControllers.first as? EVDocumentWindowController else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
@@ -304,11 +334,9 @@ final class EVApplicationDelegate: NSObject,
             do { completion(try self.loadLaunchDocument(at: url), nil) }
             catch { completion(nil, error) }
         }
-        let urls = arguments.filenames.map {
-            URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
-        }
         controller.openArgumentList(urls, splitCount: arguments.splitCount,
-            initialLine: arguments.initialLine, vertical: arguments.verticalSplits) { [self] result in
+            initialLine: arguments.initialLine, vertical: arguments.verticalSplits,
+            preparedFirstDocument: preparedFirstDocument) { [self] result in
             if let blockingToken {
                 if case .success = result, let url = urls.first,
                    let opened = EVDocumentIdentity.existingDocument(at: url),
@@ -341,7 +369,9 @@ final class EVApplicationDelegate: NSObject,
             recordRecentDocument(url)
             return existing
         }
+        EVStartupPerformance.mark("document.open.begin")
         let document = documentFactory()
+        EVStartupPerformance.mark("document.backend.created")
         document.recordRecentDocument = recordRecentDocument
         let type = Self.documentType(for: url)
         if FileManager.default.fileExists(atPath: url.path) {
@@ -354,6 +384,7 @@ final class EVApplicationDelegate: NSObject,
             )
             document.configureRecovery(for: url)
         }
+        EVStartupPerformance.mark("document.read.finished")
         document.fileURL = url
         document.fileType = EVDocument.typeName(for: document.editorBackend.sourceFormat)
         if !document.editorBackend.persistenceState.isDirty { document.updateChangeCount(.changeCleared) }

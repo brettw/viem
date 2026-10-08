@@ -9,6 +9,58 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Batched caret edges preserve native offsets for bidi, tracking, and Unicode clusters")
+  func batchedCaretOffsetsMatchNative() {
+    let texts = [
+      "", "AV", "office", "fi", "e\u{301} 👩🏽‍💻", "abc אבג def", "مرحبا", "\t \tfi",
+      "a\u{202E}bc\u{202C}d", "A\u{202B}אב\u{202A}12\u{202C}גד\u{202C}Z",
+      "אב \u{2066}abc \u{2067}גד\u{2069} xyz\u{2069} ה", "a\u{200D}b\u{200B}\u{AD}c",
+      "سَلامٌ e\u{301} 👩🏽‍💻 مرحبا",
+    ]
+    for family in ["Times New Roman", "Avenir Next", "Helvetica"] {
+      let font = CTFontCreateWithName(family as CFString, 24, nil)
+      for text in texts {
+        for spacing in [0.0, 2, -0.5, -10] {
+          for direction in [NSWritingDirection.natural, .leftToRight, .rightToLeft] {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.baseWritingDirection = direction
+            let line = CTLineCreateWithAttributedString(NSAttributedString(
+              string: text, attributes: [.font: font, .tracking: spacing, .paragraphStyle: paragraph]))
+            let offsets = CoreTextLineCaretOffsets(line)
+            // Include boundaries inside composed characters: these must retain
+            // the native fallback even though they are not editor caret stops.
+            for index in 0...text.utf16.count {
+              var secondary: CGFloat = 0
+              let primary = CTLineGetOffsetForStringIndex(line, index, &secondary)
+              let actual = offsets.offsets(at: index)
+              #expect(abs(actual.primary - primary) < 0.000001)
+              #expect(abs(actual.secondary - secondary) < 0.000001)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  @Test("Batched caret edges preserve boundaries across mixed font and tracking runs")
+  func batchedCaretOffsetsWithMixedStyles() {
+    let attributed = NSMutableAttributedString(
+      string: "AV office אבג e\u{301} 🙂 final",
+      attributes: [.font: CTFontCreateWithName("Times New Roman" as CFString, 24, nil)])
+    attributed.addAttributes(
+      [.font: CTFontCreateWithName("Helvetica" as CFString, 36, nil), .tracking: 3],
+      range: (attributed.string as NSString).range(of: "office אבג"))
+    let line = CTLineCreateWithAttributedString(attributed)
+    let offsets = CoreTextLineCaretOffsets(line)
+    for index in 0...attributed.length {
+      var secondary: CGFloat = 0
+      let primary = CTLineGetOffsetForStringIndex(line, index, &secondary)
+      let actual = offsets.offsets(at: index)
+      #expect(abs(actual.primary - primary) < 0.000001)
+      #expect(abs(actual.secondary - secondary) < 0.000001)
+    }
+  }
+
   @MainActor @Test("Core retries one native shaping failure with system typography and exports its warning")
   func coreFontFailureRecovery() throws {
     let fault = NativeShapingFault()

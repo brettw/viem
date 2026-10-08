@@ -158,6 +158,37 @@ final class EVLaunchArgumentsTests: XCTestCase {
         controller.close()
     }
 
+    func testLaunchConstructsFirstViewFromRecoveredDirtyDocument() throws {
+        let f = try LaunchFixture()
+        defer { f.close() }
+        let url = try f.write("recovered.md", text: "Saved document\n")
+        let store = try EVRecoveryStore.claim(for: url)
+        defer { store.closeAndRemove(); store.drainForTesting() }
+        let recovered = Data("# Unsaved recovery\n\nSecond paragraph".utf8)
+        store.write(EVRecoverySnapshot(source: recovered, format: .markdownSource,
+            encoding: UInt32(VIEM_ENCODING_UTF8), fileFormat: UInt32(VIEM_FILE_FORMAT_UNIX),
+            documentID: 81, documentRevision: 4))
+        store.drainForTesting()
+        f.delegate.documentFactory = {
+            let document = EVDocument()
+            document.recoveryDecisionHandler = { candidates in
+                .recover(candidates.firstIndex { $0.snapshot != nil }!)
+            }
+            return document
+        }
+
+        f.process(EVLaunchArguments(filenames: [url.path], initialLine: 2))
+
+        let document = try f.document(at: url)
+        let controller = try f.window(for: document)
+        XCTAssertEqual(f.documents.count, 1)
+        XCTAssertEqual(controller.paneCount, 1)
+        XCTAssertTrue(document.wasRecovered)
+        XCTAssertTrue(document.editorBackend.persistenceState.isDirty)
+        XCTAssertEqual(try document.editorBackend.serializedSource(typeName: EVDocument.markdownType), recovered)
+        XCTAssertEqual(try Data(contentsOf: url), Data("Saved document\n".utf8))
+    }
+
     func testEmptyForwardedLaunchReusesWindowAndCreatesBlankAfterLastWindowCloses() throws {
         let f = try LaunchFixture()
         defer { f.close() }

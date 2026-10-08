@@ -253,6 +253,46 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         try await assertCompleted([existingCaller], status: 0)
     }
 
+    func testMissingFirstFileWaitsForItsNamedEmptyDocumentToClose() async throws {
+        let f = try Fixture()
+        defer { f.close() }
+        let url = f.directory.appendingPathComponent("new-message.txt")
+        let caller = try f.caller(url.path)
+        let document = try f.document(url)
+        XCTAssertEqual(f.documents.count, 1)
+        XCTAssertEqual(try document.editorBackend.serializedSource(typeName: EVDocument.plainTextType), Data())
+        XCTAssertFalse(document.editorBackend.persistenceState.isDirty)
+        try await assertWaiting([caller])
+        ex("q", in: try surface(f.window(document)))
+        try await assertCompleted([caller], status: 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testCanceledInitialRecoveryFailsCallerWithoutCreatingAWindow() async throws {
+        let f = try Fixture()
+        defer { f.close() }
+        let url = try f.write("recoverable.txt")
+        let store = try EVRecoveryStore.claim(for: url)
+        defer { store.closeAndRemove(); store.drainForTesting() }
+        store.write(EVRecoverySnapshot(source: Data("unsaved".utf8), format: .plainText,
+            encoding: UInt32(VIEM_ENCODING_UTF8), fileFormat: UInt32(VIEM_FILE_FORMAT_UNIX),
+            documentID: 98, documentRevision: 3))
+        store.drainForTesting()
+        let makeDocument = f.delegate.documentFactory
+        f.delegate.documentFactory = {
+            let document = makeDocument()
+            document.recoveryDecisionHandler = { _ in .cancel }
+            return document
+        }
+
+        let caller = try f.caller(url.path)
+
+        try await assertCompleted([caller], status: 1)
+        XCTAssertTrue(f.documents.isEmpty)
+        XCTAssertEqual(EVBlockingEditSessions.shared.count, 0)
+        XCTAssertEqual(try Data(contentsOf: url), Data("Original message\n".utf8))
+    }
+
     func testCquitPublishesRequestedStatusBeforeClosingAllUnsavedDocuments() async throws {
         for (command, status): (String, Int32) in [("cq", 1), ("0cq", 0), ("7cq", 7)] {
             let f = try Fixture()

@@ -119,16 +119,16 @@ final class EVDocumentReplacementTests: XCTestCase {
         backend.persistenceStateDidChange = { _ in persistenceNotifications += 1 }
         var stagedCore: ViemCoreHandle = 0
         weak var stagedSession: EVCoreViewSession?
-        surfaces[0].makeCoreViewSession = { document, size in
+        surfaces[0].makeCoreViewSession = { document, size, margins in
             stagedCore = document.core
-            let session = try EVCoreViewSession(document: document, width: size.width, height: size.height)
+            let session = try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins)
             stagedSession = session
             return session
         }
-        surfaces[1].makeCoreViewSession = { document, _ in
+        surfaces[1].makeCoreViewSession = { document, _, margins in
             // Exercise the real C view-creation validation after another
             // replacement view has already been prepared successfully.
-            try EVCoreViewSession(document: document, width: .infinity, height: 100)
+            try EVCoreViewSession(document: document, width: .infinity, height: 100, margins: margins)
         }
 
         XCTAssertThrowsError(try backend.read(source: Data("replacement".utf8),
