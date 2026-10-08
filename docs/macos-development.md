@@ -60,8 +60,9 @@ launcher that waits for its requested document to close. See
 
 The bundle includes the shared desktop fonts and their attribution files from
 [`assets/fonts`](../assets/fonts/README.md) in `Contents/Resources/fonts`.
-Startup registers these fonts for Viem's process before opening font pickers or
-shaping text. They are available alongside installed fonts without systemwide
+Startup uses installed fonts with matching face names and registers bundled
+files for Viem's process when any of their faces are missing, before opening
+font pickers or shaping text. They are available without systemwide
 installation; saved styles retain ordinary family and face names.
 
 After moving or renaming the checkout, remove cached build artifacts before

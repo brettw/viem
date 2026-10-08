@@ -30,9 +30,10 @@ public struct EVOpenTypeFeature: Equatable, Sendable {
 /// Native discovery only. Documents retain names and normalized properties,
 /// never Core Text descriptors or objects.
 public enum EVFontCatalog {
-  /// Register packaged files before constructing font pickers or shapers. The
-  /// registration lasts for this process only; missing resources leave ordinary
-  /// system-font fallback available. No native work runs under the catalog lock.
+  /// Prefer installed faces with the same PostScript names, registering missing
+  /// packaged files before constructing font pickers or shapers. Registration
+  /// lasts for this process only; missing resources leave ordinary system-font
+  /// fallback available. No native work runs under the catalog lock.
   @discardableResult
   public static func registerBundledFonts(in directory: URL) -> [String] {
     guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
@@ -47,7 +48,12 @@ public enum EVFontCatalog {
       ["ttf", "otf", "ttc", "otc"].contains($0.pathExtension.lowercased())
         && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
     }.sorted { $0.path < $1.path }
-    for url in urls {
+    guard !urls.isEmpty else { return failures }
+    // Take one transient snapshot before registration changes Core Text's
+    // catalog, avoiding repeated font-catalog lookups for every named face.
+    let availableNames = Set(CTFontManagerCopyAvailablePostScriptNames() as? [String] ?? [])
+    let missing = fontsRequiringRegistration(urls, availableNames: availableNames)
+    for url in missing {
       var error: Unmanaged<CFError>?
       if !CTFontManagerRegisterFontsForURL(url as CFURL, .process, &error),
         let failure = error?.takeRetainedValue(),
@@ -56,8 +62,23 @@ public enum EVFontCatalog {
         failures.append("\(url.lastPathComponent): \(failure)")
       }
     }
-    if !urls.isEmpty { invalidate() }
+    if !missing.isEmpty { invalidate() }
     return failures
+  }
+
+  static func fontsRequiringRegistration(_ urls: [URL], availableNames: Set<String>) -> [URL] {
+    urls.filter { url in
+      guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL)
+        as? [CTFontDescriptor], !descriptors.isEmpty else { return true }
+      // A collection or variable font may supply many named faces. One installed
+      // regular face must not hide a missing weight or italic design. Unreadable
+      // names take the normal registration path so invalid files still report.
+      return !descriptors.allSatisfy { descriptor in
+        guard let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontNameAttribute)
+          as? String, !name.isEmpty else { return false }
+        return availableNames.contains(name)
+      }
+    }
   }
 
   private final class Cache: @unchecked Sendable {
