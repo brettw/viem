@@ -1,7 +1,9 @@
 #if DEBUG
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.Graphics.Canvas;
+using Microsoft.Graphics.Canvas.Text;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Rendering;
@@ -15,6 +17,7 @@ internal static class VariableFontTests
     private static void Check(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
+        InstalledFontTests.Run(pane.Canvas.Device);
         FlightlinePortableChecks(pane);
         var packagedFace = FontCatalog.ForFamilyChange("Flightline Code", null)!;
         using (var format = new Microsoft.Graphics.Canvas.Text.CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(packagedFace.Family, packagedFace.Weight, packagedFace.Slant, packagedFace.Stretch), FontSize = 14 })
@@ -22,14 +25,18 @@ internal static class VariableFontTests
             FontVariations.Apply(layout, 0, 14, new() { ["wght"] = packagedFace.Weight }, packagedFace);
             var capture = new GlyphCapture(f => new GlyphFontMetadata(f)); DirectWriteGlyphCapture.Draw(layout, capture);
             var parts = capture.Extract(0, 14, 0, 0);
-            Check(parts.Count > 0, "typographic font selection preserves packaged-font glyphs");
-            Check(FontVariations.Name(FontVariations.Table(parts.First().Font, "name"), 6, "") == packagedFace.Name, "typographic selection retains the packaged font collection instead of substituting a system face");
+            Check(parts.Count > 0, "typographic font selection preserves the requested design's glyphs");
+            Check(FontVariations.Name(FontVariations.Table(parts.First().Font, "name"), 6, "") == packagedFace.Name, "typographic selection retains the requested original font design");
         }
         RecursiveFontChecks(pane);
+        EquivalentGlyphChecks(pane.Canvas.Device, FontCatalog.Match("Recursive", "Mono Casual Light")!, "recursive/Recursive_VF_1.085.ttf");
+        foreach (var design in FontCatalog.Faces("Flightline Code"))
+            EquivalentGlyphChecks(pane.Canvas.Device, design, "flightline/FlightlineCode-" + (design.Slant == FontStyle.Normal ? "Regular" : "Italic") + "-VF.ttf");
         await RecursiveInspectorChecks(pane, preferences);
         FlightlineFontChecks(pane);
         await FlightlineInspectorChecks(pane, preferences);
         await FlightlineSavedInspectorChecks(pane, preferences);
+        await StyleAndSettingsTests.FontChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -81,6 +88,104 @@ internal static class VariableFontTests
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".variable-font.png");
         } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
+
+    internal static void SourceChecks(FontFace face, string relativePath)
+    {
+        string expected = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Resources/fonts", relativePath));
+        Check(File.Exists(expected), $"{face.Name} retains its packaged fallback file");
+        if (Environment.GetEnvironmentVariable("VIEM_FORCE_BUNDLED_FONTS") == "1")
+            Check(face.Source is { IsFile: true }, $"forcing bundled fonts selects a file for {face.Name}");
+        string rendering = FontCatalog.RenderingFamily(face.Family, face.Weight, face.Slant, face.Stretch, face);
+        if (face.Source == null)
+            Check(rendering == face.Family, $"{face.Name} renders through the installed family without a file URI");
+        else {
+            Check(face.Source.IsFile && string.Equals(face.Source.LocalPath, expected, StringComparison.OrdinalIgnoreCase), $"{face.Name} selects its original packaged file");
+            Check(rendering == face.Source.AbsoluteUri + "#" + face.Family, $"{face.Name} selects its bundled variant URI");
+        }
+    }
+
+    private sealed record FontShapeRun(string Name, Dictionary<string, float> Axes, CanvasGlyph[] Glyphs, float Size, uint Bidi, Vector2 Offset);
+    private sealed record FontShape(double Width, double Height, FontShapeRun[] Runs, byte[] Pixels);
+
+    internal static void EquivalentGlyphChecks(CanvasDevice device, FontFace selected, string relativePath)
+    {
+        var source = new Uri(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "Resources/fonts", relativePath)));
+        using var bundled = new CanvasFontSet(source);
+        var info = FontVariations.For(selected);
+        var coordinates = selected.PortableFamily == "Flightline Code"
+            ? new[] { 250f, 400f, 437f, 700f }.Select(weight => new Dictionary<string, float> { ["wght"] = weight })
+            : info.Instances.Where(i => i.Name != "Default").Where((_, index) => index % 10 == 0).Select(i => i.Values).Append(info.Defaults);
+        foreach (var axes in coordinates) {
+            var expected = Shape(selected, axes, bundled);
+            var actual = Shape(selected, axes, null);
+            Check(expected.Width == actual.Width && expected.Height == actual.Height && expected.Runs.Length > 0
+                && expected.Runs.All(run => run.Name == selected.Name)
+                && expected.Runs.Length == actual.Runs.Length && expected.Runs.Zip(actual.Runs).All(pair =>
+                    pair.First.Name == pair.Second.Name && pair.First.Size == pair.Second.Size && pair.First.Bidi == pair.Second.Bidi
+                    && pair.First.Offset == pair.Second.Offset && pair.First.Glyphs.SequenceEqual(pair.Second.Glyphs)
+                    && pair.First.Axes.Count == pair.Second.Axes.Count
+                    && pair.First.Axes.All(axis => pair.Second.Axes.TryGetValue(axis.Key, out float value) && value == axis.Value)),
+                $"{selected.Name} selected and bundled sources produce identical native glyphs, axes, offsets and bounds ({string.Join(", ", axes.Select(a => $"{a.Key}={a.Value}"))})");
+            Check(expected.Pixels.Any(value => value != 255) && expected.Pixels.AsSpan().SequenceEqual(actual.Pixels), $"{selected.Name} selected and bundled sources draw identical nonempty pixels");
+        }
+        FontShape Shape(FontFace face, Dictionary<string, float> axes, CanvasFontSet? reference)
+        {
+            const string text = "Writing MMMM iii 0123 — AV fi fl";
+            using var format = new CanvasTextFormat {
+                FontFamily = reference == null ? FontCatalog.RenderingFamily(face.Family, face.Weight, face.Slant, face.Stretch, face) : source.AbsoluteUri + "#" + face.Family,
+                FontSize = 16, FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(axes.GetValueOrDefault("wght", 400), 1, 999) },
+                FontStyle = face.Slant, FontStretch = face.Stretch,
+            };
+            using var layout = new CanvasTextLayout(device, text, format, 2000, 300);
+            if (reference != null) UseReferenceCollection(layout, reference, face.PortableFamily, text.Length);
+            FontVariations.Apply(layout, 0, text.Length, axes, reference == null ? face : null);
+            var fonts = new List<CanvasFontFace>();
+            var capture = new GlyphCapture(font => { fonts.Add(font); return new GlyphFontMetadata(font); });
+            try {
+                DirectWriteGlyphCapture.Draw(layout, capture);
+                var parts = capture.Extract(0, text.Length, 0, 0);
+                using var surface = new CanvasRenderTarget(device, 800, 100, 96);
+                using (var drawing = surface.CreateDrawingSession()) {
+                    drawing.Clear(Microsoft.UI.Colors.White);
+                    using var brush = new Microsoft.Graphics.Canvas.Brushes.CanvasSolidColorBrush(drawing, Microsoft.UI.Colors.Black);
+                    foreach (var part in parts)
+                        drawing.DrawGlyphRun(part.Offset + new Vector2(8, 8), part.Font, part.Size, part.Glyphs, false, part.BidiLevel, brush);
+                }
+                return new(layout.LayoutBounds.Width, layout.LayoutBounds.Height, parts.Select(part => new FontShapeRun(
+                    FontVariations.Name(FontVariations.Table(part.Font, "name"), 6, ""), FontVariations.NativeAxes(part.Font),
+                    part.Glyphs, part.Size, part.BidiLevel, part.Offset)).ToArray(), surface.GetPixelBytes());
+            } finally { foreach (var font in fonts.Distinct()) font.Dispose(); }
+        }
+    }
+
+    [DllImport("dwrite.dll")] private static extern int DWriteCreateFactory(uint kind, in Guid id, out nint factory);
+    [StructLayout(LayoutKind.Sequential)] private struct TextRange { public uint Start, Length; }
+    private static unsafe void UseReferenceCollection(CanvasTextLayout layout, CanvasFontSet fonts, string family, int length)
+    {
+        // Build the reference from the packaged resource even when production
+        // skipped it. Keep this collection local to the test and its layout.
+        Guid id = new("F3744D80-21F7-42EB-B35D-995BC72FC223");
+        nint factory = 0, set = 0, collection = 0, native = 0;
+        try {
+            Marshal.ThrowExceptionForHR(DWriteCreateFactory(0, in id, out factory));
+            set = FontVariations.NativeResource(fonts, new("53585141-D9F8-4095-8321-D73CF6BD116B"));
+            Check(set != 0, "the packaged reference exposes its native font set");
+            Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, nint, uint, nint*, int>)(*(nint**)factory)[52])(factory, set, 0, &collection));
+            native = FontVariations.NativeResource(layout, new("05A9BF42-223F-4441-B5FB-8263685F55E9"));
+            Check(native != 0, "the packaged reference exposes its native text layout");
+            var range = new TextRange { Length = (uint)length };
+            Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, nint, TextRange, int>)(*(nint**)native)[30])(native, collection, range));
+            fixed (char* name = family)
+                Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, char*, TextRange, int>)(*(nint**)native)[31])(native, name, range));
+        } finally {
+            if (native != 0) Marshal.Release(native);
+            if (collection != 0) Marshal.Release(collection);
+            if (set != 0) Marshal.Release(set);
+            if (factory != 0) Marshal.Release(factory);
+            GC.KeepAlive(layout); GC.KeepAlive(fonts);
+        }
+    }
+
     internal static void FlightlineFontChecks(EditorPane pane)
     {
         var faces = FontCatalog.Faces("Flightline Code");
@@ -91,8 +196,9 @@ internal static class VariableFontTests
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
         foreach (string file in files) {
-            var face = faces.First(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == file);
             bool italic = file.Contains("Italic", StringComparison.Ordinal);
+            var face = faces.Single(f => f.Name == (italic ? "FlightlineCode-NormalItalic" : "FlightlineCode-Normal"));
+            SourceChecks(face, "flightline/" + file);
             var info = FontVariations.For(face);
             Check(info.Axes.Length == 1 && info.Axes[0] is { Tag: "wght", Minimum: 200, Default: 400, Maximum: 700 }, "Flightline exposes its 200–700 weight axis");
             var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
@@ -105,7 +211,7 @@ internal static class VariableFontTests
                 Check(view.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline selects the designed upright or italic outlines");
             }
         }
-        var upright = faces.First(f => f.Source != null && f.Slant == FontStyle.Normal);
+        var upright = faces.Single(f => f.Slant == FontStyle.Normal);
         var paragraph = view.Styles().Styles.Single(s => s.Id == "Paragraph");
         view.EditStyleFont(paragraph, [upright.PortableFamily], upright, new() { ["wght"] = 437 });
         void Emphasis(bool bold, uint slant, float weight) {
@@ -128,7 +234,7 @@ internal static class VariableFontTests
         byte[] source = "Flightline variable controls"u8.ToArray();
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-        var upright = FontCatalog.Faces("Flightline Code").First(f => f.Source != null && f.Slant == FontStyle.Normal);
+        var upright = FontCatalog.Faces("Flightline Code").Single(f => f.Slant == FontStyle.Normal);
         view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.PortableFamily], upright);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
@@ -136,7 +242,7 @@ internal static class VariableFontTests
             await Task.Delay(100);
             foreach (bool italic in new[] { false, true }) {
                 inspector.FontVariantControl.SelectedItem = FontCatalog.Faces("Flightline Code")
-                    .First(f => f.Source != null && (f.Slant != FontStyle.Normal) == italic);
+                    .Single(f => (f.Slant != FontStyle.Normal) == italic);
                 var slider = Descendants<Slider>(inspector.RootControl).Single();
                 Check(slider.Minimum == 200 && slider.Maximum == 700 && slider.StepFrequency == 1, "Flightline's inspector weight control covers the design range in integer steps");
                 var presets = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>().ToArray();
@@ -178,11 +284,11 @@ internal static class VariableFontTests
         // path populated the catalogue first, nor on installed static copies.
         Check(FontCatalog.Resolve("Flightline Code", "Normal")?.Family == "Flightline Code", "portable Flightline family resolves before picker discovery");
         var faces = FontCatalog.Faces("Flightline Code");
-        Check(faces.Length == 2 && faces.All(f => f.Source != null), "Flightline retains both packaged designs without duplicate installed static faces");
+        Check(faces.Length == 2 && faces.Select(f => f.Name).ToHashSet().SetEquals(["FlightlineCode-Normal", "FlightlineCode-NormalItalic"]), "Flightline retains both original variable designs without duplicate installed static faces");
         var normal = FontCatalog.Match("Flightline Code", "Normal");
         var italic = FontCatalog.Match("Flightline Code", "Normal Italic");
-        Check(normal is { Source: not null, Slant: FontStyle.Normal, Weight: 400 }
-            && italic is { Source: not null, Slant: FontStyle.Italic, Weight: 400 }, "portable Flightline Normal and Normal Italic identify different designs at the default weight");
+        Check(normal is { Slant: FontStyle.Normal, Weight: 400 }
+            && italic is { Slant: FontStyle.Italic, Weight: 400 }, "portable Flightline Normal and Normal Italic identify different designs at the default weight");
         Check(FontCatalog.Current("Flightline Code", 250, 0) == normal, "a custom variable weight without a subfamily retains the upright catalogue and sliders");
         foreach (var face in faces) {
             var info = FontVariations.For(face);
@@ -248,12 +354,12 @@ internal static class VariableFontTests
     internal static void RecursiveFontChecks(EditorPane pane)
     {
         var recursiveFamilies = FontCatalog.Families.Where(f => f.StartsWith("Recursive", StringComparison.OrdinalIgnoreCase)).ToArray();
-        var recursiveFaces = recursiveFamilies.SelectMany(FontCatalog.Faces).ToArray();
-        var face = recursiveFaces.FirstOrDefault(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == "Recursive_VF_1.085.ttf")
-            ?? throw new InvalidOperationException("The bundled Recursive variable font is unavailable. Families: " + string.Join(", ", recursiveFamilies) + "; Faces: " + string.Join(", ", recursiveFaces.Select(f => f.Name)));
-        Check(face.Source is { IsFile: true } && Path.GetFileName(face.Source.LocalPath) == "Recursive_VF_1.085.ttf", "Recursive resolves to the bundled variable font");
+        var recursiveFaces = FontCatalog.Faces("Recursive");
+        var face = recursiveFaces.SingleOrDefault(f => f.Name == "Recursive-SansLinearLight")
+            ?? throw new InvalidOperationException("The Recursive variable design is unavailable. Families: " + string.Join(", ", recursiveFamilies) + "; Faces: " + string.Join(", ", recursiveFaces.Select(f => f.Name)));
+        SourceChecks(face, "recursive/Recursive_VF_1.085.ttf");
         Check(!File.Exists(Path.Combine(AppContext.BaseDirectory, "Resources/fonts/recursive/recursive-static-TTFs.ttc")), "rebuilding removes the old Recursive static collection");
-        Check(FontCatalog.Families.Contains(face.Family), "the bundled Recursive variable font appears in the font picker");
+        Check(FontCatalog.Families.Contains(face.Family), "the Recursive variable font appears in the font picker");
         var info = FontVariations.For(face);
         Check(info.Axes.Select(a => a.Tag).ToHashSet().SetEquals(["MONO", "CASL", "wght", "slnt", "CRSV"]), "Recursive exposes all five variable axes");
         var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
@@ -277,7 +383,7 @@ internal static class VariableFontTests
             var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
             Check(info.Axes.All(a => Math.Abs(axes.GetValueOrDefault(a.Tag, float.NaN) - instance.Values[a.Tag]) < .001f), $"Recursive {instance.Name} renders with its named-instance coordinates");
         }
-        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "bundled Recursive instance selection preserves document source");
+        Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Recursive instance selection preserves document source");
         var saved = view.Styles();
         Check(saved.StringList(saved.Styles.Single(s => s.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "Recursive", "serif" }),
             "Windows saves the same portable family and fallback order as Mac");
@@ -285,8 +391,7 @@ internal static class VariableFontTests
     }
     private static async Task RecursiveInspectorChecks(EditorPane pane, Preferences preferences)
     {
-        var face = FontCatalog.Families.Where(f => f.StartsWith("Recursive", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(FontCatalog.Faces).First(f => f.Source is { IsFile: true } && Path.GetFileName(f.Source.LocalPath) == "Recursive_VF_1.085.ttf");
+        var face = FontCatalog.Faces("Recursive").Single(f => f.Name == "Recursive-SansLinearLight");
         var info = FontVariations.For(face);
         byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
         using var doc = new CoreDocument("Recursive variable inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);

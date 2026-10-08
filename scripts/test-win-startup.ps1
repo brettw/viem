@@ -50,10 +50,13 @@ try {
                     }
                 }
             }
-            if (!$ProfileDocument -and ($report.fontPickerListLoaded -ne $false -or $report.fontFaceDescriptionsRead -ne 0)) {
-                throw 'Empty-editor startup loaded font picker data or enumerated font faces.'
+            if ($report.fontPickerListLoaded -ne $false) {
+                throw 'Startup loaded the font picker list.'
             }
-            [pscustomobject]@{ Run = $run; ProcessMs = [Math]::Round($report.processMilliseconds, 1); FirstDrawMs = [Math]::Round($first.milliseconds, 1); AfterActivationMs = [Math]::Round($first.milliseconds - $activation.milliseconds, 1); Report = $reportPath }
+            # A variable-font theme needs targeted face metadata even for an
+            # empty editor. The native startup checks verify generic/missing
+            # lookups add no face reads; report the actual count here.
+            [pscustomobject]@{ Run = $run; FontFaces = $report.fontFaceDescriptionsRead; BundledFontFiles = $report.bundledFontFilesLoaded; InstalledFontDesigns = $report.installedFontDesignsUsed; ProcessMs = [Math]::Round($report.processMilliseconds, 1); FirstDrawMs = [Math]::Round($first.milliseconds, 1); AfterActivationMs = [Math]::Round($first.milliseconds - $activation.milliseconds, 1); Report = $reportPath }
         }
     }
     finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_STARTUP_REPORT = $oldReport; $env:VIEM_STARTUP_EXIT = $oldExit; $env:VIEM_STARTUP_DOCUMENT = $oldDocument }

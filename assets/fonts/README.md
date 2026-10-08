@@ -22,12 +22,17 @@ Font binaries are copied byte-for-byte. Before creating editor UI, macOS checks
 the available PostScript names and uses installed faces when they cover every
 face in a packaged font file. This is a name-only match, without comparing font
 versions or bytes. Files with missing faces are registered with Core Text at
-process scope. Windows indexes the bundled files with Win2D alongside system
-fonts, and selects a file URI only when rendering. Keep all faces and attribution
-files together when updating a family.
+process scope. Windows reads bounded metadata from each single-face variable
+font and checks indexed installed-family candidates before opening an app-local
+Win2D font set. It reuses an installed design only when its original identity and
+`name`, `fvar`, and `STAT` tables match. Missing, incompatible, static, collection,
+or unreadable candidates keep the normal bundled-file path. Each design is
+independent, so an installed upright face cannot hide a missing italic resource.
+This compares variable-font metadata, not every glyph byte or the entire file.
+Keep all faces and attribution files together when updating a family.
 
 DirectWrite may synthesize the same PostScript name for separate variable
-designs. Windows retains each bundled design's original `name` table identity
+designs. Windows retains each preferred design's original `name` table identity
 and portable names separately from its native lookup name. Its picker uses the
 font's `fvar` presets and axes; installed static copies do not hide a bundled
 variable design of the same family and slant.
