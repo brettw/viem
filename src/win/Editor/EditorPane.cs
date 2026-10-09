@@ -406,6 +406,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
+        if (ShowCodeBlockLanguageMenu(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         caretHoverLocation = null; SetCaretHover(null);
         DismissCommandOutput(false);
@@ -562,7 +563,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     internal void CaretHoverFocusChanged()
     {
-        if (!window.IsWindowActive) { caretHoverLocation = null; SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); }
+        if (!window.IsWindowActive) { caretHoverLocation = null; SetCaretHover(null); DismissLinkPopup(suppress: false); if (!PickingImageLocation) DismissImagePopup(suppress: false); }
         else if (View != null) Run(() => { RefreshLinkPopup(); RefreshImagePopup(); });
     }
     internal void MoveCaretHover(Point point)
@@ -619,6 +620,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
         DrawInlineImages(drawing);
+        DrawCodeBlockLanguages(drawing);
         if (CaretHoverRectangle is Rect hover && window.IsWindowActive) {
             var color = theme.Caret; color.A = (byte)Math.Round(color.A * .2);
             if (caretHoverMode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) drawing.FillRectangle(hover, color);

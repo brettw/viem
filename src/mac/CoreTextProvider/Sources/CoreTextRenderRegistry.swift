@@ -9,12 +9,14 @@ public struct CoreTextRenderAttributes: Equatable {
   public let letterSpacing: CGFloat
   public let language: String?
   public let writingDirection: NSWritingDirection
+  public let baselineOffset: CGFloat
 
   public init(letterSpacing: CGFloat = 0,
-    language: String? = nil, writingDirection: NSWritingDirection = .natural) {
+    language: String? = nil, writingDirection: NSWritingDirection = .natural, baselineOffset: CGFloat = 0) {
     self.letterSpacing = letterSpacing
     self.language = language
     self.writingDirection = writingDirection
+    self.baselineOffset = baselineOffset
   }
 }
 

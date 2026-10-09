@@ -8,6 +8,17 @@ import XCTest
 
 @MainActor
 final class EVImageTests: XCTestCase {
+    private final class ImageDocumentHost: EVDocumentHostEffectHandling {
+        var url: URL?
+        init(_ url: URL?) { self.url = url }
+        func documentURL(for surface: any EVEditorSurface) -> URL? { url }
+        func perform(documentHostRequests: [EVDocumentHostRequest],
+                     completion: @escaping @MainActor (Result<String?, Error>) -> Void) {
+            XCTFail("Choosing an image must not issue document host effects")
+            completion(.failure(EVDocumentHostError.unsupportedRequest))
+        }
+    }
+
     private func editor(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow) {
         let backend = configuration.map { EVCoreDocumentBackend(configuration: $0) } ?? EVCoreDocumentBackend()
         try backend.read(source: Data(source.utf8), typeName: type)
@@ -33,6 +44,135 @@ final class EVImageTests: XCTestCase {
         let directory = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: directory.appendingPathComponent(name + ".png"))
+    }
+
+    func testImageFileLocationsAreRelativeWithoutClimbingThroughRootAndRetainFilenameIdentity() throws {
+        let document = URL(fileURLWithPath: "/work/project/docs/document.md")
+        for (file, expected) in [
+            ("/work/project/docs/image.png", "image.png"),
+            ("/work/project/images/image.png", "../images/image.png"),
+            ("/work/project/docs/image #?% cafe\u{301}:a.png", "image%20%23%3F%25%20cafe%CC%81%3Aa.png"),
+            ("/work/project/docs/a%20.png", "a%2520.png"),
+        ] {
+            let url = URL(fileURLWithPath: file)
+            let location = EVImageFileLocation.destination(for: url, relativeTo: document)
+            XCTAssertEqual(location, expected)
+            XCTAssertEqual(try EVLinkOpener.destinationURL(location, relativeTo: document).standardizedFileURL, url.standardizedFileURL)
+        }
+        let unrelated = URL(fileURLWithPath: "/elsewhere/image.png")
+        let composed = try XCTUnwrap(URL(string: "file:///work/project/docs/caf%C3%A9.png"))
+        XCTAssertEqual(EVImageFileLocation.destination(for: composed, relativeTo: document), "caf%C3%A9.png")
+        XCTAssertEqual(EVImageFileLocation.destination(for: composed, relativeTo: nil), composed.absoluteString)
+        XCTAssertEqual(EVImageFileLocation.destination(for: unrelated, relativeTo: document), unrelated.absoluteString)
+        XCTAssertEqual(EVImageFileLocation.destination(for: unrelated, relativeTo: nil), unrelated.absoluteString)
+        let prefixLookalike = URL(fileURLWithPath: "/work-other/image.png")
+        XCTAssertEqual(EVImageFileLocation.destination(for: prefixLookalike, relativeTo: document), prefixLookalike.absoluteString)
+        XCTAssertEqual(EVImageFileLocation.destination(for: URL(fileURLWithPath: "/images/image.png"),
+            relativeTo: URL(fileURLWithPath: "/document.md")), "images/image.png")
+    }
+
+    func testImageFolderButtonUpdatesOnlyItsDraftAndApplyPreservesTitleAndUndoInBothViews() throws {
+        let source = "before ![keep](<old.png> \"title\") after"
+        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+            let (backend, surface, window) = try editor(source, type: type)
+            defer { surface.imagePopover.close(); window.close() }
+            let document = URL(fileURLWithPath: "/tmp/viem-image-picker/docs/document.md")
+            let host = ImageDocumentHost(document)
+            surface.documentHostEffectHandler = host
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
+            let popup = surface.imagePopover
+            popup.openEditor()
+            XCTAssertTrue(popup.isEditing)
+            XCTAssertFalse(popup.chooseImageButton.isHidden)
+            XCTAssertNotNil(popup.chooseImageButton.image)
+            let form = try XCTUnwrap(popup.destinationField.window?.contentView)
+            form.layoutSubtreeIfNeeded()
+            let fieldRect = popup.destinationField.convert(popup.destinationField.bounds, to: form)
+            let buttonRect = popup.chooseImageButton.convert(popup.chooseImageButton.bounds, to: form)
+            XCTAssertGreaterThan(buttonRect.minX, fieldRect.maxX)
+            XCTAssertLessThanOrEqual(buttonRect.maxX, form.bounds.maxX - 12)
+            var completed: (@MainActor (URL?) -> Void)?
+            popup.imageFilePanelPresenter = { panel, parent, callback in
+                XCTAssertTrue(parent === window)
+                XCTAssertTrue(panel.canChooseFiles)
+                XCTAssertFalse(panel.canChooseDirectories)
+                XCTAssertFalse(panel.allowsMultipleSelection)
+                XCTAssertEqual(panel.directoryURL?.standardizedFileURL, document.deletingLastPathComponent().standardizedFileURL)
+                completed = callback
+            }
+            popup.chooseImageButton.performClick(nil)
+            XCTAssertFalse(popup.chooseImageButton.isEnabled)
+            NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: popup.destinationField.window)
+            XCTAssertTrue(popup.isEditing, "The native picker may take focus without discarding its image draft")
+            try XCTUnwrap(completed)(nil)
+            XCTAssertEqual(popup.destinationField.stringValue, "old.png")
+            XCTAssertTrue(popup.chooseImageButton.isEnabled)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            popup.chooseImageButton.performClick(nil)
+            let selected = URL(fileURLWithPath: "/tmp/viem-image-picker/images/a #%.png")
+            try XCTUnwrap(completed)(selected)
+            XCTAssertEqual(popup.destinationField.stringValue, "../images/a%20%23%25.png")
+            XCTAssertEqual(popup.textField.stringValue, "keep")
+            XCTAssertTrue(popup.applyButton.isEnabled)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            try preview("image-file-editor", form)
+            popup.applyButton.performClick(nil)
+            XCTAssertNil(surface.commandOutput)
+            XCTAssertEqual(String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self),
+                "before ![keep](<../images/a%20%23%25.png> \"title\") after")
+            surface.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        }
+    }
+
+    func testDelayedImagePickerCannotChangeAnotherDraftOrRetargetAChangedDocument() throws {
+        let (backend, surface, window) = try editor("plain", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        let host = ImageDocumentHost(URL(fileURLWithPath: "/work/document.md"))
+        surface.documentHostEffectHandler = host
+        let popup = surface.imagePopover
+        var completed: (@MainActor (URL?) -> Void)?
+        popup.imageFilePanelPresenter = { _, _, callback in completed = callback }
+        popup.openEditor(inserting: true)
+        popup.chooseImageButton.performClick(nil)
+        let old = try XCTUnwrap(completed)
+        popup.close()
+        popup.openEditor(inserting: true)
+        old(URL(fileURLWithPath: "/work/old.png"))
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(popup.destinationField.stringValue, "")
+        XCTAssertTrue(popup.chooseImageButton.isEnabled)
+        popup.chooseImageButton.performClick(nil)
+        host.url = URL(fileURLWithPath: "/other/document.md")
+        try XCTUnwrap(completed)(URL(fileURLWithPath: "/work/image.png"))
+        XCTAssertFalse(popup.isEditing)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("plain".utf8))
+    }
+
+    func testNativeImageFilePickerKeepsDraftWhileOpenAndAfterCancellation() throws {
+        let (backend, surface, window) = try editor("plain", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        let popup = surface.imagePopover
+        popup.openEditor(inserting: true)
+        popup.textField.stringValue = "keep this draft"
+        popup.destinationField.stringValue = "old.png"
+        popup.chooseImageButton.performClick(nil)
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while window.attachedSheet == nil, Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+        }
+        let picker = try XCTUnwrap(window.attachedSheet as? NSOpenPanel)
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertFalse(popup.chooseImageButton.isEnabled)
+        picker.cancel(nil)
+        while !popup.chooseImageButton.isEnabled, Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02))
+        }
+        XCTAssertTrue(popup.chooseImageButton.isEnabled)
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(popup.textField.stringValue, "keep this draft")
+        XCTAssertEqual(popup.destinationField.stringValue, "old.png")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("plain".utf8))
     }
 
     func testRemoteImageIsAtomicURLPlaceholderAndOnlyExplicitOpenLaunchesBrowser() throws {

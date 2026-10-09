@@ -23,21 +23,50 @@ fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: &str)
 
 #[test]
 fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
-    for (format, source, code_indent) in [
-        (
-            Format::Markdown,
-            "Before.\n\n```\n  one\n\n  two\n```\n\nAfter.",
-            32.,
-        ),
-    ] {
-        let document = open(source, format);
+    for (format, source, code_indent) in [(
+        Format::Markdown,
+        "Before.\n\n```\n  one\n\n  two\n```\n\nAfter.",
+        32.,
+    )] {
+        let mut document = open(source, format);
+        let mut defaults: serde_json::Value =
+            serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+        for style in defaults["block_styles"].as_array_mut().unwrap() {
+            if style["id"] == "Paragraph" || style["id"] == "Code Block" {
+                style["block"]["margin_top"] = 7.into();
+                style["block"]["margin_bottom"] = 7.into();
+            }
+            if style["id"] == "Code Block" {
+                for property in [
+                    "margin_left",
+                    "padding_top",
+                    "padding_bottom",
+                    "border_top_width",
+                    "border_bottom_width",
+                    "border_left_width",
+                ] {
+                    style["block"][property] = 0.into();
+                }
+                style["block"]["padding_left"] = code_indent.into();
+            }
+        }
+        document
+            .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
+            .unwrap();
         let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
         assert_eq!(styles.paragraphs.len(), 3);
         for (index, paragraph) in styles.paragraphs.iter().enumerate() {
             assert_eq!(paragraph.margin_top, if index == 1 { 0. } else { 7. });
             assert_eq!(paragraph.margin_bottom, if index == 1 { 0. } else { 7. });
         }
-        assert_eq!(styles.paragraphs[1].containers.iter().map(|c| c.style.left()).sum::<f32>(), code_indent);
+        assert_eq!(
+            styles.paragraphs[1]
+                .containers
+                .iter()
+                .map(|c| c.style.left())
+                .sum::<f32>(),
+            code_indent
+        );
         assert_eq!(document.text(), "Before.\n  one\n\n  two\nAfter.");
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 800., 800.);
@@ -47,9 +76,27 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
         assert_eq!(rows[2].paragraph_id, rows[3].paragraph_id);
         assert_ne!(rows[0].paragraph_id, rows[1].paragraph_id);
         assert_ne!(rows[3].paragraph_id, rows[4].paragraph_id);
-        for (row, next) in rows.iter().zip(rows.iter().skip(1)) {
+        let caption = rows[1]
+            .decorations
+            .iter()
+            .find(|decoration| decoration.kind == viem_core::layout::DecorationKind::CodeLanguage)
+            .unwrap();
+        assert_eq!(caption.text, "None ▾");
+        assert_eq!(caption.typographic_bounds.height, 16.);
+        assert!(
+            (caption.typographic_bounds.y - rows[0].y - rows[0].line_advance - 9.).abs() < 0.01,
+            "the caption begins inside the code box, below the collapsed paragraph margin"
+        );
+        assert!(
+            (caption.typographic_bounds.y + caption.typographic_bounds.height - rows[1].y).abs()
+                < 0.01,
+            "the first body row starts after the caption's reserved header"
+        );
+        for (index, (row, next)) in rows.iter().zip(rows.iter().skip(1)).enumerate() {
             let expected_gap = if row.paragraph_id == next.paragraph_id {
                 0.
+            } else if index == 0 {
+                7. + 18.
             } else {
                 7.
             };
@@ -76,9 +123,7 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
             style["block"]["margin_bottom"] = 13.into();
         }
     }
-    for (format, source, expected_before) in [
-        (Format::Markdown, "Text", 11.),
-    ] {
+    for (format, source, expected_before) in [(Format::Markdown, "Text", 11.)] {
         let mut document = open(source, format);
         document
             .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
@@ -94,13 +139,24 @@ fn paragraph_defaults_remain_overridable_without_serializing_on_open() {
 #[test]
 fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset() {
     for indent in [-10., 0., 10.] {
-        let document = open("- First words with enough text to wrap across several rows.", Format::Markdown);
+        let document = open(
+            "- First words with enough text to wrap across several rows.",
+            Format::Markdown,
+        );
         let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
         styles.paragraphs[0].first_line_indent = indent;
         let body = document.text().find("First").unwrap();
         let mut engine = viem_core::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut view = viem_core::layout::ViewLayout::new(175., 800.);
-        engine.relayout_styled_text(document.id(), document.revision(), document.text(), styles, &mut view).unwrap();
+        engine
+            .relayout_styled_text(
+                document.id(),
+                document.revision(),
+                document.text(),
+                styles,
+                &mut view,
+            )
+            .unwrap();
         let rows = &view.snapshot().unwrap().rows;
         let body_x = rows[0]
             .clusters
@@ -136,7 +192,15 @@ fn list_body_indents_are_signed_and_derived_list_styles_do_not_double_the_inset(
         document_style: projection.document_style(),
     })
     .unwrap();
-    assert_eq!(styles.paragraphs[0].leading_indent + styles.paragraphs[0].containers.iter().map(|c| c.style.left()).sum::<f32>(), 32.);
+    assert_eq!(
+        styles.paragraphs[0].leading_indent
+            + styles.paragraphs[0]
+                .containers
+                .iter()
+                .map(|c| c.style.left())
+                .sum::<f32>(),
+        32.
+    );
 }
 
 #[test]

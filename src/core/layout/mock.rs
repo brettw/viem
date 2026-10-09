@@ -108,8 +108,8 @@ impl MockTextMeasurementProvider {
     fn metrics(style: &ResolvedTextStyle, scale: f32) -> TextMetrics {
         let em = style.size * scale;
         TextMetrics {
-            ascent: em * 0.78,
-            descent: em * 0.22,
+            ascent: (em * 0.78 + style.baseline_offset * scale).max(0.0),
+            descent: (em * 0.22 - style.baseline_offset * scale).max(0.0),
             leading: em * 0.12,
         }
     }
@@ -172,15 +172,15 @@ impl MockTextMeasurementProvider {
 
     fn bounds(
         advance: f32,
-        metrics: &TextMetrics,
+        _metrics: &TextMetrics,
         style: &ResolvedTextStyle,
         scale: f32,
     ) -> (ShapedBounds, ShapedBounds) {
         let typographic = ShapedBounds {
             x: 0.0,
-            y: -metrics.ascent,
+            y: -style.size * scale * 0.78 - style.baseline_offset * scale,
             width: advance,
-            height: metrics.ascent + metrics.descent,
+            height: style.size * scale,
         };
         let overhang = if style.slant == FontSlant::Upright {
             0.0
@@ -189,9 +189,9 @@ impl MockTextMeasurementProvider {
         };
         let ink = ShapedBounds {
             x: -overhang,
-            y: -metrics.ascent,
+            y: typographic.y,
             width: advance + overhang * 2.0,
-            height: metrics.ascent + metrics.descent,
+            height: typographic.height,
         };
         (typographic, ink)
     }
@@ -236,6 +236,7 @@ impl MockTextMeasurementProvider {
         mix(&style.weight.to_bits().to_le_bytes());
         mix(&[u8::from(style.relative_bold)]);
         mix(&style.letter_spacing.to_bits().to_le_bytes());
+        mix(&style.baseline_offset.to_bits().to_le_bytes());
         mix(&request.scale.to_bits().to_le_bytes());
         mix(&request.metrics_generation.0.to_le_bytes());
         mix(&request.measurement_environment_id.0.to_le_bytes());

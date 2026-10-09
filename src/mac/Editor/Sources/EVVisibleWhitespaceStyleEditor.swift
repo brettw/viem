@@ -135,6 +135,8 @@ private extension EVVisibleWhitespaceStyle {
             case .characterBackground: background = nil
             case .characterUnderline: underline = nil
             case .characterStrikethrough: strikethrough = nil
+            case .characterSuperscript: superscript = nil
+            case .characterSubscript: `subscript` = nil
             case .characterLanguage: language = nil
             case .characterDirection: direction = nil
             case .characterOpenTypeFeatures: openTypeFeatures = nil
@@ -155,6 +157,8 @@ private extension EVVisibleWhitespaceStyle {
         case let (.characterBackground, .color(v)): background = EVThemeColor(Double(v.red), Double(v.green), Double(v.blue), Double(v.alpha))
         case let (.characterUnderline, .boolean(v)): underline = v
         case let (.characterStrikethrough, .boolean(v)): strikethrough = v
+        case let (.characterSuperscript, .boolean(v)): superscript = v; if v { `subscript` = false }
+        case let (.characterSubscript, .boolean(v)): `subscript` = v; if v { superscript = false }
         case let (.characterLanguage, .string(v)): language = v
         case let (.characterDirection, .writingDirection(v)) where v <= 2: direction = [.natural, .leftToRight, .rightToLeft][Int(v)]
         case let (.characterOpenTypeFeatures, .openTypeFeatures(v)):
@@ -180,6 +184,8 @@ private extension EVVisibleWhitespaceStyle {
         declared[.characterBackground] = background.map { .color(EVStyleColor(red: Float($0.red), green: Float($0.green), blue: Float($0.blue), alpha: Float($0.alpha))) }
         declared[.characterUnderline] = underline.map(EVStyleValue.boolean)
         declared[.characterStrikethrough] = strikethrough.map(EVStyleValue.boolean)
+        declared[.characterSuperscript] = superscript.map(EVStyleValue.boolean)
+        declared[.characterSubscript] = `subscript`.map(EVStyleValue.boolean)
         declared[.characterLanguage] = language.map(EVStyleValue.string)
         declared[.characterDirection] = direction.map { .writingDirection($0 == .natural ? 0 : $0 == .leftToRight ? 1 : 2) }
         declared[.characterOpenTypeFeatures] = openTypeFeatures.map { .openTypeFeatures($0.sorted { $0.key < $1.key }.map { EVOpenTypeFeature(tag: $0.key, setting: $0.value) }) }

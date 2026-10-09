@@ -247,6 +247,7 @@ final class EVCoreTextStylePreviewView: NSView {
         from values: [EVStyleProperty: EVStyleValue]
     ) -> [NSAttributedString.Key: Any] {
         let font = makeFont(from: values)
+        let size = CTFontGetSize(font)
         var attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             .paragraphStyle: makeParagraphStyle(from: values),
@@ -266,6 +267,13 @@ final class EVCoreTextStylePreviewView: NSView {
         if case let .color(value)? = values[.characterBackground] {
             attributes[NSAttributedString.Key(kCTBackgroundColorAttributeName as String)] =
                 value.appKitColor.cgColor
+        }
+        if case let .boolean(value)? = values[.characterSuperscript], value {
+            attributes[.baselineOffset] = size * 0.35
+            attributes[NSAttributedString.Key(kCTFontAttributeName as String)] = CTFontCreateCopyWithAttributes(font, size * 0.75, nil, nil)
+        } else if case let .boolean(value)? = values[.characterSubscript], value {
+            attributes[.baselineOffset] = -size * 0.2
+            attributes[NSAttributedString.Key(kCTFontAttributeName as String)] = CTFontCreateCopyWithAttributes(font, size * 0.75, nil, nil)
         }
         if case let .boolean(value)? = values[.characterUnderline], value {
             attributes[NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)] =

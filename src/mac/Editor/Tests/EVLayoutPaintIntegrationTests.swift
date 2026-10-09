@@ -8,6 +8,39 @@ import XCTest
 
 final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
+  func testScriptDecorationsFollowTheirOwnBaselineInAMixedRow() throws {
+    let backend = EVCoreDocumentBackend()
+    try backend.read(source: Data("<ins><del>A<sup>S</sup><sub>B</sub></del></ins>".utf8), typeName: EVDocument.markdownType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    surface.loadViewIfNeeded()
+    surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 160)
+    surface.viewDidLayout()
+    let session = try XCTUnwrap(surface.session)
+    for scale in [Float(1), Float(2)] {
+      _ = try session.setScale(CGFloat(scale))
+      surface.refreshPresentation()
+      let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+      let paint = try XCTUnwrap(surface.layoutPaint)
+      let decorations = surface.editorView.textDecorationsForDrawing(in: snapshot, paint: paint)
+      XCTAssertEqual(decorations.count, 6)
+      for kind in [EVTextDecorationKind.underline, .strikethrough] {
+        let group = decorations.filter { $0.kind == kind }
+        let normal = try XCTUnwrap(group.first { abs($0.rect.minX - surface.editorView.viewRect(snapshot.clusters[0].typographic_bounds).minX) < 0.01 })
+        let raised = try XCTUnwrap(group.first { abs($0.rect.minX - surface.editorView.viewRect(snapshot.clusters[1].typographic_bounds).minX) < 0.01 })
+        let lowered = try XCTUnwrap(group.first { abs($0.rect.minX - surface.editorView.viewRect(snapshot.clusters[2].typographic_bounds).minX) < 0.01 })
+        XCTAssertLessThan(raised.rect.minY, normal.rect.minY)
+        XCTAssertGreaterThan(lowered.rect.minY, normal.rect.minY)
+      }
+      for cluster in snapshot.clusters {
+        let resolved = surface.editorView.resolvedTextPaint(for: cluster, paint: paint)
+        if cluster.text_start == 1 { XCTAssertGreaterThan(resolved.baselineOffset, 0) }
+        else if cluster.text_start == 2 { XCTAssertLessThan(resolved.baselineOffset, 0) }
+        else { XCTAssertEqual(resolved.baselineOffset, 0) }
+      }
+    }
+  }
+
+  @MainActor
   func testDefaultPaintUsesApplicationThemeAndSFProFourteen() throws {
     let prior = EVThemeStore.shared.theme
     EVThemeStore.shared.update(.paper)

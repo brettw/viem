@@ -46,7 +46,10 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
 
     case bold = 301
     case italic
+    case underline = 303
     case strikethrough = 304
+    case superscript
+    case `subscript`
     case defaultParagraphStyle = 320
     case characterStyles
     case baseParagraphStyle

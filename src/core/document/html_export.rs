@@ -292,6 +292,8 @@ fn character(shape: &ResolvedTextStyle, paint: &ResolvedTextPaint) -> CharacterP
         background: paint.background,
         underline: Some(paint.underline),
         strikethrough: Some(paint.strikethrough),
+        superscript: (shape.baseline_offset > 0.0).then_some(true),
+        subscript: (shape.baseline_offset < 0.0).then_some(true),
         direction: Some(match shape.direction {
             TextDirection::LeftToRight => WritingDirection::LeftToRight,
             TextDirection::RightToLeft => WritingDirection::RightToLeft,

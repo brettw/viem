@@ -51,6 +51,74 @@ final class EVLinkPopoverTests: XCTestCase {
         }
     }
 
+    private func trackHeadingPicker(_ combo: NSComboBox, keys: [(UInt16, String)]) throws {
+        let window = try XCTUnwrap(combo.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(window.makeFirstResponder(combo))
+        let location = combo.convert(NSPoint(x: combo.bounds.maxX - 8, y: combo.bounds.midY), to: nil)
+        for (keyCode, characters) in keys.reversed() {
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: location, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
+            NSApplication.shared.postEvent(key, atStart: true)
+        }
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0))
+        NSApplication.shared.postEvent(up, atStart: true)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        combo.mouseDown(with: down)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+
+    func testNativeHeadingPickerEscapeKeepsDraftAndSelectionKeepsFragmentAfterTracking() throws {
+        let source = "plain\n\n# Destination"
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        surface.linkPopover.openEditor(inserting: true)
+        let popup = surface.linkPopover
+        let combo = try XCTUnwrap(popup.destinationField as? NSComboBox)
+        popup.textField.stringValue = "draft"
+        combo.stringValue = "#typed"
+        try trackHeadingPicker(combo, keys: [(53, "\u{1b}")])
+        XCTAssertTrue(popup.isEditing, "Escape dismisses the native heading list while retaining the form")
+        XCTAssertEqual(popup.textField.stringValue, "draft")
+        XCTAssertEqual(combo.stringValue, "#typed")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        try trackHeadingPicker(combo, keys: [(125, "\u{f701}"), (36, "\r")])
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(combo.stringValue, "#destination", "Native tracking and field synchronization must retain the fragment destination")
+        XCTAssertTrue(popup.applyButton.isEnabled)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
+    func testHeadingSelectionRestorationRetainsTypedDestinationAndNewDraft() throws {
+        let source = "plain\n\n# Destination"
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        let popup = surface.linkPopover
+        popup.openEditor(inserting: true)
+        let combo = try XCTUnwrap(popup.destinationField as? NSComboBox)
+        popup.comboBoxWillPopUp(Notification(name: NSComboBox.willPopUpNotification, object: combo))
+        combo.selectItem(at: 0)
+        popup.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: combo))
+        combo.stringValue = "https://example.com/typed"
+        popup.comboBoxWillDismiss(Notification(name: NSComboBox.willDismissNotification, object: combo))
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertEqual(combo.stringValue, "https://example.com/typed", "A deferred native label repair cannot replace newly typed text")
+        popup.comboBoxWillPopUp(Notification(name: NSComboBox.willPopUpNotification, object: combo))
+        combo.selectItem(at: 0)
+        popup.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: combo))
+        popup.close()
+        popup.openEditor(inserting: true)
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(combo.stringValue, "", "A selection repair belongs only to the draft that requested it")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
     func testURLOnlyInsertionAndInvalidDestinationLeavesDraftAndSourceIntact() throws {
         let (backend, surface, window) = try editor("", type: EVDocument.markdownType)
         defer { surface.linkPopover.close(); window.close() }
@@ -107,6 +175,63 @@ final class EVLinkPopoverTests: XCTestCase {
         }
     }
 
+    func testCaretToolbarOpensEmptyDraftAndHeadingComboUsesExactFragments() throws {
+        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+            for insert in [false, true] {
+                let source = "plain\n\n# A **heading**\n\n# A **heading**"
+                let (backend, surface, window) = try editor(source, type: type)
+                defer { surface.linkPopover.close(); window.close() }
+                let session = try XCTUnwrap(surface.session)
+                surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+                if insert { surface.performInput { _ = try session.sendText("i") } }
+                surface.formattingToolbar.refresh()
+                XCTAssertTrue(surface.formattingToolbar.insertLink.isEnabled)
+                surface.formattingToolbar.insertLink.performClick(nil)
+                let popup = surface.linkPopover
+                XCTAssertTrue(popup.isEditing)
+                XCTAssertEqual(popup.textField.stringValue, "")
+                XCTAssertEqual(popup.destinationField.stringValue, "")
+                let combo = try XCTUnwrap(popup.destinationField as? NSComboBox)
+                popup.comboBoxWillPopUp(Notification(name: NSComboBox.willPopUpNotification, object: combo))
+                XCTAssertEqual(combo.objectValues as? [String], ["A heading", "A heading"])
+                combo.selectItem(at: 1)
+                popup.comboBoxSelectionDidChange(Notification(name: NSComboBox.selectionDidChangeNotification, object: combo))
+                popup.comboBoxWillDismiss(Notification(name: NSComboBox.willDismissNotification, object: combo))
+                XCTAssertEqual(combo.stringValue, "#a-heading-1")
+                XCTAssertTrue(popup.applyButton.isEnabled)
+                popup.textField.stringValue = "jump"
+                popup.applyButton.performClick(nil)
+                XCTAssertNil(surface.commandOutput)
+                XCTAssertTrue(String(decoding: try backend.serializedSource(typeName: type), as: UTF8.self).contains("#a-heading-1"))
+                surface.perform(menuCommand: .undo, sender: nil)
+                XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            }
+        }
+    }
+
+    func testCompactPopupFitsLabelAndRetainsMaximumWidth() throws {
+        var widths: [CGFloat] = []
+        for label in ["x", String(repeating: "wide label ", count: 30)] {
+            let (_, surface, window) = try editor("[\(label)](https://example.com)", type: EVDocument.markdownType)
+            defer { surface.linkPopover.close(); window.close() }
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 0))
+            surface.linkPopover.refresh()
+            XCTAssertTrue(surface.linkPopover.isOpen)
+            XCTAssertEqual(surface.linkPopover.destinationButton.title, label)
+            widths.append(surface.linkPopover.popupFrame.width)
+        }
+        XCTAssertLessThan(widths[0], widths[1])
+        XCTAssertLessThanOrEqual(widths[1], 374)
+        let (_, surface, window) = try editor("[](https://example.com)", type: EVDocument.markdownSourceType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        surface.linkPopover.refresh()
+        XCTAssertTrue(surface.linkPopover.isOpen)
+        XCTAssertEqual(surface.linkPopover.destinationButton.title, "empty")
+        let font = try XCTUnwrap(surface.linkPopover.destinationButton.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.italicFontMask))
+    }
+
     func testSourcePopupIncludesDestinationSyntaxAndCopyEditRemoveActions() throws {
         let original = "before [**label**](https://example.com/a%20b) after"
         let (backend, surface, window) = try editor(original, type: EVDocument.markdownSourceType)
@@ -136,7 +261,7 @@ final class EVLinkPopoverTests: XCTestCase {
         formContent.layoutSubtreeIfNeeded()
         for control in [popup.textField, popup.destinationField, popup.applyButton] {
             XCTAssertTrue(formContent.bounds.insetBy(dx: 1, dy: 1).contains(control.convert(control.bounds, to: formContent)),
-                          "Native fields and footer must retain margins inside the fitted popup")
+                          "Native fields and footer must retain margins inside the fitted popup: content \(formContent.bounds), popup \(popup.popupFrame), control \(control.convert(control.bounds, to: formContent))")
         }
         try preview("link-editor", view: formContent)
         popup.destinationField.stringValue = "#heading"

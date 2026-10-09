@@ -18,7 +18,9 @@ Source, Text and Code input are unaffected.
 This sentence is written across
 several source lines. In WYSIWYG they form one flowing paragraph.
 
-This is a separate paragraph, with **bold**, *italic*, ***bold italic***, and ~~strikethrough~~ text. Nested formatting includes **bold with *italic inside*** and *italic with **bold inside***.
+This is a separate paragraph, with **bold**, *italic*, ***bold italic***, and ~~strikethrough~~ text. Nested formatting includes **This text is _extremely_ important** and *italic with **bold inside***.
+
+The toolbar also authors <ins>underlined text</ins>, superscripts such as x<sup>2</sup>, and subscripts such as H<sub>2</sub>O. The two script buttons form a group between strikeout and Code.
 
 Underscores inside identifiers stay literal: `snake_case_name` and snake_case_name. Escaped punctuation also stays literal: \*stars\*, \_underscores\_, \[brackets\], and \# a hash.
 
@@ -126,6 +128,8 @@ preview at their intrinsic size or shrink proportionally to fit the content
 width. Click an image or move the caret onto it to see its selection
 outline and location popup; Edit expands that popup to change its location and
 alternative text. Source exposes the complete image notation.
+The folder button beside Location chooses a local file and fills the draft with
+a relative path where possible. Apply commits the change.
 
 Standalone images use the **Image** paragraph style. Edit that style to change
 margins, borders and padding; its font also applies to image location labels and
@@ -171,11 +175,17 @@ light-purple Markdown reference style. Resolved reference images still preview:
 Inline `code` is monospaced and dark green. Double backticks allow a literal backtick: ``code with a ` backtick``. Code does not interpret *emphasis*, &amp;, or links.
 
 ```rust
-// A language annotation is retained; syntax highlighting is not enabled.
+// WYSIWYG highlights this Rust block with the shared Code syntax styles.
 fn main() {
     println!("Hello, Viem!");
 }
 ```
+
+The language selector sits inside the block's upper-right corner and preserves
+the document's scroll position when changed. Choose None
+to use its Code Block style. New blocks use the preceding block's language,
+or the following block's when there is no preceding block; the first defaults
+to None.
 
 ~~~
 Tilde fences work too.
@@ -210,7 +220,7 @@ The third uses underscores.
 
 ## Passive HTML and comments
 
-Inline HTML supports <b>bold</b>, <em>emphasis</em>, <del>deleted text</del>, <code>code</code>, <kbd>keyboard text</kbd>, and <u>underlined text</u>.
+Inline HTML supports <b>bold</b>, <em>emphasis</em>, <del>deleted text</del>, <code>code</code>, <kbd>keyboard text</kbd>, <u>underlined text</u>, <sup>superscript</sup>, and <sub>subscript</sub>.
 
 HTML images use the same local previews and remote location placeholders as
 Markdown images. A width or height alone preserves the image's proportions;
@@ -305,4 +315,4 @@ graph LR
 
 ### Other GitHub features
 
-Emoji shortcodes such as :smile: stay literal. Repository mentions such as @example, issue references such as #123, and a generated table of contents are not implemented. Heading links such as [Literal code](#literal-code) navigate within this document. Fenced language names do not enable syntax highlighting.
+Emoji shortcodes such as :smile: stay literal. Repository mentions such as @example, issue references such as #123, and a generated table of contents are not implemented. Heading links such as [Literal code](#literal-code) navigate within this document and can be chosen from the link destination combobox.

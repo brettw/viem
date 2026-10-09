@@ -23,7 +23,10 @@ internal sealed partial class EditorPane
     private Button? imageDestinationButton;
     private TextBox? imageText, imageDestination;
     private TextBlock? imageError;
-    private Button? imageApply, imageReload;
+    private Button? imageApply, imageReload, imageBrowse;
+    private object? imageEditDraft, pickingImageDraft;
+    private bool PickingImageLocation => pickingImageDraft != null;
+    internal Button? ImageBrowseButton => imageBrowse;
     private ImageContext? shownImage, dismissedImage;
     private bool editingImage;
     private bool insertingImageAtCaret;
@@ -59,8 +62,19 @@ internal sealed partial class EditorPane
         AutomationProperties.SetName(imageText, "Image alt text"); AutomationProperties.SetName(imageDestination, "Image location");
         imageError = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, MaxWidth = 320, FontSize = 12 };
         AutomationProperties.SetLiveSetting(imageError, AutomationLiveSetting.Polite);
+        imageBrowse = new Button { Width = 34, Height = 32, MinWidth = 0, MinHeight = 0, Padding = new(0),
+            VerticalAlignment = VerticalAlignment.Bottom, Content = new FontIcon { Glyph = "\uE8B7", FontSize = 16 } };
+        AutomationProperties.SetName(imageBrowse, "Choose image file"); ToolTipService.SetToolTip(imageBrowse, "Choose image file");
+        imageBrowse.Click += async (_, _) => {
+            try { await BrowseImageLocation(); }
+            catch (Exception error) { if (!disposed) Report(error); }
+        };
+        var location = new Grid { ColumnSpacing = 6 };
+        location.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        location.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        location.Children.Add(imageDestination); location.Children.Add(imageBrowse); Grid.SetColumn(imageBrowse, 1);
         imageEditor = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
-        imageEditor.Children.Add(imageText); imageEditor.Children.Add(imageDestination); imageEditor.Children.Add(imageError);
+        imageEditor.Children.Add(imageText); imageEditor.Children.Add(location); imageEditor.Children.Add(imageError);
         var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = "Cancel", MinWidth = 60 };
         imageApply = new Button { Content = "Apply", MinWidth = 60 };
@@ -115,6 +129,8 @@ internal sealed partial class EditorPane
         if (!insertingImageAtCaret && context.Image is { Editable: false }) return;
         EnsureImagePopup();
         editingImage = true;
+        imageEditDraft = new object();
+        imageBrowse!.IsEnabled = !PickingImageLocation;
         imageText!.Text = insertingImageAtCaret ? "" : context.Image?.Text ?? context.Text;
         imageDestination!.Text = insertingImageAtCaret ? "" : context.Image?.Destination ?? "";
         imageApply!.IsEnabled = imageDestination.Text.Trim().Length > 0;
@@ -137,6 +153,49 @@ internal sealed partial class EditorPane
         imagePopup.UpdateLayout();
         var focus = imageDestination;
         focus.Focus(FocusState.Programmatic); focus.SelectAll();
+    }
+
+    internal async Task BrowseImageLocation()
+    {
+        if (disposed || PickingImageLocation || !ImageEditorVisible || imageEditDraft is not { } draft
+            || shownImage is not { } context || View is not { } view) return;
+        view.ValidateImageContext(context);
+        string? documentPath = Document.FilePath;
+        pickingImageDraft = draft;
+        imageBrowse!.IsEnabled = false;
+        try
+        {
+            string? directory = documentPath == null ? null : Path.GetDirectoryName(documentPath);
+            string? path = await window.PickImageFile(directory);
+            if (disposed || path == null || !ReferenceEquals(imageEditDraft, draft) || !ReferenceEquals(View, view)
+                || !ImageEditorVisible || !SameImageContext(shownImage, context)
+                || !string.Equals(Document.FilePath, documentPath, StringComparison.OrdinalIgnoreCase)) return;
+            // Native pickers may outlive a source edit, selection change, closed
+            // view or a cancelled/reopened form. They only complete this draft.
+            try { view.ValidateImageContext(context); }
+            catch (Exception error) when (error is InvalidOperationException || error is Viem.Windows.Interop.CoreException { Status: VIEM_STATUS_STALE_REVISION })
+            { DismissImagePopup(suppress: false); return; }
+            imageDestination!.Text = ImageLocation.PickedDestination(path, documentPath);
+            PositionImagePopup();
+        }
+        catch (Exception error)
+        {
+            if (!disposed && ReferenceEquals(imageEditDraft, draft) && ImageEditorVisible)
+            {
+                imageError!.Text = error.Message; imageError.Visibility = Visibility.Visible;
+                PositionImagePopup();
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(pickingImageDraft, draft)) pickingImageDraft = null;
+            if (!disposed)
+            {
+                imageBrowse!.IsEnabled = true;
+                if (ReferenceEquals(imageEditDraft, draft) && ImageEditorVisible)
+                    imageDestination!.Focus(FocusState.Programmatic);
+            }
+        }
     }
 
     internal void ApplyImageEditor()
@@ -165,13 +224,13 @@ internal sealed partial class EditorPane
     internal void DismissImagePopup(bool suppress = true)
     {
         if (suppress) dismissedImage = shownImage;
-        editingImage = false; insertingImageAtCaret = false; shownImage = null;
+        editingImage = false; insertingImageAtCaret = false; shownImage = null; imageEditDraft = null;
         if (imagePopup != null) imagePopup.Visibility = Visibility.Collapsed;
     }
 
     private void RefreshImagePopup()
     {
-        if (View is not { } view || !IsActive || !window.IsWindowActive || view.Composing || composing
+        if (View is not { } view || !IsActive || (!window.IsWindowActive && !PickingImageLocation) || view.Composing || composing
             || !view.HasFormattingSelection || Document.State.format is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE))
         { DismissImagePopup(suppress: false); return; }
         if (!HasImageInteractionFocus()) { DismissImagePopup(suppress: false); return; }
@@ -225,6 +284,7 @@ internal sealed partial class EditorPane
 
     private bool HasImageInteractionFocus()
     {
+        if (PickingImageLocation) return true;
         if (XamlRoot == null) return false;
         for (var element = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject; element != null; element = VisualTreeHelper.GetParent(element))
             if (element == input || element == imagePopup) return true;
@@ -244,9 +304,13 @@ internal sealed partial class EditorPane
         imageError!.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         imagePopup.Padding = editingImage ? new(10) : new(5);
         imageReload!.Visibility = Document.State.format == VIEM_FORMAT_MARKDOWN ? Visibility.Visible : Visibility.Collapsed;
-        imagePopup.Width = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
+        double maximumWidth = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
         double actionsWidth = imageActions!.Children.OfType<Button>().Skip(1).Count(button => button.Visibility == Visibility.Visible) * 32 + 2;
-        imageDestinationButton!.Width = Math.Max(48, imagePopup.Width - imagePopup.Padding.Left - imagePopup.Padding.Right - actionsWidth);
+        var label = (TextBlock)imageDestinationButton!.Content;
+        label.MaxWidth = double.PositiveInfinity;
+        label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        imagePopup.Width = editingImage ? maximumWidth : Math.Min(maximumWidth, label.DesiredSize.Width + 12 + 10 + actionsWidth);
+        imageDestinationButton.Width = Math.Max(12, imagePopup.Width - imagePopup.Padding.Left - imagePopup.Padding.Right - actionsWidth);
         ((TextBlock)imageDestinationButton.Content).MaxWidth = imageDestinationButton.Width - 12;
         imagePopup.Measure(new Size(imagePopup.Width, double.PositiveInfinity));
         double height = imagePopup.DesiredSize.Height;

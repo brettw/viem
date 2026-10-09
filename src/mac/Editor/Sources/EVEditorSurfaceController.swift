@@ -849,6 +849,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_STRONG), session: session)
         case .italic:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS), session: session)
+        case .underline, .superscript, .subscript:
+            performInput {
+                let property: EVStyleProperty = menuCommand == .underline ? .characterUnderline : menuCommand == .superscript ? .characterSuperscript : .characterSubscript
+                let state = try session.inlinePropertyState(property)
+                _ = try session.setInlineProperty(property, state != UInt32(VIEM_SEMANTIC_STYLE_STATE_ON), expected: session.listSelection())
+            }
         case .strikethrough:
             performInput {
                 let state = try session.strikethroughState()
@@ -967,6 +973,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS),
                 session: session
             )
+        case .underline, .superscript, .subscript:
+            inlinePropertyMenuPresentation(menuCommand, session: session)
         case .strikethrough:
             if [.markdown, .markdownSource].contains(backend.sourceFormat), let session,
                let state = try? session.strikethroughState() {
@@ -1259,6 +1267,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         editorView.performZoomGeometryUpdate {
             self.performInput { _ = try session.setScale(CGFloat(scale)) }
         }
+    }
+
+    private func inlinePropertyMenuPresentation(_ command: EVMenuCommand, session: EVCoreViewSession?) -> EVMenuItemPresentation {
+        guard [.markdown, .markdownSource].contains(backend.sourceFormat), let session else { return .disabled }
+        let property: EVStyleProperty = command == .underline ? .characterUnderline : command == .superscript ? .characterSuperscript : .characterSubscript
+        let state = (try? session.inlinePropertyState(property)) ?? UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF)
+        return EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
+            && (try? session.selectedNamedStyles().hasCodeBlock) != true,
+            state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
+                : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
     }
 
     private func semanticStyleMenuPresentation(

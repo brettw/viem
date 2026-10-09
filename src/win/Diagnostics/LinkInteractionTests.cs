@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Shell;
 using static Viem.Windows.Interop.Native;
@@ -13,6 +14,13 @@ internal static class LinkInteractionTests
 {
     private static void Check(bool condition, string name)
     { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+
+    private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is T match) yield return match;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            foreach (var child in Children<T>(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
 
     internal static async Task Run(Preferences preferences)
     {
@@ -32,6 +40,7 @@ internal static class LinkInteractionTests
                 && ToolTipService.GetToolTip(window.Toolbar.InsertLink) as string == "Link",
                 "Markdown has an accessible link toolbar action reflecting the Normal caret");
             Check(pane.LinkPopupVisible && !pane.LinkEditorVisible, "the caret reveals the compact link toolbar");
+            Check(pane.LinkSummary == "alpha" && pane.LinkPopupWidth < 360, "the compact toolbar fits its link label within the previous maximum width");
             window.Toolbar.InsertLink.Focus(FocusState.Programmatic); pane.Refresh();
             Check(!pane.LinkPopupVisible, "background refresh does not reopen link controls while another control has focus");
             pane.FocusEditor(); pane.Refresh();
@@ -111,6 +120,37 @@ internal static class LinkInteractionTests
             Check(Source().EndsWith("[plain](<other.md#part>)", StringComparison.Ordinal), "selected text becomes a local-document link");
             view.Undo();
             view.Key(VIEM_KEY_ESCAPE); view.Command("G0"); pane.ShowInsertLink();
+            Check(pane.LinkEditorVisible && pane.LinkTextValue == "" && pane.LinkDestinationValue == "",
+                "a caret without a link or selection starts an empty link draft");
+            var destinationControl = pane.LinkDestinationControl!;
+            Check(destinationControl.IsEditable, "the destination field is an editable native combobox");
+            destinationControl.IsDropDownOpen = true;
+            await Task.Delay(30);
+            Check(destinationControl.Items.Count == 1 && destinationControl.Items[0] is LinkHeading { Text: "Destination", Destination: "#destination" },
+                "expanding the destination combobox lists the document headings");
+            Check(destinationControl.DisplayMemberPath.Length == 0 && destinationControl.ItemTemplate != null
+                && destinationControl.Items[0].ToString() == "#destination",
+                "heading rows display their labels while native editable text uses the destination value");
+            destinationControl.UpdateLayout();
+            var headingRow = destinationControl.ContainerFromIndex(0) as ComboBoxItem;
+            Check(headingRow != null && Children<TextBlock>(headingRow).Any(text => text.Text == "Destination"),
+                "the native heading dropdown renders its bound label in managed and NativeAOT builds");
+            destinationControl.SelectedIndex = 0;
+            destinationControl.IsDropDownOpen = false;
+            await Task.Delay(40);
+            Check(pane.LinkDestinationValue == "#destination", "choosing a heading authors its exact internal fragment");
+            pane.DismissLinkPopup(suppress: false);
+            Check(!destinationControl.IsDropDownOpen && destinationControl.SelectedItem == null && destinationControl.Items.Count == 0,
+                "dismissing a link draft closes and clears its heading dropdown");
+            pane.ShowInsertLink();
+            Check(pane.LinkEditorVisible && pane.LinkDestinationValue == "" && destinationControl.SelectedItem == null,
+                "a new link draft starts without the previous heading selection");
+            destinationControl.IsDropDownOpen = true;
+            await Task.Delay(30);
+            destinationControl.SelectedIndex = 0;
+            destinationControl.IsDropDownOpen = false;
+            await Task.Delay(40);
+            Check(pane.LinkDestinationValue == "#destination", "the same heading can be selected again after cancelling a draft");
             pane.LinkTextValue = ""; pane.LinkDestinationValue = "https://example.test"; pane.ApplyLinkEditor();
             Check(document.FormattedText().Contains("https://example.test", StringComparison.Ordinal), "a destination alone supplies the inserted link text");
             view.Undo();

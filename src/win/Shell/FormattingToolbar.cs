@@ -10,14 +10,14 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
-internal enum ToolbarAction { Bold, Italic, Strikethrough, CharacterCode, Bullets, Numbers, BlockQuote, CodeBlock, Indent, Unindent }
+internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, Superscript, Subscript, CharacterCode, Bullets, Numbers, BlockQuote, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
 internal sealed partial class FormattingToolbar : UserControl
 {
-    internal readonly ScrollViewer Scroll = new() { HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    internal readonly ScrollViewer Scroll = new() { MinWidth = 0, HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
     private EditorPane? pane;
-    private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 12, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
     internal readonly DropDownButton Character = Selector("Character style");
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
@@ -50,8 +50,11 @@ internal sealed partial class FormattingToolbar : UserControl
         };
         Height = 42; Visibility = Visibility.Collapsed;
         Scroll.Content = row;
+        // Groups retain their measured widths. Clip the scrolling viewport
+        // before the fixed right-hand view toggle.
+        Scroll.SizeChanged += (_, e) => Scroll.Clip = new RectangleGeometry { Rect = new global::Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
         var layout = new Grid { ColumnSpacing = 12, Padding = new(0, 0, 10, 0) };
-        layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 0 });
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.Children.Add(Scroll); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
         FormattedView.Content = FormattedViewIcon(FormattedView);
@@ -68,7 +71,6 @@ internal sealed partial class FormattingToolbar : UserControl
         AutomationProperties.SetName(this, "Formatting toolbar");
         foreach (var selector in new[] { Paragraph, Character })
         {
-            row.Children.Add(selector);
             var menu = (MenuFlyout)selector.Flyout;
             menu.Opening += (_, _) => tracking++;
             menu.Closed += (_, _) => { tracking--; DispatcherQueue.TryEnqueue(Refresh); PopupsClosed?.Invoke(); };
@@ -76,11 +78,16 @@ internal sealed partial class FormattingToolbar : UserControl
         var character = Group(); row.Children.Add(character);
         Add(character, ToolbarAction.Bold, "Bold", "\uE8DD");
         Add(character, ToolbarAction.Italic, "Italic", "\uE8DB");
+        Add(character, ToolbarAction.Underline, "Underline", "\uE8DC");
         Add(character, ToolbarAction.Strikethrough, "Strikethrough", "\uEDE0");
-        Add(character, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
+        var script = Group(); row.Children.Add(script);
+        Add(script, ToolbarAction.Superscript, "Superscript", "x²", literal: true);
+        Add(script, ToolbarAction.Subscript, "Subscript", "x₂", literal: true);
+        var codeLink = Group(); row.Children.Add(codeLink);
+        Add(codeLink, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
         AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link");
         InsertLink.Click += (_, _) => ExecuteLink();
-        character.Children.Add(InsertLink);
+        codeLink.Children.Add(InsertLink);
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
@@ -92,12 +99,13 @@ internal sealed partial class FormattingToolbar : UserControl
             if (InsertImage.IsEnabled && pane is { } target) target.Run(target.ShowInsertImage);
         };
         block.Children.Add(InsertImage);
+        row.Children.Add(InsertTable);
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
+        row.Children.Add(Paragraph); row.Children.Add(Character);
         InsertTable.Content = TableIcon(InsertTable);
         AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
-        row.Children.Add(InsertTable);
     }
 
     private static StackPanel Group(double spacing = 2) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
@@ -111,7 +119,8 @@ internal sealed partial class FormattingToolbar : UserControl
         ButtonBase button = toggle ? new ToggleButton { IsThreeState = true } : new Button();
         button.Width = 28; button.Height = 26; button.MinWidth = 0; button.MinHeight = 0; button.Padding = new(0);
         button.IsTabStop = true; button.AllowFocusOnInteraction = false;
-        button.Content = action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
+        button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(button, action == ToolbarAction.Superscript)
+            : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
         AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
@@ -232,6 +241,9 @@ internal sealed partial class FormattingToolbar : UserControl
             }
             bool canStrike = view.CanFormatStrikethrough;
             Set(ToolbarAction.Strikethrough, available ? view.StrikethroughState() : 0, canStrike);
+            Set(ToolbarAction.Underline, available ? view.UnderlineState() : 0, view.CanFormatUnderline);
+            Set(ToolbarAction.Superscript, available ? view.SuperscriptState() : 0, view.CanFormatSuperscript);
+            Set(ToolbarAction.Subscript, available ? view.SubscriptState() : 0, view.CanFormatSubscript);
             RefreshCode(ToolbarAction.CharacterCode, new(2, "Code"), new(2, ""));
             RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
             Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);
@@ -272,7 +284,10 @@ internal sealed partial class FormattingToolbar : UserControl
 
     private void RefreshSelector(DropDownButton button, uint space)
     {
-        var entries = choices.Where(c => c.Key.Namespace == space).ToArray();
+        var entries = choices.Where(c => c.Key.Namespace == space
+            && (space != 1 || View?.Document.State.format != VIEM_FORMAT_MARKDOWN
+                || sheet?.Styles.FirstOrDefault(s => s.Key == c.Key) is { } definition
+                    && (definition.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || c.Selected && (definition.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) != 0))).ToArray();
         var menu = (MenuFlyout)button.Flyout;
         // Keep native item objects even when the selection becomes Mixed.
         if (!menu.Items.Select(i => i.Tag).SequenceEqual(entries.Select(e => (object)e.Key)))
@@ -281,6 +296,7 @@ internal sealed partial class FormattingToolbar : UserControl
             foreach (var entry in entries)
             {
                 var item = new ToggleMenuFlyoutItem { Tag = entry.Key };
+                item.Icon = StyleIcons.Icon(StyleIcons.Kind(sheet?.Styles.FirstOrDefault(s => s.Key == entry.Key), space));
                 item.Click += (_, _) => {
                     if (item.CommandParameter is not ViemStyleSheetIdentityV1 identity || View is not { } view) return;
                     Run(() => view.ChooseStyle((StyleKey)item.Tag, identity));
@@ -299,7 +315,9 @@ internal sealed partial class FormattingToolbar : UserControl
             if (item.IsChecked != entry.Selected) item.IsChecked = entry.Selected;
         }
         string title = entries.FirstOrDefault(c => c.Selected)?.Name ?? "Mixed";
-        if (!Equals(button.Content, title)) button.Content = title;
+        var active = entries.FirstOrDefault(c => c.Selected);
+        var kind = StyleIcons.Kind(sheet?.Styles.FirstOrDefault(s => s.Key == active?.Key), space);
+        if (!Equals(button.Tag, (title, kind))) { button.Content = StyleIcons.Label(title, kind); button.Tag = (title, kind); }
         button.IsEnabled = entries.Any(c => c.Enabled);
     }
 
@@ -325,7 +343,10 @@ internal sealed partial class FormattingToolbar : UserControl
             {
                 case ToolbarAction.Bold: view.ToggleSemantic(VIEM_SEMANTIC_STYLE_STRONG); break;
                 case ToolbarAction.Italic: view.ToggleSemantic(VIEM_SEMANTIC_STYLE_EMPHASIS); break;
+                case ToolbarAction.Underline: view.ToggleUnderline(); break;
                 case ToolbarAction.Strikethrough: view.ToggleStrikethrough(); break;
+                case ToolbarAction.Superscript: view.ToggleSuperscript(); break;
+                case ToolbarAction.Subscript: view.ToggleSubscript(); break;
                 case ToolbarAction.CharacterCode: Code(new(2, "Code"), new(2, "")); break;
                 case ToolbarAction.BlockQuote: view.SetBlockQuote(selected!.QuoteState != VIEM_SEMANTIC_STYLE_STATE_ON); break;
                 case ToolbarAction.CodeBlock: Code(new(1, "Code Block"), new(1, "Paragraph")); break;

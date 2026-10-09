@@ -32,6 +32,13 @@ impl From<&str> for StyleId {
 }
 
 impl StyleId {
+    /// Markdown can author only these paragraph treatments; other definitions
+    /// configure projection appearance without introducing new source syntax.
+    pub(crate) fn supports_markdown_paragraph_assignment(&self) -> bool {
+        matches!(self.0.as_str(), "Paragraph" | "Block quote" | "Code Block"
+            | "Heading1" | "Heading2" | "Heading3" | "Heading4" | "Heading5" | "Heading6")
+    }
+
     /// Presentation-only character overlay used for search matches.
     pub fn incremental_match() -> Self {
         Self("* Incremental match".into())
@@ -234,6 +241,8 @@ pub struct CharacterProperties {
     pub background: Option<Color>,
     pub underline: Option<bool>,
     pub strikethrough: Option<bool>,
+    pub superscript: Option<bool>,
+    pub subscript: Option<bool>,
     pub language: Option<String>,
     pub direction: Option<WritingDirection>,
     pub open_type_features: Option<BTreeMap<String, u32>>,
@@ -535,6 +544,8 @@ impl StyleSheet {
                     foreground: None,
                     underline: Some(false),
                     strikethrough: Some(false),
+                    superscript: Some(false),
+                    subscript: Some(false),
                     direction: Some(WritingDirection::Natural),
                     open_type_features: Some(BTreeMap::new()),
                     letter_spacing: Some(0.0),
@@ -792,6 +803,8 @@ pub struct ResolvedCharacterStyle {
     pub background: Option<Color>,
     pub underline: bool,
     pub strikethrough: bool,
+    pub superscript: bool,
+    pub subscript: bool,
     pub language: Option<String>,
     pub direction: WritingDirection,
     pub open_type_features: BTreeMap<String, u32>,
@@ -819,6 +832,8 @@ impl Default for ResolvedCharacterStyle {
             background: None,
             underline: false,
             strikethrough: false,
+            superscript: false,
+            subscript: false,
             language: None,
             direction: WritingDirection::Natural,
             open_type_features: BTreeMap::new(),
@@ -852,6 +867,8 @@ impl ResolvedCharacterStyle {
         compare!(background, StyleProperty::CharacterBackground);
         compare!(underline, StyleProperty::CharacterUnderline);
         compare!(strikethrough, StyleProperty::CharacterStrikethrough);
+        compare!(superscript, StyleProperty::CharacterSuperscript);
+        compare!(subscript, StyleProperty::CharacterSubscript);
         compare!(language, StyleProperty::CharacterLanguage);
         compare!(direction, StyleProperty::CharacterDirection);
         compare!(open_type_features, StyleProperty::CharacterOpenTypeFeatures);
@@ -986,6 +1003,8 @@ pub enum StyleProperty {
     CharacterBackground,
     CharacterUnderline,
     CharacterStrikethrough,
+    CharacterSuperscript,
+    CharacterSubscript,
     CharacterLanguage,
     CharacterDirection,
     CharacterOpenTypeFeatures,
@@ -1085,6 +1104,8 @@ impl StyleProperty {
             | Self::CharacterSize
             | Self::CharacterWeight
             | Self::CharacterBold
+            | Self::CharacterSuperscript
+            | Self::CharacterSubscript
             | Self::CharacterSlant
             | Self::CharacterLanguage
             | Self::CharacterDirection
@@ -1132,7 +1153,7 @@ pub(crate) const PARAGRAPH_STYLE_PROPERTIES: [StyleProperty; 23] = [
     StyleProperty::ParagraphBaseDirection,
 ];
 
-pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 15] = [
+pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 17] = [
     StyleProperty::CharacterFontFamilies,
     StyleProperty::CharacterFontFace,
     StyleProperty::CharacterFontAxes,
@@ -1144,6 +1165,8 @@ pub(crate) const CHARACTER_STYLE_PROPERTIES: [StyleProperty; 15] = [
     StyleProperty::CharacterBackground,
     StyleProperty::CharacterUnderline,
     StyleProperty::CharacterStrikethrough,
+    StyleProperty::CharacterSuperscript,
+    StyleProperty::CharacterSubscript,
     StyleProperty::CharacterLanguage,
     StyleProperty::CharacterDirection,
     StyleProperty::CharacterOpenTypeFeatures,
@@ -2832,6 +2855,8 @@ sparse_property_operations! {
     background => CharacterBackground(Color),
     underline => CharacterUnderline(Boolean),
     strikethrough => CharacterStrikethrough(Boolean),
+    superscript => CharacterSuperscript(Boolean),
+    subscript => CharacterSubscript(Boolean),
     language => CharacterLanguage(Text),
     direction => CharacterDirection(WritingDirection),
     open_type_features => CharacterOpenTypeFeatures(OpenTypeFeatures),
@@ -2865,7 +2890,12 @@ pub(super) fn set_character_property(
         properties.size = Some(FontSize::Percentage(*value));
         Ok(())
     } else {
-        set_character_property_value(style, properties, property, value)
+        set_character_property_value(style, properties, property, value)?;
+        if *value == StylePropertyValue::Boolean(true) {
+            if property == StyleProperty::CharacterSuperscript { properties.subscript = Some(false); }
+            if property == StyleProperty::CharacterSubscript { properties.superscript = Some(false); }
+        }
+        Ok(())
     }
 }
 
@@ -3129,6 +3159,12 @@ fn record_character_winners(
             &origin,
         );
     }
+    if properties.superscript.is_some() {
+        record_winner(contributions, StyleProperty::CharacterSuperscript, &origin);
+    }
+    if properties.subscript.is_some() {
+        record_winner(contributions, StyleProperty::CharacterSubscript, &origin);
+    }
     if properties.language.is_some() {
         record_winner(contributions, StyleProperty::CharacterLanguage, &origin);
     }
@@ -3293,6 +3329,14 @@ fn apply_character_properties(
     }
     if let Some(value) = properties.strikethrough {
         resolved.strikethrough = value;
+    }
+    if let Some(value) = properties.superscript {
+        resolved.superscript = value;
+        if value { resolved.subscript = false; }
+    }
+    if let Some(value) = properties.subscript {
+        resolved.subscript = value;
+        if value { resolved.superscript = false; }
     }
     if let Some(value) = properties.language.as_ref() {
         resolved.language = Some(value.clone());

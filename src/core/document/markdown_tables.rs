@@ -172,6 +172,7 @@ pub enum TableEditIntent {
         anchor_row: usize,
         anchor_column: usize,
     },
+    SetCellsInlineProperty { table: u64, rows: Range<usize>, columns: Range<usize>, property: super::StyleProperty, enabled: bool },
     SetCellsStrikethrough {
         table: u64,
         rows: Range<usize>,

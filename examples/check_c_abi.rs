@@ -295,6 +295,7 @@ _Static_assert(VIEM_EFFECT_BATCH_INFO_V1_SIZE == sizeof(ViemEffectBatchInfoV1),
 _Static_assert(offsetof(ViemEffectBatchInfoV1, ex_mark_count) ==
     {effect_batch_mark_count}, "effect batch mark count offset");
 _Static_assert(sizeof(ViemResolvedTextStyleV1) == {style}, "style");
+_Static_assert(offsetof(ViemResolvedTextStyleV1, baseline_offset) == {baseline_offset}, "baseline offset");
 _Static_assert(VIEM_STYLE_VALUE_PERCENTAGE == {percentage_value}, "percentage value tag");
 _Static_assert(sizeof(ViemShapeStyleRunV1) == {style_run}, "style run");
 _Static_assert(sizeof(ViemShapedClusterV1) == {cluster}, "cluster");
@@ -710,6 +711,7 @@ static void typecheck(void) {{
         effect_batch_info = std::mem::size_of::<ViemEffectBatchInfoV1>(),
         effect_batch_mark_count = std::mem::offset_of!(ViemEffectBatchInfoV1, ex_mark_count),
         style = std::mem::size_of::<ViemResolvedTextStyleV1>(),
+        baseline_offset = std::mem::offset_of!(ViemResolvedTextStyleV1, baseline_offset),
         percentage_value = VIEM_STYLE_VALUE_PERCENTAGE,
         style_run = std::mem::size_of::<ViemShapeStyleRunV1>(),
         cluster = std::mem::size_of::<ViemShapedClusterV1>(),

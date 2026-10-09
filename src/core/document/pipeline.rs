@@ -101,6 +101,7 @@ pub enum PipelineEditIntent {
     AssignCharacterStyle {
         style: StyleId,
     },
+    SetInlineProperty { property: super::StyleProperty, enabled: bool },
     SetStrikethrough {
         enabled: bool,
     },
@@ -565,7 +566,8 @@ impl TransformationPipelineSnapshot {
             | PipelineEditIntent::ConfigureDocumentDefaultCharacter => {
                 StageEditDisposition::PassThrough
             }
-            PipelineEditIntent::SetSemanticInlineStyle { .. }
+            PipelineEditIntent::SetInlineProperty { property: super::StyleProperty::CharacterUnderline | super::StyleProperty::CharacterSuperscript | super::StyleProperty::CharacterSubscript, .. }
+            | PipelineEditIntent::SetSemanticInlineStyle { .. }
             | PipelineEditIntent::SetStrikethrough { .. } => {
                 if self.configuration.format.is_markdown() {
                     StageEditDisposition::Translated
@@ -592,7 +594,8 @@ impl TransformationPipelineSnapshot {
             {
                 StageEditDisposition::Translated
             }
-            PipelineEditIntent::AssignBlockStyle { .. }
+            PipelineEditIntent::SetInlineProperty { .. }
+            | PipelineEditIntent::AssignBlockStyle { .. }
             | PipelineEditIntent::AssignCharacterStyle { .. } => StageEditDisposition::Unsupported(
                 if self.configuration.format == Format::PlainText {
                     UnsupportedEditReason::PlainTextHasNoRichStyleStorage

@@ -199,6 +199,57 @@ fn fragment_navigation_matches_headings_and_duplicate_suffixes() {
         assert!(doc.find_link_fragment("missing").unwrap().is_none());
     }
 }
+
+#[test]
+fn heading_picker_uses_navigation_fragments_and_omits_code_lookalikes() {
+    let source = "# Hello, **World**!\n\n## Hello, **World**!\n\nSetext `title`\n===\n\n> ### Quoted heading\n\n- Parent\n  - #### ~~Nested~~ heading\n\n```\n# Not a heading\n```";
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let doc = document(source, format);
+        let list = doc.link_headings().unwrap();
+        assert!(!list.truncated);
+        assert_eq!(list.headings.iter().map(|h| (&*h.text, &*h.destination, h.level)).collect::<Vec<_>>(), vec![
+            ("Hello, World!", "#hello-world", 1),
+            ("Hello, World!", "#hello-world-1", 2),
+            ("Setext title", "#setext-title", 1),
+            ("Quoted heading", "#quoted-heading", 3),
+            ("Nested heading", "#nested-heading", 4),
+        ]);
+        for heading in list.headings {
+            assert_eq!(doc.find_link_fragment(&heading.destination[1..]).unwrap(), Some(heading.offset));
+        }
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+    assert!(document(source, Format::PlainText).link_headings().unwrap().headings.is_empty());
+}
+
+#[test]
+fn heading_picker_has_finite_retention_and_reports_truncation() {
+    let doc = document(&"# Heading\n\n".repeat(1025), Format::Markdown);
+    let list = doc.link_headings().unwrap();
+    assert_eq!(list.headings.len(), 1024);
+    assert!(list.truncated);
+    assert_eq!(list.headings[1023].destination, "#heading-1023");
+    let collisions = document("# foo\n\n# foo-1\n\n# foo\n\n# foo", Format::Markdown).link_headings().unwrap();
+    assert_eq!(collisions.headings.iter().map(|heading| heading.destination.as_str()).collect::<Vec<_>>(),
+        vec!["#foo", "#foo-1", "#foo-2", "#foo-3"]);
+}
+
+#[test]
+fn heading_picker_reads_only_indexed_headings_and_bounds_giant_labels() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let doc = document(&format!("{}# Target\n", "unrelated prose\n\n".repeat(10_000)), format);
+        let (result, work) = measure_document_work(|| doc.link_headings().unwrap());
+        assert_eq!(result.headings.len(), 1);
+        assert_eq!(result.headings[0].destination, "#target");
+        assert_eq!(work.source_full_materializations, 0, "{work:?}");
+        assert!(work.source_decoded_bytes < 64, "{work:?}");
+        assert!(work.list_capability_blocks_visited < 256, "{work:?}");
+        let giant = document(&format!("# {}\n", "x".repeat(300_000)), format);
+        let (result, work) = measure_document_work(|| giant.link_headings().unwrap());
+        assert!(result.headings.is_empty() && result.truncated);
+        assert_eq!(work.source_decoded_bytes, 0, "{work:?}");
+    }
+}
 #[test]
 fn passive_link_refresh_never_decodes_unrelated_large_document_source() {
     let source = format!(

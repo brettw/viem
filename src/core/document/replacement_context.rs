@@ -15,6 +15,7 @@ pub(crate) struct ReplacementTypingContext {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReplacementParagraphStyle {
+    pub code_language: Option<String>,
     pub style: super::StyleId,
     pub quote_depth: usize,
 }
@@ -41,6 +42,7 @@ impl Document {
             // restore in source.
             style: if owner.style.0 == "Image" { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
             quote_depth: owner.quote_depth,
+            code_language: owner.code_language.clone(),
         };
         // Paragraph separators have no character style of their own. Skip
         // only structural separators, retaining authored hard breaks/spaces.

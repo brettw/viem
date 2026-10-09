@@ -27,6 +27,8 @@ pub use completion::*;
 mod tables;
 pub use tables::*;
 mod links;
+mod code_blocks;
+pub use code_blocks::*;
 pub use links::*;
 mod images;
 pub use images::*;
@@ -848,6 +850,7 @@ pub struct ViemResolvedTextStyleV1 {
     pub size: f32,
     pub weight: f32,
     pub letter_spacing: f32,
+    pub baseline_offset: f32,
     pub font_families: *const ViemUtf8Slice,
     pub font_family_count: u64,
     pub language: ViemUtf8Slice,
@@ -1325,6 +1328,8 @@ pub const VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR: u32 = 41;
 pub const VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND: u32 = 42;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES: u32 = 43;
 pub const VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE: u32 = 44;
+pub const VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT: u32 = 45;
+pub const VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT: u32 = 46;
 
 pub const VIEM_STYLE_VALUE_NONE: u32 = 0;
 pub const VIEM_STYLE_VALUE_FLOAT: u32 = 1;
@@ -1658,6 +1663,7 @@ pub struct ViemTextPaintV1 {
     pub flags: u32,
     pub foreground: ViemRgbaV1,
     pub background: ViemRgbaV1,
+    pub baseline_offset: f32,
 }
 
 pub const VIEM_TEXT_PAINT_V1_SIZE: u32 = size_of::<ViemTextPaintV1>() as u32;
@@ -1805,6 +1811,7 @@ pub const VIEM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<ViemLayoutDecorationV1
 pub const VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
+pub const VIEM_LAYOUT_DECORATION_CODE_LANGUAGE: u32 = 1 << 4;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutDecorationsInfoV1 {
@@ -2854,6 +2861,7 @@ impl MarshalledStyle {
             size: style.size,
             weight: style.weight,
             letter_spacing: style.letter_spacing,
+            baseline_offset: style.baseline_offset,
             font_families: slice_pointer(&font_families),
             font_family_count: font_families.len() as u64,
             language: style
@@ -5010,6 +5018,7 @@ fn text_paint_to_ffi(paint: &ResolvedTextPaint) -> ViemTextPaintV1 {
         flags,
         foreground: color_to_ffi(paint.foreground),
         background,
+        baseline_offset: paint.baseline_offset,
     }
 }
 
@@ -5297,6 +5306,8 @@ fn style_property_to_ffi(property: StyleProperty) -> u32 {
         StyleProperty::CharacterForeground => VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND,
         StyleProperty::CharacterBackground => VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND,
         StyleProperty::CharacterUnderline => VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+        StyleProperty::CharacterSuperscript => VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT,
+        StyleProperty::CharacterSubscript => VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT,
         StyleProperty::CharacterStrikethrough => VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
         StyleProperty::CharacterLanguage => VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE,
         StyleProperty::CharacterDirection => VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION,
@@ -5469,6 +5480,8 @@ fn declared_character_property(
         StyleProperty::CharacterForeground => properties.foreground.map(StylePropertyValue::Color),
         StyleProperty::CharacterBackground => properties.background.map(StylePropertyValue::Color),
         StyleProperty::CharacterUnderline => properties.underline.map(StylePropertyValue::Boolean),
+        StyleProperty::CharacterSuperscript => properties.superscript.map(StylePropertyValue::Boolean),
+        StyleProperty::CharacterSubscript => properties.subscript.map(StylePropertyValue::Boolean),
         StyleProperty::CharacterStrikethrough => {
             properties.strikethrough.map(StylePropertyValue::Boolean)
         }
@@ -5567,6 +5580,8 @@ fn effective_character_property(
         StyleProperty::CharacterUnderline => {
             Some(StylePropertyValue::Boolean(properties.underline))
         }
+        StyleProperty::CharacterSuperscript => Some(StylePropertyValue::Boolean(properties.superscript)),
+        StyleProperty::CharacterSubscript => Some(StylePropertyValue::Boolean(properties.subscript)),
         StyleProperty::CharacterStrikethrough => {
             Some(StylePropertyValue::Boolean(properties.strikethrough))
         }
@@ -5886,7 +5901,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 is_base_paragraph,
                 Some(style.role),
             ) & if format.is_code() { !VIEM_STYLE_CAPABILITY_EDIT_NEXT_STYLE } else { u32::MAX }) | if format.is_markdown()
-                && matches!(style.id.0.as_str(), "Block quote" | "Code Block")
+                && style.id.supports_markdown_paragraph_assignment()
             {
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
@@ -6990,6 +7005,8 @@ fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
         VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND => Ok(StyleProperty::CharacterForeground),
         VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND => Ok(StyleProperty::CharacterBackground),
         VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE => Ok(StyleProperty::CharacterUnderline),
+        VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT => Ok(StyleProperty::CharacterSuperscript),
+        VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT => Ok(StyleProperty::CharacterSubscript),
         VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH => Ok(StyleProperty::CharacterStrikethrough),
         VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE => Ok(StyleProperty::CharacterLanguage),
         VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION => Ok(StyleProperty::CharacterDirection),
@@ -7113,6 +7130,8 @@ unsafe fn parse_style_property_value<O>(
         }
         StyleProperty::CharacterBold
         | StyleProperty::CharacterUnderline
+        | StyleProperty::CharacterSuperscript
+        | StyleProperty::CharacterSubscript
         | StyleProperty::CharacterStrikethrough => {
             if value.kind != VIEM_STYLE_VALUE_BOOLEAN || value.enum_value > 1 {
                 return Err(invalid());
@@ -8337,6 +8356,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                 crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak => VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER,
                                 crate::layout::DecorationKind::BlockBackground => VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND,
                                 crate::layout::DecorationKind::BlockBorder => VIEM_LAYOUT_DECORATION_BLOCK_BORDER,
+                                crate::layout::DecorationKind::CodeLanguage => VIEM_LAYOUT_DECORATION_CODE_LANGUAGE,
                                 _ => 0,
                             },
                             row_index: checked_export_count(row_index)?,
@@ -10105,6 +10125,45 @@ pub unsafe extern "C" fn viem_core_view_assign_style(
     })
 }
 
+/// Set a supported Markdown character effect against an exact logical selection.
+/// # Safety
+/// Selection and outcome pointers must be valid and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_set_inline_property(
+    handle: ViemCoreHandle, view: ViemViewId,
+    expected_selection: *const ViemLogicalSelectionIdentityV1,
+    property: u32, enabled: u8, out_outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let selection = unsafe { read_core_request(expected_selection, out_outcome)? };
+        let property = parse_style_property(property)?;
+        if enabled > 1 || !matches!(property, StyleProperty::CharacterUnderline | StyleProperty::CharacterSuperscript | StyleProperty::CharacterSubscript) { return Err(ViemStatus::InvalidArgument); }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core.list_selection_identity(ViewId(view)).map_err(core_status)?;
+            validate_logical_selection_identity(selection, logical_selection_identity_to_ffi(&expected)?)?;
+            dispatch_event(core, view, CoreEvent::SetInlineProperty { expected, property, enabled: enabled != 0 })
+        })?;
+        unsafe { out_outcome.write(outcome) }; Ok(())
+    })
+}
+
+/// Read Off, On or Mixed for a supported Markdown character effect.
+/// # Safety
+/// out_state points to aligned writable u32 storage.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_inline_property_state(
+    handle: ViemCoreHandle, view: ViemViewId, property: u32, out_state: *mut u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_state, 1)?;
+        let property = parse_style_property(property)?;
+        if !matches!(property, StyleProperty::CharacterUnderline | StyleProperty::CharacterSuperscript | StyleProperty::CharacterSubscript) { return Err(ViemStatus::InvalidArgument); }
+        let state = with_core(handle, |core| core.selection_inline_property_state(ViewId(view), property).map(semantic_style_state_to_ffi).map_err(core_status))?;
+        unsafe { out_state.write(state) }; Ok(())
+    })
+}
+
 /// Set Markdown strikethrough through exact source/selection verification.
 /// # Safety
 /// The selection and output pointers must be valid and disjoint.
@@ -10456,6 +10515,7 @@ mod tests {
     mod syntax_wait_tests;
     mod clipboard_import_tests;
     mod theme_tests;
+    mod style_assignment_tests;
     use super::{
         checkout_core, viem_core_copy_formatted_utf8_range,
         viem_core_copy_style_sheet, viem_core_destroy, viem_core_formatted_point_info,
@@ -11419,7 +11479,7 @@ mod tests {
             ViemStatus::Ok
         );
         assert_eq!(info.definition_count, 25);
-        assert_eq!(info.property_count, 904);
+        assert_eq!(info.property_count, 954);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();

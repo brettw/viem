@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Shell;
@@ -27,6 +28,7 @@ internal static class FormattingToolbarTests
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
         selector.Flyout.Hide(); await Task.Delay(50);
     }
+    private static string? Title(DropDownButton selector) => (selector.Content as StackPanel)?.Children.OfType<TextBlock>().SingleOrDefault()?.Text;
     private static bool? State(FormattingToolbar toolbar, ToolbarAction action) => ((ToggleButton)toolbar.Buttons[action]).IsChecked;
     private static async Task Click(FormattingToolbar toolbar, ToolbarAction action)
     {
@@ -53,7 +55,7 @@ internal static class FormattingToolbarTests
 
     private static async Task CharacterCaretContext(Preferences preferences)
     {
-        const string source = "**bold** *italic* ~~strike~~ `code` plain";
+        const string source = "**bold** *italic* <u>underline</u> ~~strike~~ <sup>super</sup> <sub>sub</sub> `code` plain";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
@@ -62,7 +64,8 @@ internal static class FormattingToolbarTests
         {
             await Task.Delay(100);
             foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
-                (ToolbarAction.Strikethrough, "strike"), (ToolbarAction.CharacterCode, "code") })
+                (ToolbarAction.Underline, "underline"), (ToolbarAction.Strikethrough, "strike"),
+                (ToolbarAction.Superscript, "super"), (ToolbarAction.Subscript, "sub"), (ToolbarAction.CharacterCode, "code") })
             {
                 view.Key(VIEM_KEY_ESCAPE);
                 ulong offset = (ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1;
@@ -79,7 +82,8 @@ internal static class FormattingToolbarTests
             }
             document.SetReadOnly(true);
             foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
-                (ToolbarAction.Strikethrough, "strike"), (ToolbarAction.CharacterCode, "code") })
+                (ToolbarAction.Underline, "underline"), (ToolbarAction.Strikethrough, "strike"),
+                (ToolbarAction.Superscript, "super"), (ToolbarAction.Subscript, "sub"), (ToolbarAction.CharacterCode, "code") })
             {
                 view.Place((ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1,
                     VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
@@ -119,7 +123,57 @@ internal static class FormattingToolbarTests
             await Task.Delay(150);
             Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
-            Check(toolbar.Paragraph.Content as string == "Heading 1", "toolbar reads the initial named paragraph");
+            Check(Title(toolbar.Paragraph) == "Heading 1", "toolbar reads the initial named paragraph");
+            Check(((StackPanel)toolbar.Paragraph.Content).Children.First() is IconElement
+                && ((MenuFlyout)toolbar.Paragraph.Flyout).Items.OfType<ToggleMenuFlyoutItem>().All(i => i.Icon != null),
+                "toolbar style selectors annotate every style with its type icon");
+            var toolbarRow = (StackPanel)toolbar.Scroll.Content;
+            var characterGroup = (StackPanel)toolbar.Buttons[ToolbarAction.Bold].Parent;
+            Check(characterGroup.Children.OfType<ButtonBase>().Select(b => AutomationProperties.GetName(b))
+                .SequenceEqual(new[] { "Bold", "Italic", "Underline", "Strikethrough" }), "toolbar emphasis order includes underline between italic and strikeout");
+            var scripts = (StackPanel)toolbar.Buttons[ToolbarAction.Superscript].Parent;
+            foreach (var action in new[] { ToolbarAction.Superscript, ToolbarAction.Subscript })
+            {
+                var icon = (Canvas)toolbar.Buttons[action].Content;
+                var glyphs = icon.Children.OfType<TextBlock>().ToArray();
+                Check(glyphs.Length == 2 && glyphs[0].Text == "x" && glyphs[0].FontStyle == global::Windows.UI.Text.FontStyle.Italic
+                    && Math.Abs(glyphs[0].FontSize - 11.7) < .01 && glyphs[1].Text == "2" && glyphs[1].FontSize < glyphs[0].FontSize,
+                    "script toolbar icons use a smaller italic x and small numeral: " + action);
+            }
+            var initialStyles = view.Styles(view.SelectedNamedStyles().Identity);
+            var supportedStyles = initialStyles.Styles.Where(s => s.Namespace == 1 && s.Has(VIEM_STYLE_CAPABILITY_ASSIGN)).Select(s => s.Key).ToHashSet();
+            Check(((MenuFlyout)toolbar.Paragraph.Flyout).Items.Select(i => (StyleKey)i.Tag).ToHashSet().SetEquals(supportedStyles),
+                "WYSIWYG paragraph selector lists only styles supported for source assignment");
+            foreach (var listStyle in initialStyles.Styles.Where(s => (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) != 0 || s.Native.role == VIEM_STYLE_ROLE_LIST))
+                Check(StyleIcons.Kind(listStyle) == StyleIconKind.Paragraph, "list definitions use paragraph style icons: " + listStyle.Name);
+            foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers })
+            {
+                view.Command("j0");
+                await Click(toolbar, action);
+                var list = view.SelectedNamedStyles();
+                var current = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.OfType<ToggleMenuFlyoutItem>()
+                    .Single(item => ((StyleKey)item.Tag).Id == list.Paragraph);
+                Check(current.IsChecked && !current.IsEnabled && current.Icon is FontIcon { Glyph: "¶" }
+                    && Title(toolbar.Paragraph) == current.Text,
+                    "current list paragraph retains its exact disabled style row: " + action);
+                view.Undo(); view.Command("gg0");
+            }
+            var codeLink = (StackPanel)toolbar.Buttons[ToolbarAction.CharacterCode].Parent;
+            int scriptIndex = toolbarRow.Children.IndexOf(scripts), codeIndex = toolbarRow.Children.IndexOf(codeLink), tableIndex = toolbarRow.Children.IndexOf(toolbar.InsertTable);
+            Check(toolbarRow.Children[0] == characterGroup && scriptIndex == 1 && codeIndex == scriptIndex + 1
+                && !toolbarRow.Children.OfType<Border>().Any(),
+                "toolbar groups use ordinary gaps and place script immediately before code and link");
+            Check(toolbar.InsertImage.Parent == toolbarRow.Children[tableIndex - 1]
+                && toolbar.Buttons[ToolbarAction.Indent].Parent == toolbarRow.Children[tableIndex + 1]
+                && toolbarRow.Children[tableIndex + 2] == toolbar.Paragraph && toolbarRow.Children[tableIndex + 3] == toolbar.Character,
+                "table precedes indent and the two style selectors trail the command buttons");
+            toolbar.UpdateLayout();
+            double Left(FrameworkElement element) => element.TransformToVisual(toolbarRow).TransformPoint(new()).X;
+            double Gap(FrameworkElement before, FrameworkElement after) => Left(after) - Left(before) - before.ActualWidth;
+            double standardGap = Gap(codeLink, (FrameworkElement)toolbar.InsertImage.Parent);
+            Check(Math.Abs(standardGap - 8) < 1 && toolbarRow.Children.OfType<FrameworkElement>().Zip(toolbarRow.Children.OfType<FrameworkElement>().Skip(1))
+                .All(pair => Math.Abs(Gap(pair.First, pair.Second) - standardGap) < 1),
+                "every toolbar group uses the same gap as Link to Bulleted List");
             Check(toolbar.FormattedView.IsChecked == true && !toolbar.FormattedView.IsThreeState
                 && AutomationProperties.GetName(toolbar.FormattedView) == "Formatted view"
                 && ToolTipService.GetToolTip(toolbar.FormattedView) as string == "Formatted view (WYSIWYG)",
@@ -138,6 +192,9 @@ internal static class FormattingToolbarTests
                 && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "toolbar switches to Markdown Source while preserving source and semantic caret",
                 $"format={document.State.format}, checked={toolbar.FormattedView.IsChecked}, caret={view.Presentation.cursor_utf8_offset}, expected={sourceCaret}, placed={placedCaret}, requested={caret}, sourceEqual={beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision))}, mode={view.Presentation.mode}, error={pane.LastError}");
+            var sourceStyleIds = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.Select(i => ((StyleKey)i.Tag).Id).ToHashSet();
+            Check(new[] { "Table", "Table cell", "Table header", "Image" }.All(sourceStyleIds.Contains),
+                "Source paragraph catalogue retains structural presentation styles");
             view.Undo();
             Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true,
                 "undoing a view switch synchronizes the formatted-view toggle");
@@ -152,17 +209,17 @@ internal static class FormattingToolbarTests
                 "formatted view round trip retains the caret, fixed icon and source bytes");
             view.Command("gg0");
             view.Command("j0");
-            Check(toolbar.Paragraph.Content as string == "Base Paragraph", "toolbar follows a caret command synchronously");
+            Check(Title(toolbar.Paragraph) == "Base Paragraph", "toolbar follows a caret command synchronously");
             var items = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.ToArray();
             var sheet = view.Styles(view.SelectedNamedStyles().Identity);
             view.Command("w");
-            Check(toolbar.Character.Content as string == "Code", "toolbar tracks the Code character assignment");
+            Check(Title(toolbar.Character) == "Code", "toolbar tracks the Code character assignment");
             Check(items.SequenceEqual(((MenuFlyout)toolbar.Paragraph.Flyout).Items) && ReferenceEquals(sheet, view.Styles(view.SelectedNamedStyles().Identity)),
                 "cursor movement retains native menu items and the exact stylesheet snapshot");
             view.SelectAll();
-            Check(toolbar.Paragraph.Content as string == "Mixed" && toolbar.Character.Content as string == "Mixed", "toolbar selectors show mixed assignments");
+            Check(Title(toolbar.Paragraph) == "Mixed" && Title(toolbar.Character) == "Mixed", "toolbar selectors show mixed assignments");
             await Choose(toolbar.Paragraph, "Heading2");
-            Check(toolbar.Paragraph.Content as string == "Heading 2" && pane.LastError == null, "toolbar selector invokes the shared heading action");
+            Check(Title(toolbar.Paragraph) == "Heading 2" && pane.LastError == null, "toolbar selector invokes the shared heading action");
             byte[] changed = document.Source(document.State.document_revision);
             view.Undo(); Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source, "toolbar paragraph assignment is one undo transaction");
             view.Redo(); Check(changed.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "toolbar paragraph redo restores exact source"); view.Undo();
@@ -215,13 +272,36 @@ internal static class FormattingToolbarTests
                 && toolbar.Scroll.ScrollableWidth == 0,
                 "wide toolbar aligns the formatted-view toggle at the right edge across a flexible gap",
                 $"toggleX={toggleX}, toggleWidth={toolbar.FormattedView.ActualWidth}, toolbarWidth={toolbar.ActualWidth}, scrollable={toolbar.Scroll.ScrollableWidth}, scale={scale}");
+            Resize(700, 450); await Task.Delay(120);
+            toolbar.Scroll.ChangeView(0, null, null, true); await Task.Delay(50);
+            double unindentX = toolbar.Buttons[ToolbarAction.Unindent].TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
+            double paragraphX = toolbar.Paragraph.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
+            double characterX = toolbar.Character.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
+            Check(unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth <= toolbar.Scroll.ActualWidth
+                && paragraphX < toolbar.Scroll.ActualWidth && paragraphX + toolbar.Paragraph.ActualWidth > toolbar.Scroll.ActualWidth
+                && characterX >= toolbar.Scroll.ActualWidth,
+                "shrinking the toolbar clips Paragraph then Character while every earlier command remains visible",
+                $"unindentRight={unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth}, paragraphX={paragraphX}, characterX={characterX}, viewport={toolbar.Scroll.ActualWidth}");
             Resize(540, 450); await Task.Delay(120);
+            toolbar.Scroll.ChangeView(0, null, null, true); await Task.Delay(50);
             Check(toolbar.Scroll.ScrollableWidth > 0, "narrow Windows toolbar keeps all groups accessible by scrolling");
             toggleX = toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X;
             Check(toggleX >= 0 && toggleX + toolbar.FormattedView.ActualWidth <= toolbar.ActualWidth,
                 "formatted-view toggle stays visible beside narrow toolbar overflow");
+            double scrollX = toolbar.Scroll.TransformToVisual(toolbar).TransformPoint(new()).X;
+            Check(scrollX + toolbar.Scroll.ActualWidth <= toggleX && toolbar.Scroll.Clip is RectangleGeometry clip
+                && Math.Abs(clip.Rect.Width - toolbar.Scroll.ActualWidth) < 1 && Math.Abs(clip.Rect.Height - toolbar.Scroll.ActualHeight) < 1,
+                "the scroll viewport clips later controls before the fixed formatted-view toggle");
+            Check(toolbar.Paragraph.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X >= toolbar.Scroll.ActualWidth
+                && Left(toolbar.Paragraph) >= Left((FrameworkElement)toolbar.Buttons[ToolbarAction.Unindent].Parent)
+                    + ((FrameworkElement)toolbar.Buttons[ToolbarAction.Unindent].Parent).ActualWidth,
+                "narrow windows clip the trailing style selectors after the earlier command buttons");
+            Check(toolbarRow.Children.OfType<FrameworkElement>().Zip(toolbarRow.Children.OfType<FrameworkElement>().Skip(1))
+                .All(pair => Gap(pair.First, pair.Second) >= standardGap - 1),
+                "narrow toolbar layout never lets later controls overlap earlier groups");
             toolbar.Scroll.ChangeView(toolbar.Scroll.ScrollableWidth, null, null, true); await Task.Delay(50);
-            Check(toolbar.Scroll.HorizontalOffset > 0, "toolbar overflow scrolls to its trailing indent controls");
+            Check(toolbar.Scroll.HorizontalOffset > 0 && toolbar.Character.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X + toolbar.Character.ActualWidth <= toolbar.Scroll.ActualWidth + 1,
+                "toolbar overflow scrolls to its trailing style selectors");
             Check(Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
                 "scrolling formatting controls leaves the formatted-view toggle fixed");
             window.AppWindow.Resize(size);
@@ -240,7 +320,7 @@ internal static class FormattingToolbarTests
             Check(toolbar.Visibility == Visibility.Visible && toolbar.FormattedView.IsChecked == true,
                 "switching panes restores each format's toolbar preference and formatted-view state");
             md.Command("vj");
-            Check(State(toolbar, ToolbarAction.Bullets) == true && toolbar.Paragraph.Content as string == "Mixed", "list state is structural across nested paragraph styles");
+            Check(State(toolbar, ToolbarAction.Bullets) == true && Title(toolbar.Paragraph) == "Mixed", "list state is structural across nested paragraph styles");
             md.SelectAll(); Check(State(toolbar, ToolbarAction.Bullets) == null, "mixed list and non-list selection shows a mixed toggle");
             md.Key(VIEM_KEY_ESCAPE); md.Command("ggj0");
             byte[] nested = markdown.Document.Source(markdown.Document.State.document_revision);
@@ -361,7 +441,7 @@ internal static class FormattingToolbarTests
                     Check(window.ToolbarToggle.Focus(FocusState.Programmatic), "the first formatting-toolbar toggle takes native focus");
                     await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(50);
                     var toolbar = window.Toolbar;
-                    Check(toolbar.Visibility == Visibility.Visible && toolbar.Paragraph.Content as string == "Base Paragraph"
+                    Check(toolbar.Visibility == Visibility.Visible && Title(toolbar.Paragraph) == "Base Paragraph"
                         && document.FormattedText() == "XText", "first native toolbar activation creates current controls without editing text");
                     preferences.SetFormattingToolbar(format, false);
                     preferences.SetFormattingToolbar(format, true);

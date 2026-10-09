@@ -386,6 +386,7 @@ pub enum DecorationKind {
     ThematicBreak,
     BlockBackground,
     BlockBorder,
+    CodeLanguage,
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
@@ -1896,6 +1897,10 @@ pub struct ViewLayout {
     height: f32,
     viewport_left: f32,
     viewport_top: f32,
+    // A formatting-only interaction can shrink the content past the user's
+    // scroll origin. Retain real blank tail/right space until scrolling returns
+    // inside the ordinary bounds; this supplies no text or caret geometry.
+    preserved_scroll_origin: (f32, f32),
     insets: EdgeInsets,
     wrap: bool,
     scale: f32,
@@ -1950,6 +1955,7 @@ impl ViewLayout {
             height: finite_nonnegative(height),
             viewport_left: 0.0,
             viewport_top: 0.0,
+            preserved_scroll_origin: (0.0, 0.0),
             insets: EdgeInsets::default(),
             wrap: true,
             scale: 1.0,
@@ -1984,6 +1990,7 @@ impl ViewLayout {
     /// shifted; lines the transaction may have restyled are dropped. Anything
     /// inconsistent falls back to the complete invalidation.
     pub(crate) fn rebase_document_change(&mut self, change: &DocumentLayoutChange) {
+        self.preserved_scroll_origin = (0.0, 0.0);
         let DocumentLayoutChange::Local {
             old_revision,
             new_revision,
@@ -2295,6 +2302,9 @@ impl ViewLayout {
         if !left.is_finite() {
             return Err(LayoutError::InvalidGeometry);
         }
+        if left <= 0.0 || self.visible_content_width().is_some_and(|(width, exact)| exact && left <= (width - self.width).max(0.0)) {
+            self.preserved_scroll_origin.0 = 0.0;
+        }
         self.viewport_left = self.clamp_viewport_left(left);
         Ok(())
     }
@@ -2305,7 +2315,7 @@ impl ViewLayout {
     pub fn maximum_viewport_left(&self) -> Option<f32> {
         self.visible_content_width()
             .filter(|(_, exact)| *exact)
-            .map(|(width, _)| (width - self.width).max(0.0))
+            .map(|(width, _)| (width - self.width).max(0.0).max(self.preserved_scroll_origin.0))
     }
 
     /// Current visible lower bound when coverage is incomplete. Never derives
@@ -2314,7 +2324,7 @@ impl ViewLayout {
         self.visible_content_width()
             .map_or(self.viewport_left, |(width, _)| {
                 (width - self.width).max(0.0)
-            })
+            }).max(self.preserved_scroll_origin.0)
     }
 
     fn visible_content_width(&self) -> Option<(f32, bool)> {
@@ -2340,20 +2350,40 @@ impl ViewLayout {
         self.snapshot.as_ref()
             .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
             .and_then(|snapshot| snapshot.maximum_viewport_top(self.height))
+            .map(|maximum| maximum.max(self.preserved_scroll_origin.1))
     }
 
     pub fn estimated_maximum_viewport_top(&self) -> f32 {
         self.snapshot.as_ref()
             .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
             .map_or(self.viewport_top, |snapshot| snapshot.estimated_maximum_viewport_top(self.height))
+            .max(self.preserved_scroll_origin.1)
     }
 
     pub fn set_viewport_top(&mut self, top: f32) -> Result<(), LayoutError> {
         if !top.is_finite() {
             return Err(LayoutError::InvalidGeometry);
         }
+        if top <= 0.0 || self.snapshot.as_ref().and_then(|snapshot| snapshot.maximum_viewport_top(self.height)).is_some_and(|maximum| top <= maximum) {
+            self.preserved_scroll_origin.1 = 0.0;
+        }
         self.viewport_top = self.clamp_viewport_top(top);
         self.viewport_left = self.clamp_viewport_left(self.viewport_left);
+        Ok(())
+    }
+
+    /// Retain the previous origin through a formatting-only content shrink.
+    /// Blank space after a proven document end is covered without fake rows.
+    pub(crate) fn retain_viewport_origin(&mut self, left: f32, top: f32) -> Result<(), LayoutError> {
+        if !left.is_finite() || !top.is_finite() { return Err(LayoutError::InvalidGeometry); }
+        let snapshot = self.snapshot.as_ref().ok_or(LayoutError::NoRows)?;
+        if snapshot.configuration_generation != self.configuration_generation
+            || snapshot.missing_viewport_edges(top.max(0.0), self.height) != (false, false) {
+            return Err(LayoutError::OutsideMaterializedCoverage);
+        }
+        self.preserved_scroll_origin = (left.max(0.0), top.max(0.0));
+        self.viewport_left = left.max(0.0);
+        self.viewport_top = top.max(0.0);
         Ok(())
     }
 
@@ -2943,7 +2973,7 @@ impl ViewLayout {
     fn clamp_viewport_top(&self, requested: f32) -> f32 {
         self.snapshot.as_ref().map_or(requested.max(0.0), |snapshot| {
             snapshot.clamp_viewport_top(requested, self.height)
-        })
+        }).max(requested.max(0.0).min(self.preserved_scroll_origin.1))
     }
 
     fn clamp_viewport_left(&self, requested: f32) -> f32 {
@@ -6404,6 +6434,20 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
             width: (rect.width - (style.border.left + style.border.right) * scale).max(0.),
             height: (inner_bottom - inner_top).max(0.),
         };
+        if is_top {
+            if let Some(language) = &style.language_label {
+                let text = format!("{language} ▾");
+                let width = (text.chars().count() as f32 * 6.7 * scale).min(220.0 * scale).min((inner_rect.width - 8.0 * scale).max(0.0));
+                let bounds = LayoutRect { x: inner_rect.x + inner_rect.width - width - 4.0 * scale,
+                    y: inner_top + 2.0 * scale, width, height: 16.0 * scale };
+                let mut label_paint = ResolvedTextPaint::default();
+                label_paint.foreground = style.foreground;
+                label_paint.foreground_is_default = style.foreground_is_default;
+                row.decorations.push(PositionedDecoration { kind: DecorationKind::CodeLanguage,
+                    owner: Some(owner), text, x: bounds.x, advance: width, typographic_bounds: bounds,
+                    ink_bounds: bounds, render_run: None, paint: label_paint, font_size: 11.0 * scale });
+            }
+        }
         if let Some(color) = style.background {
             paint.foreground = color;
             paint.foreground_is_default = false;

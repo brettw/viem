@@ -326,6 +326,8 @@ impl Document {
                 background: resolved.background,
                 underline: Some(resolved.underline),
                 strikethrough: Some(resolved.strikethrough),
+                superscript: Some(resolved.superscript),
+                subscript: Some(resolved.subscript),
                 language: resolved.language,
                 direction: (resolved.direction != super::super::WritingDirection::Natural)
                     .then_some(resolved.direction),

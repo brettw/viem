@@ -3,8 +3,13 @@
 use super::*;
 use crate::document::html::{self, TokenKind};
 
+#[cfg(test)]
+thread_local! {
+    static DIRECT_STYLE_SLOT_WRITES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn allowed(name: &str) -> bool {
-    matches!(name, "a" | "abbr" | "b" | "bdi" | "bdo" | "blockquote" | "br" | "cite" | "code" | "del" | "details" | "div" | "dl" | "dt" | "dd" | "em" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "i" | "ins" | "kbd" | "li" | "mark" | "ol" | "p" | "pre" | "q" | "s" | "samp" | "small" | "span" | "strike" | "strong" | "summary" | "tt" | "u" | "ul" | "var" | "wbr")
+    matches!(name, "a" | "abbr" | "b" | "bdi" | "bdo" | "blockquote" | "br" | "cite" | "code" | "del" | "details" | "div" | "dl" | "dt" | "dd" | "em" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "i" | "ins" | "kbd" | "li" | "mark" | "ol" | "p" | "pre" | "q" | "s" | "samp" | "small" | "span" | "strike" | "strong" | "summary" | "tt" | "u" | "sup" | "sub" | "ul" | "var" | "wbr")
 }
 
 pub(super) fn image_only_html(source: &str) -> bool {
@@ -95,9 +100,12 @@ impl MarkdownBuilder<'_> {
             return;
         }
         if tag.end {
-            if let Some(index) = self.html_stack.iter().rposition(|(name, _, _)| name == &tag.name) {
+            if let Some(index) = self.html_stack.iter().rposition(|(name, _, _, _)| name == &tag.name) {
                 let entries: Vec<_> = self.html_stack.drain(index..).collect();
-                for (_, start, application) in entries { if start < self.output.len() { self.styles.push(StyleSpan { range: start..self.output.len(), application }); } }
+                let finish = self.output.len() + if self.preserve_markers { range.len() } else { 0 };
+                for (_, start, application, slot) in entries {
+                    self.finish_html_scope(start, finish, application, slot);
+                }
             }
         } else {
             let application = match tag.name.as_str() {
@@ -106,12 +114,39 @@ impl MarkdownBuilder<'_> {
                 "code" | "kbd" | "samp" | "tt" => Some(StyleApplication::Named("Code".into())),
                 "del" | "s" | "strike" => Some(StyleApplication::Automatic("Strikethrough".into())),
                 "a" if tag.attribute("href").is_some() => Some(StyleApplication::Automatic("Link".into())),
+                "sup" => Some(StyleApplication::Direct(CharacterProperties { superscript: Some(true), subscript: Some(false), ..Default::default() })),
+                "sub" => Some(StyleApplication::Direct(CharacterProperties { subscript: Some(true), superscript: Some(false), ..Default::default() })),
                 "u" | "ins" => Some(StyleApplication::Direct(CharacterProperties { underline: Some(true), ..Default::default() })),
                 _ => None,
             };
-            if let Some(application) = application { self.html_stack.push((tag.name.clone(), self.output.len(), application)); }
+            if let Some(application) = application {
+                // Reserve sparse direct scopes before their children so an
+                // inner script wins even when both have equal visible ranges.
+                // Closing fills this slot without scanning or shifting styles
+                // from preceding paragraphs or deeply nested scopes.
+                let slot = if matches!(application, StyleApplication::Direct(_)) {
+                    let slot = self.styles.len();
+                    self.styles.push(StyleSpan { range: self.output.len()..self.output.len(), application: application.clone() });
+                    Some(slot)
+                } else { None };
+                self.html_stack.push((tag.name.clone(), self.output.len(), application, slot));
+            }
         }
         if self.preserve_markers { self.emit_range(range.start, range.end); }
+    }
+
+    pub(super) fn finish_html_scope(
+        &mut self, start: usize, finish: usize, application: StyleApplication, slot: Option<usize>,
+    ) {
+        if let Some(slot) = slot {
+            self.styles[slot].range = start..finish;
+            #[cfg(test)]
+            DIRECT_STYLE_SLOT_WRITES.with(|work| work.set(work.get() + 1));
+        } else if start < finish {
+            // Semantic scopes keep the inner-first ownership order used by
+            // source-local delimiter removal.
+            self.styles.push(StyleSpan { range: start..finish, application });
+        }
     }
 
     /// HTML blocks remain literal in Source, including physical newlines,
@@ -190,4 +225,52 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
     }
     result.append_link_styles(styles);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::{Document, Encoding};
+
+    #[test]
+    fn scripted_paragraphs_and_deep_inline_scopes_complete_in_linear_style_work() {
+        const COUNT: usize = 10_000;
+        for source in [
+            "<sup>x</sup>\n\n".repeat(COUNT),
+            format!("{}x{}", "<sup>".repeat(COUNT), "</sup>".repeat(COUNT)),
+        ] {
+            DIRECT_STYLE_SLOT_WRITES.with(|work| work.set(0));
+            let document =
+                Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown)
+                    .unwrap();
+            assert_eq!(DIRECT_STYLE_SLOT_WRITES.with(std::cell::Cell::get), COUNT);
+            assert_eq!(
+                document
+                    .projection()
+                    .style_spans()
+                    .iter()
+                    .filter(|span| matches!(span.application, StyleApplication::Direct(_)))
+                    .count(),
+                COUNT
+            );
+            assert_eq!(
+                document.text().chars().filter(|ch| *ch == 'x').count(),
+                if document.text().contains('\n') {
+                    COUNT
+                } else {
+                    1
+                }
+            );
+        }
+
+        let empty =
+            Document::from_bytes(b"a<sup></sup>b".to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        assert_eq!(empty.text(), "ab");
+        assert!(empty
+            .projection()
+            .style_spans()
+            .iter()
+            .all(|span| !span.range.is_empty()));
+    }
 }

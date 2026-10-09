@@ -24,6 +24,7 @@ struct EVResolvedTextPaint {
     let background: NSColor?
     let underline: Bool
     let strikethrough: Bool
+    let baselineOffset: CGFloat
 }
 
 enum EVTextDecorationKind: Equatable {
@@ -2101,7 +2102,53 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    private struct CodeBlockLanguageTarget {
+        let documentID: UInt64
+        let revision: UInt64
+        let offset: UInt64
+        let language: String
+    }
+
+    private func showCodeBlockLanguageMenu(for event: NSEvent) -> Bool {
+        guard !event.modifierFlags.contains(.control), let surface,
+              surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let item = snapshot.decorations.first(where: {
+            $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 && viewRect($0.typographic_bounds).contains(point)
+        }), let row = row(for: item.row_index, in: snapshot.rows) else { return false }
+        let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
+        let label = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)
+        let menu = NSMenu(title: "Code block language")
+        menu.autoenablesItems = false
+        let canEdit = (try? surface.backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0
+        func add(_ title: String, language: String) {
+            let choice = NSMenuItem(title: title, action: #selector(chooseCodeBlockLanguage(_:)), keyEquivalent: "")
+            choice.target = self
+            choice.isEnabled = canEdit
+            choice.state = label == "\(title) ▾" ? .on : .off
+            choice.representedObject = CodeBlockLanguageTarget(documentID: snapshot.info.identity.document_id,
+                revision: snapshot.info.identity.document_revision, offset: row.text_start, language: language)
+            menu.addItem(choice)
+        }
+        add("None", language: "")
+        menu.addItem(.separator())
+        for language in EVCodeLanguage.all { add(language.name, language: language.id) }
+        let bounds = viewRect(item.typographic_bounds)
+        menu.popUp(positioning: nil, at: NSPoint(x: bounds.minX, y: bounds.maxY), in: self)
+        return true
+    }
+
+    @objc private func chooseCodeBlockLanguage(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? CodeBlockLanguageTarget, let surface,
+              let session = surface.session else { return }
+        surface.performInput {
+            _ = try session.setCodeBlockLanguage(documentID: target.documentID, revision: target.revision,
+                offset: target.offset, language: target.language)
+        }
+    }
+
     override func mouseDown(with event: NSEvent) {
+        if showCodeBlockLanguageMenu(for: event) { return }
         setCaretHoverRect(nil)
         surface?.dismissCommandOutput()
         if event.modifierFlags.contains(.control) { showEditorContextMenu(event); return }
@@ -3285,9 +3332,20 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// Paragraph furniture is drawn from its own exact-layout export. It never
     /// participates in text slicing, caret, selection, search or accessibility text.
     private func drawParagraphDecorations(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
-        guard let session = surface?.session else { return }
+        guard let session = surface?.session, let scale = exactLayoutScale(for: snapshot) else { return }
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
             if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 { continue }
+            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 {
+                let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
+                let text = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.alignment = .right
+                paragraph.lineBreakMode = .byTruncatingTail
+                text.draw(in: viewRect(item.typographic_bounds), withAttributes: [
+                    .font: NSFont.systemFont(ofSize: CGFloat(item.font_size)),
+                    .foregroundColor: nativeForeground(item.paint), .paragraphStyle: paragraph])
+                continue
+            }
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
             let foreground = nativeForeground(item.paint)
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
@@ -3307,12 +3365,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 }
             }
             foreground.setFill()
+            let decorationBaseline = CGFloat(row.baseline) - CGFloat(item.paint.baseline_offset) * scale
+            let decorationAscent = max(0, decorationBaseline - CGFloat(item.typographic_bounds.y))
+            let decorationDescent = max(0, CGFloat(item.typographic_bounds.y + item.typographic_bounds.height) - decorationBaseline)
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0 {
-                viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) + max(1, CGFloat(row.descent) * 0.35)),
+                viewRect(x: CGFloat(item.x), y: floor(decorationBaseline + max(1, decorationDescent * 0.35)),
                          width: CGFloat(item.advance), height: 1).fill()
             }
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0 {
-                viewRect(x: CGFloat(item.x), y: floor(CGFloat(row.baseline) - CGFloat(row.ascent) * 0.32),
+                viewRect(x: CGFloat(item.x), y: floor(decorationBaseline - decorationAscent * 0.32),
                          width: CGFloat(item.advance), height: 1).fill()
             }
         }
@@ -3347,7 +3408,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         paint: EVLayoutPaintExport? = nil,
         clusters: [ViemPositionedClusterV1]? = nil
     ) -> [EVTextDecoration] {
-        guard let paint = paint ?? exactLayoutPaint(for: snapshot) else { return [] }
+        guard let paint = paint ?? exactLayoutPaint(for: snapshot), let scale = exactLayoutScale(for: snapshot) else { return [] }
         var result: [EVTextDecoration] = []
         for cluster in clusters ?? snapshot.clusters {
             guard let row = row(for: cluster.row_index, in: snapshot.rows) else { continue }
@@ -3355,8 +3416,11 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let thickness: CGFloat = 1
             let left = CGFloat(cluster.typographic_bounds.x)
             let width = CGFloat(cluster.typographic_bounds.width)
+            let baseline = CGFloat(row.baseline) - resolved.baselineOffset * scale
+            let ascent = max(0, baseline - CGFloat(cluster.typographic_bounds.y))
+            let descent = max(0, CGFloat(cluster.typographic_bounds.y + cluster.typographic_bounds.height) - baseline)
             if resolved.underline {
-                let y = floor(CGFloat(row.baseline) + max(1, CGFloat(row.descent) * 0.35))
+                let y = floor(baseline + max(1, descent * 0.35))
                 result.append(
                     EVTextDecoration(
                         kind: .underline,
@@ -3366,7 +3430,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 )
             }
             if resolved.strikethrough {
-                let y = floor(CGFloat(row.baseline) - CGFloat(row.ascent) * 0.32)
+                let y = floor(baseline - ascent * 0.32)
                 result.append(
                     EVTextDecoration(
                         kind: .strikethrough,
@@ -3377,6 +3441,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             }
         }
         return result
+    }
+
+    private func exactLayoutScale(for snapshot: EVLayoutExport) -> CGFloat? {
+        guard let surface, let session = surface.session else { return nil }
+        let viewport = surface.viewportState
+        let identity = snapshot.info.identity
+        guard identity.view_id == session.viewID,
+              identity.document_id == viewport.document_id,
+              identity.document_revision == viewport.document_revision,
+              identity.layout_revision == viewport.layout_revision,
+              identity.configuration_generation == viewport.configuration_generation,
+              identity.measurement_environment_id == viewport.measurement_environment_id,
+              identity.metrics_generation == viewport.metrics_generation,
+              viewport.scale.isFinite, viewport.scale > 0 else { return nil }
+        return CGFloat(viewport.scale)
     }
 
     func resolvedTextPaint(
@@ -3392,7 +3471,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 ? nativeColor(value.background)
                 : nil,
             underline: flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0,
-            strikethrough: flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0
+            strikethrough: flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0,
+            baselineOffset: CGFloat(value.baseline_offset)
         )
     }
 

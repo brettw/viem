@@ -779,7 +779,8 @@ impl Document {
             .map(|line| format!("{continued}{line}"))
             .collect::<Vec<_>>()
             .join(nl);
-        let syntax = format!("{first_prefix}{fence}{nl}{body}{nl}{continued}{fence}");
+        let language = self.projection().default_code_language(block.range.start).unwrap_or_default();
+        let syntax = format!("{first_prefix}{fence}{language}{nl}{body}{nl}{continued}{fence}");
         Ok(Some(Recognition {
             patches: vec![SourcePatch::primary(
                 physical.start..end,

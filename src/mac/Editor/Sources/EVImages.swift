@@ -2,6 +2,44 @@ import AppKit
 import CViemCore
 import ViemAppShell
 
+enum EVImageFileLocation {
+    /// Keep selected filenames as URI path components so punctuation cannot
+    /// turn a local filename into a fragment, query or scheme.
+    static func destination(for file: URL, relativeTo document: URL?) -> String {
+        guard let document, document.isFileURL, document.host == file.host else { return file.absoluteString }
+        let directory = Array(Self.components(of: document).dropLast())
+        let components = Self.components(of: file)
+        var common = 0
+        while common < min(directory.count, components.count), directory[common] == components[common] {
+            common += 1
+        }
+        let ascent = directory.count - common
+        // Root alone is not a useful common ancestor if we must climb to it.
+        guard common > 1 || (common == 1 && ascent == 0) else { return file.absoluteString }
+        let unreserved = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        var path = Array(repeating: "..", count: ascent)
+        for component in components.dropFirst(common) {
+            guard let encoded = component.addingPercentEncoding(withAllowedCharacters: unreserved) else { return file.absoluteString }
+            path.append(encoded)
+        }
+        return path.joined(separator: "/")
+    }
+
+    private static func components(of url: URL) -> [String] {
+        // Foundation's file-URL standardization decomposes Unicode filenames.
+        // Normalize only path separators and dot segments, retaining the exact
+        // spelling provided by the native picker.
+        var result = ["/"]
+        for component in url.path.split(separator: "/") {
+            if component == "." { continue }
+            if component == ".." {
+                if result.count > 1 { result.removeLast() }
+            } else { result.append(String(component)) }
+        }
+        return result
+    }
+}
+
 extension EVEditorSurfaceController {
     func imageDestination(at target: EVLinkMenuTarget) throws -> String? {
         guard let session else { return nil }

@@ -22,6 +22,8 @@ mod list_indent;
 mod markdown_block_styles;
 #[path = "markdown_code_style.rs"]
 mod markdown_code_style;
+#[path = "markdown_code_language.rs"]
+mod markdown_code_language;
 #[path = "markdown_gfm_edit.rs"]
 mod markdown_gfm_edit;
 #[path = "markdown_table_edit.rs"]
@@ -60,6 +62,9 @@ mod replacement;
 mod structural_style;
 #[path = "strikethrough.rs"]
 mod strikethrough;
+#[path = "inline_properties.rs"]
+mod inline_properties;
+pub(crate) use inline_properties::resolved_inline_boolean;
 #[path = "typing.rs"]
 mod typing;
 pub use fragments::{FragmentEdit, ReplacementFragment};
@@ -181,6 +186,7 @@ impl StyleModelRequest {
 /// rather than silently rebasing it to the current state.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModelRequest {
+    SetInlineProperty { document: DocumentId, revision: Revision, range: Range<usize>, property: StyleProperty, enabled: bool },
     SetStrikethrough {
         document: DocumentId,
         revision: Revision,
@@ -326,7 +332,7 @@ pub enum ModelRequest {
 impl ModelRequest {
     pub fn document(&self) -> DocumentId {
         match self {
-            Self::SetStrikethrough { document, .. } => *document,
+            Self::SetStrikethrough { document, .. } | Self::SetInlineProperty { document, .. } => *document,
             Self::ReplacePhysicalSource { document, .. } => *document,
             Self::ApplyFragmentEdits { document, .. }
             | Self::ApplyTextEdits { document, .. }
@@ -353,7 +359,7 @@ impl ModelRequest {
 
     pub fn revision(&self) -> Revision {
         match self {
-            Self::SetStrikethrough { revision, .. } => *revision,
+            Self::SetStrikethrough { revision, .. } | Self::SetInlineProperty { revision, .. } => *revision,
             Self::ReplacePhysicalSource { revision, .. } => *revision,
             Self::ApplyFragmentEdits { revision, .. }
             | Self::ApplyTextEdits { revision, .. }
@@ -1080,6 +1086,7 @@ impl Document {
             .flatten();
         let prepared = match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
+            ModelRequest::SetInlineProperty { range, property, enabled, .. } => self.prepare_inline_property(range, property, enabled),
             ModelRequest::SetStrikethrough { range, enabled, .. } => {
                 self.prepare_strikethrough(range, enabled)
             }
@@ -3024,7 +3031,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
 
         self.validate_range(&range)?;
-        if !self.format().is_markdown() {
+        if !self.format().is_markdown() || !style.supports_markdown_paragraph_assignment() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if style.0 == "Code Block" {
@@ -3414,7 +3421,11 @@ impl Document {
                         .iter()
                         .any(|span| {
                             span.application == StyleApplication::Semantic(style)
-                                && span.range == (range.start..range.end + added)
+                                // Adjacent emphasis delimiters can join into a
+                                // triple run whose source-visible style owner
+                                // also includes the original outer markers.
+                                && span.range.start <= range.start
+                                && range.end + added <= span.range.end
                         })
                     {
                         return Err(DocumentError::UnsupportedFormatting.into());
@@ -3567,7 +3578,9 @@ impl Document {
             }
             if spans
                 .iter()
-                .any(|span| span.range.start < range.end && range.start < span.range.end)
+                .any(|span| span.range.start < range.end && range.start < span.range.end
+                    && (!matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+                        || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)))
             {
                 return Err(DocumentError::OverlappingFormatting.into());
             }
@@ -3649,7 +3662,9 @@ impl Document {
         if enabled
             && spans
                 .iter()
-                .any(|span| span.range.start < range.end && range.start < span.range.end)
+                .any(|span| span.range.start < range.end && range.start < span.range.end
+                && (!matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+                    || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)))
         {
             return Err(DocumentError::OverlappingFormatting.into());
         }

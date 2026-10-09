@@ -9,7 +9,7 @@ use crate::document::{
 };
 use std::sync::Arc;
 
-mod metrics;
+pub(super) mod metrics;
 
 #[cfg(test)]
 mod filename_tests {
@@ -39,7 +39,8 @@ mod filename_tests {
 }
 
 pub(super) struct CoreSyntax {
-    service: SyntaxService,
+    pub(super) service: SyntaxService,
+    pub(super) markdown: super::markdown_code::MarkdownCodeSyntax,
     pub(super) selection: LanguageSelection,
     pub(super) automatic_detection: Option<Detection>,
     pub(super) automatic_mode: bool,
@@ -60,6 +61,7 @@ impl Default for CoreSyntax {
     fn default() -> Self {
         Self {
             service: Default::default(),
+            markdown: Default::default(),
             selection: LanguageSelection::Automatic,
             automatic_detection: None,
             automatic_mode: true,
@@ -94,7 +96,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(export.with_syntax(service, input))
     }
 
-    fn syntax_input(&self) -> SyntaxInputSnapshot {
+    pub(super) fn syntax_input(&self) -> SyntaxInputSnapshot {
         SyntaxInputSnapshot::new(
             SyntaxInputIdentity {
                 document: self.document.id().0,
@@ -202,6 +204,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub fn configure_syntax(&mut self, directory: &str) {
         self.syntax.service.set_vim_directory(directory.to_owned());
         self.syntax.published = None;
+        self.syntax.markdown = Default::default();
     }
 
     /// Replace the platform's syntax integration without changing document
@@ -216,6 +219,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         service.set_vim_directory(self.syntax.service.configuration.vim_directory.clone());
         service.set_filename(self.syntax.service.configuration.filename.clone());
         self.syntax.service = service;
+        self.syntax.markdown = Default::default();
         self.syntax.published = None;
     }
     pub fn syntax_diagnostics(&self) -> String {
@@ -249,6 +253,8 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Bounded publication and immutable request capture only. No provider
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
+        if self.document.format() == Format::Markdown { return self.poll_markdown_code_syntax(); }
+        self.syntax.markdown = Default::default();
         if !self.document.format().is_code() {
             self.syntax.service.cancel();
             self.syntax.published = None;
@@ -314,7 +320,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok((changed, self.syntax.service.prepare_wait(input, range, state, deadline)))
     }
 
-    fn visible_syntax_range(&self, input: &SyntaxInputSnapshot, view: &View<P>) -> std::ops::Range<usize> {
+    pub(super) fn visible_syntax_range(&self, input: &SyntaxInputSnapshot, view: &View<P>) -> std::ops::Range<usize> {
         let start = view
             .layout
             .hard_line_at_y(view.layout.viewport_top() as f64)
@@ -392,7 +398,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.apply_code_presentation_change(sheet, change, caret_anchors);
     }
 
-    fn caret_anchors_for_publication(&self) -> BTreeMap<ViewId, ViewportTextAnchor> {
+    pub(super) fn caret_anchors_for_publication(&self) -> BTreeMap<ViewId, ViewportTextAnchor> {
         self.views.iter()
             .filter_map(|(id, view)| capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor)))
             .collect()
@@ -436,7 +442,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.apply_code_presentation_change(sheet, change, caret_anchors);
     }
 
-    fn apply_code_presentation_change(
+    pub(super) fn apply_code_presentation_change(
         &mut self,
         sheet: Arc<crate::document::StyleSheet>,
         change: metrics::MetricChange,

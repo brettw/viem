@@ -119,6 +119,9 @@ pub struct BlockAttributes {
     pub list_loose: bool,
     pub thematic_break: bool,
     pub markdown_html: bool,
+    /// Authored fenced-code language; empty means unspecified.
+    pub code_language: Option<String>,
+    pub(crate) code_language_label: bool,
     pub style: StyleId,
     /// Absent for the overwhelmingly common inherited paragraph. Nonempty
     /// declarations are immutable and shared by projection/history clones.
@@ -142,13 +145,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_language: None, code_language_label: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false,
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_language: None, code_language_label: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -213,7 +216,7 @@ impl PartialEq for BlockAttributes {
                 a.starts_here == b.starts_here && a.ends_here == b.ends_here
                     && a.container.kind == b.container.kind && a.container.style == b.container.style
                     && a.container.direct_formatting == b.container.direct_formatting
-            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -224,13 +227,16 @@ impl RangedItem for Block {
         super::range_index::NavigationSummary {
             minimum: key, maximum: key,
             minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
-            flags: u16::from(!self.list_editing.indent) | (u16::from(!self.list_editing.unindent) << 1),
+            flags: u16::from(!self.list_editing.indent) | (u16::from(!self.list_editing.unindent) << 1)
+                | if self.style.0 == "Code Block" { 4 } else { 0 }
+                | if matches!(self.kind, BlockKind::Heading(_)) || self.style.0.strip_prefix("Heading")
+                    .and_then(|level| level.parse::<u8>().ok()).is_some_and(|level| (1..=6).contains(&level)) { 8 } else { 0 },
         }
     }
 
     fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         visitor.arc_once(&self.attributes, |visitor| {
-            visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + 16);
+            visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + self.code_language.as_ref().map_or(0, String::capacity) + 16);
             if !self.containers.is_empty() {
                 visitor.arc(&self.containers, |visitor| {
                     for member in self.containers.iter() {
@@ -1469,6 +1475,13 @@ impl From<FormattedTextError> for SourceToTextError {
     }
 }
 
+/// Disposable automatic styles are separate from semantic spans and configuration.
+#[derive(Clone, Debug)]
+struct MarkdownCodePresentation {
+    sheet: Arc<StyleSheet>,
+    spans: IntervalRangeStore<StyleSpan>,
+}
+
 /// Immutable formatted projection consumed by commands and layout.
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
@@ -1502,6 +1515,7 @@ pub struct FormattedDocument {
     source_ordered: bool,
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
     style_sheet: Arc<StyleSheet>,
+    markdown_code_presentation: Option<Arc<MarkdownCodePresentation>>,
     document_style: DocumentStyleAssignment,
     source_content_start: usize,
     source_content_end: usize,
@@ -1819,6 +1833,7 @@ impl FormattedDocument {
             source_ordered,
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
             style_sheet: Arc::new(style_sheet),
+            markdown_code_presentation: None,
             document_style,
             source_content_start,
             source_content_end,
@@ -3101,8 +3116,22 @@ impl FormattedDocument {
         self.blocks.query_touching(range)
     }
 
+    /// Find the nearest code paragraph without traversing unrelated paragraphs.
+    pub(crate) fn default_code_language(&self, at: usize) -> Option<String> {
+        let index = self.blocks.partition_point_start(at);
+        let prior = self.blocks.find_navigation(0..index, true, |summary| summary.flags & 4 != 0);
+        let found = prior.or_else(|| self.blocks.find_navigation(index..self.blocks.len(), false, |summary| summary.flags & 4 != 0));
+        found.and_then(|index| self.blocks.get(index)).and_then(|block| block.code_language.clone())
+    }
+
     pub(super) fn list_indentation_blocks(&self, source_view: bool) -> &OrderedRangeStore<Block> {
         if source_view { self.flow_blocks.as_ref().unwrap_or(&self.blocks) } else { &self.blocks }
+    }
+
+    pub(super) fn heading_after(&self, index: usize, source_view: bool) -> Option<(usize, Block)> {
+        let blocks = self.list_indentation_blocks(source_view);
+        let index = blocks.find_navigation(index..blocks.len(), false, |summary| summary.flags & 8 != 0)?;
+        Some((index, blocks.get(index)?))
     }
 
     /// Style spans with a non-empty intersection with a formatted region,
@@ -3371,6 +3400,20 @@ impl FormattedDocument {
         &self.style_sheet
     }
 
+    pub(crate) fn layout_style_sheet(&self) -> &StyleSheet {
+        self.markdown_code_presentation.as_ref().map_or(&self.style_sheet, |presentation| &presentation.sheet)
+    }
+
+    pub(crate) fn layout_style_spans_for_region(&self, range: &Range<usize>) -> Vec<StyleSpan> {
+        let mut spans = self.style_spans_for_region(range);
+        if let Some(presentation) = &self.markdown_code_presentation {
+            spans.extend(presentation.spans.query_overlapping(range));
+            spans.sort_by_key(|span| span.range.start);
+        }
+        spans
+    }
+
+
     /// Install an already validated generated-configuration sheet on an
     /// otherwise unchanged projection candidate. The caller binds the
     /// candidate to the new document revision before atomic publication.
@@ -3427,6 +3470,17 @@ impl FormattedDocument {
             runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect(),
         );
         self.style_sheet = sheet;
+    }
+
+    pub(crate) fn install_markdown_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
+        let names: std::collections::BTreeMap<_, _> = sheet.character_styles()
+            .filter(|style| style.id.0.starts_with("__code/"))
+            .filter_map(|style| sheet.character_style_metadata(&style.id)
+                .map(|metadata| (metadata.display_name.as_str(), &style.id))).collect();
+        let spans = runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect();
+        self.markdown_code_presentation = Some(Arc::new(MarkdownCodePresentation {
+            sheet, spans: IntervalRangeStore::new(spans),
+        }));
     }
 
     /// Install a publication as a splice of the previous presentation's
@@ -5082,6 +5136,7 @@ pub(crate) fn splice_line_local_projection(
         source_boundaries,
         source_ordered: true,
         decoding_diagnostics,
+        markdown_code_presentation: None,
         style_sheet: {
             let mut sheet = previous.style_sheet.clone();
             if let Some(level) = regional
@@ -5893,6 +5948,7 @@ fn project_markdown_lines(
             if let Some(block) = builder.blocks.last_mut() {
                 block.kind = presented_kind(block.kind.clone());
                 block.quote_depth = quote_depth;
+                block.code_language_label = !preserve_markers;
             }
             if let Some(ending) = normalized.endings.get(line_index - 1) {
                 hard_breaks.push(builder.output.len());
@@ -5926,6 +5982,9 @@ fn project_markdown_lines(
                 }
                 closing += 1;
             }
+            let language = normalized.text[fence_start..line.end].trim_start_matches([' ', '\t'])
+                [length..].split_whitespace().next().filter(|value| !value.is_empty())
+                .map(super::syntax::detection::canonical_language);
             let after = (closing + usize::from(closed)).min(input_lines.len());
             let body_start = if preserve_markers {
                 line_index
@@ -5982,6 +6041,8 @@ fn project_markdown_lines(
             if let Some(block) = builder.blocks.last_mut() {
                 block.kind = presented_kind(block.kind.clone());
                 block.quote_depth = quote_depth;
+                block.code_language = language;
+                block.code_language_label = !preserve_markers;
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -6108,6 +6169,7 @@ fn project_markdown_lines(
     hard_breaks.sort_unstable();
     hard_breaks.dedup();
     let text_len = builder.output.len();
+    builder.styles.retain(|span| !span.range.is_empty() || !matches!(span.application, StyleApplication::Direct(_)));
     let mut projection = FormattedDocument::from_parts(
         revision,
         builder.output,
@@ -6205,7 +6267,7 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
 struct MarkdownBuilder<'a> {
     in_table: bool,
     preserve_markers: bool,
-    html_stack: Vec<(String, usize, StyleApplication)>,
+    html_stack: Vec<(String, usize, StyleApplication, Option<usize>)>,
     html_raw_text: Option<String>,
     inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
     reference_definitions: String,
@@ -6268,8 +6330,9 @@ impl<'a> MarkdownBuilder<'a> {
                 }
             }
         }
-        for (_, start, application) in self.html_stack.drain(..) {
-            if start < self.output.len() { self.styles.push(StyleSpan { range: start..self.output.len(), application }); }
+        let entries: Vec<_> = self.html_stack.drain(..).collect();
+        for (_, start, application, slot) in entries {
+            self.finish_html_scope(start, self.output.len(), application, slot);
         }
     }
 

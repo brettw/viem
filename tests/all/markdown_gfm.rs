@@ -57,8 +57,8 @@ fn gfm_block_recognition() {
 fn passive_html_and_comments() {
     for (source, expected) in [
         ("<b>bold</b> and <em>italic</em>", "bold and italic"),
-        ("x<sup>2</sup> H<sub>2</sub>O", "x<sup>2</sup> H<sub>2</sub>O"),
-        ("<div>x<sup>2</sup> H<sub>2</sub>O</div>", "x<sup>2</sup> H<sub>2</sub>O"),
+        ("x<sup>2</sup> H<sub>2</sub>O", "x2 H2O"),
+        ("<div>x<sup>2</sup> H<sub>2</sub>O</div>", "x2 H2O"),
         ("<div>\n*literal*\n</div>", "*literal*"),
         ("<div><p>one</p><p>two</p></div>", "one\ntwo"),
         ("before <!-- &amp; comment --> after", "before <!-- &amp; comment --> after"),
@@ -70,6 +70,11 @@ fn passive_html_and_comments() {
         let doc = open(source);
         assert_eq!(doc.text(), expected, "{source:?}");
         assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+    for source in ["x<sup>2</sup> H<sub>2</sub>O", "<div>x<sup>2</sup> H<sub>2</sub>O</div>"] {
+        let document = open(source);
+        assert!(viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 1, false).unwrap().superscript);
+        assert!(viem_core::layout::DocumentLayoutStyles::character_at(document.projection(), 4, false).unwrap().subscript);
     }
 }
 

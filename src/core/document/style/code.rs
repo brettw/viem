@@ -18,6 +18,34 @@ pub fn snapshot() -> Arc<StyleSheet> {
         .clone()
 }
 
+/// Disposable Markdown overlay: copy global Code character definitions into a
+/// private namespace, preserving document definitions, geometry and source.
+pub(crate) fn markdown_sheet(document: &StyleSheet, code: &StyleSheet) -> Arc<StyleSheet> {
+    let mut sheet = document.clone();
+    sheet.character_styles.retain(|id, _| !id.0.starts_with("__code/"));
+    sheet.character_metadata.retain(|id, _| !id.0.starts_with("__code/"));
+    let id = |value: &StyleId| StyleId(format!("__code/{}", value.0));
+    let base = StyleId("__code/Base".into());
+    let properties = code.block_style(&code.base_paragraph).map(|style| style.character.clone()).unwrap_or_default();
+    sheet.character_styles.insert(base.clone(), CharacterStyle { id: base.clone(), based_on: None, properties });
+    sheet.character_metadata.insert(base.clone(), StyleDefinitionMetadata { display_name: "ViemCodeBase".into(), origin: StyleDefinitionOrigin::SyntheticReadOnly });
+    for style in code.character_styles().filter(|style| !style.id.is_internal()) {
+        let mapped = id(&style.id);
+        sheet.character_styles.insert(mapped.clone(), CharacterStyle { id: mapped.clone(),
+            based_on: Some(style.based_on.as_ref().map(&id).unwrap_or_else(|| base.clone())), properties: style.properties.clone() });
+        if let Some(metadata) = code.character_style_metadata(&style.id) {
+            sheet.character_metadata.insert(mapped, StyleDefinitionMetadata { display_name: metadata.display_name.clone(), origin: StyleDefinitionOrigin::SyntheticReadOnly });
+        }
+    }
+    // The overlay revision includes both authorities. It never enters saved configuration.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 63);
+    if let Ok(revision) = NEXT.fetch_update(std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed, |value| value.checked_add(1)) {
+        sheet.revision = StyleSheetRevision(revision);
+    }
+    Arc::new(sheet)
+}
+
 pub fn default_sheet() -> StyleSheet {
     let mut sheet = StyleSheet::plain_text();
     sheet

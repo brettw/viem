@@ -684,6 +684,7 @@ typedef struct ViemResolvedTextStyleV1 {
   float size;
   float weight;
   float letter_spacing;
+  float baseline_offset;
   const ViemUtf8Slice *font_families;
   uint64_t font_family_count;
   ViemUtf8Slice language;
@@ -1094,6 +1095,8 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND 42u
 #define VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES 43u
 #define VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE 44u
+#define VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT 45u
+#define VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT 46u
 
 
 #define VIEM_STYLE_VALUE_NONE 0u
@@ -1321,6 +1324,8 @@ typedef struct ViemTextPaintV1 {
   uint32_t flags;
   ViemRgbaV1 foreground;
   ViemRgbaV1 background;
+  /* Unscaled baseline displacement; positive values raise the text. */
+  float baseline_offset;
 } ViemTextPaintV1;
 
 #define VIEM_TEXT_PAINT_V1_SIZE ((uint32_t)sizeof(ViemTextPaintV1))
@@ -1435,6 +1440,7 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER (1u << 1)
 #define VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND (1u << 2)
 #define VIEM_LAYOUT_DECORATION_BLOCK_BORDER (1u << 3)
+#define VIEM_LAYOUT_DECORATION_CODE_LANGUAGE (1u << 4)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {
@@ -2696,6 +2702,14 @@ ViemStatus viem_core_view_end_style_edit_group(
     ViemCoreHandle core, ViemViewId view,
     const ViemStyleEditGroupV1 *group);
 
+/* Set/read Markdown underline, superscript or subscript. */
+ViemStatus viem_core_view_set_inline_property(
+    ViemCoreHandle handle, ViemViewId view,
+    const ViemLogicalSelectionIdentityV1 *expected_selection,
+    uint32_t property, uint8_t enabled, ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_inline_property_state(
+    ViemCoreHandle handle, ViemViewId view, uint32_t property, uint32_t *out_state);
+
 /* Set Markdown strikethrough at an exact selection or typing caret. */
 ViemStatus viem_core_view_set_strikethrough(ViemCoreHandle core, ViemViewId view,
     const ViemLogicalSelectionIdentityV1 *expected_selection, uint8_t enabled,
@@ -2912,6 +2926,18 @@ ViemStatus viem_core_view_edit_image(ViemCoreHandle core, ViemViewId view,
 ViemStatus viem_core_view_select_image(ViemCoreHandle core, ViemViewId view,
                                       uint64_t document_id, uint64_t revision,
                                       uint64_t text_offset, ViemCoreOutcomeV1 *outcome);
+/* Explicit heading picker: {headings:[{text,destination,level,offset}],truncated}.
+ * Exact revision, two-pass UTF-8 JSON. Enumerated only on user request. */
+ViemStatus viem_core_copy_link_headings(ViemCoreHandle core, uint64_t document_id,
+                                       uint64_t revision, uint8_t *output,
+                                       uint64_t capacity, uint64_t *required);
+/* Empty language selects None. The offset must name the original code block
+ * in this exact document revision; stale popup actions never retarget. */
+ViemStatus viem_core_view_set_code_block_language(
+    ViemCoreHandle core, ViemViewId view, uint64_t document_id,
+    uint64_t document_revision, uint64_t offset, ViemUtf8Slice language,
+    ViemCoreOutcomeV1 *output);
+
 /* fragment is percent-decoded, excludes '#'; outputs name this exact revision. */
 ViemStatus viem_core_find_link_fragment(ViemCoreHandle core, uint64_t document_id,
                                        uint64_t revision, ViemUtf8Slice fragment,

@@ -568,6 +568,7 @@ private struct ResolvedStyle {
   let weight: CGFloat
   let slant: UInt32
   let letterSpacing: CGFloat
+  let baselineOffset: CGFloat
   let language: String?
   let script: String?
   let direction: UInt32
@@ -579,7 +580,7 @@ private struct ResolvedStyle {
       source.reserved <= 1,
       source.size.isFinite, source.size > 0,
       source.weight.isFinite,
-      source.letter_spacing.isFinite,
+      source.letter_spacing.isFinite, source.baseline_offset.isFinite,
       source.has_language <= 1,
       source.has_script <= 1,
       source.slant == UInt32(VIEM_FONT_SLANT_UPRIGHT)
@@ -626,6 +627,7 @@ private struct ResolvedStyle {
     weight = CGFloat(source.weight)
     slant = source.slant
     letterSpacing = CGFloat(source.letter_spacing) * scale
+    baselineOffset = CGFloat(source.baseline_offset) * scale
     language = source.has_language == 1 ? try decode(source.language) : nil
     script = source.has_script == 1 ? try decode(source.script) : nil
     direction = source.direction
@@ -653,6 +655,7 @@ private struct ResolvedStyle {
     var result: [NSAttributedString.Key: Any] = [
       NSAttributedString.Key(kCTFontAttributeName as String): font,
     ]
+    result[.baselineOffset] = baselineOffset
     result.merge(letterSpacingAttributes(letterSpacing)) { _, value in value }
     if syntheticBold {
       result[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -3.0
@@ -1140,6 +1143,9 @@ private func makeCluster(
     )
   }
 
+  let fontMetrics = clusterMetrics
+  clusterMetrics = Metrics(ascent: max(0, fontMetrics.ascent + style.baselineOffset), descent: max(0, fontMetrics.descent - style.baselineOffset), leading: fontMetrics.leading)
+
   var inkRect = CGRect.null
   for record in records {
     var glyph = record.glyph
@@ -1155,8 +1161,8 @@ private func makeCluster(
   }
   if inkRect.isNull || !inkRect.origin.x.isFinite || !inkRect.origin.y.isFinite {
     inkRect = CGRect(
-      x: 0, y: -clusterMetrics.ascent, width: advance,
-      height: clusterMetrics.ascent + clusterMetrics.descent)
+      x: 0, y: -fontMetrics.ascent - style.baselineOffset, width: advance,
+      height: fontMetrics.ascent + fontMetrics.descent)
   }
 
   if style.syntheticBold {
@@ -1192,6 +1198,7 @@ private func makeCluster(
   // Identical whitespace glyphs can carry distinct marker inheritance even
   // when their shaping geometry is equal (for example, language alone).
   signature.append(Float(style.letterSpacing).bitPattern)
+  signature.append(Float(style.baselineOffset).bitPattern)
   signature.append(style.direction)
   signature.append(UInt8(style.language == nil ? 0 : 1))
   if let language = style.language { signature.append(language) }
@@ -1212,7 +1219,8 @@ private func makeCluster(
     isColorGlyph: allFonts.contains { CTFontGetSymbolicTraits($0).rawValue & (1 << 13) != 0 },
     textAttributes: .init(letterSpacing: style.letterSpacing, language: style.language,
       writingDirection: style.direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? .rightToLeft
-        : style.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural)
+        : style.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural,
+      baselineOffset: style.baselineOffset)
   )
   let fallback = allFonts.map { CTFontCopyPostScriptName($0) as String }
     .reduce(into: [String]()) { names, name in
@@ -1227,9 +1235,9 @@ private func makeCluster(
     metrics: clusterMetrics,
     typographicBounds: Bounds(
       x: 0,
-      y: -clusterMetrics.ascent,
+      y: -fontMetrics.ascent - style.baselineOffset,
       width: advance,
-      height: clusterMetrics.ascent + clusterMetrics.descent
+      height: fontMetrics.ascent + fontMetrics.descent
     ),
     inkBounds: Bounds(
       x: inkRect.minX,

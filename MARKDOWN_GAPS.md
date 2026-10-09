@@ -12,6 +12,10 @@ separately in [BUGS.md](BUGS.md).
 - **Emphasis delimiter rules:** CommonMark opening/closing, intraword
   underscores, nesting and delimiter runs. The grammar recognizer supplies
   source ranges; Viem retains the original bytes and editable provenance.
+  Bold and italic can be authored together or nested in either direction.
+- **Underline and scripts:** passive `<ins>`/`<u>`, `<sup>` and `<sub>` project
+  underline, superscript and subscript. Native character actions author these
+  effects through verified source edits and pending typing.
 - **Automatic links:** angle URLs and email addresses, and GFM bare HTTP(S),
   `www.` and email links, with punctuation and balanced-parenthesis handling.
 - **Inline link authoring and navigation:** the native toolbar inserts Markdown
@@ -23,7 +27,9 @@ separately in [BUGS.md](BUGS.md).
   available and otherwise open a new Viem window, and HTTP(S) links open the
   default browser. Local document fragments target headings in the chosen view.
   Heading names use lowercase text with punctuation removed, hyphenated spaces
-  and duplicate suffixes.
+  and duplicate suffixes. The destination combobox lists those headings; a
+  caret without a link or selection starts an empty link draft. Compact popups
+  fit the link label within their previous maximum width.
 - **Inline images:** Markdown images, including resolved references, and passive
   HTML `<img src="…">` tags are atomic
   objects in WYSIWYG; Source retains full notation. Native Insert Image controls
@@ -61,6 +67,9 @@ separately in [BUGS.md](BUGS.md).
   lookalikes stay in the code body. Fences end with their containing quote;
   a later unquoted fence starts an independent code block. Live edits and
   reopened files keep those owners separate. Indented code remains supported.
+  WYSIWYG blocks highlight specified languages with the Code syntax system and
+  offer a native language selector. None retains the Code Block style. New
+  blocks inherit the preceding language or, without a preceding block, the next.
 - **Headings and thematic breaks:** Setext underlines, optional closing ATX
   markers and horizontal rules, including the relevant block precedence.
 - **Strikethrough:** GFM single/double-tilde spans use the generated
@@ -103,8 +112,6 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 
 2. **Task-list checkboxes.** `[ ]` and `[x]` stay literal bullet-item text;
    there are no checkbox controls.
-3. **Fenced-code syntax highlighting.** Info strings remain preserved in source;
-   code bodies use Code Block styling without language highlighting.
 4. **Image/reference presentation.** Remote images never load: Viem shows their
    URLs in boxes. Missing, unsupported or invalid local files use placeholders.
    Local previews are limited to 10 MB (10,000,000 bytes) and 5000 source pixels
@@ -125,15 +132,14 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 7. **Unsupported HTML and filtered content.** Tags outside the passive
    vocabulary keep their literal source syntax. This differs from GitHub's
    supported passive HTML and its subsequent filtering and sanitization.
-   - `<sub>` and `<sup>` show as literal tags.
-   - So do `<picture>` and `<source>`, a common README pattern for light and
-     dark logos; only the inner `<img>` renders. Theme-dependent source
-     selection is unsupported, including image URL fragments
+   - `<picture>` and `<source>` remain literal, including the common README
+     pattern for light and dark logos; only the inner `<img>` renders.
+     Theme-dependent source selection is unsupported, including image URL fragments
      `#gh-dark-mode-only` and `#gh-light-mode-only`. GitHub documents
      [theme-aware README images](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/quickstart-for-writing-on-github#adding-an-image-to-suit-your-visitors)
      and the
      [image-fragment form](https://github.blog/changelog/2021-11-24-specify-theme-context-for-images-in-markdown/).
-   - So do custom elements such as `<Warning>` or `<foo>`.
+   - Custom elements such as `<Warning>` or `<foo>` remain literal.
    - Processing instructions (`<?php … ?>`), CDATA sections and
      `<!DOCTYPE …>` display as literal text; their GitHub sanitizer
      presentation requires separate comparison.

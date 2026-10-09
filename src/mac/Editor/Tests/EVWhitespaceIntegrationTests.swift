@@ -8,6 +8,18 @@ import XCTest
 
 @MainActor
 final class EVWhitespaceIntegrationTests: XCTestCase {
+    func testWhitespaceAttributesRetainContributorScriptBaseline() {
+        let inherited = CoreTextRenderAttributes(baselineOffset: 5)
+        let resolved = EVEditorView.whitespaceTextAttributes(.defaultStyle, inherited: inherited, scale: 2)
+        XCTAssertEqual(resolved.baselineOffset, 5, "Contributor values already use scaled layout points")
+        var style = EVVisibleWhitespaceStyle.defaultStyle
+        style.size = 20
+        style.superscript = true
+        XCTAssertEqual(EVEditorView.whitespaceTextAttributes(style, inherited: .init(), scale: 2).baselineOffset, 14)
+        style.superscript = false
+        style.subscript = true
+        XCTAssertEqual(EVEditorView.whitespaceTextAttributes(style, inherited: inherited, scale: 2).baselineOffset, -8)
+    }
     private func fixture(_ source: String, type: String = "public.plain-text") throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVEditingPreferences) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-whitespace-native-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }

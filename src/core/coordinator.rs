@@ -303,6 +303,7 @@ pub enum CoreEvent {
     FlushMappingPrefix,
     FlushMappingPrefixWithClipboard(ClipboardCommandContext),
     EditCommandLine(crate::command::CommandLineEditRequest),
+    SetInlineProperty { expected: LogicalSelectionIdentity, property: StyleProperty, enabled: bool },
     SetStrikethrough {
         expected: LogicalSelectionIdentity,
         enabled: bool,
@@ -954,6 +955,7 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 
 /// Serial composition root for one buffer and its attached views.
 mod syntax;
+mod markdown_code;
 mod document_mode;
 pub use document_mode::{DocumentMode, DocumentModeState};
 mod whitespace;
@@ -4554,6 +4556,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         request: ModelRequest,
     ) -> Result<CoreOutcome, CoreError> {
         let pending_typing = match &request {
+            ModelRequest::SetInlineProperty { property, enabled, .. } => self.select_typing_after_character_property(view_id, *property, crate::document::StylePropertyValue::Boolean(*enabled)),
             ModelRequest::SetStrikethrough { enabled, .. } => self.select_typing_after_character_property(
                 view_id, StyleProperty::CharacterStrikethrough,
                 crate::document::StylePropertyValue::Boolean(*enabled),
@@ -5214,6 +5217,23 @@ impl<P: TextMeasurementProvider> Core<P> {
                     position_map: None,
                     layout_changed: false,
                     composition_changes: Vec::new(),
+                });
+            }
+            CoreEvent::SetInlineProperty { expected, property, enabled } => {
+                if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+                if let Some(selection) = self.table_selection(view_id)? {
+                    return self.apply_table_edit(view_id, expected.document(), expected.revision(),
+                        crate::document::TableEditIntent::SetCellsInlineProperty {
+                            table: selection.table, rows: selection.rows(), columns: selection.columns(), property, enabled,
+                        });
+                }
+                if expected.kind() == LogicalSelectionKind::None {
+                    let mut candidate = self.views[&view_id].commands.clone();
+                    candidate.set_typing_properties(&self.document, vec![(property, crate::document::StylePropertyValue::Boolean(enabled))])?;
+                    return self.publish_pending_typing(view_id, candidate);
+                }
+                return self.apply_native_model_request(view_id, ModelRequest::SetInlineProperty {
+                    document: expected.document(), revision: expected.revision(), range: expected.range(), property, enabled,
                 });
             }
             CoreEvent::SetStrikethrough { expected, enabled } => {
@@ -6464,7 +6484,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::NavigateHistory(_) => {
                 unreachable!("native history navigation returns before ordinary dispatch")
             }
-            CoreEvent::SetStrikethrough { .. }
+            CoreEvent::SetInlineProperty { .. }
+            | CoreEvent::SetStrikethrough { .. }
             | CoreEvent::SetFileFormat { .. }
             | CoreEvent::SetMarkdownSource { .. }
             | CoreEvent::SetDocumentMode { .. }
@@ -8910,8 +8931,14 @@ mod tests {
             .selection_semantic_style_presentation(markdown_view, SemanticInlineStyle::Strong)
             .unwrap();
         assert_eq!(mixed.state(), SemanticStyleState::Mixed);
-        assert!(!mixed.can_set());
+        assert!(mixed.can_set());
         assert!(!mixed.can_clear());
+        let expected = markdown.list_selection_identity(markdown_view).unwrap();
+        markdown.handle(markdown_view, CoreEvent::SetSelectionSemanticStyle {
+            expected, style: SemanticInlineStyle::Strong, enabled: true,
+        }).unwrap();
+        assert_eq!(markdown.document().text(), "bold plain");
+        assert_eq!(markdown.selection_semantic_style_presentation(markdown_view, SemanticInlineStyle::Strong).unwrap().state(), SemanticStyleState::On);
     }
 
     #[test]

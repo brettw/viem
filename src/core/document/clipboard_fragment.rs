@@ -747,6 +747,10 @@ impl Document {
                             super::super::FontSlant::Upright
                         },
                     ),
+                    underline: properties.underline,
+                    strikethrough: properties.strikethrough,
+                    superscript: properties.superscript,
+                    subscript: properties.subscript,
                     ..CharacterProperties::default()
                 };
                 if let Some((range, _)) = markdown_runs
@@ -762,6 +766,8 @@ impl Document {
         for (range, properties) in markdown_runs {
             if properties.bold != Some(true)
                 && properties.slant != Some(super::super::FontSlant::Italic)
+                && properties.underline != Some(true) && properties.strikethrough != Some(true)
+                && properties.superscript != Some(true) && properties.subscript != Some(true)
             {
                 continue;
             }
@@ -1036,7 +1042,7 @@ fn style_runs(
             characters.push(json!({"start":pair[0]-range.start,"end":pair[1]-range.start,
                 "font_families":style.font_families,"font_face":style.font_face,"font_axes":style.font_axes,"size":style.size,"weight":style.weight,"base_weight":style.base_weight,
                 "bold":style.bold,"slant":style.slant,"foreground":style.foreground,"foreground_is_default":style.foreground_is_default,
-                "background":style.background,"underline":style.underline,"strikethrough":style.strikethrough,"language":style.language,
+                "background":style.background,"underline":style.underline,"strikethrough":style.strikethrough,"superscript":style.superscript,"subscript":style.subscript,"language":style.language,
                 "direction":style.direction,"open_type_features":style.open_type_features,"letter_spacing":style.letter_spacing}));
         }
     }

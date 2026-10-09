@@ -200,6 +200,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             toggle(.characterBold, title: "B", font: .boldSystemFont(ofSize: 14)),
             toggle(.characterSlant, title: "I", font: NSFontManager.shared.convert(.systemFont(ofSize: 14), toHaveTrait: .italicFontMask)),
             toggle(.characterUnderline, title: "U"), toggle(.characterStrikethrough, title: "S̶"),
+            toggle(.characterSuperscript, title: "x²"), toggle(.characterSubscript, title: "x₂"),
         ], spacing: sectionSpacing)
         featureButton.image = EVStyleIcons.image(.features)
         featureButton.bezelStyle = .texturedRounded
@@ -211,14 +212,15 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         featureButton.heightAnchor.constraint(equalToConstant: 27).isActive = true
         let appearance = row([
             labeled("", control: emphasis),
-            color(.characterForeground, title: "Text Color"),
-            color(.characterBackground, title: "Background Color"),
             NSView(),
             labeled("OpenType", control: overrideGroup(.characterOpenTypeFeatures, control: featureButton), property: .characterOpenTypeFeatures),
         ])
         let metrics = row([
             numeric(.characterLetterSpacing, title: "Tracking", icon: .tracking),
             direction(.characterDirection, title: "Direction"),
+            NSView(),
+            color(.characterForeground, title: "Text Color"),
+            color(.characterBackground, title: "Background Color"),
         ])
         configure(characterView, rows: [familyRow, axisRows, appearance, separator(), metrics])
 
@@ -718,6 +720,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         button.setButtonType(.pushOnPushOff)
         button.bezelStyle = .texturedRounded
         button.font = font
+        if property == .characterSuperscript || property == .characterSubscript {
+            button.image = EVStyleIcons.scriptImage(raised: property == .characterSuperscript)
+            button.imagePosition = .imageOnly
+        }
         if property == .characterUnderline {
             button.attributedTitle = NSAttributedString(string: title, attributes: [
                 .font: font, .foregroundColor: NSColor.labelColor,

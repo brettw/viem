@@ -28,6 +28,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private let scroll = NSScrollView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()
+  private let scriptGroup = NSStackView()
+  private let codeLinkGroup = NSStackView()
   private let blockGroup = NSStackView()
   private let indentGroup = NSStackView()
   private var catalogue: EVStyleMenuCatalogue?
@@ -42,7 +44,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     setAccessibilityLabel("Formatting toolbar")
     row.orientation = .horizontal
     row.alignment = .centerY
-    row.spacing = 12
+    row.spacing = 8
     row.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
     for (popup, label, role) in [(paragraphStyle, "Paragraph style", EVStyleMenuRole.paragraph),
                                 (characterStyle, "Character style", EVStyleMenuRole.character)] {
@@ -57,24 +59,28 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       popup.refusesFirstResponder = true
       popup.menu?.autoenablesItems = false
       popup.menu?.delegate = self
-      row.addArrangedSubview(popup)
     }
-    for group in [characterGroup, blockGroup, indentGroup] {
+    for group in [characterGroup, scriptGroup, codeLinkGroup, blockGroup, indentGroup] {
       group.orientation = .horizontal
       group.alignment = .centerY
       group.spacing = 2
-      row.addArrangedSubview(group)
     }
+    row.addArrangedSubview(characterGroup)
+    row.addArrangedSubview(scriptGroup)
+    row.addArrangedSubview(codeLinkGroup)
+    row.addArrangedSubview(blockGroup)
     for (command, title, symbol) in [
-      (EVMenuCommand.bold, "Bold", "bold"), (.italic, "Italic", "italic"),
+      (EVMenuCommand.bold, "Bold", "bold"), (.italic, "Italic", "italic"), (.underline, "Underline", "underline"),
       (.strikethrough, "Strikethrough", "strikethrough")
     ] { add(command, title: title, symbol: symbol, to: characterGroup) }
+    add(.superscript, title: "Superscript", to: scriptGroup, image: EVStyleIcons.scriptImage(raised: true))
+    add(.subscript, title: "Subscript", to: scriptGroup, image: EVStyleIcons.scriptImage(raised: false))
     configure(characterCode, title: "Code (Character)", symbol: "chevron.left.forwardslash.chevron.right", toggle: true)
     characterCode.action = #selector(toggleCharacterCode(_:))
-    characterGroup.addArrangedSubview(characterCode)
+    codeLinkGroup.addArrangedSubview(characterCode)
     configure(insertLink, title: "Link", symbol: "link", toggle: true)
     insertLink.action = #selector(openLinkEditor(_:))
-    characterGroup.addArrangedSubview(insertLink)
+    codeLinkGroup.addArrangedSubview(insertLink)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
     configure(blockQuote, title: "Block Quote", toggle: true)
@@ -87,12 +93,15 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(insertImage, title: "Insert Image", symbol: "photo", toggle: true)
     insertImage.action = #selector(openImageEditor(_:))
     blockGroup.addArrangedSubview(insertImage)
+    row.addArrangedSubview(insertTable)
+    row.addArrangedSubview(indentGroup)
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
     add(.decreaseIndent, title: "Unindent", symbol: "decrease.indent", to: indentGroup, toggle: false)
+    row.addArrangedSubview(paragraphStyle)
+    row.addArrangedSubview(characterStyle)
     configure(insertTable, title: "Insert Table", toggle: false)
     insertTable.image = Self.tableImage()
     insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
-    row.addArrangedSubview(insertTable)
     scroll.drawsBackground = false
     scroll.borderType = .noBorder
     scroll.hasHorizontalScroller = true
@@ -128,9 +137,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     button.target = self
   }
 
-  private func add(_ command: EVMenuCommand, title: String, symbol: String, to group: NSStackView, toggle: Bool = true) {
+  private func add(_ command: EVMenuCommand, title: String, symbol: String? = nil, to group: NSStackView, image: NSImage? = nil, toggle: Bool = true) {
     let button = NSButton()
     configure(button, title: title, symbol: symbol, toggle: toggle)
+    if let image { button.image = image }
     button.tag = command.rawValue
     button.action = #selector(performCommand(_:))
     commandButtons[command] = button
@@ -278,7 +288,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   }
 
   private func refresh(_ popup: NSPopUpButton, role: EVStyleMenuRole) {
-    let entries = catalogue?.entries.filter { $0.role == role && $0.actionKind == .assign } ?? []
+    let definitions = Dictionary(uniqueKeysWithValues: (styleSnapshot?.definitions ?? []).map { ($0.key, $0) })
+    let entries = catalogue?.entries.filter {
+      guard $0.role == role && $0.actionKind == .assign else { return false }
+      guard role == .paragraph, surface?.backend.sourceFormat == .markdown else { return true }
+      guard let definition = definitions[EVStyleKey(namespace: .block, id: EVStyleID(rawValue: $0.stableID))] else { return false }
+      return definition.capabilities.contains(.assign)
+        || $0.presentation.state == .on && definition.flags.contains(.internalList)
+    } ?? []
     let selected = entries.first { $0.presentation.state == .on }
     // Keep AppKit menu objects across cursor moves. Only catalogue membership
     // changes require rebuilding; action identities always follow the snapshot.
@@ -286,13 +303,21 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     let previous = role == .paragraph ? paragraphEntries : characterEntries
     if keys != previous {
       popup.removeAllItems()
-      if selected == nil { popup.addItem(withTitle: "Mixed"); popup.lastItem?.isEnabled = false }
+      if selected == nil {
+        popup.addItem(withTitle: "Mixed")
+        popup.lastItem?.isEnabled = false
+        popup.lastItem?.image = EVStyleIcons.typeImage(role == .paragraph ? .paragraph : .character)
+      }
       for entry in entries { popup.menu?.addItem(NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")) }
       if role == .paragraph { paragraphEntries = keys } else { characterEntries = keys }
     }
     for (index, entry) in entries.enumerated() {
       guard let item = popup.item(at: index + (selected == nil ? 1 : 0)) else { continue }
       if item.title != entry.displayName { item.title = entry.displayName }
+      let key = EVStyleKey(namespace: role == .paragraph ? .block : .character, id: EVStyleID(rawValue: entry.stableID))
+      let typeImage = definitions[key].map { EVStyleIcons.typeImage(for: $0) }
+        ?? EVStyleIcons.typeImage(role == .paragraph ? .paragraph : .character)
+      if item.image !== typeImage { item.image = typeImage }
       if item.isEnabled != entry.presentation.isEnabled { item.isEnabled = entry.presentation.isEnabled }
       if item.state != entry.presentation.state { item.state = entry.presentation.state }
       if let catalogue { item.representedObject = action(for: entry, in: catalogue) }

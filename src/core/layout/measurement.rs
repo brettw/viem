@@ -71,6 +71,8 @@ pub struct ResolvedTextStyle {
     pub font_face: String,
     pub font_axes: std::collections::BTreeMap<String, f32>,
     pub size: f32,
+    /// Positive values raise glyphs above the paragraph baseline, in unscaled points.
+    pub baseline_offset: f32,
     pub weight: f32,
     pub relative_bold: bool,
     /// Preserve italic versus oblique so the platform shaper can select the
@@ -90,6 +92,7 @@ impl Default for ResolvedTextStyle {
             font_face: String::new(),
             font_axes: Default::default(),
             size: 14.0,
+            baseline_offset: 0.0,
             weight: 400.0,
             relative_bold: false,
             slant: FontSlant::Upright,
@@ -112,7 +115,8 @@ impl ResolvedTextStyle {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        self.size.is_finite()
+        self.baseline_offset.is_finite()
+            && self.size.is_finite()
             && self.size > 0.0
             && self.weight.is_finite()
             && self.font_face.len() <= 1024 && !self.font_face.chars().any(char::is_control)

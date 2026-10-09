@@ -28,7 +28,8 @@ pub(super) fn replacement_insertion(
         let newline = document.file_format().spelling();
         let source = document.source_byte_len();
         let body = text.replace('\n', newline);
-        let prefix = format!("{fence}{newline}");
+        let language = inherited.paragraph.code_language.as_deref().unwrap_or("");
+        let prefix = format!("{fence}{language}{newline}");
         return Ok(Some(super::super::replacement_context::Insertion {
             source: source..source,
             source_caret: source + prefix.len() + body.len(),

@@ -5065,6 +5065,28 @@ fn link_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
 }
 
 #[test]
+fn heading_picker_ffi_checks_revision_identity_and_output_regions() {
+    let core = create_core(b"# Target\n\n# Target", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
+    let state = document_state(&core);
+    let mut required = 0;
+    assert_eq!(unsafe { viem_core_copy_link_headings(core.handle, state.document_id, state.document_revision,
+        ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(unsafe { viem_core_copy_link_headings(core.handle, state.document_id, state.document_revision,
+        bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+    let headings: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(headings["headings"][1]["destination"], "#target-1");
+    assert_eq!(headings["truncated"], false);
+    assert_eq!(unsafe { viem_core_copy_link_headings(core.handle, state.document_id + 1, state.document_revision,
+        ptr::null_mut(), 0, &mut required) }, ViemStatus::InvalidArgument);
+    assert_eq!(unsafe { viem_core_copy_link_headings(core.handle, state.document_id, state.document_revision + 1,
+        ptr::null_mut(), 0, &mut required) }, ViemStatus::StaleRevision);
+    assert_eq!(unsafe { viem_core_copy_link_headings(core.handle, state.document_id, state.document_revision,
+        (&mut required as *mut u64).cast(), 8, &mut required) }, ViemStatus::InvalidArgument);
+    assert_eq!(document_state(&core), state);
+}
+
+#[test]
 fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     let core = create_core(b"selected", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));

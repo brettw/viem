@@ -13,12 +13,13 @@ pub struct BlockBoxStyle {
     pub background: Option<Color>,
     pub foreground: Color,
     pub foreground_is_default: bool,
+    pub language_label: Option<String>,
     pub inline_start: f32,
     pub inline_end: f32,
 }
 impl Default for BlockBoxStyle {
     fn default() -> Self { Self { margin: EdgeInsets::default(), padding: EdgeInsets::default(), border: EdgeInsets::default(),
-        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, inline_start: 0., inline_end: 0. } }
+        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, language_label: None, inline_start: 0., inline_end: 0. } }
 }
 
 impl BlockBoxStyle {
@@ -31,7 +32,7 @@ impl BlockBoxStyle {
             background: style.background,
             foreground: style.character.foreground,
             foreground_is_default: style.character.foreground_is_default,
-            inline_start: 0., inline_end: 0.,
+            language_label: None, inline_start: 0., inline_end: 0.,
         }
     }
     pub fn top(&self) -> f32 { self.padding.top + self.border.top }
