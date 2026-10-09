@@ -52,14 +52,14 @@ internal sealed unsafe partial class CoreView
         ulong documentId = Document.State.document_id;
         Apply(outcome => viem_core_view_select_image(Document.Handle, Id, documentId, revision, offset, outcome));
     }
-    public void EditImage(ImageContext expected, string text, string destination, bool remove = false)
+    public void EditImage(ImageContext expected, string text, string destination, bool remove = false, bool insertAtCaret = false)
     {
         ValidateImageContext(expected);
         using var arena = new NativeArena();
         var label = arena.Utf8(text); var target = arena.Utf8(destination);
         Apply(outcome => {
             var selection = expected.Selection;
-            return viem_core_view_edit_image(Document.Handle, Id, &selection, remove ? 2u : expected.Image != null ? 1u : 0u,
+            return viem_core_view_edit_image(Document.Handle, Id, &selection, remove ? 2u : !insertAtCaret && expected.Image != null ? 1u : 0u,
                 expected.Image?.Start ?? 0, expected.Image?.End ?? 0, label, target, outcome);
         });
     }

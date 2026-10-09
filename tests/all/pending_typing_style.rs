@@ -14,6 +14,126 @@ fn fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, 
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 100.);
     (core, view)
 }
+
+#[test]
+fn literal_code_block_character_controls_reject_without_entering_insert_or_changing_source() {
+    use viem_core::command::Mode;
+    use viem_core::document::StyleProperty;
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for source in ["```\nword\n```", "    word", "> ```\n> word\n> ```"] {
+            let (mut core, view) = fixture(format, source);
+            let at = core.document().text().find("word").unwrap();
+            core.handle(
+                view,
+                CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(),
+                    text_offset: at,
+                    affinity: BoundaryAffinity::Downstream,
+                    extend_selection: false,
+                },
+            )
+            .unwrap();
+            let expected = core.list_selection_identity(view).unwrap();
+            let history = core.document().history_status();
+            for style in [SemanticInlineStyle::Strong, SemanticInlineStyle::Emphasis] {
+                let presentation = core
+                    .selection_semantic_style_presentation(view, style)
+                    .unwrap();
+                assert!(
+                    !presentation.can_set() && !presentation.can_clear(),
+                    "{format:?}: {source}"
+                );
+                assert!(core
+                    .handle(
+                        view,
+                        CoreEvent::SetSelectionSemanticStyle {
+                            expected: expected.clone(),
+                            style,
+                            enabled: true
+                        }
+                    )
+                    .is_err());
+            }
+            assert!(core
+                .handle(
+                    view,
+                    CoreEvent::SetStrikethrough {
+                        expected: expected.clone(),
+                        enabled: true
+                    }
+                )
+                .is_err());
+            assert!(core
+                .handle(
+                    view,
+                    CoreEvent::AssignNamedStyle {
+                        expected: expected.clone(),
+                        style_sheet_revision: core.document().projection().style_sheet().revision,
+                        namespace: viem_core::document::StyleNamespace::Character,
+                        style: "Code".into()
+                    }
+                )
+                .is_err());
+            assert!(core
+                .document()
+                .validate_typing_properties_at(
+                    at,
+                    BoundaryAffinity::Downstream,
+                    &[(
+                        StyleProperty::CharacterStrikethrough,
+                        viem_core::document::StylePropertyValue::Boolean(true)
+                    )]
+                )
+                .is_err());
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+            assert_eq!(core.command_state(view).unwrap().cursor(), at);
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert_eq!(core.document().history_status(), history);
+        }
+    }
+}
+
+#[test]
+fn pending_code_remains_presentable_after_read_only_policy_change() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let (mut core, view) = fixture(format, "word");
+        let expected = core.list_selection_identity(view).unwrap();
+        core.handle(
+            view,
+            CoreEvent::AssignNamedStyle {
+                expected,
+                style_sheet_revision: core.document().projection().style_sheet().revision,
+                namespace: viem_core::document::StyleNamespace::Character,
+                style: "Code".into(),
+            },
+        )
+        .unwrap();
+        core.set_read_only(core.document().id(), core.document().revision(), true)
+            .unwrap();
+        assert_eq!(
+            core.selected_named_styles(view).unwrap().character,
+            Some("Code".into())
+        );
+        assert!(core.selected_character_style(view).is_ok());
+        let state = core
+            .selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
+            .unwrap();
+        assert!(!state.can_set() && !state.can_clear());
+        let expected = core.list_selection_identity(view).unwrap();
+        assert!(core
+            .handle(
+                view,
+                CoreEvent::AssignNamedStyle {
+                    expected,
+                    style_sheet_revision: core.document().projection().style_sheet().revision,
+                    namespace: viem_core::document::StyleNamespace::Character,
+                    style: "".into()
+                }
+            )
+            .is_err());
+        assert_eq!(core.document().source_bytes(), b"word");
+    }
+}
 #[test]
 fn source_italic_input_before_existing_strong_word_keeps_unicode_and_whitespace() {
     let source = "A **word** and more prose.\nA continuation.\n\nLast paragraph.";
@@ -86,7 +206,6 @@ fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
         (Format::MarkdownSource, "word", 0),
-
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -161,7 +280,6 @@ fn typing_can_disable_existing_style_and_continue_inherited_run() {
     for (format, source, at) in [
         (Format::Markdown, "**word**", 2),
         (Format::MarkdownSource, "**word**", 4),
-
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -206,12 +324,8 @@ fn typing_can_disable_existing_style_and_continue_inherited_run() {
 }
 #[test]
 fn combined_bold_italic_repeats_and_is_one_insert_undo() {
-    for format in [
-        Format::Markdown,
-        Format::MarkdownSource,
-        ] {
+    for format in [Format::Markdown, Format::MarkdownSource] {
         let source = match format {
-
             _ => "x",
         };
         let (mut core, view) = fixture(format, source);
@@ -261,9 +375,15 @@ fn stale_formatting_targets_leave_state_unchanged() {
     core.handle(view, key(Key::Char('i'))).unwrap();
     let stale = core.list_selection_identity(view).unwrap();
     core.handle(view, key(Key::Right)).unwrap();
-    assert!(core.handle(view, CoreEvent::SetStrikethrough {
-        expected: stale.clone(), enabled: true,
-    }).is_err());
+    assert!(core
+        .handle(
+            view,
+            CoreEvent::SetStrikethrough {
+                expected: stale.clone(),
+                enabled: true,
+            }
+        )
+        .is_err());
     assert!(core
         .handle(
             view,
@@ -276,7 +396,6 @@ fn stale_formatting_targets_leave_state_unchanged() {
         .is_err());
     assert_eq!(core.document().source_bytes(), b"word");
     assert!(!core.selected_character_style(view).unwrap().bold);
-
 }
 #[test]
 fn pending_state_is_view_local_and_external_reprojection_cancels_it() {
@@ -330,7 +449,8 @@ fn continuing_style_uses_local_projection_and_one_literal_source_patch_in_large_
     };
     let mut source = "line\n\n".repeat(10_000);
     source.push_str("*last*");
-    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+    let document =
+        Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
     let at = document.projection().text_tree().byte_len();
     let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), "b", vec![]).unwrap();
     let (prepared, caret) = document

@@ -4,8 +4,9 @@ use std::ops::Range;
 
 mod code;
 
-/// Named styles surrounding a logical selection. Code reports automatic
-/// character-style assignments; other formats report authored assignments.
+/// Styles surrounding a logical selection. Inspector queries also report
+/// content-derived character appearances; authored assignment queries exclude
+/// them so display identities never become source formatting intentions.
 /// Direct formatting never creates a separate named-style identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectedNamedStyles {
@@ -30,6 +31,31 @@ impl FormattedDocument {
         &self,
         range: Range<usize>,
         affinity: BoundaryAffinity,
+    ) -> SelectedNamedStyles {
+        self.selected_style_assignments(range, affinity, false, false, false, false)
+    }
+
+    /// The style inspector also names content-derived Markdown appearances.
+    /// These are display identities, not authored character assignments.
+    pub(crate) fn selected_display_styles(
+        &self,
+        range: Range<usize>,
+        affinity: BoundaryAffinity,
+        suppress_link: bool,
+        suppress_strike: bool,
+        suppress_authored: bool,
+    ) -> SelectedNamedStyles {
+        self.selected_style_assignments(range, affinity, true, suppress_link, suppress_strike, suppress_authored)
+    }
+
+    fn selected_style_assignments(
+        &self,
+        range: Range<usize>,
+        affinity: BoundaryAffinity,
+        display: bool,
+        suppress_link: bool,
+        suppress_strike: bool,
+        suppress_authored: bool,
     ) -> SelectedNamedStyles {
         let length = self.text_tree().byte_len();
         // An empty paragraph has its own editable boundary even at EOF. It
@@ -71,11 +97,12 @@ impl FormattedDocument {
             }
         }
         for (index, span) in spans.iter().enumerate() {
-            if !matches!(
+            if !(!suppress_authored && matches!(
                 span.application,
                 StyleApplication::Named(_)
                     | StyleApplication::Semantic(super::SemanticInlineStyle::Code)
-            ) {
+            )) && !(display && matches!(&span.application, StyleApplication::Automatic(id)
+                if matches!(id.0.as_str(), "Link" | "Comment" | "Markdown reference" | "Strikethrough") && !(suppress_link && id.0 == "Link") && !(suppress_strike && id.0 == "Strikethrough"))) {
                 continue;
             }
             let lower = span.range.start.max(start);
@@ -92,6 +119,7 @@ impl FormattedDocument {
         let mut characters = BTreeSet::new();
         let mut active_characters = BTreeMap::new();
         let mut active_code = BTreeSet::new();
+        let mut active_automatic = BTreeMap::new();
         let mut has_bullets = false;
         let mut has_numbering = false;
         let mut has_non_list = false;
@@ -106,6 +134,7 @@ impl FormattedDocument {
                 for index in indices {
                     active_characters.remove(index);
                     active_code.remove(index);
+                    active_automatic.remove(index);
                 }
             }
             if let Some(indices) = starts.get(&point) {
@@ -117,6 +146,9 @@ impl FormattedDocument {
 
                         StyleApplication::Semantic(super::SemanticInlineStyle::Code) => {
                             active_code.insert(*index);
+                        }
+                        StyleApplication::Automatic(id) if display => {
+                            active_automatic.insert(*index, id.clone());
                         }
                         _ => {}
                     }
@@ -156,7 +188,11 @@ impl FormattedDocument {
                     .hard_breaks_for_region(&(point..point + 1))
                     .contains(&point)
             {
-                characters.insert(character);
+                if character.is_none() && !active_automatic.is_empty() {
+                    characters.extend(active_automatic.values().cloned().map(Some));
+                } else {
+                    characters.insert(character);
+                }
             }
         }
         SelectedNamedStyles {

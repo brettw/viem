@@ -2,6 +2,7 @@
 using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
 using Viem.Windows.Core;
 using Viem.Windows.Shell;
 using static Viem.Windows.Interop.Native;
@@ -26,8 +27,10 @@ internal static class LinkInteractionTests
         {
             await Task.Delay(100);
             view.Place(1, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            Check(window.Toolbar.InsertLink.IsEnabled && AutomationProperties.GetName(window.Toolbar.InsertLink) == "Insert link",
-                "Markdown has an accessible insert-link toolbar action");
+            Check(window.Toolbar.InsertLink.IsEnabled && window.Toolbar.InsertLink.IsChecked == true
+                && AutomationProperties.GetName(window.Toolbar.InsertLink) == "Link"
+                && ToolTipService.GetToolTip(window.Toolbar.InsertLink) as string == "Link",
+                "Markdown has an accessible link toolbar action reflecting the Normal caret");
             Check(pane.LinkPopupVisible && !pane.LinkEditorVisible, "the caret reveals the compact link toolbar");
             window.Toolbar.InsertLink.Focus(FocusState.Programmatic); pane.Refresh();
             Check(!pane.LinkPopupVisible, "background refresh does not reopen link controls while another control has focus");
@@ -49,9 +52,20 @@ internal static class LinkInteractionTests
             foreach (ulong offset in new ulong[] { 0, 6, 7, 12, 32 })
             {
                 view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-                Check(view.LinkContext().Link?.Destination == "https://example.test/a%20b" && pane.LinkPopupVisible,
+                Check(view.LinkContext().Link?.Destination == "https://example.test/a%20b" && pane.LinkPopupVisible
+                    && window.Toolbar.InsertLink.IsChecked == true,
                     "Source link punctuation and destination activate the popup at offset " + offset);
             }
+            view.Place(7, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            view.Place(12, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision, true);
+            Check(window.Toolbar.InsertLink.IsChecked == true && !window.Toolbar.InsertLink.IsEnabled,
+                "a Source destination selection retains link state and disables unsupported treatment changes");
+            ulong sourceRevision = document.State.document_revision;
+            uint sourceSelectionMode = view.Presentation.mode;
+            window.Toolbar.ExecuteLink();
+            Check(!pane.LinkEditorVisible && view.Presentation.mode == sourceSelectionMode && document.State.document_revision == sourceRevision
+                && Source() == source, "an unavailable active-link action preserves selection and never opens an insertion form");
+            view.Key(VIEM_KEY_ESCAPE);
             view.SetMarkdownSource(false);
             view.Place(1, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             var previous = view.LinkContext();
@@ -63,6 +77,32 @@ internal static class LinkInteractionTests
             var current = view.LinkContext(); view.EditLink(current, "", "", remove: true);
             Check(Source().StartsWith("alpha\n\n", StringComparison.Ordinal), "removing a link retains its label");
             view.Undo(); Check(Source() == source, "unlink undo restores exact source spelling");
+
+            view.Key(VIEM_KEY_ESCAPE); view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            ulong revision = document.State.document_revision;
+            Check(window.Toolbar.InsertLink.Focus(FocusState.Programmatic), "the link toggle accepts native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            Check(view.Presentation.mode == VIEM_MODE_INSERT && window.Toolbar.InsertLink.IsChecked == false
+                && document.State.document_revision == revision && !pane.LinkEditorVisible,
+                "Normal link toggling enters Insert with pending unlinked text without editing source");
+            view.Text("X"); view.Key(VIEM_KEY_ESCAPE);
+            Check(document.FormattedText().StartsWith("alXpha", StringComparison.Ordinal)
+                && Source().Contains("X[", StringComparison.Ordinal), "link toggling splits the source link around newly typed plain text");
+            view.Undo(); Check(Source() == source, "link split and inserted text share exact undo");
+
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            view.Place(5, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision, true);
+            Check(window.Toolbar.InsertLink.IsChecked == true && window.Toolbar.InsertLink.IsEnabled,
+                "a single selected link enables removal through the active toolbar button");
+            Check(window.Toolbar.InsertLink.Focus(FocusState.Programmatic), "selected-link removal accepts native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            Check(Source().StartsWith("alpha\n\n", StringComparison.Ordinal) && !pane.LinkEditorVisible,
+                "clicking the selected-link button removes its treatment and retains its label");
+            view.Undo(); Check(Source() == source, "selected-link toolbar removal restores original bytes on undo");
+            view.Key(VIEM_KEY_ESCAPE); view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            view.Place(8, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision, true);
+            Check(!window.Toolbar.InsertLink.IsEnabled, "complex cross-paragraph link selections disable unsupported toolbar actions");
+            view.Key(VIEM_KEY_ESCAPE);
 
             view.Command("G0viw");
             pane.ShowInsertLink();

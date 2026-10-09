@@ -23,8 +23,8 @@ internal sealed partial class FormattingToolbar : UserControl
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
-    internal readonly Button InsertImage = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uEB9F", FontSize = 14 } };
-    internal readonly Button InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
+    internal readonly ToggleButton InsertImage = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uEB9F", FontSize = 14 } };
+    internal readonly ToggleButton InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
     private readonly TablePicker tablePicker;
     private ViemLogicalSelectionIdentityV1? pickerSelection;
     private StyleSheet? sheet;
@@ -78,8 +78,8 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(character, ToolbarAction.Italic, "Italic", "\uE8DB");
         Add(character, ToolbarAction.Strikethrough, "Strikethrough", "\uEDE0");
         Add(character, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
-        AutomationProperties.SetName(InsertLink, "Insert link"); ToolTipService.SetToolTip(InsertLink, "Insert link");
-        InsertLink.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertLink); };
+        AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link");
+        InsertLink.Click += (_, _) => ExecuteLink();
         character.Children.Add(InsertLink);
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
@@ -87,7 +87,10 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(block, ToolbarAction.BlockQuote, "Block Quote", "");
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
         AutomationProperties.SetName(InsertImage, "Insert image"); ToolTipService.SetToolTip(InsertImage, "Insert image");
-        InsertImage.Click += (_, _) => { if (pane is { } target) target.Run(target.ShowInsertImage); };
+        InsertImage.Click += (_, _) => {
+            Refresh();
+            if (InsertImage.IsEnabled && pane is { } target) target.Run(target.ShowInsertImage);
+        };
         block.Children.Add(InsertImage);
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
@@ -200,9 +203,18 @@ internal sealed partial class FormattingToolbar : UserControl
             bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertImage.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
-            InsertImage.IsEnabled = markdown && available && !view.Composing && !view.Document.IsReadOnly;
             InsertLink.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
-            InsertLink.IsEnabled = markdown && available && !view.Composing && !view.Document.IsReadOnly;
+            var imageContext = markdown && available ? view.ImageContext() : null;
+            bool imageActive = imageContext?.Image is { } image
+                && (!view.HasSelection && view.Presentation.mode == VIEM_MODE_NORMAL
+                    || view.HasSelection && imageContext.Selection.text_start == image.Start && imageContext.Selection.text_end == image.End);
+            InsertImage.IsChecked = imageActive;
+            InsertImage.IsEnabled = imageContext?.CanInsert == true && !imageActive && !view.Composing && !view.Document.IsReadOnly;
+            var linkContext = markdown && available ? view.LinkContext() : null;
+            InsertLink.IsChecked = linkContext?.Linked == true;
+            InsertLink.IsEnabled = linkContext is { } link && (link.Linked
+                ? view.HasSelection ? link.CanRemoveSelection : link.CanExitLink : link.CanInsert)
+                && !view.Composing && !view.Document.IsReadOnly;
             // Rectangular selections and prompts have no formatting identity.
             // Disable their actions without asking selection-dependent APIs.
             var tableContext = markdown && available ? view.TableContext() : default;
@@ -210,7 +222,7 @@ internal sealed partial class FormattingToolbar : UserControl
             if (pickerSelection is { } expected && !CoreView.SameSelection(expected, tableContext.selection)) tablePicker.Close();
             selected = view.SelectedNamedStyles();
             sheet = view.Styles(selected.Identity);
-            choices = CoreView.StyleChoices(sheet, selected);
+            choices = CoreView.StyleChoices(sheet, selected, view.Document.IsReadOnly);
             if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
             if (tracking == 0) { RefreshSelector(Paragraph, 1); RefreshSelector(Character, 2); }
             foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
@@ -219,7 +231,7 @@ internal sealed partial class FormattingToolbar : UserControl
                 Set(action, state.state, available && (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
             }
             bool canStrike = view.CanFormatStrikethrough;
-            Set(ToolbarAction.Strikethrough, canStrike ? view.StrikethroughState() : 0, canStrike);
+            Set(ToolbarAction.Strikethrough, available ? view.StrikethroughState() : 0, canStrike);
             RefreshCode(ToolbarAction.CharacterCode, new(2, "Code"), new(2, ""));
             RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
             Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);
@@ -254,7 +266,8 @@ internal sealed partial class FormattingToolbar : UserControl
     {
         bool active = choices.Any(c => c.Key == code && c.Selected);
         bool available = choices.Any(c => c.Key == (active ? fallback : code) && c.Enabled);
-        Set(action, active ? 1u : 0u, available, available);
+        bool visible = View?.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+        Set(action, active ? 1u : 0u, available, visible);
     }
 
     private void RefreshSelector(DropDownButton button, uint space)
@@ -291,6 +304,17 @@ internal sealed partial class FormattingToolbar : UserControl
     }
 
     private void Run(Action action) { pane?.Run(action); Refresh(); }
+    internal void ExecuteLink()
+    {
+        if (View is not { } view) return;
+        Refresh();
+        if (!InsertLink.IsEnabled || InsertLink.Visibility != Visibility.Visible) return;
+        var context = view.LinkContext();
+        if (view.HasSelection && context.Linked && context.CanRemoveSelection) Run(() => view.ToggleLink(context));
+        else if (!view.HasSelection && context.Linked) Run(() => view.ToggleLink(context));
+        else if (pane is { } target) target.Run(() => target.ShowInsertLink(insertOnly: true));
+        RestoreEditorFocus();
+    }
     internal void Execute(ToolbarAction action)
     {
         if (View is not { } view) return;

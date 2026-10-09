@@ -26,6 +26,7 @@ internal sealed partial class EditorPane
     private Button? linkApply;
     private LinkContext? shownLink, dismissedLink;
     private bool editingLink;
+    private bool insertingLink;
     private Rect linkAnchor;
     internal bool LinkPopupVisible => linkPopup?.Visibility == Visibility.Visible;
     internal bool LinkEditorVisible => LinkPopupVisible && editingLink;
@@ -92,21 +93,23 @@ internal sealed partial class EditorPane
     }
 
     private static bool SameLinkContext(LinkContext? left, LinkContext? right) => left != null && right != null
-        && CoreView.SameSelection(left.Selection, right.Selection) && left.Link == right.Link;
+        && CoreView.SameSelection(left.Selection, right.Selection) && left.Link == right.Link
+        && left.Linked == right.Linked && left.CanExitLink == right.CanExitLink && left.CanRemoveSelection == right.CanRemoveSelection;
 
-    internal void ShowInsertLink()
+    internal void ShowInsertLink(bool insertOnly = false)
     {
         CaptureCommittedText();
-        Enqueue(() => { PresentInsertLink(); return Task.CompletedTask; });
+        Enqueue(() => { PresentInsertLink(insertOnly); return Task.CompletedTask; });
     }
 
-    private void PresentInsertLink()
+    private void PresentInsertLink(bool insertOnly)
     {
         DismissImagePopup(suppress: false);
         if (View is not { } view || !view.HasFormattingSelection || view.Composing) return;
         var context = view.LinkContext();
-        if (!context.CanInsert && context.Link?.Editable != true)
+        if (insertOnly ? !context.CanInsert : !context.CanInsert && context.Link?.Editable != true)
         { SetMessage("Links can be inserted within a single paragraph of Markdown prose."); return; }
+        insertingLink = insertOnly;
         shownLink = context; dismissedLink = null;
         linkAnchor = caretRect;
         if (linkAnchor.Height <= 0) return;
@@ -118,11 +121,11 @@ internal sealed partial class EditorPane
     {
         if (View is not { } view || shownLink is not { } context) return;
         view.ValidateLinkContext(context);
-        if (context.Link is { Editable: false }) return;
+        if (!insertingLink && context.Link is { Editable: false }) return;
         EnsureLinkPopup();
         editingLink = true;
-        linkText!.Text = context.Link?.Text ?? context.Text;
-        linkDestination!.Text = context.Link?.Destination ?? "";
+        linkText!.Text = insertingLink ? context.Text : context.Link?.Text ?? context.Text;
+        linkDestination!.Text = insertingLink ? "" : context.Link?.Destination ?? "";
         linkApply!.IsEnabled = linkDestination.Text.Trim().Length > 0;
         linkError!.Text = ""; linkError.Visibility = Visibility.Collapsed;
         linkActions!.Visibility = Visibility.Collapsed; linkEditor!.Visibility = Visibility.Visible;
@@ -155,7 +158,7 @@ internal sealed partial class EditorPane
             // Validate supported schemes before creating a link; relative paths
             // may be authored before a document is first saved.
             LinkDestination.Validate(target);
-            view.EditLink(context, linkText!.Text.Length == 0 ? target : linkText.Text, target);
+            view.EditLink(context, linkText!.Text.Length == 0 ? target : linkText.Text, target, insertOnly: insertingLink);
             DismissLinkPopup(suppress: false); FocusEditor(); Refresh();
         }
         catch (Exception error)
@@ -171,7 +174,7 @@ internal sealed partial class EditorPane
     internal void DismissLinkPopup(bool suppress = true)
     {
         if (suppress) dismissedLink = shownLink;
-        editingLink = false; shownLink = null;
+        editingLink = false; insertingLink = false; shownLink = null;
         if (linkPopup != null) linkPopup.Visibility = Visibility.Collapsed;
     }
 
@@ -200,7 +203,7 @@ internal sealed partial class EditorPane
         if (view.HasSelection || context.Link == null || SameLinkContext(dismissedLink, context)
             || !TryLinkAnchor(context, out linkAnchor))
         { DismissLinkPopup(suppress: false); return; }
-        EnsureLinkPopup(); shownLink = context;
+        EnsureLinkPopup(); shownLink = context; insertingLink = false;
         ((TextBlock)linkDestinationButton!.Content).Text = context.Link.Destination;
         AutomationProperties.SetName(linkDestinationButton, "Open " + context.Link.Destination);
         ToolTipService.SetToolTip(linkDestinationButton, context.Link.Destination);

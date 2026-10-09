@@ -260,6 +260,34 @@ final class EVImageTests: XCTestCase {
         XCTAssertEqual(surface.selectedUTF8Ranges(), [1..<4])
     }
 
+    func testImageToolbarAtUnselectedInsertCaretInsertsNewImageBesideExistingObject() throws {
+        let source = "A![old](old.png)B"
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        let session = try XCTUnwrap(surface.session)
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        surface.performInput { _ = try session.sendText("i") }
+        let toolbar = surface.formattingToolbar
+        toolbar.refresh()
+        XCTAssertEqual(toolbar.insertImage.state, .off)
+        XCTAssertTrue(toolbar.insertImage.isEnabled)
+        toolbar.insertImage.performClick(nil)
+        let popup = surface.imagePopover
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(popup.textField.stringValue, "")
+        XCTAssertEqual(popup.destinationField.stringValue, "")
+        popup.textField.stringValue = "new"
+        popup.destinationField.stringValue = "new.png"
+        popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        popup.applyButton.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+                       Data("A![new](<new.png>)![old](old.png)B".utf8))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
     func testImageParagraphStyleControlsNativeLabelAndSourceFontsAndBoxes() throws {
         for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-image-style-\(UUID().uuidString)")

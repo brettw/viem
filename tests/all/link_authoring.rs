@@ -637,6 +637,724 @@ fn unlink_preserves_url_code_spans_without_escaping_their_literal_body() {
 }
 
 #[test]
+fn pending_unlink_splits_source_retains_inline_styles_and_restores_exact_history() {
+    use viem_core::command::{InputEvent, Key, Mode};
+    use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+    use viem_core::{Core, CoreEvent};
+    for (format, source, needle) in [
+        (
+            Format::Markdown,
+            "before [ab**cd**ef](<target.md> 'title') after",
+            "d",
+        ),
+        (
+            Format::MarkdownSource,
+            "before [ab**cd**ef](<target.md> 'title') after",
+            "d",
+        ),
+        (Format::Markdown, "before [ab`cd`ef](target.md) after", "d"),
+        (
+            Format::MarkdownSource,
+            "before [ab`cd`ef](target.md) after",
+            "d",
+        ),
+    ] {
+        let mut core = Core::new(document(source, format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let at = core.document().text().find(needle).unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: viem_core::document::BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        let expected = core.list_selection_identity(view).unwrap();
+        core.exit_link_typing(view, expected).unwrap();
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+            .unwrap_or_else(|error| panic!("{format:?} {source}: {error:?}"));
+        let changed = core.document().source_bytes();
+        let reopened = document(std::str::from_utf8(&changed).unwrap(), Format::Markdown);
+        let x = reopened.text().find('X').unwrap();
+        assert!(
+            reopened
+                .link_at(reopened.text_point(x).unwrap())
+                .unwrap()
+                .is_none(),
+            "{format:?}: {:?}",
+            String::from_utf8_lossy(&changed)
+        );
+        if source.contains("**") {
+            assert!(
+                DocumentLayoutStyles::character_at(reopened.projection(), x, false)
+                    .unwrap()
+                    .bold
+            );
+        }
+        if source.contains('`') {
+            assert_eq!(
+                core.selected_named_styles(view).unwrap().character,
+                Some("Code".into())
+            );
+        }
+        assert_eq!(reopened.text(), "before abcXdef after");
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::text("u")))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), changed);
+    }
+}
+
+#[test]
+fn selected_unlink_keeps_unselected_links_and_extended_graphemes() {
+    let source = "before [a **👩🏽‍💻é** z](<target.md> 'title') after";
+    let mut doc = document(source, Format::Markdown);
+    let start = doc.text().find('👩').unwrap();
+    let end = doc.text().find(" z").unwrap();
+    apply(
+        &mut doc,
+        LinkEditIntent::RemoveSelection { range: start..end },
+    );
+    assert_eq!(doc.text(), "before a 👩🏽‍💻é z after");
+    assert!(doc
+        .link_at(doc.text_point(start).unwrap())
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        doc.link_at(doc.text_point(start - 1).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some("target.md")
+    );
+    assert_eq!(
+        doc.link_at(doc.text_point(end).unwrap())
+            .unwrap()
+            .as_deref(),
+        Some("target.md")
+    );
+    assert!(
+        viem_core::layout::DocumentLayoutStyles::character_at(doc.projection(), start, false)
+            .unwrap()
+            .bold
+    );
+}
+
+#[test]
+fn native_link_insert_from_normal_starts_typing_inside_the_new_link() {
+    use viem_core::command::{InputEvent, Mode};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut core = Core::new(document("tail", format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let expected = core.list_selection_identity(view).unwrap();
+        core.edit_link(
+            view,
+            expected.clone(),
+            LinkEditIntent::Insert {
+                range: expected.range(),
+                text: "label".into(),
+                destination: "target.md".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+        core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(reopened.text(), "labelXtail");
+        let x = reopened.text().find('X').unwrap();
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(x).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("target.md")
+        );
+    }
+}
+
+#[test]
+fn pending_unlink_ime_commit_and_subsequent_typing_keep_the_override() {
+    use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let source = "before [abcdef](target.md) after";
+        let mut core = Core::new(document(source, format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let at = core.document().text().find("cd").unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+            .unwrap();
+        let target = CompositionTarget::at_offsets(core.document(), at..at).unwrap();
+        core.handle(
+            view,
+            CoreEvent::Composition(CompositionEvent::Begin(target)),
+        )
+        .unwrap();
+        core.handle(
+            view,
+            CoreEvent::Composition(CompositionEvent::Update(CompositionUpdate::new("猫", 3..3))),
+        )
+        .unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::Composition(CompositionEvent::Commit))
+            .unwrap();
+        let composed = core.document().source_bytes();
+        core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(reopened.text(), "before ab猫Xcdef after");
+        let cat = reopened.text().find('猫').unwrap();
+        assert!(reopened
+            .link_at(reopened.text_point(cat).unwrap())
+            .unwrap()
+            .is_none());
+        assert!(reopened
+            .link_at(reopened.text_point(cat + 3).unwrap())
+            .unwrap()
+            .is_none());
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::key('u')))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), composed);
+        core.handle(view, CoreEvent::Input(InputEvent::key('u')))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn pending_unlink_replace_restores_original_source_and_repeat_keeps_unlinked_text() {
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let source = "[abcdef](target.md)";
+        let mut core = Core::new(document(source, format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        core.handle(view, CoreEvent::Input(InputEvent::key('R')))
+            .unwrap();
+        let at = core.document().text().find("cd").unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::text("XY")))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(reopened.text(), "abXYef", "{format:?}");
+        assert!(reopened
+            .link_at(reopened.text_point(2).unwrap())
+            .unwrap()
+            .is_none());
+        assert!(reopened
+            .link_at(reopened.text_point(3).unwrap())
+            .unwrap()
+            .is_none());
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Backspace)))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Backspace)))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        let d = core.document().text().find("de").unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: d,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::key('.')))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(reopened.text(), "abXXef", "{format:?}");
+        assert!(reopened
+            .link_at(reopened.text_point(3).unwrap())
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[test]
+fn pending_unlink_preserves_multiline_payload_and_quote_owner() {
+    use viem_core::command::InputEvent;
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut core = Core::new(document("> [abcdef](target.md)", format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let at = core.document().text().find("cd").unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::text("X\nY")))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(
+            reopened.text(),
+            if format == Format::Markdown {
+                "abX\nYcdef"
+            } else {
+                "abX Ycdef"
+            },
+            "{format:?}"
+        );
+        let x = reopened.text().find('X').unwrap();
+        let y = reopened.text().find('Y').unwrap();
+        assert!(reopened
+            .link_at(reopened.text_point(x).unwrap())
+            .unwrap()
+            .is_none());
+        assert!(reopened
+            .link_at(reopened.text_point(y).unwrap())
+            .unwrap()
+            .is_none());
+        if format == Format::Markdown {
+            assert!(reopened
+                .projection()
+                .blocks()
+                .iter()
+                .all(|block| block.quote_depth > 0));
+        }
+    }
+}
+
+#[test]
+fn pending_unlink_stale_and_encoding_failures_leave_source_and_requested_typing_unchanged() {
+    use viem_core::command::{InputEvent, Mode};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let source = "[abcdef](target.md)";
+    let mut core = Core::new(
+        Document::from_bytes(
+            source.as_bytes().to_vec(),
+            Encoding::Latin1,
+            Format::Markdown,
+        )
+        .unwrap(),
+    );
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+    let stale = core.list_selection_identity(view).unwrap();
+    core.handle(
+        view,
+        CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: 2,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        },
+    )
+    .unwrap();
+    assert!(core.exit_link_typing(view, stale).is_err());
+    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+    core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+        .unwrap();
+    let history = core.document().history_status();
+    let cursor = core.command_state(view).unwrap().cursor();
+    // A literal Code context cannot use prose numeric-reference fallbacks.
+    let expected = core.list_selection_identity(view).unwrap();
+    core.handle(
+        view,
+        CoreEvent::AssignNamedStyle {
+            expected,
+            style_sheet_revision: core.document().projection().style_sheet().revision,
+            namespace: viem_core::document::StyleNamespace::Character,
+            style: "Code".into(),
+        },
+    )
+    .unwrap();
+    assert!(core
+        .handle(view, CoreEvent::Input(InputEvent::text("猫")))
+        .is_err());
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    assert_eq!(core.document().history_status(), history);
+    assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+    assert_eq!(
+        core.selected_named_styles(view).unwrap().character,
+        Some("Code".into())
+    );
+    core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+        .unwrap();
+    let reopened = Document::from_bytes(
+        core.document().source_bytes(),
+        Encoding::Latin1,
+        Format::Markdown,
+    )
+    .unwrap();
+    let x = reopened.text().find('X').unwrap();
+    assert!(reopened
+        .link_at(reopened.text_point(x).unwrap())
+        .unwrap()
+        .is_none());
+    assert!(reopened
+        .is_code_at(x, BoundaryAffinity::Downstream)
+        .unwrap());
+}
+
+#[test]
+fn pending_unlink_can_insert_a_new_link_without_changing_the_remaining_destinations() {
+    use viem_core::command::InputEvent;
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut core = Core::new(document(
+            "before [ab**cd**ef](<original.md> 'title') after",
+            format,
+        ));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let at = core.document().text().find('d').unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+            .unwrap();
+        let expected = core.list_selection_identity(view).unwrap();
+        core.edit_link(
+            view,
+            expected.clone(),
+            LinkEditIntent::Insert {
+                range: expected.range(),
+                text: "NEW".into(),
+                destination: "new.md".into(),
+            },
+        )
+        .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::text("X")))
+            .unwrap();
+        let reopened = document(
+            std::str::from_utf8(&core.document().source_bytes()).unwrap(),
+            Format::Markdown,
+        );
+        assert_eq!(reopened.text(), "before abcNEWXdef after");
+        let start = reopened.text().find("NEW").unwrap();
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(start).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("new.md")
+        );
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(start + 3).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("new.md")
+        );
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(start - 1).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("original.md")
+        );
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(start + 4).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("original.md")
+        );
+        assert!(
+            DocumentLayoutStyles::character_at(reopened.projection(), start, false)
+                .unwrap()
+                .bold
+        );
+    }
+}
+
+#[test]
+fn unsupported_link_typing_context_keeps_display_and_caret_state_without_source_changes() {
+    use viem_core::command::Mode;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::Core;
+    for source in ["<a href='target.md'>label</a>"] {
+        let mut core = Core::new(document(source, Format::Markdown));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        assert_eq!(
+            core.selected_named_styles(view).unwrap().character,
+            Some("Link".into())
+        );
+        let selection = core.list_selection_identity(view).unwrap();
+        let history = core.document().history_status();
+        assert!(core.exit_link_typing(view, selection.clone()).is_err());
+        assert_eq!(core.list_selection_identity(view).unwrap(), selection);
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert_eq!(core.document().history_status(), history);
+    }
+}
+
+#[test]
+fn pending_unlink_handles_editable_automatic_links_and_protects_plain_url_payloads() {
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for source in [
+            "before https://example.test/path after",
+            "before <https://example.test/path> after",
+            "before <writer@example.test> after",
+            "before [abcdef](old.md) after",
+        ] {
+            let mut core = Core::new(document(source, format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+            let at = core
+                .document()
+                .text()
+                .find("example")
+                .or_else(|| core.document().text().find('d'))
+                .unwrap();
+            let prior = document(source, Format::Markdown).text().to_owned();
+            let old_source = core.document().source_bytes();
+            core.handle(
+                view,
+                CoreEvent::PlaceCursor {
+                    document_revision: core.document().revision(),
+                    text_offset: at,
+                    affinity: BoundaryAffinity::Downstream,
+                    extend_selection: false,
+                },
+            )
+            .unwrap();
+            core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+                .unwrap();
+            core.handle(
+                view,
+                CoreEvent::Input(InputEvent::text(" https://new.test/path ")),
+            )
+            .unwrap();
+            let after = core.document().source_bytes();
+            let reopened =
+                Document::from_bytes(after.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            let start = reopened.text().find("https://new.test/path").unwrap();
+            assert!(
+                reopened
+                    .link_at(reopened.text_point(start).unwrap())
+                    .unwrap()
+                    .is_none(),
+                "{format:?}: {source}"
+            );
+            assert!(reopened.text().len() > prior.len());
+            core.handle(
+                view,
+                CoreEvent::Input(InputEvent::text("https://next.test/path ")),
+            )
+            .unwrap();
+            let reopened = Document::from_bytes(
+                core.document().source_bytes(),
+                Encoding::Utf8,
+                Format::Markdown,
+            )
+            .unwrap();
+            let next = reopened.text().find("https://next.test/path").unwrap();
+            assert!(reopened
+                .link_at(reopened.text_point(next).unwrap())
+                .unwrap()
+                .is_none());
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+                .unwrap();
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u'))))
+                .unwrap();
+            assert_eq!(core.document().source_bytes(), old_source);
+        }
+    }
+}
+
+#[test]
+fn pending_unlink_preserves_utf16_bom_non_ascii_title_and_untouched_encoded_tails() {
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let source = "α before [é**猫犬**z](<docs/é.md> '題') after Ω";
+    let original = [
+        vec![0xff, 0xfe],
+        source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+    ]
+    .concat();
+    let prefix: Vec<u8> = "α before "
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let tail: Vec<u8> = " after Ω"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut core =
+            Core::new(Document::from_bytes(original.clone(), Encoding::Utf16Le, format).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
+        let at = core.document().text().find('犬').unwrap();
+        core.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        core.exit_link_typing(view, core.list_selection_identity(view).unwrap())
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::text("鳥")))
+            .unwrap();
+        let after = core.document().source_bytes();
+        assert!(after.starts_with(&[vec![0xff, 0xfe], prefix.clone()].concat()));
+        assert!(after.ends_with(&tail));
+        let reopened =
+            Document::from_bytes(after.clone(), Encoding::Utf16Le, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), "α before é猫鳥犬z after Ω");
+        let at = reopened.text().find('鳥').unwrap();
+        assert!(reopened
+            .link_at(reopened.text_point(at).unwrap())
+            .unwrap()
+            .is_none());
+        let left = reopened.text().find('猫').unwrap();
+        assert_eq!(
+            reopened
+                .link_at(reopened.text_point(left).unwrap())
+                .unwrap()
+                .as_deref(),
+            Some("docs/é.md")
+        );
+        assert!(String::from_utf16(
+            &after[2..]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>()
+        )
+        .unwrap()
+        .contains("'題'"));
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+            .unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u'))))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), original);
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), after);
+    }
+}
+
+#[test]
+fn selected_automatic_link_removal_preserves_linked_label_halves_and_exact_undo() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for source in [
+            "before https://example.test/path after",
+            "before <https://example.test/path> after",
+            "before <writer@example.test> after",
+        ] {
+            let mut doc = document(source, format);
+            let start = doc.text().find("example").unwrap();
+            let expected = document(source, Format::Markdown).text().to_owned();
+            apply(
+                &mut doc,
+                LinkEditIntent::RemoveSelection {
+                    range: start..start + "example".len(),
+                },
+            );
+            let after = doc.source_bytes();
+            let reopened =
+                Document::from_bytes(after.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), expected);
+            let start = reopened.text().find("example").unwrap();
+            assert!(reopened
+                .link_at(reopened.text_point(start).unwrap())
+                .unwrap()
+                .is_none());
+            assert!(reopened
+                .link_at(reopened.text_point(start - 1).unwrap())
+                .unwrap()
+                .is_some());
+            assert!(reopened
+                .link_at(reopened.text_point(start + "example".len()).unwrap())
+                .unwrap()
+                .is_some());
+            assert!(doc.undo());
+            assert_eq!(doc.source_bytes(), source.as_bytes());
+            assert!(doc.redo());
+            assert_eq!(doc.source_bytes(), after);
+        }
+    }
+}
+
+#[test]
 fn source_label_fields_share_inline_context_and_gfm_strikethrough_with_rich_view() {
     for (source, expected) in [
         ("[# Heading](url)", "# Heading"),

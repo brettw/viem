@@ -6,13 +6,22 @@ pub(super) struct TypingStyle {
     pub named: Option<StyleId>,
     pub values: Vec<(StyleProperty, StylePropertyValue)>,
     pub inherited: Option<crate::document::ReplacementTypingContext>,
+    pub link_disabled: bool,
 }
 impl TypingStyle {
     pub fn is_empty(&self) -> bool {
-        self.named.is_none() && self.values.is_empty() && self.inherited.is_none()
+        self.named.is_none()
+            && self.values.is_empty()
+            && self.inherited.is_none()
+            && !self.link_disabled
     }
     pub fn for_repeat(&self) -> Self {
-        Self { named: self.named.clone(), values: self.values.clone(), inherited: None }
+        Self {
+            named: self.named.clone(),
+            values: self.values.clone(),
+            inherited: None,
+            link_disabled: self.link_disabled,
+        }
     }
 }
 // Values enter only after finite-value validation by Document.
@@ -24,7 +33,12 @@ impl CommandInterpreter {
         values: Vec<(StyleProperty, StylePropertyValue)>,
         inherited: Option<crate::document::ReplacementTypingContext>,
     ) {
-        self.typing_style = TypingStyle { named, values, inherited };
+        self.typing_style = TypingStyle {
+            named,
+            values,
+            inherited,
+            link_disabled: false,
+        };
     }
     /// Publish validated pending style after a native formatting transaction,
     /// retaining its place in the insert-session repeat program.
@@ -48,8 +62,72 @@ impl CommandInterpreter {
     pub(crate) fn typing_properties(&self) -> &[(StyleProperty, StylePropertyValue)] {
         &self.typing_style.values
     }
-    pub(crate) fn typing_inherited_context(&self) -> Option<&crate::document::ReplacementTypingContext> {
+    pub(crate) fn typing_inherited_context(
+        &self,
+    ) -> Option<&crate::document::ReplacementTypingContext> {
         self.typing_style.inherited.as_ref()
+    }
+    pub(crate) fn typing_link_disabled(&self) -> bool {
+        self.typing_style.link_disabled
+    }
+    pub(crate) fn restore_typing_link_disabled(&mut self, disabled: bool) {
+        self.typing_style.link_disabled = disabled;
+    }
+    pub(crate) fn set_typing_link_disabled(
+        &mut self,
+        document: &Document,
+    ) -> Result<(), DocumentError> {
+        if !matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace)
+            || !document.can_exit_link_typing(
+                self.cursor,
+                if self.mode == Mode::Normal {
+                    BoundaryAffinity::Downstream
+                } else {
+                    self.insertion_boundary_affinity()
+                },
+            )
+        {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let current = crate::layout::DocumentLayoutStyles::character_at(
+            document.projection(),
+            self.cursor,
+            self.mode != Mode::Normal
+                && self.insertion_boundary_affinity() == BoundaryAffinity::Upstream,
+        )
+        .map_err(|_| DocumentError::AmbiguousProjection)?;
+        let mut next = self.typing_style.clone();
+        let affinity = if self.mode == Mode::Normal {
+            BoundaryAffinity::Downstream
+        } else {
+            self.insertion_boundary_affinity()
+        };
+        if next.named.is_none() && document.is_code_at(self.cursor, affinity)? {
+            next.named = Some("Code".into());
+        }
+        use StylePropertyValue as V;
+        for value in [
+            (StyleProperty::CharacterBold, V::Boolean(current.bold)),
+            (StyleProperty::CharacterSlant, V::FontSlant(current.slant)),
+            (
+                StyleProperty::CharacterStrikethrough,
+                V::Boolean(current.strikethrough),
+            ),
+        ] {
+            if !next.values.iter().any(|(property, _)| *property == value.0) {
+                next.values.push(value);
+            }
+        }
+        next.link_disabled = true;
+        self.typing_style = next;
+        if let Some(program) = self
+            .insert_session
+            .as_mut()
+            .and_then(|session| session.repeat_program.as_mut())
+        {
+            program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
+        }
+        Ok(())
     }
     pub fn set_typing_named_style(
         &mut self,
@@ -59,8 +137,17 @@ impl CommandInterpreter {
         if !matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace) {
             return Err(DocumentError::UnsupportedFormatting);
         }
-        document.validate_typing_named_style(&style)?;
-        if self.typing_style.named.as_ref() != Some(&style) || !self.typing_style.values.is_empty() {
+        document.validate_typing_named_style_at(
+            self.cursor,
+            if self.mode == Mode::Normal {
+                BoundaryAffinity::Downstream
+            } else {
+                self.insertion_boundary_affinity()
+            },
+            &style,
+        )?;
+        if self.typing_style.named.as_ref() != Some(&style) || !self.typing_style.values.is_empty()
+        {
             self.typing_style.named = Some(style);
             self.typing_style.values.clear();
             if let Some(session) = self.insert_session.as_mut() {
@@ -78,7 +165,7 @@ impl CommandInterpreter {
         document: &Document,
         values: Vec<(StyleProperty, StylePropertyValue)>,
     ) -> Result<(), DocumentError> {
-        if !matches!(self.mode, Mode::Insert | Mode::Replace) {
+        if !matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace) {
             return Err(DocumentError::UnsupportedFormatting);
         }
         let mut next = self.typing_style.clone();
@@ -86,7 +173,15 @@ impl CommandInterpreter {
             next.values.retain(|(p, _)| *p != property);
             next.values.push((property, value));
         }
-        document.validate_typing_properties(&next.values)?;
+        document.validate_typing_properties_at(
+            self.cursor,
+            if self.mode == Mode::Normal {
+                BoundaryAffinity::Downstream
+            } else {
+                self.insertion_boundary_affinity()
+            },
+            &next.values,
+        )?;
         let exit = document.markdown_source_typing_exit(self.cursor, &next.values)?;
         if let Some((at, preserved)) = exit {
             // A combining scalar can attach to a visible closing delimiter.
@@ -154,5 +249,28 @@ impl CommandInterpreter {
             }
         }
         Ok(())
+    }
+
+    /// Native character controls start typing without synthesizing Vim input.
+    /// Call only after validating the requested view-local declaration.
+    pub(crate) fn begin_native_character_typing(&mut self, document: &mut Document) -> bool {
+        if self.mode != Mode::Normal {
+            return false;
+        }
+        let pending = self.typing_style.clone();
+        self.enter_insert(document, InsertPlacement::Before, 1);
+        self.typing_style = pending;
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        if !self.typing_style.is_empty() {
+            if let Some(program) = self
+                .insert_session
+                .as_mut()
+                .and_then(|session| session.repeat_program.as_mut())
+            {
+                program.steps.clear();
+                program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
+            }
+        }
+        true
     }
 }

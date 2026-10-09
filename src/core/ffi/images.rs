@@ -29,7 +29,11 @@ pub unsafe extern "C" fn viem_core_view_copy_image_context(
                 .ok_or(ViemStatus::InvalidView)?
                 .cursor();
             let image = document
-                .image_snapshot_at(document.text_point(cursor).map_err(document_status)?)
+                // Native selections are half-open and may leave their active
+                // caret just after the image. Sample selected content so both
+                // selection directions identify the same atomic image.
+                .image_snapshot_at(document.text_point(if range.is_empty() { cursor } else { range.start })
+                    .map_err(document_status)?)
                 .map_err(document_status)?
                 .filter(|image| {
                     range.is_empty()

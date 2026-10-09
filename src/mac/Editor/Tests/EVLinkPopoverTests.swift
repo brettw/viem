@@ -72,7 +72,12 @@ final class EVLinkPopoverTests: XCTestCase {
         popup.applyButton.performClick(nil)
         XCTAssertFalse(popup.isEditing)
         XCTAssertEqual(try backend.formattedText(), "https://example.com")
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL), "Toolbar insertion preserves Normal mode")
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT), "Link insertion begins typing in the requested character context")
+        XCTAssertEqual(surface.formattingToolbar.insertLink.state, .on)
+        surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(try backend.formattedText(), "https://example.comX")
+        XCTAssertEqual(try surface.session?.inlineContentContext(.link).item?.text, "https://example.comX")
     }
 
     func testToolbarUsesSelectedTextAndAppliesOneUndoableLinkInBothViews() throws {

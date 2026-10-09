@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import ViemAppShell
 
 @MainActor
 private final class EVLinkPanel: NSPanel {
@@ -33,6 +34,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     private var suppressed: ViemLogicalSelectionIdentityV1?
     private var cachedSelection: ViemLogicalSelectionIdentityV1?
     private var cachedContext: EVInlineContentContext?
+    private var cachedReadOnly: Bool?
     private weak var originWindow: NSWindow?
     private var eventMonitor: Any?
     private var observers: [NSObjectProtocol] = []
@@ -162,17 +164,51 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     }
 
     private func readContext(session: EVCoreViewSession, selection: ViemLogicalSelectionIdentityV1) throws -> EVInlineContentContext {
-        if let cachedSelection, cachedSelection.isSameSelection(as: selection), let cachedContext { return cachedContext }
+        // Pending link choices change without a source or selection revision.
+        // Image context has no typing override and can reuse this identity.
+        let readOnly = kind == .image
+            ? try session.document.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) != 0 : nil
+        if kind == .image, let cachedSelection,
+           cachedSelection.isSameSelection(as: selection), cachedReadOnly == readOnly,
+           let cachedContext { return cachedContext }
         let result = try session.inlineContentContext(kind)
-        cachedSelection = selection; cachedContext = result
+        cachedSelection = selection; cachedContext = result; cachedReadOnly = readOnly
         return result
     }
 
-    var canOpenEditor: Bool {
-        guard surface?.commandLine?.prompt == nil, let session = surface?.session, !session.hasActiveComposition,
-              let selection = try? session.listSelection(),
-              let context = try? readContext(session: session, selection: selection) else { return false }
-        return context.canInsert || context.item?.editable == true
+    var toolbarPresentation: EVMenuItemPresentation {
+        guard let surface, surface.commandLine?.prompt == nil, let session = surface.session,
+              !session.hasActiveComposition, let selection = try? session.listSelection(),
+              let context = try? readContext(session: session, selection: selection) else { return .disabled }
+        if kind == .link {
+            return EVMenuItemPresentation(isEnabled: context.linked
+                ? (selection.text_start == selection.text_end ? context.canExitLink : context.canRemoveSelection)
+                : context.canInsert, state: context.linked ? .on : .off)
+        }
+        let active = context.item.map { image in
+            (surface.viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) && selection.text_start == selection.text_end)
+                || (selection.text_start == image.start && selection.text_end == image.end)
+        } ?? false
+        return EVMenuItemPresentation(isEnabled: !active && context.canInsert, state: active ? .on : .off)
+    }
+
+    func performToolbarAction() {
+        guard toolbarPresentation.isEnabled, let surface, let session = surface.session else { return }
+        do {
+            let selection = try session.listSelection()
+            let context = try readContext(session: session, selection: selection)
+            if kind == .link, context.linked {
+                close()
+                surface.performInput {
+                    _ = try session.editInlineContent(.link,
+                        action: selection.text_start == selection.text_end ? 3 : 4,
+                        context: context, expected: selection)
+                }
+                cachedSelection = nil; cachedContext = nil
+                surface.formattingToolbar.refresh()
+                surface.editorView.window?.makeFirstResponder(surface.editorView)
+            } else { openEditor(inserting: true) }
+        } catch { surface.report(error) }
     }
 
     func refresh() {
@@ -203,13 +239,14 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         show(editing: false)
     }
 
-    func openEditor() {
+    func openEditor(inserting: Bool = false) {
         guard let surface, surface.commandLine?.prompt == nil, surface.acceptCompletionForNativeInput(), let session = surface.session,
               !session.hasActiveComposition else { return }
         do {
             let selection = try session.listSelection()
-            let next = try readContext(session: session, selection: selection)
-            guard next.item?.editable == true || next.canInsert,
+            let current = try readContext(session: session, selection: selection)
+            let next = inserting ? current.forInsertion : current
+            guard inserting ? next.canInsert : (next.item?.editable == true || next.canInsert),
                   let rect = anchorRect(for: next.item) else { return }
             context = next; expected = selection; suppressed = nil; anchor = rect
             beginEditing()

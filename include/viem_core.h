@@ -1756,7 +1756,8 @@ typedef struct ViemVisualSelectionRectangleV1 {
 #define VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE (1u << 0)
 #define VIEM_SEMANTIC_STYLE_CAN_SET (1u << 1)
 #define VIEM_SEMANTIC_STYLE_CAN_CLEAR (1u << 2)
-/* Insert/Replace caret; changes pending typing declarations, not source. */
+/* Normal/Insert/Replace caret; changes pending typing declarations, not source.
+ * A character control in Normal starts Insert with the requested declaration. */
 #define VIEM_SEMANTIC_STYLE_TYPING_CONTEXT (1u << 3)
 
 /*
@@ -1958,7 +1959,7 @@ typedef struct ViemSetParagraphStyleV1 {
 #define VIEM_SET_PARAGRAPH_STYLE_V1_SIZE ((uint32_t)sizeof(ViemSetParagraphStyleV1))
 
 /* Named paragraph or character style assignment. With no selection a character
- * assignment updates subsequent typing. An empty character style_id clears the
+ * assignment updates subsequent typing and enters Insert from Normal. An empty character style_id clears the
  * named assignment (Default Paragraph); it is never a stored style definition.
  * Paragraph assignment accepts the current paragraph identity. */
 typedef struct ViemAssignStyleV1 {
@@ -2879,12 +2880,14 @@ ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, co
 ViemStatus viem_core_set_code_language(ViemCoreHandle core, uint32_t selection, const uint8_t *language, uint64_t length);
 ViemStatus viem_core_redetect_code_language(ViemCoreHandle core, const uint8_t *filename, uint64_t length);
 /* Link popup JSON: selection {viewId,documentId,revision,start,end,kind,anchor,
- * active,affinity}, canInsert, text, link null or {start,end,text,destination,
+ * active,affinity}, canInsert, linked, canExitLink, canRemoveSelection, text,
+ * link null or {start,end,text,destination,
  * editable}. Query work is bounded to the active source region. */
 ViemStatus viem_core_view_copy_link_context(ViemCoreHandle core, ViemViewId view,
                                            uint8_t *output, uint64_t capacity,
                                            uint64_t *required);
-/* action: 0 inserts at expected selection, 1 edits, 2 removes active link.
+/* action: 0 inserts at expected selection, 1 edits, 2 removes active link,
+ * 3 exits link treatment for future typing, 4 removes selected link treatment.
  * Every mutation validates the complete expected logical selection identity. */
 ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
                                    const ViemLogicalSelectionIdentityV1 *expected,

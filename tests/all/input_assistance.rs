@@ -265,7 +265,7 @@ fn implicit_quotes_do_not_make_encodable_input_fail() {
 }
 
 #[test]
-fn pending_code_does_not_change_the_context_of_normal_replace() {
+fn leaving_pending_code_retires_it_before_normal_replace() {
     use viem_core::document::StyleNamespace;
     let (mut core, view) = smart_fixture(Format::Markdown, "x");
     let expected = core.list_selection_identity(view).unwrap();
@@ -279,6 +279,8 @@ fn pending_code_does_not_change_the_context_of_normal_replace() {
         },
     )
     .unwrap();
+    assert_eq!(core.command_state(view).unwrap().mode(), viem_core::command::Mode::Insert);
+    key(&mut core, view, Key::Escape);
     key(&mut core, view, Key::Char('r'));
     key(&mut core, view, Key::Char('"'));
     assert_eq!(core.document().text(), "“");

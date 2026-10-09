@@ -2,6 +2,21 @@
 use super::*;
 use crate::document::LinkEditIntent;
 impl<P: TextMeasurementProvider> Core<P> {
+    pub fn exit_link_typing(
+        &mut self,
+        view: ViewId,
+        expected: LogicalSelectionIdentity,
+    ) -> Result<CoreOutcome, CoreError> {
+        if expected.kind() != LogicalSelectionKind::None
+            || self.list_selection_identity(view)? != expected
+        {
+            return Err(CoreError::StaleLogicalSelection);
+        }
+        let mut candidate = self.views[&view].commands.clone();
+        candidate.set_typing_link_disabled(&self.document)?;
+        self.publish_pending_typing(view, candidate)
+    }
+
     pub fn edit_link(
         &mut self,
         view: ViewId,
@@ -11,10 +26,48 @@ impl<P: TextMeasurementProvider> Core<P> {
         if self.list_selection_identity(view)? != expected {
             return Err(CoreError::StaleLogicalSelection);
         }
-        let (preflight, caret) = self
-            .document
-            .prepare_link_edit(expected.document(), expected.revision(), intent)
-            .map_err(command_model_transaction_error)?;
+        let insert = matches!(&intent, LinkEditIntent::Insert { .. });
+        let normal_insert = insert
+            && expected.kind() == LogicalSelectionKind::None
+            && self.views[&view].commands.mode() == Mode::Normal;
+        let prepare = if self.views[&view].commands.typing_link_disabled() {
+            match intent {
+                LinkEditIntent::Insert {
+                    range,
+                    text,
+                    destination,
+                } if range.is_empty()
+                    && self.document.can_exit_link_typing(
+                        range.start,
+                        self.views[&view].commands.insertion_boundary_affinity(),
+                    ) =>
+                {
+                    self.document.prepare_new_link_at_unlinked_caret(
+                        range,
+                        text,
+                        destination,
+                        self.views[&view].commands.insertion_boundary_affinity(),
+                        self.views[&view].commands.typing_named_style(),
+                        self.views[&view].commands.typing_properties(),
+                    )
+                }
+                intent => self.document.prepare_link_edit(
+                    expected.document(),
+                    expected.revision(),
+                    intent,
+                ),
+            }
+        } else {
+            self.document
+                .prepare_link_edit(expected.document(), expected.revision(), intent)
+        };
+        let (preflight, caret) = prepare.map_err(command_model_transaction_error)?;
+        let typing_caret = if insert {
+            self.document
+                .prepared_link_typing_caret(&preflight, caret)?
+        } else {
+            None
+        };
         if preflight.is_no_op() {
             return Ok(CoreOutcome {
                 command: None,
@@ -47,6 +100,25 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("prepared view")
             .commands
             .finish_native_link_edit(&mut self.document, caret);
+        let resumes_typing = if normal_insert {
+            self.views
+                .get_mut(&view)
+                .expect("prepared view")
+                .commands
+                .begin_native_character_typing(&mut self.document)
+                || resumes_typing
+        } else {
+            resumes_typing
+        };
+        if insert && resumes_typing {
+            if let Some(typing_caret) = typing_caret {
+                self.views
+                    .get_mut(&view)
+                    .expect("prepared view")
+                    .commands
+                    .set_native_link_typing_caret(&self.document, typing_caret);
+            }
+        }
         let after = self.views[&view]
             .commands
             .capture_history_restoration(&self.document)?;

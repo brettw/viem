@@ -419,6 +419,178 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("Words".utf8))
   }
 
+  func testNormalCaretTracksInlineTraitsAndTogglesEnterInsertWithoutSourceChanges() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      for (source, command) in [("**ab** plain", EVMenuCommand.bold), ("*ab* plain", .italic), ("~~ab~~ plain", .strikethrough)] {
+        let (backend, surface) = try surface(source, type: type)
+        let session = try XCTUnwrap(surface.session)
+        let text = try backend.formattedText() as NSString
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "ab").location + 1, length: 0))
+        let toolbar = surface.formattingToolbar
+        toolbar.refresh()
+        let button = try XCTUnwrap(toolbar.commandButtons[command])
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertEqual(button.state, .on, source)
+        XCTAssertTrue(button.isEnabled)
+        button.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(button.state, .off)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        XCTAssertFalse(surface.canUndo)
+        surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertNil(surface.commandOutput)
+        XCTAssertEqual(button.state, .off)
+        let changed = try backend.serializedSource(typeName: type)
+        XCTAssertNotEqual(changed, Data(source.utf8))
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: type), changed)
+        let (_, reopened) = try self.surface(String(decoding: changed, as: UTF8.self), type: EVDocument.markdownType)
+        let rich = try reopened.backend.formattedText() as NSString
+        reopened.editorView.setAccessibilitySelectedTextRange(NSRange(location: rich.range(of: "X").location, length: 1))
+        XCTAssertEqual(reopened.presentation(for: command).state, .off, "Inserted text must reopen without the disabled trait")
+      }
+    }
+  }
+
+  func testLinkToolbarTracksCaretSplitsTypingAndRemovesSelectedTreatment() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      let source = "before [label](<next.md> \"Title\") after"
+      let (backend, surface) = try surface(source, type: type)
+      let session = try XCTUnwrap(surface.session)
+      let text = try backend.formattedText() as NSString
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "label").location + 2, length: 0))
+      let toolbar = surface.formattingToolbar
+      toolbar.refresh()
+      XCTAssertEqual(toolbar.insertLink.state, .on)
+      XCTAssertTrue(toolbar.insertLink.isEnabled)
+      toolbar.insertLink.performClick(nil)
+      XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+      XCTAssertEqual(toolbar.insertLink.state, .off)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      XCTAssertFalse(surface.canUndo)
+      surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(toolbar.insertLink.state, .off)
+      let saved = try backend.serializedSource(typeName: type)
+      let (fresh, reopened) = try self.surface(String(decoding: saved, as: UTF8.self), type: EVDocument.markdownType)
+      XCTAssertEqual(try fresh.formattedText(), "before laXbel after")
+      reopened.editorView.setAccessibilitySelectedTextRange(NSRange(location: 9, length: 0))
+      XCTAssertNil(try reopened.session?.inlineContentContext(.link).item)
+      surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: type), saved)
+
+      let (selectedBackend, selectedSurface) = try self.surface(source, type: type)
+      let selectedText = try selectedBackend.formattedText() as NSString
+      let selection = type == EVDocument.markdownType ? selectedText.range(of: "label")
+        : selectedText.range(of: "[label](<next.md> \"Title\")")
+      selectedSurface.editorView.setAccessibilitySelectedTextRange(selection)
+      let selectedToolbar = selectedSurface.formattingToolbar
+      selectedToolbar.refresh()
+      XCTAssertEqual(selectedToolbar.insertLink.state, .on)
+      XCTAssertTrue(selectedToolbar.insertLink.isEnabled)
+      selectedToolbar.insertLink.performClick(nil)
+      XCTAssertNil(selectedSurface.commandOutput)
+      XCTAssertEqual(try selectedBackend.serializedSource(typeName: type), Data("before label after".utf8))
+      selectedSurface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try selectedBackend.serializedSource(typeName: type), Data(source.utf8))
+    }
+  }
+
+  func testImageToolbarIsActiveDisabledForCurrentOrSelectedImageAndOffAtTypingCaret() throws {
+    let source = "A![alt](local.png)B"
+    let (backend, surface) = try surface(source, type: EVDocument.markdownType)
+    let session = try XCTUnwrap(surface.session)
+    let toolbar = surface.formattingToolbar
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+    toolbar.refresh()
+    XCTAssertEqual(toolbar.insertImage.state, .on)
+    XCTAssertFalse(toolbar.insertImage.isEnabled)
+    surface.performInput { _ = try session.sendText("i") }
+    toolbar.refresh()
+    XCTAssertEqual(toolbar.insertImage.state, .off)
+    XCTAssertTrue(toolbar.insertImage.isEnabled)
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 1))
+    toolbar.refresh()
+    XCTAssertEqual(toolbar.insertImage.state, .on)
+    XCTAssertFalse(toolbar.insertImage.isEnabled)
+    toolbar.insertImage.performClick(nil)
+    XCTAssertFalse(surface.imagePopover.isEditing)
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+    toolbar.refresh()
+    XCTAssertEqual(toolbar.insertImage.state, .off)
+    XCTAssertTrue(toolbar.insertImage.isEnabled)
+    let revision = try backend.revision()
+    try backend.setReadOnly(true)
+    toolbar.refresh()
+    XCTAssertEqual(try backend.revision(), revision)
+    XCTAssertEqual(toolbar.insertImage.state, .off)
+    XCTAssertFalse(toolbar.insertImage.isEnabled)
+    try backend.setReadOnly(false)
+    toolbar.refresh()
+    XCTAssertTrue(toolbar.insertImage.isEnabled)
+  }
+
+  func testInlineButtonsRetainReadOnlyStateAndDisableLiteralCodeBlockTyping() throws {
+    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+      let source = "**bold** *italic* ~~strike~~ [link](next.md) `code`"
+      let (backend, surface) = try surface(source, type: type)
+      let text = try backend.formattedText() as NSString
+      try backend.setReadOnly(true)
+      for (word, command) in [("bold", EVMenuCommand.bold), ("italic", .italic), ("strike", .strikethrough)] {
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: word).location, length: 0))
+        surface.formattingToolbar.refresh()
+        let button = try XCTUnwrap(surface.formattingToolbar.commandButtons[command])
+        XCTAssertEqual(button.state, .on)
+        XCTAssertFalse(button.isEnabled)
+      }
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "link").location, length: 0))
+      surface.formattingToolbar.refresh()
+      XCTAssertEqual(surface.formattingToolbar.insertLink.state, .on)
+      XCTAssertFalse(surface.formattingToolbar.insertLink.isEnabled)
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: text.range(of: "code").location, length: 0))
+      surface.formattingToolbar.refresh()
+      XCTAssertEqual(surface.formattingToolbar.characterCode.state, .on)
+      XCTAssertFalse(surface.formattingToolbar.characterCode.isHidden)
+      XCTAssertFalse(surface.formattingToolbar.characterCode.isEnabled)
+      XCTAssertFalse(surface.formattingToolbar.characterStyle.isEnabled)
+      XCTAssertEqual(surface.formattingToolbar.characterStyle.titleOfSelectedItem, "Code")
+      surface.formattingToolbar.toggleCharacterCode(surface.formattingToolbar.characterCode)
+      XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+      XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+      try backend.setReadOnly(false)
+      surface.formattingToolbar.refresh()
+      XCTAssertEqual(surface.formattingToolbar.characterCode.state, .on)
+      XCTAssertTrue(surface.formattingToolbar.characterCode.isEnabled)
+      XCTAssertTrue(surface.formattingToolbar.characterStyle.isEnabled)
+
+      let (_, code) = try self.surface("```\nliteral\n```", type: type)
+      let codeText = try code.backend.formattedText() as NSString
+      code.editorView.setAccessibilitySelectedTextRange(NSRange(location: codeText.range(of: "literal").location, length: 0))
+      code.formattingToolbar.refresh()
+      for command in [EVMenuCommand.bold, .italic, .strikethrough] {
+        XCTAssertFalse(try XCTUnwrap(code.formattingToolbar.commandButtons[command]).isEnabled)
+      }
+      XCTAssertFalse(code.formattingToolbar.characterCode.isHidden)
+      XCTAssertFalse(code.formattingToolbar.characterCode.isEnabled)
+      XCTAssertFalse(code.formattingToolbar.characterStyle.isEnabled)
+      code.formattingToolbar.toggleCharacterCode(code.formattingToolbar.characterCode)
+      XCTAssertEqual(code.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+    }
+    for type in [EVDocument.plainTextType, EVDocument.codeType] {
+      let (_, literal) = try surface("literal", type: type)
+      literal.formattingToolbar.refresh()
+      XCTAssertTrue(literal.formattingToolbar.characterCode.isHidden)
+    }
+  }
+
   func testListTogglesUseStructuralStateAcrossNestingAndMixedParagraphs() throws {
     let (_, surface) = try surface("- One\n  - Two\n\nPlain", type: EVDocument.markdownType)
     let toolbar = surface.formattingToolbar

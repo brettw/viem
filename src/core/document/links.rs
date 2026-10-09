@@ -81,7 +81,9 @@ pub(super) fn markdown_inline_at(text: &str, start: usize, end: usize) -> Option
     markdown_bracket_at(text, start, end, false)
 }
 pub(super) fn markdown_image_at(text: &str, start: usize, end: usize) -> Option<InlineLink> {
-    if text.as_bytes().get(start) != Some(&b'!') || escaped(text.as_bytes(), start) { return None; }
+    if text.as_bytes().get(start) != Some(&b'!') || escaped(text.as_bytes(), start) {
+        return None;
+    }
     let mut image = markdown_bracket_at(text, start + 1, end, true)?;
     image.range.start = start;
     Some(image)
@@ -364,7 +366,7 @@ pub struct LinkSnapshot {
     pub editable: bool,
     source: Range<usize>,
     label_source: Range<usize>,
-    destination_source: Option<Range<usize>>,
+    pub(super) destination_source: Option<Range<usize>>,
 }
 
 const MAX_LINK_QUERY_BYTES: usize = 64 * 1024;
@@ -385,6 +387,25 @@ fn plain_label(source: &str) -> String {
 }
 
 impl Document {
+    pub(crate) fn link_typing_end(&self, link: &LinkSnapshot) -> Result<usize, DocumentError> {
+        if self.format().is_source_view() {
+            link_boundary(self, link.label_source.end, BoundaryAffinity::Upstream)
+                .ok_or(DocumentError::AmbiguousProjection)
+        } else {
+            Ok(link.range.end)
+        }
+    }
+    pub(crate) fn prepared_link_typing_caret(
+        &self,
+        prepared: &PreparedModelTransaction,
+        caret: usize,
+    ) -> Result<Option<usize>, DocumentError> {
+        let candidate = self.prepared_candidate_document(prepared)?;
+        candidate
+            .link_at_boundary(caret, BoundaryAffinity::Upstream)?
+            .map(|link| candidate.link_typing_end(&link))
+            .transpose()
+    }
     /// Bounded, source-local lookup. The projection's indexed Link interval is
     /// authoritative; unrelated source is neither copied nor decoded.
     pub fn link_snapshot_at(
@@ -660,6 +681,9 @@ pub enum LinkEditIntent {
     Remove {
         range: Range<usize>,
     },
+    RemoveSelection {
+        range: Range<usize>,
+    },
 }
 
 pub(super) fn escape_label(text: &str) -> String {
@@ -680,6 +704,550 @@ pub(super) fn escape_destination(text: &str) -> String {
 }
 
 impl Document {
+    pub(crate) fn link_at_boundary(
+        &self,
+        at: usize,
+        affinity: BoundaryAffinity,
+    ) -> Result<Option<LinkSnapshot>, DocumentError> {
+        let sample = if affinity == BoundaryAffinity::Upstream && at > 0 {
+            self.hard_line_snapshot()
+                .previous_grapheme_boundary(at)
+                .unwrap_or(at)
+        } else {
+            at
+        };
+        self.link_snapshot_at(self.text_point(sample)?)
+    }
+
+    pub(crate) fn can_exit_link_typing(&self, at: usize, affinity: BoundaryAffinity) -> bool {
+        if self.is_read_only() || !self.format().is_markdown() {
+            return false;
+        }
+        let Ok(Some(link)) = self.link_at_boundary(at, affinity) else {
+            return false;
+        };
+        link.editable
+            && (link.destination_source.is_none()
+                || !self.format().is_source_view()
+                || self
+                    .projection()
+                    .source_insertion_point(at, true)
+                    .is_some_and(|source| {
+                        link.label_source.start <= source && source <= link.label_source.end
+                    }))
+    }
+
+    pub(crate) fn can_remove_link_selection(&self, range: Range<usize>) -> bool {
+        if range.is_empty() || range.len() > MAX_LINK_QUERY_BYTES / 2 {
+            return false;
+        }
+        if self.is_read_only() || !self.format().is_markdown() {
+            return false;
+        }
+        let Ok(Some(link)) = self.link_snapshot_at(match self.text_point(range.start) {
+            Ok(point) => point,
+            Err(_) => return false,
+        }) else {
+            return false;
+        };
+        if !link.editable || range.end > link.range.end {
+            return false;
+        }
+        range == link.range
+            || link.destination_source.is_none()
+            || (!self.format().is_source_view()
+                || self.projection().source_range(range).is_some_and(|source| {
+                    link.label_source.start <= source.start && source.end <= link.label_source.end
+                }))
+    }
+
+    /// Convert only an editable automatic-link construct to explicit Markdown
+    /// before splitting its label. This is a speculative mutation, never a
+    /// toolbar capability query; passive HTML anchors remain unavailable.
+    pub(crate) fn prepare_canonical_autolink(
+        &self,
+        range: Range<usize>,
+        affinity: BoundaryAffinity,
+    ) -> Result<(PreparedModelTransaction, Range<usize>), ModelTransactionError> {
+        let link = self
+            .link_at_boundary(range.start, affinity)?
+            .filter(|link| {
+                link.editable && link.destination_source.is_none() && range.end <= link.range.end
+            })
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        let source = self
+            .state()
+            .source
+            .bytes_in(link.source.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let original = Document::from_bytes_with_file_format(
+            source,
+            self.encoding(),
+            Format::Markdown,
+            self.file_format(),
+        )?;
+        let replacement = self.encoding().encode_fragment(&format!(
+            "[{}](<{}>)",
+            escape_label(&link.text),
+            escape_destination(&link.destination)
+        ))?;
+        let explicit = Document::from_bytes_with_file_format(
+            replacement.clone(),
+            self.encoding(),
+            Format::Markdown,
+            self.file_format(),
+        )?;
+        if original.text() != explicit.text() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        let relative = |at: usize, boundary: BoundaryAffinity| -> Result<usize, DocumentError> {
+            let source = self
+                .projection()
+                .source_insertion_point(at, boundary == BoundaryAffinity::Downstream)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            link_boundary(
+                &original,
+                source
+                    .checked_sub(link.source.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?,
+                boundary,
+            )
+            .ok_or(DocumentError::AmbiguousProjection)
+        };
+        let logical = if self.format().is_source_view() {
+            relative(range.start, affinity)?
+                ..relative(
+                    range.end,
+                    if range.is_empty() {
+                        affinity
+                    } else {
+                        BoundaryAffinity::Upstream
+                    },
+                )?
+        } else {
+            range.start - link.range.start..range.end - link.range.start
+        };
+        let patch = SourcePatch::primary(link.source.clone(), replacement);
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(vec![patch])?
+        } else {
+            self.prepare_text_edits_with_patch_policy(Vec::new(), Some(vec![patch]), true)?
+        };
+        let projected = if self.format().is_source_view() {
+            let candidate = self.prepared_candidate_document(&prepared)?;
+            let map = |at: usize, downstream: bool| -> Result<usize, DocumentError> {
+                let source = explicit
+                    .projection()
+                    .source_insertion_point(at, downstream)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                link_boundary(
+                    &candidate,
+                    link.source.start + source,
+                    if downstream {
+                        BoundaryAffinity::Downstream
+                    } else {
+                        BoundaryAffinity::Upstream
+                    },
+                )
+                .ok_or(DocumentError::AmbiguousProjection)
+            };
+            map(logical.start, true)?..map(logical.end, false)?
+        } else {
+            range
+        };
+        Ok((prepared, projected))
+    }
+
+    fn link_label_document(&self, link: &LinkSnapshot) -> Result<Document, DocumentError> {
+        let mut bytes = self.encoding().encode_fragment("[")?;
+        bytes.extend(
+            self.state()
+                .source
+                .bytes_in(link.label_source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?,
+        );
+        bytes.extend(self.encoding().encode_fragment("](viem-label)")?);
+        Document::from_bytes_with_file_format(
+            bytes,
+            self.encoding(),
+            Format::Markdown,
+            self.file_format(),
+        )
+    }
+
+    fn link_label_logical_range(
+        &self,
+        link: &LinkSnapshot,
+        range: Range<usize>,
+    ) -> Result<Range<usize>, DocumentError> {
+        if range.start < link.range.start || range.end > link.range.end {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        if !self.format().is_source_view() {
+            return Ok(range.start - link.range.start..range.end - link.range.start);
+        }
+        let lower = self
+            .projection()
+            .source_insertion_point(range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let upper = self
+            .projection()
+            .source_insertion_point(range.end, false)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        if lower < link.label_source.start || upper > link.label_source.end || upper < lower {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let fragment = self.link_label_document(link)?;
+        let prefix = self.encoding().encode_fragment("[")?.len();
+        let start = link_boundary(
+            &fragment,
+            prefix + lower - link.label_source.start,
+            BoundaryAffinity::Downstream,
+        )
+        .ok_or(DocumentError::UnsupportedFormatting)?;
+        let end = link_boundary(
+            &fragment,
+            prefix + upper - link.label_source.start,
+            BoundaryAffinity::Upstream,
+        )
+        .ok_or(DocumentError::UnsupportedFormatting)?;
+        fragment.text_point(start)?;
+        fragment.text_point(end)?;
+        Ok(start..end)
+    }
+
+    /// Slice one bounded link label through ordinary verified deletion, so
+    /// retained emphasis/code scopes receive the same local delimiter repairs.
+    fn link_label_fragment(
+        &self,
+        link: &LinkSnapshot,
+        range: Range<usize>,
+        unlink: bool,
+    ) -> Result<Vec<u8>, ModelTransactionError> {
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut fragment = self.link_label_document(link)?;
+        let length = fragment.projection().text_tree().byte_len();
+        fragment.text_point(range.start)?;
+        fragment.text_point(range.end)?;
+        let expected = fragment
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let mut edits = Vec::new();
+        if range.start > 0 {
+            edits.push(TextEdit::new(0..range.start, ""));
+        }
+        if range.end < length {
+            edits.push(TextEdit::new(range.end..length, ""));
+        }
+        if !edits.is_empty() {
+            let prepared = fragment.prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: fragment.id(),
+                revision: fragment.revision(),
+                edits,
+            })?;
+            fragment.commit_model_transaction(prepared)?;
+        }
+        if fragment.text() != expected {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        let item = fragment
+            .link_snapshot_at(fragment.text_point(0)?)?
+            .ok_or(DocumentError::VerificationFailed)?;
+        if unlink {
+            let (prepared, _) = fragment.prepare_link_edit(
+                fragment.id(),
+                fragment.revision(),
+                LinkEditIntent::Remove { range: item.range },
+            )?;
+            fragment.commit_model_transaction(prepared)?;
+            Ok(fragment.source_bytes())
+        } else {
+            fragment
+                .state()
+                .source
+                .bytes_in(item.label_source)
+                .ok_or(DocumentError::VerificationFailed.into())
+        }
+    }
+
+    fn split_link_replacement(
+        &self,
+        link: &LinkSnapshot,
+        selected: Range<usize>,
+        middle: Vec<u8>,
+    ) -> Result<(Vec<u8>, usize), ModelTransactionError> {
+        if link.destination_source.is_none() {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let logical = self.link_label_logical_range(link, selected)?;
+        let length = self
+            .link_label_document(link)?
+            .projection()
+            .text_tree()
+            .byte_len();
+        let prefix = self
+            .state()
+            .source
+            .bytes_in(link.source.start..link.label_source.start)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let suffix = self
+            .state()
+            .source
+            .bytes_in(link.label_source.end..link.source.end)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let mut replacement = Vec::new();
+        if logical.start > 0 {
+            replacement.extend_from_slice(&prefix);
+            replacement.extend(self.link_label_fragment(link, 0..logical.start, false)?);
+            replacement.extend_from_slice(&suffix);
+        }
+        replacement.extend_from_slice(&middle);
+        let caret_source = link.source.start + replacement.len();
+        if logical.end < length {
+            replacement.extend(prefix);
+            replacement.extend(self.link_label_fragment(link, logical.end..length, false)?);
+            replacement.extend(suffix);
+        }
+        Ok((replacement, caret_source))
+    }
+
+    fn prepare_split_link(
+        &self,
+        link: &LinkSnapshot,
+        range: Range<usize>,
+        middle: Vec<u8>,
+        text: &str,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        let (replacement, caret_source) =
+            self.split_link_replacement(link, range.clone(), middle)?;
+        let original = self
+            .state()
+            .source
+            .bytes_in(link.source.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix = original
+            .iter()
+            .zip(&replacement)
+            .take_while(|(old, new)| old == new)
+            .count();
+        let suffix = original[prefix..]
+            .iter()
+            .rev()
+            .zip(replacement[prefix..].iter().rev())
+            .take_while(|(old, new)| old == new)
+            .count();
+        let decoded = self
+            .encoding()
+            .decode_region(&original, link.source.start)?;
+        // Keep the patch at complete encoded scalar boundaries, while retaining
+        // every unchanged label byte and its source-position identity.
+        let prefix = decoded
+            .scalar_spans()
+            .take_while(|unit| unit.source.end <= link.source.start + prefix)
+            .last()
+            .map_or(0, |unit| unit.source.end - link.source.start);
+        let suffix_start = decoded
+            .scalar_spans()
+            .find(|unit| unit.source.start >= link.source.end - suffix)
+            .map_or(link.source.end, |unit| unit.source.start);
+        let suffix = link.source.end - suffix_start;
+        let patch = SourcePatch::primary(
+            link.source.start + prefix..suffix_start,
+            replacement[prefix..replacement.len() - suffix].to_vec(),
+        );
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(vec![patch])?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                vec![TextEdit::new(range.clone(), text)],
+                Some(vec![patch]),
+                true,
+            )?
+        };
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        let caret = if self.format().is_source_view() {
+            link_boundary(&candidate, caret_source, BoundaryAffinity::Upstream)
+                .ok_or(DocumentError::VerificationFailed)?
+        } else {
+            range.start + text.len()
+        };
+        candidate.text_point(caret)?;
+        Ok((prepared, caret))
+    }
+
+    pub(crate) fn prepare_new_link_at_unlinked_caret(
+        &self,
+        range: Range<usize>,
+        text: String,
+        destination: String,
+        affinity: BoundaryAffinity,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        if !range.is_empty() || !self.can_exit_link_typing(range.start, affinity) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), text, Vec::new())
+            .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        self.prepare_link_after_unlinked_typing(
+            FormattedPayloadEdit::new(range, payload).with_boundary_affinity(affinity),
+            named,
+            values,
+            destination,
+        )
+    }
+
+    fn prepare_link_selection_removal(
+        &self,
+        range: Range<usize>,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        if self.is_read_only()
+            || !self.format().is_markdown()
+            || range.is_empty()
+            || range.len() > MAX_LINK_QUERY_BYTES / 2
+        {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let link = self
+            .link_snapshot_at(self.text_point(range.start)?)?
+            .filter(|link| link.editable && range.end <= link.range.end)
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        if range == link.range {
+            return self.prepare_link_edit(
+                self.id(),
+                self.revision(),
+                LinkEditIntent::Remove { range },
+            );
+        }
+        if link.destination_source.is_none() {
+            return self.prepare_autolink_selection_removal(range);
+        }
+        let logical = self.link_label_logical_range(&link, range.clone())?;
+        let middle = self.link_label_fragment(&link, logical, true)?;
+        let text = self
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let (prepared, caret) = self.prepare_split_link(&link, range.clone(), middle, &text)?;
+        if !self.format().is_source_view() {
+            let candidate = self.prepared_candidate_document(&prepared)?;
+            if candidate
+                .projection()
+                .style_spans_for_region(&range)
+                .iter()
+                .any(|span| {
+                    span.application == StyleApplication::Automatic("Link".into())
+                        && span.range.start < range.end
+                        && range.start < span.range.end
+                })
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+        }
+        Ok((prepared, caret))
+    }
+
+    pub(crate) fn prepare_unlinked_typing_boundary(
+        &self,
+        range: Range<usize>,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        let link = self
+            .link_snapshot_at(self.text_point(range.start)?)?
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        let logical = self.link_label_logical_range(&link, range.clone())?;
+        let middle = self.link_label_fragment(&link, logical, true)?;
+        let length = middle.len();
+        let fragment = Document::from_bytes_with_file_format(
+            middle.clone(),
+            self.encoding(),
+            Format::Markdown,
+            self.file_format(),
+        )?;
+        let inner = fragment
+            .projection()
+            .source_insertion_point(0, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let text = self
+            .projection()
+            .text_tree()
+            .slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let (prepared, end) = self.prepare_split_link(&link, range.clone(), middle, &text)?;
+        let at = if self.format().is_source_view() {
+            let candidate = self.prepared_candidate_document(&prepared)?;
+            let end_source = candidate
+                .projection()
+                .source_insertion_point(end, false)
+                .ok_or(DocumentError::VerificationFailed)?;
+            link_boundary(
+                &candidate,
+                end_source
+                    .checked_sub(length)
+                    .ok_or(DocumentError::VerificationFailed)?
+                    + inner,
+                BoundaryAffinity::Downstream,
+            )
+            .ok_or(DocumentError::VerificationFailed)?
+        } else {
+            range.start
+        };
+        Ok((prepared, at))
+    }
+
+    pub(crate) fn prepare_insertion_without_link(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        inherited: Option<&super::ReplacementTypingContext>,
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        self.validate_typing_payload(&edit)?;
+        // Replacement consumes the first selected character regardless of the
+        // previous insertion side, just like ordinary replacement inheritance.
+        let affinity = if edit.range.is_empty() {
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream)
+        } else {
+            BoundaryAffinity::Downstream
+        };
+        let edit = edit.with_boundary_affinity(affinity);
+        let Some(link) = self.link_at_boundary(edit.range.start, affinity)? else {
+            return self.prepare_typing_without_automatic_links(edit, named, values, inherited);
+        };
+        if !self.can_exit_link_typing(edit.range.start, affinity) || edit.range.end > link.range.end
+        {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        if link.destination_source.is_none() {
+            return self.prepare_typing_after_canonical_link(edit, named, values);
+        }
+        let (prepared, caret, start) = self.prepare_typing_after_link_split(edit, named, values)?;
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        if candidate.link_at(candidate.text_point(start)?)?.is_some() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        let actual =
+            crate::layout::DocumentLayoutStyles::character_at(candidate.projection(), start, false)
+                .map_err(|_| DocumentError::VerificationFailed)?;
+        let requested = self.validate_typing_properties(values)?;
+        if requested.bold.is_some_and(|value| value != actual.bold)
+            || requested.slant.is_some_and(|value| value != actual.slant)
+            || requested
+                .strikethrough
+                .is_some_and(|value| value != actual.strikethrough)
+            || named.is_some_and(|style| style.0 == "Code")
+                && !candidate.is_code_at(start, BoundaryAffinity::Downstream)?
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok((prepared, caret, start))
+    }
+
     pub fn can_insert_link(&self, range: Range<usize>) -> bool {
         if !self.format().is_markdown()
             || self.is_read_only()
@@ -749,6 +1317,9 @@ impl Document {
         if self.is_read_only() || !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
+        if let LinkEditIntent::RemoveSelection { range } = intent {
+            return self.prepare_link_selection_removal(range);
+        }
         let (range, text, destination, remove, existing) = match intent {
             LinkEditIntent::Insert {
                 range,
@@ -778,6 +1349,7 @@ impl Document {
                     .ok_or(DocumentError::UnsupportedFormatting)?;
                 (range, link.text.clone(), String::new(), true, Some(link))
             }
+            LinkEditIntent::RemoveSelection { .. } => unreachable!("handled above"),
         };
         if (!remove && text.is_empty())
             || text.len() + destination.len() > MAX_LINK_QUERY_BYTES / 2

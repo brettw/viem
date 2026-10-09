@@ -52,9 +52,9 @@ import XCTest
         XCTAssertEqual(try selectedStyle(range, view: view, session: session)?.rawValue, id)
     }
 
-    func testBuiltinStyleAtCaretSurvivesInsertEntryAndRoundTripsTypedText() throws {
+    func testBuiltinStyleAtNormalCaretEntersInsertAndRoundTripsTypedText() throws {
         for (source, type) in [("base", EVDocument.markdownType)] {
-            for (before, after, insertion) in [("i", "", 0), ("", "i", 0), ("", "a", 1)] {
+            for (before, insertion) in [("i", 0), ("", 0), ("l", 1), ("R", 0)] {
                 let (backend, view, session) = try surface(source, type: type)
                 try keys(before, view: view, session: session)
                 let revision = try backend.revision()
@@ -64,13 +64,13 @@ import XCTest
                 XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
                 XCTAssertEqual(try backend.revision(), revision)
                 XCTAssertEqual(try session.listSelection().text_start, cursor)
-                XCTAssertEqual(view.viewPresentation.mode, mode)
+                XCTAssertEqual(view.viewPresentation.mode,
+                               mode == UInt32(VIEM_MODE_REPLACE) ? mode : UInt32(VIEM_MODE_INSERT))
                 XCTAssertFalse(backend.persistenceState.isDirty)
-                try keys(after, view: view, session: session)
                 view.editorView.insertText("XY", replacementRange: NSRange(location: NSNotFound, length: 0))
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                 view.refreshPresentation()
-                XCTAssertEqual(try backend.formattedText(), insertion == 0 ? "XYbase" : "bXYase")
+                XCTAssertEqual(try backend.formattedText(), before == "R" ? "XYse" : insertion == 0 ? "XYbase" : "bXYase")
                 let range = NSRange(location: insertion, length: 2)
                 XCTAssertEqual(try selectedStyle(range, view: view, session: session)?.rawValue, "Code")
                 let saved = try backend.serializedSource(typeName: type)

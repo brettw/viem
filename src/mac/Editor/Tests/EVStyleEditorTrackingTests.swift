@@ -331,6 +331,225 @@ final class EVStyleEditorTrackingTests: XCTestCase {
         withExtendedLifetime((builder, owner, controller)) {}
     }
 
+    func testMarkdownSemanticStylesFollowTheCaretInNormalAndInsertModes() throws {
+        let source = """
+        Plain
+
+        [linked](https://example.com)
+
+        <https://example.com/automatic>
+
+        <!-- comment -->
+
+        [reference][ref]
+
+        ~~strike~~
+
+        `code`
+
+        [`nested`](https://example.com)
+
+        [~~overlap~~](https://example.com)
+
+        ![photo](https://example.com/photo.png)
+
+        [ref]: docs/next.md
+        """
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            for mode in [UInt32(VIEM_MODE_NORMAL), UInt32(VIEM_MODE_INSERT)] {
+                let backend = EVCoreDocumentBackend(configuration: configuration())
+                try backend.read(source: Data(source.utf8), typeName: type)
+                let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+                prepare(surface)
+                surface.view.frame.size.height = 1_200
+                surface.viewDidLayout()
+                let session = try XCTUnwrap(surface.session)
+                if mode == UInt32(VIEM_MODE_INSERT) {
+                    surface.performInput { _ = try session.sendText("i") }
+                }
+                let original = try backend.recoverySnapshot()
+                let coordinator = EVStyleEditorCoordinator()
+                coordinator.show(document: surface, sender: nil)
+                defer { coordinator.close() }
+                XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+                let text = try backend.formattedText()
+                let cases: [(String, EVStyleKey)] = [
+                    ("linked", EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link"))),
+                    ("automatic", EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link"))),
+                    ("comment", EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Comment"))),
+                    ("reference", EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Markdown reference"))),
+                    ("strike", EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Strikethrough"))),
+                    ("code", inlineCode),
+                    ("nested", inlineCode),
+                    ("overlap", .baseParagraph),
+                    (type == EVDocument.markdownType ? "\u{fffc}" : "photo",
+                     EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Image"))),
+                    ("Plain", .baseParagraph),
+                ]
+                for (token, expected) in cases {
+                    let range = try XCTUnwrap(text.range(of: token))
+                    let offset = range.lowerBound.utf16Offset(in: text)
+                    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: offset, length: 0))
+                    coordinator.settleSelectionFollowForTesting()
+                    XCTAssertEqual(surface.viewPresentation.mode, mode, "\(type): \(token)")
+                    XCTAssertEqual(surface.currentStyleEditorKey(), expected, "\(type): \(token)")
+                    XCTAssertEqual(coordinator.inspection?.selectedStyleKey, expected, "\(type): \(token)")
+                }
+                XCTAssertEqual(try backend.recoverySnapshot(), original)
+                XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+                XCTAssertFalse(surface.canUndo)
+            }
+        }
+    }
+
+    func testLinkStyleSelectionAndMixedCharacterStylesUseTheSameInspectorPolicy() throws {
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let backend = EVCoreDocumentBackend(configuration: configuration())
+            let source = "plain [linked](https://example.com) and `code`"
+            try backend.read(source: Data(source.utf8), typeName: type)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            prepare(surface)
+            let session = try XCTUnwrap(surface.session)
+            let text = try backend.formattedText()
+            let label = try XCTUnwrap(text.range(of: "linked"))
+            let coordinator = EVStyleEditorCoordinator()
+            coordinator.show(document: surface, sender: nil)
+            defer { coordinator.close() }
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(label, in: text))
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(try session.selectedNamedStyles().character?.rawValue, "Link")
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey,
+                           EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link")))
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: text.utf16.count))
+            coordinator.settleSelectionFollowForTesting()
+            let selected = try session.selectedNamedStyles()
+            XCTAssertTrue(selected.characterMixed)
+            XCTAssertNil(selected.character)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+            XCTAssertFalse(surface.canUndo)
+        }
+    }
+
+    func testPendingCharacterChangesFollowWithoutMovingTheInsertCaret() throws {
+        let source = "plain [linked](target.md) ~~strike~~ tail"
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let backend = EVCoreDocumentBackend(configuration: configuration())
+            try backend.read(source: Data(source.utf8), typeName: type)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            prepare(surface)
+            let session = try XCTUnwrap(surface.session)
+            var sourceChangeCount = 0
+            backend.sourceDidChange = { [weak surface] in
+                sourceChangeCount += 1
+                surface?.refreshPresentation()
+            }
+            surface.performInput { _ = try session.sendText("i") }
+            let text = try backend.formattedText()
+            let link = try XCTUnwrap(text.range(of: "linked"))
+            moveCaret(link.lowerBound.utf16Offset(in: text) + 1, in: surface)
+            let original = try backend.recoverySnapshot()
+            let coordinator = EVStyleEditorCoordinator()
+            coordinator.show(document: surface, sender: nil)
+            defer { coordinator.close() }
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey,
+                           EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Link")))
+            let caret = surface.viewPresentation.cursor_utf8_offset
+            let affinity = surface.viewPresentation.cursor_affinity
+            surface.formattingToolbar.openLinkEditor(surface.formattingToolbar.insertLink)
+            XCTAssertNil(surface.commandOutput)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+            XCTAssertEqual(surface.viewPresentation.cursor_affinity, affinity)
+            XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(surface.currentStyleEditorKey(), .baseParagraph)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+
+            surface.formattingToolbar.toggleCharacterCode(surface.formattingToolbar.characterCode)
+            XCTAssertNil(surface.commandOutput)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+            XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(surface.currentStyleEditorKey(), inlineCode)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+            surface.formattingToolbar.toggleCharacterCode(surface.formattingToolbar.characterCode)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph)
+
+            let strike = try XCTUnwrap(text.range(of: "strike"))
+            moveCaret(strike.lowerBound.utf16Offset(in: text) + 1, in: surface)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey,
+                           EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Strikethrough")))
+            let strikeCaret = surface.viewPresentation.cursor_utf8_offset
+            surface.perform(menuCommand: .strikethrough, sender: nil)
+            XCTAssertNil(surface.commandOutput)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, strikeCaret)
+            XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(surface.currentStyleEditorKey(), .baseParagraph)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, .baseParagraph,
+                           "A pending off choice suppresses the automatic source strikethrough style")
+            XCTAssertEqual(try backend.recoverySnapshot(), original)
+            XCTAssertEqual(sourceChangeCount, 0)
+            XCTAssertFalse(surface.canUndo)
+
+            coordinator.selectStyle(heading)
+            let editor = try XCTUnwrap(coordinator.styleWindow?.contentViewController as? EVStyleEditorViewController)
+            XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(29)), editor.inspection.diagnostic)
+            surface.refreshPresentation()
+            XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading,
+                           "Editing a definition preserves the explicit inspector choice")
+            let generation = session.characterContextGeneration
+            let snapshot = try backend.styleSheetSnapshot()
+            XCTAssertThrowsError(try session.assignStyle(
+                EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Missing style")),
+                identity: snapshot.identity, expected: session.listSelection()))
+            surface.refreshPresentation()
+            XCTAssertEqual(session.characterContextGeneration, generation)
+            XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+        }
+    }
+
+    func testCollapsedCaretModeChangeResumesFollowingTheInsertionStyle() throws {
+        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+            let backend = EVCoreDocumentBackend(configuration: configuration())
+            try backend.read(source: Data("plain `code` tail".utf8), typeName: type)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            prepare(surface)
+            let session = try XCTUnwrap(surface.session)
+            var point = ViemLayoutCaretPointV1()
+            point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+            point.document_revision = try backend.revision()
+            point.text_offset = 6
+            point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+            surface.performInput { _ = try session.placeCursor(point, extendSelection: false) }
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+            let coordinator = EVStyleEditorCoordinator()
+            coordinator.show(document: surface, sender: nil)
+            defer { coordinator.close() }
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode)
+            coordinator.selectStyle(heading)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, heading)
+            XCTAssertFalse(coordinator.selectionFollowScheduledForTesting)
+            let original = try backend.recoverySnapshot()
+            surface.performInput { _ = try session.sendText("i") }
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, point.text_offset)
+            XCTAssertEqual(surface.viewPresentation.cursor_affinity, point.affinity)
+            XCTAssertTrue(coordinator.selectionFollowScheduledForTesting)
+            coordinator.settleSelectionFollowForTesting()
+            XCTAssertEqual(surface.currentStyleEditorKey(), inlineCode)
+            XCTAssertEqual(coordinator.inspection?.selectedStyleKey, inlineCode,
+                           "A typing mode change resumes caret following without a move or affinity change")
+            XCTAssertEqual(try backend.recoverySnapshot(), original)
+            XCTAssertFalse(surface.canUndo)
+        }
+    }
+
     func testCodeTrackingKeepsTheGlobalSettingsTargetAndStandaloneSettingsStopFollowing() async throws {
         let configuration = configuration()
         let backend = EVCoreDocumentBackend(configuration: configuration)

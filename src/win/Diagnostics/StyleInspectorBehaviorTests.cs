@@ -409,7 +409,90 @@ internal static class StyleInspectorBehaviorTests
         var standalone = new StyleWindow(codeView, preferences, followCaret: false);
         try { Move(codeView, 0); Check(!standalone.CaretFollowScheduled && standalone.CaretStyleQueries == 0, "standalone global Code inspectors never follow a document caret"); }
         finally { standalone.Close(); }
+        await MarkdownCharacterFollowing(pane, preferences);
         await MarkdownCodeFollowing(pane, preferences);
+    }
+    private static async Task MarkdownCharacterFollowing(EditorPane pane, Preferences preferences)
+    {
+        byte[] source = "plain [link](other.md) ~~strike~~ `code` <!--comment-->\n\n[label][ref]\n\n[ref]: other.md"u8.ToArray();
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        {
+            byte[] originalStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+            using var document = new CoreDocument(source, "following.md", format);
+            using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+            var inspector = new StyleWindow(view, preferences);
+            try
+            {
+                foreach (var (text, style) in new[] { ("link", "Link"), ("strike", "Strikethrough"), ("code", "Code"),
+                    ("comment", "Comment"), ("label", "Markdown reference") })
+                {
+                    int index = document.FormattedText().IndexOf(text, StringComparison.Ordinal) + 1;
+                    Move(view, (ulong)index);
+                    Check(view.CurrentStyleEditorKey(view.Styles()) == new StyleKey(2, style),
+                        "Markdown caret exposes its automatic character style to the inspector: " + style + " / " + format);
+                    inspector.Retarget(view);
+                    Check(Selected(inspector).Key == new StyleKey(2, style),
+                        "reopening Markdown styles selects the current character treatment: " + style + " / " + format);
+                }
+                Move(view, 1); inspector.Retarget(view);
+                Move(view, (ulong)document.FormattedText().IndexOf("link", StringComparison.Ordinal) + 1);
+                await Task.Delay(650);
+                Check(Selected(inspector).Key == new StyleKey(2, "Link"),
+                    "moving onto a link updates the open style inspector after the caret settles: " + format);
+                ulong linkStart = view.LinkContext().Link!.Start;
+                Check(linkStart == (ulong)document.FormattedText().IndexOf(format == VIEM_FORMAT_MARKDOWN_SOURCE ? "[link]" : "link", StringComparison.Ordinal),
+                    "the mode-change fixture uses the complete projected Link span boundary: " + format);
+                view.Place(linkStart, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+                inspector.Retarget(view);
+                Check(Selected(inspector).Key == new StyleKey(2, "Link"), "the Normal projected link boundary follows its current character");
+                inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>()
+                    .Single(style => (style.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+                var beforeInsert = view.Presentation;
+                view.Command("i");
+                Check(view.Presentation.cursor_utf8_offset == beforeInsert.cursor_utf8_offset
+                    && view.Presentation.cursor_affinity == beforeInsert.cursor_affinity && inspector.CaretFollowScheduled,
+                    "a collapsed-caret mode change schedules style following without position or affinity changes: " + format);
+                await Task.Delay(650);
+                Check(Selected(inspector).Key == new StyleKey(2, "Link"),
+                    "Insert mode resumes caret-style following after a manual inspector choice without changing position: " + format);
+                view.Key(VIEM_KEY_ESCAPE);
+                Move(view, (ulong)document.FormattedText().IndexOf("link", StringComparison.Ordinal) + 1);
+                inspector.Retarget(view);
+                view.Command("i");
+                ulong caret = view.Presentation.cursor_utf8_offset;
+                view.ToggleLink(view.LinkContext());
+                Check(view.Presentation.cursor_utf8_offset == caret && inspector.CaretFollowScheduled,
+                    "pending link clearing schedules the inspector without caret movement: " + format);
+                await Task.Delay(650);
+                Check((Selected(inspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0,
+                    "the stationary Insert caret follows pending unlinked appearance: " + format);
+                view.ChooseStyle(new(2, "Code"), view.SelectedNamedStyles().Identity);
+                await Task.Delay(650);
+                Check(view.Presentation.cursor_utf8_offset == caret && Selected(inspector).Key == new StyleKey(2, "Code"),
+                    "the stationary Insert caret follows pending Code appearance: " + format);
+                view.ChooseStyle(new(2, ""), view.SelectedNamedStyles().Identity);
+                await Task.Delay(650);
+                Check((Selected(inspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0,
+                    "clearing pending Code updates the inspector at the same caret: " + format);
+                view.Key(VIEM_KEY_ESCAPE);
+                Move(view, (ulong)document.FormattedText().IndexOf("strike", StringComparison.Ordinal) + 1);
+                view.Command("i"); inspector.Retarget(view);
+                Check(Selected(inspector).Key == new StyleKey(2, "Strikethrough"), "the inspector opens the strike treatment before a pending clear");
+                caret = view.Presentation.cursor_utf8_offset;
+                view.ToggleStrikethrough();
+                await Task.Delay(650);
+                Check(view.Presentation.cursor_utf8_offset == caret && (Selected(inspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0,
+                    "clearing pending strikethrough updates the inspector without movement: " + format);
+                inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(style => style.Key == new StyleKey(2, "Link"));
+                Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 27), "the manually selected link definition accepts an explicit size edit");
+                await Task.Delay(650);
+                Check(Selected(inspector).Key == new StyleKey(2, "Link") && !inspector.CaretFollowScheduled,
+                    "editing a manually selected definition preserves the inspector selection: " + format);
+                Check(source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty,
+                    "following automatic Markdown character styles preserves source bytes and clean state");
+            }
+            finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalStyles); }
+        }
     }
     private static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
     {
