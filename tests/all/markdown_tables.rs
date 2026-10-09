@@ -872,3 +872,55 @@ fn table_following_prose_has_independent_block_ownership_and_header_inherits_cel
         "plain text without a blank line remains a GFM body row"
     );
 }
+
+#[test]
+fn source_rows_ending_in_hard_break_spaces_remain_separate_and_editable() {
+    fn rows(document: &Document) -> Vec<&str> {
+        document
+            .projection()
+            .blocks()
+            .iter()
+            .map(|block| &document.text()[block.range.clone()])
+            .collect()
+    }
+    let document = doc("| a |  \n| - |\n| c | d |  \n| e |\n", Format::MarkdownSource);
+    assert_eq!(rows(&document), ["| a |  ", "| - |", "| c | d |  ", "| e |", ""]);
+    for (source, edit) in [
+        // Deleting a closing pipe leaves trailing hard-break spaces on the row.
+        ("| a  |\n| -- |\n", TextEdit::new(5..6, "")),
+        ("| f\\|oo  |\n| ------ |\n| b `\\|` az |\n", TextEdit::new(9..10, "")),
+        ("| a |  \n| - |\n| c |\n", TextEdit::new(2..2, "x")),
+    ] {
+        let mut document = doc(source, Format::MarkdownSource);
+        document
+            .apply_model_request(ModelRequest::ApplyTextEdits {
+                document: document.id(),
+                revision: document.revision(),
+                edits: vec![edit],
+            })
+            .unwrap();
+        let fresh = doc(std::str::from_utf8(&document.source_bytes()).unwrap(), Format::MarkdownSource);
+        assert_eq!(document.text(), fresh.text(), "{source:?}");
+        assert_eq!(rows(&document), rows(&fresh), "{source:?}");
+    }
+}
+
+#[test]
+fn literal_carriage_returns_are_line_content_rather_than_grammar_breaks() {
+    // Bare LF selects Unix endings, so each CR is content of its physical line.
+    for source in [
+        "| a |\r\n| - |\n",
+        "| abc | def |\n| --- | -\r-- |\n",
+        "|a|\r|-|\na\r# b",
+        "|a|\r|-|",
+        "a\r# b",
+    ] {
+        let source_view = doc(source, Format::MarkdownSource);
+        assert_eq!(source_view.text().trim_end_matches('\n'), source.trim_end_matches('\n'), "{source:?}");
+        assert!(source_view.projection().tables().is_empty(), "{source:?}");
+        let wysiwyg = doc(source, Format::Markdown);
+        assert!(wysiwyg.projection().tables().is_empty(), "{source:?}");
+        assert!(wysiwyg.text().contains('\r'), "{source:?}");
+        assert!(!wysiwyg.projection().blocks().iter().any(|block| block.style.0.starts_with("Heading")), "{source:?}");
+    }
+}

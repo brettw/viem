@@ -278,8 +278,11 @@ impl Blocks {
     }
 }
 
-/// Literal LF in a document explicitly opened with Mac CR endings is text,
-/// not a grammar line break. Preserve byte offsets while classifying blocks.
+/// Line-ending characters that the open policy keeps as content are text, not
+/// grammar line breaks: literal LF under Mac endings, and any CR left after
+/// normalization (recognized endings all become LF). Otherwise the grammar
+/// splits a line that every other classifier sees whole. Preserve byte
+/// offsets while classifying blocks.
 pub(super) fn grammar_text(input: &super::line_endings::NormalizedText) -> std::borrow::Cow<'_, str> {
     let mut replacement = None;
     for (at, _) in input.text.match_indices('\n') {
@@ -287,6 +290,9 @@ pub(super) fn grammar_text(input: &super::line_endings::NormalizedText) -> std::
             .is_none_or(|ending| ending.normalized.start != at) {
             replacement.get_or_insert_with(|| input.text.as_bytes().to_vec())[at] = 1;
         }
+    }
+    for (at, _) in input.text.match_indices('\r') {
+        replacement.get_or_insert_with(|| input.text.as_bytes().to_vec())[at] = 1;
     }
     replacement.map_or(std::borrow::Cow::Borrowed(&input.text), |bytes| std::borrow::Cow::Owned(String::from_utf8(bytes).unwrap()))
 }

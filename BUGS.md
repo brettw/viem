@@ -39,8 +39,8 @@ Results:
   Markdown reference styling. Separately, 11,185 edits failed with
   `VerificationFailed` and 79 with `AmbiguousProjection`.
 - **Source view (297,883 edits):** 134 panics, 1,877 divergences from a fresh
-  parse and 10 `VerificationFailed`.
-- **Other checks:** opening never panicked except in bug 2. LF, CRLF and CR
+  parse and 10 `VerificationFailed`. The panics were bug 1, now fixed.
+- **Other checks:** opening never panicked except in bug 2, now fixed. LF, CRLF and CR
   copies of every example projected identically. The adversarial lines
   exercised in that run, up to 400 KB, projected in linear time; the URL
   family in bug 49 instead takes quadratic time.
@@ -67,9 +67,19 @@ text, blocks and style spans equal those of a fresh parse of
    `FormattedDocument::extract_table_row`. The FFI boundary returns
    `ViemStatus::Panic` and the edit is lost. All 134 Source-view fuzz panics
    took this path, including deleting the closing pipe of
-   `"| f\\|oo  |\n| ------ |\n..."`. The candidate builder should reject the
-   invalid local candidate and fall back to structural reprojection of the
-   ordinary Source edit instead of panicking.
+   `"| f\\|oo  |\n| ------ |\n..."`.
+
+   **Fixed.** The cause was wider than this edit. In Source view, a table
+   row whose line ends in two spaces was joined to the next row as a
+   hard-break continuation, because both rows are `Paragraph` blocks with
+   the same table style. Opening `"| a |  \n| - |\n| c |\n"` showed the
+   header and delimiter rows as one block, and typing anywhere in such a row
+   also panicked. The row-local candidate then owned no complete block.
+   Table rows are now excluded from hard-break joining in both views
+   (`project_markdown`). `extract_table_row` also checks that the row owns
+   complete blocks; if not, it declines the local candidate and the edit
+   falls back to ordinary reprojection. Regression:
+   `markdown_tables::source_rows_ending_in_hard_break_spaces_remain_separate_and_editable`.
 2. **Opening a table with a literal CR in Source view underflows.** Open
    `"| a |\r\n| - |\n"` or `"| abc | def |\n| --- | -\r-- |\n"` as Markdown
    Source. These have mixed endings, so `unix` detection makes `\r` content.
@@ -82,6 +92,18 @@ text, blocks and style spans equal those of a fresh parse of
    `"|a|\r|-|"` changes Source projection text to `"|a|\n|-|"`.
    [`grammar_text`](src/core/document/markdown_syntax.rs#L283) masks literal
    LF under Mac policy but leaves literal CR exposed to grammar line parsing.
+
+   **Fixed.** `grammar_text` now also masks every CR left after
+   normalization, since recognized endings all become LF. pulldown-cmark no
+   longer splits lines that Viem's line model and hand-written classifiers
+   keep whole. Under the Unix interpretation these inputs are now ordinary
+   paragraphs whose CR stays visible content. The hidden `a` in `"a\r# b"`
+   and the changed Source text for `"|a|\r|-|"` are fixed as well.
+   `install_flow_ranges` now validates its ranges against the projected
+   text. If they disagree, it installs no flow lines (layout uses physical
+   lines) instead of wrapping a separator length, and a debug assertion
+   reports the mismatch in tests. Regression:
+   `markdown_tables::literal_carriage_returns_are_line_content_rather_than_grammar_breaks`.
 
 ## Edits that commit but reopen differently
 
@@ -212,8 +234,9 @@ semantic-correctness requirement in AGENTS.md.
     - In `"Hello World\n| abc | def |\n| --- | --- |\n| bar | baz |\n"`,
       delete the leading `|` of the header row. The screen keeps the table;
       reopening shows a paragraph.
-    - In `"foo|bar  \n---|---\nfoo|bar\n"`, delete a trailing space after
-      `bar`. The header and delimiter rows merge into one block.
+    - **Fixed with bug 1.** In `"foo|bar  \n---|---\nfoo|bar\n"`, deleting a
+      trailing space after `bar` merged the header and delimiter rows into
+      one block. That was the same hard-break row joining.
 
 ## Ordinary edits that are rejected
 
