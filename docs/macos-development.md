@@ -88,6 +88,12 @@ current app, and runs the Swift tests with isolated settings. Run `make check-ab
 for the header check alone. See [C ABI validation](abi-validation.md) for Windows
 setup and CI usage. Ordinary Rust tests do not run the C compiler check.
 
+After building, run `swift scripts/test-blocking-editor-focus.swift` to check
+actual foreground activation for cold and already-running blocking editor
+requests, document focus, recovery dialogs, and completion on close. This GUI
+check requires Accessibility permission for the invoking terminal/runtime and
+uses an isolated copy of the app with temporary settings and documents.
+
 Native tests link the separate `native-test` Rust profile, which inherits the
 Rust test suite's optimization while retaining debug assertions and overflow
 checks. The first run builds this archive;

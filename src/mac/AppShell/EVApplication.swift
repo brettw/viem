@@ -66,8 +66,41 @@ public enum EVApplication {
                     return nil
                 } catch { return error.localizedDescription }
             }
-            application.activate(ignoringOtherApps: true)
+            application.activate()
             application.run()
+        }
+    }
+
+    static func activateForBlockingEdit() {
+        // Sonoma and later ignore ignoringOtherApps. Ask Launch Services to
+        // hand activation to the actual document owner, not the short-lived
+        // process that forwarded --blocking-edit to this instance. Unwind
+        // finishLaunching first so a cold launch is registered with AppKit.
+        // Include modal panels: a forwarded request can open a recovery alert
+        // before returning from its current main-dispatch block.
+        RunLoop.main.perform(inModes: [.default, .modalPanel]) {
+            let application = NSApplication.shared
+            let bundle = Bundle.main.bundleURL
+            guard bundle.pathExtension == "app" else {
+                application.activate()
+                return
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            configuration.allowsRunningApplicationSubstitution = false
+            configuration.addsToRecentItems = false
+            configuration.promptsUserIfNeeded = false
+            // A default reopen event can create a blank window or focus a
+            // different document. This request only transfers activation.
+            configuration.appleEvent = NSAppleEventDescriptor(
+                eventClass: AEEventClass(kAEMiscStandards), eventID: AEEventID(kAEActivate),
+                targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                transactionID: AETransactionID(kAnyTransactionID))
+            NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
+                if let error {
+                    FileHandle.standardError.write(Data("Viem: Could not activate editor: \(error.localizedDescription)\n".utf8))
+                }
+            }
         }
     }
 
@@ -109,6 +142,7 @@ final class EVApplicationDelegate: NSObject,
     var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
     var hasOpenDocumentWindows: () -> Bool = { EVDocumentWindowController.hasOpenDocumentWindows }
     var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
+    var activateForBlockingEdit: () -> Void = { EVApplication.activateForBlockingEdit() }
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
@@ -137,7 +171,7 @@ final class EVApplicationDelegate: NSObject,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         openLaunchArguments()
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -282,6 +316,9 @@ final class EVApplicationDelegate: NSObject,
         guard !isProcessingLaunch, !pendingLaunches.isEmpty else { return }
         isProcessingLaunch = true
         let (arguments, workingDirectory, blockingToken) = pendingLaunches.removeFirst()
+        // Recovery/open panels must receive the same handoff as the eventual
+        // editor window. The completion socket still owns the caller's wait.
+        if blockingToken != nil { activateForBlockingEdit() }
         guard !arguments.isEmpty else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             if hasNoOpenWindows {
@@ -356,7 +393,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     private func finishLaunch() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate()
         isProcessingLaunch = false
         processNextLaunch()
     }

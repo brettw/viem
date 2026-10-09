@@ -39,7 +39,8 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         private let originalDocuments: Set<ObjectIdentifier>
         private var callers: [EVBlockingTestCaller] = []
 
-        init() throws {
+        init(launchArguments: EVLaunchArguments = EVLaunchArguments(),
+             initialCaller: EVBlockingTestCaller? = nil) throws {
             EVEditorComposition.install()
             directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("viem-blocking-integration-\(UUID())", isDirectory: true)
@@ -47,10 +48,13 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
             originalDocuments = Set(NSDocumentController.shared.documents.map(ObjectIdentifier.init))
             let configuration = EVConfigurationStore(
                 directory: directory.appendingPathComponent("profile", isDirectory: true), legacyDefaults: nil)
-            delegate = EVApplicationDelegate(configuration: configuration)
+            delegate = EVApplicationDelegate(configuration: configuration,
+                launchArguments: launchArguments, launchDirectory: directory,
+                blockingCompletion: initialCaller?.completion)
             delegate.documentFactory = { EVDocument(editorBackend: EVCoreDocumentBackend(configuration: configuration)) }
             delegate.recordRecentDocument = { _ in }
             delegate.terminateApplication = { XCTFail("A native test must not terminate the test application") }
+            if let initialCaller { callers.append(initialCaller) }
         }
 
         var documents: [EVDocument] {
@@ -144,6 +148,27 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         throw CocoaError(.userCancelled)
     }
 
+    func testInitialBlockingLaunchActivatesOnceAndWaitsForDocumentClosure() async throws {
+        let caller = try EVBlockingTestCaller()
+        let f = try Fixture(launchArguments: EVLaunchArguments(filenames: ["COMMIT_EDITMSG"]),
+                            initialCaller: caller)
+        defer { f.close() }
+        let url = try f.write("COMMIT_EDITMSG")
+        var activationRequests = 0
+        f.delegate.activateForBlockingEdit = { activationRequests += 1 }
+
+        XCTAssertTrue(f.delegate.openLaunchArguments())
+        XCTAssertTrue(f.delegate.openLaunchArguments())
+
+        XCTAssertEqual(activationRequests, 1, "Repeated launch callbacks must not replay the focus handoff")
+        XCTAssertEqual(f.documents.count, 1)
+        let document = try f.document(url)
+        XCTAssertEqual(document.windowControllers.count, 1)
+        try await assertWaiting([caller])
+        document.close()
+        try await assertCompleted([caller], status: 0)
+    }
+
     func testConcurrentRelativeAndAliasedCallersReuseExistingDocumentUntilItsLastViewCloses() async throws {
         let f = try Fixture()
         defer { f.close() }
@@ -152,10 +177,14 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         let hardlink = f.directory.appendingPathComponent("commit hard link.txt")
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: url)
         try FileManager.default.linkItem(at: url, to: hardlink)
+        var activationRequests = 0
+        f.delegate.activateForBlockingEdit = { activationRequests += 1 }
         f.process(url.path)
+        XCTAssertEqual(activationRequests, 0)
         let document = try f.document(url)
         let first = try f.window(document)
         let callers = try ["./" + url.lastPathComponent, alias.path, hardlink.path].map { try f.caller($0) }
+        XCTAssertEqual(activationRequests, 3, "Every forwarded blocking request must activate its document owner")
         XCTAssertEqual(f.documents.count, 1)
         XCTAssertTrue(try f.document(alias) === document)
         XCTAssertTrue(try f.document(hardlink) === document)
@@ -279,9 +308,14 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
             documentID: 98, documentRevision: 3))
         store.drainForTesting()
         let makeDocument = f.delegate.documentFactory
+        var requestedActivation = false
+        f.delegate.activateForBlockingEdit = { requestedActivation = true }
         f.delegate.documentFactory = {
             let document = makeDocument()
-            document.recoveryDecisionHandler = { _ in .cancel }
+            document.recoveryDecisionHandler = { _ in
+                XCTAssertTrue(requestedActivation, "Recovery must receive focus before waiting for the user")
+                return .cancel
+            }
             return document
         }
 

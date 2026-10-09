@@ -5,7 +5,9 @@ waits until every pane and window showing that shared document has closed.
 Other open files do not keep the caller waiting. Relative paths use the caller's
 working directory, and paths with spaces must be quoted.
 
-On macOS, the helper ships inside the application bundle. For an app installed
+On macOS, the helper ships inside the application bundle. Blocking requests use
+Launch Services to bring the document-owning editor forward, including when Viem
+is already running. For an app installed
 in `/Applications`, configure Git with:
 
 ```sh
