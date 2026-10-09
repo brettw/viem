@@ -64,7 +64,8 @@ Release uses `dotnet publish` and NativeAOT compilation, including Viem's
 WinUI/Win2D projections, to eliminate startup JIT compilation. The script
 preserves the executable path below. A direct `dotnet build -c Release` still
 produces a managed build; use the build script for startup measurements.
-Ordinary Debug builds remain managed and debuggable. The first online restore
+Ordinary Debug editor builds remain managed and debuggable. The blocking launcher
+is published with NativeAOT in both configurations. The first online restore
 also fetches the SDK's native compiler/runtime packs; later `-Offline` builds
 reuse them. The pinned Windows SDK .NET projection supplies the C#/WinRT
 runtime support required for Win2D's non-blittable font and line-metric arrays.
@@ -84,8 +85,8 @@ Both `dotnet build` and `dotnet publish` verify and replace that runtime subtree
 publishing with `--no-build` also packages it. No installed Vim is required.
 Resource lookup uses the executable directory, so the app can be relocated or
 launched from another working directory. Windows App SDK
-is self-contained. The published Release editor includes its .NET runtime;
-managed Debug builds and the blocking launcher use the installed .NET 10 runtime.
+is self-contained. The published Release editor and blocking launcher need no
+separately installed .NET runtime; managed Debug editor builds use .NET 10.
 It does not install file associations or an application package.
 
 Both build and publish also copy [`assets/fonts`](../../assets/fonts/README.md)
