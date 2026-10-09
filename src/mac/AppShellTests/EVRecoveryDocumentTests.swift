@@ -21,12 +21,18 @@ final class EVRecoveryDocumentTests: XCTestCase {
         var snapshotCount = 0
         var readOnly = false
         var acknowledgementAction: (() throws -> Void)?
+        var readError: Error?
+        var recoverySnapshotError: Error?
         func makeEditorSurface() -> any EVEditorSurface { Surface() }
-        func read(source: Data, typeName: String) throws { data = source; sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText }
+        func read(source: Data, typeName: String) throws {
+            if let readError { throw readError }
+            data = source; sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText
+        }
         func serializedSource(typeName: String) throws -> Data { data }
         func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot { EVDocumentSaveSnapshot(data: data, documentID: 8, documentRevision: persistenceState.documentRevision) }
         func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws { try acknowledgementAction?(); persistenceState.isDirty = false; persistenceStateDidChange?(persistenceState) }
         func recoverySnapshot() throws -> EVRecoverySnapshot {
+            if let recoverySnapshotError { throw recoverySnapshotError }
             snapshotCount += 1
             return EVRecoverySnapshot(source: data, format: sourceFormat, encoding: 1, fileFormat: 1, documentID: 8, documentRevision: persistenceState.documentRevision)
         }
@@ -48,6 +54,142 @@ final class EVRecoveryDocumentTests: XCTestCase {
         try Data("original".utf8).write(to: target)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         return target
+    }
+
+    private func staleRecovery(for target: URL, suffix: String = "", text: String = "unsaved") throws -> URL {
+        XCTAssertEqual(kill(Int32.max, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
+        let canonical = target.resolvingSymlinksInPath()
+        let url = canonical.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).viem\(suffix).swp")
+        let snapshot = EVRecoverySnapshot(source: Data(text.utf8), format: .markdownSource,
+            encoding: 2, fileFormat: 3, documentID: 7, documentRevision: 3)
+        let record = EVRecoveryRecord(version: 1, owner: UUID(), processID: Int32.max,
+            host: ProcessInfo.processInfo.hostName, targetPath: canonical.path,
+            created: Date(), updated: Date(), snapshot: snapshot)
+        try record.encoded().write(to: url)
+        return url
+    }
+
+    func testRecoverRetiresOnlySelectedStaleSnapshotAfterWritingOwnedBackup() throws {
+        let target = try fixture()
+        let selected = try staleRecovery(for: target)
+        let other = try staleRecovery(for: target, suffix: ".1", text: "different work")
+        let backend = Backend()
+        let recovered = EVDocument(editorBackend: backend)
+        recovered.recoveryDecisionHandler = { candidates in .recover(candidates.firstIndex { $0.url == selected }!) }
+        recovered.recoveryStoreFactory = { target in
+            XCTAssertTrue(FileManager.default.fileExists(atPath: selected.path))
+            return try EVRecoveryStore.claim(for: target)
+        }
+        try recovered.read(from: target, ofType: EVDocument.plainTextType)
+        recovered.drainRecoveryForTesting()
+        XCTAssertEqual(backend.data, Data("unsaved".utf8))
+        XCTAssertTrue(recovered.isDocumentEdited)
+        let new = try XCTUnwrap(recovered.recoveryURLForTesting)
+        XCTAssertEqual(EVRecoveryRecord.decode(try Data(contentsOf: new))?.snapshot?.source, backend.data)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: selected.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
+        XCTAssertEqual(try Data(contentsOf: target), Data("original".utf8))
+        recovered.close()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path))
+    }
+
+    func testEditAndDeleteOpensDiskContentsAndRemovesStalePromptCandidates() throws {
+        let target = try fixture()
+        let files = try [staleRecovery(for: target), staleRecovery(for: target, suffix: ".1")]
+        let backend = Backend(), document = EVDocument(editorBackend: backend)
+        document.recoveryDecisionHandler = { candidates in
+            XCTAssertEqual(candidates.count, 2)
+            XCTAssertTrue(candidates.allSatisfy(\.canDelete))
+            return .editAndDeleteRecovery
+        }
+        try document.read(from: target, ofType: EVDocument.plainTextType)
+        document.drainRecoveryForTesting()
+        XCTAssertEqual(backend.data, Data("original".utf8))
+        XCTAssertFalse(document.wasRecovered)
+        XCTAssertFalse(document.isDocumentEdited)
+        XCTAssertTrue(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        let new = try XCTUnwrap(document.recoveryURLForTesting)
+        XCTAssertEqual(EVRecoveryRecord.decode(try Data(contentsOf: new))?.snapshot?.source, backend.data)
+        document.close()
+        XCTAssertTrue(EVRecoveryStore.candidates(for: target).isEmpty)
+    }
+
+    func testReadOnlyAndCancelPreserveStaleRecovery() throws {
+        for decision: EVRecoveryOpenDecision in [.readOnly, .cancel] {
+            let target = try fixture(), old = try staleRecovery(for: target)
+            let bytes = try Data(contentsOf: old)
+            let document = EVDocument(editorBackend: Backend())
+            document.recoveryDecisionHandler = { _ in decision }
+            if decision == .cancel {
+                XCTAssertThrowsError(try document.read(from: target, ofType: EVDocument.plainTextType))
+            } else {
+                try document.read(from: target, ofType: EVDocument.plainTextType)
+                document.drainRecoveryForTesting()
+            }
+            document.close()
+            XCTAssertEqual(try Data(contentsOf: old), bytes)
+        }
+    }
+
+    func testDeleteRejectsLiveAndForeignConflictsBeforeReadingDocument() throws {
+        let target = try fixture()
+        let live = try EVRecoveryStore.claim(for: target)
+        defer { live.closeAndRemove(); live.drainForTesting() }
+        let foreign = target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).swp")
+        try Data("foreign".utf8).write(to: foreign)
+        let backend = Backend(), document = EVDocument(editorBackend: backend)
+        defer { document.close() }
+        document.recoveryDecisionHandler = { _ in .editAndDeleteRecovery }
+        XCTAssertThrowsError(try document.read(from: target, ofType: EVDocument.plainTextType))
+        XCTAssertTrue(backend.data.isEmpty)
+        XCTAssertNil(document.recoveryURLForTesting)
+        XCTAssertEqual(try Data(contentsOf: foreign), Data("foreign".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: live.url.path))
+    }
+
+    func testFailedDiskOpenDoesNotDiscardRecovery() throws {
+        let target = try fixture(), old = try staleRecovery(for: target)
+        let bytes = try Data(contentsOf: old)
+        let backend = Backend(), document = EVDocument(editorBackend: backend)
+        backend.readError = CocoaError(.fileReadCorruptFile)
+        document.recoveryDecisionHandler = { _ in .editAndDeleteRecovery }
+        XCTAssertThrowsError(try document.read(from: target, ofType: EVDocument.plainTextType))
+        document.close()
+        XCTAssertEqual(try Data(contentsOf: old), bytes)
+    }
+
+    func testFailedBackupPreservesOldFileForRecoverAndExplicitDiscard() async throws {
+        for recover in [false, true] {
+            for failure in ["snapshot", "claim", "write"] {
+                let target = try fixture(), old = try staleRecovery(for: target)
+                let bytes = try Data(contentsOf: old)
+                let backend = Backend(), document = EVDocument(editorBackend: backend)
+                defer { document.close() }
+                document.recoveryDecisionHandler = { _ in recover ? .recover(0) : .editAndDeleteRecovery }
+                let reported = expectation(description: "Report failed \(failure) while keeping editing available")
+                document.recoveryCleanupFailureHandler = { _ in reported.fulfill() }
+                if failure == "snapshot" { backend.recoverySnapshotError = EVRecoveryError.backendUnavailable }
+                document.recoveryStoreFactory = { target in
+                    if failure == "claim" { throw EVRecoveryError.noAvailableSlot }
+                    let store = try EVRecoveryStore.claim(for: target)
+                    if failure == "write" {
+                        let staging = store.url.deletingLastPathComponent()
+                            .appendingPathComponent(".viem-recovery-\(store.owner.uuidString)-1.tmp")
+                        try Data().write(to: staging)
+                    }
+                    return store
+                }
+                try document.read(from: target, ofType: EVDocument.plainTextType)
+                document.drainRecoveryForTesting()
+                await fulfillment(of: [reported], timeout: 3)
+                XCTAssertEqual(try Data(contentsOf: old), bytes)
+                XCTAssertEqual(backend.data, Data((recover ? "unsaved" : "original").utf8))
+                XCTAssertNotNil(document.recoveryFailure)
+                document.close()
+                XCTAssertEqual(try Data(contentsOf: old), bytes)
+            }
+        }
     }
 
     func testRecoverLoadsUnsavedBytesAndLeavesOriginalAndOtherOwnerUntouched() throws {

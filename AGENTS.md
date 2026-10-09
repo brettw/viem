@@ -1322,9 +1322,17 @@ recover offscreen frames, cascade new windows, and preserve existing frames.
 ### Editing locks and recovery
 
 Claim an exclusive recovery slot for named documents, with a writable recovery
-location fallback. Existing Viem/Vim swap files offer read-only, edit-anyway, or
-cancel; offer Recover only for valid Viem snapshots. Never interpret or rewrite
-foreign swap bytes, nor replace/remove another session's slot.
+location fallback. Existing Viem/Vim swap files offer read-only or cancel; offer
+Recover only for valid Viem snapshots. “Edit and delete recovery file” opens the
+saved document and discards the recovery files covered by that prompt. Enable
+this action only when all candidates are verified unchanged, stale local Viem
+files. Recover retires only the selected stale file. Both cleanup paths require
+a successfully committed, durable replacement recovery snapshot first, then
+revalidate the old file's identity, contents and exited owner before deletion.
+Failed or superseded replacement writes preserve the old files. Report cleanup
+failures without preventing editing or repeatedly attempting deletion. Read-only
+and cancellation preserve existing files. Never interpret, rewrite or delete
+foreign swap bytes, or replace/remove a live or unverifiable session's slot.
 
 Read-only still permits editing, registers, and history; it guards writing.
 Unforced writes report E45, explicit forced writes permit it, and native Save

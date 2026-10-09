@@ -70,6 +70,7 @@ internal static class FrontendSmokeTests
             other.Dispose(); Check(File.Exists(owner.Slot) && !File.Exists(other.Slot), "recovery cleanup removes only owned slot");
         }
         Check(DocumentRecovery.Candidates(path, profile).Length == 0, "document close cleans recovery slots");
+        await RecoveryCleanupTests.Run(device, dispatcher, profile, Check);
         string config = Path.Combine(test, "config.json");
         File.WriteAllText(config, "{\"version\":1,\"future\":42,\"editing\":{\"future\":true,\"indentation\":{\"tabstop\":4,\"future\":1}}}");
         var preferences = new Preferences(test); preferences.Set("editing", "indentation", new System.Text.Json.Nodes.JsonObject { ["shiftwidth"] = 3 });
