@@ -4,6 +4,9 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName>blocking-viem</AssemblyName>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <!-- Publish the helper as a native executable, just like the Release editor,
+         so launching it never requires a separately installed .NET runtime. -->
+    <PublishAot Condition="'$(PublishAot)' == ''">true</PublishAot>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>

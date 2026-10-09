@@ -22,6 +22,8 @@ subsequent debug builds. A shell redirector should use `exec` and forward `"$@"`
 to that helper, preserving Git's working directory, arguments, and exit status.
 
 On Windows, keep `blocking-viem.exe` beside `Viem.exe` and its runtime files.
+The build script publishes the helper as a native executable. Neither it nor
+the Release editor requires a separately installed .NET runtime.
 Put their directory on `PATH` and run:
 
 ```powershell
