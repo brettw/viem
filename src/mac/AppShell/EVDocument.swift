@@ -55,7 +55,7 @@ public enum EVDocumentSerializationError: LocalizedError, Equatable {
 
 public enum EVRecoveryOpenDecision: Equatable {
     case readOnly
-    case editAnyway
+    case editAndDeleteRecovery
     case recover(Int)
     case cancel
 }
@@ -141,7 +141,10 @@ public final class EVDocument: NSDocument {
     private var recoveryRequestedTarget: URL?
     private var retiredRecoveryStores: [EVRecoveryStore] = []
     private var recoveryWriteGeneration: UInt64 = 0
+    private var recoveryCleanupOwner: UUID?
+    private var reportedRecoveryCleanupOwner: UUID?
     var recoveryStoreFactory: (URL) throws -> EVRecoveryStore = { try EVRecoveryStore.claim(for: $0) }
+    var recoveryCleanupFailureHandler: (Error) -> Void = { NSApplication.shared.presentError($0) }
     private var recoveryTimer: DispatchWorkItem?
     private var recoveryGeneration: UInt64 = 0
     private var recoveryLifecycleObserver: NSObjectProtocol?
@@ -221,16 +224,23 @@ public final class EVDocument: NSDocument {
         try onMainActor {
             let ownURLs = Set(self.retiredRecoveryStores.map(\.url) + (self.recoveryStore.map { [$0.url] } ?? []))
             let candidates = EVRecoveryStore.candidates(for: target).filter { !ownURLs.contains($0.url) }
-            let decision = candidates.isEmpty ? EVRecoveryOpenDecision.editAnyway
+            let decision: EVRecoveryOpenDecision? = candidates.isEmpty ? nil
                 : self.recoveryDecisionHandler?(candidates) ?? self.askRecoveryDecision(candidates, target: target)
             if case .cancel = decision { throw CocoaError(.userCancelled) }
+            if decision == .editAndDeleteRecovery, !candidates.allSatisfy(\.canDelete) {
+                throw EVRecoveryError.cannotDeleteRecovery
+            }
             let recovered: Bool
+            let retiring: [EVRecoveryCandidate]
             switch decision {
             case let .recover(index):
                 guard candidates.indices.contains(index), let snapshot = candidates[index].snapshot else { throw EVRecoveryError.noAvailableSlot }
                 try self.editorBackend.restoreRecovery(snapshot)
                 recovered = true
-            case .readOnly, .editAnyway:
+                // Other snapshots may contain different unsaved work. Recovery
+                // retires only the selected stale file after our backup commits.
+                retiring = candidates[index].canDelete ? [candidates[index]] : []
+            case nil, .readOnly, .editAndDeleteRecovery:
                 var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
                     markdownFormattedView: self.editorBackend.prefersMarkdownFormattedView)
                 if let currentURL = self.fileURL, EVDocumentIdentity.sameFile(currentURL, target),
@@ -241,6 +251,7 @@ public final class EVDocument: NSDocument {
                 try self.editorBackend.read(source: original.get(), typeName: openingType,
                     filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
                 recovered = false
+                retiring = decision == .editAndDeleteRecovery ? candidates : []
             case .cancel: return
             }
             EVStartupPerformance.mark("document.backend.read")
@@ -252,7 +263,7 @@ public final class EVDocument: NSDocument {
             self.recoveryGeneration &+= 1
             self.recoveryRequestedTarget = target
             EVStartupPerformance.mark("document.baseline.recorded")
-            self.beginRecovery(for: target)
+            self.beginRecovery(for: target, retiring: retiring)
             EVStartupPerformance.mark("document.recovery.claimed")
             self.synchronizeEditedState(self.editorBackend.persistenceState)
             if self.wasRecovered { self.updateChangeCount(.changeDone) }
@@ -296,10 +307,12 @@ public final class EVDocument: NSDocument {
         beginRecovery(for: target)
     }
 
-    private func beginRecovery(for target: URL) {
+    private func beginRecovery(for target: URL, retiring: [EVRecoveryCandidate] = []) {
         do {
             let snapshot = try editorBackend.recoverySnapshot()
             let candidate = try recoveryStoreFactory(target)
+            candidate.retireAfterNextCommit(retiring)
+            recoveryCleanupOwner = retiring.isEmpty ? nil : candidate.owner
             if let previous = recoveryStore {
                 previous.invalidatePendingWrites()
                 retiredRecoveryStores.append(previous)
@@ -307,7 +320,10 @@ public final class EVDocument: NSDocument {
             recoveryStore = candidate
             recoveryTarget = target
             writeRecovery(snapshot, to: candidate)
-        } catch { recoveryFailure = error.localizedDescription }
+        } catch {
+            recoveryFailure = error.localizedDescription
+            if !retiring.isEmpty { reportRecoveryCleanupFailure(error) }
+        }
     }
 
     private func scheduleRecovery() {
@@ -368,22 +384,39 @@ public final class EVDocument: NSDocument {
                 guard let self, self.recoveryStore === store, self.recoveryWriteGeneration == generation,
                       self.recoveryRequestedTarget == self.recoveryTarget else { return }
                 self.recoveryFailure = error.localizedDescription
+                if self.recoveryCleanupOwner == store.owner, self.reportedRecoveryCleanupOwner != store.owner {
+                    self.reportedRecoveryCleanupOwner = store.owner
+                    self.reportRecoveryCleanupFailure(error)
+                }
             }
         })
+    }
+
+    private func reportRecoveryCleanupFailure(_ error: Error) {
+        // Opening remains usable if the backup or cleanup fails. Report once
+        // for this request, after the current opening callback has unwound.
+        DispatchQueue.main.async { [weak self] in
+            self?.recoveryCleanupFailureHandler(error)
+        }
     }
 
     private func askRecoveryDecision(_ candidates: [EVRecoveryCandidate], target: URL) -> EVRecoveryOpenDecision {
         let alert = NSAlert()
         alert.messageText = "An editing session already exists for “\(target.lastPathComponent)”."
-        alert.informativeText = "A swap or recovery file is present. Another editor may still be using this file. Opening read-only allows editing, and requires confirmation before saving."
+        let canDelete = candidates.allSatisfy(\.canDelete)
+        alert.informativeText = canDelete
+            ? "A previous Viem session left recovery files. Edit and delete recovery file opens the saved document and discards those recovery files. Recover opens unsaved changes and removes that old recovery file after a new backup is written."
+            : "A swap or recovery file may belong to another editor, or cannot be verified as a stale Viem recovery file. It will be left untouched. Opening read-only allows editing, and requires confirmation before saving."
         alert.addButton(withTitle: "Open Read-Only")
-        alert.addButton(withTitle: "Edit Anyway")
+        let deleteButton = alert.addButton(withTitle: "Edit and delete recovery file")
+        deleteButton.isEnabled = canDelete
+        deleteButton.hasDestructiveAction = true
         let recoverable = candidates.firstIndex { $0.snapshot != nil }
         if recoverable != nil { alert.addButton(withTitle: "Recover") }
         alert.addButton(withTitle: "Cancel")
         let response = alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
         if response == 0 { return .readOnly }
-        if response == 1 { return .editAnyway }
+        if response == 1 { return .editAndDeleteRecovery }
         if response == 2, let recoverable { return .recover(recoverable) }
         return .cancel
     }

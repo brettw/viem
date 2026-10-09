@@ -42,6 +42,35 @@ public struct EVRecoveryCandidate: Sendable {
     public let isViemRecovery: Bool
     public let ownerMayBeRunning: Bool
     public let updated: Date?
+    fileprivate let identity: EVRecoveryFileIdentity?
+    fileprivate let digest: Data?
+
+    /// Only a verified, unchanged local Viem session whose process has exited
+    /// can authorize disposal. Foreign, unreadable and live slots stay intact.
+    public var canDelete: Bool {
+        isViemRecovery && !ownerMayBeRunning && identity?.owner == getuid() && identity?.links == 1
+    }
+}
+
+fileprivate struct EVRecoveryFileIdentity: Equatable, Sendable {
+    let device: dev_t
+    let inode: ino_t
+    let generation: UInt32
+    let owner: uid_t
+    let links: nlink_t
+    let size: off_t
+    let modifiedSeconds: Int
+    let modifiedNanoseconds: Int
+    let changedSeconds: Int
+    let changedNanoseconds: Int
+
+    init?(_ info: stat) {
+        guard info.st_mode & S_IFMT == S_IFREG else { return nil }
+        device = info.st_dev; inode = info.st_ino; generation = info.st_gen; size = info.st_size
+        owner = info.st_uid; links = info.st_nlink
+        modifiedSeconds = info.st_mtimespec.tv_sec; modifiedNanoseconds = info.st_mtimespec.tv_nsec
+        changedSeconds = info.st_ctimespec.tv_sec; changedNanoseconds = info.st_ctimespec.tv_nsec
+    }
 }
 
 enum EVRecoveryError: LocalizedError {
@@ -49,12 +78,18 @@ enum EVRecoveryError: LocalizedError {
     case noAvailableSlot
     case readOnly
     case backendUnavailable
+    case recoveryChanged
+    case cannotDeleteRecovery
+    case cleanupFailed(String)
     var errorDescription: String? {
         switch self {
         case .ownershipLost: "The recovery file now belongs to another editing session. It was left unchanged."
         case .noAvailableSlot: "Viem could not create a recovery file for this document."
         case .readOnly: "This document was opened read-only. Use :w! or confirm Save Anyway to write it."
         case .backendUnavailable: "This document backend does not support recovery or read-only editing."
+        case .recoveryChanged: "The recovery file changed since the recovery prompt. It was left unchanged."
+        case .cannotDeleteRecovery: "Only unchanged recovery files from ended local Viem sessions can be deleted."
+        case let .cleanupFailed(message): "The document is open, but an old recovery file could not be deleted: \(message)"
         }
     }
 }
@@ -69,6 +104,10 @@ final class EVRecoveryStore: @unchecked Sendable {
     private let lock = NSLock()
     private var generation: UInt64 = 0
     private var closed = false
+    // Accessed only on queue. A failed/superseded backup cannot consume these;
+    // cleanup itself is attempted once and its diagnostic survives later writes.
+    private var retiringCandidates: [EVRecoveryCandidate] = []
+    private var retirementFailure: Error?
 
     private init(url: URL, record: EVRecoveryRecord) {
         self.url = url; self.owner = record.owner; self.record = record
@@ -79,12 +118,83 @@ final class EVRecoveryStore: @unchecked Sendable {
         var urls = slotURLs(for: target)
         urls.append(target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).swp"))
         return urls.compactMap { url in
-            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-            let value = (try? Data(contentsOf: url)).flatMap(EVRecoveryRecord.decode)
+            var info = stat()
+            guard lstat(url.path, &info) == 0 else { return nil }
+            // Snapshot and deletion token must describe the same physical read.
+            let inspected = inspect(url)
+            let value = inspected.flatMap { EVRecoveryRecord.decode($0.bytes) }
             let matching = value.flatMap { $0.targetPath == target.path ? $0 : nil }
-            let live = matching.map { $0.host != ProcessInfo.processInfo.hostName || kill($0.processID, 0) == 0 || errno == EPERM } ?? true
-            return EVRecoveryCandidate(url: url, snapshot: matching?.snapshot, isViemRecovery: matching != nil, ownerMayBeRunning: live, updated: matching?.updated)
+            return EVRecoveryCandidate(url: url, snapshot: matching?.snapshot, isViemRecovery: matching != nil,
+                ownerMayBeRunning: matching.map { !ownerHasExited($0) } ?? true, updated: matching?.updated,
+                identity: inspected?.identity, digest: inspected.map { Data(SHA256.hash(data: $0.bytes)) })
         }.sorted { ($0.updated ?? .distantPast) > ($1.updated ?? .distantPast) }
+    }
+
+    private static func ownerHasExited(_ record: EVRecoveryRecord) -> Bool {
+        guard record.host == ProcessInfo.processInfo.hostName, record.processID > 0 else { return false }
+        return kill(record.processID, 0) == -1 && errno == ESRCH
+    }
+
+    private static func inspect(_ url: URL) -> (bytes: Data, identity: EVRecoveryFileIdentity)? {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        return try? inspect(descriptor, at: url)
+    }
+
+    private static func inspect(_ descriptor: Int32, at url: URL) throws -> (bytes: Data, identity: EVRecoveryFileIdentity) {
+        var before = stat(), after = stat(), path = stat()
+        guard fstat(descriptor, &before) == 0, let identity = EVRecoveryFileIdentity(before) else {
+            throw EVRecoveryError.cannotDeleteRecovery
+        }
+        let bytes = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readToEnd() ?? Data()
+        guard fstat(descriptor, &after) == 0, lstat(url.path, &path) == 0,
+              EVRecoveryFileIdentity(after) == identity, EVRecoveryFileIdentity(path) == identity else {
+            throw EVRecoveryError.recoveryChanged
+        }
+        return (bytes, identity)
+    }
+
+    /// Register the prompt's exact candidates before the first backup write.
+    /// An ordinary close before any successful write leaves them recoverable.
+    func retireAfterNextCommit(_ candidates: [EVRecoveryCandidate]) {
+        queue.async { [self] in retiringCandidates = candidates }
+    }
+
+    private static func removeUnchangedRecovery(_ candidate: EVRecoveryCandidate) throws {
+        guard candidate.canDelete, let expected = candidate.identity, let digest = candidate.digest else {
+            throw EVRecoveryError.cannotDeleteRecovery
+        }
+        let descriptor = open(candidate.url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        if descriptor < 0, errno == ENOENT { return }
+        guard descriptor >= 0 else { throw EVRecoveryError.recoveryChanged }
+        defer { close(descriptor) }
+        // Serialize competing cleaners of this inode through the last identity
+        // check and unlink. A new session can claim the name only afterward.
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else { throw EVRecoveryError.recoveryChanged }
+        defer { _ = flock(descriptor, LOCK_UN) }
+        let current = try inspect(descriptor, at: candidate.url)
+        guard current.identity == expected, Data(SHA256.hash(data: current.bytes)) == digest,
+              let record = EVRecoveryRecord.decode(current.bytes), ownerHasExited(record) else {
+            throw EVRecoveryError.recoveryChanged
+        }
+        var final = stat()
+        guard lstat(candidate.url.path, &final) == 0, EVRecoveryFileIdentity(final) == expected else {
+            throw EVRecoveryError.recoveryChanged
+        }
+        guard unlink(candidate.url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        try synchronizeDirectory(containing: candidate.url)
+    }
+
+    private func retireCommittedCandidates() {
+        let candidates = retiringCandidates
+        retiringCandidates.removeAll()
+        var failures: [String] = []
+        for candidate in candidates {
+            do { try Self.removeUnchangedRecovery(candidate) }
+            catch { if failures.count < 3 { failures.append("\(candidate.url.lastPathComponent): \(error.localizedDescription)") } }
+        }
+        if !failures.isEmpty { retirementFailure = EVRecoveryError.cleanupFailed(failures.joined(separator: " ")) }
     }
 
     static func claim(for sourceURL: URL) throws -> EVRecoveryStore {
@@ -133,11 +243,14 @@ final class EVRecoveryStore: @unchecked Sendable {
                     // Persist staging bytes before replacing the last good snapshot.
                     guard rename(temporary.path, url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
                     record = candidate
-                    Self.synchronizeDirectory(containing: url)
+                    try Self.synchronizeDirectory(containing: url)
                     return true
                 }
-                if committed { didCommit?() }
-                completion?(nil)
+                if committed {
+                    retireCommittedCandidates()
+                    didCommit?()
+                }
+                completion?(retirementFailure)
             } catch { completion?(error) }
         }
     }
@@ -199,9 +312,11 @@ final class EVRecoveryStore: @unchecked Sendable {
         }
     }
 
-    private static func synchronizeDirectory(containing url: URL) {
+    private static func synchronizeDirectory(containing url: URL) throws {
         let descriptor = open(url.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        if descriptor >= 0 { _ = fsync(descriptor); close(descriptor) }
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 
     private func ownsCurrentFile() -> Bool {

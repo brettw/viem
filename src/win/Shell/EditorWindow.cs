@@ -379,18 +379,33 @@ internal sealed partial class EditorWindow : Window
         existing = FindExisting();
         if (await ShowExisting()) return;
         RecoverySnapshot? recovered = null; bool readOnly = false;
+        RecoveryCandidate[] retireCandidates = [];
         if (existing.Pane == null)
         {
             var candidates = DocumentRecovery.Candidates(path, preferences.DirectoryPath);
             if (candidates.Length > 0)
             {
-                var snapshot = candidates.Select(c => c.Snapshot).FirstOrDefault(s => s != null);
-                var choices = new RadioButtons { ItemsSource = snapshot == null ? new[] { "Open Read-Only", "Edit Anyway" } : new[] { "Open Read-Only", "Edit Anyway", "Recover Unsaved Changes" }, SelectedIndex = 0 };
-                var content = new StackPanel { Spacing = 12 }; content.Children.Add(new TextBlock { Text = "Another editing session or recovery file exists for " + Path.GetFileName(path) + ". It will be left untouched.", TextWrapping = TextWrapping.Wrap }); content.Children.Add(choices);
+                var recoveryCandidate = candidates.FirstOrDefault(c => c.Snapshot != null);
+                bool canDelete = candidates.All(c => c.CanDelete);
+                var labels = new List<string> { "Open Read-Only" };
+                if (canDelete) labels.Add("Edit and delete recovery file");
+                int recoverIndex = recoveryCandidate == null ? -1 : labels.Count;
+                if (recoveryCandidate != null) labels.Add("Recover Unsaved Changes");
+                var choices = new RadioButtons { ItemsSource = labels, SelectedIndex = 0 };
+                string explanation = canDelete
+                    ? "Editing the disk version deletes the previous recovery file(s) after a new backup is saved. Recover restores unsaved changes and replaces the selected stale recovery file."
+                    : "Some recovery files cannot be safely deleted and will be retained. Recover restores unsaved changes and replaces only a verified stale Viem recovery file.";
+                var content = new StackPanel { Spacing = 12 }; content.Children.Add(new TextBlock { Text = "Another editing session or recovery file exists for " + Path.GetFileName(path) + ". " + explanation, TextWrapping = TextWrapping.Wrap }); content.Children.Add(choices);
                 var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = "Existing editing session", Content = content, PrimaryButtonText = "Open", CloseButtonText = "Cancel" };
                 if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
                 ValidateTarget();
-                readOnly = choices.SelectedIndex == 0; if (choices.SelectedIndex == 2) recovered = snapshot;
+                readOnly = choices.SelectedIndex == 0;
+                if (choices.SelectedIndex == recoverIndex && recoveryCandidate != null)
+                {
+                    recovered = recoveryCandidate.Snapshot;
+                    if (recoveryCandidate.CanDelete) retireCandidates = [recoveryCandidate];
+                }
+                else if (canDelete && choices.SelectedIndex == 1) retireCandidates = candidates;
             }
         }
         CoreDocument doc;
@@ -416,13 +431,22 @@ internal sealed partial class EditorWindow : Window
                 doc.Dispose();
                 if (await ShowExisting()) return;
                 doc = existing.Pane.Document;
-                recovered = null; readOnly = false;
+                recovered = null; readOnly = false; retireCandidates = [];
             }
             else doc = ConfigureNewDocument(doc, source, path);
         }
         try { ValidateTarget(); RequireReplacementAllowed(); if (split) RequireSplitRoom(splitSource, vertical); }
         catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
-        if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); recoveries[doc].Write(RecoverySnapshot.Capture(doc)); }
+        if (recovered != null) { savedSources[doc] = SHA256.HashData(bytes); doc.MarkRecovered(); }
+        if (recovered != null || retireCandidates.Length > 0)
+        {
+            if (recoveries.TryGetValue(doc, out var recovery))
+            {
+                recovery.RetireAfterNextWrite(retireCandidates);
+                doc.ConfigureForEditing("recovery snapshot", () => recovery.Write(RecoverySnapshot.Capture(doc)));
+            }
+            else doc.ConfigurationWarning("The previous recovery file was retained because a new recovery backup could not be established.");
+        }
         if (readOnly) doc.SetReadOnly(true);
         if (newWindow)
         {
