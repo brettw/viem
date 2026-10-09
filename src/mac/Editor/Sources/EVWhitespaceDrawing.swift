@@ -43,8 +43,10 @@ extension EVEditorView {
                     session.provider.renderRegistry.textAttributes(identifier: $0.render_run.identifier,
                         metricsGeneration: $0.render_run.metrics_generation)
                 } ?? CoreTextRenderAttributes()
-                textAttributes = Self.whitespaceTextAttributes(style, inherited: inheritedAttributes, scale: scale)
-                font = Self.whitespaceFont(style, inherited: inherited, scale: scale)
+                textAttributes = Self.whitespaceTextAttributes(style, inherited: inheritedAttributes, scale: scale,
+                    inheritedFontSize: CTFontGetSize(inherited))
+                font = Self.whitespaceFont(style, inherited: inherited, scale: scale,
+                    inheritedBaselineOffset: inheritedAttributes.baselineOffset)
                 fonts[fontKey] = (font, textAttributes)
             }
             let foreground = style.foreground?.color
@@ -71,7 +73,7 @@ extension EVEditorView {
             context.saveGState()
             context.clip(to: rect)
             if let background = style.background { context.setFillColor(background.color.cgColor); context.fill(rect) }
-            let baseline = viewPoint(fromLayoutPoint: CGPoint(x: marker.x, y: CGFloat(row.baseline)))
+            let baseline = viewPoint(fromLayoutPoint: CGPoint(x: marker.x, y: CGFloat(row.baseline) - textAttributes.baselineOffset))
             // Baseline-aligned for ordinary markers; clamp oversized ink into
             // its original slot without changing any text or caret geometry.
             let fittedBaseline = min(rect.maxY - descent * fit, max(rect.minY + ascent * fit, baseline.y))
@@ -99,13 +101,31 @@ extension EVEditorView {
     }
 
     static func whitespaceTextAttributes(_ style: EVVisibleWhitespaceStyle,
-        inherited: CoreTextRenderAttributes, scale: CGFloat) -> CoreTextRenderAttributes {
-        CoreTextRenderAttributes(
+        inherited: CoreTextRenderAttributes, scale: CGFloat, inheritedFontSize: CGFloat = 0) -> CoreTextRenderAttributes {
+        let script = whitespaceScript(style, inheritedBaselineOffset: inherited.baselineOffset)
+        let baselineOffset: CGFloat
+        if style.superscript == nil && style.subscript == nil && style.size == nil {
+            baselineOffset = inherited.baselineOffset
+        } else {
+            let baseSize = style.size.map { CGFloat($0) * scale }
+                ?? inheritedFontSize / (inherited.baselineOffset == 0 ? 1 : 0.75)
+            baselineOffset = baseSize * (script > 0 ? 0.35 : script < 0 ? -0.2 : 0)
+        }
+        return CoreTextRenderAttributes(
             letterSpacing: style.letterSpacing.map { CGFloat($0) * scale } ?? inherited.letterSpacing,
             language: style.language ?? inherited.language,
             writingDirection: style.direction.map {
                 $0 == .rightToLeft ? .rightToLeft : $0 == .leftToRight ? .leftToRight : .natural
-            } ?? inherited.writingDirection)
+            } ?? inherited.writingDirection,
+            baselineOffset: baselineOffset)
+    }
+
+    private static func whitespaceScript(_ style: EVVisibleWhitespaceStyle, inheritedBaselineOffset: CGFloat) -> Int {
+        if style.superscript == true { return 1 }
+        if style.subscript == true { return -1 }
+        if inheritedBaselineOffset > 0 { return style.superscript == false ? 0 : 1 }
+        if inheritedBaselineOffset < 0 { return style.subscript == false ? 0 : -1 }
+        return 0
     }
 
     /// The marker inherits the contributor whose slot contains its origin.
@@ -123,8 +143,11 @@ extension EVEditorView {
         return clusters[lower - 1]
     }
 
-    static func whitespaceFont(_ style: EVVisibleWhitespaceStyle, inherited: CTFont, scale: CGFloat) -> CTFont {
-        let size = style.size.map { CGFloat($0) * scale } ?? CTFontGetSize(inherited)
+    static func whitespaceFont(_ style: EVVisibleWhitespaceStyle, inherited: CTFont, scale: CGFloat,
+        inheritedBaselineOffset: CGFloat = 0) -> CTFont {
+        let baseSize = style.size.map { CGFloat($0) * scale }
+            ?? CTFontGetSize(inherited) / (inheritedBaselineOffset == 0 ? 1 : 0.75)
+        let size = baseSize * (whitespaceScript(style, inheritedBaselineOffset: inheritedBaselineOffset) == 0 ? 1 : 0.75)
         let descriptor = CTFontCopyFontDescriptor(inherited)
         if style.fontFamilies == nil, style.fontFace == nil, style.weight == nil, style.bold == nil, style.slant == nil {
             let overrides = style.openTypeFeatures.map { features in

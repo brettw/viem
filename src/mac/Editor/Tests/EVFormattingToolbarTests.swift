@@ -24,6 +24,126 @@ final class EVFormattingToolbarTests: XCTestCase {
     toolbar.chooseStyle(popup)
   }
 
+  func testCharacterAndTableGroupsHaveRequestedOrderAndStandardGaps() throws {
+    let (_, surface) = try surface("Words")
+    let toolbar = surface.formattingToolbar
+    let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
+    let row = try XCTUnwrap(scroll.documentView as? NSStackView)
+    let bold = try XCTUnwrap(toolbar.commandButtons[.bold])
+    let character = try XCTUnwrap(bold.superview as? NSStackView)
+    XCTAssertEqual(character.arrangedSubviews.compactMap { ($0 as? NSButton)?.title },
+      ["Bold", "Italic", "Underline", "Strikethrough"])
+    let scripts = try XCTUnwrap(toolbar.commandButtons[.superscript]?.superview as? NSStackView)
+    XCTAssertEqual(scripts.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Superscript", "Subscript"])
+    XCTAssertTrue(toolbar.commandButtons.values.allSatisfy { $0.image != nil }, "Every toolbar command must have a visible icon")
+    var scriptNumberCenters: [CGFloat] = []
+    for command in [EVMenuCommand.superscript, .subscript] {
+      let image = try XCTUnwrap(toolbar.commandButtons[command]?.image)
+      XCTAssertTrue(image.isTemplate)
+      let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation)))
+      var numberPixels: [CGFloat] = []
+      for y in 0..<bitmap.pixelsHigh {
+        for x in (bitmap.pixelsWide * 5 / 9)..<bitmap.pixelsWide {
+          if (bitmap.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.25 {
+            numberPixels.append(CGFloat(y) / CGFloat(bitmap.pixelsHigh))
+          }
+        }
+      }
+      XCTAssertFalse(numberPixels.isEmpty, "The script icon must draw its numeral")
+      XCTAssertLessThan((numberPixels.max() ?? 0) - (numberPixels.min() ?? 0), 0.36,
+        "The script numeral stays small within the 18-point icon")
+      scriptNumberCenters.append(numberPixels.reduce(0, +) / CGFloat(max(1, numberPixels.count)))
+    }
+    XCTAssertGreaterThan(abs(scriptNumberCenters[0] - scriptNumberCenters[1]), 0.25,
+      "Superscript and subscript must visibly place their numerals at different heights")
+    let codeLink = try XCTUnwrap(toolbar.characterCode.superview as? NSStackView)
+    XCTAssertEqual(codeLink.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Code (Character)", "Link"])
+    let characterIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: character))
+    let scriptIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: scripts))
+    let codeIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: codeLink))
+    XCTAssertEqual(characterIndex, 0)
+    XCTAssertEqual(scriptIndex, characterIndex + 1)
+    XCTAssertEqual(codeIndex, scriptIndex + 1)
+    XCTAssertFalse(row.arrangedSubviews.contains { $0 is NSBox })
+    let tableIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: toolbar.insertTable))
+    XCTAssertTrue(toolbar.insertImage.superview === row.arrangedSubviews[tableIndex - 1])
+    XCTAssertTrue(toolbar.commandButtons[.increaseIndent]?.superview === row.arrangedSubviews[tableIndex + 1])
+    XCTAssertTrue(toolbar.paragraphStyle === row.arrangedSubviews[tableIndex + 2])
+    XCTAssertTrue(toolbar.characterStyle === row.arrangedSubviews[tableIndex + 3])
+    XCTAssertTrue(row.arrangedSubviews.last === toolbar.characterStyle)
+    toolbar.layoutSubtreeIfNeeded()
+    let standardGap = row.arrangedSubviews[codeIndex + 1].frame.minX - codeLink.frame.maxX
+    XCTAssertEqual(standardGap, row.spacing, accuracy: 0.01)
+    for index in [scriptIndex, codeIndex, tableIndex, tableIndex + 1] {
+      XCTAssertEqual(row.arrangedSubviews[index].frame.minX - row.arrangedSubviews[index - 1].frame.maxX,
+        standardGap, accuracy: 0.01)
+    }
+    XCTAssertTrue(toolbar.paragraphStyle.itemArray.allSatisfy { $0.image != nil })
+    XCTAssertTrue(toolbar.characterStyle.itemArray.allSatisfy { $0.image != nil })
+  }
+
+  func testWYSIWYGParagraphSelectorShowsOnlySupportedAssignmentsAndKeepsSourceCatalogue() throws {
+    let (backend, surface) = try surface("Words")
+    let toolbar = surface.formattingToolbar
+    let snapshot = try backend.styleSheetSnapshot()
+    let supported = Set(snapshot.definitions.filter { $0.key.namespace == .block && $0.capabilities.contains(.assign) }.map { $0.key.id.rawValue })
+    let expected: Set<String> = ["Paragraph", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6", "Block quote", "Code Block"]
+    XCTAssertEqual(supported, expected)
+    let displayed = Set(toolbar.paragraphStyle.itemArray.compactMap { ($0.representedObject as? EVStyleMenuAction)?.stableID })
+    XCTAssertEqual(displayed, supported)
+    XCTAssertTrue(displayed.isDisjoint(with: ["Table", "Table cell", "Table header", "Image"]))
+    for definition in snapshot.definitions where definition.flags.contains(.internalList)
+      || definition.kind == .list {
+      XCTAssertEqual(EVStyleIcons.type(for: definition), .paragraph, definition.name)
+    }
+    toolbar.formattedView.performClick(nil)
+    toolbar.refresh()
+    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+    let sourceDisplayed = Set(toolbar.paragraphStyle.itemArray.compactMap { ($0.representedObject as? EVStyleMenuAction)?.stableID })
+    XCTAssertTrue(["Table", "Table cell", "Table header", "Image"].allSatisfy { sourceDisplayed.contains($0) })
+  }
+
+  func testWYSIWYGListCaretShowsItsExactParagraphStyleWithoutOfferingAssignment() throws {
+    for source in ["- item", "1. item"] {
+      let (backend, surface) = try surface(source)
+      let toolbar = surface.formattingToolbar
+      let selected = try XCTUnwrap(surface.session?.selectedNamedStyles().paragraph)
+      let definition = try XCTUnwrap(backend.styleSheetSnapshot().definition(namespace: .block, id: selected))
+      XCTAssertTrue(definition.flags.contains(.internalList))
+      let item = try XCTUnwrap(toolbar.paragraphStyle.selectedItem)
+      XCTAssertEqual((item.representedObject as? EVStyleMenuAction)?.stableID, selected.rawValue)
+      XCTAssertEqual(item.title, definition.name)
+      XCTAssertFalse(item.isEnabled)
+      XCTAssertEqual(item.image?.accessibilityDescription, "Paragraph style")
+      XCTAssertTrue(toolbar.paragraphStyle.isEnabled)
+      let entries = toolbar.paragraphStyle.itemArray.compactMap { ($0.representedObject as? EVStyleMenuAction)?.stableID }
+      XCTAssertEqual(entries.filter { $0.hasPrefix("BulletedList") || $0.hasPrefix("NumberedList") }, [selected.rawValue])
+    }
+  }
+
+  func testUnderlineAndScriptToolbarActionsRoundTripAndUndo() throws {
+    for (command, markup) in [(EVMenuCommand.underline, "ins"), (.superscript, "sup"), (.subscript, "sub")] {
+      let (backend, surface) = try surface("Words")
+      surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
+      let toolbar = surface.formattingToolbar
+      let button = try XCTUnwrap(toolbar.commandButtons[command])
+      toolbar.refresh()
+      XCTAssertTrue(button.isEnabled)
+      button.performClick(nil)
+      XCTAssertNil(surface.commandOutput)
+      XCTAssertEqual(button.state, .on)
+      let changed = try backend.serializedSource(typeName: EVDocument.markdownType)
+      XCTAssertEqual(changed, Data("<\(markup)>Words</\(markup)>".utf8))
+      let (_, reopened) = try self.surface(String(decoding: changed, as: UTF8.self))
+      reopened.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
+      XCTAssertEqual(reopened.presentation(for: command).state, .on)
+      surface.perform(menuCommand: .undo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("Words".utf8))
+      surface.perform(menuCommand: .redo, sender: nil)
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), changed)
+    }
+  }
+
   func testFormattedViewTogglePreservesSourceTracksSharedHistoryAndRestoresFocus() throws {
     let source = Data("# Heading\n\n**Words**".utf8)
     let (backend, first) = try surface(String(decoding: source, as: UTF8.self), type: EVDocument.markdownSourceType)
@@ -406,7 +526,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
     toolbar.refresh()
     XCTAssertEqual(Set(toolbar.commandButtons.keys), Set([
-      .bold, .italic, .strikethrough, .bulletedList, .numberedList, .increaseIndent, .decreaseIndent
+      .bold, .italic, .underline, .strikethrough, .superscript, .subscript, .bulletedList, .numberedList, .increaseIndent, .decreaseIndent
     ]))
     XCTAssertFalse(try XCTUnwrap(toolbar.commandButtons[.strikethrough]).isHidden)
     let bold = try XCTUnwrap(toolbar.commandButtons[.bold])
@@ -628,8 +748,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     let button = toolbar.formattedView
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
-    let lastFormattingButton = try XCTUnwrap(toolbar.commandButtons[.decreaseIndent])
-    let lastFrame = lastFormattingButton.convert(lastFormattingButton.bounds, to: toolbar)
+    let lastFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: toolbar)
     XCTAssertGreaterThan(button.frame.minX - lastFrame.maxX, 12)
     if let directory = ProcessInfo.processInfo.environment["VIEM_TOOLBAR_SCREENSHOT_DIR"] {
       window.setContentSize(NSSize(width: 920, height: 300))
@@ -645,10 +764,22 @@ final class EVFormattingToolbarTests: XCTestCase {
         try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("toolbar-\(appearance.rawValue).png"))
       }
     }
+    let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
+    window.setContentSize(NSSize(width: 650, height: 300))
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    let indent = try XCTUnwrap(toolbar.commandButtons[.decreaseIndent])
+    let indentFrame = indent.convert(indent.bounds, to: scroll.contentView)
+    let paragraphFrame = toolbar.paragraphStyle.convert(toolbar.paragraphStyle.bounds, to: scroll.contentView)
+    let characterFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: scroll.contentView)
+    XCTAssertGreaterThanOrEqual(indentFrame.minX, scroll.contentView.bounds.minX)
+    XCTAssertLessThanOrEqual(indentFrame.maxX, scroll.contentView.bounds.maxX)
+    XCTAssertGreaterThan(paragraphFrame.maxX, scroll.contentView.bounds.maxX)
+    XCTAssertGreaterThan(characterFrame.minX, scroll.contentView.bounds.maxX)
+    XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
+    XCTAssertGreaterThanOrEqual(button.frame.minX - scroll.frame.maxX, 12)
     window.setContentSize(NSSize(width: 480, height: 300))
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     XCTAssertLessThanOrEqual(toolbar.frame.width, window.frame.width)
-    let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
     XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).frame.width, scroll.contentSize.width)
     XCTAssertTrue(scroll.hasHorizontalScroller)
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)

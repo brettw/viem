@@ -3,6 +3,7 @@ using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
@@ -57,6 +58,7 @@ internal static class StyleInspectorBehaviorTests
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         BlockPreview(pane, preferences);
+        await CharacterScriptPreview(pane, preferences);
         if (Environment.GetEnvironmentVariable("VIEM_TEST_STYLE_PERFORMANCE_ONLY") == "1") {
             await Following(pane, preferences);
             await CacheRegressions(pane, preferences);
@@ -81,6 +83,19 @@ internal static class StyleInspectorBehaviorTests
         float Size() => inspector.ThemeView.Styles().Styles.Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)
             .Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
         try {
+            Check(inspector.StylePicker.ItemTemplateSelector is StyleIcons.PickerTemplates
+                && Children<ComboBox>(inspector.RootControl).Where(c => c.ItemTemplateSelector is StyleIcons.PickerTemplates).Count() == 3,
+                "all inspector style-name pickers use paragraph, character, block and built-in type icons");
+            Check(new[] { "Superscript", "Subscript" }.All(name => Children<ToggleButton>(inspector.RootControl)
+                .Any(button => AutomationProperties.GetName(button) == name)),
+                "character inspector exposes superscript and subscript with accessible names");
+            foreach (var button in Children<ToggleButton>(inspector.RootControl).Where(button =>
+                AutomationProperties.GetName(button) is "Superscript" or "Subscript"))
+            {
+                var glyphs = ((Canvas)button.Content).Children.OfType<TextBlock>().ToArray();
+                Check(glyphs.Length == 2 && glyphs[0].FontStyle == global::Windows.UI.Text.FontStyle.Italic && Math.Abs(glyphs[0].FontSize - 11.7) < .01
+                    && glyphs[1].FontSize == 7, "inspector script buttons share the refined toolbar glyphs");
+            }
             Check(inspector.DocumentPicker.Items.Cast<string>().SequenceEqual(new[] { "Plain Text", "Markdown", "Code" })
                 && inspector.DocumentPicker.SelectedIndex == 1, "Document picker groups Markdown views and uses Plain Text, Markdown, Code order");
             var originalSizes = new float[formats.Length];
@@ -254,6 +269,53 @@ internal static class StyleInspectorBehaviorTests
         }
         Check(document.Source(document.State.document_revision).SequenceEqual(source),
             "Block preview leaves the inspected document source unchanged");
+    }
+
+    private static async Task CharacterScriptPreview(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        byte[] source = "Preview source stays unchanged."u8.ToArray();
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences, followCaret: false);
+        inspector.Activate(); await Task.Delay(150);
+        try {
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Namespace == 2 && s.Id == "Code");
+            inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(20));
+            foreach (uint property in new[] { VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT, VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT })
+                inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 0));
+            inspector.RefreshForTesting();
+            (StyleWindow.PreviewTextGeometry Geometry, byte[] Pixels) Render() {
+                using var target = new CanvasRenderTarget(pane.Canvas.Device, 640, 200, 96);
+                StyleWindow.PreviewTextGeometry geometry;
+                using (var drawing = target.CreateDrawingSession()) geometry = inspector.DrawPreviewForTesting(drawing, 640, 200);
+                return (geometry, target.GetPixelBytes());
+            }
+            var plain = Render();
+            inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 1));
+            inspector.RefreshForTesting();
+            var raised = Render();
+            Check(Math.Abs(raised.Geometry.FontSize - plain.Geometry.FontSize * .75f) < .001f
+                && Math.Abs(raised.Geometry.Baseline - (plain.Geometry.Baseline - 7)) < .01f
+                && !raised.Pixels.AsSpan().SequenceEqual(plain.Pixels),
+                "Character style preview shrinks superscript and raises its native baseline by 35 percent of the original size");
+            inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 1));
+            inspector.RefreshForTesting();
+            var lowered = Render();
+            Check(Math.Abs(lowered.Geometry.FontSize - plain.Geometry.FontSize * .75f) < .001f
+                && Math.Abs(lowered.Geometry.Baseline - (plain.Geometry.Baseline + 4)) < .01f
+                && !lowered.Pixels.AsSpan().SequenceEqual(raised.Pixels),
+                "Character style preview lowers subscript by 20 percent and retires superscript");
+            inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT, CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 0));
+            inspector.RefreshForTesting();
+            var cleared = Render();
+            Check(cleared.Geometry == plain.Geometry && cleared.Pixels.AsSpan().SequenceEqual(plain.Pixels),
+                "Clearing script restores the native character preview geometry and pixels");
+            Check(!document.IsDirty && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
+                "Character preview script edits preserve the open document source");
+        }
+        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
     private static async Task CacheRegressions(EditorPane pane, Preferences preferences)
     {

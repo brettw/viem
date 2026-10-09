@@ -56,6 +56,8 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
   public var background: EVThemeColor?
   public var underline: Bool?
   public var strikethrough: Bool?
+  public var superscript: Bool?
+  public var `subscript`: Bool?
   public var language: String?
   public var direction: Direction?
   public var openTypeFeatures: [String: UInt32]?
@@ -83,13 +85,13 @@ public struct EVVisibleWhitespaceStyle: Codable, Equatable, Sendable {
       && (letterSpacing?.isFinite ?? true)
   }
 
-  public static let propertyNames = ["font_families", "font_face", "font_axes", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "language", "direction", "open_type_features", "letter_spacing"]
+  public static let propertyNames = ["font_families", "font_face", "font_axes", "size", "weight", "bold", "slant", "foreground", "background", "underline", "strikethrough", "superscript", "subscript", "language", "direction", "open_type_features", "letter_spacing"]
 
   private enum CodingKeys: String, CodingKey {
     case fontFamilies = "font_families", size, weight, bold, slant, foreground, background
     case fontAxes = "font_axes"
     case fontFace = "font_face"
-    case underline, strikethrough, language, direction, openTypeFeatures = "open_type_features"
+    case underline, strikethrough, superscript, `subscript`, language, direction, openTypeFeatures = "open_type_features"
     case letterSpacing = "letter_spacing"
   }
 }

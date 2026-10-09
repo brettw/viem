@@ -73,6 +73,24 @@ internal sealed unsafe partial class CoreView
         && !Document.IsReadOnly && !SelectedNamedStyles().HasCodeBlock
         && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
             || Presentation.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
+    public bool CanFormatUnderline => CanFormatStrikethrough;
+    public bool CanFormatSuperscript => CanFormatStrikethrough;
+    public bool CanFormatSubscript => CanFormatStrikethrough;
+    public uint InlinePropertyState(uint property)
+    { uint state = 0; Check(viem_core_view_inline_property_state(Document.Handle, Id, property, &state), "Read character formatting"); return state; }
+    public uint UnderlineState() => InlinePropertyState(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE);
+    public uint SuperscriptState() => InlinePropertyState(VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT);
+    public uint SubscriptState() => InlinePropertyState(VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT);
+    public void ToggleInlineProperty(uint property)
+    {
+        var selection = LogicalSelection();
+        byte enabled = InlinePropertyState(property) != VIEM_SEMANTIC_STYLE_STATE_ON ? (byte)1 : (byte)0;
+        Apply(o => { var expected = selection; return viem_core_view_set_inline_property(Document.Handle, Id, &expected, property, enabled, o); });
+        FormattingContextChanged?.Invoke();
+    }
+    public void ToggleUnderline() => ToggleInlineProperty(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE);
+    public void ToggleSuperscript() => ToggleInlineProperty(VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT);
+    public void ToggleSubscript() => ToggleInlineProperty(VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT);
     public uint StrikethroughState()
     { uint state = 0; Check(viem_core_view_strikethrough_state(Document.Handle, Id, &state), "Read strikethrough"); return state; }
     public void ToggleStrikethrough()

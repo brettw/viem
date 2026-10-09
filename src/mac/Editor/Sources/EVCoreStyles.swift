@@ -147,6 +147,8 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     case characterBackground = 19
     case characterUnderline = 20
     case characterStrikethrough = 21
+    case characterSuperscript = 45
+    case characterSubscript = 46
     case characterLanguage = 22
     case characterDirection = 23
     case characterOpenTypeFeatures = 24
@@ -173,7 +175,7 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
     static let characterProperties: [Self] = [
         .characterFontFamilies, .characterSize, .characterWeight, .characterSlant, .characterBold,
         .characterForeground, .characterBackground, .characterUnderline,
-        .characterStrikethrough, .characterLanguage, .characterDirection,
+        .characterStrikethrough, .characterSuperscript, .characterSubscript, .characterLanguage, .characterDirection,
         .characterOpenTypeFeatures, .characterFontAxes, .characterFontFace, .characterLetterSpacing,
     ]
 
@@ -223,6 +225,8 @@ enum EVStyleProperty: UInt32, CaseIterable, Hashable {
         case .characterBackground: "Background"
         case .characterUnderline: "Underline"
         case .characterStrikethrough: "Strikethrough"
+        case .characterSuperscript: "Superscript"
+        case .characterSubscript: "Subscript"
         case .characterLanguage: "Language"
         case .characterDirection: "Writing direction"
         case .characterOpenTypeFeatures: "OpenType features"

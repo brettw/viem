@@ -316,6 +316,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let preserve_selection = matches!(
             intent,
             TableEditIntent::SetCellsSemanticStyle { .. }
+                | TableEditIntent::SetCellsInlineProperty { .. }
                 | TableEditIntent::SetCellsStrikethrough { .. }
                 | TableEditIntent::AssignCellsNamedStyle { .. }
         );

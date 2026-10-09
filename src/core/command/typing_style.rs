@@ -105,10 +105,29 @@ impl CommandInterpreter {
         if next.named.is_none() && document.is_code_at(self.cursor, affinity)? {
             next.named = Some("Code".into());
         }
+        let authored_current = crate::layout::DocumentLayoutStyles::semantic_character_at(
+            document.projection(),
+            self.cursor,
+            self.mode != Mode::Normal
+                && self.insertion_boundary_affinity() == BoundaryAffinity::Upstream,
+        )
+        .map_err(|_| DocumentError::AmbiguousProjection)?;
         use StylePropertyValue as V;
         for value in [
             (StyleProperty::CharacterBold, V::Boolean(current.bold)),
             (StyleProperty::CharacterSlant, V::FontSlant(current.slant)),
+            (
+                StyleProperty::CharacterUnderline,
+                V::Boolean(authored_current.underline),
+            ),
+            (
+                StyleProperty::CharacterSuperscript,
+                V::Boolean(authored_current.superscript),
+            ),
+            (
+                StyleProperty::CharacterSubscript,
+                V::Boolean(authored_current.subscript),
+            ),
             (
                 StyleProperty::CharacterStrikethrough,
                 V::Boolean(current.strikethrough),
@@ -170,6 +189,18 @@ impl CommandInterpreter {
         }
         let mut next = self.typing_style.clone();
         for (property, value) in values {
+            if value == StylePropertyValue::Boolean(true) {
+                let opposite = match property {
+                    StyleProperty::CharacterSuperscript => Some(StyleProperty::CharacterSubscript),
+                    StyleProperty::CharacterSubscript => Some(StyleProperty::CharacterSuperscript),
+                    _ => None,
+                };
+                if let Some(opposite) = opposite {
+                    next.values.retain(|(p, _)| *p != opposite);
+                    next.values
+                        .push((opposite, StylePropertyValue::Boolean(false)));
+                }
+            }
             next.values.retain(|(p, _)| *p != property);
             next.values.push((property, value));
         }
@@ -244,6 +275,19 @@ impl CommandInterpreter {
                     };
                 }
                 (StyleProperty::CharacterSlant, V::FontSlant(v)) => style.slant = *v,
+                (StyleProperty::CharacterUnderline, V::Boolean(v)) => style.underline = *v,
+                (StyleProperty::CharacterSuperscript, V::Boolean(v)) => {
+                    style.superscript = *v;
+                    if *v {
+                        style.subscript = false;
+                    }
+                }
+                (StyleProperty::CharacterSubscript, V::Boolean(v)) => {
+                    style.subscript = *v;
+                    if *v {
+                        style.superscript = false;
+                    }
+                }
                 (StyleProperty::CharacterStrikethrough, V::Boolean(v)) => style.strikethrough = *v,
                 _ => {}
             }

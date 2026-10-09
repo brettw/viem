@@ -93,6 +93,8 @@ pub struct ResolvedTextPaint {
     pub background: Option<Color>,
     pub underline: bool,
     pub strikethrough: bool,
+    /// Unscaled baseline displacement; positive values raise the text.
+    pub baseline_offset: f32,
 }
 
 impl Default for ResolvedTextPaint {
@@ -320,7 +322,7 @@ impl DocumentLayoutStyles {
         if !automatic && block.style.0 == "Image" {
             block.style = document.style_sheet().base_paragraph.clone();
         }
-        let mut spans = document.style_spans_for_region(&range);
+        let mut spans = if automatic { document.layout_style_spans_for_region(&range) } else { document.style_spans_for_region(&range) };
         if !automatic {
             spans.retain(|span| {
                 !matches!(
@@ -334,7 +336,7 @@ impl DocumentLayoutStyles {
                 blocks: &blocks,
                 style_spans: &spans,
                 inline_images: &images,
-                style_sheet: document.style_sheet(),
+                style_sheet: if automatic { document.layout_style_sheet() } else { document.style_sheet() },
                 document_style: document.document_style(),
                 search_matches: &[],
             },
@@ -427,7 +429,7 @@ impl DocumentLayoutStyles {
         let structural_flow = flow_blocks.is_some();
         let regional_blocks =
             flow_blocks.unwrap_or_else(|| document.blocks_for_region(&text_range));
-        let regional_spans = document.style_spans_for_region(&text_range);
+        let regional_spans = document.layout_style_spans_for_region(&text_range);
         let regional_images = document.inline_images_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
         validate_spans_in_tree(text, &regional_spans)?;
@@ -435,7 +437,7 @@ impl DocumentLayoutStyles {
             blocks: &regional_blocks,
             style_spans: &regional_spans,
             inline_images: &regional_images,
-            style_sheet: document.style_sheet(),
+            style_sheet: document.layout_style_sheet(),
             document_style: document.document_style(),
             search_matches,
         };
@@ -518,6 +520,10 @@ impl DocumentLayoutStyles {
                 if defaults.base_direction.is_some() { container_paragraph.base_direction = defaults.base_direction; }
                 if defaults.first_line_indent.is_some() { container_paragraph.first_line_indent = defaults.first_line_indent; }
                 let mut container_box = super::BlockBoxStyle::from_resolved(&resolved);
+                if block.code_language_label && container.kind == crate::document::ContainerKind::CodeBlock {
+                    container_box.language_label = Some(block.code_language.as_deref().map(crate::document::syntax::languages::display_name).unwrap_or_else(|| "None".into()));
+                    container_box.padding.top += 18.0;
+                }
                 container_box.inline_start = resolved.leading_indent;
                 container_box.inline_end = resolved.trailing_indent;
                 containers.push(super::ContainerLayoutStyle { id: container.id, kind: container.kind,
@@ -630,7 +636,14 @@ impl DocumentLayoutStyles {
                     _ => None,
                 },
                 marker_paint: paint_style(&paragraph.character),
-                block_box: if container_body { super::BlockBoxStyle::default() } else { super::BlockBoxStyle::from_resolved(&paragraph) },
+                block_box: {
+                    let mut value = if container_body { super::BlockBoxStyle::default() } else { super::BlockBoxStyle::from_resolved(&paragraph) };
+                    if block.code_language_label && !block.containers.iter().any(|member| member.container.kind == crate::document::ContainerKind::CodeBlock) {
+                        value.language_label = Some(block.code_language.as_deref().map(crate::document::syntax::languages::display_name).unwrap_or_else(|| "None".into()));
+                        value.padding.top += 18.0;
+                    }
+                    value
+                },
                 containers: containers.into(),
                 margin_top: if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top },
                 margin_bottom: if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom },
@@ -985,6 +998,8 @@ fn merge_character_properties(destination: &mut CharacterProperties, source: &Ch
     replace_some!(background);
     replace_some!(underline);
     replace_some!(strikethrough);
+    replace_some!(superscript);
+    replace_some!(subscript);
     replace_some!(language);
     replace_some!(direction);
     replace_some!(open_type_features);
@@ -1012,7 +1027,8 @@ pub(crate) fn shaping_style(
         font_families: character.font_families.clone(),
         font_face: character.font_face.clone(),
         font_axes: character.font_axes.clone(),
-        size: character.size,
+        size: character.size * if character.superscript || character.subscript { 0.75 } else { 1.0 },
+        baseline_offset: character.size * if character.superscript { 0.35 } else if character.subscript { -0.2 } else { 0.0 },
         weight: f32::from(character.weight),
         relative_bold: character.bold,
         slant: character.slant,
@@ -1036,6 +1052,7 @@ fn paint_style(character: &ResolvedCharacterStyle) -> ResolvedTextPaint {
         background: character.background,
         underline: character.underline,
         strikethrough: character.strikethrough,
+        baseline_offset: character.size * if character.superscript { 0.35 } else if character.subscript { -0.2 } else { 0.0 },
     }
 }
 

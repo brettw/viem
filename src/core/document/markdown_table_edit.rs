@@ -94,6 +94,7 @@ impl Document {
             | TableEditIntent::ClearCells { table, .. }
             | TableEditIntent::ReplaceCells { table, .. }
             | TableEditIntent::SetCellsSemanticStyle { table, .. }
+            | TableEditIntent::SetCellsInlineProperty { table, .. }
             | TableEditIntent::SetCellsStrikethrough { table, .. }
             | TableEditIntent::AssignCellsNamedStyle { table, .. } => *table,
             _ => unreachable!(),
@@ -303,6 +304,7 @@ impl Document {
                 ..
             }
             | TableEditIntent::SetCellsSemanticStyle { rows, columns, .. }
+            | TableEditIntent::SetCellsInlineProperty { rows, columns, .. }
             | TableEditIntent::SetCellsStrikethrough { rows, columns, .. }
             | TableEditIntent::AssignCellsNamedStyle { rows, columns, .. } => {
                 if rows.is_empty()
@@ -349,6 +351,12 @@ impl Document {
                                     *style,
                                     *enabled,
                                 )?;
+                                patches.extend(prepared.summary.source_patches);
+                                None
+                            }
+                            TableEditIntent::SetCellsInlineProperty { property, enabled, .. } => {
+                                if cell.range.is_empty() { continue; }
+                                let prepared = self.prepare_inline_property(cell.range.clone(), *property, *enabled)?;
                                 patches.extend(prepared.summary.source_patches);
                                 None
                             }

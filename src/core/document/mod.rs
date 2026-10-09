@@ -47,12 +47,13 @@ mod markdown_quotes;
 mod markdown_source_edit;
 mod paragraph_flow;
 mod rich_text;
+pub(crate) use transaction::resolved_inline_boolean;
 pub use lists::{ListIdentity, ListItemNode, ListNode, ListStructure};
 mod line_endings;
 mod images;
 pub use images::{ImageSnapshot, ImageEditIntent};
 mod links;
-pub use links::{LinkSnapshot, LinkEditIntent};
+pub use links::{LinkSnapshot, LinkEditIntent, LinkHeading, LinkHeadingList};
 mod persistence;
 mod pipeline;
 mod position;
@@ -1066,7 +1067,10 @@ impl Document {
     }
 
     pub fn projection(&self) -> &FormattedDocument {
-        self.code_presentation.as_ref().filter(|p| self.format().is_code() && p.projection.revision() == self.revision()).map(|p| &p.projection).unwrap_or(&self.state().projection)
+        self.code_presentation.as_ref().filter(|p| p.projection.revision() == self.revision()
+            && (self.format().is_code() || self.format() == Format::Markdown
+                && p.projection.style_sheet().revision == self.state().projection.style_sheet().revision))
+            .map(|p| &p.projection).unwrap_or(&self.state().projection)
     }
 
     pub fn install_code_presentation(&mut self, sheet: std::sync::Arc<StyleSheet>, runs: &[syntax::SyntaxRun]) -> bool {

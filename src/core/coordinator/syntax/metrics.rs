@@ -112,7 +112,7 @@ pub(super) fn sheet_has_metric_styles(sheet: &crate::document::StyleSheet) -> Re
 
 /// Where a publication changes font metrics, in the shared new revision.
 #[derive(Clone, Debug, PartialEq)]
-pub(super) enum MetricChange {
+pub(in crate::coordinator) enum MetricChange {
     None,
     /// The formatted hull of every differing metric run.
     Local(std::ops::Range<usize>),

@@ -2,6 +2,35 @@
 use super::*;
 use crate::document::{LinkEditIntent, StyleApplication};
 
+/// Explicit destination-picker enumeration, bound to the captured document.
+/// # Safety
+/// Output and required-length storage must be valid, aligned and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_link_headings(
+    handle: ViemCoreHandle,
+    document: u64,
+    revision: u64,
+    output: *mut u8,
+    capacity: u64,
+    required: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(output, capacity)?,
+            typed_pointer_region(required, 1)?,
+        ])?;
+        let bytes = with_core(handle, |core| {
+            if core.document().id().0 != document {
+                return Err(ViemStatus::InvalidArgument);
+            }
+            validate_revision(core.document(), revision)?;
+            let headings = core.document().link_headings().map_err(document_status)?;
+            serde_json::to_vec(&headings).map_err(|_| ViemStatus::CoreFailure)
+        })?;
+        unsafe { copy_clipboard_json_bytes(&bytes, output, capacity, required) }
+    })
+}
+
 /// # Safety
 /// Output and required-length storage must be valid, aligned and disjoint.
 #[no_mangle]

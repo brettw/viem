@@ -420,6 +420,7 @@ final class EVStyleEditorViewController: NSViewController {
     private let stylePopup = NSPopUpButton()
     private let restoreDefaultsButton = NSButton(title: "Restore Defaults", target: nil, action: nil)
     private let typeLabel = NSTextField(labelWithString: "")
+    private let typeIcon = NSImageView()
     private let basedOnPopup = NSPopUpButton()
     private let editParentButton = NSButton()
     private let editNextStyleButton = NSButton()
@@ -499,6 +500,12 @@ final class EVStyleEditorViewController: NSViewController {
         stylePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
         typeLabel.textColor = .secondaryLabelColor
         typeLabel.setAccessibilityLabel("Style type")
+        typeIcon.widthAnchor.constraint(equalToConstant: 16).isActive = true
+        typeIcon.heightAnchor.constraint(equalToConstant: 16).isActive = true
+        let typeRow = NSStackView(views: [typeIcon, typeLabel])
+        typeRow.orientation = .horizontal
+        typeRow.alignment = .centerY
+        typeRow.spacing = 6
         basedOnPopup.target = self
         basedOnPopup.action = #selector(basedOnChanged(_:))
         basedOnPopup.setAccessibilityLabel("Based on style")
@@ -524,7 +531,7 @@ final class EVStyleEditorViewController: NSViewController {
         ])
 
         let propertiesGrid = NSGridView(views: [
-            [label("Style type"), typeLabel],
+            [label("Style type"), typeRow],
             [label("Based on"), navigationRow(popup: basedOnPopup, button: editParentButton)],
             [label("Next paragraph"), navigationRow(popup: nextStyleRow.popupForCompactLayout, button: editNextStyleButton)],
         ])
@@ -856,6 +863,7 @@ final class EVStyleEditorViewController: NSViewController {
         configureStylePopup(snapshot: snapshot)
         selectPopupItem(for: definition.key)
         typeLabel.stringValue = definition.kind.displayName
+        typeIcon.image = EVStyleIcons.typeImage(for: definition)
         configureBasedOn(snapshot: snapshot, definition: definition)
 
         availabilityLabel.stringValue = diagnosticMessage
@@ -926,6 +934,7 @@ final class EVStyleEditorViewController: NSViewController {
             for definition in styles {
                 let item = NSMenuItem(title: definition.name, action: nil, keyEquivalent: "")
                 item.representedObject = EVStyleKeyBox(definition.key)
+                item.image = EVStyleIcons.typeImage(for: definition)
                 item.toolTip = "Stable ID: \(definition.key.id.rawValue)"
                 menu.addItem(item)
             }
@@ -937,19 +946,22 @@ final class EVStyleEditorViewController: NSViewController {
         let editable = definition.capabilities.contains(.parent)
         var choices: [EVStyleChoiceIdentity] = []
         if editable {
-            if definition.kind == .character { choices.append(EVStyleChoiceIdentity(key: .defaultParagraph, name: "Default Paragraph")) }
+            if definition.kind == .character { choices.append(EVStyleChoiceIdentity(key: .defaultParagraph, name: "Default Paragraph", icon: .character)) }
             choices += snapshot.legalParents(for: definition)
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name) }
+                .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name, icon: EVStyleIcons.type(for: $0)) }
         } else {
             let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name }
                 ?? (definition.kind == .character ? "Default Paragraph" : "None")
-            choices = [EVStyleChoiceIdentity(key: definition.parentKey, name: title)]
+            let parent = definition.parentKey.flatMap { snapshot.definition(for: $0) }
+            choices = [EVStyleChoiceIdentity(key: definition.parentKey, name: title,
+                icon: parent.map { EVStyleIcons.type(for: $0) } ?? (definition.kind == .character ? .character : nil))]
         }
         if parentMenuChoices != choices {
             basedOnPopup.removeAllItems()
             for choice in choices {
                 basedOnPopup.addItem(withTitle: choice.name)
+                basedOnPopup.lastItem?.image = choice.icon.map { EVStyleIcons.typeImage($0) }
                 if let key = choice.key { basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(key) }
             }
             parentMenuChoices = choices
@@ -1137,6 +1149,7 @@ final class EVStyleEditorViewController: NSViewController {
         stylePopup.removeAllItems()
         stylePopup.isEnabled = false
         typeLabel.stringValue = "No document"
+        typeIcon.image = nil
         basedOnPopup.removeAllItems()
         basedOnPopup.addItem(withTitle: "Unavailable")
         basedOnPopup.isEnabled = false
@@ -1467,6 +1480,7 @@ private struct EVStyleChoiceIdentity: Equatable {
     let name: String
     var kind: EVStyleKind? = nil
     var internalSyntax: Bool = false
+    var icon: EVStyleIcons.StyleType? = nil
 }
 
 @MainActor
@@ -1497,12 +1511,14 @@ private final class EVFollowingStyleRow: NSObject {
         isConfiguring = true
         defer { isConfiguring = false }
         let signature = choices.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name) }
+            .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name, icon: EVStyleIcons.type(for: $0)) }
         if menuChoices != signature {
             popup.removeAllItems()
             popup.addItem(withTitle: "Same Style")
+            popup.lastItem?.image = EVStyleIcons.typeImage(.paragraph)
             for choice in signature {
                 popup.addItem(withTitle: choice.name)
+                popup.lastItem?.image = choice.icon.map { EVStyleIcons.typeImage($0) }
                 if let key = choice.key { popup.lastItem?.representedObject = EVStyleKeyBox(key) }
             }
             menuChoices = signature

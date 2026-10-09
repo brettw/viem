@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Hosting;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Shell;
@@ -21,7 +22,8 @@ internal sealed partial class EditorPane
     private Border? linkPopup;
     private StackPanel? linkActions, linkEditor;
     private Button? linkDestinationButton;
-    private TextBox? linkText, linkDestination;
+    private TextBox? linkText;
+    private ComboBox? linkDestination;
     private TextBlock? linkError;
     private Button? linkApply;
     private LinkContext? shownLink, dismissedLink;
@@ -30,6 +32,9 @@ internal sealed partial class EditorPane
     private Rect linkAnchor;
     internal bool LinkPopupVisible => linkPopup?.Visibility == Visibility.Visible;
     internal bool LinkEditorVisible => LinkPopupVisible && editingLink;
+    internal ComboBox? LinkDestinationControl => linkDestination;
+    internal double LinkPopupWidth => linkPopup?.Width ?? 0;
+    internal string LinkSummary => (linkDestinationButton?.Content as TextBlock)?.Text ?? "";
     internal string LinkTextValue { get => linkText?.Text ?? ""; set { EnsureLinkPopup(); linkText!.Text = value; } }
     internal string LinkDestinationValue { get => linkDestination?.Text ?? ""; set { EnsureLinkPopup(); linkDestination!.Text = value; } }
 
@@ -53,7 +58,9 @@ internal sealed partial class EditorPane
         var remove = Action("Remove link", "", RemoveShownLink);
         remove.Content = UnlinkIcon(remove);
         linkText = new TextBox { Header = "Text", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
-        linkDestination = new TextBox { Header = "Destination", PlaceholderText = "https://…, file.md, or #heading", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
+        linkDestination = new ComboBox { Header = "Destination", PlaceholderText = "https://…, file.md, or #heading", MinWidth = 0,
+            IsEditable = true, IsTextSearchEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><TextBlock Text='{Binding Text}'/></DataTemplate>") };
         AutomationProperties.SetName(linkText, "Link text"); AutomationProperties.SetName(linkDestination, "Link destination");
         linkError = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, MaxWidth = 320, FontSize = 12 };
         AutomationProperties.SetLiveSetting(linkError, AutomationLiveSetting.Polite);
@@ -65,9 +72,20 @@ internal sealed partial class EditorPane
         cancel.Click += (_, _) => { DismissLinkPopup(); FocusEditor(); };
         linkApply.Click += (_, _) => ApplyLinkEditor();
         controls.Children.Add(cancel); controls.Children.Add(linkApply); linkEditor.Children.Add(controls);
-        linkDestination.TextChanged += (_, _) => {
+        linkDestination.RegisterPropertyChangedCallback(ComboBox.TextProperty, (_, _) => {
             linkApply.IsEnabled = linkDestination.Text.Trim().Length > 0;
             linkError.Visibility = Visibility.Collapsed;
+        });
+        linkDestination.DropDownOpened += (_, _) => {
+            if (View is not { } view || shownLink is not { } context) return;
+            try {
+                var choices = view.LinkHeadings(context);
+                linkDestination.ItemsSource = choices.Headings;
+                if (choices.Truncated) { linkError.Text = "Some headings are omitted from this list. You can also enter any #heading destination."; linkError.Visibility = Visibility.Visible; }
+            } catch (Exception error) { linkDestination.ItemsSource = null; linkError.Text = error.Message; linkError.Visibility = Visibility.Visible; }
+        };
+        linkDestination.SelectionChanged += (_, _) => {
+            if (linkDestination.SelectedItem is LinkHeading heading) linkDestination.Text = heading.Destination;
         };
         linkText.TextChanged += (_, _) => linkError.Visibility = Visibility.Collapsed;
         linkApply.IsEnabled = false;
@@ -75,6 +93,7 @@ internal sealed partial class EditorPane
         linkPopup = new Border { Child = contents, Padding = new(5), BorderThickness = new(1), CornerRadius = new(8), Visibility = Visibility.Collapsed, Width = 340 };
         AutomationProperties.SetName(linkPopup, "Link");
         linkPopup.KeyDown += (_, e) => {
+            if (linkDestination.IsDropDownOpen && e.Key is VirtualKey.Escape or VirtualKey.Enter) return;
             if (e.Key == VirtualKey.Escape) { e.Handled = true; DismissLinkPopup(); FocusEditor(); }
             else if (e.Key == VirtualKey.Enter && editingLink) { e.Handled = true; ApplyLinkEditor(); }
         };
@@ -124,8 +143,11 @@ internal sealed partial class EditorPane
         if (!insertingLink && context.Link is { Editable: false }) return;
         EnsureLinkPopup();
         editingLink = true;
+        linkDestination!.IsDropDownOpen = false;
+        linkDestination.SelectedItem = null;
+        linkDestination.ItemsSource = null;
         linkText!.Text = insertingLink ? context.Text : context.Link?.Text ?? context.Text;
-        linkDestination!.Text = insertingLink ? "" : context.Link?.Destination ?? "";
+        linkDestination.Text = insertingLink ? "" : context.Link?.Destination ?? "";
         linkApply!.IsEnabled = linkDestination.Text.Trim().Length > 0;
         linkError!.Text = ""; linkError.Visibility = Visibility.Collapsed;
         linkActions!.Visibility = Visibility.Collapsed; linkEditor!.Visibility = Visibility.Visible;
@@ -144,8 +166,8 @@ internal sealed partial class EditorPane
             visual.StartAnimation("Opacity", opacity);
         }
         linkPopup.UpdateLayout();
-        var focus = linkText.Text.Length == 0 ? linkText : linkDestination;
-        focus.Focus(FocusState.Programmatic); focus.SelectAll();
+        if (linkText.Text.Length == 0) { linkText.Focus(FocusState.Programmatic); linkText.SelectAll(); }
+        else linkDestination.Focus(FocusState.Programmatic);
     }
 
     internal void ApplyLinkEditor()
@@ -175,6 +197,11 @@ internal sealed partial class EditorPane
     {
         if (suppress) dismissedLink = shownLink;
         editingLink = false; insertingLink = false; shownLink = null;
+        if (linkDestination != null) {
+            linkDestination.IsDropDownOpen = false;
+            linkDestination.SelectedItem = null;
+            linkDestination.ItemsSource = null;
+        }
         if (linkPopup != null) linkPopup.Visibility = Visibility.Collapsed;
     }
 
@@ -204,7 +231,9 @@ internal sealed partial class EditorPane
             || !TryLinkAnchor(context, out linkAnchor))
         { DismissLinkPopup(suppress: false); return; }
         EnsureLinkPopup(); shownLink = context; insertingLink = false;
-        ((TextBlock)linkDestinationButton!.Content).Text = context.Link.Destination;
+        var label = (TextBlock)linkDestinationButton!.Content;
+        label.Text = context.Link.Text.Length == 0 ? "empty" : context.Link.Text;
+        label.FontStyle = context.Link.Text.Length == 0 ? global::Windows.UI.Text.FontStyle.Italic : global::Windows.UI.Text.FontStyle.Normal;
         AutomationProperties.SetName(linkDestinationButton, "Open " + context.Link.Destination);
         ToolTipService.SetToolTip(linkDestinationButton, context.Link.Destination);
         foreach (var button in linkActions!.Children.OfType<Button>().Skip(2)) button.IsEnabled = context.Link.Editable;
@@ -236,6 +265,7 @@ internal sealed partial class EditorPane
 
     private bool HasLinkInteractionFocus()
     {
+        if (LinkEditorVisible && linkDestination?.IsDropDownOpen == true) return true;
         if (XamlRoot == null) return false;
         for (var element = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject; element != null; element = VisualTreeHelper.GetParent(element))
             if (element == input || element == linkPopup) return true;
@@ -254,8 +284,12 @@ internal sealed partial class EditorPane
         linkPopup.BorderBrush = new SolidColorBrush(preferences.Theme.StatusForeground);
         linkError!.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         linkPopup.Padding = editingLink ? new(10) : new(5);
-        linkPopup.Width = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
-        linkDestinationButton!.Width = Math.Max(48, linkPopup.Width - linkPopup.Padding.Left - linkPopup.Padding.Right - 98);
+        double maximumWidth = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
+        var label = (TextBlock)linkDestinationButton!.Content;
+        label.MaxWidth = double.PositiveInfinity;
+        label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        linkPopup.Width = editingLink ? maximumWidth : Math.Min(maximumWidth, label.DesiredSize.Width + 12 + 108);
+        linkDestinationButton.Width = Math.Max(12, linkPopup.Width - linkPopup.Padding.Left - linkPopup.Padding.Right - 98);
         ((TextBlock)linkDestinationButton.Content).MaxWidth = linkDestinationButton.Width - 12;
         linkPopup.Measure(new Size(linkPopup.Width, double.PositiveInfinity));
         double height = linkPopup.DesiredSize.Height;

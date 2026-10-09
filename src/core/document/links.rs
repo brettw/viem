@@ -4,6 +4,20 @@ use super::html::TokenKind;
 use super::line_endings::NormalizedText;
 use super::*;
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LinkHeading {
+    pub text: String,
+    pub destination: String,
+    pub level: u8,
+    pub offset: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct LinkHeadingList {
+    pub headings: Vec<LinkHeading>,
+    pub truncated: bool,
+}
+
 #[derive(Debug)]
 pub(super) struct InlineLink {
     pub range: Range<usize>,
@@ -1581,8 +1595,119 @@ impl Document {
             .ok_or(DocumentError::VerificationFailed.into())
     }
 
-    /// Resolve GitHub-style heading fragments, including duplicate suffixes.
-    /// This explicit navigation query may visit headings; passive UI never does.
+    /// Explicit navigation and destination-picker queries share fragment names.
+    /// Passive caret refresh never enumerates headings.
+    fn visit_link_headings(
+        &self,
+        byte_budget: usize,
+        mut visit: impl FnMut(LinkHeading) -> bool,
+    ) -> Result<bool, DocumentError> {
+        if !self.format().is_markdown() {
+            return Ok(false);
+        }
+        let mut slugs = std::collections::HashMap::<String, usize>::new();
+        let mut index = 0;
+        let mut decoded_bytes = 0usize;
+        while let Some((found, block)) = self
+            .projection()
+            .heading_after(index, self.format().is_source_view())
+        {
+            index = found + 1;
+            let level = match block.kind {
+                BlockKind::Heading(level) => level,
+                _ => block
+                    .style
+                    .0
+                    .strip_prefix("Heading")
+                    .and_then(|level| level.parse::<u8>().ok())
+                    .filter(|level| (1..=6).contains(level))
+                    .ok_or(DocumentError::AmbiguousProjection)?,
+            };
+            let source_start = self
+                .projection()
+                .source_insertion_point(block.range.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let source_end = self
+                .projection()
+                .source_insertion_point(block.range.end, false)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let lines = &self.state().source_hard_lines;
+            let first = lines
+                .line_at_offset(source_start)
+                .and_then(|line| lines.get(line))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let last = lines
+                .line_at_offset(source_end.saturating_sub(1).max(source_start))
+                .and_then(|line| lines.get(line))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let source = first.start..last.end;
+            decoded_bytes = decoded_bytes.saturating_add(source.len());
+            if decoded_bytes > byte_budget {
+                return Ok(true);
+            }
+            let bytes = self
+                .state()
+                .source
+                .bytes_in(source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = self.encoding().decode_region(&bytes, source.start)?;
+            let input = super::line_endings::normalize(&decoded, self.file_format());
+            // Each owner is already classified as a heading. Remove its local
+            // list/quote prefix so a nested heading parses independently of its
+            // unvisited ancestors. Authored body whitespace remains escaped.
+            let body = input
+                .text
+                .lines()
+                .map(|line| {
+                    let line = &line[super::markdown_quotes::prefix(line)..];
+                    let line = line.trim_start_matches([' ', '\t']);
+                    let prefix = super::markdown_blocks::marker_prefix_length(line).unwrap_or(0);
+                    &line[prefix..]
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut label = String::new();
+            use pulldown_cmark::{Event, Options};
+            for event in pulldown_cmark::Parser::new_ext(&body, Options::ENABLE_STRIKETHROUGH) {
+                match event {
+                    Event::Text(text) | Event::Code(text) => label.push_str(&text),
+                    Event::SoftBreak | Event::HardBreak => label.push(' '),
+                    _ => {}
+                }
+            }
+            let base: String = label
+                .trim()
+                .to_lowercase()
+                .chars()
+                .filter_map(|ch| {
+                    if ch == ' ' {
+                        Some('-')
+                    } else if ch == '-' || ch == '_' || ch.is_alphanumeric() {
+                        Some(ch)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut slug = base.clone();
+            while slugs.contains_key(&slug) {
+                let suffix = slugs.entry(base.clone()).or_default();
+                *suffix += 1;
+                slug = format!("{base}-{suffix}");
+            }
+            slugs.insert(slug.clone(), 0);
+            if !visit(LinkHeading {
+                text: label,
+                destination: format!("#{slug}"),
+                level,
+                offset: block.range.start,
+            }) {
+                break;
+            }
+        }
+        Ok(false)
+    }
+
     pub fn find_link_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {
         if !self.format().is_markdown() {
             return Ok(None);
@@ -1590,66 +1715,37 @@ impl Document {
         if fragment.is_empty() {
             return Ok(Some(0));
         }
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = super::line_endings::normalize(&decoded, self.file_format());
-        let mut headings = std::collections::HashMap::<String, usize>::new();
-        let mut current: Option<(usize, String)> = None;
-        use pulldown_cmark::{Event, Tag, TagEnd};
-        for (event, range) in pulldown_cmark::Parser::new(&input.text).into_offset_iter() {
-            match event {
-                Event::Start(Tag::Heading { .. }) => current = Some((range.start, String::new())),
-                Event::Text(text) | Event::Code(text) => {
-                    if let Some((_, label)) = &mut current {
-                        label.push_str(&text);
-                    }
-                }
-                Event::SoftBreak | Event::HardBreak => {
-                    if let Some((_, label)) = &mut current {
-                        label.push(' ');
-                    }
-                }
-                Event::End(TagEnd::Heading(_)) => {
-                    if let Some((start, label)) = current.take() {
-                        let base: String = label
-                            .trim()
-                            .to_lowercase()
-                            .chars()
-                            .filter_map(|ch| {
-                                if ch == ' ' {
-                                    Some('-')
-                                } else if ch == '-' || ch == '_' || ch.is_alphanumeric() {
-                                    Some(ch)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        let mut slug = base.clone();
-                        let mut suffix = 0;
-                        while headings.contains_key(&slug) {
-                            suffix += 1;
-                            slug = format!("{base}-{suffix}");
-                        }
-                        headings.insert(slug.clone(), 1);
-                        if slug == fragment {
-                            let unit = input.units.get(
-                                input
-                                    .units
-                                    .partition_point(|unit| unit.normalized.end <= start),
-                            );
-                            if let Some(unit) = unit {
-                                return Ok(link_boundary(
-                                    self,
-                                    unit.source.start,
-                                    BoundaryAffinity::Downstream,
-                                ));
-                            }
-                        }
-                    }
-                }
-                _ => {}
+        let mut result = None;
+        self.visit_link_headings(usize::MAX, |heading| {
+            if heading.destination.strip_prefix('#') == Some(fragment) {
+                result = Some(heading.offset);
+                false
+            } else {
+                true
             }
-        }
-        Ok(None)
+        })?;
+        Ok(result)
+    }
+
+    /// An explicit picker request, with finite native menu/label retention.
+    pub fn link_headings(&self) -> Result<LinkHeadingList, DocumentError> {
+        let mut result = LinkHeadingList {
+            headings: Vec::new(),
+            truncated: false,
+        };
+        let mut retained = 0usize;
+        let input_truncated = self.visit_link_headings(256 * 1024, |heading| {
+            retained = retained
+                .saturating_add(heading.text.len())
+                .saturating_add(heading.destination.len());
+            if result.headings.len() == 1024 || retained > 256 * 1024 {
+                result.truncated = true;
+                return false;
+            }
+            result.headings.push(heading);
+            true
+        })?;
+        result.truncated |= input_truncated;
+        Ok(result)
     }
 }

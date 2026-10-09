@@ -640,7 +640,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     func pollSyntax(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        guard core != 0, sourceFormat == .code else { return }
+        guard core != 0, sourceFormat == .code || sourceFormat == .markdown else { return }
         var changed: UInt8 = 0
         guard viem_core_poll_syntax(core, &changed) == Status.ok else { return }
         if changed != 0 { publishSyntaxChange() }
@@ -653,7 +653,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     /// before exporting a frame. The shared core owns the deadline and request
     /// identity; secondary panes and timer-driven publication never wait again.
     func waitForSyntax(viewID: ViemViewId) throws -> Bool {
-        guard core != 0, sourceFormat == .code, !isPublishingSyntaxChange else { return false }
+        guard core != 0, sourceFormat == .code || sourceFormat == .markdown, !isPublishingSyntaxChange else { return false }
         var changed: UInt8 = 0
         try checked(viem_core_view_wait_for_syntax(core, viewID, &changed), operation: "Prepare syntax paint")
         if changed != 0 { publishSyntaxChange(excluding: viewID) }
@@ -1276,6 +1276,24 @@ final class EVCoreViewSession {
             viem_core_view_set_strikethrough(document.core, viewID, &selection, enabled ? 1 : 0, outcome)
         }
     }
+
+    @discardableResult
+    func setInlineProperty(_ property: EVStyleProperty, _ enabled: Bool,
+                           expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var selection = selection
+        return try performCoreOperation("Change \(property.displayName)", pendingCharacterSelection: selection) { outcome in
+            viem_core_view_set_inline_property(document.core, viewID, &selection, property.rawValue, enabled ? 1 : 0, outcome)
+        }
+    }
+
+    func inlinePropertyState(_ property: EVStyleProperty) throws -> UInt32 {
+        var state: UInt32 = 0
+        try checked(viem_core_view_inline_property_state(document.core, viewID, property.rawValue, &state), operation: "Read \(property.displayName)")
+        return state
+    }
+    func underlineState() throws -> UInt32 { try inlinePropertyState(.characterUnderline) }
+    func superscriptState() throws -> UInt32 { try inlinePropertyState(.characterSuperscript) }
+    func subscriptState() throws -> UInt32 { try inlinePropertyState(.characterSubscript) }
 
     func strikethroughState() throws -> UInt32 {
         var state: UInt32 = 0

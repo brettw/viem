@@ -112,8 +112,16 @@ internal sealed partial class StyleWindow
         var button = new ToggleButton { Content = label, Width = 32, MinWidth = 0, Padding = new(0), FontSize = 14 };
         if (label == "B") button.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
         if (label == "I") button.FontStyle = FontStyle.Italic;
+        if (property is VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT or VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT)
+            button.Content = StyleIcons.ScriptIcon(button, property == VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT);
         if (label is "U" or "S") button.Content = new TextBlock { Text = label, TextDecorations = label == "U" ? TextDecorations.Underline : TextDecorations.Strikethrough, FontSize = 14 };
-        Property(row, label, property, button, caption: false, reserveCaption: true);
+        string name = property switch {
+            VIEM_STYLE_PROPERTY_CHARACTER_BOLD => "Bold", VIEM_STYLE_PROPERTY_CHARACTER_SLANT => "Italic",
+            VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE => "Underline", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH => "Strikethrough",
+            VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT => "Superscript", VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT => "Subscript", _ => label
+        };
+        ToolTipService.SetToolTip(button, name);
+        Property(row, name, property, button, caption: false, reserveCaption: true);
         refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
         button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
@@ -129,9 +137,17 @@ internal sealed partial class StyleWindow
         var row = Row(character);
         Boolean(row, "B", VIEM_STYLE_PROPERTY_CHARACTER_BOLD); Boolean(row, "I", VIEM_STYLE_PROPERTY_CHARACTER_SLANT);
         Boolean(row, "U", VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE); Boolean(row, "S", VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH);
-        ColorControl(row, "Text Color", VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND); ColorControl(row, "Background Color", VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
+        Boolean(row, "x²", VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT); Boolean(row, "x₂", VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT);
         character.Children.Add(Separator());
-        row = Row(character); Number(row, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2");
+        var metrics = new Grid { ColumnSpacing = 12 };
+        metrics.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); metrics.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); metrics.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        character.Children.Add(metrics);
+        Number(metrics, "Tracking", VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING, icon: "\uE8D2", groupWidth: 156);
+        Choice(metrics, "Direction", VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, ["Automatic", "Left to Right", "Right to Left"], [0, 1, 2]);
+        Grid.SetColumn((FrameworkElement)metrics.Children.Last(), 1);
+        var colors = Inline(); colors.Spacing = 12; colors.HorizontalAlignment = HorizontalAlignment.Right;
+        ColorControl(colors, "Text Color", VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND); ColorControl(colors, "Background Color", VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);
+        Grid.SetColumn(colors, 2); metrics.Children.Add(colors);
     }
     private void BuildParagraph()
     {

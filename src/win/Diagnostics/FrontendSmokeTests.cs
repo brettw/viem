@@ -109,6 +109,7 @@ internal static class FrontendSmokeTests
             "Markdown paths default to source presentation and HTML paths use Code");
         GlobalSelectionOptionTests.Run(device, dispatcher, Check);
         BidiControlTests.Run(device, dispatcher, Check);
+        CodeBlockLanguageTests.Run(device, dispatcher, Check);
         void Scenario(string text, uint format, Action<CoreDocument, CoreView> run)
         { using var doc = new CoreDocument(Encoding.UTF8.GetBytes(text), format: format); using var view = new CoreView(doc, device, dispatcher, 700, 400); run(doc, view); }
         Scenario("alpha beta\nsecond line\n", 1, (doc, view) => {

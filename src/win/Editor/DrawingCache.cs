@@ -102,8 +102,10 @@ internal sealed partial class EditorPane
                 Color foreground = (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);
                 glyphs.Draw(cluster.render_run, new(cluster.x - viewport.left, row.baseline - viewport.top), foreground);
                 if ((paint.flags & (VIEM_TEXT_PAINT_UNDERLINE | VIEM_TEXT_PAINT_STRIKETHROUGH)) != 0) glyphs.Flush();
-                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top + 2, (float)bounds.Right, row.baseline - viewport.top + 2, foreground);
-                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine((float)bounds.X, row.baseline - viewport.top - row.ascent * .3f, (float)bounds.Right, row.baseline - viewport.top - row.ascent * .3f, foreground);
+                float baseline = row.baseline - paint.baseline_offset * viewport.scale;
+                float ascent = Math.Max(0, baseline - cluster.typographic_bounds.y);
+                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine((float)bounds.X, baseline - viewport.top + 2, (float)bounds.Right, baseline - viewport.top + 2, foreground);
+                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine((float)bounds.X, baseline - viewport.top - ascent * .3f, (float)bounds.Right, baseline - viewport.top - ascent * .3f, foreground);
             }
         }
         glyphs.Flush();
@@ -116,6 +118,7 @@ internal sealed partial class EditorPane
                 || d.typographic_bounds.y > drawnBottom + 4) continue;
             Color foreground = (d.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(d.paint.foreground);
             if ((d.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) != 0) continue;
+            if ((d.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0) continue;
             glyphs.Draw(d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
         }
         glyphs.Flush();

@@ -121,7 +121,10 @@ final class EVCoreBlockStylePreview {
     }
 
     func draw(in bounds: CGRect, context: CGContext) {
-        guard let snapshot = try? prepare(bounds.size), let paint else { return }
+        guard let snapshot = try? prepare(bounds.size), let paint,
+              let viewport = try? session.viewportState(),
+              viewport.configuration_generation == snapshot.info.identity.configuration_generation,
+              viewport.layout_revision == snapshot.info.identity.layout_revision else { return }
         // Core exports complete boxes in owner order. Keep backgrounds and
         // borders together so an overlapping child paints above its parent.
         context.saveGState()
@@ -145,13 +148,16 @@ final class EVCoreBlockStylePreview {
                 atBaseline: CGPoint(x: CGFloat(cluster.x), y: CGFloat(row.baseline)),
                 color: color(style.foreground).cgColor, in: context)
             color(style.foreground).setFill()
+            let baseline = CGFloat(row.baseline) - CGFloat(style.baseline_offset) * CGFloat(viewport.scale)
+            let ascent = max(0, baseline - CGFloat(cluster.typographic_bounds.y))
+            let descent = max(0, CGFloat(cluster.typographic_bounds.y + cluster.typographic_bounds.height) - baseline)
             if style.flags & UInt32(VIEM_TEXT_PAINT_UNDERLINE) != 0 {
                 CGRect(x: CGFloat(cluster.typographic_bounds.x),
-                    y: floor(CGFloat(row.baseline) + max(1, CGFloat(row.descent) * 0.35)),
+                    y: floor(baseline + max(1, descent * 0.35)),
                     width: CGFloat(cluster.typographic_bounds.width), height: 1).fill()
             }
             if style.flags & UInt32(VIEM_TEXT_PAINT_STRIKETHROUGH) != 0 {
-                CGRect(x: CGFloat(cluster.typographic_bounds.x), y: floor(CGFloat(row.baseline) - CGFloat(row.ascent) * 0.32),
+                CGRect(x: CGFloat(cluster.typographic_bounds.x), y: floor(baseline - ascent * 0.32),
                     width: CGFloat(cluster.typographic_bounds.width), height: 1).fill()
             }
         }

@@ -706,6 +706,12 @@ impl SyntaxService {
     pub fn retained_result_bytes(&self) -> usize {
         self.cache.iter().map(SyntaxResult::bytes).sum::<usize>() + self.runs.bytes()
     }
+    /// Include a completed result until its owner has polled and accepted it.
+    /// This is a bounded scheduling query; no provider work occurs under the lock.
+    pub(crate) fn has_pending_work(&self) -> bool {
+        let slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+        slot.pending.is_some() || slot.active.is_some() || slot.ready.is_some()
+    }
 }
 impl Drop for SyntaxService {
     fn drop(&mut self) {
@@ -969,13 +975,24 @@ mod tests {
         }
         drop(service); // Must return before the deliberately suspended native destructor.
         receiver.recv_timeout(Duration::from_secs(5)).unwrap();
-        // The destructor cannot retain the pool's cache lock.
-        assert!(pool().idle.try_lock().is_ok());
+        // Other parallel services may briefly hold this shared cache lock.
+        // It must remain acquirable while this native destructor is suspended.
+        let (acquired, acquisition) = mpsc::channel();
+        let probe = std::thread::spawn(move || {
+            let _idle = pool().idle.lock().unwrap();
+            let _ = acquired.send(());
+        });
+        let lock_available = acquisition.recv_timeout(Duration::from_secs(5));
         {
             let (lock, cv) = &*gate;
             *lock.lock().unwrap() = true;
             cv.notify_all();
         }
+        probe.join().unwrap();
+        assert!(
+            lock_available.is_ok(),
+            "native destructor retained the cache lock"
+        );
     }
 
     #[test]

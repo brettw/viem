@@ -11,7 +11,7 @@ private final class EVLinkPanel: NSPanel {
 
 /// Transient controls retain an exact core selection; the document owns all edits.
 @MainActor
-final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
+final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSComboBoxDelegate {
     private weak var surface: EVEditorSurfaceController?
     private let kind: EVInlineContentKind
     private let panel = EVLinkPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
@@ -25,7 +25,8 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     let reloadButton = NSButton()
     let removeButton = NSButton()
     let textField = NSTextField()
-    let destinationField = NSTextField()
+    let destinationField: NSTextField
+    let chooseImageButton = NSButton()
     let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
@@ -42,11 +43,19 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     private(set) var isEditing = false
     private var applying = false
     private var anchor = NSRect.zero
+    private var headingChoices: [EVLinkHeadingList.Heading] = []
+    private var selectingDestination = false
+    private var destinationDraft: NSObject?
+    private var scheduledDestinationDraft: NSObject?
+    private var pendingDestination: (index: Int, text: String, destination: String)?
+    private var imageFilePicker: NSOpenPanel?
+    var imageFilePanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)?
     var popupFrame: NSRect { panel.frame }
 
     init(surface: EVEditorSurfaceController, kind: EVInlineContentKind) {
         self.surface = surface
         self.kind = kind
+        destinationField = kind == .link ? NSComboBox() : NSTextField()
         super.init()
         panel.isReleasedWhenClosed = false
         panel.hasShadow = true
@@ -86,6 +95,10 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         form.spacing = 12
         form.detachesHiddenViews = true
         form.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        configure(chooseImageButton, title: "Choose image file", symbol: "folder", action: #selector(chooseImage))
+        chooseImageButton.refusesFirstResponder = false
+        chooseImageButton.isHidden = kind != .image
+        chooseImageButton.widthAnchor.constraint(equalToConstant: 28).isActive = true
         let rows = [(kind == .image ? "Alt text" : "Text", textField), (kind == .image ? "Location" : "Destination", destinationField)].map { label, field -> [NSView] in
             let title = NSTextField(labelWithString: label + ":")
             title.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -98,6 +111,13 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
             field.setAccessibilityLabel(label)
             field.setContentHuggingPriority(.defaultLow, for: .horizontal)
             field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            if kind == .image, field === destinationField {
+                let location = NSStackView(views: [field, chooseImageButton])
+                location.orientation = .horizontal
+                location.alignment = .centerY
+                location.spacing = 6
+                return [title, location]
+            }
             return [title, field]
         }
         let grid = NSGridView(views: rows)
@@ -109,6 +129,11 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         grid.widthAnchor.constraint(equalToConstant: 360).isActive = true
         form.addArrangedSubview(grid)
         destinationField.placeholderString = kind == .image ? "image.png or https://…" : "https://…, document.md, or #heading"
+        if let combo = destinationField as? NSComboBox {
+            combo.completes = false
+            combo.numberOfVisibleItems = 12
+            combo.hasVerticalScroller = true
+        }
         errorLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 2
@@ -132,7 +157,8 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         applyButton.keyEquivalent = "\r"
         cancelButton.action = #selector(cancel)
         textField.nextKeyView = destinationField
-        destinationField.nextKeyView = applyButton
+        destinationField.nextKeyView = kind == .image ? chooseImageButton : applyButton
+        chooseImageButton.nextKeyView = applyButton
         applyButton.nextKeyView = cancelButton
         cancelButton.nextKeyView = textField
     }
@@ -232,7 +258,11 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
               (!surface.hasSelection || (kind == .image && selection.text_start == link.start && selection.text_end == link.end)),
               let rect = anchorRect(for: link) else { close(); return }
         context = next; expected = selection; anchor = rect
-        destinationButton.title = link.destination
+        let label = kind == .link ? link.text : link.destination
+        let empty = label.isEmpty
+        destinationButton.attributedTitle = NSAttributedString(string: empty ? "empty" : label, attributes: [
+            .font: empty ? NSFontManager.shared.convert(NSFont.systemFont(ofSize: 12), toHaveTrait: .italicFontMask) : NSFont.systemFont(ofSize: 12)
+        ])
         destinationButton.toolTip = link.destination
         editButton.isEnabled = link.editable
         removeButton.isEnabled = link.editable
@@ -255,6 +285,11 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
 
     private func beginEditing() {
         guard let context else { return }
+        destinationDraft = NSObject()
+        pendingDestination = nil
+        if let combo = destinationField as? NSComboBox, combo.indexOfSelectedItem >= 0 {
+            combo.deselectItem(at: combo.indexOfSelectedItem)
+        }
         textField.stringValue = context.item?.text ?? context.text
         destinationField.stringValue = context.item?.destination ?? ""
         setValidationMessage("")
@@ -310,12 +345,18 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         if let current = anchorRect(for: context?.item) { anchor = current }
         let screenRect = window.convertToScreen(surface.editorView.convert(anchor, to: nil))
         let visible = window.screen?.visibleFrame ?? screenRect.insetBy(dx: -600, dy: -400)
+        // Hidden validation rows are detached by the stack during layout.
+        // Measure only after that pass, so first expansion and later errors
+        // use the current native control heights.
+        form.needsLayout = true
+        form.layoutSubtreeIfNeeded()
         let formSize = form.fittingSize
         let showsReload = kind == .image && surface.backend.sourceFormat == .markdown
         reloadButton.isHidden = !showsReload
         reloadButton.isEnabled = context?.item.map { surface.session?.provider.canReloadImage($0.destination) == true } ?? false
         let actions = showsReload ? [copyButton, editButton, reloadButton, removeButton] : [copyButton, editButton, removeButton]
-        let compactWidth = 278 + CGFloat(actions.count) * 32
+        let labelWidth = min(263, ceil(destinationButton.attributedTitle.size().width) + 12)
+        let compactWidth = 15 + labelWidth + CGFloat(actions.count) * 32
         let size = isEditing ? NSSize(width: formSize.width + 28, height: formSize.height + 26)
             : NSSize(width: compactWidth, height: 34)
         let x = min(max(screenRect.minX, visible.minX + 4), visible.maxX - size.width - 4)
@@ -323,29 +364,38 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         let y = below >= visible.minY + 4 ? below : min(screenRect.maxY + 5, visible.maxY - size.height - 4)
         let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
         summary.frame = NSRect(origin: .zero, size: NSSize(width: compactWidth, height: 34))
-        if isEditing { form.frame = NSRect(x: 14, y: 12, width: formSize.width, height: formSize.height) }
-        destinationButton.frame = NSRect(x: 6, y: 4, width: 263, height: 26)
+        destinationButton.frame = NSRect(x: 6, y: 4, width: labelWidth, height: 26)
         for (index, button) in actions.enumerated() {
-            button.frame = NSRect(x: 273 + CGFloat(index) * 32, y: 4, width: 29, height: 26)
+            button.frame = NSRect(x: labelWidth + 10 + CGFloat(index) * 32, y: 4, width: 29, height: 26)
+        }
+        panel.setFrame(frame, display: true)
+        if isEditing {
+            form.frame = NSRect(x: 14, y: 12, width: formSize.width, height: formSize.height)
+            form.layoutSubtreeIfNeeded()
         }
         if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            form.alphaValue = 0
             NSAnimationContext.runAnimationGroup { animation in
                 animation.duration = 0.16
-                panel.animator().setFrame(frame, display: true)
+                form.animator().alphaValue = 1
             }
-        } else { panel.setFrame(frame, display: true) }
+        } else { form.alphaValue = 1 }
     }
 
     private func installDismissal() {
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self, self.isOpen else { return event }
+            if self.imageFilePicker != nil { return event }
             if event.type == .keyDown, event.keyCode == 53 {
+                // Let the native combobox dismiss its list before Escape
+                // dismisses the authoring form and its retained draft.
+                if self.selectingDestination { return event }
                 let consumed = self.isEditing
                 self.close(restoreFocus: consumed, suppress: true)
                 return consumed ? nil : event
             }
             if event.type == .leftMouseDown || event.type == .rightMouseDown {
-                if event.window !== self.panel { self.close(suppress: true) }
+                if event.window !== self.panel && !self.selectingDestination { self.close(suppress: true) }
             }
             return event
         }
@@ -354,7 +404,11 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
                                (NSWindow.didResignMainNotification, originWindow),
                                (NSWindow.didResignKeyNotification, panel)] {
             observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.close() }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if self.imageFilePicker != nil, name != NSWindow.willCloseNotification { return }
+                    self.close()
+                }
             })
         }
     }
@@ -363,6 +417,12 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
         guard isOpen else { return }
         if suppress { suppressed = expected }
         isOpen = false; isEditing = false
+        let picker = imageFilePicker
+        imageFilePicker = nil
+        chooseImageButton.isEnabled = true
+        picker?.cancel(nil)
+        selectingDestination = false; headingChoices = []
+        destinationDraft = nil; pendingDestination = nil
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }; eventMonitor = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }; observers.removeAll()
         let window = originWindow
@@ -403,6 +463,46 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
             surface?.reloadImage(at: target)
         } catch { surface?.report(error) }
     }
+    @objc func chooseImage() {
+        guard kind == .image, isEditing, imageFilePicker == nil,
+              let surface, let session = surface.session, let window = originWindow,
+              let expected, let draft = destinationDraft,
+              let current = try? session.listSelection(), expected.isSameSelection(as: current) else { return }
+        let document = surface.documentHostEffectHandler?.documentURL(for: surface)
+        let panel = NSOpenPanel()
+        panel.title = "Choose Image"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowsOtherFileTypes = true
+        panel.directoryURL = document?.deletingLastPathComponent()
+        if let existing = try? EVLinkOpener.destinationURL(destinationField.stringValue, relativeTo: document), existing.isFileURL {
+            panel.directoryURL = existing.deletingLastPathComponent()
+        }
+        imageFilePicker = panel
+        chooseImageButton.isEnabled = false
+        let completed: @MainActor (URL?) -> Void = { [weak self, weak panel, weak session, weak window, weak surface] file in
+            guard let self, let panel, self.imageFilePicker === panel else { return }
+            self.imageFilePicker = nil
+            self.chooseImageButton.isEnabled = true
+            guard self.isEditing, self.destinationDraft === draft, let session, let window, let surface,
+                  self.surface?.session === session, self.originWindow === window,
+                  self.surface?.documentHostEffectHandler?.documentURL(for: surface) == document,
+                  let current = try? session.listSelection(), expected.isSameSelection(as: current) else {
+                self.close()
+                return
+            }
+            if let file, file.isFileURL {
+                self.destinationField.stringValue = EVImageFileLocation.destination(for: file, relativeTo: document)
+                self.setValidationMessage(""); self.updateValidation()
+            }
+            self.panel.makeKeyAndOrderFront(nil)
+            self.panel.makeFirstResponder(self.destinationField)
+        }
+        if let imageFilePanelPresenter { imageFilePanelPresenter(panel, window, completed) }
+        else { panel.beginSheetModal(for: window) { response in completed(response == .OK ? panel.url : nil) } }
+    }
     @objc func remove() { commit(action: 2) }
     @objc func apply() {
         guard applyButton.isEnabled else { return }
@@ -433,6 +533,56 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate {
     }
     @objc func cancel() { close(restoreFocus: true, suppress: true) }
     func controlTextDidChange(_ obj: Notification) { setValidationMessage(""); updateValidation() }
+    func comboBoxWillPopUp(_ notification: Notification) {
+        guard let combo = notification.object as? NSComboBox, let session = surface?.session, let expected else { return }
+        selectingDestination = true
+        pendingDestination = nil
+        let draft = combo.stringValue
+        do {
+            let list = try session.linkHeadings(expected: expected)
+            headingChoices = list.headings
+            combo.removeAllItems()
+            combo.addItems(withObjectValues: headingChoices.map { $0.text.isEmpty ? "empty" : $0.text })
+            if list.truncated { setValidationMessage("Some headings are omitted from this list. You can also enter any #heading destination.") }
+        } catch { combo.removeAllItems(); headingChoices = []; setValidationMessage(error.localizedDescription) }
+        combo.stringValue = draft
+    }
+    func comboBoxWillDismiss(_ notification: Notification) {
+        selectingDestination = false
+        restoreDestinationAfterTracking()
+    }
+    func comboBoxSelectionDidChange(_ notification: Notification) {
+        guard let combo = notification.object as? NSComboBox, headingChoices.indices.contains(combo.indexOfSelectedItem) else { return }
+        let heading = headingChoices[combo.indexOfSelectedItem]
+        pendingDestination = (combo.indexOfSelectedItem, heading.text.isEmpty ? "empty" : heading.text, heading.destination)
+        combo.stringValue = heading.destination
+        setValidationMessage(""); updateValidation()
+        restoreDestinationAfterTracking()
+    }
+    private func restoreDestinationAfterTracking() {
+        guard pendingDestination != nil, let draft = destinationDraft, let expected,
+              scheduledDestinationDraft !== draft else { return }
+        scheduledDestinationDraft = draft
+        // NSComboBox may copy its displayed row label into the field after
+        // selection delegates return. One coalesced restoration after tracking
+        // keeps the authored fragment without retargeting a later draft.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if self.scheduledDestinationDraft === draft { self.scheduledDestinationDraft = nil }
+            guard self.isEditing, self.destinationDraft === draft,
+                  let current = self.expected, current.isSameSelection(as: expected),
+                  let selection = try? self.surface?.session?.listSelection(), expected.isSameSelection(as: selection),
+                  let combo = self.destinationField as? NSComboBox, let choice = self.pendingDestination,
+                  combo.indexOfSelectedItem == choice.index else { return }
+            guard combo.stringValue == choice.text || combo.stringValue == choice.destination else {
+                self.pendingDestination = nil
+                return
+            }
+            combo.stringValue = choice.destination
+            self.setValidationMessage(""); self.updateValidation()
+            if !self.selectingDestination { self.pendingDestination = nil }
+        }
+    }
     private func setValidationMessage(_ message: String) {
         let hidden = message.isEmpty
         guard errorLabel.stringValue != message || errorLabel.isHidden != hidden else { return }

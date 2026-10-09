@@ -401,6 +401,16 @@ impl FormattedTextTree {
         output
     }
 
+    /// Capture a scalar-aligned subrope in logarithmic work, sharing its text.
+    /// A code block stays one complete parse even when only a viewport is requested.
+    pub(crate) fn subrope(&self, range: Range<usize>) -> Result<Self, FormattedTextError> {
+        self.validate_range(&range, false)?;
+        let mut stats = FormattedTextSpliceStats::default();
+        let (_, tail) = split_optional(self.root.clone(), range.start, Retain::Right, &mut stats)?;
+        let (root, _) = split_optional(tail, range.len(), Retain::Left, &mut stats)?;
+        Ok(Self { root })
+    }
+
     /// Return a copied UTF-8 slice. Reading only visits intersecting leaves.
     pub fn slice(&self, range: Range<usize>) -> Result<String, FormattedTextError> {
         self.validate_range(&range, false)?;

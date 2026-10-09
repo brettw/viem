@@ -110,6 +110,8 @@ internal static class ImageInteractionTests
             Check(pane.LastError == null, "image interaction diagnostics complete without presentation errors");
         }
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        PickedLocationPaths();
+        await LocationPicker(preferences);
         await NestedPopups(preferences);
         await KeyboardSelection(preferences);
         await LocalPreview(preferences);
@@ -118,6 +120,135 @@ internal static class ImageInteractionTests
         await ScrollDuringImageReload(preferences);
         await ImageStyle(preferences);
         await CacheBudgets(preferences);
+    }
+
+    private static void PickedLocationPaths()
+    {
+        const string document = @"C:\project\docs\note.md";
+        Check(ImageLocation.PickedDestination(@"C:\project\docs\cat.png", document) == "cat.png"
+            && ImageLocation.PickedDestination(@"C:\project\docs\images\cat.png", document) == "images/cat.png"
+            && ImageLocation.PickedDestination(@"C:\project\images\cat.png", document) == "../images/cat.png",
+            "picked image paths use forward-slash relative locations in the same folder, children and siblings");
+        Check(ImageLocation.PickedDestination(@"C:\Project\images\cat.png", @"c:\project\docs\note.md") == "../images/cat.png",
+            "picked image path ancestry follows Windows case-insensitive directory semantics");
+        foreach (var pair in new[] {
+            (File: @"C:\pictures\cat.png", Document: @"C:\docs\note.md"),
+            (File: @"D:\project\cat.png", Document: document),
+            (File: @"\\server\other\project\cat.png", Document: @"\\server\share\project\note.md"),
+            (File: @"\\server\share\pictures\cat.png", Document: @"\\server\share\docs\note.md")
+        })
+        {
+            string value = ImageLocation.PickedDestination(pair.File, pair.Document);
+            Check(value.StartsWith("file:", StringComparison.Ordinal)
+                && ImageLocation.Resolve(value, pair.Document).LocalPath == pair.File,
+                "picked image absolute file URIs retain exact identity across roots: " + pair.File);
+        }
+        Check(ImageLocation.PickedDestination(@"C:\images\cat.png", @"C:\note.md") == "images/cat.png"
+            && ImageLocation.PickedDestination(@"\\server\share\images\cat.png", @"\\server\share\note.md") == "images/cat.png",
+            "documents already at a drive or share root can author child paths without ascending through that root");
+        Check(ImageLocation.PickedDestination(@"\\server\share\project\images\cat.png", @"\\server\share\project\docs\note.md") == "../images/cat.png",
+            "picked images within a UNC share use relative paths only below their shared directory");
+        foreach (string file in new[] { @"C:\project\docs\# 100% %2F.png", @"C:\elsewhere\# 100% %2F.png" })
+        {
+            string value = ImageLocation.PickedDestination(file, document);
+            var resolved = LinkDestination.Resolve(value, document);
+            Check(resolved.Value == file && resolved.Fragment == "" && !value.Contains('#') && value.Contains("%252F", StringComparison.Ordinal),
+                "picked image punctuation is escaped once and resolves as literal filename content");
+            string unsaved = ImageLocation.PickedDestination(file, null);
+            Check(unsaved.StartsWith("file:", StringComparison.Ordinal) && ImageLocation.Resolve(unsaved, null).LocalPath == file,
+                "an unsaved document receives an absolute escaped file URI from its image picker");
+        }
+        const string unicode = "C:\\elsewhere\\e\u0301 &@().png";
+        string escaped = ImageLocation.PickedDestination(unicode, document);
+        Check(escaped.Contains("e%CC%81%20%26%40%28%29.png", StringComparison.Ordinal)
+            && ImageLocation.Resolve(escaped, document).LocalPath == unicode,
+            "absolute picked image paths retain Unicode spelling and encode every reserved filename character");
+    }
+
+    private static async Task LocationPicker(Preferences preferences)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-image-picker-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "picked #%.png");
+        const string source = "![old](https://example.invalid/old.png)\n\nbody";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_MARKDOWN_SOURCE);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        EditorWindow? other = null;
+        bool closed = false;
+        string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
+        try
+        {
+            await Task.Delay(100);
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            pane.ShowInsertImage(); pane.ImageTextValue = "draft alt"; pane.ImageDestinationValue = "draft.png";
+            Check(pane.ImageBrowseButton is { } browse && AutomationProperties.GetName(browse) == "Choose image file"
+                && browse.Content is FontIcon { Glyph: "\uE8B7" } && Grid.GetColumn(browse) == 1,
+                "the image location row has an accessible folder button to the right of its field");
+            var selection = view.LogicalSelection(); ulong revision = document.State.document_revision;
+            window.PickImageFileForTesting = suggested => {
+                Check(suggested == directory, "the image picker starts in the current document directory");
+                return Task.FromResult<string?>(null);
+            };
+            await pane.BrowseImageLocation();
+            Check(pane.ImageEditorVisible && pane.ImageTextValue == "draft alt" && pane.ImageDestinationValue == "draft.png"
+                && CoreView.SameSelection(view.LogicalSelection(), selection) && document.State.document_revision == revision && Source() == source,
+                "cancelling the image picker retains fields, selection, source and undo revision");
+
+            var choice = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.PickImageFileForTesting = _ => choice.Task;
+            Task pending = pane.BrowseImageLocation();
+            Check(pane.ImageBrowseButton?.IsEnabled == false, "a pending image picker prevents duplicate dialogs");
+            other = new EditorWindow(preferences, new CoreDocument("Other"u8.ToArray()));
+            App.Instance.Windows.Add(other); other.Activate(); await Task.Delay(100);
+            pane.CaretHoverFocusChanged(); pane.Refresh();
+            Check(pane.ImageEditorVisible && pane.ImageTextValue == "draft alt" && pane.ImageDestinationValue == "draft.png",
+                "native picker focus and window deactivation preserve the image edit draft");
+            window.Activate(); choice.SetResult(path); await pending;
+            Check(pane.ImageDestinationValue == "picked%20%23%25.png" && pane.ImageTextValue == "draft alt"
+                && CoreView.SameSelection(view.LogicalSelection(), selection) && document.State.document_revision == revision && Source() == source,
+                "choosing an image updates only its escaped relative location draft without changing document or selection");
+            await other.ClosePane(other.ActivePane!, force: true); App.Instance.Windows.Remove(other); other = null;
+            pane.ApplyImageEditor();
+            Check(Source().Contains("picked%20%23%25.png", StringComparison.Ordinal), "Apply publishes the picked image location through the existing verified source transaction");
+            view.Undo(); Check(Source() == source, "undo restores exact image source after applying a picker choice");
+
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            pending = pane.BrowseImageLocation();
+            pane.DismissImagePopup(); pane.ShowInsertImage(); pane.ImageTextValue = "new draft"; pane.ImageDestinationValue = "new.png";
+            choice.SetResult(path); await pending;
+            Check(pane.ImageEditorVisible && pane.ImageTextValue == "new draft" && pane.ImageDestinationValue == "new.png" && Source() == source,
+                "a delayed picker result cannot overwrite a cancelled and reopened image draft");
+
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            pending = pane.BrowseImageLocation();
+            string? originalPath = document.FilePath;
+            document.FilePath = Path.Combine(directory, "moved", "note.md");
+            choice.SetResult(path); await pending;
+            Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "new.png" && Source() == source,
+                "renaming or saving the document under another path rejects a delayed picker result with a different relative base");
+            document.FilePath = originalPath;
+
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            pending = pane.BrowseImageLocation();
+            view.Command("G0"); choice.SetResult(path); await pending;
+            Check(!pane.ImageEditorVisible && Source() == source, "a changed selection rejects a delayed image picker result");
+
+            view.Command("gg0"); pane.ShowInsertImage();
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            pending = pane.BrowseImageLocation();
+            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); closed = true;
+            choice.SetResult(path); await pending;
+            Check(pane.LastError == null, "an image picker completion after its view closes is ignored without accessing disposed state");
+        }
+        finally
+        {
+            if (other != null) { await other.ClosePane(other.ActivePane!, force: true); App.Instance.Windows.Remove(other); }
+            if (!closed) { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static async Task NestedPopups(Preferences preferences)

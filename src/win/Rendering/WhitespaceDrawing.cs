@@ -15,7 +15,7 @@ namespace Viem.Windows.Rendering;
 
 internal sealed unsafe partial class DirectWriteProvider
 {
-    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}", string Face = "")
+    private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}", string Face = "", float BaselineOffset = 0)
     {
         public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
         {
@@ -31,7 +31,7 @@ internal sealed unsafe partial class DirectWriteProvider
             var weight = (ushort)Math.Clamp(style.weight, 1, 999);
             var face = ResolvedFace(style, resolved.Family, slant, resolved.Stretch);
             return new(resolved.Family, resolved.Stretch, style.size * scale, weight, slant, style.letter_spacing * scale,
-                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family, face)), Text(style.font_face));
+                style.has_language != 0 ? Text(style.language) : "", features, FontVariations.Encode(ResolvedAxes(style, resolved.Family, face)), Text(style.font_face), style.baseline_offset * scale);
         }
     }
 
@@ -79,8 +79,15 @@ internal sealed unsafe partial class DirectWriteProvider
                 ushort weight = Value("weight")?.GetUInt16() ?? inherited.Weight;
                 if (Value("bold")?.GetBoolean() == true) weight = weight < 350 ? (ushort)400 : weight < 550 ? (ushort)700 : (ushort)900;
                 else if (Value("bold")?.GetBoolean() == false && weight >= 600 && Value("weight") == null) weight = 400;
+                bool? superscript = Value("superscript")?.GetBoolean(), subscript = Value("subscript")?.GetBoolean();
+                int script = superscript == true ? 1 : subscript == true ? -1
+                    : inherited.BaselineOffset > 0 && superscript != false ? 1
+                    : inherited.BaselineOffset < 0 && subscript != false ? -1 : 0;
+                float baseSize = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale
+                    : inherited.Size / (inherited.BaselineOffset == 0 ? 1 : .75f);
                 var font = inherited with {
-                    Family = family, Face = faceName, Stretch = stretch, Size = Value("size") is JsonElement size ? size.GetSingle() * viewport.scale : inherited.Size, Weight = weight,
+                    Family = family, Face = faceName, Stretch = stretch, Size = baseSize * (script == 0 ? 1 : .75f), Weight = weight,
+                    BaselineOffset = baseSize * (script > 0 ? .35f : script < 0 ? -.2f : 0),
                     Slant = Value("slant")?.GetString() switch { "Upright" => FontStyle.Normal, "Italic" => FontStyle.Italic, "Oblique" => FontStyle.Oblique, _ => inherited.Slant },
                     Spacing = Value("letter_spacing") is JsonElement spacing ? spacing.GetSingle() * viewport.scale : inherited.Spacing,
                     Language = Value("language")?.GetString() ?? inherited.Language, Features = Value("open_type_features")?.GetRawText() ?? inherited.Features, Axes = primaryFamily ? Value("font_axes")?.GetRawText() ?? (Value("font_families") == null ? inherited.Axes : "{}") : "{}"
@@ -112,7 +119,7 @@ internal sealed unsafe partial class DirectWriteProvider
                 }
                 var bounds = layout.LayoutBounds; var metrics = layout.LineMetrics[0];
                 float fit = (float)Math.Min(1, Math.Min(slot.Width / Math.Max(.001, bounds.Width), slot.Height / Math.Max(.001, bounds.Height)));
-                float baseline = Math.Clamp(row.baseline - viewport.top, (float)slot.Y + metrics.Baseline * fit, (float)slot.Bottom - (metrics.Height - metrics.Baseline) * fit);
+                float baseline = Math.Clamp(row.baseline - viewport.top - font.BaselineOffset, (float)slot.Y + metrics.Baseline * fit, (float)slot.Bottom - (metrics.Height - metrics.Baseline) * fit);
                 using var clip = drawing.CreateLayer(1, slot);
                 if (Value("background") is JsonElement background) drawing.FillRectangle(slot, ColorValue(background));
                 var previous = drawing.Transform;

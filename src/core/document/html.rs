@@ -834,6 +834,8 @@ fn project_tokens(
                     "b" | "strong" => frame.character.bold = Some(true),
                     "i" | "em" => frame.character.slant = Some(FontSlant::Italic),
                     "u" => frame.character.underline = Some(true),
+                    "sup" => { frame.character.superscript = Some(true); frame.character.subscript = Some(false); }
+                    "sub" => { frame.character.subscript = Some(true); frame.character.superscript = Some(false); }
                     "s" | "strike" | "del" => frame.character.strikethrough = Some(true),
                     "ol" => {
                         frame.list_counter = tag
@@ -1873,6 +1875,12 @@ pub(super) fn apply_css(
                     character.strikethrough = Some(words.contains(&"line-through"));
                 }
             }
+            "vertical-align" => match lower.as_str() {
+                "super" => { character.superscript = Some(true); character.subscript = Some(false); }
+                "sub" => { character.subscript = Some(true); character.superscript = Some(false); }
+                "baseline" => { character.superscript = Some(false); character.subscript = Some(false); }
+                _ => {},
+            },
             "letter-spacing" => {
                 if let Some(n) = if lower == "normal" {
                     Some(0.0)
@@ -2060,6 +2068,9 @@ pub(super) fn character_css(properties: &CharacterProperties) -> String {
     if let Some(color) = properties.background {
         declarations.push(format!("background-color: {}", css_color(color)));
     }
+    if properties.superscript == Some(true) { declarations.push("vertical-align: super".to_owned()); }
+    else if properties.subscript == Some(true) { declarations.push("vertical-align: sub".to_owned()); }
+    else if properties.superscript == Some(false) || properties.subscript == Some(false) { declarations.push("vertical-align: baseline".to_owned()); }
     if properties.underline.is_some() || properties.strikethrough.is_some() {
         let mut values = Vec::new();
         if properties.underline == Some(true) {

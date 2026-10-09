@@ -31,6 +31,7 @@ internal sealed partial class StyleWindow : Window
     private readonly uint[] documentFormats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
     private readonly Border selectorBox = new() { Padding = new(14, 12, 14, 12), BorderThickness = new(1), CornerRadius = new(6), Margin = new(0, 0, 0, 4) };
     private readonly TextBlock styleType = new() { VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
+    private readonly ContentControl styleTypeIcon = new() { Width = 16, Height = 16, VerticalAlignment = VerticalAlignment.Center };
     private readonly ComboBox parent = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox next = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly Button visitParent = NavigationButton();
@@ -60,6 +61,8 @@ internal sealed partial class StyleWindow : Window
         documentPicker.ItemsSource = new[] { "Plain Text", "Markdown", "Code" };
         AutomationProperties.SetName(documentPicker, "Document");
         AutomationProperties.SetName(stylePicker, "Style");
+        var styleTemplates = new StyleIcons.PickerTemplates();
+        foreach (var picker in new[] { stylePicker, parent, next }) picker.ItemTemplateSelector = styleTemplates;
         AutomationProperties.SetName(selectorBox, "Stylesheet selection");
         var selectorControls = new FrameworkElement[] {
             new TextBlock { Text = "Document", VerticalAlignment = VerticalAlignment.Center }, documentPicker,
@@ -72,7 +75,9 @@ internal sealed partial class StyleWindow : Window
         var properties = new Grid { RowSpacing = 8, ColumnSpacing = 10, Margin = new(12, 0, 12, 4) };
         properties.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); properties.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         stylePicker.VerticalAlignment = VerticalAlignment.Center;
-        Field(properties, "Style type", styleType); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
+        var typeRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, VerticalAlignment = VerticalAlignment.Center };
+        typeRow.Children.Add(styleTypeIcon); typeRow.Children.Add(styleType);
+        Field(properties, "Style type", typeRow); Field(properties, "Based on", Relationship(parent, visitParent)); Field(properties, "Next paragraph", Relationship(next, visitNext));
         foreach (var row in properties.RowDefinitions) row.Height = new(28);
         Add(properties);
         Add(Separator());
@@ -218,6 +223,7 @@ internal sealed partial class StyleWindow : Window
             selected = chosen;
             styleType.Text = selected.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? "Paragraph"
                 : selected.Namespace == 2 ? "Character" : "Container";
+            styleTypeIcon.Content = StyleIcons.Icon(StyleIcons.Kind(selected));
             if (!ReferenceEquals(catalogueSheet, sheet)) {
                 var catalogue = new List<object>();
                 var sections = new[] {
@@ -298,8 +304,16 @@ internal sealed partial class StyleWindow : Window
         }
         finally { updating = false; }
     }
-    private void DrawPreview(CanvasDrawingSession drawing)
+    internal readonly record struct PreviewTextGeometry(float FontSize, float Baseline, float Width);
+    private PreviewTextGeometry? previewTextGeometry;
+    internal PreviewTextGeometry DrawPreviewForTesting(CanvasDrawingSession drawing, float width, float height)
     {
+        DrawPreview(drawing, width, height);
+        return previewTextGeometry ?? throw new InvalidOperationException("The selected style has no character preview.");
+    }
+    private void DrawPreview(CanvasDrawingSession drawing, float? width = null, float? height = null)
+    {
+        previewTextGeometry = null;
         drawing.Clear(preferences.Theme.Background);
         if (selected == null) return;
         if (selected.Namespace == 1) {
@@ -309,7 +323,7 @@ internal sealed partial class StyleWindow : Window
                     blockPreviews.Add(selected.Native.role, blockPreview);
                 }
                 blockPreview.Update(sheet, selected, preferences.Theme.Foreground);
-                blockPreview.Draw(drawing, (float)preview.ActualWidth, (float)preview.ActualHeight, preferences.Theme.Foreground);
+                blockPreview.Draw(drawing, width ?? (float)preview.ActualWidth, height ?? (float)preview.ActualHeight, preferences.Theme.Foreground);
             } catch (Exception exception) {
                 using var message = new CanvasTextFormat { FontSize = 12 };
                 drawing.DrawText("Style preview: " + exception.Message, 12, 12, preferences.Theme.Foreground, message);
@@ -319,12 +333,16 @@ internal sealed partial class StyleWindow : Window
         string family = sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES));
         var resolved = FontCatalog.Resolve(family) ?? (Family: "Segoe UI", Stretch: FontStretch.Normal);
         float size = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
+        bool superscript = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT).enum_value != 0;
+        bool subscript = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT).enum_value != 0;
+        float baselineOffset = superscript ? size * .35f : subscript ? -size * .2f : 0;
+        float renderedSize = superscript || subscript ? size * .75f : size;
         uint weight = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value;
         if (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0) weight = Math.Min(1000, weight + 300);
         var slant = selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
         if (slant == FontStyle.Normal) slant = CurrentFace?.Slant ?? slant;
         var renderedFace = FontCatalog.RenderingFace(resolved.Family, weight, slant, resolved.Stretch);
-        using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(resolved.Family, weight, slant, resolved.Stretch), FontStretch = resolved.Stretch, FontSize = size, WordWrapping = CanvasWordWrapping.Wrap };
+        using var format = new CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(resolved.Family, weight, slant, resolved.Stretch), FontStretch = resolved.Stretch, FontSize = renderedSize, WordWrapping = CanvasWordWrapping.Wrap };
         format.FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(weight, 1, 999) };
         format.FontStyle = slant;
         format.HorizontalAlignment = selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value switch { 2 => CanvasHorizontalAlignment.Right, 3 => CanvasHorizontalAlignment.Center, _ => CanvasHorizontalAlignment.Left };
@@ -337,7 +355,7 @@ internal sealed partial class StyleWindow : Window
         float borderTop = Edge(VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH), borderBottom = Edge(VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH);
         float paddingLeft = Edge(VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT), paddingRight = Edge(VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT);
         float boxX = 20 + left, boxY = 36 + Edge(VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP);
-        float boxWidth = Math.Max(1, (float)preview.ActualWidth - 40 - left - right);
+        float boxWidth = Math.Max(1, (width ?? (float)preview.ActualWidth) - 40 - left - right);
         float textX = boxX + borderLeft + paddingLeft;
         float textY = boxY + borderTop + Edge(VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP);
         using var layout = new CanvasTextLayout(preview.Device, sample, format, Math.Max(1, boxWidth - borderLeft - borderRight - paddingLeft - paddingRight), 76);
@@ -345,6 +363,12 @@ internal sealed partial class StyleWindow : Window
         layout.SetUnderline(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE).enum_value != 0);
         layout.SetStrikethrough(0, sample.Length, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value != 0);
         layout.SetCharacterSpacing(0, sample.Length, 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING).number, 0);
+        // Anchor the specimen to the original font's baseline, then apply the
+        // same script shift as core shaping. Shrinking the font must not add
+        // another baseline shift of its own.
+        float nativeBaseline = layout.LineMetrics[0].Baseline;
+        textY += nativeBaseline * (size / renderedSize - 1) - baselineOffset;
+        previewTextGeometry = new(renderedSize, textY + nativeBaseline, (float)layout.LayoutBounds.Width);
         using var context = new CanvasTextFormat { FontFamily = "Segoe UI", FontSize = 12 };
         var muted = preferences.Theme.Foreground; muted.A = 190;
         drawing.DrawText("Previous paragraph gives the style context.", 20, 20, muted, context);

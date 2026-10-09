@@ -561,6 +561,21 @@ impl Document {
                 (StyleProperty::CharacterSlant, StylePropertyValue::FontSlant(slant)) => {
                     properties.slant = Some(*slant);
                 }
+                (StyleProperty::CharacterUnderline, StylePropertyValue::Boolean(enabled)) => {
+                    properties.underline = Some(*enabled)
+                }
+                (StyleProperty::CharacterSuperscript, StylePropertyValue::Boolean(enabled)) => {
+                    properties.superscript = Some(*enabled);
+                    if *enabled {
+                        properties.subscript = Some(false);
+                    }
+                }
+                (StyleProperty::CharacterSubscript, StylePropertyValue::Boolean(enabled)) => {
+                    properties.subscript = Some(*enabled);
+                    if *enabled {
+                        properties.superscript = Some(false);
+                    }
+                }
                 (StyleProperty::CharacterStrikethrough, StylePropertyValue::Boolean(enabled)) => {
                     properties.strikethrough = Some(*enabled);
                 }
@@ -636,6 +651,21 @@ impl Document {
         }) && p.slant.is_none_or(|slant| {
             (slant != FontSlant::Upright)
                 == has(StyleApplication::Semantic(SemanticInlineStyle::Emphasis))
+        }) && [
+            (StyleProperty::CharacterUnderline, p.underline),
+            (StyleProperty::CharacterSuperscript, p.superscript),
+            (StyleProperty::CharacterSubscript, p.subscript),
+        ]
+        .iter()
+        .all(|(property, desired)| {
+            desired.is_none_or(|enabled| {
+                enabled
+                    == spans.iter().any(|span| {
+                        span.range.contains(&sample)
+                            && matches!(&span.application, StyleApplication::Direct(value)
+                    if super::inline_properties::inline_boolean(value, *property) == Some(true))
+                    })
+            })
         }) && p.strikethrough.is_none_or(|enabled| {
             enabled == has(StyleApplication::Automatic("Strikethrough".into()))
         })
@@ -995,6 +1025,10 @@ impl Document {
                 let mut result = vec![
                     (P::CharacterBold, V::Boolean(c.bold)),
                     (P::CharacterSlant, V::FontSlant(c.slant)),
+                    (P::CharacterUnderline, V::Boolean(c.underline)),
+                    (P::CharacterStrikethrough, V::Boolean(c.strikethrough)),
+                    (P::CharacterSuperscript, V::Boolean(c.superscript)),
+                    (P::CharacterSubscript, V::Boolean(c.subscript)),
                 ];
 
                 result.retain(|(property, _)| {
@@ -1307,6 +1341,24 @@ impl Document {
                     style,
                     enabled,
                 )?;
+                apply(
+                    &mut scratch,
+                    prepared,
+                    &mut selection,
+                    &mut caret,
+                    &mut sources,
+                    &mut formatted,
+                )?;
+            }
+        }
+        for (property, enabled) in [
+            (StyleProperty::CharacterUnderline, properties.underline),
+            (StyleProperty::CharacterSuperscript, properties.superscript),
+            (StyleProperty::CharacterSubscript, properties.subscript),
+        ] {
+            if let Some(enabled) = enabled {
+                let prepared =
+                    scratch.prepare_inline_property(selection.clone(), property, enabled)?;
                 apply(
                     &mut scratch,
                     prepared,

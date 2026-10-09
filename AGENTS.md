@@ -274,6 +274,12 @@ for arbitrary font, color, OpenType, or paragraph properties. Style-definition
 editing is separate configuration and retains its full normalized properties;
 synthetic read-only definitions remain read-only.
 
+Bold and Italic compose independently, including triple emphasis and either
+nesting direction. Underline authors passive `<ins>` scopes; superscript and
+subscript author `<sup>` and `<sub>` scopes with proportional size and baseline
+placement. These actions share selection, typing-context and undo policies with
+other character formatting, preserving unrelated source and nested treatments.
+
 - Insertion inherits character context from caret affinity, using the only
   interior side at paragraph edges. Empty paragraphs retain explicit paragraph
   and typing context. Hidden syntax adds no insertion/deletion stops.
@@ -412,14 +418,24 @@ Vim `h`/`l` and operator motions keep their line-boundary rules. Image authoring
 preserves unrelated source, titles and undo; empty
 alternative text is valid. Resolved reference images render as objects, and
 editing one occurrence may replace only that occurrence with inline image syntax.
+The image Location field offers a native file picker that updates only the draft.
+Picked files use document-relative destinations when this does not ascend through
+the filesystem root; otherwise retain an absolute file destination, including
+unsaved documents and different Windows drives or shares. Encode filename
+punctuation as path content rather than fragments or queries. Cancellation or a
+stale draft cannot change source or a later draft.
 Opening an image location is explicit native URL interaction, never a resource
 fetch for a preview. Clipboard plain-text image fallbacks and HTML export retain
 passive location text rather than creating automatic remote loads.
 
 Markdown Source and WYSIWYG share native link insertion, editing and removal.
 The caret popup uses Text and Destination fields, defaulting Text to the selected
-text. A link's compact toolbar sits below its text, aligned to its left edge,
-and offers explicit open, copy destination, edit and remove actions. Edit expands
+text; an unlinked caret opens both fields empty. Destination is an editable
+combobox whose explicit expansion lists current document headings using the
+same fragment identities as navigation. A link's compact toolbar fits its label
+within its maximum width, showing an italic `empty` for an empty label. It sits
+below its text, aligned to its left edge, and offers explicit open, copy
+destination, edit and remove actions. Edit expands
 into the same fields with a transition that honors reduced motion. In Source,
 the complete inline link notation belongs to the popup's active range. Link
 mutations verify the retained selection and source revision before publication,
@@ -461,8 +477,16 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   boundaries through supporting escapes/breaks. An indented block may become a
   fence when needed to express empty or leading/trailing blank code lines.
 - A code block is one container with one literal paragraph, internal hard breaks
-  and spacing around the whole block. Rich Code/Code Block styles are independent
-  of the Code format's global syntax sheet. List/quote ownership survives a
+  and spacing around the whole block. WYSIWYG code blocks expose a language
+  selector inside their upper-right border, using the Code Block foreground.
+  None uses rich Code Block text styling; a specified language uses the shared
+  Code syntax styles while retaining Markdown container geometry. The first
+  new block defaults to None; later blocks inherit the preceding block's language,
+  or the following block's when none precedes them. Language edits preserve the
+  body and unrelated source in one verified undoable transaction, without changing
+  any view's scroll position. A shorter block may leave blank canvas after the
+  content without adding text or caret rows. Syntax remains
+  disposable and bounded to visible work. List/quote ownership survives a
   contained paragraph's heading or Code Block style.
 - WYSIWYG labels and their gaps are layout decorations with no text, register,
   selection or caret positions. The first body grapheme is first editable text.
@@ -1444,6 +1468,9 @@ like table cell text.
 Windows Heading 6 remains menu-only because Control-6 belongs to Vim Control-^.
 
 The toolbar is absent in Text/Code and remembers visibility per Markdown format.
+Toolbar groups use the standard extra gap, without divider lines. Paragraph and
+character style selectors follow the indent controls so they clip first in a
+narrow window; earlier formatting controls retain precedence on both platforms.
 Its Formatted view toggle uses source-preserving Markdown switching, stays
 reachable in narrow windows, and follows shared changes/history. Remember the
 last successful Markdown view choice across launches, including undo/redo of a
@@ -1485,6 +1512,12 @@ and availability guidance, retain actionable errors, and fit the window height
 to the remaining controls.
 Style pickers omit empty sections and omit section headings when only one
 nonempty section remains.
+Style names and type labels carry consistent role icons: ¶ for paragraphs,
+a bold serif `a` for characters, a square drawn from separated corners for
+blocks, and a gear for internal built-in definitions.
+Structural list choices use the paragraph icon. The Markdown WYSIWYG toolbar's
+paragraph selector offers only styles its formatting operations can apply;
+presentation-only image and table styles remain available in the inspector.
 [`docs/Word style.png`](<docs/Word style.png>) is a density/composition reference,
 not a template/automatic-update/Apply/OK/Cancel workflow.
 

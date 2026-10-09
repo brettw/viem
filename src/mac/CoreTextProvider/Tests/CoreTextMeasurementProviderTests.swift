@@ -9,6 +9,21 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Script baseline offsets move glyph ink and contribute exact row metrics")
+  func scriptBaselineOffsets() throws {
+    let provider = CoreTextMeasurementProvider()
+    let normal = try shape(provider: provider, text: "x", globalStart: 0, fontFamily: "Times New Roman", fontSize: 18)
+    let raised = try shape(provider: provider, text: "x", globalStart: 0, fontFamily: "Times New Roman", fontSize: 18, baselineOffset: 6)
+    let lowered = try shape(provider: provider, text: "x", globalStart: 0, fontFamily: "Times New Roman", fontSize: 18, baselineOffset: -4)
+    let a = try #require(normal.clusters.first)
+    let b = try #require(raised.clusters.first)
+    let c = try #require(lowered.clusters.first)
+    #expect(abs(b.value.ink_bounds.y - a.value.ink_bounds.y + 6) < 0.01)
+    #expect(abs(c.value.ink_bounds.y - a.value.ink_bounds.y - 4) < 0.01)
+    #expect(abs(b.value.metrics.ascent - a.value.metrics.ascent - 6) < 0.01)
+    #expect(abs(c.value.metrics.descent - a.value.metrics.descent - 4) < 0.01)
+  }
+
   @Test("Batched caret edges preserve native offsets for bidi, tracking, and Unicode clusters")
   func batchedCaretOffsetsMatchNative() {
     let texts = [
@@ -706,6 +721,7 @@ private func shape(
   fontFamily: String = "SF Pro",
   fontSize: Float = 14,
   letterSpacing: Float = 0,
+  baselineOffset: Float = 0,
   scale: Float = 1,
   expectedStatus: UInt32? = 0
 ) throws -> ShapeResult {
@@ -740,6 +756,7 @@ private func shape(
             style.size = fontSize
             style.weight = 400
             style.letter_spacing = letterSpacing
+            style.baseline_offset = baselineOffset
             style.font_family_count = 1
             style.font_families = withUnsafePointer(to: &family) { $0 }
             style.features = featureBuffer.baseAddress

@@ -136,8 +136,10 @@ internal sealed unsafe class BlockStylePreview : IDisposable
                 glyphs.Draw(cluster.render_run, new(cluster.x, row.baseline), color);
                 if ((paint.flags & (VIEM_TEXT_PAINT_UNDERLINE | VIEM_TEXT_PAINT_STRIKETHROUGH)) != 0) glyphs.Flush();
                 var bounds = cluster.typographic_bounds;
-                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine(bounds.x, row.baseline + 2, bounds.x + bounds.width, row.baseline + 2, color);
-                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine(bounds.x, row.baseline - row.ascent * .3f, bounds.x + bounds.width, row.baseline - row.ascent * .3f, color);
+                float baseline = row.baseline - paint.baseline_offset * view.Viewport.scale;
+                float ascent = Math.Max(0, baseline - bounds.y);
+                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine(bounds.x, baseline + 2, bounds.x + bounds.width, baseline + 2, color);
+                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine(bounds.x, baseline - ascent * .3f, bounds.x + bounds.width, baseline - ascent * .3f, color);
             }
         }
         glyphs.Flush();

@@ -64,12 +64,13 @@ impl Document {
                     .max(2)
                     + 1;
                 let fence = "`".repeat(width);
+                let language = self.projection().default_code_language(block.range.start).unwrap_or_default();
                 let body = quote_lines(body, container);
                 (
-                    format!("{container}{fence}\n{body}\n{container}{fence}"),
+                    format!("{container}{fence}{language}\n{body}\n{container}{fence}"),
                     0..raw.len(),
                     body,
-                    format!("{container}{fence}\n"),
+                    format!("{container}{fence}{language}\n"),
                     format!("\n{container}{fence}"),
                 )
             } else if let Some(code) =

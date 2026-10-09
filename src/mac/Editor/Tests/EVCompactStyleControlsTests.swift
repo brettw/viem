@@ -7,6 +7,47 @@ import XCTest
 
 @MainActor
 final class EVCompactStyleControlsTests: XCTestCase {
+    func testStyleTypeIconsAndScriptControlsShareCompactRows() throws {
+        let (_, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let picker = try control(NSPopUpButton.self, label: "Style", in: editor.view)
+        for name in ["Base Paragraph", "Heading 1", "Code", "Code Block"] {
+            XCTAssertNotNil(picker.item(withTitle: name)?.image, name)
+        }
+        for name in ["Bulleted List", "Numbered List"] {
+            XCTAssertEqual(picker.item(withTitle: name)?.image?.accessibilityDescription, "Paragraph style", name)
+        }
+        let strike = try control(NSButton.self, label: "Strikethrough", in: editor.view)
+        let superscript = try control(NSButton.self, label: "Superscript", in: editor.view)
+        let subscriptControl = try control(NSButton.self, label: "Subscript", in: editor.view)
+        XCTAssertTrue(superscript.image === EVStyleIcons.scriptImage(raised: true))
+        XCTAssertTrue(subscriptControl.image === EVStyleIcons.scriptImage(raised: false))
+        editor.view.frame = NSRect(x: 0, y: 0, width: 760, height: 650)
+        editor.view.layoutSubtreeIfNeeded()
+        let strikeFrame = editor.view.convert(strike.bounds, from: strike)
+        let superFrame = editor.view.convert(superscript.bounds, from: superscript)
+        let subFrame = editor.view.convert(subscriptControl.bounds, from: subscriptControl)
+        XCTAssertEqual(strikeFrame.midY, superFrame.midY, accuracy: 1)
+        XCTAssertEqual(superFrame.midY, subFrame.midY, accuracy: 1)
+        XCTAssertLessThan(strikeFrame.maxX, superFrame.minX)
+        XCTAssertLessThan(superFrame.maxX, subFrame.minX)
+        let direction = try control(NSPopUpButton.self, label: "Character direction", in: editor.view)
+        let textColor = try control(NSColorWell.self, label: "Text color", in: editor.view)
+        let background = try control(NSColorWell.self, label: "Background color", in: editor.view)
+        let directionFrame = editor.view.convert(direction.bounds, from: direction)
+        let foregroundFrame = editor.view.convert(textColor.bounds, from: textColor)
+        let backgroundFrame = editor.view.convert(background.bounds, from: background)
+        XCTAssertEqual(directionFrame.midY, foregroundFrame.midY, accuracy: 1)
+        XCTAssertEqual(foregroundFrame.midY, backgroundFrame.midY, accuracy: 1)
+        XCTAssertLessThan(directionFrame.maxX, foregroundFrame.minX)
+        XCTAssertLessThan(foregroundFrame.maxX, backgroundFrame.minX)
+        let following = try control(NSPopUpButton.self, label: "Following paragraph style", in: editor.view)
+        XCTAssertTrue(following.itemArray.allSatisfy { $0.image != nil })
+        editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
+        let parent = try control(NSPopUpButton.self, label: "Based on style", in: editor.view)
+        XCTAssertTrue(parent.itemArray.allSatisfy { $0.image != nil })
+    }
+
     func testTableStylesExposePlacementAndExplainSourceOwnedCellAlignment() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }

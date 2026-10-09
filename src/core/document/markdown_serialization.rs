@@ -240,6 +240,13 @@ fn markdown_inline_text(
         properties.slant,
         Some(FontSlant::Italic | FontSlant::Oblique)
     );
+    let decorations: Vec<_> = [
+        (properties.underline == Some(true), "ins"),
+        (properties.superscript == Some(true), "sup"),
+        (properties.subscript == Some(true), "sub"),
+        (properties.strikethrough == Some(true), "del"),
+    ].into_iter().filter_map(|(on, name)| on.then_some(name)).collect();
+    for tag in &decorations { output.push_str(&format!("<{tag}>")); }
     if code {
         let visible = text;
         let marker = "`".repeat(longest_run(&visible, '`') + 1);
@@ -270,6 +277,7 @@ fn markdown_inline_text(
         output.text(text, at, TextSpelling::Markdown);
         output.push_str(marker);
     }
+    for tag in decorations.into_iter().rev() { output.push_str(&format!("</{tag}>")); }
 }
 
 fn longest_run(text: &str, delimiter: char) -> usize {

@@ -402,6 +402,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             int styleIndex = -1;
             for (ulong r = 0; r < request.style_run_count; r++)
                 if (request.style_runs[r].text_start <= (ulong)globalStart && request.style_runs[r].text_end > (ulong)globalStart) { style = request.style_runs[r].style; styleIndex = (int)r; }
+            float baselineOffset = style.baseline_offset * request.scale;
+            if (baselineOffset != 0) parts = parts.Select(p => p with { Offset = p.Offset - new Vector2(0, baselineOffset) }).ToList();
             float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Metadata.Ascent * p.Size);
             float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Metadata.Descent * p.Size);
             float leading = parts.Count == 0 ? 0 : parts.Max(p => Math.Max(0, p.Metadata.LineGap * p.Size));
@@ -409,8 +411,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             cluster.text_start = (ulong)globalStart;
             cluster.text_end = checked((ulong)(contextStart + byteEnd));
             cluster.advance = Math.Max(0, advance);
-            cluster.metrics = new() { ascent = Math.Max(0, ascent), descent = Math.Max(0, descent), leading = leading };
-            cluster.typographic_bounds = new() { y = -ascent, width = cluster.advance, height = Math.Max(0, ascent + descent) };
+            cluster.metrics = new() { ascent = Math.Max(0, ascent + baselineOffset), descent = Math.Max(0, descent - baselineOffset), leading = leading };
+            cluster.typographic_bounds = new() { y = -ascent - baselineOffset, width = cluster.advance, height = Math.Max(0, ascent + descent) };
             cluster.ink_bounds = cluster.typographic_bounds;
             foreach (var part in parts)
             {
@@ -449,7 +451,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             {
                 ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
-                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline, cluster.ink_bounds, markerFont) { ImageDestination = imageDestination }))
+                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline + baselineOffset, cluster.ink_bounds, markerFont) { ImageDestination = imageDestination }))
                     throw new InvalidOperationException("Duplicate glyph resource identity.");
                 Interlocked.Increment(ref fragment.References);
                 responseResources.Add(id);
