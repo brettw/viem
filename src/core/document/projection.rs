@@ -1637,6 +1637,9 @@ impl FormattedDocument {
             .filter(|item|range.start<=item.formatted_range.start && item.formatted_range.end<=range.end)
             .map(|item|item.with_transform(shift_range_i128(&item.formatted_range,-(range.start as i128))?,source_delta,None))
             .collect::<Option<Vec<_>>>()?;
+        // A row must own complete blocks. Otherwise reject this local
+        // candidate so the caller reprojects the ordinary edit instead.
+        validate_block_partition(&text,&blocks).ok()?;
         let mut projection=Self::from_parts(self.revision,text,blocks,styles,provenance,diagnostics,self.style_sheet.as_ref().clone(),source.start,source.end);
         projection.inline_images=IntervalRangeStore::new(self.inline_images.query_overlapping(&range).into_iter()
             .map(|image| image.with_transform(shift_range_i128(&image.range,-(range.start as i128))?,source_delta,None)).collect::<Option<Vec<_>>>()?);
@@ -1824,23 +1827,26 @@ impl FormattedDocument {
     }
 
     pub(crate) fn install_flow_ranges(&mut self, ranges: Vec<Range<usize>>) {
+        let text_len = self.text.byte_len();
         let ends = ranges
             .iter()
             .skip(1)
             .map(|range| range.start)
-            .chain(std::iter::once(self.text.byte_len()))
+            .chain(std::iter::once(text_len))
             .collect::<Vec<_>>();
-        self.flow_lines = Some(OrderedRangeStore::new(
-            ranges
-                .into_iter()
-                .zip(ends)
-                .map(|(range, next_start)| HardLine {
-                    id: 0,
-                    separator_length: next_start - range.end,
-                    range,
-                })
-                .collect(),
-        ));
+        let lines = ranges
+            .into_iter()
+            .zip(ends)
+            .map(|(range, next_start)| {
+                (range.start <= range.end && range.end <= next_start && next_start <= text_len)
+                    .then(|| HardLine { id: 0, separator_length: next_start - range.end, range })
+            })
+            .collect::<Option<Vec<_>>>();
+        // Flow is optional source layout. Ranges that disagree with the
+        // projected text fall back to physical hard lines instead of
+        // recording wrapped separator lengths.
+        debug_assert!(lines.is_some(), "flow ranges partition the projected text");
+        self.flow_lines = lines.map(OrderedRangeStore::new);
     }
 
     pub(crate) fn flow_blocks_for_region(&self, range: &Range<usize>) -> Option<Vec<Block>> {
@@ -5566,8 +5572,11 @@ fn project_markdown(
             while flow_index + 1 < flows.len() && flows[flow_index].end < block.range.start {
                 flow_index += 1;
             }
+            // Table rows are structural boundaries even when a row's source
+            // line ends in hard-break syntax.
             let join = paragraphs.last().is_some_and(|previous| {
                 previous.quote_depth == block.quote_depth && previous.style == block.style && previous.style.0 != "Code Block" && block.style.0 != "Code Block"
+                    && !projected.range_intersects_table(&previous.range) && !projected.range_intersects_table(&block.range)
                     && (flows[flow_index].start <= previous.range.start && block.range.end <= flows[flow_index].end
                         || (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
                             || matches!((&previous.kind, &block.kind),
@@ -5624,6 +5633,8 @@ fn project_markdown(
                         if a == d && b == e && c == f))
                     && previous.style.0 != "Code Block"
                     && block.style.0 != "Code Block"
+                    && !projected.range_intersects_table(&previous.range)
+                    && !projected.range_intersects_table(&block.range)
                     && previous.quote_depth == block.quote_depth && previous.style == block.style
                     && projected
                         .provenance_for_region(&(previous.range.end..block.range.start))
