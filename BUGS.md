@@ -3,7 +3,9 @@
 Found in an audit on October 9, 2026, at commit `cc0d454`. Each entry gives a
 minimal source, the action and the result. Sources use Rust string escapes
 (`\n` is a line ending, `\\` one backslash). Line references are to that
-commit. Missing GitHub features and deliberate presentation differences are
+commit; the comparison audit after documentation commit `93a7c52` adds
+entries 49–59 and further reproductions below without changing parser code.
+Missing GitHub features and deliberate presentation differences are
 tracked in [MARKDOWN_GAPS.md](MARKDOWN_GAPS.md), not here.
 
 **(keys)** marks bugs reproduced by sending key events through `Core`, which is
@@ -11,6 +13,9 @@ what a user sees. **(model API)** marks bugs reproduced only with
 `ModelRequest::ApplyTextEdits`. Typing sometimes takes a different path, so a
 model-API failure is not always reachable from the keyboard. It still breaks
 the contract for native actions that issue the same request.
+
+**(document API)** marks edits reproduced with public `Document::replace`,
+without establishing their keyboard entry path.
 
 ## How the audit was run
 
@@ -36,8 +41,14 @@ Results:
 - **Source view (297,883 edits):** 134 panics, 1,877 divergences from a fresh
   parse and 10 `VerificationFailed`.
 - **Other checks:** opening never panicked except in bug 2. LF, CRLF and CR
-  copies of every example projected identically. Adversarial lines up to
-  400 KB projected in linear time.
+  copies of every example projected identically. The adversarial lines
+  exercised in that run, up to 400 KB, projected in linear time; the URL
+  family in bug 49 instead takes quadratic time.
+
+The comparison audit also opened 672 available GFM examples and 6,000
+generated sources in both views, then checked targeted public document and
+Core-key reproductions. All 352 existing Markdown-related tests passed;
+these findings require additional regression cases.
 
 The cheapest regression guard is the same comparison. After each committed
 edit in `tests/all/fuzz_markdown_edits.rs`, assert that the projection's
@@ -57,13 +68,20 @@ text, blocks and style spans equal those of a fresh parse of
    `ViemStatus::Panic` and the edit is lost. All 134 Source-view fuzz panics
    took this path, including deleting the closing pipe of
    `"| f\\|oo  |\n| ------ |\n..."`. The candidate builder should reject the
-   edit instead of panicking.
+   invalid local candidate and fall back to structural reprojection of the
+   ordinary Source edit instead of panicking.
 2. **Opening a table with a literal CR in Source view underflows.** Open
    `"| a |\r\n| - |\n"` or `"| abc | def |\n| --- | -\r-- |\n"` as Markdown
    Source. These have mixed endings, so `unix` detection makes `\r` content.
    `next_start - range.end` in `install_flow_ranges`
    ([projection.rs:1839](src/core/document/projection.rs#L1839)) subtracts
    with overflow. Release builds wrap and record a huge `separator_length`.
+   The comparison audit also reproduced the panic with
+   `"|a|\r|-|\na\r# b"`. The same line-ending disagreement hides unrelated
+   text: default-Unix `"a\r# b"` displays only `b` in WYSIWYG, while
+   `"|a|\r|-|"` changes Source projection text to `"|a|\n|-|"`.
+   [`grammar_text`](src/core/document/markdown_syntax.rs#L283) masks literal
+   LF under Mac policy but leaves literal CR exposed to grammar line parsing.
 
 ## Edits that commit but reopen differently
 
@@ -103,6 +121,17 @@ semantic-correctness requirement in AGENTS.md.
    file gets `1.x` or `-x` with no space, which is not a list marker.
    Reopening shows `1.x Text after.` as a plain paragraph. (model API)
    `"*\n      <div>\n     <div>\n"` behaves the same.
+
+   - (document API) `"-\nparagraph"` with `replace(0..0, "X")` commits
+     live text `"X paragraph"` but saves `"-X\nparagraph"`, which reopens
+     as `"-X paragraph"`.
+   - (document API) `"text\n1.\nnext"` with `replace(5..5, "X")` commits
+     `"text\nX next"` but saves `"text\n1.X\nnext"`, which reopens as
+     `"text 1.X next"`.
+   The structured local candidate path
+   ([transaction.rs:4777](src/core/document/transaction.rs#L4777)) can
+   inherit the existing incorrect list context; verification must establish
+   the meaning of the patched source, including the marker boundary.
 7. **Typing into an empty ATX heading at end of file writes after it.**
    - In `"## \n#\n### ###\n"`, type `x` in the last heading. The file
      becomes `"...### ###\nx"`. Reopening shows the empty heading followed
@@ -246,6 +275,18 @@ a user-facing reason rather than `VerificationFailed`.
     `"<!-- foo -->*bar*\n"` or `"<table><tr><td>\n..."`, and typing just
     before the colon of `"[Foo bar]:\n<my url>\n'title'\n\n[Foo bar]\n"`.
 
+    - (document API) In `"<ul><li>a</li><li>b</li></ul>"`, whose visible
+      text is `"a\nb"`, `replace(0..3, "X")` returns `VerificationFailed`,
+      and deleting `1..2` returns `AmbiguousProjection`. The HTML boundary
+      repair handles paragraph/heading/div owners but not these list
+      boundaries; an unsupported structural edit still needs an explicit
+      format-policy error rather than failed verification.
+    - (document API) In `"<div><!--x--></div>"`, inserting `X` at visible
+      offset 6 or 7 returns `VerificationFailed`; the same insertions in
+      standalone `"<!--x-->"` succeed. Breaking the comment closer changes
+      the visibility of the enclosing syntax, which the candidate does not
+      preserve.
+
 ## Projection mistakes on open
 
 Most of these come from three hand-written line classifiers that run beside
@@ -322,7 +363,9 @@ soft-break detection in
 39. **An unclosed fence in a list item continues past the item.** ```` "- ```\n  code\n- next\n" ```` shows `- next` as literal text in
     the first item. The list classifier keeps its fence state until a
     closing fence, ignoring the end of the item
-    ([markdown_blocks.rs:168](src/core/document/markdown_blocks.rs#L168)).
+   ([markdown_blocks.rs:168](src/core/document/markdown_blocks.rs#L168)).
+   In ```` "- ```\na\n```\ntail" ````, unindented `a` and `tail` also
+   acquire `ListItem` kinds after the empty item's fence has ended.
 40. **A fence-like line inside an HTML block corrupts later lists.** ```` "<div>\n```\n</div>\n\n- a\n- b\n" ```` shows `- a` and `- b` as
     literal paragraphs. Both classifiers open a fence on any ```` ``` ```` line
     ([markdown_blocks.rs:235](src/core/document/markdown_blocks.rs#L235),
@@ -338,6 +381,9 @@ soft-break detection in
     continuation. The list-context filter on headings at
     [projection.rs:5700-5705](src/core/document/projection.rs#L5700)
     suppresses the heading.
+    (document API) In `"text\n-\nnext"`, `replace(5..5, "X")` commits
+    live `"text\nX\nnext"`, but saved `"text\n- X\nnext"` reopens as
+    `"text\nX next"`.
 42. **Several container markers on one line are not nested.**
     `"- - foo\n"`, `"1. - 2. foo\n"`, `"- *foo\n  - - \n  baz*\n"` and
     `" - >*\n"` show literal `- foo`, `- 2. foo`, `- ` and `*` inside one
@@ -357,11 +403,15 @@ soft-break detection in
 45. **Collapsed reference images leave a literal `[]`.**
     `"![foo][]\n\n[foo]: /url\n"` shows the image followed by `[]`. So do
     `![*foo* bar][]`, `![Foo][]` and `First ![^1][] Second`.
-46. **Inline links ignore precedence and line endings.** In each case
-    GitHub shows no link, but Viem makes one.
+46. **Inline links ignore precedence and line endings.** These sources do
+    not contain the outer inline link that Viem constructs.
     - In `"[a <b x=\"](c)\">"`, raw HTML takes precedence.
     - In `"[foo<https://example.com/?search=](uri)>"`, the autolink takes
-      precedence.
+      precedence. Viem instead resolves the outer construct to `uri`,
+      rather than the angle autolink's
+      `https://example.com/?search=](uri)` destination.
+    - In `"[a[ref]](url)\n\n[ref]: inner"`, the resolved inner reference
+      prevents an outer inline link. Viem nevertheless resolves it to `url`.
     - In `"[link](<foo\nbar>)"`, a pointy-bracket destination cannot
       contain a line ending.
 
@@ -383,3 +433,108 @@ soft-break detection in
 
     Reference presentation is deliberately literal, but block boundaries
     should still follow the definition.
+
+## Additional findings from the comparison audit
+
+### Performance
+
+49. **Autolinks with unmatched trailing parentheses take quadratic time.**
+    Open `format!("http://example.com/{}", ")".repeat(n))` in either
+    Markdown view. The trimming loop
+    ([markdown_syntax.rs:98](src/core/document/markdown_syntax.rs#L98))
+    recounts every opening and closing parenthesis for each removed `)`.
+    Doubling the suffix approximately quadruples opening time; a 128,000-byte
+    suffix takes seconds even in an optimized test build. Compute the
+    balance once and update it while trimming; a small document must not
+    require quadratic synchronous parsing work.
+
+### Block and HTML projection
+
+50. **Indented code after some block starts is parsed as prose.**
+    `"---\n    *code*"` projects as `"\n    code"`, with a Paragraph
+    rather than Code Block. The literal asterisks disappear and emphasis
+    applies. The same problem follows Setext headings, empty ATX headings,
+    indented ATX headings and tab-delimited headings. In
+    `"Title\n===\n    &amp;"`, the code entity incorrectly decodes.
+    [markdown_indented_code.rs:156](src/core/document/markdown_indented_code.rs#L156)
+    decides whether the preceding line is prose using the incomplete
+    `markdown_block_prefix`, rather than grammar-owned block boundaries.
+
+    - (document API) `replace(6..7, "")` on the first source rejects an
+      ordinary visible-character deletion with `VerificationFailed`.
+    - (document API) `replace(10..11, "")` on the second source succeeds
+      with live `"Title\n    "`, while saved `"Title\n===\n    "`
+      reopens as `"Title"`.
+51. **Markdown prose cooking changes literal HTML `<pre>` content.**
+    - `"<pre>a\n\nb</pre>"` displays `"a\nb"`, losing a blank code line.
+      Source view also shows `"<pre>a\nb</pre>"`.
+    - `"<pre>a\\\nb</pre>"` displays `"a\nb"`, losing the backslash.
+    - `"<pre>a  \nb</pre>"` displays `"a\nb"`, losing both spaces.
+
+    Original bytes remain intact, but visible code and editing coordinates
+    are wrong. [paragraph_flow.rs:150](src/core/document/paragraph_flow.rs#L150)
+    exempts Markdown code scopes without exempting HTML blocks; its
+    separator folding and hard-break cleanup then transform literal content.
+52. **The ignored initial HTML `<pre>` newline remains visible.**
+    `"<pre>\nfoo</pre>"` and `"<pre>&#10;foo</pre>"` display `"\nfoo"`
+    instead of `"foo"`. [html.rs:955](src/core/document/html.rs#L955)
+    recognizes the ignored LF only when advancing an empty caret boundary;
+    the text-emission path still emits it. The HTML clipboard parser
+    produces the correct text for both sources. The
+    [HTML standard](https://html.spec.whatwg.org/dev/syntax.html#restrictions-on-content-models)
+    specifies ignoring one initial newline.
+53. **Allowed inline HTML styles disappear inside HTML blocks.**
+    `"a<kbd>b</kbd>c"` gives `b` the Code style, but
+    `"<div>a<kbd>b</kbd>c</div>"` gives it none. `<samp>` and `<tt>` behave
+    the same; wrapping `<ins>` in `<div>` removes its underline.
+    [markdown_html.rs:106–109](src/core/document/markdown_html.rs#L106)
+    supports these treatments, while the
+    [block HTML handler](src/core/document/html.rs#L833) omits them.
+
+### Inline recognition and destinations
+
+54. **Semicolon-free references silently change Markdown link destinations.**
+    `"[a](foo&copy)"` resolves to `foo©`, and `"[a](foo&#123)"` resolves to
+    `foo{`, instead of retaining the literal destinations. This is observable
+    through `Document::link_at` in both views. Source bytes are unchanged,
+    but explicit navigation targets a different URL or file.
+    [links.rs:33](src/core/document/links.rs#L33) uses permissive HTML entity
+    recovery instead of Markdown's semicolon and digit-count rules. Prose
+    already checks for a semicolon, although it has bug 47's length defect.
+55. **Malformed parenthesized link titles become links.**
+    `"[a](url (tit(le))"` should stay literal, but Viem displays linked `a`
+    with destination `url`. Adding a final `)` displays `a)` instead of the
+    literal source. [links.rs:203](src/core/document/links.rs#L203) scans
+    until the first closing parenthesis without rejecting an unescaped
+    opening parenthesis inside the title.
+56. **Code spans containing non-space whitespace keep unwanted edge spaces.**
+    `` "` \t `" `` displays space–tab–space instead of one tab; NBSP and
+    other Unicode whitespace have the same problem.
+    [projection.rs:6401](src/core/document/projection.rs#L6401) uses Unicode
+    `.trim()` for the code-span exception that applies only to content made
+    entirely of ASCII spaces.
+57. **Valid extended email autolinks are rejected.** `a@b.c1` is not a link,
+    and domains with internal underscores are rejected.
+    [markdown_syntax.rs:117](src/core/document/markdown_syntax.rs#L117)
+    requires a final alphabetic character and bans every underscore; GFM
+    permits a final digit and internal underscores, provided the final
+    character is neither `-` nor `_`.
+
+### Container boundaries and furniture
+
+58. **Lazy quote context leaks into following top-level blocks.**
+    `"> a\n#\tfoo"` gives the following top-level heading quote depth 1
+    instead of 0. The lazy-continuation check
+    ([markdown_quotes.rs:160](src/core/document/markdown_quotes.rs#L160))
+    relies on the incomplete block recognizer. Conversely, `"> a\n2. b"`
+    keeps `2. b` as literal prose instead of starting the top-level ordered
+    list: quote stripping loses the boundary before list classification.
+    (document API) `replace(2..2, "X")` on the latter commits live
+    `"a\nX2. b"`, while saved `"> a\nX2. b"` reopens as `"a X2. b"`.
+59. **Allowed HTML `<hr>` is stripped without a rule or boundary.**
+    `"<div>a<hr>b</div>"` becomes `"ab"`, and `"two<hr>three"` becomes
+    `"twothree"`. `<hr>` belongs to the admitted passive HTML vocabulary,
+    but neither the [inline handler](src/core/document/markdown_html.rs#L67)
+    nor the [block handler](src/core/document/html.rs#L833) creates thematic
+    furniture or a paragraph boundary. This is a projection defect, rather
+    than an unsupported-tag fallback.

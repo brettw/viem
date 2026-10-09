@@ -122,18 +122,30 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 6. **Surplus blank separators.** Viem deliberately retains editable empty
    paragraphs from repeated separator pairs. Do not collapse them to GitHub's
    presentation.
-7. **Unsupported HTML.** Tags outside the passive vocabulary keep their
-   literal source syntax. GitHub's sanitizer instead removes them and keeps
-   their text, and hides some blocks entirely.
+7. **Unsupported HTML and filtered content.** Tags outside the passive
+   vocabulary keep their literal source syntax. This differs from GitHub's
+   supported passive HTML and its subsequent filtering and sanitization.
    - `<sub>` and `<sup>` show as literal tags.
    - So do `<picture>` and `<source>`, a common README pattern for light and
-     dark logos; only the inner `<img>` renders.
+     dark logos; only the inner `<img>` renders. Theme-dependent source
+     selection is unsupported, including image URL fragments
+     `#gh-dark-mode-only` and `#gh-light-mode-only`. GitHub documents
+     [theme-aware README images](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/quickstart-for-writing-on-github#adding-an-image-to-suit-your-visitors)
+     and the
+     [image-fragment form](https://github.blog/changelog/2021-11-24-specify-theme-context-for-images-in-markdown/).
    - So do custom elements such as `<Warning>` or `<foo>`.
-   - HTML blocks for `<script>`, `<style>` and `<textarea>`, processing
-     instructions (`<?php … ?>`), CDATA sections and `<!DOCTYPE …>` display
-     as literal text. GitHub hides them.
-   - An inline `<hr>` inside a paragraph is dropped, so `two<hr>three` reads
-     `twothree`. GitHub draws a rule.
+   - Processing instructions (`<?php … ?>`), CDATA sections and
+     `<!DOCTYPE …>` display as literal text; their GitHub sanitizer
+     presentation requires separate comparison.
+
+   Do not treat every filtered tag as hidden content. GFM's
+   [disallowed raw HTML extension](https://github.github.com/gfm/#disallowed-raw-html-extension-)
+   escapes the opening `<` in tags such as `<script>`, `<style>` and
+   `<textarea>`, and the
+   [GitHub markup implementation](https://github.com/github/markup/blob/master/lib/github/markup/markdown.rb)
+   enables that filter. Their literal appearance alone is not a missing
+   rendering feature. Supported `<pre>`, inline styles and `<hr>` have
+   projection defects tracked in [BUGS.md](BUGS.md), bugs 51–53 and 59.
 8. **Character references in the C1 range.** Numeric references from 0x80
    to 0x9F decode through Windows-1252, as in HTML5, so `&#x80;` shows `€`.
    GitHub's cmark-gfm decodes them as the C1 control code points. The current
@@ -144,15 +156,22 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 
 9. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
    titles, icons and treatments remain unsupported.
-10. **Math and diagrams.** Math expressions stay literal; Mermaid and other
-   diagram fences remain code.
-11. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Repository
-   mentions, issue links, commit links, explicit HTML anchors and a generated
-   table of contents remain separate work; Markdown heading links are supported.
-12. **YAML front matter.** GitHub renders a leading `---` … `---` metadata
-   block as a table. Viem parses it as CommonMark does: the opening `---`
-   becomes a thematic break, and the metadata lines become one setext H2
-   underlined by the closing `---`.
+10. **Math and diagrams.** Math expressions stay literal. Mermaid, GeoJSON,
+   TopoJSON and ASCII STL fences remain code rather than rendered diagrams,
+   maps or 3D models. GitHub supports
+   [all four diagram formats](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/creating-diagrams)
+   in repository Markdown.
+11. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Explicit
+   HTML anchors and a generated table of contents remain unsupported;
+   Markdown heading links are supported. Mentions and conversation-specific
+   issue/PR reference autolinks are separate GitHub application behavior.
+   GitHub itself
+   [does not create issue/PR reference autolinks in repository files](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls),
+   so those are outside this repository-Markdown compatibility target.
+12. **YAML front matter.** GitHub renders valid YAML front matter as a metadata
+   table. Viem has no front-matter recognition: for example,
+   `---\ntitle: Example\n---` becomes a thematic break followed by a Setext
+   H2. More complex metadata follows ordinary Markdown block parsing.
 13. **Collapsible sections.** `<details>` and `<summary>` render as flat
    text, with the summary and body always visible and no disclosure control.
 14. **HTML alignment attributes.** `align` on passive HTML is ignored, for
