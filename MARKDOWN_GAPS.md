@@ -1,9 +1,11 @@
 # Markdown compatibility with GitHub
 
-Updated October 8, 2026. The target is GitHub's rendering of repository
+Updated October 9, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
-from deferred work. It does not claim complete GFM conformance.
+from deferred work. It does not claim complete GFM conformance. Parsing and
+editing defects, where Viem misreads syntax it claims to support, are tracked
+separately in [BUGS.md](BUGS.md).
 
 ## Implemented from the P1/P2 audit
 
@@ -112,28 +114,60 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    Native decoders support local raster formats; SVG previews,
    animated playback and resizing handles
    remain unsupported. Reference links and definitions remain visible source
-   notation with Markdown reference styling.
+   notation with Markdown reference styling. Inline formatting inside a
+   reference link's label also stays literal: `[*foo* bar][ref]` shows its
+   asterisks, while GitHub renders the emphasis.
 5. **Comments.** GitHub hides comments; Viem deliberately displays and styles
    them so they remain directly editable.
 6. **Surplus blank separators.** Viem deliberately retains editable empty
    paragraphs from repeated separator pairs. Do not collapse them to GitHub's
    presentation.
-7. **Unsupported inline HTML.** `<sub>` and `<sup>` retain literal source syntax.
+7. **Unsupported HTML.** Tags outside the passive vocabulary keep their
+   literal source syntax. GitHub's sanitizer instead removes them and keeps
+   their text, and hides some blocks entirely.
+   - `<sub>` and `<sup>` show as literal tags.
+   - So do `<picture>` and `<source>`, a common README pattern for light and
+     dark logos; only the inner `<img>` renders.
+   - So do custom elements such as `<Warning>` or `<foo>`.
+   - HTML blocks for `<script>`, `<style>` and `<textarea>`, processing
+     instructions (`<?php … ?>`), CDATA sections and `<!DOCTYPE …>` display
+     as literal text. GitHub hides them.
+   - An inline `<hr>` inside a paragraph is dropped, so `two<hr>three` reads
+     `twothree`. GitHub draws a rule.
+8. **Character references in the C1 range.** Numeric references from 0x80
+   to 0x9F decode through Windows-1252, as in HTML5, so `&#x80;` shows `€`.
+   GitHub's cmark-gfm decodes them as the C1 control code points. The current
+   behavior is covered by a test, so this is a deliberate choice to confirm
+   or revisit.
 
 ## P3 — unchanged and not implemented in this pass
 
-8. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
+9. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
    titles, icons and treatments remain unsupported.
-9. **Math and diagrams.** Math expressions stay literal; Mermaid and other
+10. **Math and diagrams.** Math expressions stay literal; Mermaid and other
    diagram fences remain code.
-10. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Repository
+11. **Emoji and GitHub navigation.** Emoji shortcodes remain literal. Repository
    mentions, issue links, commit links, explicit HTML anchors and a generated
    table of contents remain separate work; Markdown heading links are supported.
+12. **YAML front matter.** GitHub renders a leading `---` … `---` metadata
+   block as a table. Viem parses it as CommonMark does: the opening `---`
+   becomes a thematic break, and the metadata lines become one setext H2
+   underlined by the closing `---`.
+13. **Collapsible sections.** `<details>` and `<summary>` render as flat
+   text, with the summary and body always visible and no disclosure control.
+14. **HTML alignment attributes.** `align` on passive HTML is ignored, for
+   example `<p align="center">`, `<div align="center">`, `<h1 align="center">`
+   and `<img align="right">`. Centered README headers and logos render
+   left-aligned.
 
 ## Remaining conformance audit
 
 The selected audit fixtures are covered; the full GFM example corpus and
-GitHub's HTML sanitizer are broader than those fixtures. Continue differential
+GitHub's HTML sanitizer are broader than those fixtures. An October 9, 2026
+run of the CommonMark spec examples, the GFM examples and pulldown-cmark's
+regression suite against both views found the parsing and editing defects
+listed in [BUGS.md](BUGS.md); fix those before treating the corresponding
+constructs as conforming. Continue differential
 coverage of malformed/container nesting, tabs at every depth, Unicode
 punctuation, autolink edge cases, HTML recovery and allowed-tag presentation.
 Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
@@ -156,7 +190,9 @@ Natural paragraph direction and ordinary mixed-direction table content retain
 their direction across slices; carrying explicit control stacks is separate
 typography work.
 
-Reference-sensitive source edits currently use a complete parse so changes to
-remote definitions cannot leave stale styling. Ordinary prose/list edits retain
-regional projection. A cached definition dependency index is a future
-performance improvement for very large reference-heavy files.
+Reference-sensitive source edits are intended to use a complete parse so
+changes to remote definitions cannot leave stale styling. Ordinary prose/list
+edits retain regional projection. Some edits still miss that path, leaving
+stale reference styling and presentation (see [BUGS.md](BUGS.md), bug 10). A
+cached definition dependency index is a future performance improvement for
+very large reference-heavy files.
