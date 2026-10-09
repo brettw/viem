@@ -6,7 +6,7 @@ using static Viem.Windows.Interop.Abi;
 namespace Viem.Windows.Core;
 
 internal sealed record MarkdownLink(ulong Start, ulong End, string Text, string Destination, bool Editable);
-internal sealed record LinkContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, string Text, MarkdownLink? Link);
+internal sealed record LinkContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, bool Linked, bool CanRemoveSelection, bool CanExitLink, string Text, MarkdownLink? Link);
 
 internal sealed unsafe partial class CoreView
 {
@@ -30,23 +30,36 @@ internal sealed unsafe partial class CoreView
             value.GetProperty("start").GetUInt64(), value.GetProperty("end").GetUInt64(),
             value.GetProperty("text").GetString() ?? "", value.GetProperty("destination").GetString() ?? "",
             value.GetProperty("editable").GetBoolean());
-        return new(selection, root.GetProperty("canInsert").GetBoolean(), root.GetProperty("text").GetString() ?? "", link);
+        return new(selection, root.GetProperty("canInsert").GetBoolean(), root.GetProperty("linked").GetBoolean(),
+            root.GetProperty("canRemoveSelection").GetBoolean(), root.GetProperty("canExitLink").GetBoolean(),
+            root.GetProperty("text").GetString() ?? "", link);
     }
     public void ValidateLinkContext(LinkContext expected)
     {
         if (Id == 0 || !HasFormattingSelection) throw new InvalidOperationException("The selection changed. Select the link again.");
         var current = LinkContext();
-        if (!SameSelection(current.Selection, expected.Selection) || current.Link != expected.Link)
+        if (!SameSelection(current.Selection, expected.Selection) || current.Link != expected.Link
+            || current.Linked != expected.Linked || current.CanExitLink != expected.CanExitLink || current.CanRemoveSelection != expected.CanRemoveSelection)
             throw new InvalidOperationException("The document or selection changed. Select the link again.");
     }
-    public void EditLink(LinkContext expected, string text, string destination, bool remove = false)
+    public void ToggleLink(LinkContext expected)
+    {
+        ValidateLinkContext(expected);
+        Apply(outcome => {
+            var selection = expected.Selection;
+            return viem_core_view_edit_link(Document.Handle, Id, &selection, HasSelection ? 4u : 3u,
+                expected.Link?.Start ?? 0, expected.Link?.End ?? 0, default, default, outcome);
+        });
+        FormattingContextChanged?.Invoke();
+    }
+    public void EditLink(LinkContext expected, string text, string destination, bool remove = false, bool insertOnly = false)
     {
         ValidateLinkContext(expected);
         using var arena = new NativeArena();
         var label = arena.Utf8(text); var target = arena.Utf8(destination);
         Apply(outcome => {
             var selection = expected.Selection;
-            return viem_core_view_edit_link(Document.Handle, Id, &selection, remove ? 2u : expected.Link != null ? 1u : 0u,
+            return viem_core_view_edit_link(Document.Handle, Id, &selection, remove ? 2u : !insertOnly && expected.Link != null ? 1u : 0u,
                 expected.Link?.Start ?? 0, expected.Link?.End ?? 0, label, target, outcome);
         });
     }

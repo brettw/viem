@@ -1179,11 +1179,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         let upstream = range.is_none()
             && if matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
                 view.commands.insertion_boundary_affinity()
+            } else if view.commands.mode() == Mode::Normal {
+                BoundaryAffinity::Downstream
             } else {
                 view.commands.boundary_affinity()
             } == BoundaryAffinity::Upstream;
         let mut first =
-            DocumentLayoutStyles::semantic_character_at(self.document.projection(), at, upstream)
+            if range.is_none() && view.commands.typing_link_disabled() {
+                DocumentLayoutStyles::semantic_character_at(self.document.projection(), at, upstream)
+            } else {
+                DocumentLayoutStyles::character_at(self.document.projection(), at, upstream)
+            }
                 .map_err(LayoutError::from)?;
         if range.is_none() {
             view.commands
@@ -1214,7 +1220,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
         };
         if selection_kind == LogicalSelectionKind::None
-            && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+            && matches!(view.commands.mode(), Mode::Normal | Mode::Insert | Mode::Replace)
         {
             let values = match style {
                 SemanticInlineStyle::Strong => vec![(
@@ -1230,7 +1236,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 _ => Vec::new(),
             };
             let supported = !values.is_empty()
-                && self.document.validate_typing_properties(&values).is_ok()
+                && self.document.validate_typing_properties_at(view.commands.cursor(),
+                    if view.commands.mode() == Mode::Normal { BoundaryAffinity::Downstream } else { view.commands.insertion_boundary_affinity() }, &values).is_ok()
 ;
             let current = self.selected_character_style(view_id)?;
             let on = match style {
@@ -1345,13 +1352,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(state) = self.table_strikethrough_state(view_id)? { return Ok(state); }
         if self.active_linear_selection_identity(view_id)?.is_none() {
             let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
-            if !matches!(view.commands.mode(), Mode::Insert | Mode::Replace) {
+            if !matches!(view.commands.mode(), Mode::Normal | Mode::Insert | Mode::Replace) {
                 return Err(CoreError::StaleLogicalSelection);
             }
-            self.document.validate_typing_properties(&[(
-                StyleProperty::CharacterStrikethrough,
-                crate::document::StylePropertyValue::Boolean(true),
-            )])?;
             return Ok(if self.selected_character_style(view_id)?.strikethrough {
                 SemanticStyleState::On
             } else {
@@ -1409,7 +1412,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let commands = &self.views[&view_id].commands;
         let typing = selection.kind() == LogicalSelectionKind::None
             && matches!(commands.mode(), Mode::Insert | Mode::Replace);
-        let affinity = if typing { commands.insertion_boundary_affinity() }
+        let affinity = if commands.mode() == Mode::Normal { BoundaryAffinity::Downstream }
+            else if typing { commands.insertion_boundary_affinity() }
             else { selection.active_affinity() };
         let mut selected = if self.document.format().is_code() {
             self.document.projection().selected_code_named_styles(
@@ -1417,9 +1421,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 affinity,
             )
         } else {
-            self.document.projection().selected_named_styles(
+            self.document.projection().selected_display_styles(
                 selection.range(),
                 affinity,
+                commands.typing_link_disabled(),
+                commands.typing_properties().iter().any(|(property, value)| *property == StyleProperty::CharacterStrikethrough && *value == crate::document::StylePropertyValue::Boolean(false)),
+                selection.kind() == LogicalSelectionKind::None && commands.typing_named_style().is_some_and(|id| id.0.is_empty()),
             )
         };
         if typing && selected.character.as_ref().is_some_and(|style| self.document.character_style_is_code(style))
@@ -1428,9 +1435,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             selected.character_mixed = false;
         }
         if !self.document.format().is_code() && selection.kind() == LogicalSelectionKind::None {
+            if commands.typing_link_disabled() && selected.character.as_ref().is_some_and(|id| id.0 == "Link") {
+                selected.character = None;
+            }
             if let Some(named) = self.views[&view_id].commands.typing_named_style() {
-                selected.character = (!named.0.is_empty()).then(|| named.clone());
-                selected.character_mixed = false;
+                if !named.0.is_empty() {
+                    selected.character = Some(named.clone());
+                    selected.character_mixed = false;
+                }
             }
         }
         Ok(selected)
@@ -4291,11 +4303,27 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(())
     }
 
-    fn pending_typing_outcome(
+    fn publish_pending_typing(
         &mut self,
         view_id: ViewId,
-        previous_cursor: usize,
+        mut candidate: CommandInterpreter,
     ) -> Result<CoreOutcome, CoreError> {
+        let previous_cursor = self.views[&view_id].commands.cursor();
+        let normal = self.views[&view_id].commands.mode() == Mode::Normal;
+        let before = normal.then(|| self.views[&view_id].commands.capture_history_restoration(&self.document)).transpose()?;
+        if normal {
+            self.finalize_open_edit_group(view_id)?;
+        }
+        let entered = candidate.begin_native_character_typing(&mut self.document);
+        self.views.get_mut(&view_id).expect("view checked").commands = candidate;
+        if let Some(before) = before {
+            self.edit_group_owner = Some(view_id);
+            self.edit_group_restoration = Some(OpenGroupRestoration {
+                generation: self.document.edit_group_generation(),
+                parent: self.document.history_status().current,
+                before,
+            });
+        }
         let moved = self
             .views
             .get(&view_id)
@@ -4304,13 +4332,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             .cursor()
             != previous_cursor;
         if moved {
-            self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
+            if let Err(error) = self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret) {
+                self.record_presentation_error(view_id, error);
+            }
         }
         Ok(CoreOutcome {
             command: None,
             document_changed: false,
             position_map: None,
-            layout_changed: moved,
+            layout_changed: moved || entered,
             composition_changes: Vec::new(),
         })
     }
@@ -4421,18 +4451,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )],
                 _ => return Err(CoreError::Document(DocumentError::UnsupportedFormatting)),
             };
-            let previous_cursor = self
-                .views
-                .get(&view_id)
-                .expect("view checked")
-                .commands
-                .cursor();
-            self.views
-                .get_mut(&view_id)
-                .expect("view checked")
-                .commands
-                .set_typing_properties(&self.document, values)?;
-            return self.pending_typing_outcome(view_id, previous_cursor);
+            let mut candidate = self.views[&view_id].commands.clone();
+            candidate.set_typing_properties(&self.document, values)?;
+            return self.publish_pending_typing(view_id, candidate);
         }
         let current = self
             .active_linear_selection_identity(view_id)?
@@ -5206,13 +5227,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                         });
                 }
                 if expected.kind() == LogicalSelectionKind::None {
-                    let commands = &mut self.views.get_mut(&view_id).expect("view checked").commands;
-                    let previous_cursor = commands.cursor();
-                    commands.set_typing_properties(&self.document, vec![(
+                    let mut candidate = self.views[&view_id].commands.clone();
+                    candidate.set_typing_properties(&self.document, vec![(
                         StyleProperty::CharacterStrikethrough,
                         crate::document::StylePropertyValue::Boolean(enabled),
                     )])?;
-                    return self.pending_typing_outcome(view_id, previous_cursor);
+                    return self.publish_pending_typing(view_id, candidate);
                 }
                 return self.apply_native_model_request(view_id, ModelRequest::SetStrikethrough {
                     document: expected.document(),
@@ -5389,18 +5409,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if namespace == StyleNamespace::Character
                     && expected.range().is_empty()
                 {
-                    self.document.validate_typing_named_style(&style)?;
-                    let commands =
-                        &mut self.views.get_mut(&view_id).expect("view checked").commands;
-                    let previous_cursor = commands.cursor();
+                    self.document.validate_typing_named_style_at(self.views[&view_id].commands.cursor(),
+                        if self.views[&view_id].commands.mode() == Mode::Normal { BoundaryAffinity::Downstream }
+                        else { self.views[&view_id].commands.insertion_boundary_affinity() }, &style)?;
+                    let mut candidate = self.views[&view_id].commands.clone();
                     // A collapsed native selection remains in its selection
                     // mode, but chooses future typing just like an ordinary caret.
                     if expected.kind() == LogicalSelectionKind::None {
-                        commands.set_typing_named_style(&self.document, style)?;
+                        candidate.set_typing_named_style(&self.document, style)?;
                     } else {
-                        commands.install_typing_style(Some(style), Vec::new());
+                        candidate.install_typing_style(Some(style), Vec::new());
                     }
-                    return self.pending_typing_outcome(view_id, previous_cursor);
+                    return self.publish_pending_typing(view_id, candidate);
                 }
                 let pending_choice = (namespace == StyleNamespace::Character
                     && self.views.get(&view_id).expect("view checked").commands.is_text_selection())
@@ -7225,6 +7245,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let select_commit = (!table_commit).then(|| invoking_commands.select_composition_commit(&self.document)).flatten();
         let typing_properties = invoking_commands.typing_properties().to_vec();
         let typing_named = invoking_commands.typing_named_style().cloned();
+        let typing_link_disabled = invoking_commands.typing_link_disabled();
         let typing_inherited = self.document.replacement_typing_context(session.replacement_range())?
             .or_else(|| invoking_commands.typing_inherited_context().cloned());
         let request = session.prepare_commit_with_input_policy(&self.document, invoking_commands)?;
@@ -7300,6 +7321,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             target_commands.finish_native_table_edit(&mut self.document, caret_offset, true);
         }
         target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
+        target_commands.restore_typing_link_disabled(typing_link_disabled);
         target_commands.note_markdown_typing_exit(&self.document, markdown_exit)
             .expect("Markdown preparation validated the committed syntax boundary");
         for (id, commands) in next_commands {

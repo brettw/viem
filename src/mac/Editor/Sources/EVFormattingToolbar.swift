@@ -72,7 +72,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(characterCode, title: "Code (Character)", symbol: "chevron.left.forwardslash.chevron.right", toggle: true)
     characterCode.action = #selector(toggleCharacterCode(_:))
     characterGroup.addArrangedSubview(characterCode)
-    configure(insertLink, title: "Insert Link", symbol: "link", toggle: false)
+    configure(insertLink, title: "Link", symbol: "link", toggle: true)
     insertLink.action = #selector(openLinkEditor(_:))
     characterGroup.addArrangedSubview(insertLink)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
@@ -84,7 +84,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
     codeBlock.action = #selector(toggleCodeBlock(_:))
     blockGroup.addArrangedSubview(codeBlock)
-    configure(insertImage, title: "Insert Image", symbol: "photo", toggle: false)
+    configure(insertImage, title: "Insert Image", symbol: "photo", toggle: true)
     insertImage.action = #selector(openImageEditor(_:))
     blockGroup.addArrangedSubview(insertImage)
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
@@ -220,9 +220,13 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     let markdown = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
     setHidden(!markdown, for: insertTable)
     setHidden(!markdown, for: insertLink)
-    insertLink.isEnabled = markdown && surface.linkPopover.canOpenEditor
+    let link = surface.linkPopover.toolbarPresentation
+    insertLink.state = link.state
+    insertLink.isEnabled = markdown && link.isEnabled
     setHidden(!markdown, for: insertImage)
-    insertImage.isEnabled = markdown && surface.imagePopover.canOpenEditor
+    let image = surface.imagePopover.toolbarPresentation
+    insertImage.state = image.state
+    insertImage.isEnabled = markdown && image.isEnabled
     let tableContext = try? surface.session?.tableContext()
     insertTable.isEnabled = markdown && (tableContext?.flags ?? 0) & 1 != 0
     if let expected = pickerSelection, let current = tableContext?.selection,
@@ -304,6 +308,13 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     let state = entry?.presentation.state ?? .off
     if button.state != state { button.state = state }
     let targetID = button.state == .on ? (role == .character ? "" : "Paragraph") : id
+    if role == .character {
+      let target = catalogue?.entries.first { $0.role == role && $0.stableID == targetID }
+      setHidden(surface?.backend.sourceFormat.hasSameSerialization(as: .markdown) != true
+        || entry == nil || target == nil, for: button)
+      button.isEnabled = target?.presentation.isEnabled == true
+      return
+    }
     setHidden(catalogue?.entries.first {
       $0.role == role && $0.stableID == targetID
     }?.presentation.isEnabled != true, for: button)
@@ -337,8 +348,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     finishAction()
   }
 
-  @objc func openImageEditor(_ sender: NSButton) { surface?.imagePopover.openEditor() }
-  @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.openEditor() }
+  @objc func openImageEditor(_ sender: NSButton) { surface?.imagePopover.performToolbarAction(); refresh() }
+  @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.performToolbarAction(); refresh() }
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }
   @objc func toggleCodeBlock(_ sender: NSButton) { toggleStyle(role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender) }

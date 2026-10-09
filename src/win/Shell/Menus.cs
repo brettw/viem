@@ -138,7 +138,7 @@ internal sealed partial class EditorWindow
         if (View == null || paragraphMenu == null) return;
         var selected = View.SelectedNamedStyles();
         var snapshot = View.Styles(selected.Identity);
-        var entries = CoreView.StyleChoices(snapshot, selected);
+        var entries = CoreView.StyleChoices(snapshot, selected, View.Document.IsReadOnly);
         foreach (var menu in new[] { paragraphMenu, characterMenu })
         {
             uint space = menu == paragraphMenu ? 1u : 2u;

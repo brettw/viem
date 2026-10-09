@@ -14,13 +14,31 @@ struct EVInlineContentContext: Decodable {
     let canInsert: Bool
     let item: Item?
     let text: String
-    private enum CodingKeys: String, CodingKey { case canInsert, link, image, text }
+    let linked: Bool
+    let canExitLink: Bool
+    let canRemoveSelection: Bool
+    private enum CodingKeys: String, CodingKey { case canInsert, link, image, text, linked, canExitLink, canRemoveSelection }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         canInsert = try values.decode(Bool.self, forKey: .canInsert)
         item = try values.decodeIfPresent(Item.self, forKey: .link)
             ?? values.decodeIfPresent(Item.self, forKey: .image)
         text = try values.decode(String.self, forKey: .text)
+        linked = try values.decodeIfPresent(Bool.self, forKey: .linked) ?? false
+        canExitLink = try values.decodeIfPresent(Bool.self, forKey: .canExitLink) ?? false
+        canRemoveSelection = try values.decodeIfPresent(Bool.self, forKey: .canRemoveSelection) ?? false
+    }
+
+    var forInsertion: Self {
+        Self(canInsert: canInsert, item: nil, text: text,
+             linked: false, canExitLink: false, canRemoveSelection: false)
+    }
+
+    private init(canInsert: Bool, item: Item?, text: String, linked: Bool,
+                 canExitLink: Bool, canRemoveSelection: Bool) {
+        self.canInsert = canInsert; self.item = item; self.text = text
+        self.linked = linked; self.canExitLink = canExitLink
+        self.canRemoveSelection = canRemoveSelection
     }
 }
 
@@ -81,6 +99,9 @@ extension EVCoreViewSession {
             }
         }
         guard status == 0 else { throw EVCoreFrontendError.core(operation: "Edit link", status: status) }
+        if kind == .link, action == 3 {
+            notePendingCharacterContextChange(outcome, expected: expected)
+        }
         finishStyleEdit(outcome)
         return outcome
     }

@@ -44,10 +44,61 @@ internal static class FormattingToolbarTests
     internal static async Task RunStartup(Preferences preferences)
     {
         await LazyConstruction(preferences);
+        await CharacterCaretContext(preferences);
         TablePickerTests.Run();
         await TableInteractionTests.Run(preferences);
         await LinkInteractionTests.Run(preferences);
         await ImageInteractionTests.Run(preferences);
+    }
+
+    private static async Task CharacterCaretContext(Preferences preferences)
+    {
+        const string source = "**bold** *italic* ~~strike~~ `code` plain";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready; var toolbar = window.Toolbar;
+        try
+        {
+            await Task.Delay(100);
+            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
+                (ToolbarAction.Strikethrough, "strike"), (ToolbarAction.CharacterCode, "code") })
+            {
+                view.Key(VIEM_KEY_ESCAPE);
+                ulong offset = (ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1;
+                view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+                Check(view.Presentation.mode == VIEM_MODE_NORMAL && State(toolbar, action) == true && toolbar.Buttons[action].IsEnabled,
+                    "Normal caret reflects active character formatting: " + action);
+                ulong revision = document.State.document_revision;
+                await Click(toolbar, action);
+                Check(view.Presentation.mode == VIEM_MODE_INSERT && State(toolbar, action) == false && document.State.document_revision == revision,
+                    "Normal character toggle starts Insert with pending cleared formatting: " + action);
+                view.Text("X"); view.Key(VIEM_KEY_ESCAPE); view.Undo();
+                Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                    "Normal character toggle and insertion retain exact undo: " + action);
+            }
+            document.SetReadOnly(true);
+            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
+                (ToolbarAction.Strikethrough, "strike"), (ToolbarAction.CharacterCode, "code") })
+            {
+                view.Place((ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1,
+                    VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+                toolbar.Refresh();
+                Check(State(toolbar, action) == true && !toolbar.Buttons[action].IsEnabled && toolbar.Buttons[action].Visibility == Visibility.Visible,
+                    "read-only character controls retain their active caret state while disabled: " + action);
+                ulong revision = document.State.document_revision;
+                toolbar.Execute(action);
+                Check(view.Presentation.mode == VIEM_MODE_NORMAL && document.State.document_revision == revision,
+                    "a disabled read-only character action preserves mode and source revision: " + action);
+            }
+            document.SetReadOnly(false);
+            view.Key(VIEM_KEY_ESCAPE); view.Command("G$");
+            await Click(toolbar, ToolbarAction.Bold);
+            Check(view.Presentation.mode == VIEM_MODE_INSERT && State(toolbar, ToolbarAction.Bold) == true,
+                "Normal character toggle starts Insert with newly requested formatting");
+            Check(pane.LastError == null, "caret character formatting tests finish without native presentation errors");
+        }
+        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
     internal static async Task Run(Preferences preferences)
@@ -237,6 +288,22 @@ internal static class FormattingToolbarTests
                 toolbar.Execute(ToolbarAction.BlockQuote);
                 Check(Encoding.UTF8.GetString(codePane.Document.Source(codePane.Document.State.document_revision)) == code,
                     "unavailable quote action preserves code source");
+                var codeStyle = codeView.Styles().Styles.Single(style => style.Key == new StyleKey(1, "Code Block"));
+                codeView.EditStyle(codeStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
+                    CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 1));
+                toolbar.Refresh();
+                Check(State(toolbar, ToolbarAction.Strikethrough) == true && !toolbar.Buttons[ToolbarAction.Strikethrough].IsEnabled,
+                    "literal code keeps resolved strikethrough appearance visible while disabling document formatting: " + format);
+                Check(toolbar.Buttons[ToolbarAction.CharacterCode].Visibility == Visibility.Visible
+                    && !toolbar.Buttons[ToolbarAction.CharacterCode].IsEnabled && !toolbar.Character.IsEnabled,
+                    "literal code retains its character toolbar controls and disables unsupported assignments: " + format);
+                ulong literalRevision = codePane.Document.State.document_revision;
+                toolbar.Execute(ToolbarAction.Strikethrough);
+                toolbar.Execute(ToolbarAction.CharacterCode);
+                Check(codeView.Presentation.mode == VIEM_MODE_NORMAL && codePane.Document.State.document_revision == literalRevision
+                    && Encoding.UTF8.GetString(codePane.Document.Source(codePane.Document.State.document_revision)) == code,
+                    "disabled literal-code strikethrough preserves its mode and exact source: " + format);
+                codeView.Undo();
                 codeView.Place((ulong)codeText.IndexOf("After", StringComparison.Ordinal), VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, codePane.Document.State.document_revision);
                 toolbar.Refresh();
                 Check(toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled, "quote toggle re-enables outside code");

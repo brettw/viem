@@ -10779,7 +10779,7 @@ impl CommandInterpreter {
         ).transpose().map_err(command_document_error)?.flatten() {
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             self.cursor += input.len();
-        } else if document.format() == Format::Markdown
+        } else if document.format() == Format::Markdown && !self.typing_style.link_disabled
             && self.markdown_autodetect()
         {
             let (prepared, cursor, authored_start, exit_source) = document.prepare_markdown_typing_batch(
@@ -10795,8 +10795,9 @@ impl CommandInterpreter {
             self.cursor = cursor;
             self.note_markdown_typing_exit(document, exit_source)?;
         } else if !self.typing_style.is_empty() {
-            let (prepared, cursor, authored_start) = document
-                .prepare_insertion_with_typing_context(
+            let prepare = if self.typing_style.link_disabled { Document::prepare_insertion_without_link }
+                else { Document::prepare_insertion_with_typing_context };
+            let (prepared, cursor, authored_start) = prepare(document,
                     edit,
                     self.typing_style.named.as_ref(),
                     &self.typing_style.values,
@@ -10956,6 +10957,7 @@ impl CommandInterpreter {
                     self.typing_style.named.as_ref(),
                     &self.typing_style.values,
                     self.insertion_boundary_affinity(),
+                    self.typing_style.link_disabled,
                     document.format() == Format::Markdown && self.markdown_autodetect(),
                     self.input_assistance.literal,
                     self.markdown_typing_exit(document),
@@ -11010,7 +11012,11 @@ impl CommandInterpreter {
             FormattedPayloadEdit::new(start..end, payload)
                 .with_boundary_affinity(self.insertion_boundary_affinity());
         document.validate_typing_payload(&edit)?;
-        if !self.typing_style.is_empty() {
+        if self.typing_style.link_disabled {
+            let (prepared, caret, _) = document.prepare_insertion_without_link(edit, self.typing_style.named.as_ref(), &self.typing_style.values, self.typing_style.inherited.as_ref()).map_err(command_document_error)?;
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            self.cursor = caret;
+        } else if !self.typing_style.is_empty() {
             self.cursor = document
                 .insert_with_typing_style(
                     edit,
@@ -11342,6 +11348,7 @@ impl CommandInterpreter {
                                 self.set_typing_named_style(document, named.clone())?;
                             }
                             self.set_typing_properties(document, value.values.clone())?;
+                            self.typing_style.link_disabled = value.link_disabled;
                             CommandOutput::complete()
                         }
                         EditSessionStep::Text(value) if self.mode == Mode::Insert => {

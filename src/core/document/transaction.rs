@@ -2930,7 +2930,7 @@ impl Document {
         ))
     }
 
-    fn prepare_visible_source_patches(
+    pub(super) fn prepare_visible_source_patches(
         &self,
         patches: Vec<SourcePatch>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {

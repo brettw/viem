@@ -34,6 +34,9 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   func styleMenuCatalogue(snapshot: EVStyleSheetSnapshot, selectedStyles: EVSelectedNamedStyles?,
                           selectionAvailable: Bool) -> EVStyleMenuCatalogue {
     let inTable = selectedStyles?.hasTable == true
+    let characterAssignmentsAvailable = selectionAvailable
+      && (try? backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0
+      && selectedStyles?.hasCodeBlock != true
     var entries = snapshot.definitions.filter {
       !$0.flags.contains(.internalSyntax)
         && (!$0.flags.contains(.internalList)
@@ -49,6 +52,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
           isEnabled: selectionAvailable && (!inTable || definition.kind == .character)
+            && (definition.kind != .character || characterAssignmentsAvailable)
             && ((self.standardHeadingLevel(for: definition.key.id.rawValue) != nil
               && definition.kind == .paragraph)
               || (definition.capabilities.contains(.assign)
@@ -64,7 +68,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     entries.insert(EVStyleMenuEntry(
       role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
       presentation: EVMenuItemPresentation(
-        isEnabled: selectionAvailable && [.markdown, .markdownSource].contains(backend.sourceFormat),
+        isEnabled: characterAssignmentsAvailable && [.markdown, .markdownSource].contains(backend.sourceFormat),
         state: selectedStyles?.identity == snapshot.identity
           && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off)
     ), at: 0)
@@ -185,6 +189,10 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         snapshot.identity.documentRevision == action.documentRevision,
         snapshot.identity.styleSheetRevision == action.styleSheetRevision
       else { return }
+      if action.role == .character {
+        guard (try? backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0,
+              (try? session.selectedNamedStyles().hasCodeBlock) == false else { return }
+      }
       let key = EVStyleKey(namespace: action.role.namespace, id: EVStyleID(rawValue: action.stableID))
       let clearCharacter = key == .defaultParagraph
       let definition = snapshot.definition(for: key)

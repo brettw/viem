@@ -657,7 +657,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             Data("alpha beta".utf8)
         )
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
-        XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
+        XCTAssertEqual(surface.presentation(for: .bold), EVMenuItemPresentation(isEnabled: true, state: .off))
         XCTAssertEqual(surface.presentation(for: .redo).title, "Redo Style Change")
 
         surface.perform(menuCommand: .redo, sender: nil)
@@ -667,7 +667,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             Data("**alpha** beta".utf8)
         )
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
-        XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
+        XCTAssertEqual(surface.presentation(for: .bold), EVMenuItemPresentation(isEnabled: true, state: .on))
 
         try send(Array("0v4l"), through: session)
         surface.refreshPresentation()
@@ -702,12 +702,12 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testSemanticStyleMenusDisableNonselectionPlainTextAndVisualBlockSelections() throws {
+    func testSemanticStyleMenusEnableMarkdownCaretAndDisablePlainTextAndVisualBlockSelections() throws {
         do {
             let (_, surface, _) = try makeMarkdownSurface("alpha")
 
-            XCTAssertFalse(surface.presentation(for: .bold).isEnabled)
-            XCTAssertFalse(surface.presentation(for: .italic).isEnabled)
+            XCTAssertEqual(surface.presentation(for: .bold), EVMenuItemPresentation(isEnabled: true, state: .off))
+            XCTAssertEqual(surface.presentation(for: .italic), EVMenuItemPresentation(isEnabled: true, state: .off))
         }
 
         do {

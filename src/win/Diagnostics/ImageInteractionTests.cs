@@ -35,8 +35,9 @@ internal static class ImageInteractionTests
         {
             await Task.Delay(100);
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            Check(window.Toolbar.InsertImage.IsEnabled && AutomationProperties.GetName(window.Toolbar.InsertImage) == "Insert image",
-                "Markdown exposes the native insert-image toolbar action");
+            Check(!window.Toolbar.InsertImage.IsEnabled && window.Toolbar.InsertImage.IsChecked == true
+                && AutomationProperties.GetName(window.Toolbar.InsertImage) == "Insert image",
+                "the Normal image caret activates and disables the native image toolbar button");
             var group = VisualTreeHelper.GetParent(window.Toolbar.InsertImage) as StackPanel;
             Check(group != null && group.Children.IndexOf(window.Toolbar.InsertImage) == group.Children.IndexOf(window.Toolbar.Buttons[ToolbarAction.CodeBlock]) + 1,
                 "the image toolbar action immediately follows Code Block in its group");
@@ -85,7 +86,8 @@ internal static class ImageInteractionTests
             foreach (ulong offset in new ulong[] { 0, 1, 8, 15, 37 })
             {
                 view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-                Check(view.ImageContext().Image?.Destination == "https://example.invalid/a.png" && pane.ImagePopupVisible,
+                Check(view.ImageContext().Image?.Destination == "https://example.invalid/a.png" && pane.ImagePopupVisible
+                    && window.Toolbar.InsertImage.IsChecked == true && !window.Toolbar.InsertImage.IsEnabled,
                     "Source image markup activates the location popup at offset " + offset);
                 Check(!pane.ImageReloadVisible, "Source image popups omit the preview reload action");
             }
@@ -155,11 +157,13 @@ internal static class ImageInteractionTests
             view.Command("i"); view.Key(VIEM_KEY_RIGHT);
             var selection = view.LogicalSelection();
             Check(view.HasSelection && selection.text_start == 1 && selection.text_end == 4
-                && pane.CaretIsOnInlineImage() && pane.ImagePopupVisible,
+                && pane.CaretIsOnInlineImage() && pane.ImagePopupVisible
+                && window.Toolbar.InsertImage.IsChecked == true && !window.Toolbar.InsertImage.IsEnabled,
                 "Insert Right onto an image selects its complete object and displays an outline and location popup");
             view.Key(VIEM_KEY_RIGHT);
             Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 4
-                && !pane.CaretIsOnInlineImage(), "Right past a selected image restores the ordinary Insert caret");
+                && !pane.CaretIsOnInlineImage() && window.Toolbar.InsertImage.IsChecked == false && window.Toolbar.InsertImage.IsEnabled,
+                "Right past a selected image restores the ordinary Insert caret and insertion toolbar action");
             view.Key(VIEM_KEY_LEFT);
             selection = view.LogicalSelection();
             Check(view.HasSelection && selection.text_start == 1 && selection.text_end == 4 && pane.CaretIsOnInlineImage(),
@@ -169,6 +173,16 @@ internal static class ImageInteractionTests
             view.Undo();
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "undo restores the image's original source after keyboard replacement");
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg0i"); view.Key(VIEM_KEY_RIGHT); view.Key(VIEM_KEY_RIGHT);
+            Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "the image insertion button accepts native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            Check(pane.ImageEditorVisible && pane.ImageTextValue == "" && pane.ImageDestinationValue == "",
+                "Insert image opens an empty insertion form beside an existing image");
+            pane.ImageDestinationValue = "new.png"; pane.ApplyImageEditor();
+            Check(document.FormattedText() == "A\uFFFC\uFFFCB", "Insert image creates a new object at the caret without editing the adjacent image");
+            view.Key(VIEM_KEY_ESCAPE); view.Undo();
+            Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "inserting beside an image restores exact original source on undo");
         }
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }

@@ -5086,3 +5086,50 @@ fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::Ok);
     assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::StaleRevision);
 }
+
+#[test]
+fn image_popup_ffi_identifies_forward_and_reversed_native_image_selections() {
+    let source = b"A![cat](image.png)B";
+    for format in [VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE] {
+        for reversed in [false, true] {
+            let core = create_core(source, ViemDocumentOptions { format, ..Default::default() });
+            let mut provider = Box::new(FakeProviderContext::new(core.handle));
+            let (view, _) = add_test_view(&core, provider.as_mut());
+            let revision = document_state(&core).document_revision;
+            let mut outcome = ViemCoreOutcomeV1::default();
+            assert_eq!(unsafe { test_send_text(core.handle, view, b"i".as_ptr(), 1, &mut outcome) }, ViemStatus::Ok);
+            let start = 1;
+            let end = if format == VIEM_FORMAT_MARKDOWN { 4 } else { (source.len() - 1) as u64 };
+            let place = ViemPlaceCursorV1 {
+                struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+                document_revision: revision,
+                text_offset: if reversed { end } else { start },
+                affinity: if reversed { VIEM_BOUNDARY_AFFINITY_UPSTREAM } else { VIEM_BOUNDARY_AFFINITY_DOWNSTREAM },
+                ..Default::default()
+            };
+            assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &place, &mut outcome) }, ViemStatus::Ok);
+            let extend = ViemPlaceCursorV1 {
+                flags: VIEM_PLACE_CURSOR_EXTEND_SELECTION,
+                text_offset: if reversed { start } else { end },
+                affinity: if reversed { VIEM_BOUNDARY_AFFINITY_DOWNSTREAM } else { VIEM_BOUNDARY_AFFINITY_UPSTREAM },
+                ..place
+            };
+            assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &extend, &mut outcome) }, ViemStatus::Ok);
+            let mut selection = ViemLogicalSelectionIdentityV1::default();
+            assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
+            assert_eq!((selection.text_start, selection.text_end), (start, end));
+            assert_eq!(outcome.cursor_utf8_offset, if reversed { start } else { end });
+            let mut required = 0;
+            assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+            let mut bytes = vec![0; required as usize];
+            assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+            let context: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(context["image"]["start"], start);
+            assert_eq!(context["image"]["end"], end);
+            assert_eq!(context["image"]["text"], "cat");
+            assert_eq!(context["image"]["destination"], "image.png");
+            assert_eq!(context["canInsert"], false);
+            assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, revision), source);
+        }
+    }
+}

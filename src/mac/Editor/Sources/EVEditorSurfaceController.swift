@@ -58,6 +58,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     // The offsets themselves remain scoped to viewPresentation's immutable
     // document revision. This associates that snapshot with its owning view.
     private var selectionPresentationViewID: ViemViewId?
+    private var selectionCharacterContextGeneration: UInt64 = 0
     private var themeObserver: NSObjectProtocol?
     private let viewPreferences: EVViewPreferences
     private var viewPreferencesObserver: NSObjectProtocol?
@@ -400,7 +401,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 }
             }
 
-            let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID)
+            let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID,
+                characterContextGeneration: session.characterContextGeneration)
             let imageViewportChanged = selectionPresentationViewID != session.viewID
                 || documentState.document_id != nextDocumentState.document_id
                 || documentState.document_revision != nextDocumentState.document_revision
@@ -423,6 +425,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             completion = nextCompletion
             viewPresentation = nextPresentation
             selectionPresentationViewID = session.viewID
+            selectionCharacterContextGeneration = session.characterContextGeneration
             viewportState = nextViewport
             layoutSnapshot = nextLayoutSnapshot
             layoutPaint = nextLayoutPaint
@@ -580,21 +583,31 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    /// Detect changes in the exported caret/selection payload, without keeping
-    /// persistent offsets or resolving a second selection/layout query. A new
+    /// Detect changes in the caret, selection, or pending character context without
+    /// keeping persistent offsets or resolving a second selection/layout query. A new
     /// source revision alone updates the retained snapshot silently: editing a
     /// style may patch source while leaving the logical selection unchanged.
     /// Old offsets are never reused as positions in that new revision.
-    private func selectionPresentationChanged(_ next: ViemViewPresentationV1, viewID: ViemViewId) -> Bool {
+    private func selectionPresentationChanged(_ next: ViemViewPresentationV1, viewID: ViemViewId,
+                                              characterContextGeneration: UInt64) -> Bool {
         guard let previousViewID = selectionPresentationViewID else { return false }
         let previous = viewPresentation
         if previousViewID != viewID || previous.document_id != next.document_id { return true }
+        if selectionCharacterContextGeneration != characterContextGeneration { return true }
         if previous.cursor_utf8_offset != next.cursor_utf8_offset || previous.cursor_affinity != next.cursor_affinity { return true }
 
         let selectionFlags = UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR)
             | UInt32(VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT)
             | UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK)
         if previous.flags & selectionFlags != next.flags & selectionFlags { return true }
+        if next.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR) == 0,
+           previous.mode != next.mode {
+            func hasCharacterContext(_ mode: UInt32) -> Bool {
+                mode == UInt32(VIEM_MODE_NORMAL) || mode == UInt32(VIEM_MODE_INSERT)
+                    || mode == UInt32(VIEM_MODE_REPLACE)
+            }
+            if hasCharacterContext(previous.mode), hasCharacterContext(next.mode) { return true }
+        }
         if next.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR) != 0 {
             if previous.visual_anchor_utf8_offset != next.visual_anchor_utf8_offset { return true }
             if next.flags & UInt32(VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT) != 0,
@@ -957,7 +970,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .strikethrough:
             if [.markdown, .markdownSource].contains(backend.sourceFormat), let session,
                let state = try? session.strikethroughState() {
-                EVMenuItemPresentation(isEnabled: true,
+                EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
+                    && (try? session.selectedNamedStyles().hasCodeBlock) != true,
                     state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
                         : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
             } else { .disabled }

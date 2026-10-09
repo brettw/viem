@@ -2,6 +2,11 @@
 use super::*;
 
 impl CommandInterpreter {
+    pub(crate) fn set_native_link_typing_caret(&mut self, document: &Document, caret: usize) {
+        self.cursor = caret;
+        self.boundary_affinity = BoundaryAffinity::Upstream;
+        self.position_revision = Some(document.revision());
+    }
     /// Retire the consumed selection and begin a fresh typing undo unit when
     /// the user came from native/Select selection or Insert/Replace. Vim Visual
     /// edits return to Normal. No input is replayed at this native boundary.

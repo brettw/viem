@@ -21,6 +21,7 @@ internal sealed partial class StyleWindow
         followsSyntaxStyle = followCaret;
         followedPresentation = documentView.Presentation;
         documentView.Changed += ViewChanged;
+        documentView.FormattingContextChanged += FormattingContextChanged;
         documentView.Document.Changed += DocumentChanged;
         documentView.Document.SyntaxChanged += SyntaxChanged;
         documentView.Disposed += SourceViewClosed;
@@ -29,6 +30,7 @@ internal sealed partial class StyleWindow
     {
         CancelCaretFollow();
         documentView.Changed -= ViewChanged;
+        documentView.FormattingContextChanged -= FormattingContextChanged;
         documentView.Document.Changed -= DocumentChanged;
         documentView.Document.SyntaxChanged -= SyntaxChanged;
         documentView.Disposed -= SourceViewClosed;
@@ -51,6 +53,17 @@ internal sealed partial class StyleWindow
         bool changed = SelectionChanged(followedPresentation, next);
         followedPresentation = next;
         if (!changed || updating) return;
+        ScheduleCaretFollow();
+    }
+    private void FormattingContextChanged()
+    {
+        if (closed || !followsCaret || documentView.Id == 0 || updating) return;
+        // Pending character choices can change without moving the caret or
+        // publishing source. Definition edits do not issue this notification.
+        ScheduleCaretFollow();
+    }
+    private void ScheduleCaretFollow()
+    {
         // A command that moves the caret also ends its core style edit group.
         // Drop queued colors before following the new editing context.
         DismissColorPickers(commit: false);
@@ -125,6 +138,9 @@ internal sealed partial class StyleWindow
     {
         if (previous.document_id != next.document_id || previous.cursor_utf8_offset != next.cursor_utf8_offset
             || previous.cursor_affinity != next.cursor_affinity) return true;
+        if (previous.mode != next.mode
+            && (previous.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE)
+            && (next.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE)) return true;
         const uint flags = VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR | VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT | VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK;
         if ((previous.flags & flags) != (next.flags & flags)) return true;
         if ((next.flags & VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR) != 0)

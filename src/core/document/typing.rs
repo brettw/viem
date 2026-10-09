@@ -2,11 +2,349 @@
 //! stages never publish history. Their local patch lists are composed against
 //! the original source, then verified and committed as one model transaction.
 use super::*;
-use crate::document::{FontSlant, StylePropertyValue};
+use crate::document::{FontSlant, LinkEditIntent, ReplacementTypingContext, StylePropertyValue};
 
 use super::replacement::PatchComposition;
 
 impl Document {
+    pub(crate) fn prepare_typing_after_canonical_link(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let (canonical, range) = scratch.prepare_canonical_autolink(
+            edit.range.clone(),
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream),
+        )?;
+        for patch in canonical.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(canonical)?;
+        let payload = FormattedTextPayload::new(
+            &scratch.hard_line_snapshot(),
+            edit.payload.text(),
+            edit.payload.break_offsets().to_vec(),
+        )
+        .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let staged = FormattedPayloadEdit::new(range, payload).with_boundary_affinity(
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream),
+        );
+        let (inserted, caret, start) =
+            scratch.prepare_insertion_without_link(staged, named, values, None)?;
+        for patch in inserted.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(inserted)?;
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(sources.source_patches())?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                vec![edit.text_edit()],
+                Some(sources.source_patches()),
+                true,
+            )?
+        };
+        self.prepared_text_point(&prepared, caret)?;
+        self.prepared_text_point(&prepared, start)?;
+        Ok((prepared, caret, start))
+    }
+
+    pub(crate) fn prepare_autolink_selection_removal(
+        &self,
+        range: std::ops::Range<usize>,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let (canonical, selected) =
+            scratch.prepare_canonical_autolink(range.clone(), BoundaryAffinity::Downstream)?;
+        for patch in canonical.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(canonical)?;
+        let (removed, caret) = scratch.prepare_link_edit(
+            scratch.id(),
+            scratch.revision(),
+            LinkEditIntent::RemoveSelection { range: selected },
+        )?;
+        for patch in removed.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(removed)?;
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(sources.source_patches())?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                Vec::new(),
+                Some(sources.source_patches()),
+                true,
+            )?
+        };
+        self.prepared_text_point(&prepared, caret)?;
+        Ok((prepared, caret))
+    }
+    pub(crate) fn prepare_link_after_unlinked_typing(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        destination: String,
+    ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let payload = FormattedTextPayload::new(
+            &scratch.hard_line_snapshot(),
+            edit.payload.text(),
+            edit.payload.break_offsets().to_vec(),
+        )
+        .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let staged = FormattedPayloadEdit::new(edit.range.clone(), payload).with_boundary_affinity(
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream),
+        );
+        let (first, caret, start) =
+            scratch.prepare_insertion_without_link(staged, named, values, None)?;
+        for patch in first.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(first)?;
+        let (linked, caret) = scratch.prepare_link_edit(
+            scratch.id(),
+            scratch.revision(),
+            super::super::LinkEditIntent::Insert {
+                range: start..caret,
+                text: edit.payload.text().to_owned(),
+                destination,
+            },
+        )?;
+        for patch in linked.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(linked)?;
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(sources.source_patches())?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                vec![edit.text_edit()],
+                Some(sources.source_patches()),
+                true,
+            )?
+        };
+        self.prepared_text_point(&prepared, caret)?;
+        Ok((prepared, caret))
+    }
+    /// Compose a source-local link split with ordinary styled payload editing.
+    /// The provisional character retains the original inline context and supplies
+    /// an editable boundary; none of the stages
+    /// stage is published, and the final transaction verifies the real payload.
+    pub(crate) fn prepare_typing_after_link_split(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let placeholder = FormattedTextPayload::new(&scratch.hard_line_snapshot(), "x", Vec::new())
+            .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let placeholder = FormattedPayloadEdit::new(edit.range.clone(), placeholder)
+            .with_boundary_affinity(
+                edit.boundary_affinity
+                    .unwrap_or(BoundaryAffinity::Downstream),
+            );
+        let (first, _, staged_at) =
+            scratch.prepare_insertion_with_typing_context(placeholder, None, &[], None)?;
+        for patch in first.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(first)?;
+        let (unlinked, staged_at) =
+            scratch.prepare_unlinked_typing_boundary(staged_at..staged_at + 1)?;
+        for patch in unlinked.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(unlinked)?;
+        let payload = FormattedTextPayload::new(
+            &scratch.hard_line_snapshot(),
+            edit.payload.text(),
+            edit.payload.break_offsets().to_vec(),
+        )
+        .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let staged = FormattedPayloadEdit::new(staged_at..staged_at, payload)
+            .with_boundary_affinity(BoundaryAffinity::Downstream);
+        let (next, mut caret, mut authored_start) =
+            scratch.prepare_insertion_with_typing_context(staged, named, values, None)?;
+        let placeholder = next
+            .text_position_map()
+            .map_text_point(
+                scratch.text_point(staged_at)?,
+                Association::AfterInsertion,
+                BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
+        for patch in next.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(next)?;
+        let remove = scratch.prepare_model_request(ModelRequest::ApplyTextEdits {
+            document: scratch.id(),
+            revision: scratch.revision(),
+            edits: vec![TextEdit::new(placeholder..placeholder + 1, "")],
+        })?;
+        let map = remove.text_position_map();
+        caret = map
+            .map_text_point(
+                scratch.text_point(caret)?,
+                Association::BeforeInsertion,
+                BoundaryAffinity::Upstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
+        authored_start = map
+            .map_text_point(
+                scratch.text_point(authored_start)?,
+                Association::BeforeInsertion,
+                BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding,
+            )?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
+        for patch in remove.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(remove)?;
+        scratch.protect_unlinked_typing(&mut sources, &mut authored_start, &mut caret)?;
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(sources.source_patches())?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                vec![edit.text_edit()],
+                Some(sources.source_patches()),
+                true,
+            )?
+        };
+        self.prepared_text_point(&prepared, caret)?;
+        self.prepared_text_point(&prepared, authored_start)?;
+        Ok((prepared, caret, authored_start))
+    }
+
+    pub(crate) fn prepare_typing_without_automatic_links(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        inherited: Option<&ReplacementTypingContext>,
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        let mut scratch = self.scratch_document();
+        let payload = FormattedTextPayload::new(
+            &scratch.hard_line_snapshot(),
+            edit.payload.text(),
+            edit.payload.break_offsets().to_vec(),
+        )
+        .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let staged = FormattedPayloadEdit::new(edit.range.clone(), payload).with_boundary_affinity(
+            edit.boundary_affinity
+                .unwrap_or(BoundaryAffinity::Downstream),
+        );
+        let mut inherited = inherited.cloned();
+        if let Some(context) = inherited.as_mut() {
+            context.link = None;
+        }
+        let (first, mut caret, mut start) = scratch.prepare_insertion_with_typing_context(
+            staged,
+            named,
+            values,
+            inherited.as_ref(),
+        )?;
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        for patch in first.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(first)?;
+        scratch.protect_unlinked_typing(&mut sources, &mut start, &mut caret)?;
+        let prepared = if self.format().is_source_view() {
+            self.prepare_visible_source_patches(sources.source_patches())?
+        } else {
+            self.prepare_text_edits_with_patch_policy(
+                vec![edit.text_edit()],
+                Some(sources.source_patches()),
+                true,
+            )?
+        };
+        self.prepared_text_point(&prepared, caret)?;
+        self.prepared_text_point(&prepared, start)?;
+        Ok((prepared, caret, start))
+    }
+
+    /// A pending plain-link choice also protects URL/email payloads from GFM's
+    /// automatic linking. Reuse ordinary link removal's verified escaping rule.
+    fn protect_unlinked_typing(
+        &mut self,
+        sources: &mut PatchComposition,
+        start: &mut usize,
+        caret: &mut usize,
+    ) -> Result<(), ModelTransactionError> {
+        for _ in 0..512 {
+            let item = self
+                .projection()
+                .style_spans_for_region(&(*start..*caret))
+                .iter()
+                .find(|span| {
+                    span.application == StyleApplication::Automatic("Link".into())
+                        && span.range.start < *caret
+                        && *start < span.range.end
+                })
+                .map(|span| span.range.start);
+            let Some(at) = item else {
+                return Ok(());
+            };
+            let link = self
+                .link_snapshot_at(self.text_point(at)?)?
+                .filter(|link| link.editable && link.destination_source.is_none())
+                .ok_or(DocumentError::UnsupportedFormatting)?;
+            let (prepared, _) = self.prepare_link_edit(
+                self.id(),
+                self.revision(),
+                LinkEditIntent::Remove { range: link.range },
+            )?;
+            let map = prepared.text_position_map();
+            *start = map
+                .map_text_point(
+                    self.text_point(*start)?,
+                    Association::BeforeInsertion,
+                    BoundaryAffinity::Downstream,
+                    DeletionRecovery::PreferFollowingThenPreceding,
+                )?
+                .value()
+                .ok_or(DocumentError::AmbiguousProjection)?
+                .offset();
+            *caret = map
+                .map_text_point(
+                    self.text_point(*caret)?,
+                    Association::AfterInsertion,
+                    BoundaryAffinity::Upstream,
+                    DeletionRecovery::PreferFollowingThenPreceding,
+                )?
+                .value()
+                .ok_or(DocumentError::AmbiguousProjection)?
+                .offset();
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            self.commit_model_transaction(prepared)?;
+        }
+        Err(DocumentError::UnsupportedFormatting.into())
+    }
     pub(crate) fn validate_typing_payload(
         &self,
         edit: &FormattedPayloadEdit,
@@ -33,6 +371,19 @@ impl Document {
             return Err(DocumentError::UnsupportedFormatting);
         }
         Ok(())
+    }
+
+    pub fn validate_typing_named_style_at(
+        &self,
+        at: usize,
+        affinity: BoundaryAffinity,
+        style: &StyleId,
+    ) -> Result<(), DocumentError> {
+        if self.is_read_only() {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        self.validate_typing_named_style(style)?;
+        self.validate_typing_properties_at(at, affinity, &[])
     }
 
     pub fn typing_named_style_at(
@@ -217,6 +568,44 @@ impl Document {
             }
         }
         Ok(properties)
+    }
+
+    /// Native character formatting is unavailable in literal block owners.
+    /// This local capability query never prepares or publishes an edit.
+    pub fn validate_typing_properties_at(
+        &self,
+        at: usize,
+        affinity: BoundaryAffinity,
+        values: &[(StyleProperty, StylePropertyValue)],
+    ) -> Result<(), DocumentError> {
+        self.text_point(at)?;
+        self.validate_typing_properties(values)?;
+        if self.is_read_only() {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let sample = if affinity == BoundaryAffinity::Upstream && at > 0 {
+            self.hard_line_snapshot()
+                .previous_grapheme_boundary(at)
+                .unwrap_or(at)
+        } else {
+            at
+        };
+        if self
+            .projection()
+            .blocks_for_region(&(sample..sample))
+            .iter()
+            .any(|block| {
+                block.range.start <= sample
+                    && sample <= block.range.end
+                    && (block.style.0 == "Code Block"
+                        || block.containers.iter().any(|member| {
+                            member.container.kind == super::super::ContainerKind::CodeBlock
+                        }))
+            })
+        {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        Ok(())
     }
 
     fn typing_context_matches(

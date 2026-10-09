@@ -936,6 +936,7 @@ final class EVCoreViewSession {
     private nonisolated let coreHandle: ViemCoreHandle
     private(set) var viewID: ViemViewId = 0
     private(set) var lastOutcome = ViemCoreOutcomeV1()
+    private(set) var characterContextGeneration: UInt64 = 0
     private var viewportSize = CGSize(width: 1, height: 1)
     private(set) var hasActiveComposition = false
     weak var commandTurnHost: (any EVCommandTurnHost)?
@@ -1271,7 +1272,7 @@ final class EVCoreViewSession {
     func setStrikethrough(_ enabled: Bool,
                          expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         var selection = selection
-        return try performCoreOperation("Change strikethrough") { outcome in
+        return try performCoreOperation("Change strikethrough", pendingCharacterSelection: selection) { outcome in
             viem_core_view_set_strikethrough(document.core, viewID, &selection, enabled ? 1 : 0, outcome)
         }
     }
@@ -1312,7 +1313,8 @@ final class EVCoreViewSession {
         request.enabled = enabled ? 1 : 0
         request.reserved = 0
         request.expected_selection = selection
-        return try performCoreOperation(enabled ? "Apply selection semantic style" : "Clear selection semantic style") { outcome in
+        return try performCoreOperation(enabled ? "Apply selection semantic style" : "Clear selection semantic style",
+                                        pendingCharacterSelection: selection) { outcome in
             viem_core_view_set_semantic_style(
                 document.core,
                 viewID,
@@ -1515,7 +1517,8 @@ final class EVCoreViewSession {
         request.identity = identity.abiValue
         request.expected_selection = selection
         let bytes = Array(key.id.rawValue.utf8)
-        return try performCoreOperation("Assign named style") { outcome in
+        return try performCoreOperation("Assign named style",
+                                        pendingCharacterSelection: key.namespace == .character ? selection : nil) { outcome in
             bytes.withUnsafeBufferPointer { buffer in
                 request.style_id.data = buffer.baseAddress
                 request.style_id.length = UInt64(buffer.count)
@@ -1911,11 +1914,15 @@ final class EVCoreViewSession {
     private func performCoreOperation(
         _ operation: String,
         transition: CompositionTransition = .cancelIfChanged,
+        pendingCharacterSelection: ViemLogicalSelectionIdentityV1? = nil,
         _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>) -> UInt32
     ) throws -> ViemCoreOutcomeV1 {
         var outcome = ViemCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try checked(body(&outcome), operation: operation)
+        if let pendingCharacterSelection {
+            notePendingCharacterContextChange(outcome, expected: pendingCharacterSelection)
+        }
         finish(outcome, composition: transition)
         return outcome
     }
@@ -1926,6 +1933,17 @@ final class EVCoreViewSession {
 
     func finishStyleEdit(_ outcome: ViemCoreOutcomeV1) {
         finish(outcome)
+    }
+
+    /// Pending choices have no source revision or caret movement. Publish their
+    /// view-local context with the next presentation, without treating unrelated
+    /// stylesheet edits or refreshes as a reason to leave a manual inspector choice.
+    func notePendingCharacterContextChange(_ outcome: ViemCoreOutcomeV1,
+                                           expected selection: ViemLogicalSelectionIdentityV1) {
+        guard selection.kind == UInt32(VIEM_LOGICAL_SELECTION_KIND_NONE),
+              selection.text_start == selection.text_end,
+              outcome.flags & UInt32(VIEM_OUTCOME_DOCUMENT_CHANGED) == 0 else { return }
+        characterContextGeneration += 1
     }
 
     private func finish(

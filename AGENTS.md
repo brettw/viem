@@ -290,9 +290,10 @@ synthetic read-only definitions remain read-only.
   declarations, including whole-document replacement. Joins keep the first
   paragraph's style while retained text keeps its inline formatting.
 - Pending character choices are view-local until text commits, without source,
-  dirty, or undo changes. Named-style choices in Normal mode carry into the next
-  Insert/Replace session; failures preserve pending choices. Movement/selection
-  retires them. Do not create empty source scopes for pending formatting.
+  dirty, or undo changes. Character-formatting controls at a Normal caret enter
+  Insert with the requested typing choice; failures preserve mode and pending
+  choices. Movement/selection retires them. Do not create empty source scopes
+  for pending formatting.
 - Selected formatting remains inside paragraph/heading/list/code owners and
   preserves unselected content and spelling.
 - Paragraph splits copy style/direct declarations except terminal Enter uses
@@ -522,14 +523,24 @@ does not contribute prose context. Preserve entered straight quotes if context
 is unavailable within a bounded query or conversion cannot be encoded. Quote
 conversion and insertion are one undoable edit.
 
-With no selection in Insert/Replace, character-formatting actions set a sparse
-view-local typing override at the exact caret without changing source or history.
+With no selection in Normal, character-formatting actions enter Insert at the
+caret with the requested sparse typing override. With no selection in Insert/Replace,
+character-formatting actions set a sparse view-local typing override at the exact
+caret without changing source or history.
 The next insertion applies text and formatting atomically; repeated typing keeps
 it, explicit movement/mode exit/projection change retires it. UI reports inherited
 style plus pending overrides, excluding automatic syntax colors. Turning off a
 property at its closing boundary exits that context (crossing closing markup in
 Source); doing so inside text splits subsequent formatting without skipping text
 or losing unrelated nested styles. IME commit includes the override.
+The Link toggle follows this typing policy: switching it off splits the link
+around subsequent inserted text, preserving retained label formatting and source.
+With a supported selection it removes link treatment; unsupported selections
+disable the action. Character controls report the current Normal-mode character
+or the Insert/Replace typing context, including link state. The Image button is
+active and disabled for the current Normal-mode image or an exact selected image.
+An Insert/Replace caret without a selection keeps Image inactive and inserts a
+new image rather than editing the adjacent image.
 
 Replace Backspace restores original local source patches, including formatting
 and delimiters, rather than reconstructing plain text or saving a whole document

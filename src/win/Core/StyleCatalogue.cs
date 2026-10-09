@@ -51,16 +51,18 @@ internal sealed unsafe partial class CoreView
     }
 
     // Shared by native menus and toolbar; names are labels, never action IDs.
-    public static StyleChoice[] StyleChoices(StyleSheet sheet, SelectedStyles selected)
+    public static StyleChoice[] StyleChoices(StyleSheet sheet, SelectedStyles selected, bool readOnly)
     {
         bool matches = sheet.Identity.Equals(selected.Identity);
         var choices = sheet.Styles.Where(s => s.Namespace is 1 or 2
             && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0
             && ((s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) == 0 || matches && s.Id == selected.Paragraph))
             .OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(s => new StyleChoice(s.Key, s.Name, (s.Namespace == 2 || !selected.HasTable) && (s.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || HeadingLevel(s.Key) != null),
+            .Select(s => new StyleChoice(s.Key, s.Name, !readOnly && (s.Namespace == 2 ? !selected.HasCodeBlock : !selected.HasTable)
+                && (s.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || HeadingLevel(s.Key) != null),
                 matches && (s.Namespace == 1 ? !selected.ParagraphMixed && selected.Paragraph == s.Id : !selected.CharacterMixed && selected.Character == s.Id))).ToList();
-        choices.Insert(0, new(new(2, ""), "Default Paragraph", true, matches && !selected.CharacterMixed && selected.Character.Length == 0));
+        choices.Insert(0, new(new(2, ""), "Default Paragraph", !readOnly && !selected.HasCodeBlock,
+            matches && !selected.CharacterMixed && selected.Character.Length == 0));
         return choices.ToArray();
     }
 
@@ -74,7 +76,7 @@ internal sealed unsafe partial class CoreView
         if (!HasFormattingSelection) return;
         var selected = SelectedNamedStyles();
         if (!selected.Identity.Equals(expected)) return;
-        if (!StyleChoices(Styles(expected), selected).Any(c => c.Key == key && c.Enabled)) return;
+        if (!StyleChoices(Styles(expected), selected, Document.IsReadOnly).Any(c => c.Key == key && c.Enabled)) return;
         if (HeadingLevel(key) is { } level) SetParagraph(level);
         else AssignStyle(key.Namespace, key.Id, expected);
     }

@@ -66,11 +66,13 @@ internal sealed unsafe partial class CoreView
         var presentation = SemanticStyle(style);
         Apply(o => { var request = New<ViemSetSemanticStyleV1>(); request.style = style; request.enabled = presentation.state == VIEM_SEMANTIC_STYLE_STATE_ON ? 0u : 1u; request.expected_selection = presentation.selection;
             return viem_core_view_set_semantic_style(Document.Handle, Id, &request, o); });
+        FormattingContextChanged?.Invoke();
     }
     public bool CanFormatStrikethrough => HasFormattingSelection
         && Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE
+        && !Document.IsReadOnly && !SelectedNamedStyles().HasCodeBlock
         && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
-            || Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
+            || Presentation.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
     public uint StrikethroughState()
     { uint state = 0; Check(viem_core_view_strikethrough_state(Document.Handle, Id, &state), "Read strikethrough"); return state; }
     public void ToggleStrikethrough()
@@ -78,6 +80,7 @@ internal sealed unsafe partial class CoreView
         var selection = LogicalSelection();
         byte enabled = StrikethroughState() != VIEM_SEMANTIC_STYLE_STATE_ON ? (byte)1 : (byte)0;
         Apply(o => { var expected = selection; return viem_core_view_set_strikethrough(Document.Handle, Id, &expected, enabled, o); });
+        FormattingContextChanged?.Invoke();
     }
     public static ViemStyleEditValueV1 Number(float number) { var v = New<ViemStyleEditValueV1>(); v.kind = VIEM_STYLE_VALUE_FLOAT; v.number = number; return v; }
     public static ViemStyleEditValueV1 Enum(uint kind, uint value) { var v = New<ViemStyleEditValueV1>(); v.kind = kind; v.enum_value = value; return v; }
@@ -180,6 +183,7 @@ internal sealed unsafe partial class CoreView
     {
         using var arena = new NativeArena(); var slice = arena.Utf8(id); var identity = expected ?? StyleIdentity();
         Apply(o => { var r = New<ViemAssignStyleV1>(); r.@namespace = space; r.identity = identity; r.style_id = slice; r.expected_selection = LogicalSelection(); return viem_core_view_assign_style(Document.Handle, Id, &r, o); });
+        FormattingContextChanged?.Invoke();
     }
     public string CreateCodeStyle(string name)
     {

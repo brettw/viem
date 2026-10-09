@@ -1,6 +1,6 @@
 //! Bounded link popup queries and exact-selection authoring.
 use super::*;
-use crate::document::LinkEditIntent;
+use crate::document::{LinkEditIntent, StyleApplication};
 
 /// # Safety
 /// Output and required-length storage must be valid, aligned and disjoint.
@@ -28,8 +28,47 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                 .command_state(ViewId(view))
                 .ok_or(ViemStatus::InvalidView)?
                 .cursor();
+            let commands = core
+                .command_state(ViewId(view))
+                .ok_or(ViemStatus::InvalidView)?;
+            let affinity = if commands.mode() == Mode::Normal {
+                BoundaryAffinity::Downstream
+            } else {
+                commands.insertion_boundary_affinity()
+            };
+            let sample = if range.is_empty() && affinity == BoundaryAffinity::Upstream && cursor > 0
+            {
+                document
+                    .hard_line_snapshot()
+                    .previous_grapheme_boundary(cursor)
+                    .unwrap_or(cursor)
+            } else if range.is_empty() {
+                cursor
+            } else {
+                range.start
+            };
+            let linked = document
+                .projection()
+                .style_spans_for_region(&(sample..sample.saturating_add(1)))
+                .iter()
+                .any(|span| {
+                    span.application == StyleApplication::Automatic("Link".into())
+                        && span.range.contains(&sample)
+                        && (range.is_empty() || range.end <= span.range.end)
+                });
             let link = document
-                .link_snapshot_at(document.text_point(cursor).map_err(document_status)?)
+                .link_at_boundary(
+                    if range.is_empty() {
+                        cursor
+                    } else {
+                        range.start
+                    },
+                    if range.is_empty() {
+                        affinity
+                    } else {
+                        BoundaryAffinity::Downstream
+                    },
+                )
                 .map_err(document_status)?
                 .filter(|link| {
                     range.is_empty()
@@ -54,7 +93,11 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                 "selection": { "viewId": view, "documentId": document.id().0, "revision": document.revision().0,
                     "start": range.start, "end": range.end, "kind": identity.kind, "anchor": selection.anchor(), "active": selection.active(),
                     "affinity": if selection.active_affinity() == BoundaryAffinity::Upstream { 0 } else { 1 } },
-                "canInsert": linear && document.can_insert_link(range), "text": text,
+                "canInsert": linear && (document.can_insert_link(range.clone()) || range.is_empty() && commands.typing_link_disabled()
+                    && commands.typing_named_style().is_none_or(|style| !document.character_style_is_code(style)) && document.can_exit_link_typing(cursor, affinity)), "text": text,
+                "linked": linked && (!range.is_empty() || !commands.typing_link_disabled()),
+                "canExitLink": range.is_empty() && !commands.typing_link_disabled() && document.can_exit_link_typing(cursor, affinity),
+                "canRemoveSelection": linear && document.can_remove_link_selection(range),
                 "link": link.map(|link| serde_json::json!({"start":link.range.start,"end":link.range.end,"text":link.text,"destination":link.destination,"editable":link.editable && !document.is_read_only()}))
             })).map_err(|_| ViemStatus::CoreFailure)
         })?;
@@ -93,7 +136,7 @@ pub unsafe extern "C" fn viem_core_view_edit_link(
             typed_pointer_region(destination.data, destination.length)?,
         ])?;
         let expected = unsafe { expected.read() };
-        if action > 2 || text.length.saturating_add(destination.length) > 32 * 1024 {
+        if action > 4 || text.length.saturating_add(destination.length) > 32 * 1024 {
             return Err(ViemStatus::InvalidArgument);
         }
         let text = str::from_utf8(unsafe { input_bytes(text.data, text.length)? })
@@ -124,6 +167,12 @@ pub unsafe extern "C" fn viem_core_view_edit_link(
             }
             let range = usize::try_from(link_start).map_err(|_| ViemStatus::LengthOverflow)?
                 ..usize::try_from(link_end).map_err(|_| ViemStatus::LengthOverflow)?;
+            if action == 3 {
+                let outcome = core
+                    .exit_link_typing(ViewId(view), selection)
+                    .map_err(core_status)?;
+                return summarize_core_outcome(core, ViewId(view), Some(&outcome));
+            }
             let intent = match action {
                 0 => LinkEditIntent::Insert {
                     range: selection.range(),
@@ -135,7 +184,10 @@ pub unsafe extern "C" fn viem_core_view_edit_link(
                     text,
                     destination,
                 },
-                _ => LinkEditIntent::Remove { range },
+                2 => LinkEditIntent::Remove { range },
+                _ => LinkEditIntent::RemoveSelection {
+                    range: selection.range(),
+                },
             };
             let outcome = core
                 .edit_link(ViewId(view), selection, intent)

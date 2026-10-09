@@ -26,6 +26,7 @@ internal sealed partial class EditorPane
     private Button? imageApply, imageReload;
     private ImageContext? shownImage, dismissedImage;
     private bool editingImage;
+    private bool insertingImageAtCaret;
     private Rect imageAnchor;
     internal bool ImagePopupVisible => imagePopup?.Visibility == Visibility.Visible;
     internal bool ImageEditorVisible => ImagePopupVisible && editingImage;
@@ -96,8 +97,10 @@ internal sealed partial class EditorPane
         DismissLinkPopup(suppress: false);
         if (View is not { } view || !view.HasFormattingSelection || view.Composing) return;
         var context = view.ImageContext();
-        if (!context.CanInsert && context.Image?.Editable != true)
+        bool insertAtCaret = !view.HasSelection && view.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE;
+        if (insertAtCaret ? !context.CanInsert : !context.CanInsert && context.Image?.Editable != true)
         { SetMessage("Images can be inserted within a single paragraph of Markdown prose."); return; }
+        insertingImageAtCaret = insertAtCaret;
         shownImage = context; dismissedImage = null;
         imageAnchor = caretRect;
         if (imageAnchor.Height <= 0) return;
@@ -109,11 +112,11 @@ internal sealed partial class EditorPane
     {
         if (View is not { } view || shownImage is not { } context) return;
         view.ValidateImageContext(context);
-        if (context.Image is { Editable: false }) return;
+        if (!insertingImageAtCaret && context.Image is { Editable: false }) return;
         EnsureImagePopup();
         editingImage = true;
-        imageText!.Text = context.Image?.Text ?? context.Text;
-        imageDestination!.Text = context.Image?.Destination ?? "";
+        imageText!.Text = insertingImageAtCaret ? "" : context.Image?.Text ?? context.Text;
+        imageDestination!.Text = insertingImageAtCaret ? "" : context.Image?.Destination ?? "";
         imageApply!.IsEnabled = imageDestination.Text.Trim().Length > 0;
         imageError!.Text = ""; imageError.Visibility = Visibility.Collapsed;
         imageActions!.Visibility = Visibility.Collapsed; imageEditor!.Visibility = Visibility.Visible;
@@ -146,7 +149,7 @@ internal sealed partial class EditorPane
             // Validate supported schemes before creating an image; relative paths
             // may be authored before a document is first saved.
             ImageLocation.Validate(target);
-            view.EditImage(context, imageText!.Text, target);
+            view.EditImage(context, imageText!.Text, target, insertAtCaret: insertingImageAtCaret);
             DismissImagePopup(suppress: false); FocusEditor(); Refresh();
         }
         catch (Exception error)
@@ -162,7 +165,7 @@ internal sealed partial class EditorPane
     internal void DismissImagePopup(bool suppress = true)
     {
         if (suppress) dismissedImage = shownImage;
-        editingImage = false; shownImage = null;
+        editingImage = false; insertingImageAtCaret = false; shownImage = null;
         if (imagePopup != null) imagePopup.Visibility = Visibility.Collapsed;
     }
 
@@ -188,7 +191,7 @@ internal sealed partial class EditorPane
             || !TryImageAnchor(context, out imageAnchor))
         { DismissImagePopup(suppress: false); return; }
         DismissLinkPopup(suppress: false);
-        EnsureImagePopup(); shownImage = context;
+        EnsureImagePopup(); shownImage = context; insertingImageAtCaret = false;
         ((TextBlock)imageDestinationButton!.Content).Text = context.Image.Destination;
         AutomationProperties.SetName(imageDestinationButton, "Open " + context.Image.Destination);
         ToolTipService.SetToolTip(imageDestinationButton, context.Image.Destination);

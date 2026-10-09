@@ -179,6 +179,7 @@ impl Document {
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
+        link_disabled: bool,
         autodetect: bool,
         literal: bool,
         exit: Option<crate::document::SourcePoint>,
@@ -222,7 +223,10 @@ impl Document {
                 .expect("journaled Replace excludes semantic hard breaks");
             let edit =
                 FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity);
-            let (prepared, after_cursor, closed) = if self.format() == Format::Markdown && (autodetect || literal) {
+            let (prepared, after_cursor, closed) = if link_disabled {
+                let (prepared, caret, _) = scratch.prepare_insertion_without_link(edit, named, values, None)?;
+                (prepared, caret, None)
+            } else if self.format() == Format::Markdown && (autodetect || literal) {
                 let (prepared, caret, _, closed) = scratch.prepare_markdown_typing_grapheme(edit, named, values, None, literal, exit_source.map(|at| scratch.source_point(at)).transpose()?)?;
                 (prepared, caret, closed)
             } else if values.is_empty() && named.is_none() {

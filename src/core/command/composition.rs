@@ -312,6 +312,7 @@ impl CompositionSession {
             commands.typing_properties(),
             commands.insertion_boundary_affinity(),
             commands.typing_inherited_context().or(inherited.as_ref()),
+            commands.typing_link_disabled(),
             commands.markdown_autodetect(),
             commands.markdown_typing_exit(document),
         )
@@ -324,11 +325,12 @@ impl CompositionSession {
         values: &[(StyleProperty, StylePropertyValue)],
         affinity: BoundaryAffinity,
         inherited: Option<&crate::document::ReplacementTypingContext>,
+        link_disabled: bool,
         autodetect: bool,
         exit: Option<crate::document::SourcePoint>,
     ) -> Result<CompositionCommitRequest, CompositionError> {
-        let autodetect = autodetect && document.format() == crate::document::Format::Markdown;
-        if !autodetect && named.is_none() && values.is_empty() && inherited.is_none() || self.marked_text.is_empty() {
+        let autodetect = autodetect && !link_disabled && document.format() == crate::document::Format::Markdown;
+        if !link_disabled && !autodetect && named.is_none() && values.is_empty() && inherited.is_none() || self.marked_text.is_empty() {
             return self.prepare_commit(document);
         }
         self.validate_document(document)?;
@@ -346,6 +348,8 @@ impl CompositionSession {
         let typing = FormattedPayloadEdit::new(edit.range.clone(), payload).with_boundary_affinity(affinity);
         let (prepared, caret_offset, _, markdown_exit) = if autodetect && document.format() == crate::document::Format::Markdown {
             document.prepare_markdown_typing_batch(typing, named, values, inherited, false, exit)
+        } else if link_disabled {
+            document.prepare_insertion_without_link(typing, named, values, inherited).map(|(p, c, s)| (p, c, s, None))
         } else {
             document.prepare_insertion_with_typing_context(typing, named, values, inherited).map(|(p, c, s)| (p, c, s, None))
         }.map_err(composition_model_error)?;

@@ -18,6 +18,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public ViemCoreOutcomeV1 Outcome { get; private set; }
     public event Action<HostEffects>? Effects;
     public event Action? Changed;
+    public event Action? FormattingContextChanged;
     public event Action? Disposed;
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
