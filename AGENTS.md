@@ -54,6 +54,7 @@ Recognized and explicitly selected formats retain their precedence.
 
 Blocking editor invocations on macOS and Windows complete only when all views of the requested
 shared document close, including later copies; save alone does not complete them.
+They bring the requested document forward, including when an existing editor process handles the request.
 Reload preserves the wait. `:cq` abandons all open documents without saving and
 returns failure to pending callers (or its explicit exit status), following Vim.
 Launch/open failure and GUI crashes must not report successful editing.
