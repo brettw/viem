@@ -918,6 +918,13 @@ store actual U+0000, not Vim's internal LF-as-NUL convention. Named special-key
 notation consumes only one original grapheme in Replace. Reject invalid Unicode
 scalars. Undo, repeat, macros and Replace Backspace retain literal intent.
 
+Native formatting accelerators use the same semantic actions and availability
+as native formatting controls in Markdown Source and WYSIWYG, including with
+the toolbar hidden. Pending Vim grammar, prompts, literal input and active IME
+composition retain input priority. Windows formatting bindings preserve the
+unshifted Vim control commands and AltGr text input. Link accelerators open the
+native insert/edit popup rather than removing the link or exiting its context.
+
 Text, Code and Markdown Source use logical indentation columns with defaults
 `autoindent`, `tabstop=2`, `shiftwidth=2`, `softtabstop=2`, `expandtab`, `smarttab`.
 Options inherit application defaults independently per buffer field; explicit

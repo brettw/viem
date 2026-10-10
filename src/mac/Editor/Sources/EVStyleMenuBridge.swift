@@ -5,10 +5,19 @@ import ViemAppShell
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
   func listStylePresentation(_ command: EVMenuCommand) -> EVMenuItemPresentation {
-    guard let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }
-    return EVMenuItemPresentation(isEnabled: true,
+    guard backend.sourceFormat.isMarkdown,
+      let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }
+    return EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
       state: command == .bulletedList ? selected.bulletState
         : command == .numberedList ? selected.numberedState : .off)
+  }
+
+  func characterCodePresentation() -> EVMenuItemPresentation {
+    guard backend.sourceFormat.isMarkdown,
+      let catalogue = currentStyleMenuCatalogue() else { return .disabled }
+    let active = catalogue.entries.contains { $0.role == .character && $0.stableID == "Code" && $0.presentation.state == .on }
+    let target = catalogue.entries.first { $0.role == .character && $0.stableID == (active ? "" : "Code") }
+    return EVMenuItemPresentation(isEnabled: target?.presentation.isEnabled == true, state: active ? .on : .off)
   }
 
   func listIndentPresentation(unindent: Bool) -> EVMenuItemPresentation {
@@ -260,8 +269,16 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
 }
 
 @MainActor
-extension EVEditorView: EVStyleMenuActionRouting, NSMenuItemValidation {
+extension EVEditorView: EVStyleMenuActionRouting, EVFormattingCommandRouting, NSMenuItemValidation {
   func validateMenuItem(_ item: NSMenuItem) -> Bool {
+    if item.action == #selector(EVFormattingCommandRouting.performEditorFormattingCommand(_:)) {
+      guard isActiveTextSurface, window?.isKeyWindow == true, window?.firstResponder === self, formattingInputAvailable,
+        let command = EVMenuCommand(rawValue: item.tag), command.formattingShortcut != nil,
+        let surface else { return false }
+      let presentation = surface.presentation(for: command)
+      item.state = presentation.state
+      return presentation.isEnabled
+    }
     if item.action == #selector(openLink(_:)) {
       guard let target = item.representedObject as? EVLinkMenuTarget,
             let surface else { return false }
@@ -303,6 +320,12 @@ extension EVEditorView: EVStyleMenuActionRouting, NSMenuItemValidation {
       let action = item.representedObject as? EVStyleMenuAction
     else { return }
     surface?.perform(styleMenuAction: action, sender: sender)
+  }
+
+  @objc func performEditorFormattingCommand(_ sender: Any?) {
+    guard let item = sender as? NSMenuItem, validateMenuItem(item),
+      let command = EVMenuCommand(rawValue: item.tag) else { return }
+    surface?.perform(menuCommand: command, sender: sender)
   }
 }
 

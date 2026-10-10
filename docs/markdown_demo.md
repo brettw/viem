@@ -22,6 +22,22 @@ This is a separate paragraph, with **bold**, *italic*, ***bold italic***, and ~~
 
 The toolbar also authors <ins>underlined text</ins>, superscripts such as x<sup>2</sup>, and subscripts such as H<sub>2</sub>O. The two script buttons form a group between strikeout and Code.
 
+Hover over a toolbar button to see its keyboard shortcut. Formatting shortcuts
+work in both Source and WYSIWYG, including when the toolbar is hidden:
+
+| Action | macOS | Windows |
+| --- | --- | --- |
+| Inline code | Option-Command-C | Ctrl-Shift-E |
+| Superscript | Control-Command-Plus | Ctrl-Period |
+| Subscript | Control-Command-Minus | Ctrl-Comma |
+| Insert or edit link | Command-K | Ctrl-Shift-K |
+| Bulleted list | Shift-Command-8 | Ctrl-Shift-8 |
+| Numbered list | Shift-Command-7 | Ctrl-Shift-7 |
+
+On a US Mac keyboard, Control-Command-Plus uses Control-Shift-Command-=.
+Pending Vim commands, literal input, command prompts, and active IME composition
+retain their input before these formatting shortcuts.
+
 Underscores inside identifiers stay literal: `snake_case_name` and snake_case_name. Escaped punctuation also stays literal: \*stars\*, \_underscores\_, \[brackets\], and \# a hash.
 
 This line ends with two spaces.  

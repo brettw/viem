@@ -3,13 +3,26 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Input;
 
-internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu, ZoomIn, ZoomOut }
+internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu, ZoomIn, ZoomOut, CharacterCode, Link, Superscript, Subscript, Bullets, Numbers }
 internal readonly record struct KeyRoute(uint Kind = 0, uint Codepoint = 0, uint Modifiers = 0, NativeAction Action = NativeAction.None);
 
 /// <summary>Reserve Windows shortcuts explicitly; preserve all other vi bindings.</summary>
 internal static class KeyPolicy
 {
-    public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false)
+    public static string FormattingShortcut(NativeAction action) => action switch
+    {
+        NativeAction.CharacterCode => "Ctrl+Shift+E",
+        NativeAction.Link => "Ctrl+Shift+K",
+        NativeAction.Superscript => "Ctrl+.",
+        NativeAction.Subscript => "Ctrl+,",
+        NativeAction.Bullets => "Ctrl+Shift+8",
+        NativeAction.Numbers => "Ctrl+Shift+7",
+        _ => ""
+    };
+
+    public static bool IsFormattingAction(NativeAction action) => FormattingShortcut(action).Length != 0;
+
+    public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false, bool formatting = false)
     {
         if (!literal && key == VirtualKey.F8 && !control && !shift && !alt) return new(Action: NativeAction.Styles);
         if (!literal && !control && !alt && (key == VirtualKey.Application || key == VirtualKey.F10 && shift))
@@ -18,6 +31,20 @@ internal static class KeyPolicy
         // AltGr is text input, not a Control shortcut.
         if (control && !alt)
         {
+            if (!literal && formatting)
+            {
+                var action = (key, shift) switch
+                {
+                    (VirtualKey.E, true) => NativeAction.CharacterCode,
+                    (VirtualKey.K, true) => NativeAction.Link,
+                    ((VirtualKey)190, false) => NativeAction.Superscript,
+                    ((VirtualKey)188, false) => NativeAction.Subscript,
+                    (VirtualKey.Number8, true) => NativeAction.Bullets,
+                    (VirtualKey.Number7, true) => NativeAction.Numbers,
+                    _ => NativeAction.None
+                };
+                if (action != NativeAction.None) return new(Action: action);
+            }
             if (key == VirtualKey.C) return new(Action: NativeAction.Copy);
             if (key == VirtualKey.X) return new(Action: NativeAction.Cut);
             if (key == VirtualKey.V) return new(Action: shift ? NativeAction.PastePlain : NativeAction.Paste);

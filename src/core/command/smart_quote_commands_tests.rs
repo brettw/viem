@@ -209,16 +209,34 @@ fn normal_block_put_and_physical_source_put_preserve_code_context() {
 
 #[test]
 fn rich_register_paste_preserves_bold_and_code_while_transforming_prose() {
-    let source = Document::from_bytes(
+    let mut source = Document::from_bytes(
         b"**\"bold\"** `\"code\"`".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
     )
     .unwrap();
+    // A relative Code size produces a fractional float that JSON must retain exactly.
+    let mut defaults: serde_json::Value =
+        serde_json::from_slice(&source.export_style_defaults().unwrap()).unwrap();
+    defaults["block_styles"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|style| style["id"] == "Paragraph")
+        .unwrap()["character"]["size"] = serde_json::json!(16);
+    defaults["character_styles"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|style| style["id"] == "Code")
+        .unwrap()["properties"]["size"] = serde_json::json!({"percentage": 90});
+    let defaults = serde_json::to_vec(&defaults).unwrap();
+    source.initialize_style_defaults(&defaults).unwrap();
     let fragment = source.clipboard_fragment(0..source.text().len()).unwrap();
     let raw = RegisterValue::from_clipboard_fragment(fragment).unwrap();
     for mode in ['P', 'i', 'v'] {
         let (mut document, mut commands) = fixture(Format::Markdown, "x");
+        document.initialize_style_defaults(&defaults).unwrap();
         commands.registers.yank(Some('a'), raw.clone());
         match mode {
             'P' => keys(&mut commands, &mut document, "\"aP"),

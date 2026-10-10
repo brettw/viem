@@ -728,7 +728,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
+        if menuCommand.formattingShortcut != nil, isViewLoaded, !editorView.formattingInputAvailable { return }
         guard acceptCompletionForNativeInput() else { return }
+        if menuCommand.formattingShortcut != nil, !presentation(for: menuCommand).isEnabled { return }
         if isViewLoaded, editorView.statusBar?.performCommandOutputAction(menuCommand) == true { return }
         dismissCommandOutput()
         guard let session else { return }
@@ -833,10 +835,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .actualSize:
             setZoom(1, session: session)
         case .bulletedList, .numberedList, .removeList:
+            let remove = menuCommand == .removeList || presentation(for: menuCommand).state == .on
             performInput {
                 let selection = try session.listSelection()
-                let style: UInt32 = menuCommand == .bulletedList ? UInt32(VIEM_LIST_STYLE_BULLET)
-                    : menuCommand == .numberedList ? UInt32(VIEM_LIST_STYLE_NUMBERED) : UInt32(VIEM_LIST_STYLE_NONE)
+                let style: UInt32 = remove ? UInt32(VIEM_LIST_STYLE_NONE)
+                    : menuCommand == .bulletedList ? UInt32(VIEM_LIST_STYLE_BULLET) : UInt32(VIEM_LIST_STYLE_NUMBERED)
                 _ = try session.setListStyle(style, expected: selection)
             }
         case .increaseIndent, .decreaseIndent:
@@ -845,6 +848,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 _ = try session.indentList(unindent: menuCommand == .decreaseIndent,
                                           expected: session.listSelection())
             }
+        case .characterCode:
+            formattingToolbar.toggleCharacterCode(formattingToolbar.characterCode)
+        case .insertLink:
+            linkPopover.openEditor()
         case .bold:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_STRONG), session: session)
         case .italic:
@@ -882,6 +889,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     public func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation {
+        if menuCommand.formattingShortcut != nil, isViewLoaded, !editorView.formattingInputAvailable { return .disabled }
         if isViewLoaded, let presentation = editorView.statusBar?.commandOutputPresentation(for: menuCommand) {
             return presentation
         }
@@ -963,6 +971,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         case .actualSize:
             .enabled
+        case .characterCode:
+            characterCodePresentation()
+        case .insertLink:
+            backend.sourceFormat.isMarkdown ? linkPopover.editorPresentation : .disabled
         case .bold:
             semanticStyleMenuPresentation(
                 UInt32(VIEM_SEMANTIC_STYLE_STRONG),
@@ -1295,17 +1307,20 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         switch value.state {
         case UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
+                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
+                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
                 state: .off
             )
         case UInt32(VIEM_SEMANTIC_STYLE_STATE_ON):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_CLEAR) != 0,
+                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
+                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_CLEAR) != 0,
                 state: .on
             )
         case UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED):
             return EVMenuItemPresentation(
-                isEnabled: value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
+                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
+                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
                 state: .mixed
             )
         default:

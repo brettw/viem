@@ -19,12 +19,26 @@ final class EVLaunchArgumentsTests: XCTestCase {
             originalDocuments = Set(NSDocumentController.shared.documents.map(ObjectIdentifier.init))
             delegate = EVApplicationDelegate()
             delegate.recordRecentDocument = { _ in }
+            // Other UI suites can leave native windows in AppKit's global
+            // inventory. Forwarded launches must observe only this fixture.
+            delegate.applicationWindows = { [weak self] in self?.windows ?? [] }
+            delegate.hasOpenDocumentWindows = { [weak self] in
+                self?.documents.contains { EVDocumentWindowController.hasOpenViews(of: $0) } ?? false
+            }
+            delegate.mainWindow = { [weak self] in
+                guard let self else { return nil }
+                return windows.first { $0 === NSApplication.shared.mainWindow } ?? windows.first
+            }
         }
 
         var documents: [EVDocument] {
             NSDocumentController.shared.documents.compactMap { document in
                 originalDocuments.contains(ObjectIdentifier(document)) ? nil : document as? EVDocument
             }
+        }
+
+        private var windows: [NSWindow] {
+            documents.flatMap(\.windowControllers).compactMap(\.window)
         }
 
         func write(_ filename: String, text: String = "first\nsecond\nthird") throws -> URL {

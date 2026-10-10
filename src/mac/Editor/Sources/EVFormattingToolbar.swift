@@ -76,9 +76,11 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     add(.superscript, title: "Superscript", to: scriptGroup, image: EVStyleIcons.scriptImage(raised: true))
     add(.subscript, title: "Subscript", to: scriptGroup, image: EVStyleIcons.scriptImage(raised: false))
     configure(characterCode, title: "Code (Character)", symbol: "chevron.left.forwardslash.chevron.right", toggle: true)
+    characterCode.toolTip = shortcutToolTip("Code (Character)", command: .characterCode)
     characterCode.action = #selector(toggleCharacterCode(_:))
     codeLinkGroup.addArrangedSubview(characterCode)
     configure(insertLink, title: "Link", symbol: "link", toggle: true)
+    insertLink.toolTip = shortcutToolTip("Link", command: .insertLink)
     insertLink.action = #selector(openLinkEditor(_:))
     codeLinkGroup.addArrangedSubview(insertLink)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
@@ -140,11 +142,16 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private func add(_ command: EVMenuCommand, title: String, symbol: String? = nil, to group: NSStackView, image: NSImage? = nil, toggle: Bool = true) {
     let button = NSButton()
     configure(button, title: title, symbol: symbol, toggle: toggle)
+    button.toolTip = shortcutToolTip(title, command: command)
     if let image { button.image = image }
     button.tag = command.rawValue
     button.action = #selector(performCommand(_:))
     commandButtons[command] = button
     group.addArrangedSubview(button)
+  }
+
+  private func shortcutToolTip(_ title: String, command: EVMenuCommand) -> String {
+    command.formattingShortcut.map { "\(title) (\($0.label))" } ?? title
   }
 
   override func layout() {
@@ -263,9 +270,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       case .increaseIndent, .decreaseIndent:
         let flag = UInt32(command == .increaseIndent ? VIEM_LIST_CAN_INDENT : VIEM_LIST_CAN_UNINDENT)
         presentation = EVMenuItemPresentation(isEnabled: indent & flag != 0)
-      case .bulletedList, .numberedList:
-        presentation = EVMenuItemPresentation(isEnabled: selected != nil,
-          state: (command == .bulletedList ? selected?.bulletState : selected?.numberedState) ?? .off)
       default: presentation = surface.presentation(for: command)
       }
       if button.state != presentation.state { button.state = presentation.state }
@@ -367,9 +371,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   @objc func performCommand(_ sender: NSButton) {
     guard let command = EVMenuCommand(rawValue: sender.tag), let surface,
       surface.presentation(for: command).isEnabled else { refresh(); return }
-    let removeList = (command == .bulletedList || command == .numberedList)
-      && surface.presentation(for: command).state == .on
-    surface.perform(menuCommand: removeList ? .removeList : command, sender: sender)
+    surface.perform(menuCommand: command, sender: sender)
     finishAction()
   }
 

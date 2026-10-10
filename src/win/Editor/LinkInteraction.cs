@@ -124,7 +124,7 @@ internal sealed partial class EditorPane
     private void PresentInsertLink(bool insertOnly)
     {
         DismissImagePopup(suppress: false);
-        if (View is not { } view || !view.HasFormattingSelection || view.Composing) return;
+        if (!CanUseFormattingCommands || View is not { } view) return;
         var context = view.LinkContext();
         if (insertOnly ? !context.CanInsert : !context.CanInsert && context.Link?.Editable != true)
         { SetMessage("Links can be inserted within a single paragraph of Markdown prose."); return; }

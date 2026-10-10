@@ -689,15 +689,34 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     }
 
     @MainActor
-    func testSemanticStyleMenusExposeMixedStateWithoutOfferingAnInexactRewrite() throws {
-        let (_, surface, session) = try makeMarkdownSurface("**alpha** beta")
+    func testSemanticStyleMenusApplyMixedFormattingWithoutChangingUnselectedText() throws {
+        let (backend, surface, session) = try makeMarkdownSurface("**alpha** beta")
         try send(Array("v6l"), through: session)
         surface.refreshPresentation()
 
         XCTAssertEqual(
             surface.presentation(for: .bold),
-            EVMenuItemPresentation(isEnabled: false, state: .mixed),
-            "a partially covered range is Mixed, but the current Markdown adapter cannot merge it exactly"
+            EVMenuItemPresentation(isEnabled: true, state: .mixed)
+        )
+
+        surface.perform(menuCommand: .bold, sender: nil)
+
+        XCTAssertEqual(surface.formattedText, "alpha beta")
+        XCTAssertEqual(
+            try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("**alpha b**eta".utf8)
+        )
+        XCTAssertEqual(surface.presentation(for: .bold), EVMenuItemPresentation(isEnabled: true, state: .on))
+
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(
+            try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("**alpha** beta".utf8)
+        )
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(
+            try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("**alpha b**eta".utf8)
         )
     }
 

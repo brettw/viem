@@ -3030,8 +3030,9 @@ impl CommandInterpreter {
             self.retire_typing_context();
         }
         let edit_group_depth = document.edit_group_depth();
-        let edit_line_edge = matches!(self.mode, Mode::Insert | Mode::Replace)
-            && matches!(event, InputEvent::Key(Key::Home | Key::End));
+        let explicit_boundary_affinity = matches!(self.mode, Mode::Insert | Mode::Replace)
+            && matches!(event, InputEvent::Key(Key::Home | Key::End))
+            || !self.handles_literal_input(&event) && Self::is_paragraph_navigation_input(&event);
         self.record_event(&event);
         let result = self.handle_table_input(document, &event).and_then(|table_output| {
             if table_output.is_some() { return Ok(table_output); }
@@ -3048,7 +3049,7 @@ impl CommandInterpreter {
         });
         match result {
             Ok(mut output) => {
-                if !edit_line_edge {
+                if !explicit_boundary_affinity {
                     self.finish_non_layout_dispatch(&output);
                 }
                 self.finish_select_visual_once(&output);
@@ -4110,6 +4111,7 @@ impl CommandInterpreter {
             return Ok(output);
         }
         let event = self.normalized_input_event(event);
+        let paragraph_navigation = Self::is_paragraph_navigation_input(&event);
         self.record_event(&event);
         if self.substitute_confirmation.is_some() {
             return Ok(self.handle_substitute_confirmation(document, event));
@@ -4181,14 +4183,14 @@ impl CommandInterpreter {
                 }
                 output.merge(installed);
             }
-            if !(command_line_block_enter && self.mode == Mode::VisualBlock) {
+            if !paragraph_navigation && !(command_line_block_enter && self.mode == Mode::VisualBlock) {
                 self.finish_non_layout_dispatch(&output);
             }
             self.finish_insert_normal_once(document, &mut output);
             return Ok(output);
         }
         let mut output = self.dispatch_event(document, event)?;
-        self.finish_non_layout_dispatch(&output);
+        if !paragraph_navigation { self.finish_non_layout_dispatch(&output); }
         self.finish_insert_normal_once(document, &mut output);
         Ok(output)
     }
@@ -5167,6 +5169,11 @@ impl CommandInterpreter {
             }
         };
         Some(output)
+    }
+
+    fn is_paragraph_navigation_input(event: &InputEvent) -> bool {
+        matches!(event, InputEvent::Key(Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph
+            | Key::ModifiedNavigation { key: NavigationKey::ParagraphStart | NavigationKey::ParagraphEnd | NavigationKey::NextParagraph, .. }))
     }
 
     fn finish_non_layout_dispatch(&mut self, output: &CommandOutput) {

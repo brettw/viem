@@ -479,6 +479,16 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(makeNamedStyleMenu(title: "Character", role: .character,
             command: .characterStyles))
         menu.addItem(.separator())
+        for (title, command) in [("Bold", EVMenuCommand.bold), ("Italic", .italic), ("Underline", .underline),
+                                 ("Superscript", .superscript), ("Subscript", .subscript),
+                                 ("Code (Character)", .characterCode), ("Link…", .insertLink)] {
+            // Keep toolbar-only inline actions registered with AppKit without
+            // adding them to the named-style menu's visible presentation.
+            let item = coreItem(title, command: command)
+            item.isHidden = true
+            item.allowsKeyEquivalentWhenHidden = true
+            menu.addItem(item)
+        }
         menu.addItem(coreItem("Edit Styles…", command: .editStyles,
             key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
         menu.addItem(.separator())
@@ -695,14 +705,19 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         key: String = "",
         modifiers: NSEvent.ModifierFlags = [.command]
     ) -> NSMenuItem {
+        let shortcut = command.formattingShortcut
         let item = NSMenuItem(
             title: title,
-            action: command.nativeEditAction ?? #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)),
-            keyEquivalent: key
+            action: command.nativeEditAction ?? (shortcut == nil
+                ? #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
+                : #selector(EVFormattingCommandRouting.performEditorFormattingCommand(_:))),
+            keyEquivalent: key.isEmpty ? shortcut?.key ?? "" : key
         )
         item.tag = command.rawValue
         item.target = nil
-        if !key.isEmpty {
+        if key.isEmpty, let shortcut {
+            item.keyEquivalentModifierMask = shortcut.modifiers
+        } else if !key.isEmpty {
             item.keyEquivalentModifierMask = modifiers
         }
         return item

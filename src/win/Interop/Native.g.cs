@@ -1813,6 +1813,7 @@ internal static unsafe partial class Native
     public const uint VIEM_VIEW_PRESENTATION_HAS_DESIRED_X = (1u << 4);
     public const uint VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING = (1u << 5);
     public const uint VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING = (1u << 6);
+    public const uint VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING = (1u << 7);
     public static readonly uint VIEM_VIEW_PRESENTATION_V1_SIZE = ((uint)sizeof(ViemViewPresentationV1));
     public const uint VIEM_CARET_SHAPE_CELL = 1u;
     public const uint VIEM_CARET_SHAPE_BOUNDARY = 2u;

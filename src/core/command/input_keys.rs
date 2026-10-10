@@ -2,6 +2,26 @@
 use super::*;
 
 impl CommandInterpreter {
+    /// Pending Vim grammar owns the next key before native formatting actions.
+    /// This is current controller state, independent of the last command output.
+    pub fn command_input_pending(&self) -> bool {
+        self.pending != Pending::None
+            || !self.mapping_pending.is_empty()
+            || self.count.is_some()
+            || self.count_overflowed
+            || self.register_pending
+            || self.requested_register.is_some()
+            || self.select_register_pending
+            || self.select_delete_register.is_some()
+            || self.select_visual_once
+            || self.literal_input_pending()
+            || self.insert_control_g_pending()
+            || self.insert_normal_once.is_some()
+            || self.visual_block_insert.is_some()
+            || self.command_line_state.is_some()
+            || self.substitute_confirmation.is_some()
+    }
+
     /// Ctrl-O closes this typing fragment before its temporary Normal command.
     /// Publish its recipe before resetting the resumable fragment, so an
     /// interrupt (or a Normal dot command) can still repeat the completed edit.

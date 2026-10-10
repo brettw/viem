@@ -50,6 +50,8 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case strikethrough = 304
     case superscript
     case `subscript`
+    case characterCode
+    case insertLink
     case defaultParagraphStyle = 320
     case characterStyles
     case baseParagraphStyle
@@ -101,11 +103,69 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         return [.undo, .redo, .cut, .copy, .copySource, .paste, .pasteAndMatchStyle, .delete, .selectAll]
             .first { $0.nativeEditAction == action }
     }
+
+    /// One accelerator definition supplies native menus, editor dispatch and
+    /// toolbar hover labels, including actions available with the toolbar hidden.
+    public var formattingShortcut: EVFormattingShortcut? {
+        switch self {
+        case .bold: .init(key: "b", modifiers: [.command], label: "⌘B")
+        case .italic: .init(key: "i", modifiers: [.command], label: "⌘I")
+        case .underline: .init(key: "u", modifiers: [.command], label: "⌘U")
+        case .characterCode: .init(key: "c", modifiers: [.option, .command], label: "⌥⌘C")
+        case .superscript: .init(key: "+", modifiers: [.control, .command], label: "⌃⌘+")
+        case .subscript: .init(key: "-", modifiers: [.control, .command], label: "⌃⌘−")
+        case .insertLink: .init(key: "k", modifiers: [.command], label: "⌘K")
+        case .bulletedList: .init(key: "8", modifiers: [.shift, .command], label: "⇧⌘8")
+        case .numberedList: .init(key: "7", modifiers: [.shift, .command], label: "⇧⌘7")
+        default: nil
+        }
+    }
+
+    public static func formattingCommand(for event: NSEvent) -> EVMenuCommand? {
+        allCases.first { $0.formattingShortcut?.matches(event) == true }
+    }
+}
+
+public struct EVFormattingShortcut {
+    public let key: String
+    public let modifiers: NSEvent.ModifierFlags
+    public let label: String
+
+    public func matches(_ event: NSEvent) -> Bool {
+        let actualModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        let actualKey = event.charactersIgnoringModifiers?.lowercased()
+        if key == "+" {
+            // A layout with a dedicated Plus key needs no Shift. A US layout
+            // supplies Plus from Shift-Equals; AppKit reports either spelling.
+            return (actualKey == "+" && (actualModifiers == modifiers || actualModifiers == modifiers.union(.shift)))
+                || (actualKey == "=" && actualModifiers == modifiers.union(.shift))
+        }
+        if modifiers.contains(.shift), key == "7" || key == "8" {
+            // charactersIgnoringModifiers retains Shift. Re-translate the
+            // numeric key through the active layout before using the supplied
+            // characters as a fallback for synthetic events.
+            let unshifted = event.characters(byApplyingModifiers:
+                event.modifierFlags.subtracting([.command, .control, .option, .shift]))
+            if let unshifted, !unshifted.isEmpty {
+                return actualModifiers == modifiers && unshifted == key
+            }
+            let shifted = key == "7" ? "&" : "*"
+            return actualModifiers == modifiers && (actualKey == key || actualKey == shifted)
+        }
+        return actualModifiers == modifiers && actualKey == key
+    }
 }
 
 @MainActor
 @objc public protocol EVEditorCommandRouting {
     func performEditorMenuCommand(_ sender: Any?)
+}
+
+/// Formatting accelerators belong only to the focused document editor, so a
+/// native field editor cannot fall through to document formatting on its pane.
+@MainActor
+@objc public protocol EVFormattingCommandRouting {
+    func performEditorFormattingCommand(_ sender: Any?)
 }
 
 /// The two style roles exposed by the native Style menu. Stable style IDs,

@@ -1921,6 +1921,8 @@ pub const VIEM_VIEW_PRESENTATION_HAS_DESIRED_X: u32 = 1 << 4;
 pub const VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING: u32 = 1 << 5;
 /// Route prompt register selectors to core, including native text events.
 pub const VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING: u32 = 1 << 6;
+/// Pending Vim grammar owns input before native formatting accelerators.
+pub const VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING: u32 = 1 << 7;
 
 /// Current controller presentation state. Linear Visual anchors do not retain
 /// a visual affinity, so their affinity field is zero unless the exact flag is
@@ -6677,6 +6679,9 @@ fn summarize_view_presentation(
     // the cell a frontend draws.
     let caret = state.caret_target(core.document());
     let mut flags = 0;
+    if state.command_input_pending() {
+        flags |= VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING;
+    }
     if state.literal_input_pending() {
         flags |= VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING;
     }

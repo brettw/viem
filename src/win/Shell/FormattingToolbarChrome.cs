@@ -71,6 +71,13 @@ internal sealed partial class EditorWindow
         if (visible) EnsureFormattingToolbar();
         formattingToolbar?.Synchronize(ActivePane, visible);
     }
+    internal void ExecuteFormattingAction(ToolbarAction action)
+    {
+        if (ActivePane is not { CanUseFormattingCommands: true } pane) return;
+        var toolbar = EnsureFormattingToolbar();
+        toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(pane.Document.State.format));
+        toolbar.Execute(action);
+    }
 #if DEBUG
     internal FormattingToolbar Toolbar => formattingToolbar ?? throw new InvalidOperationException("The formatting toolbar has not been needed.");
     internal bool ToolbarCreated => formattingToolbar != null;

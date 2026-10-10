@@ -192,11 +192,14 @@ fn paragraph_navigation_uses_semantic_paragraphs_not_wrapped_or_hard_rows() {
         let first = core.document().paragraph_range_at(4).unwrap();
         key(&mut core, view, Key::ParagraphEnd);
         assert_eq!(core.command_state(view).unwrap().cursor(), first.end);
+        assert_eq!(core.command_state(view).unwrap().boundary_affinity(), BoundaryAffinity::Upstream);
         let next_start = core.document().text().find("second").unwrap();
         key(&mut core, view, Key::NextParagraph);
         assert_eq!(core.command_state(view).unwrap().cursor(), next_start);
+        assert_eq!(core.command_state(view).unwrap().boundary_affinity(), BoundaryAffinity::Downstream);
         key(&mut core, view, Key::ParagraphStart);
         assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        assert_eq!(core.command_state(view).unwrap().boundary_affinity(), BoundaryAffinity::Downstream);
         key(&mut core, view, Key::ParagraphStart);
         assert_eq!(core.command_state(view).unwrap().cursor(), 0);
         assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
@@ -217,6 +220,7 @@ fn paragraph_shift_selection_replaces_and_undoes_exactly() {
         },
     );
     assert_eq!(extent(&core, view), 4..15);
+    assert_eq!(core.command_state(view).unwrap().boundary_affinity(), BoundaryAffinity::Upstream);
     key(
         &mut core,
         view,

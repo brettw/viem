@@ -32,6 +32,7 @@ internal static class FormatMenuTests
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
                 var literal = window.AddPane(new CoreDocument("text"u8.ToArray(), format: format)); await literal.Ready;
+                Check(!literal.CanUseFormattingCommands, "literal formats disable rich formatting commands");
                 stylesPeer.Expand(); await Task.Delay(40);
                 Check(styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…").IsEnabled,
                     "independent style editing remains available for literal formats");

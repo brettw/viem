@@ -1558,6 +1558,8 @@ ViemStatus viem_core_view_pointer_caret(ViemCoreHandle handle, ViemViewId view,
 #define VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING (1u << 5)
 /* Route prompt register selectors to core, including native text events. */
 #define VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING (1u << 6)
+/* Pending Vim grammar owns input before native formatting accelerators. */
+#define VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING (1u << 7)
 
 /*
  * Linear Visual anchors have no retained visual affinity, so the anchor
