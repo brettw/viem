@@ -535,6 +535,9 @@ pub struct LayoutSnapshot {
     table_navigation: tables::TableNavigationIndex,
     /// Unstyled default Paragraph whitespace unit in scaled layout points.
     pub whitespace_unit: f32,
+    /// Default paragraph row advance in scaled layout points. This is stable
+    /// across visible headings, images and table cells.
+    pub default_row_advance: f32,
     pub revision: LayoutRevision,
     pub document_id: DocumentId,
     pub document_revision: Revision,
@@ -769,6 +772,7 @@ impl RegionalHardLineLayout {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RegionalLayoutSnapshot {
     whitespace_unit: f32,
+    default_row_advance: f32,
     revision: LayoutRevision,
     document_id: DocumentId,
     document_revision: Revision,
@@ -3082,6 +3086,7 @@ fn partial_snapshot_from_region(
         table_cells: tables::collect_cells(&rows),
         tables: tables::collect_tables(&rows),
         whitespace_unit: region.whitespace_unit,
+        default_row_advance: region.default_row_advance,
         revision: region.revision,
         document_id: region.document_id,
         document_revision: region.document_revision,
@@ -3664,6 +3669,17 @@ struct LayoutRunControl<'a> {
     max_shape_batch_fragments: usize,
 }
 
+/// One intrinsic font-metrics entry, without glyphs or native render leases.
+/// The ordinary paragraph basis is shared by every viewport layout job.
+struct DefaultFontMetrics {
+    style: ResolvedTextStyle,
+    scale_bits: u32,
+    measurement_environment_id: MeasurementEnvironmentId,
+    metrics_generation: MetricsGeneration,
+    render_run_policy: Option<RenderRunPolicy>,
+    height: f32,
+}
+
 impl<'a> LayoutRunControl<'a> {
     fn synchronous(cancellation: &'a dyn LayoutCancellationProbe) -> Self {
         Self {
@@ -3693,6 +3709,7 @@ pub struct LayoutEngine<P: TextMeasurementProvider> {
     provider: P,
     next_layout_revision: u64,
     shape_cache: ShapeCache,
+    default_font_metrics: Option<DefaultFontMetrics>,
     decoration_shape_cache: ShapeCache,
     unwrapped_summary_cache: UnwrappedSummaryCache,
     table_cache: tables::TableMeasurementCache,
@@ -3711,6 +3728,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             provider,
             next_layout_revision: 1,
             shape_cache: ShapeCache::new(DEFAULT_SHAPE_CACHE_BYTES),
+            default_font_metrics: None,
             decoration_shape_cache: ShapeCache::new(DEFAULT_DECORATION_SHAPE_CACHE_BYTES),
             unwrapped_summary_cache: UnwrappedSummaryCache::default(),
             table_cache: tables::TableMeasurementCache::default(),
@@ -3727,6 +3745,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
     pub fn clear_caches(&mut self) {
         self.shape_cache.clear();
+        // Intrinsic default-font metrics retain no glyphs or native render
+        // resources. Keep their independently validated identity so a job
+        // reusing positioned rows need not shape merely to recover its basis.
         self.decoration_shape_cache.clear();
         self.unwrapped_summary_cache.clear();
         self.table_cache.clear();
@@ -4641,8 +4662,15 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         });
         work_statistics.table_measured_cells = self.table_cache.measured_cells.saturating_sub(table_work_before.0);
         work_statistics.table_measured_text_bytes = self.table_cache.measured_text_bytes.saturating_sub(table_work_before.1);
+        let default_row_advance = self.default_row_advance(
+            document_id, document_revision,
+            if view.default_style_is_override { &default_style } else { &document_styles.whitespace_shaping_style },
+            document_styles.default_line_spacing, view.scale,
+            measurement_environment_id, metrics_generation, &control,
+        )?;
         let result = RegionalLayoutSnapshot {
             whitespace_unit,
+            default_row_advance,
             revision: layout_revision,
             document_id,
             document_revision,
@@ -5147,11 +5175,20 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for (index, row) in rows.iter_mut().enumerate() {
             for caret in &mut row.carets { caret.row_index = index; }
         }
+        let default_row_advance = self.default_row_advance(
+            document_id, document_revision,
+            if view.default_style_is_override { &default_style } else {
+                document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style)
+            },
+            document_styles.as_ref().map_or(LineSpacing::Normal, |styles| styles.default_line_spacing),
+            view.scale, measurement_environment_id, metrics_generation, control,
+        )?;
         let snapshot = LayoutSnapshot {
             table_navigation: tables::TableNavigationIndex::new(&rows),
         table_cells: tables::collect_cells(&rows),
             tables: tables::collect_tables(&rows),
             whitespace_unit,
+            default_row_advance,
             revision: layout_revision,
             document_id,
             document_revision,
@@ -5231,6 +5268,67 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             metrics_generation,
             control,
         )
+    }
+
+    /// Measure only the unstyled ordinary paragraph font. Reusing the bounded
+    /// shaping cache keeps this constant work independent of visible content.
+    #[allow(clippy::too_many_arguments)]
+    fn default_row_advance(
+        &mut self,
+        document_id: DocumentId,
+        document_revision: Revision,
+        style: &ResolvedTextStyle,
+        spacing: LineSpacing,
+        scale: f32,
+        measurement_environment_id: MeasurementEnvironmentId,
+        metrics_generation: MetricsGeneration,
+        control: &LayoutRunControl<'_>,
+    ) -> Result<f32, LayoutComputationError> {
+        control.checkpoint()?;
+        // Default metrics describe the request's font, independently of its
+        // authored spans, images or paragraph direction. Reuse an ordinary
+        // shaping request with exactly this font and measurement identity.
+        let render_run_policy = self.provider.render_run_policy();
+        let cached_height = self.default_font_metrics.as_ref().filter(|entry| {
+            entry.style == *style && entry.scale_bits == scale.to_bits()
+                && entry.measurement_environment_id == measurement_environment_id
+                && entry.metrics_generation == metrics_generation
+                && entry.render_run_policy == render_run_policy
+        }).map(|entry| entry.height);
+        let natural_height = match cached_height {
+            Some(height) => height,
+            None => match self.shape_cache.entries.iter().rev().find_map(|(entry, _)| {
+                (entry.default_style == *style && entry.scale_bits == scale.to_bits()
+                    && entry.measurement_environment_id == measurement_environment_id
+                    && entry.metrics_generation == metrics_generation
+                    && entry.render_run_policy == render_run_policy)
+                    .then(|| entry.fragment.default_metrics.height())
+            }) {
+                Some(height) => height,
+                None => self.shape_ranges_with_origin(
+                    document_id, document_revision, "", &[0..0], &[0..0], 0,
+                    &[], &[], std::slice::from_ref(style), &[TextDirection::LeftToRight],
+                    scale, measurement_environment_id, metrics_generation, control,
+                )?[0].default_metrics.height(),
+            },
+        };
+        if self.provider.measurement_environment_id() != measurement_environment_id {
+            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
+        }
+        if self.provider.metrics_generation() != metrics_generation {
+            return Err(LayoutError::MetricsChangedDuringShape.into());
+        }
+        let advance = line_advance(natural_height, spacing);
+        if !advance.is_finite() || advance <= 0.0 {
+            return Err(LayoutError::InvalidGeometry.into());
+        }
+        if cached_height.is_none() {
+            self.default_font_metrics = Some(DefaultFontMetrics {
+                style: style.clone(), scale_bits: scale.to_bits(), measurement_environment_id,
+                metrics_generation, render_run_policy, height: natural_height,
+            });
+        }
+        Ok(advance)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7371,6 +7469,93 @@ mod tests {
         let ink = row.ink_bounds().unwrap();
         assert!(ink.width >= row.width);
         assert!(ink.y <= row.baseline);
+    }
+
+    #[test]
+    fn default_row_advance_is_stable_and_tracks_its_measurement_dependencies() {
+        let document = Document::new("styled text");
+        let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        styles.whitespace_shaping_style.size = 17.0;
+        styles.default_line_spacing = LineSpacing::Multiplier(1.5);
+        styles.paragraphs[0].default_shaping_style.size = 34.0;
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let mut view = ViewLayout::new(300.0, 100.0);
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        let base_advance = 17.0 * 1.12 * 1.5;
+        assert!((view.snapshot().unwrap().default_row_advance - base_advance).abs() < 0.001);
+        assert!((view.snapshot().unwrap().rows[0].height() - 34.0 * 1.12).abs() < 0.001);
+        let requests = engine.provider().request_calls();
+
+        // Wrapping, viewport size and the visible paragraph's font do not
+        // change the ordinary paragraph basis or repeat its measurement.
+        view.resize(60.0, 40.0);
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert_eq!(engine.provider().request_calls(), requests);
+        assert!((view.snapshot().unwrap().default_row_advance - base_advance).abs() < 0.001);
+        styles.paragraphs[0].default_shaping_style.size = 60.0;
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert!((view.snapshot().unwrap().default_row_advance - base_advance).abs() < 0.001);
+        assert_eq!(engine.provider().request_calls(), requests + 1);
+
+        view.set_scale(2.0).unwrap();
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert!((view.snapshot().unwrap().default_row_advance - base_advance * 2.0).abs() < 0.001);
+        view.set_default_style(ResolvedTextStyle { size: 11.0, ..Default::default() }).unwrap();
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert!((view.snapshot().unwrap().default_row_advance - 11.0 * 2.0 * 1.12 * 1.5).abs() < 0.001);
+        let requests = engine.provider().request_calls();
+        styles.default_line_spacing = LineSpacing::Multiplier(2.0);
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert!((view.snapshot().unwrap().default_row_advance - 11.0 * 2.0 * 1.12 * 2.0).abs() < 0.001);
+        assert_eq!(engine.provider().request_calls(), requests, "spacing reuses font metrics");
+
+        engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles.clone(), &mut view).unwrap();
+        assert_eq!(view.snapshot().unwrap().metrics_generation, MetricsGeneration(2));
+        assert_eq!(engine.provider().request_calls(), requests + 1);
+        engine.provider_mut().set_measurement_environment_id(MeasurementEnvironmentId(2));
+        engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+            styles, &mut view).unwrap();
+        assert_eq!(view.snapshot().unwrap().measurement_environment_id, MeasurementEnvironmentId(2));
+        assert_eq!(engine.provider().request_calls(), requests + 2);
+    }
+
+    #[test]
+    fn default_row_advance_is_carried_through_regional_snapshots() {
+        let document = Document::new("styled text");
+        let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+        styles.whitespace_shaping_style.size = 17.0;
+        styles.default_line_spacing = LineSpacing::Multiplier(1.5);
+        styles.paragraphs[0].default_shaping_style.size = 34.0;
+        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+        let view = ViewLayout::new(300.0, 100.0);
+        let line = 0..document.text().len();
+        let configuration = view.capture_for_regional_layout_job(line.clone());
+        let region = engine.layout_hard_line_region_cancellable(
+            document.id(), document.revision(), document.text(), 0,
+            std::slice::from_ref(&line), 0, 1, document.text().len(), None,
+            &styles, &configuration, &NeverCancelled,
+        ).unwrap();
+        let base_advance = 17.0 * 1.12 * 1.5;
+        assert!((region.default_row_advance - base_advance).abs() < 0.001);
+        let mut height_index = ViewHeightIndex::new_estimated(1, 20.0).unwrap();
+        height_index.set_exact_height(0, region.lines[0].height()).unwrap();
+        let snapshot = partial_snapshot_from_region(&region, &height_index).unwrap();
+        assert!((snapshot.default_row_advance - base_advance).abs() < 0.001);
+        let requests = engine.provider().request_calls();
+        engine.layout_hard_line_region_cancellable(
+            document.id(), document.revision(), document.text(), 0,
+            std::slice::from_ref(&line), 0, 1, document.text().len(), None,
+            &styles, &configuration, &NeverCancelled,
+        ).unwrap();
+        assert_eq!(engine.provider().request_calls(), requests);
     }
 
     #[test]

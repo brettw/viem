@@ -406,9 +406,11 @@ pub fn align_viewport(
 
 /// Implements full-page, half-page, and Ctrl-E/Ctrl-Y screen motions.
 ///
-/// Full pages retain two visual rows of overlap when possible. Page and
-/// half-page operations move both viewport and caret by the same visual-row
-/// count. Ctrl-E/Ctrl-Y retain the caret while it remains visible and otherwise
+/// Full pages move by the usable screen height with two default text rows of
+/// overlap, independent of the visible content. They preserve the caret's
+/// screen baseline and desired x as closely as the new rows permit. Half-page
+/// operations move both viewport and caret by the same visual-row count.
+/// Ctrl-E/Ctrl-Y retain the caret while it remains visible and otherwise
 /// place it on the newly exposed nearest viewport edge at desired x.
 pub fn screen_motion(
     snapshot: &LayoutSnapshot,
@@ -419,6 +421,9 @@ pub fn screen_motion(
     desired_x: Option<f32>,
 ) -> Result<ScreenMotionResult, LayoutMotionError> {
     validate_viewport(viewport)?;
+    if matches!(motion, ScreenMotion::PageDown | ScreenMotion::PageUp) {
+        return full_page_motion(snapshot, current, viewport, motion, count, desired_x);
+    }
     let visible = visible_rows(snapshot, viewport)?;
     let located = if snapshot.coverage.contains_text_offset(current.text_offset) {
         Some(locate(snapshot, current)?)
@@ -431,10 +436,7 @@ pub fn screen_motion(
         ScreenMotion::PageUp | ScreenMotion::HalfPageUp | ScreenMotion::ScrollUp => -1,
     };
     let amount_rows = match motion {
-        ScreenMotion::PageDown | ScreenMotion::PageUp => visible_count
-            .saturating_sub(2)
-            .max(1)
-            .saturating_mul(count.max(1)),
+        ScreenMotion::PageDown | ScreenMotion::PageUp => unreachable!("full pages use screen geometry"),
         // A zero amount is the internal spelling for Vim's unset window-local
         // 'scroll' value: derive half of the current viewport. Once the user
         // supplies an explicit CTRL-D/CTRL-U count, the interpreter passes
@@ -530,6 +532,85 @@ pub fn screen_motion(
             desired_x: x,
         },
         viewport,
+    })
+}
+
+fn full_page_motion(
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+    viewport: Viewport,
+    motion: ScreenMotion,
+    count: usize,
+    desired_x: Option<f32>,
+) -> Result<ScreenMotionResult, LayoutMotionError> {
+    let old_visible = visible_rows(snapshot, viewport)?;
+    let located = if snapshot.coverage.contains_text_offset(current.text_offset) {
+        Some(locate(snapshot, current)?)
+    } else { None };
+    let x = desired_x.filter(|value| value.is_finite())
+        .unwrap_or_else(|| located.map_or(0., |(_, caret)| caret.x));
+    // View chrome is reserved on every screen; document padding scrolls with
+    // the content. Reduce excessive chrome so one ordinary row can still fit.
+    let margins = (snapshot.content_insets.top - snapshot.document_insets.top).max(0.)
+        + (snapshot.content_insets.bottom - snapshot.document_insets.bottom).max(0.);
+    let advance = snapshot.default_row_advance;
+    let usable = viewport.height - margins.min((viewport.height - advance.min(viewport.height)).max(0.));
+    let distance = (usable - 2. * advance).max(usable / 2.);
+    let down = motion == ScreenMotion::PageDown;
+    let signed_distance = f64::from(distance) * count.max(1) as f64 * if down { 1. } else { -1. };
+    let requested = (f64::from(viewport.top) + signed_distance).clamp(0., f64::from(f32::MAX)) as f32;
+    let next = Viewport {
+        top: clamped_viewport_top(snapshot, requested, viewport.height)?,
+        height: viewport.height,
+    };
+    let visible = visible_rows(snapshot, next)?;
+    let inside: Vec<_> = visible.iter().copied().filter(|index| {
+        let row = &snapshot.rows[*index];
+        let bounds = row.reveal_bounds();
+        let area = snapshot.reveal_vertical_range(row, next.height);
+        bounds.start >= next.top + area.start && bounds.end <= next.top + area.end
+    }).collect();
+    let baselines: Vec<_> = if inside.is_empty() {
+        visible.iter().copied().filter(|index| {
+            let row = &snapshot.rows[*index];
+            let area = snapshot.reveal_vertical_range(row, next.height);
+            row.baseline >= next.top + area.start && row.baseline <= next.top + area.end
+        }).collect()
+    } else { Vec::new() };
+    // Oversized typography can leave no complete row on screen. Prefer a
+    // usable baseline when one exists, while allowing continuous paging within
+    // a single oversized object even if its text baseline is outside the view.
+    let choices = if !inside.is_empty() { &inside }
+        else if !baselines.is_empty() { &baselines } else { &visible };
+    let y = located.filter(|(index, _)| old_visible.contains(index))
+        .map_or_else(|| if down { next.top } else { next.top + next.height },
+            |(index, _)| next.top + snapshot.rows[index].baseline - viewport.top);
+    // A table's side-by-side cells share a vertical band. Choose the cell at
+    // desired x before choosing its nearest text baseline, including padding
+    // and explicit multiline cells. Array order is not vertical distance.
+    let target_row = *choices.iter().min_by(|left, right| {
+        let distances = |index: usize| {
+            let row = &snapshot.rows[index];
+            let (vertical, horizontal) = row.table_cell.as_ref().map_or_else(
+                || ((row.baseline - y).abs(), 0.),
+                |cell| (
+                    (cell.rect.y - y).max(0.) + (y - cell.rect.y - cell.rect.height).max(0.),
+                    (cell.rect.x - x).max(0.) + (x - cell.rect.x - cell.rect.width).max(0.),
+                ));
+            (vertical, horizontal, (row.baseline - y).abs())
+        };
+        let left = distances(**left);
+        let right = distances(**right);
+        left.0.total_cmp(&right.0).then(left.1.total_cmp(&right.1)).then(left.2.total_cmp(&right.2))
+    }).ok_or(LayoutMotionError::EmptyLayout)?;
+    let row = &snapshot.rows[target_row];
+    if !snapshot.horizontal_geometry_is_materialized(target_row, x) {
+        return Err(horizontal_demand(snapshot, row.text_range.start, Some(x)));
+    }
+    let caret = nearest_caret(row, x).ok_or(LayoutMotionError::EmptyLayout)?;
+    Ok(ScreenMotionResult {
+        motion: VisualMotionResult { position: position_of(caret), desired_x: x },
+        viewport: next,
     })
 }
 

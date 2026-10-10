@@ -1724,6 +1724,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         cancellation: &dyn LayoutCancellationProbe,
     ) -> Result<RegionalLayoutSnapshot, LayoutComputationError> {
         let control = LayoutRunControl::cancellable(cancellation);
+        let measurement_environment_id = self.provider.measurement_environment_id();
+        let metrics_generation = self.provider.metrics_generation();
         let context = styles
             .table_context
             .as_ref()
@@ -1857,15 +1859,28 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 lines.extend(part.lines);
             }
         }
+        let default_row_advance = self.default_row_advance(
+            document_id, document_revision,
+            if view.default_style_is_override { &view.default_style } else { &styles.whitespace_shaping_style },
+            styles.default_line_spacing, view.scale,
+            measurement_environment_id, metrics_generation, &control,
+        )?;
+        if self.provider.measurement_environment_id() != measurement_environment_id {
+            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
+        }
+        if self.provider.metrics_generation() != metrics_generation {
+            return Err(LayoutError::MetricsChangedDuringShape.into());
+        }
         self.next_layout_revision = self.next_layout_revision.max(revision.0.saturating_add(1));
         Ok(RegionalLayoutSnapshot {
             whitespace_unit: styles.whitespace_shaping_style.size * view.scale * 0.5,
+            default_row_advance,
             revision,
             document_id,
             document_revision,
             configuration_generation: view.configuration_generation,
-            measurement_environment_id: self.provider.measurement_environment_id(),
-            metrics_generation: self.provider.metrics_generation(),
+            measurement_environment_id,
+            metrics_generation,
             hard_lines: first..first + ranges.len(),
             document_hard_line_count: total,
             document_text_len: tree.byte_len(),
