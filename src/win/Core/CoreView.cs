@@ -133,18 +133,11 @@ internal sealed unsafe partial class CoreView : IDisposable
             EditPrompt(prompt, Math.Min(prompt.Anchor, prompt.Active), Math.Max(prompt.Anchor, prompt.Active), ClipboardText);
             return;
         }
-        // A Windows paste is a native action even after vi's literal-next or
-        // an unfinished Normal-mode operator. Cancel that pending interpretation
-        // at the same exact caret before delivering the clipboard register.
-        if (presentation.mode == VIEM_MODE_NORMAL || (presentation.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0)
-            Place(presentation.cursor_utf8_offset, presentation.cursor_affinity, presentation.document_revision);
         string rich = ClipboardFragment;
         if (plain) ClipboardFragment = "";
         try
         {
-            if (Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE or VIEM_MODE_COMMAND_LINE) { Key(VIEM_KEY_CONTROL_CHARACTER, 'r'); Command("+"); }
-            else if (HasSelection) SelectionCommand("\"+p");
-            else Command("\"+p");
+            Key(VIEM_KEY_PASTE_CLIPBOARD);
         }
         finally { ClipboardFragment = rich; }
     }

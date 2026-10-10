@@ -265,6 +265,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_PARAGRAPH_START 24u
 #define VIEM_KEY_PARAGRAPH_END 25u
 #define VIEM_KEY_NEXT_PARAGRAPH 26u
+/* Native GUI paste: Vim paste-before placement and cursor-after behavior. */
+#define VIEM_KEY_PASTE_CLIPBOARD 27u
 #define VIEM_KEY_MODIFIER_SHIFT 1u
 #define VIEM_KEY_MODIFIER_CONTROL 2u
 #define VIEM_KEY_MODIFIER_ALT 4u

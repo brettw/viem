@@ -673,6 +673,146 @@ impl Document {
         Err(error)
     }
 
+    /// Native replacement deletes the selection, then puts the copied text at
+    /// its boundary or whole lines above the retained line. Stage rich source separately
+    /// from its clipboard terminator so neither the unselected prefix nor the
+    /// fragment's authored delimiters need to be reconstructed from plain text.
+    pub(crate) fn prepare_native_clipboard_replacement(
+        &self,
+        range: Range<usize>,
+        fragment: &ClipboardFragment,
+        text: &str,
+        keep_empty_line: bool,
+    ) -> Result<Option<(PreparedModelTransaction, usize)>, ModelTransactionError> {
+        self.validate_range(&range)?;
+        let export: Export = serde_json::from_str(fragment.json())
+            .map_err(|_| DocumentError::UnsupportedFormatting)?;
+        if !matches!(export.register_kind, 1 | 2)
+            || export.plain_text != text
+            || !export.can_insert_rich_source(self.format(), &export.source_plain_text)
+            || export.source_plain_text.is_empty()
+        {
+            return Ok(None);
+        }
+        let linewise = export.register_kind == 2;
+        let added_terminator = linewise
+            && text.strip_suffix('\n') == Some(export.source_plain_text.as_str());
+        if (!added_terminator && text != export.source_plain_text)
+            || linewise && text.len().checked_sub(1) != export.hard_breaks.last().copied()
+        {
+            return Ok(None);
+        }
+        let insertion = if linewise {
+            self.hard_line_snapshot()
+                .line_at_offset(range.start)
+                .map_err(|_| DocumentError::AmbiguousProjection)?
+                .content_range()
+                .start
+        } else {
+            range.start
+        };
+        let insertion_anchor = self.text_anchor(
+            self.text_point(insertion)?,
+            Association::BeforeInsertion,
+            BoundaryAffinity::Downstream,
+            DeletionRecovery::PreferFollowingThenPreceding,
+        )?;
+        let mut scratch = self.scratch_document();
+        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+        let mut formatted =
+            replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let publish = |scratch: &mut Document,
+                       prepared: PreparedModelTransaction,
+                       sources: &mut replacement::PatchComposition,
+                       formatted: &mut replacement::PatchComposition|
+         -> Result<(), ModelTransactionError> {
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            formatted.record_formatted(&prepared)?;
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+
+        let deleted = if keep_empty_line {
+            let payload = FormattedTextPayload::new(&scratch.hard_line_snapshot(), "\n", vec![0])
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+            scratch.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(range, payload)])?
+        } else {
+            scratch.prepare_text_edits(vec![TextEdit::new(range, "")])?
+        };
+        let insertion = deleted
+            .text_position_map()
+            .map_text_anchor(insertion_anchor)?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
+        publish(&mut scratch, deleted, &mut sources, &mut formatted)?;
+        let mut retained_line = scratch.text_anchor(
+            scratch.text_point(insertion)?,
+            Association::AfterInsertion,
+            BoundaryAffinity::Downstream,
+            DeletionRecovery::PreferFollowingThenPreceding,
+        )?;
+        if added_terminator {
+            // Establish the retained line's boundary before importing rich
+            // source; pasting a heading or code block must not restyle it.
+            let payload = FormattedTextPayload::new(&scratch.hard_line_snapshot(), "\n", vec![0])
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+            let separated = scratch.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(
+                insertion..insertion,
+                payload,
+            )])?;
+            retained_line = *separated
+                .text_position_map()
+                .map_text_anchor(retained_line)?
+                .value()
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            publish(&mut scratch, separated, &mut sources, &mut formatted)?;
+        }
+        let source_fragment = fragment.as_seen();
+        let Some(inserted) = scratch.prepare_clipboard_fragment(
+            insertion..insertion,
+            &source_fragment,
+            &export.source_plain_text,
+        )? else {
+            return Ok(None);
+        };
+        let caret = inserted
+            .text_position_map()
+            .map_text_anchor(retained_line)?
+            .value()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .offset();
+        publish(&mut scratch, inserted, &mut sources, &mut formatted)?;
+        if caret != insertion.checked_add(text.len()).ok_or(DocumentError::AmbiguousProjection)?
+            || scratch
+                .projection()
+                .text_tree()
+                .slice(insertion..caret)
+                .map_err(DocumentError::FormattedTextStorage)?
+                != text
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        let prepared = self.prepare_text_edits_with_patches(
+            formatted.formatted_edits(),
+            Some(sources.source_patches()),
+        )?;
+        let PreparedPublication::State(candidate) = &prepared.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        let expected = style_runs(scratch.projection(), &(insertion..caret))?;
+        let actual = style_runs(&candidate.projection, &(insertion..caret))?;
+        if expected != actual
+            || !candidate.projection.has_same_hard_line_structure(scratch.projection())
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        self.prepared_text_point(&prepared, caret)?;
+        Ok(Some((prepared, caret)))
+    }
+
     /// Replay external HTML's normalized formatting through the destination's
     /// existing editing adapters. The composed source patches publish as one
     /// undoable paste; unsupported Markdown properties follow its vocabulary.
@@ -1192,6 +1332,165 @@ mod tests {
         assert_eq!(value.character_runs[0]["bold"], true);
         let pasted = paste_empty(&fragment, &value, Format::Markdown);
         assert_eq!(pasted.source_bytes(), b"__old__");
+    }
+
+    #[test]
+    fn native_linewise_rich_replacement_retains_joined_line_and_authored_source() {
+        let original = open(b"__X__\n\n*Y*", Format::Markdown);
+        let fragment = original
+            .clipboard_fragment(0..original.text().len())
+            .unwrap()
+            .with_register("X\nY\n", 2, &[1, 3]);
+        let source = b"before\n\nabcdef\n\nuntouched \\*tail\\*";
+        let mut target = open(source, Format::Markdown);
+        let selected = target.text().find("bc").unwrap();
+        let (prepared, caret) = target
+            .prepare_native_clipboard_replacement(
+                selected..selected + 2,
+                &fragment,
+                "X\nY\n",
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.source_bytes(), source, "preparation is read-only");
+        assert_eq!(caret, "before\nX\nY\n".len());
+        target.commit_model_transaction(prepared).unwrap();
+        assert_eq!(target.text(), "before\nX\nY\nadef\nuntouched *tail*");
+        let saved = target.source_bytes();
+        assert_eq!(saved, b"before\n\n__X__\n\n*Y*\n\nadef\n\nuntouched \\*tail\\*");
+        let reopened = open(&saved, Format::Markdown);
+        assert_eq!(reopened.text(), target.text());
+        let style = crate::layout::DocumentLayoutStyles::semantic_character_at(
+            reopened.projection(),
+            "before\n".len(),
+            false,
+        )
+        .unwrap();
+        assert!(style.bold);
+        assert!(target.undo());
+        assert_eq!(target.source_bytes(), source);
+        assert!(target.redo());
+        assert_eq!(target.source_bytes(), saved);
+    }
+
+    #[test]
+    fn native_linewise_rich_replacement_preserves_empty_line_at_document_start() {
+        let original = open(b"__X__\n\n*Y*", Format::Markdown);
+        let fragment = original
+            .clipboard_fragment(0..original.text().len())
+            .unwrap()
+            .with_register("X\nY\n", 2, &[1, 3]);
+        for (selected, expected, saved) in [
+            (0..2, "X\nY\ncdef", b"__X__\n\n*Y*\n\ncdef".as_slice()),
+            (0..6, "X\nY\n", b"__X__\n\n*Y*\n\n".as_slice()),
+        ] {
+            let mut target = open(b"abcdef", Format::Markdown);
+            let (prepared, caret) = target
+                .prepare_native_clipboard_replacement(selected, &fragment, "X\nY\n", false)
+                .unwrap()
+                .unwrap();
+            assert_eq!(caret, 4);
+            target.commit_model_transaction(prepared).unwrap();
+            assert_eq!(target.text(), expected);
+            assert_eq!(target.source_bytes(), saved);
+            assert_eq!(open(saved, Format::Markdown).text(), expected);
+        }
+    }
+
+    #[test]
+    fn native_linewise_rich_replacement_keeps_unselected_source_between_its_patches() {
+        let original = open(b"__X__", Format::Markdown);
+        let fragment = original
+            .clipboard_fragment(0..original.text().len())
+            .unwrap()
+            .with_register("X\n", 2, &[1]);
+        let prefix = "untouched ".repeat(1_024);
+        let source = format!("{prefix}selected tail");
+        let mut target = open(source.as_bytes(), Format::Markdown);
+        let (prepared, caret) = target
+            .prepare_native_clipboard_replacement(
+                prefix.len()..prefix.len() + "selected".len(),
+                &fragment,
+                "X\n",
+                false,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(prepared.summary.source_patches.len(), 2);
+        assert_eq!(prepared.summary.source_patches[0].range(), 0..0);
+        assert_eq!(
+            prepared.summary.source_patches[1].range(),
+            prefix.len()..prefix.len() + "selected".len(),
+        );
+        assert_eq!(caret, 2);
+        target.commit_model_transaction(prepared).unwrap();
+        assert_eq!(target.source_bytes(), format!("__X__\n\n{prefix} tail").as_bytes());
+    }
+
+    #[test]
+    fn native_linewise_rich_replacement_retains_selected_line_placeholder() {
+        let original = open(b"__X__", Format::Markdown);
+        let fragment = original
+            .clipboard_fragment(0..original.text().len())
+            .unwrap()
+            .with_register("X\n", 2, &[1]);
+        let source = b"abc\n\ndef";
+        let mut target = open(source, Format::Markdown);
+        let (prepared, caret) = target
+            .prepare_native_clipboard_replacement(0..4, &fragment, "X\n", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(caret, 2);
+        target.commit_model_transaction(prepared).unwrap();
+        assert_eq!(target.text(), "X\n\ndef");
+        assert_eq!(target.source_bytes(), b"__X__\n\n\n\ndef");
+        let saved = target.source_bytes();
+        let reopened = open(&saved, Format::Markdown);
+        assert_eq!(reopened.text(), target.text());
+        let style = crate::layout::DocumentLayoutStyles::semantic_character_at(
+            reopened.projection(),
+            0,
+            false,
+        )
+        .unwrap();
+        assert!(style.bold);
+        assert!(target.undo());
+        assert_eq!(target.source_bytes(), source);
+        assert!(target.redo());
+        assert_eq!(target.source_bytes(), saved);
+    }
+
+    #[test]
+    fn native_characterwise_rich_replacement_fills_selected_line_placeholder() {
+        let original = open(b"__X__", Format::Markdown);
+        let fragment = original
+            .clipboard_fragment(0..original.text().len())
+            .unwrap();
+        let source = b"abc\n\ndef";
+        let mut target = open(source, Format::Markdown);
+        let (prepared, caret) = target
+            .prepare_native_clipboard_replacement(0..4, &fragment, "X", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(caret, 1);
+        target.commit_model_transaction(prepared).unwrap();
+        assert_eq!(target.text(), "X\ndef");
+        assert_eq!(target.source_bytes(), b"__X__\n\ndef");
+        let saved = target.source_bytes();
+        let reopened = open(&saved, Format::Markdown);
+        assert_eq!(reopened.text(), target.text());
+        let style = crate::layout::DocumentLayoutStyles::semantic_character_at(
+            reopened.projection(),
+            0,
+            false,
+        )
+        .unwrap();
+        assert!(style.bold);
+        assert!(target.undo());
+        assert_eq!(target.source_bytes(), source);
+        assert!(target.redo());
+        assert_eq!(target.source_bytes(), saved);
     }
 
     #[test]

@@ -265,6 +265,7 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn mapping_applies(&self, event: &InputEvent) -> bool {
+        if matches!(event, InputEvent::Key(Key::PasteClipboard)) { return false; }
         let Some(mode) = self.mapping_mode() else {
             return false;
         };

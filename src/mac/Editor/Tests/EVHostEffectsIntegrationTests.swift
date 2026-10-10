@@ -148,30 +148,85 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         XCTAssertEqual(write.documentRevision, surface.documentState.document_revision)
     }
 
-    func testNativePasteDispatchesClipboardRegisterIntentionsInNormalAndInsertModes() throws {
-        do {
-            let (_, surface, _) = try makeSurface("abc")
-            let pasteboard = Pasteboard()
-            pasteboard.text = "ZZ"
-            surface.pasteboard = pasteboard
-
-            surface.perform(menuCommand: .paste, sender: nil)
-
-            XCTAssertEqual(surface.formattedText, "aZZbc")
-        }
-
-        do {
+    func testNativeCharacterPasteInsertsBeforeCaretAndLeavesItAfterInsertedText() throws {
+        for insertMode in [false, true] {
             let (_, surface, session) = try makeSurface("abc")
             let pasteboard = Pasteboard()
             pasteboard.text = "ZZ"
             surface.pasteboard = pasteboard
-            try sendKey("i", through: session)
+            if insertMode { try sendKey("i", through: session) }
             surface.refreshPresentation()
 
-            surface.perform(menuCommand: .paste, sender: nil)
+            surface.editorView.pasteIntoDocument(nil)
 
             XCTAssertEqual(surface.formattedText, "ZZabc")
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 2)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
+        }
+    }
+
+    func testNativeLinewisePasteStartsAboveCurrentLineIncludingBlankCommitMessageLine() throws {
+        let scenarios: [(original: String, command: String, clipboard: String, expected: String, cursor: UInt64)] = [
+            ("\n# Please enter the commit message", "", "Subject\n\nDetails\n",
+             "Subject\n\nDetails\n\n# Please enter the commit message", 17),
+            ("abc\ndef\nghi", "jl", "ZZ\nYY\n", "abc\nZZ\nYY\ndef\nghi", 10),
+        ]
+        for insertMode in [false, true] {
+            for scenario in scenarios {
+                let (backend, surface, session) = try makeSurface(scenario.original)
+                let pasteboard = Pasteboard()
+                pasteboard.text = scenario.clipboard
+                surface.pasteboard = pasteboard
+                try sendKeys(scenario.command, through: session)
+                if insertMode { try sendKey("i", through: session) }
+                surface.refreshPresentation()
+
+                surface.editorView.pasteIntoDocument(nil)
+
+                XCTAssertEqual(surface.formattedText, scenario.expected)
+                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, scenario.cursor)
+                XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
+                XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data(scenario.expected.utf8))
+                surface.perform(menuCommand: .undo, sender: nil)
+                XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data(scenario.original.utf8))
+                surface.perform(menuCommand: .redo, sender: nil)
+                XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), Data(scenario.expected.utf8))
+            }
+        }
+    }
+
+    func testExplicitClipboardPutStillUsesVimPutAfterPlacement() throws {
+        let (_, surface, session) = try makeSurface("\n# commit guidance")
+        let pasteboard = Pasteboard()
+        pasteboard.text = "Subject\n"
+        surface.pasteboard = pasteboard
+
+        try sendKeys("\"+p", through: session)
+        surface.refreshPresentation()
+
+        XCTAssertEqual(surface.formattedText, "\nSubject\n# commit guidance")
+    }
+
+    func testNativePasteCancelsPendingCommandAndLiteralNextInterpretation() throws {
+        for insertMode in [false, true] {
+            let (_, surface, session) = try makeSurface("abc")
+            let pasteboard = Pasteboard()
+            pasteboard.text = "ZZ"
+            surface.pasteboard = pasteboard
+            if insertMode {
+                try sendKey("i", through: session)
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 113)
+            } else {
+                try sendKey("d", through: session)
+            }
+            surface.refreshPresentation()
+
+            surface.editorView.pasteIntoDocument(nil)
+
+            XCTAssertEqual(surface.formattedText, "ZZabc")
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 2)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
+            XCTAssertEqual(surface.viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING), 0)
         }
     }
 

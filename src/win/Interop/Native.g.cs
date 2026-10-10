@@ -1463,6 +1463,7 @@ internal static unsafe partial class Native
     public const uint VIEM_KEY_PARAGRAPH_START = 24u;
     public const uint VIEM_KEY_PARAGRAPH_END = 25u;
     public const uint VIEM_KEY_NEXT_PARAGRAPH = 26u;
+    public const uint VIEM_KEY_PASTE_CLIPBOARD = 27u;
     public const uint VIEM_KEY_MODIFIER_SHIFT = 1u;
     public const uint VIEM_KEY_MODIFIER_CONTROL = 2u;
     public const uint VIEM_KEY_MODIFIER_ALT = 4u;

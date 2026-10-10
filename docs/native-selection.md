@@ -59,6 +59,27 @@ Put `set` commands in `startup.viem` to retain them across launches.
 The references are [Vim Select mode](https://vimhelp.org/visual.txt.html#Select-mode)
 and the [`keymodel`/`selectmode` options](https://vimhelp.org/options.txt.html).
 
+## Native Paste
+
+Command-V on macOS and native Paste on Windows follow gVim's clipboard `gP`
+policy. With no selection, characterwise text inserts before the Normal caret
+or at the insertion caret in Insert/Replace. Replace pastes insert text without
+overwriting it. Linewise text inserts above the entire current hard/source line,
+even when the caret is partway through it. An empty current line remains after
+the pasted lines, and the caret follows the paste to column zero of that line.
+Insert/Replace resumes its original mode. External text is linewise only when
+it ends in CR/LF; Viem's private clipboard data can supply an explicit shape.
+
+With a selection, native Paste uses Vim's change/delete-then-`gP` behavior and
+finishes in Normal. Replacing a character selection with linewise text puts it
+above the joined retained line. Replacing a line selection with linewise text
+leaves an empty line after the inserted lines. The replacement is one atomic
+edit and undo unit; deleted text goes to the small-delete register `-`, and the
+clipboard is retained.
+
+These rules come from Vim's [macOS mappings](https://github.com/vim/vim/blob/master/runtime/macmap.vim)
+and [Paste helper](https://github.com/vim/vim/blob/master/runtime/autoload/paste.vim).
+
 ## Open work and policy choices
 
 These differences are current limitations or possible native-editor refinements,
@@ -69,7 +90,8 @@ policy and matching native input tests.
 | --- | --- | --- |
 | Word movement | macOS Option-Left/Right and Windows Ctrl-Left/Right use Vim word boundaries. | Decide whether native navigation should distinguish word ends from next-word starts. |
 | Windows triple-click | No dedicated line/paragraph selection gesture. | Add a gesture matching the macOS active line-policy behavior. |
-| Clipboard edit mode | Native Cut and plain-text Paste use Vim operators and can finish in Normal. | Decide whether native replacement should resume Insert. |
+| Native Cut mode | Native Cut uses Vim operators and can finish in Normal. | Decide whether native Cut should resume Insert. |
+| Block clipboard edge cases | Replacing wrapped character selections with block data and multiline Paste during deferred block insertion are unavailable. | Prepare the changed geometry and a portable multiline block insertion contract. |
 | Windows Ctrl-A | Routed to the Vim interpreter rather than native Select All; Select All is in the menu. | Any native Select All shortcut requires an explicit preference/product decision. |
 | Rectangular IME | macOS stages block preedit locally; Windows rejects block composition. | Add a portable discontiguous composition contract before claiming parity. |
 

@@ -987,8 +987,9 @@ impl CommandInterpreter {
             at + content_offset
         };
         self.cursor = document.visible_point_for_source(source, true)?;
-        self.cursor =
-            normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), self.cursor);
+        if !matches!(self.mode, Mode::Insert | Mode::Replace) {
+            self.cursor = normalize_normal_cursor(document.text(), &document.hard_line_snapshot(), self.cursor);
+        }
         self.visual_position = None;
         self.remember_physical_cursor(document, source);
         if !self.replaying {
