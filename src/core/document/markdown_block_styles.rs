@@ -2,7 +2,7 @@
 //! or list item, or when removing that syntax would join neighboring prose.
 use super::{Document, DocumentError, SourcePatch, TextEdit};
 use crate::document::{line_endings, paragraph_flow, BlockKind};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 /// Removing literal text can expose punctuation as newly active Markdown:
@@ -13,6 +13,18 @@ use std::ops::Range;
 pub(super) fn preserve_retained_literals(
     document: &Document,
     edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    preserve_retained_literals_in_regions(document, edits, &[], patches)
+}
+
+/// Repairing a paired inline scope can activate previously literal markers
+/// anywhere within that scope. Those grammar dependencies extend inspection,
+/// while only the original requested ranges count as selected content.
+pub(super) fn preserve_retained_literals_in_regions(
+    document: &Document,
+    edits: &[TextEdit],
+    regions: &[Range<usize>],
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
     let mut support = Vec::new();
@@ -31,6 +43,13 @@ pub(super) fn preserve_retained_literals(
         let text = document.projection().text_tree();
         let is_boundary = |ch: char| ch.is_ascii_punctuation() || matches!(ch, ' ' | '\t');
         let mut start = edit.range.start;
+        let mut end = edit.range.end;
+        for region in regions.iter().filter(|region| {
+            region.start <= edit.range.end && edit.range.start <= region.end
+        }) {
+            start = start.min(region.start);
+            end = end.max(region.end);
+        }
         while let Some(previous) = document.previous_grapheme_boundary(start) {
             if !text
                 .slice(previous..start)
@@ -42,7 +61,6 @@ pub(super) fn preserve_retained_literals(
             }
             start = previous;
         }
-        let mut end = edit.range.end;
         while let Some(next) = document.next_grapheme_boundary(end) {
             if !text
                 .slice(end..next)
@@ -61,8 +79,10 @@ pub(super) fn preserve_retained_literals(
             .filter(|span| {
                 !span.formatted.is_empty()
                     && !span.source.is_empty()
-                    && !(edit.range.start < span.formatted.end
-                        && span.formatted.start < edit.range.end)
+                    && !edits.iter().any(|selected| {
+                        selected.range.start < span.formatted.end
+                            && span.formatted.start < selected.range.end
+                    })
                     && !patches.iter().any(|patch| {
                         patch.range.start < span.source.end && span.source.start < patch.range.end
                     })
@@ -862,6 +882,43 @@ fn hard_boundary_contributor(document: &Document, range: Range<usize>) -> Option
         .map(|span| span.source)
 }
 
+/// A pair of physical endings separated only by blank quote prefixes is an
+/// explicit prose separator. Its proof does not depend on the following body.
+pub(super) fn explicit_paragraph_separator(
+    document: &Document,
+    boundary: &Range<usize>,
+    patches: &[SourcePatch],
+) -> Result<bool, DocumentError> {
+    if boundary.len() > 32768 {
+        return Ok(false);
+    }
+    let mut bytes = document.state().source.bytes_in(boundary.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut local = patches.iter().filter(|patch| {
+        boundary.start < patch.range.start && patch.range.start <= boundary.end
+            && patch.range.end <= boundary.end
+    }).collect::<Vec<_>>();
+    if boundary.len().saturating_add(local.iter()
+        .map(|patch| patch.replacement.len()).sum::<usize>()) > 32768
+        || patches.iter().any(|patch| !patch.range.is_empty()
+            && patch.range.start < boundary.end && boundary.start < patch.range.end
+            && (patch.range.start <= boundary.start || patch.range.end > boundary.end))
+    {
+        return Ok(false);
+    }
+    local.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    for patch in local.into_iter().rev() {
+        bytes.splice(patch.range.start - boundary.start..patch.range.end - boundary.start,
+            patch.replacement.iter().copied());
+    }
+    let decoded = document.encoding().decode_region(&bytes, boundary.start)?;
+    let normalized = line_endings::normalize(&decoded, document.file_format());
+    Ok(normalized.endings.len() >= 2 && normalized.text.split('\n').all(|line| {
+        line[crate::document::markdown_quotes::prefix(line)..]
+            .chars().all(|character| matches!(character, ' ' | '\t'))
+    }))
+}
+
 /// Whether a retained source contributor still produces its original flowed
 /// content after nearby syntax edits, without being absorbed into another unit.
 fn source_contributor_survives(
@@ -925,6 +982,17 @@ fn project_local_candidate<'a>(
     patches: &'a [SourcePatch],
     include_preceding: bool,
 ) -> Result<Option<LocalCandidate<'a>>, DocumentError> {
+    project_local_candidate_with_limit(document, range, boundary, patches, include_preceding, None)
+}
+
+fn project_local_candidate_with_limit<'a>(
+    document: &Document,
+    range: &Range<usize>,
+    boundary: &Range<usize>,
+    patches: &'a [SourcePatch],
+    include_preceding: bool,
+    byte_limit: Option<usize>,
+) -> Result<Option<LocalCandidate<'a>>, DocumentError> {
     let projection = document.projection();
     let source = &document.state().source;
     let Some(start) = projection.source_insertion_point(range.start, false) else {
@@ -983,6 +1051,11 @@ fn project_local_candidate<'a>(
         .iter()
         .filter(|patch| patch.range.start <= band.end && band.start <= patch.range.end)
         .collect::<Vec<_>>();
+    if byte_limit.is_some_and(|limit| band.len().saturating_add(local.iter()
+        .map(|patch| patch.replacement.len()).sum::<usize>()) > limit)
+    {
+        return Ok(None);
+    }
     local.sort_by_key(|patch| (patch.range.start, patch.range.end));
     let mut bytes = source
         .bytes_in(band.clone())
@@ -1005,6 +1078,129 @@ fn project_local_candidate<'a>(
     }))
 }
 
+/// Typing must retain paragraph boundaries which a neighboring line's grammar
+/// can otherwise absorb, including empty prose and setext-like thematic rules.
+pub(super) fn preserve_edited_paragraph_boundaries(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    // Empty paragraphs may be represented by a single physical ending before
+    // a structural block. Once prose is typed there, that ending can fold or
+    // become a setext underline boundary. Keep the untouched logical separator.
+    let mut boundaries = BTreeMap::new();
+    for edit in edits
+        .iter()
+        .filter(|edit| !edit.replacement.is_empty() && !edit.replacement.contains('\n'))
+    {
+        let Some(paragraph) = document
+            .projection()
+            .blocks_for_region(&edit.range)
+            .into_iter()
+            .find(|block| {
+                block.range.start <= edit.range.start
+                    && edit.range.end <= block.range.end
+                    && block.kind == BlockKind::Paragraph
+                    && !block.markdown_html
+                    && !crate::document::edit_boundary::is_code_paragraph(document, block)
+                        .unwrap_or(true)
+            })
+        else {
+            continue;
+        };
+        let Some(index) = document.projection().hard_line_at_offset(edit.range.start) else {
+            continue;
+        };
+        let Some(line) = document.projection().hard_line_range(index) else {
+            continue;
+        };
+        if edit.range.end > line.end {
+            continue;
+        }
+        let next_is_rule = document
+            .projection()
+            .hard_line_range(index + 1)
+            .is_some_and(|next| {
+                document
+                    .projection()
+                    .blocks_for_region(&next)
+                    .iter()
+                    .any(|block| block.thematic_break)
+            });
+        if !line.is_empty() && !next_is_rule {
+            continue;
+        }
+        let Some(boundary) = hard_boundary_contributor(document, line.end..line.end + 1) else {
+            continue;
+        };
+        if patches
+            .iter()
+            .any(|patch| patch.range.start < boundary.end && boundary.start < patch.range.end)
+        {
+            continue;
+        }
+        if explicit_paragraph_separator(document, &boundary, patches)? {
+            continue;
+        }
+        let Some(candidate) = project_local_candidate_with_limit(
+            document,
+            &edit.range,
+            &boundary,
+            patches,
+            false,
+            Some(32768),
+        )?
+        else {
+            // A double ending guarantees a prose boundary without parsing an
+            // arbitrarily long following row merely to prove a single ending.
+            boundaries.insert(boundary.end, paragraph.quote_depth);
+            continue;
+        };
+        let delta = candidate
+            .patches
+            .iter()
+            .filter(|patch| patch.range.end <= boundary.start)
+            .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize)
+            .sum::<isize>();
+        let start = (boundary.start - candidate.source_start)
+            .checked_add_signed(delta)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let mapped = start..start + boundary.len();
+        let projected = crate::document::projection::project(
+            &candidate.normalized,
+            super::Format::Markdown,
+            document.revision(),
+            0,
+            candidate.source_len,
+        );
+        if !projected
+            .provenance()
+            .iter()
+            .any(|span| {
+                span.source.start <= mapped.start && mapped.end <= span.source.end
+                    && projected
+                        .text_tree()
+                        .slice(span.formatted.clone())
+                        .as_deref()
+                        == Ok("\n")
+            })
+        {
+            boundaries.insert(boundary.end, paragraph.quote_depth);
+        }
+    }
+    for (at, depth) in boundaries {
+        let prefix = "> ".repeat(depth as usize);
+        let suffix = document
+            .encoding()
+            .encode_fragment(&format!("{prefix}{}", document.file_format().spelling()))?;
+        if let Some(patch) = patches.iter_mut().find(|patch| patch.range.start == at) {
+            patch.replacement.splice(0..0, suffix);
+        } else {
+            patches.push(SourcePatch::primary(at..at, suffix));
+        }
+    }
+    Ok(())
+}
 /// A split must preserve an existing following hard boundary even when the
 /// inserted separator and that boundary become one source-whitespace run.
 pub(super) fn preserve_split_boundaries<'a>(
@@ -1015,6 +1211,15 @@ pub(super) fn preserve_split_boundaries<'a>(
     let projection = document.projection();
     let mut boundaries = BTreeSet::new();
     for range in ranges {
+        if projection.blocks_for_region(range).iter().any(|block| {
+            block.range.start <= range.start && range.end <= block.range.end
+                && crate::document::edit_boundary::is_code_paragraph(document, block)
+                    .unwrap_or(false)
+        }) {
+            // Code owns literal internal endings. A paragraph-flow probe
+            // without its opener would fold them and add spurious blank rows.
+            continue;
+        }
         let Some(index) = projection.hard_line_at_offset(range.end) else {
             continue;
         };

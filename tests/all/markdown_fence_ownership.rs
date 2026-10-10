@@ -3,6 +3,60 @@ use viem_core::document::{BlockKind, BoundaryAffinity, ContainerKind, Document, 
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent};
 
+fn key_edit(source: &str, at: usize, keys: &[Key], expected: &str) {
+    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut core = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: at,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    for key in keys {
+        let outcome = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key.clone())))
+            .unwrap_or_else(|error| panic!("{source:?} at {at}, {key:?}: {error:?}"));
+        if let Some(command) = outcome.command {
+            assert!(matches!(command.status, viem_core::command::CommandStatus::Complete | viem_core::command::CommandStatus::Pending), "{source:?}: {:?}", command.status);
+        }
+    }
+    assert_eq!(core.document().text(), expected, "{source:?}");
+    let saved = core.document().source_bytes();
+    let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+    assert_eq!(reopened.text(), expected, "saved {:?}", String::from_utf8_lossy(&saved));
+    assert_eq!(core.document().projection().style_spans(), reopened.projection().style_spans());
+    assert_eq!(core.document().projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>(), reopened.projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>());
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+    assert_eq!(core.document().source_bytes(), saved);
+    assert_eq!(core.document().text(), expected);
+}
+
+#[test]
+fn indented_fence_typing_preserves_visible_indentation_on_reopen() {
+    for indent in 1..=3 {
+        let prefix = " ".repeat(indent);
+        let source = format!("{prefix}```\n{prefix}aaa\naaa\n{prefix}```\n");
+        key_edit(&source, 4, &[Key::Char('i'), Key::Char(' '), Key::Escape], "aaa\n aaa");
+    }
+    key_edit("  ```\naaa\n  aaa\naaa\n  ```\n", 8, &[Key::Char('i'), Key::Char(' '), Key::Escape], "aaa\naaa\n aaa");
+    key_edit(" ```\nx aaa\n ```\n", 0, &[Key::Char('x')], " aaa");
+}
+
+#[test]
+fn deleting_code_indentation_cannot_create_a_closing_fence() {
+    key_edit("```\naaa\n    ```\n", 4, &[Key::Char('x')], "aaa\n   ```\n");
+    key_edit("```\naaa\n    ```\n```\n\nTail", 4, &[Key::Char('x')], "aaa\n   ```\nTail");
+    key_edit(" ~~~\n    ~~~\n", 0, &[Key::Char('x')], "  ~~~\n");
+}
+
+#[test]
+fn enter_inside_multiline_fenced_code_reopens_with_exact_history() {
+    for source in ["```\nab\ncd\n```\n", " ```\n ab\n cd\n ```\n", "> ```\n> ab\n> cd\n> ```\n"] {
+        key_edit(source, 1, &[Key::Char('i'), Key::Enter, Key::Escape], "a\nb\ncd");
+    }
+    key_edit("```ruby\ndef foo(x)\n  return 3\nend\n```\n", 12, &[Key::Char('i'), Key::Enter, Key::Escape], "def foo(x)\n \n return 3\nend");
+}
+
 const ORIGINAL: &str = "```mermaid\ngraph LR\n    Writing --> Editing\n    Editing --> Saving\n```\n\n### Other GitHub features\n\nFollowing prose.";
 
 fn assert_split_fences(document: &Document) {

@@ -719,7 +719,19 @@ impl Document {
         after: bool,
         following_override: Option<StyleId>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let support = self.markdown_structural_support(&[TextEdit::new(at..at, "\n")])?;
+        let block =
+            edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
+        let heading_start = if self.format() == Format::Markdown
+            && at == block.range.start
+            && block.quote_depth == 0
+        {
+            match block.kind { BlockKind::Heading(level) => Some(level), _ => None }
+        } else { None };
+        let support = if heading_start.is_some() {
+            Vec::new()
+        } else {
+            self.markdown_structural_support(&[TextEdit::new(at..at, "\n")])?
+        };
         if !support.is_empty() {
             return self.prepare_markdown_supporting_patches(support, |doc| {
                 doc.prepare_open_paragraph_with_following(at, origin, after, following_override)
@@ -727,8 +739,6 @@ impl Document {
         }
         let origin =
             edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
-        let block =
-            edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
         let next = following_override.unwrap_or_else(|| {
             self.projection()
                 .style_sheet()
@@ -738,7 +748,32 @@ impl Document {
         });
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
-        let split = if self.format() == Format::Markdown && block.style.0 == "Code Block" {
+        let split = if let Some(level) = heading_start {
+            let source_at =
+                crate::document::source_edit::insertion_point(scratch.projection(), at, None)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+            let source_line = scratch
+                .state()
+                .source_hard_lines
+                .line_at_offset(source_at)
+                .and_then(|index| scratch.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            // Opening before a heading must precede its complete source
+            // owner. Inserting after its prefix would expose the retained
+            // closing hashes or leave a Setext underline on the wrong body.
+            let syntax = format!(
+                "{} {}",
+                "#".repeat(level as usize),
+                scratch.file_format().spelling().repeat(2)
+            );
+            scratch.prepare_text_edits_with_patches(
+                vec![TextEdit::new(at..at, "\n")],
+                Some(vec![SourcePatch::primary(
+                    source_line.start..source_line.start,
+                    scratch.encoding().encode_fragment(&syntax)?,
+                )]),
+            )?
+        } else if self.format() == Format::Markdown && block.style.0 == "Code Block" {
             scratch.prepare_markdown_code_open(at, &block, after)?
         } else if matches!(block.kind, BlockKind::ListItem { .. }) {
             if self.format() == Format::Markdown {

@@ -104,6 +104,9 @@ impl Document {
         {
             return Ok(Some(patches));
         }
+        if let Some(patches) = self.markdown_empty_heading_insertion_patches(edit)? {
+            return Ok(Some(patches));
+        }
         if let Some(payload) = payload {
             if let Some(patches) = markdown_list_structure::insertion_patches(self, payload)? {
                 return Ok(Some(patches));
@@ -266,6 +269,7 @@ impl Document {
             markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
             markdown_block_styles::preserve_deleted_source_prefixes(self, edits, patches)?;
             markdown_block_styles::preserve_join_boundaries(self, edits, patches)?;
+            markdown_block_styles::preserve_edited_paragraph_boundaries(self, edits, patches)?;
             markdown_block_styles::preserve_split_literals(self, edits, patches)?;
             markdown_block_styles::preserve_split_boundaries(
                 self,
@@ -276,6 +280,7 @@ impl Document {
             markdown_split::repair_flanking(self, edits, patches)?;
             self.repair_markdown_authored_spaces(edits, patches)?;
             self.repair_markdown_reference_spaces(edits, patches)?;
+            markdown_list_structure::preserve_empty_item_boundaries(self, edits, patches)?;
         }
         Ok(())
     }

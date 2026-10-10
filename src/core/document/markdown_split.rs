@@ -9,6 +9,20 @@ struct Scope {
     closing_marker: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScopeStyle {
+    Semantic(SemanticInlineStyle),
+    Strike,
+}
+
+fn scope_style(application: &StyleApplication) -> Option<ScopeStyle> {
+    match application {
+        StyleApplication::Semantic(style) => Some(ScopeStyle::Semantic(*style)),
+        StyleApplication::Automatic(id) if id.0 == "Strikethrough" => Some(ScopeStyle::Strike),
+        _ => None,
+    }
+}
+
 pub(super) fn patches(
     document: &Document,
     range: &Range<usize>,
@@ -191,12 +205,7 @@ fn inline_scopes(
                     .min(projection.text_tree().byte_len())),
         )
         .into_iter()
-        .filter_map(|span| {
-            let StyleApplication::Semantic(style) = span.application else {
-                return None;
-            };
-            Some((span.range, style))
-        })
+        .filter_map(|span| scope_style(&span.application).map(|style| (span.range, style)))
         .collect::<Vec<_>>();
     let mut index = 0;
     while index < pending.len() {
@@ -206,7 +215,7 @@ fn inline_scopes(
                 &(at.saturating_sub(1)
                     ..at.saturating_add(1).min(projection.text_tree().byte_len())),
             ) {
-                let StyleApplication::Semantic(style) = span.application else {
+                let Some(style) = scope_style(&span.application) else {
                     continue;
                 };
                 if extent.start <= span.range.start
@@ -221,36 +230,52 @@ fn inline_scopes(
         }
         index += 1;
     }
-    let mut scopes = link_scopes(document, &line)?;
-    for span in projection.style_spans_for_region(line) {
-        if span.application != StyleApplication::Automatic("Strikethrough".into()) {
-            continue;
-        }
-        let Some(body) = projection.source_range(span.range.clone()) else {
-            continue;
-        };
-        for marker in ["~~", "~"] {
-            let bytes = document.encoding().encode_fragment(marker)?;
-            let Some(start) = body.start.checked_sub(bytes.len()) else {
-                continue;
+    // Visible style endpoints alone do not identify a delimiter pair. One `_`
+    // from an inner `__` pair can otherwise be mistaken for outer emphasis,
+    // and asymmetric nesting can pair an inner opening with an outer closing.
+    let mut recognized_pairs = Vec::new();
+    if pending
+        .iter()
+        .any(|(_, style)| *style != ScopeStyle::Semantic(SemanticInlineStyle::Code))
+    {
+        let source = projection
+            .source_range(line.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let lines = &document.state().source_hard_lines;
+        let first = lines
+            .line_at_offset(source.start)
+            .and_then(|at| lines.get(at))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let last = lines
+            .line_at_offset(source.end.saturating_sub(1).max(source.start))
+            .and_then(|at| lines.get(at))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = document
+            .state()
+            .source
+            .bytes_in(first.start..last.end)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = document.encoding().decode_region(&bytes, first.start)?;
+        let input = normalize(&decoded, document.file_format());
+        let mapper = super::super::rich_text::Builder::new(&input, document.revision());
+        for inline in
+            super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "").values()
+        {
+            use super::super::markdown_syntax::InlineKind;
+            let style = match inline.kind {
+                InlineKind::Strong => ScopeStyle::Semantic(SemanticInlineStyle::Strong),
+                InlineKind::Emphasis => ScopeStyle::Semantic(SemanticInlineStyle::Emphasis),
+                InlineKind::Strike => ScopeStyle::Strike,
+                _ => continue,
             };
-            let opening = start..body.start;
-            let closing = body.end..body.end + bytes.len();
-            if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&bytes)
-                && document.state().source.bytes_in(closing.clone()).as_ref() == Some(&bytes)
-            {
-                scopes.push(Scope {
-                    formatted: span.range.clone(),
-                    opening,
-                    closing,
-                    marker: marker.into(),
-                    closing_marker: marker.into(),
-                });
-                break;
-            }
+            recognized_pairs.push((
+                mapper.source_range(inline.range.clone()),
+                mapper.source_range(inline.inner.clone()),
+                style,
+            ));
         }
     }
-
+    let mut scopes = link_scopes(document, &line)?;
     // Inner scopes can share a visible endpoint with outer scopes. Resolve the
     // adjacent delimiters first, then step over them to recover outer spelling.
     while !pending.is_empty() {
@@ -279,7 +304,7 @@ fn inline_scopes(
                 closing_start = inner.closing.end;
             }
             let mut matched = None;
-            if *style == SemanticInlineStyle::Code {
+            if *style == ScopeStyle::Semantic(SemanticInlineStyle::Code) {
                 if let Some((opening, closing)) =
                     super::super::markdown_code::delimiter_ranges(document, &source)?
                 {
@@ -295,7 +320,11 @@ fn inline_scopes(
                     matched = Some((opening, closing, marker));
                 }
             } else {
-                for marker in markdown_style_markers(*style) {
+                let markers = match style {
+                    ScopeStyle::Semantic(style) => markdown_style_markers(*style),
+                    ScopeStyle::Strike => &["~~", "~"][..],
+                };
+                for marker in markers {
                     let bytes = document.encoding().encode_fragment(marker)?;
                     let Some(start) = opening_end.checked_sub(bytes.len()) else {
                         continue;
@@ -305,6 +334,13 @@ fn inline_scopes(
                     if document.state().source.bytes_in(opening.clone()).as_ref() == Some(&bytes)
                         && document.state().source.bytes_in(closing.clone()).as_ref()
                             == Some(&bytes)
+                        && recognized_pairs.iter().any(|(range, inner, recognized)| {
+                            recognized == style
+                                && range.start == opening.start
+                                && inner.start == opening.end
+                                && inner.end == closing.start
+                                && range.end == closing.end
+                        })
                     {
                         matched = Some((opening, closing, (*marker).to_owned()));
                         break;
@@ -314,8 +350,17 @@ fn inline_scopes(
             let mut html_closing = None;
             if matched.is_none() {
                 let tags: &[(&str, &str)] = match style {
-                    SemanticInlineStyle::Strong => &[("<strong>", "</strong>"), ("<b>", "</b>")],
-                    SemanticInlineStyle::Emphasis => &[("<em>", "</em>"), ("<i>", "</i>")],
+                    ScopeStyle::Semantic(SemanticInlineStyle::Strong) => {
+                        &[("<strong>", "</strong>"), ("<b>", "</b>")]
+                    }
+                    ScopeStyle::Semantic(SemanticInlineStyle::Emphasis) => {
+                        &[("<em>", "</em>"), ("<i>", "</i>")]
+                    }
+                    ScopeStyle::Strike => &[
+                        ("<del>", "</del>"),
+                        ("<s>", "</s>"),
+                        ("<strike>", "</strike>"),
+                    ],
                     _ => &[],
                 };
                 for (open, close) in tags {
@@ -513,6 +558,25 @@ pub(super) fn repair_flanking(
     edits: &[TextEdit],
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), ModelTransactionError> {
+    let Some(scopes) = repair_flanking_pass(document, edits, patches)? else {
+        return Ok(());
+    };
+    // Each changing pass replaces at least one original delimiter pair.
+    // Already replaced pairs are skipped, so their count bounds convergence,
+    // including ancestor pairs affected by a later inner repair or escape.
+    for _ in 0..scopes {
+        if repair_flanking_pass(document, edits, patches)?.is_none() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn repair_flanking_pass(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<Option<usize>, ModelTransactionError> {
     let mut scopes = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for edit in edits {
@@ -529,7 +593,12 @@ pub(super) fn repair_flanking(
         else {
             continue;
         };
-        if let Some(found) = inline_scopes(document, &edit.range, &(first.start..last.end))? {
+        let Some(affected) =
+            flanking_scope_query_range(document, &edit.range, &(first.start..last.end), |_| {})?
+        else {
+            continue;
+        };
+        if let Some(found) = inline_scopes(document, &affected, &(first.start..last.end))? {
             scopes.extend(found.into_iter().filter(|scope| {
                 scope.marker.starts_with(['*', '_', '~'])
                     && seen.insert((scope.opening.start, scope.closing.end))
@@ -537,12 +606,18 @@ pub(super) fn repair_flanking(
         }
     }
     if scopes.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
+    let scope_count = scopes.len();
+    let regions = scopes
+        .iter()
+        .map(|scope| scope.formatted.clone())
+        .collect::<Vec<_>>();
+    scopes.sort_by_key(|scope| (scope.opening.start, std::cmp::Reverse(scope.closing.end)));
     let mut ordered = patches.clone();
     validate_source_patches(&mut ordered)?;
-    let candidate = apply_source_patches(&document.state().source, &ordered)?;
-    let map = |at, association| rebase_source_boundary(at, &ordered, association);
+    let primary_candidate = apply_source_patches(&document.state().source, &ordered)?;
+    let map_primary = |at, association| rebase_source_boundary(at, &ordered, association);
     let mut support = Vec::new();
     for scope in scopes {
         if ordered.iter().any(|patch| {
@@ -552,6 +627,24 @@ pub(super) fn repair_flanking(
         }) {
             continue;
         }
+        // Removing an outer delimiter changes the length of a shared run,
+        // which can invalidate an inner pair through GFM's rule of three.
+        // Check each inner scope against the repairs already made around it.
+        let mut supporting = support
+            .iter()
+            .map(|(range, bytes): &(Range<usize>, Vec<u8>)| {
+                SourcePatch::primary(range.clone(), bytes.clone())
+            })
+            .collect::<Vec<_>>();
+        validate_source_patches(&mut supporting)?;
+        let candidate = apply_source_patches(&primary_candidate, &supporting)?;
+        let map = |at, association| {
+            rebase_source_boundary(map_primary(at, association)?, &supporting, association)
+        };
+        let primary_opening = map_primary(scope.opening.start, Association::AfterInsertion)?
+            ..map_primary(scope.opening.end, Association::BeforeInsertion)?;
+        let primary_closing = map_primary(scope.closing.start, Association::AfterInsertion)?
+            ..map_primary(scope.closing.end, Association::BeforeInsertion)?;
         let opening = map(scope.opening.start, Association::AfterInsertion)?
             ..map(scope.opening.end, Association::BeforeInsertion)?;
         let closing = map(scope.closing.start, Association::AfterInsertion)?
@@ -631,23 +724,105 @@ pub(super) fn repair_flanking(
         let extent = normalized_at(opening.start)..normalized_at(closing.end);
         let recognized =
             super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "");
+        let same_role = |kind: &super::super::markdown_syntax::InlineKind| {
+            use super::super::markdown_syntax::InlineKind;
+            matches!(
+                (kind, scope.marker.as_bytes()[0], scope.marker.len()),
+                (InlineKind::Strike, b'~', _)
+                    | (InlineKind::Strong, b'*' | b'_', 2)
+                    | (InlineKind::Emphasis, b'*' | b'_', 1)
+            )
+        };
+        if recognized.values().any(|inline| {
+            same_role(&inline.kind)
+                && inline.range == extent
+                && inline.inner == (normalized_at(opening.end)..normalized_at(closing.start))
+        }) {
+            continue;
+        }
+        // An explicit typing choice may intentionally split this pair into
+        // two scopes. Accept that spelling only when the original markers
+        // stay hidden and every retained neighboring contributor keeps its role.
         let hidden = |range: Range<usize>| {
             (range.start..range.end).all(|at| {
                 recognized.values().any(|inline| {
-                    matches!(
-                        inline.kind,
-                        super::super::markdown_syntax::InlineKind::Emphasis
-                            | super::super::markdown_syntax::InlineKind::Strong
-                            | super::super::markdown_syntax::InlineKind::Strike
-                    ) && (inline.range.start <= at && at < inline.inner.start
+                    (inline.range.start <= at && at < inline.inner.start
                         || inline.inner.end <= at && at < inline.range.end)
+                        && matches!(
+                            inline.kind,
+                            super::super::markdown_syntax::InlineKind::Emphasis
+                                | super::super::markdown_syntax::InlineKind::Strong
+                                | super::super::markdown_syntax::InlineKind::Strike
+                        )
                 })
             })
         };
         if hidden(extent.start..normalized_at(opening.end))
             && hidden(normalized_at(closing.start)..extent.end)
         {
-            continue;
+            let projection = document.projection();
+            let band = document
+                .previous_grapheme_boundary(scope.formatted.start)
+                .unwrap_or(scope.formatted.start)
+                ..document
+                    .next_grapheme_boundary(scope.formatted.end)
+                    .unwrap_or(scope.formatted.end);
+            let mut retained_roles_match = true;
+            for span in projection.provenance_for_region(&band) {
+                if span.formatted.is_empty()
+                    || span.source.is_empty()
+                    || ordered.iter().any(|patch| {
+                        patch.range.start < span.source.end && span.source.start < patch.range.end
+                    })
+                    || edits.iter().any(|edit| {
+                        edit.range.start < span.formatted.end
+                            && span.formatted.start < edit.range.end
+                    })
+                {
+                    continue;
+                }
+                let before = projection
+                    .style_spans_for_region(&span.formatted)
+                    .iter()
+                    .any(|style| {
+                        style.range.start <= span.formatted.start
+                            && span.formatted.end <= style.range.end
+                            && match (
+                                &style.application,
+                                scope.marker.as_bytes()[0],
+                                scope.marker.len(),
+                            ) {
+                                (StyleApplication::Automatic(id), b'~', _) => {
+                                    id.0 == "Strikethrough"
+                                }
+                                (
+                                    StyleApplication::Semantic(SemanticInlineStyle::Strong),
+                                    b'*' | b'_',
+                                    2,
+                                )
+                                | (
+                                    StyleApplication::Semantic(SemanticInlineStyle::Emphasis),
+                                    b'*' | b'_',
+                                    1,
+                                ) => true,
+                                _ => false,
+                            }
+                    });
+                let source = normalized_at(map(span.source.start, Association::AfterInsertion)?)
+                    ..normalized_at(map(span.source.end, Association::BeforeInsertion)?);
+                let after = recognized.values().any(|inline| {
+                    same_role(&inline.kind)
+                        && inline.inner.start <= source.start
+                        && source.end <= inline.inner.end
+                });
+                if before != after {
+                    retained_roles_match = false;
+                    break;
+                }
+            }
+            if retained_roles_match {
+                continue;
+            }
         }
         if let Some(newline) = body.find(document.file_format().spelling()) {
             let tail = &body[newline + document.file_format().spelling().len()..];
@@ -656,12 +831,13 @@ pub(super) fn repair_flanking(
                 super::super::markdown_blocks::marker_prefix_length(&tail[quote..]).unwrap_or(0);
             if marker > 0 && tail[quote + marker..].trim().is_empty() && !body[..newline].is_empty()
             {
-                let at = opening.end + document.encoding().encode_fragment(&body[..newline])?.len();
+                let at = primary_opening.end
+                    + document.encoding().encode_fragment(&body[..newline])?.len();
                 support.push((
                     at..at,
                     document.encoding().encode_fragment(&scope.closing_marker)?,
                 ));
-                support.push((closing, Vec::new()));
+                support.push((primary_closing, Vec::new()));
                 continue;
             }
         }
@@ -670,11 +846,11 @@ pub(super) fn repair_flanking(
             (_, 2) => ("<strong>", "</strong>"),
             _ => ("<em>", "</em>"),
         };
-        support.push((opening, document.encoding().encode_fragment(open)?));
-        support.push((closing, document.encoding().encode_fragment(close)?));
+        support.push((primary_opening, document.encoding().encode_fragment(open)?));
+        support.push((primary_closing, document.encoding().encode_fragment(close)?));
     }
     if support.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     support.sort_by_key(|(range, _)| (range.start, range.end));
     support.dedup_by(|a, b| a.0 == b.0);
@@ -690,5 +866,193 @@ pub(super) fn repair_flanking(
         .into_iter()
         .map(|(range, bytes)| SourcePatch::primary(range, bytes))
         .collect();
-    Ok(())
+    // Replacing a delimiter pair can activate neighboring unmatched markers.
+    // Check their original visible contributors against the repaired candidate.
+    markdown_block_styles::preserve_retained_literals_in_regions(
+        document, edits, &regions, patches,
+    )?;
+    Ok(Some(scope_count))
+}
+
+enum FlankingScopeWork {
+    Grapheme,
+    LineStyles,
+}
+
+fn flanking_scope_query_range(
+    document: &Document,
+    range: &Range<usize>,
+    line: &Range<usize>,
+    mut inspected: impl FnMut(FlankingScopeWork),
+) -> Result<Option<Range<usize>>, DocumentError> {
+    let projection = document.projection();
+    let is_eligible = |span: &StyleSpan| {
+        matches!(
+            scope_style(&span.application),
+            Some(ScopeStyle::Semantic(
+                SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis
+            )) | Some(ScopeStyle::Strike)
+        )
+    };
+    let neighborhood = range.start.saturating_sub(1)
+        ..range
+            .end
+            .saturating_add(1)
+            .min(projection.text_tree().byte_len());
+    let nearby = projection
+        .style_spans_for_region(&neighborhood)
+        .iter()
+        .any(is_eligible);
+    // Only an uninterrupted delimiter run can share flanking with a hidden
+    // pair farther away. Whitespace and other punctuation already determine
+    // that pair's adjacent character, so crossing them adds unrelated work.
+    let marker = |range: Range<usize>| -> Result<bool, DocumentError> {
+        Ok(projection
+            .text_tree()
+            .slice(range)
+            .map_err(DocumentError::FormattedTextStorage)?
+            .chars()
+            .all(|ch| matches!(ch, '*' | '_' | '~')))
+    };
+    let left_marker = if range.start > line.start {
+        if let Some(previous) = document.previous_grapheme_boundary(range.start) {
+            inspected(FlankingScopeWork::Grapheme);
+            previous >= line.start && marker(previous..range.start)?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let right_marker = if range.end < line.end {
+        if let Some(next) = document.next_grapheme_boundary(range.end) {
+            inspected(FlankingScopeWork::Grapheme);
+            next <= line.end && marker(range.end..next)?
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !left_marker && !right_marker {
+        return Ok(nearby.then(|| range.clone()));
+    }
+    // Ordinary prose needs only the neighborhood query above. Query the row
+    // only when a visible delimiter run could reach a more distant scope.
+    inspected(FlankingScopeWork::LineStyles);
+    let eligible = projection
+        .style_spans_for_region(line)
+        .into_iter()
+        .filter(is_eligible)
+        .map(|span| span.range)
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return Ok(None);
+    }
+    let mut affected = range.clone();
+    while affected.start > line.start {
+        let Some(previous) = document.previous_grapheme_boundary(affected.start) else {
+            break;
+        };
+        inspected(FlankingScopeWork::Grapheme);
+        if previous < line.start || !marker(previous..affected.start)? {
+            break;
+        }
+        affected.start = previous;
+    }
+    while affected.end < line.end {
+        let Some(next) = document.next_grapheme_boundary(affected.end) else {
+            break;
+        };
+        inspected(FlankingScopeWork::Grapheme);
+        if next > line.end || !marker(affected.end..next)? {
+            break;
+        }
+        affected.end = next;
+    }
+    let query = affected.start.saturating_sub(1)
+        ..affected
+            .end
+            .saturating_add(1)
+            .min(projection.text_tree().byte_len());
+    Ok(eligible
+        .iter()
+        .any(|span| span.start < query.end && query.start < span.end)
+        .then_some(affected))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Encoding;
+
+    #[test]
+    fn flanking_scope_discovery_does_not_walk_unrelated_long_islands() {
+        for padding in [
+            " ".repeat(100_000),
+            ".".repeat(100_000),
+            "*".repeat(100_000),
+        ] {
+            let plain = Document::from_bytes(
+                format!("a{padding}b").into_bytes(),
+                Encoding::Utf8,
+                Format::Markdown,
+            )
+            .unwrap();
+            let at = 50_001;
+            let mut inspected = 0;
+            let mut row_queries = 0;
+            assert_eq!(
+                flanking_scope_query_range(
+                    &plain,
+                    &(at..at),
+                    &(0..plain.projection().text_tree().byte_len()),
+                    |work| match work {
+                        FlankingScopeWork::Grapheme => inspected += 1,
+                        FlankingScopeWork::LineStyles => row_queries += 1,
+                    },
+                )
+                .unwrap(),
+                None
+            );
+            assert!(inspected <= 2, "inspected {inspected} graphemes");
+            assert_eq!(row_queries, usize::from(padding.starts_with('*')));
+        }
+        for padding in [" ".repeat(100_000), ".".repeat(100_000)] {
+            let distant = Document::from_bytes(
+                format!("**a**{padding}**b**").into_bytes(),
+                Encoding::Utf8,
+                Format::Markdown,
+            )
+            .unwrap();
+            let at = 50_001;
+            let mut inspected = 0;
+            let mut row_queries = 0;
+            assert_eq!(
+                flanking_scope_query_range(
+                    &distant,
+                    &(at..at),
+                    &(0..distant.projection().text_tree().byte_len()),
+                    |work| match work {
+                        FlankingScopeWork::Grapheme => inspected += 1,
+                        FlankingScopeWork::LineStyles => row_queries += 1,
+                    },
+                )
+                .unwrap(),
+                None
+            );
+            assert!(inspected <= 2, "inspected {inspected} graphemes");
+            assert_eq!(row_queries, 0);
+        }
+        let bordering =
+            Document::from_bytes(b"**foo*".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let affected = flanking_scope_query_range(
+            &bordering,
+            &(0..0),
+            &(0..bordering.projection().text_tree().byte_len()),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(affected, Some(0..1));
+    }
 }

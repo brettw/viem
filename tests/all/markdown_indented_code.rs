@@ -1,5 +1,43 @@
 use viem_core::document::{BlockKind, Document, Encoding, Format, StyleId};
 
+#[test]
+fn typing_on_blank_indented_code_lines_reopens_with_exact_history() {
+    use viem_core::command::{CommandStatus, InputEvent, Key};
+    use viem_core::document::{BoundaryAffinity, HistoryNavigationRequest};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for (source, positions) in [
+        ("    a\n\n\n    b\n", vec![2, 3]),
+        ("    chunk1\n\n    chunk2\n  \n \n \n    chunk3\n", vec![7, 15, 16, 17]),
+    ] {
+        for at in positions {
+            let mut core = Core::new(open(source, Format::Markdown));
+            let mut expected = core.document().text().to_owned();
+            expected.insert(at, 'x');
+            let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            for key in [Key::Char('i'), Key::Char('x'), Key::Escape] {
+                let outcome = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+                if let Some(command) = outcome.command {
+                    assert!(matches!(command.status, CommandStatus::Complete | CommandStatus::Pending), "{at}: {:?}", command.status);
+                }
+            }
+            assert_eq!(core.document().text(), expected);
+            let saved = core.document().source_bytes();
+            let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), expected, "saved {:?}", String::from_utf8_lossy(&saved));
+            assert_eq!(core.document().projection().style_spans(), reopened.projection().style_spans());
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+            assert_eq!(core.document().source_bytes(), saved);
+        }
+    }
+}
+
 fn open(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }

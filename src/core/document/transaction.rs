@@ -795,6 +795,7 @@ struct LineLocalProjectionRegion {
     source_lines: Range<usize>,
     old_formatted: Range<usize>,
     old_source: Range<usize>,
+    retained_separator: Option<Range<usize>>,
 }
 
 struct TextEditCandidate {
@@ -2035,10 +2036,17 @@ impl Document {
             )?;
         }
         if !authored_syntax && !translate_source && self.format() == Format::Markdown {
+            markdown_block_styles::preserve_edited_paragraph_boundaries(
+                self, &edits, &mut source_patches,
+            )?;
             markdown_split::remove_empty_emphasis(self, &edits, &mut source_patches)?;
+            markdown_block_styles::preserve_retained_literals(self, &edits, &mut source_patches)?;
             markdown_split::repair_flanking(self, &edits, &mut source_patches)?;
             self.repair_markdown_authored_spaces(&edits, &mut source_patches)?;
             self.repair_markdown_reference_spaces(&edits, &mut source_patches)?;
+            markdown_list_structure::preserve_empty_item_boundaries(
+                self, &edits, &mut source_patches,
+            )?;
         }
         if !authored_syntax {
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
@@ -4441,7 +4449,17 @@ impl Document {
         // A regional Markdown Source result that cannot be proven exact, or
         // that the splice cannot place, leaves this block for the complete
         // verified candidate below.
-        if let Some(region) = self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)? {
+        // Filling an empty item can activate an ordered marker beside prose
+        // or change a following indented code block into continuation text.
+        // Its previous classifier context cannot prove that new ownership.
+        let changes_empty_item_grammar = edits.iter().any(|edit| {
+            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
+                .is_ok_and(|patches| patches.is_some())
+        });
+        let region = if changes_empty_item_grammar { None } else {
+            self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)?
+        };
+        if let Some(region) = region {
             let regional = (|| -> Result<Option<TextEditCandidate>, ModelTransactionError> {
                 let new_source_end = rebase_source_boundary(
                     region.old_source.end,
@@ -4464,8 +4482,8 @@ impl Document {
                 // A folded separator can end a regional Source capture exactly
                 // at the next physical row; its parser-only terminal row is not
                 // one of the source records replaced by this regional edit.
-                let unowned_terminal_row = self.format() == Format::MarkdownSource
-                    && new_source.end < source.len()
+                let unowned_terminal_row = (region.retained_separator.is_some()
+                    || (self.format() == Format::MarkdownSource && new_source.end < source.len()))
                     && normalized
                         .endings
                         .last()
@@ -4479,7 +4497,8 @@ impl Document {
                 } else {
                     0
                 };
-                let source_rows_change = (self.format() == Format::MarkdownSource || authored_syntax)
+                let source_rows_change = (self.format() == Format::MarkdownSource || authored_syntax
+                    || region.retained_separator.is_some())
                     && normalized.endings.len() + usize::from(!unowned_terminal_row)
                         != region.source_lines.len();
                 if self.format() != Format::Markdown
@@ -4490,9 +4509,22 @@ impl Document {
                 {
                     return Err(DocumentError::VerificationFailed.into());
                 }
+                let retained_separator = region.retained_separator.as_ref().map(|separator| -> Result<_, ModelTransactionError> {
+                    Ok((separator.clone(),
+                        rebase_source_boundary(separator.start, source_patches, Association::AfterInsertion)?
+                            ..rebase_source_boundary(separator.end, source_patches, Association::AfterInsertion)?))
+                }).transpose()?;
+                let mut parser_input = normalized.clone();
+                if let Some((_, separator)) = &retained_separator {
+                    let end = parser_input.units.iter().find(|unit| unit.source.start >= separator.start)
+                        .map_or(parser_input.text.len(), |unit| unit.normalized.start);
+                    parser_input.text.truncate(end);
+                    parser_input.units.retain(|unit| unit.normalized.start < end);
+                    parser_input.endings.retain(|ending| ending.normalized.start < end);
+                }
                 let mut regional_projection = {
                     project(
-                        &normalized,
+                        &parser_input,
                         self.state().format,
                         revision,
                         new_source.start,
@@ -4625,6 +4657,7 @@ impl Document {
                     self.format().is_literal(),
                     edits,
                     source_patches,
+                    retained_separator,
                     &mut next_projected_block_id,
                 )
                 .map_err(super::block_identity_document_error)?;
@@ -4995,6 +5028,36 @@ impl Document {
         let new_text = target_text
             .slice(old_line.start..new_line_end)
             .map_err(DocumentError::FormattedTextStorage)?;
+        if markdown_code && !markdown_list && !markdown_table {
+            if let Some(fence) = super::markdown_code::fenced_source(self, &block)? {
+                let opening = self.state().source.bytes_in(fence.opening.clone())
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let opening = self.encoding().decode_region(&opening, fence.opening.start)?.text;
+                let quote = super::markdown_quotes::prefix(&opening);
+                let indent = if matches!(block.kind, super::BlockKind::ListItem { .. }) { 0 } else {
+                    opening[quote..].bytes().take_while(|byte| *byte == b' ').count()
+                };
+                let line_start = rebase_source_boundary(physical.start, patches, Association::BeforeInsertion)?;
+                let line_end = rebase_source_boundary(physical.end, patches, Association::AfterInsertion)?;
+                let bytes = source.bytes_in(line_start..line_end).ok_or(DocumentError::VerificationFailed)?;
+                let decoded = self.encoding().decode_region(&bytes, line_start)?;
+                let normalized = normalize(&decoded, self.file_format());
+                let raw = normalized.text.trim_end_matches('\n');
+                let quote = if block.quote_depth > 0 { super::markdown_quotes::prefix(raw) } else { 0 };
+                let raw = &raw[quote..];
+                let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) {
+                    fence.body_prefix[super::markdown_quotes::prefix(&fence.body_prefix)..].len()
+                } else { 0 };
+                let skip = raw.bytes().take(container).take_while(|byte| *byte == b' ').count();
+                let raw = &raw[skip..];
+                let trim = raw.bytes().take(indent).take_while(|byte| *byte == b' ').count();
+                if super::markdown_syntax::fence_close(raw, fence.delimiter, fence.width)
+                    || raw[trim..] != new_text
+                {
+                    return Ok(None);
+                }
+            }
+        }
         let old_styles = self.projection().style_spans_for_region(&old_line);
         if old_styles
             .iter()
@@ -5175,6 +5238,7 @@ impl Document {
             false,
             edits,
             patches,
+            None,
             &mut next_projected_block_id,
         ) {
             Ok(value) => value,
@@ -5231,6 +5295,11 @@ impl Document {
         }
         let mut source_bodies = Vec::new();
         for edit in edits {
+            if markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
+                .is_ok_and(|patches| patches.is_some())
+            {
+                return false;
+            }
             let Some(block) = self
                 .projection()
                 .blocks_for_region(&edit.range)
@@ -5723,6 +5792,31 @@ impl Document {
             return Ok(None);
         }
         if edits.iter().any(|edit| self.projection().table_at(edit.range.start).is_some() || self.projection().table_at(edit.range.end).is_some()) { return Ok(None); }
+        // An explicit prose separator proves independence from the following
+        // paragraph. Capture its small source contributor, never that body's
+        // potentially unbounded physical line.
+        let retained_separator = if self.format() == Format::Markdown {
+            edits.first().and_then(|edit| {
+                let line = self.projection().hard_line_at_offset(edit.range.start)?;
+                let row = self.projection().hard_line_range(line)?;
+                if !edits.iter().all(|edit| row.start <= edit.range.start
+                    && edit.range.end <= row.end && !edit.replacement.contains(['\n', '\r'])) {
+                    return None;
+                }
+                let blocks = self.projection().blocks_for_region(&row);
+                if !blocks.iter().any(|block| block.range == row
+                    && block.kind == super::BlockKind::Paragraph && block.quote_depth == 0
+                    && !block.markdown_html) {
+                    return None;
+                }
+                self.projection().provenance_for_region(&(row.end..row.end + 1))
+                    .into_iter().find(|span| span.formatted == (row.end..row.end + 1)
+                        && !span.source.is_empty()).map(|span| span.source)
+            }).filter(|boundary| markdown_block_styles::explicit_paragraph_separator(
+                self, boundary, source_patches).unwrap_or(false))
+        } else {
+            None
+        };
         if self.format() == Format::Markdown {
             if edits.iter().any(|edit| {
                 edit.replacement.is_empty()
@@ -5748,7 +5842,12 @@ impl Document {
                 for bytes in [&old, &patch.replacement] {
                     let decoded = self.encoding().decode_region(bytes, patch.range.start)?;
                     if !normalize(&decoded, self.file_format()).endings.is_empty() {
-                        return Ok(None);
+                        if !retained_separator.as_ref().is_some_and(|separator| {
+                            separator.start < patch.range.start
+                                && patch.range.end <= separator.end
+                        }) {
+                            return Ok(None);
+                        }
                     }
                 }
             }
@@ -5980,6 +6079,27 @@ impl Document {
                         .unwrap(),
                 );
             }
+            // Prose can absorb the next physical line as a setext underline
+            // or continuation. Verify sensitive neighbors with the edit
+            // instead of inheriting their old projection.
+            if last_line + 1 < self.projection().hard_line_count() {
+                let next = self.projection().hard_line_range(last_line + 1).unwrap();
+                let neighbors = self.projection().blocks_for_region(&next);
+                if retained_separator.is_none() && blocks.iter().any(|block| {
+                    block.range.is_empty() && block.kind == super::BlockKind::Paragraph
+                })
+                {
+                    if neighbors.iter().any(|block| {
+                        block.markdown_html
+                            || super::edit_boundary::is_code_paragraph(self, block).unwrap_or(true)
+                    }) {
+                        return Ok(None);
+                    }
+                    if let Some(last) = neighbors.last() {
+                        last_line = self.projection().hard_line_at_offset(last.range.end).unwrap();
+                    }
+                }
+            }
             if authored_syntax {
                 let in_list = |line| {
                     self.projection()
@@ -6050,7 +6170,7 @@ impl Document {
             }
         }
 
-        let source_lines = if self.state().source_hard_lines.len()
+        let mut source_lines = if self.state().source_hard_lines.len()
             == self.projection().hard_line_count()
         {
             hard_lines.clone()
@@ -6095,7 +6215,11 @@ impl Document {
             .get(source_lines.start)
             .ok_or(DocumentError::VerificationFailed)?
             .start;
-        let old_source_end = if last_line + 1 == self.projection().hard_line_count() {
+        let old_source_end = if let Some(separator) = &retained_separator {
+            source_lines.end = self.state().source_hard_lines.line_at_offset(separator.end)
+                .ok_or(DocumentError::VerificationFailed)?;
+            separator.end
+        } else if last_line + 1 == self.projection().hard_line_count() {
             self.state()
                 .source_hard_lines
                 .get(source_lines.end - 1)
@@ -6133,6 +6257,7 @@ impl Document {
             source_lines,
             old_formatted,
             old_source,
+            retained_separator,
         }))
     }
 }

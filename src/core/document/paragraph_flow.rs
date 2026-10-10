@@ -66,13 +66,22 @@ fn markdown_soft_breaks_without_quotes(input: &NormalizedText, syntax: &super::m
             let previous = &input.text[lines[i].clone()];
             let literal = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= ending.source.start))
                 .is_some_and(|code| code.range.start <= ending.source.start);
+            let next_start = source_at(input, lines[i + 1].start);
+            let next_end = source_at(input, lines[i + 1].end);
+            // Grammar scopes can start after indentation on the next row.
+            // Folding their preceding ending would move earlier prose into
+            // that code/HTML owner before the projection sees its boundary.
+            let enters_code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= next_start))
+                .is_some_and(|code| next_start <= code.range.start && code.range.start <= next_end);
+            let enters_block = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= next_start))
+                .is_some_and(|block| next_start <= block.range.start && block.range.start <= next_end);
             let table_boundary = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= ending.source.start)).is_some_and(|table| table.range.start <= ending.source.end);
             let block_boundary = table_boundary || syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.source.start)).is_some_and(|block| {
                 let touches = block.range.start <= ending.source.end && ending.source.start < block.range.end;
                 touches && !(matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
                     && block.content.start <= ending.source.start && ending.source.end < block.content.end)
             }) || syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.source.start)).is_some_and(|range| range.start <= ending.source.end);
-            (!literal && !block_boundary && ((prose[i]
+            (!literal && !block_boundary && !enters_code && !enters_block && ((prose[i]
                 && prose.get(i + 1) == Some(&true)
                 && lists[i].is_none()
                 && lists.get(i + 1).is_some_and(Option::is_none)

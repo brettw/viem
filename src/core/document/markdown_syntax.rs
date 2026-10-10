@@ -250,7 +250,18 @@ impl Blocks {
         for block in &mut result.blocks {
             if block.content.start > block.content.end {
                 let raw = text[block.range.clone()].trim_end_matches(['\n', '\r']);
-                let at = block.range.start + raw.len();
+                // Empty ATX headings still have a body boundary. Keep it
+                // after the opening marker, before any optional closing
+                // sequence, so typing does not turn that sequence into text.
+                let indent = raw.len() - raw.trim_start_matches([' ', '\t']).len();
+                let hashes = raw[indent..].bytes().take_while(|byte| *byte == b'#').count();
+                let prefix = if (1..=6).contains(&hashes) {
+                    let end = indent + hashes;
+                    end + usize::from(raw.as_bytes().get(end).is_some_and(|byte| matches!(byte, b' ' | b'\t')))
+                } else {
+                    raw.len()
+                };
+                let at = block.range.start + prefix;
                 block.content = at..at;
             }
         }
