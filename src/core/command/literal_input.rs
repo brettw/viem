@@ -351,7 +351,7 @@ pub(super) fn literal_key_text(key: Key) -> Option<String> {
             name.push_str(&base[1..]);
             name
         }
-        Key::SelectAll | Key::CopySelection => return None,
+        Key::SelectAll | Key::CopySelection | Key::PasteClipboard => return None,
     })
 }
 

@@ -7,6 +7,7 @@
 pub mod argument_list;
 pub mod caret;
 pub mod clipboard;
+mod native_block_paste;
 pub mod composition;
 mod selection;
 use crate::document::Format;
@@ -204,6 +205,8 @@ pub enum Key {
     SelectAll,
     /// Platform Copy reads the selection without running a Vim operator.
     CopySelection,
+    /// Native Paste follows gVim's menu action, independently of Vim key grammar.
+    PasteClipboard,
     PageUp,
     PageDown,
     Ctrl(char),
@@ -2243,6 +2246,11 @@ impl CommandInterpreter {
             return self.mode == Mode::VisualBlock
                 || self.mode == Mode::VisualLine && self.line_mode == LineMode::Visual;
         }
+        if matches!(event, InputEvent::Key(Key::PasteClipboard)) {
+            return self.mode == Mode::VisualBlock
+                || self.mode == Mode::VisualLine && self.line_mode == LineMode::Visual
+                || self.register_is_blockwise_with_context(document, Some('+'), clipboard);
+        }
         if self.substitute_confirmation.is_some() || self.mapping_applies(event) { return false; }
         if self.is_text_selection() && self.mode == Mode::VisualBlock { return true; }
         if matches!(self.pending, Pending::G { .. }) && matches!(event, InputEvent::Key(Key::Ctrl('h' | 'H'))) { return true; }
@@ -2995,6 +3003,9 @@ impl CommandInterpreter {
         if matches!(event, InputEvent::Key(Key::CopySelection)) {
             return self.copy_platform_selection(document, None);
         }
+        if matches!(event, InputEvent::Key(Key::PasteClipboard)) {
+            return self.paste_platform_clipboard(document, None);
+        }
         if let Some(output) = self.handle_mapping(document, &event)? { return Ok(output); }
         let event = self.normalized_input_event(event);
         let image_navigation = self.is_inline_image_navigation(&event);
@@ -3084,6 +3095,9 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         if matches!(event, InputEvent::Key(Key::CopySelection)) {
             return self.copy_platform_selection(document, Some(context));
+        }
+        if matches!(event, InputEvent::Key(Key::PasteClipboard)) {
+            return self.paste_platform_clipboard(document, Some(context));
         }
         let model_checkpoint = document.begin_command_checkpoint();
         let checkpoint = self.clone();
@@ -3232,7 +3246,7 @@ impl CommandInterpreter {
                 && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
-            || matches!(&event, InputEvent::Key(Key::SelectAll)) {
+            || matches!(&event, InputEvent::Key(Key::SelectAll | Key::PasteClipboard)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -6896,6 +6910,17 @@ impl CommandInterpreter {
         preserve_unnamed: bool,
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        self.visual_block_paste_impl(document, context, preserve_unnamed, count, false)
+    }
+
+    fn visual_block_paste_impl(
+        &mut self,
+        document: &mut Document,
+        context: &LayoutCommandContext<'_>,
+        preserve_unnamed: bool,
+        count: usize,
+        native: bool,
+    ) -> Result<CommandOutput, DocumentError> {
         let resolved = match self.resolved_visual_block(document, context) {
             Ok(resolved) => resolved,
             Err(error) => return Ok(visual_block_error(error)),
@@ -6909,7 +6934,7 @@ impl CommandInterpreter {
             Ok(register) => register,
             Err(output) => return Ok(output),
         };
-        if register.text.is_empty() {
+        if register.text.is_empty() && !native {
             return Ok(CommandOutput {
                 status: CommandStatus::Error(format!("empty register {register_name}")),
                 ..CommandOutput::complete()
@@ -6924,8 +6949,9 @@ impl CommandInterpreter {
         });
         let lines = document.hard_line_snapshot();
         let mut linewise_cursor_offset = None;
+        let mut native_block_target = None;
         let plans = match register.kind {
-            RegisterKind::Characterwise if register.hard_break_offsets().is_empty() => {
+            RegisterKind::Characterwise if register.hard_break_offsets().is_empty() && !native => {
                 let repeated = match checked_register_repetition(&register, count) {
                     Ok(repeated) => repeated,
                     Err(error) => return Ok(error.into_command_output()),
@@ -6953,10 +6979,16 @@ impl CommandInterpreter {
                 };
                 let selected_payloads = (0..resolved.rows.len())
                     .map(|index| {
-                        register_rows
-                            .get(index)
-                            .cloned()
-                            .map(StructuredFragment::literal)
+                        register_rows.get(index).map(|payload| {
+                            let selected = &resolved.rows[index];
+                            let suffix = selected.ranges.last().is_some_and(|range| range.end < line_end(&lines, range.end));
+                            let payload = if native && suffix { native_block_row_with_padding(&register_rows, payload) }
+                                else { payload.clone() };
+                            if native {
+                                native_block_target = Some(selected.ranges.first().map_or(selected.visual_left.point.text_offset, |range| range.start));
+                            }
+                            StructuredFragment::literal(payload)
+                        })
                     })
                     .collect::<Vec<_>>();
                 let mut plans = block_row_replacement_plans(&resolved, &selected_payloads);
@@ -6994,7 +7026,10 @@ impl CommandInterpreter {
                         let at = nearest_layout_caret_offset(row, target_x)
                             .unwrap_or(row.text_range.end);
                         if !row_payload.is_empty() {
-                            plans.push(PlannedFormattedEdit::literal(at..at, row_payload.clone()));
+                            let payload = if native && at < line_end(&lines, at) { native_block_row_with_padding(&register_rows, row_payload) }
+                                else { row_payload.clone() };
+                            plans.push(PlannedFormattedEdit::literal(at..at, payload));
+                            if native { native_block_target = Some(at); }
                         }
                     }
                     if additional.len() > available {
@@ -7002,6 +7037,7 @@ impl CommandInterpreter {
                             document.projection().text_tree().byte_len(),
                             &additional[available..],
                         ));
+                        if native { native_block_target = Some(document.projection().text_tree().byte_len()); }
                     }
                 }
                 plans
@@ -7013,7 +7049,7 @@ impl CommandInterpreter {
                 };
                 let first_line = resolved.rows[0].hard_line_index;
                 let last_line = resolved.rows[resolved.rows.len() - 1].hard_line_index;
-                let insertion = if preserve_unnamed {
+                let insertion = if preserve_unnamed || native {
                     lines
                         .line(first_line)
                         .expect("resolved layout rows name existing hard lines")
@@ -7027,7 +7063,7 @@ impl CommandInterpreter {
                         .end
                 };
                 let mut content_start = 0;
-                if !preserve_unnamed && insertion == document.projection().text_tree().byte_len() {
+                if !preserve_unnamed && !native && insertion == document.projection().text_tree().byte_len() {
                     repeated = match linewise_register_at_eof(repeated, count) {
                         Ok(repeated) => repeated,
                         Err(error) => return Ok(error.into_command_output()),
@@ -7051,7 +7087,7 @@ impl CommandInterpreter {
             &lines,
             plans,
             if register.kind == RegisterKind::Linewise {
-                if preserve_unnamed {
+                if preserve_unnamed || native {
                     lines
                         .line(resolved.rows[0].hard_line_index)
                         .expect("resolved row has a hard line")
@@ -7065,12 +7101,14 @@ impl CommandInterpreter {
                         .end
                 }
             } else {
-                target
+                native_block_target.unwrap_or(target)
             },
-            Association::BeforeInsertion,
+            if native { Association::AfterInsertion } else { Association::BeforeInsertion },
         )?;
         let changed = document.revision() != before;
-        if !preserve_unnamed {
+        if native {
+            self.delete_register(Some('-'), replaced, visual_block_deletion_class(resolved.rows.len()));
+        } else if !preserve_unnamed {
             self.delete_register(
                 None,
                 replaced,
@@ -7078,7 +7116,9 @@ impl CommandInterpreter {
             );
         }
         let new_lines = document.hard_line_snapshot();
-        let cursor_target = if let Some(relative) = linewise_cursor_offset {
+        let cursor_target = if native {
+            mapped_target
+        } else if let Some(relative) = linewise_cursor_offset {
             first_nonblank_document(document, &new_lines,
                 mapped_target
                     .saturating_add(relative)
@@ -7096,7 +7136,7 @@ impl CommandInterpreter {
                 shape: repeat_shape,
                 action: VisualBlockRepeatAction::Operator {
                     operator: Operator::Delete,
-                    register: preserve_unnamed.then_some('_'),
+                    register: if native { Some('-') } else { preserve_unnamed.then_some('_') },
                 },
             }));
         }
@@ -7278,6 +7318,18 @@ impl CommandInterpreter {
         follow: bool,
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        self.normal_block_paste_impl(document, context, before, follow, count, false)
+    }
+
+    fn normal_block_paste_impl(
+        &mut self,
+        document: &mut Document,
+        context: &LayoutCommandContext<'_>,
+        before: bool,
+        follow: bool,
+        count: usize,
+        native: bool,
+    ) -> Result<CommandOutput, DocumentError> {
         if context.snapshot.has_horizontal_materialization() {
             return Ok(layout_error(layout_motion::complete_horizontal_demand(context.snapshot, self.cursor)));
         }
@@ -7337,7 +7389,10 @@ impl CommandInterpreter {
             };
             insertion_boundaries.push(at);
             if !row_payload.is_empty() {
-                plans.push(PlannedFormattedEdit::literal(at..at, row_payload.clone()));
+                let row_payload = if native && at < line_end(&lines, at) {
+                    native_block_row_with_padding(&register_rows, row_payload)
+                } else { row_payload.clone() };
+                plans.push(PlannedFormattedEdit::literal(at..at, row_payload));
             }
         }
         if register_rows.len() > available {
@@ -7363,9 +7418,12 @@ impl CommandInterpreter {
         let mapped_target =
             commit_planned_formatted_edits(self, document, &lines, plans, target_boundary, association)?;
         let changed = document.revision() != before_revision;
-        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
-            mapped_target.min(document.projection().text_tree().byte_len()),
-        );
+        self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            mapped_target
+        } else {
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                mapped_target.min(document.projection().text_tree().byte_len()))
+        };
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         self.desired_x = None;
@@ -9978,6 +10036,16 @@ impl CommandInterpreter {
         preserve_unnamed: bool,
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        self.visual_paste_impl(document, preserve_unnamed, count, false)
+    }
+
+    fn visual_paste_impl(
+        &mut self,
+        document: &mut Document,
+        preserve_unnamed: bool,
+        count: usize,
+        native: bool,
+    ) -> Result<CommandOutput, DocumentError> {
         let remembered = self.visual_anchor.map(|anchor| VisualMemory {
             exclusive: self.selection_exclusive,
             mode: self.mode,
@@ -10010,7 +10078,15 @@ impl CommandInterpreter {
                 .break_offsets()
                 .last()
                 .is_some_and(|offset| *offset + 1 == extent.range.len());
-        let (fragment, cursor_policy) = match (selection_was_linewise, register_is_linewise) {
+        if native && (register.clipboard_fragment().is_some() || !selection_was_linewise && register_is_linewise) {
+            return self.paste_platform_lines_over_selection(document, &register, selection_kept_following_line);
+        }
+        let native_kept_empty_line = native && selection_was_linewise && selection_kept_following_line;
+        let (mut fragment, cursor_policy) = match (selection_was_linewise, register_is_linewise) {
+            (true, _) if native => (
+                StructuredFragment::from_register(&register),
+                VisualPasteCursor::Start,
+            ),
             (false, true) => (
                 linewise_fragment_for_character_selection(&register),
                 VisualPasteCursor::FirstNonBlank { relative: 1 },
@@ -10028,6 +10104,12 @@ impl CommandInterpreter {
                 },
             ),
         };
+        // The native helper changes selected lines to one empty line before
+        // putting above it. Retain that line even when another line follows.
+        if native && selection_was_linewise && selection_kept_following_line {
+            fragment.hard_break_offsets.push(fragment.text.len());
+            fragment.text.push('\n');
+        }
         let value = if fragment.text == register.text
             && fragment.hard_break_offsets == register.hard_break_offsets()
         {
@@ -10065,6 +10147,7 @@ impl CommandInterpreter {
         let mapped_start = prepared_cursor(
             document, &prepared, extent.range.start, Association::BeforeInsertion,
         )?;
+        let native_insertion_end = if native { Some(prepared_payload_caret(document, &prepared, &edit)?) } else { None };
         if document.format() == crate::document::Format::MarkdownSource {
             inserted_len = prepared_payload_caret(document, &prepared, &edit)?
                 .saturating_sub(mapped_start);
@@ -10078,11 +10161,17 @@ impl CommandInterpreter {
             )
         });
         self.update_visual_marks();
-        if !preserve_unnamed {
+        if native {
+            self.delete_register(Some('-'), replaced, deletion_class);
+        } else if !preserve_unnamed {
             self.delete_register(None, replaced, deletion_class);
         }
         let new_lines = document.hard_line_snapshot();
-        let cursor_target = match cursor_policy {
+        let cursor_target = if native {
+            let end = native_insertion_end.expect("native paste prepared its caret");
+            if native_kept_empty_line { new_lines.previous_grapheme_boundary(end).unwrap_or(mapped_start) }
+                else { end }
+        } else { match cursor_policy {
             VisualPasteCursor::Start => mapped_start,
             VisualPasteCursor::FirstNonBlank { relative } => first_nonblank_document(document, &new_lines,
                 mapped_start
@@ -10094,7 +10183,7 @@ impl CommandInterpreter {
                 mapped_start.saturating_add(inserted_len),
             )
             .unwrap_or(mapped_start),
-        };
+        }};
         self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
         self.pointer_word_origin = None;
@@ -10108,10 +10197,10 @@ impl CommandInterpreter {
             // intact; `p` performs an ordinary deletion.
             self.last_repeat = Some(RepeatAction::VisualOperator {
                 command: VisualOperatorRepeat {
-                    operator: Operator::Delete,
+                    operator: if native { Operator::Change } else { Operator::Delete },
                     shape,
                     application_count: 1,
-                    register: preserve_unnamed.then_some('_'),
+                    register: if native { Some('-') } else { preserve_unnamed.then_some('_') },
                 },
                 edits: None,
             });
@@ -10513,7 +10602,7 @@ impl CommandInterpreter {
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
-            Key::SelectAll | Key::CopySelection => self.handle_key(document, key),
+            Key::SelectAll | Key::CopySelection | Key::PasteClipboard => self.handle_key(document, key),
         }
     }
 
@@ -11713,6 +11802,17 @@ impl CommandInterpreter {
                 ));
             }
         };
+        if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            // gVim resumes the exact insertion boundary. Use ordinary typing
+            // context (including affinity and pending rich choices), even in
+            // Replace mode: native Paste inserts rather than overwrites.
+            self.cursor = position;
+            let output = self.insert_register_payload(document, &repeated)?;
+            if !self.replaying {
+                self.last_repeat = Some(RepeatAction::Paste { before, follow, count, register: name });
+            }
+            return Ok(output);
+        }
         repeated = self.assist_input_payload(
             document, position..position, BoundaryAffinity::Downstream, &repeated,
         )?;
@@ -11749,8 +11849,11 @@ impl CommandInterpreter {
                 RegisterKind::Blockwise => unreachable!("blockwise paste returned above"),
             }
         };
-        self.cursor =
-            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), target);
+        self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            target
+        } else {
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), target)
+        };
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::Paste {
                 before,
@@ -14319,6 +14422,14 @@ impl PlannedFormattedEdit {
             fragment: StructuredFragment::from_register(value),
         }
     }
+}
+
+fn native_block_row_with_padding(rows: &[String], row: &str) -> String {
+    use unicode_width::UnicodeWidthStr;
+    let width = rows.iter().map(|row| row.width()).max().unwrap_or(0);
+    let mut result = row.to_owned();
+    result.extend(std::iter::repeat(' ').take(width.saturating_sub(row.width())));
+    result
 }
 
 fn block_row_replacement_plans(

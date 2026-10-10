@@ -1182,6 +1182,21 @@ private data must not break ordinary commands/plain paste. Windows `+` and `*`
 share its one clipboard; retry transient ownership contention and fall back to
 plain text when optional rich formats are unavailable.
 
+Native Paste follows gVim's clipboard `gP` policy, independently of ordinary
+Vim `p`/`P`. With no selection, characterwise data inserts before the Normal
+caret or at the Insert/Replace insertion boundary; Replace pastes insert rather
+than overwrite. Linewise data inserts above the current hard/source line,
+regardless of cursor column, preserving an empty current line. The caret follows
+the pasted data; after linewise paste it occupies column zero of the retained
+current line. Insert/Replace resumes its original mode.
+Selected native Paste follows Vim's change/delete-then-`gP` helper in one atomic
+transaction and undo unit, finishing in Normal. Deletion uses the small-delete
+register `-` without rewriting the clipboard. Linewise data replacing a
+character selection inserts above the joined retained line; a line selection
+leaves an empty placeholder after the inserted lines. Keep these rules portable
+across native frontends. See Vim's [macOS mappings](https://github.com/vim/vim/blob/master/runtime/macmap.vim)
+and [Paste helper](https://github.com/vim/vim/blob/master/runtime/autoload/paste.vim).
+
 External plain-text paste normalizes CRLF/bare CR to semantic breaks. Valid
 private data supplies character/line/block shape; otherwise only text ending
 in CR/LF is linewise, per Vim. Linewise clipboard writes end in a break even

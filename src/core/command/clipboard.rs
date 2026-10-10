@@ -12,6 +12,472 @@ use std::fmt;
 use super::RegisterValue;
 
 impl super::CommandInterpreter {
+    /// Native Paste is the GUI's gP intention, not an interpreted key sequence.
+    /// Keep its parser reset, selection, registers and undo effects inside the
+    /// same rollback boundary as the verified source transaction.
+    pub(super) fn paste_platform_clipboard(
+        &mut self,
+        document: &mut crate::document::Document,
+        layout: Option<&super::LayoutCommandContext<'_>>,
+    ) -> Result<super::CommandOutput, crate::document::DocumentError> {
+        use super::*;
+        if layout.is_some_and(|context| {
+            context.snapshot.document_id != document.id()
+                || context.snapshot.document_revision != document.revision()
+        }) {
+            return Ok(CommandOutput {
+                status: CommandStatus::Error("stale layout context".into()),
+                ..CommandOutput::complete()
+            });
+        }
+        let value = match self.require_register_value(document, '+') {
+            Ok(value) => value,
+            Err(output) => return Ok(output),
+        };
+        if self.mode == Mode::CommandLine {
+            // Prompts retain literal clipboard text, including line endings.
+            let input = self
+                .clipboard_context
+                .read(ClipboardTarget::Clipboard)
+                .expect("validated clipboard read")
+                .content()
+                .plain_text()
+                .to_owned();
+            let expected = self
+                .command_line_snapshot()
+                .expect("command-line mode has a prompt");
+            let range = expected.anchor.min(expected.active)..expected.anchor.max(expected.active);
+            return self.edit_command_line(
+                document,
+                CommandLineEditRequest {
+                    document: document.id(),
+                    revision: document.revision(),
+                    expected,
+                    action: CommandLineEditAction::Replace { range, text: input },
+                },
+            );
+        }
+        if self.visual_block_insert.is_some() {
+            return self.paste_platform_deferred_block(document, &value);
+        }
+        let checkpoint = self.clone();
+        let model_checkpoint = document.begin_command_checkpoint();
+        self.line_layout = layout.map(|context| context.snapshot.clone());
+        let result = (|| {
+            let original_mode = self.mode;
+            let editing = matches!(original_mode, Mode::Insert | Mode::Replace);
+            let selected = matches!(
+                self.mode,
+                Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
+            );
+            let separate_unit = !self.replaying && self.compound_replay_depth == 0;
+            if value.text.is_empty()
+                && !selected
+                && value
+                    .clipboard_fragment()
+                    .and_then(|fragment| fragment.table_cells())
+                    .is_none()
+            {
+                return Ok(CommandOutput::complete());
+            }
+            self.record_event(&InputEvent::Key(Key::PasteClipboard));
+            self.clear_pending();
+            self.requested_register = Some('+');
+            if editing {
+                self.publish_insert_repeat_before_normal_command();
+                self.publish_last_insert_fragment();
+            }
+            if separate_unit {
+                document.end_edit_group();
+                document.begin_edit_group();
+            }
+            let output = if let Some(output) = self.paste_table_matrix(document, &value, 1)? {
+                output
+            } else if let Some(extent) = self.table_selection(document) {
+                // Cell rectangles retain the portable table replacement rules.
+                let (prepared, caret) = document
+                    .prepare_table_edit(
+                        document.id(),
+                        document.revision(),
+                        crate::document::TableEditIntent::ReplaceCells {
+                            table: extent.table,
+                            rows: extent.rows(),
+                            columns: extent.columns(),
+                            text: value.text.clone(),
+                            anchor_row: extent.anchor_row,
+                            anchor_column: extent.anchor_column,
+                        },
+                    )
+                    .map_err(command_document_error)?;
+                document
+                    .commit_model_transaction(prepared)
+                    .map_err(command_document_error)?;
+                self.finish_native_table_edit(document, caret, true);
+                CommandOutput {
+                    document_changed: true,
+                    cursor_moved: true,
+                    mode_changed: true,
+                    ..CommandOutput::complete()
+                }
+            } else if self.mode == Mode::VisualBlock {
+                let Some(layout) = layout else {
+                    return Ok(layout_required("paste block selection"));
+                };
+                self.visual_block_paste_impl(document, layout, false, 1, true)?
+            } else if selected && value.kind == RegisterKind::Blockwise {
+                let Some(layout) = layout else {
+                    return Ok(layout_required("paste block clipboard"));
+                };
+                self.paste_platform_block_over_selection(document, layout, &value)?
+            } else if selected {
+                self.visual_paste_impl(document, false, 1, true)?
+            } else if value.kind == RegisterKind::Blockwise {
+                let Some(layout) = layout else {
+                    return Ok(layout_required("paste block clipboard"));
+                };
+                self.normal_block_paste_impl(document, layout, true, true, 1, true)?
+            } else {
+                self.paste_impl(document, true, 1, true)?
+            };
+            if separate_unit {
+                document.end_edit_group();
+            }
+            if editing {
+                self.mode = original_mode;
+                self.invalidate_replace_restoration();
+                if let Some(session) = self.insert_session.as_mut() {
+                    session.placement = if self.mode == Mode::Replace {
+                        InsertPlacement::Replace
+                    } else {
+                        InsertPlacement::Before
+                    };
+                    session.repeat_program = Some(EditSessionProgram::default());
+                    session.last_inserted = RegisterValue::characterwise("");
+                    session.preserve_normal_repeat = true;
+                    session.unit_floor = self.cursor;
+                }
+                if separate_unit {
+                    document.begin_edit_group();
+                }
+            }
+            self.clear_pending();
+            if !editing {
+                self.retire_typing_context();
+            }
+            self.boundary_affinity = if editing
+                && value.kind == RegisterKind::Characterwise
+                && !value.text.ends_with('\n')
+            {
+                BoundaryAffinity::Upstream
+            } else {
+                BoundaryAffinity::Downstream
+            };
+            self.visual_position = None;
+            self.desired_x = None;
+            self.preferred_column = None;
+            self.position_revision = Some(document.revision());
+            Ok(output)
+        })();
+        match result {
+            Ok(mut output) if output.status == CommandStatus::Complete => {
+                self.line_layout = checkpoint.line_layout;
+                self.finish_insert_normal_once(document, &mut output);
+                self.finish_clipboard_writes(&mut output);
+                self.invalidate_changed_incremental_navigation();
+                document.commit_command_checkpoint(model_checkpoint);
+                Ok(output)
+            }
+            result => {
+                document.rollback_command_checkpoint(model_checkpoint);
+                *self = checkpoint;
+                result
+            }
+        }
+    }
+
+    /// Place block rows against the lines surviving the change. In particular,
+    /// a character selection crossing lines joins its retained prefix/suffix;
+    /// subsequent donor rows belong to the following surviving layout rows.
+    fn paste_platform_block_over_selection(
+        &mut self,
+        document: &mut crate::document::Document,
+        context: &super::LayoutCommandContext<'_>,
+        value: &super::RegisterValue,
+    ) -> Result<super::CommandOutput, crate::document::DocumentError> {
+        use super::*;
+        if context.snapshot.has_horizontal_materialization() {
+            return Ok(layout_error(layout_motion::complete_horizontal_demand(
+                context.snapshot,
+                self.cursor,
+            )));
+        }
+        let extent = self.visual_extent(document);
+        let shape = self.visual_repeat_shape(document);
+        let lines = document.hard_line_snapshot();
+        if extent.kind != MotionKind::Linewise
+            && context.snapshot.rows.windows(2).any(|rows| {
+                rows[0].hard_line_index == rows[1].hard_line_index
+                    && rows[0].text_range.end >= extent.range.start
+                    && rows[1].text_range.start <= extent.range.end
+            })
+        {
+            return Ok(CommandOutput::unsupported(
+                "Block clipboard replacement of wrapped selected text is unavailable.",
+            ));
+        }
+        let replaced = register_value(document, &lines, &extent, None);
+        let class = ordinary_deletion_class(&lines, &extent);
+        let rows = match checked_block_register_rows(value, 1) {
+            Ok(rows) => rows,
+            Err(error) => return Ok(error.into_command_output()),
+        };
+        let Some((_, _, target_x)) = normal_block_insertion_origin(
+            context.snapshot,
+            VisualPosition {
+                text_offset: extent.range.start,
+                affinity: BoundaryAffinity::Downstream,
+            },
+            true,
+        ) else {
+            return Ok(layout_error(LayoutMotionError::PositionNotInLayout(
+                VisualPosition {
+                    text_offset: extent.range.start,
+                    affinity: BoundaryAffinity::Downstream,
+                },
+            )));
+        };
+        let linewise = extent.kind == MotionKind::Linewise;
+        let kept_following = linewise
+            && lines
+                .capture(extent.range.clone())
+                .expect("Visual range belongs to the current hard-line snapshot")
+                .break_offsets()
+                .last()
+                .is_some_and(|offset| *offset + 1 == extent.range.len());
+        let suffix = !linewise && extent.range.end < line_end(&lines, extent.range.end);
+        let mut first = StructuredFragment::literal(if suffix {
+            native_block_row_with_padding(&rows, &rows[0])
+        } else {
+            rows[0].clone()
+        });
+        if kept_following {
+            first.hard_break_offsets.push(first.text.len());
+            first.text.push('\n');
+        }
+        let mut plans = vec![PlannedFormattedEdit {
+            range: extent.range.clone(),
+            fragment: first,
+        }];
+        let mut target = extent.range.start;
+        let next_row = if linewise {
+            context
+                .snapshot
+                .rows
+                .iter()
+                .position(|row| row.text_range.start >= extent.range.end)
+                .unwrap_or(context.snapshot.rows.len())
+        } else {
+            let Some((end_row, _, _)) = normal_block_insertion_origin(
+                context.snapshot,
+                VisualPosition {
+                    text_offset: extent.range.end,
+                    affinity: BoundaryAffinity::Downstream,
+                },
+                true,
+            ) else {
+                return Ok(layout_error(LayoutMotionError::PositionNotInLayout(
+                    VisualPosition {
+                        text_offset: extent.range.end,
+                        affinity: BoundaryAffinity::Downstream,
+                    },
+                )));
+            };
+            end_row + 1
+        };
+        let additional = &rows[1..];
+        let available = context.snapshot.rows.len().saturating_sub(next_row);
+        for (index, row_payload) in additional.iter().take(available).enumerate() {
+            let row = &context.snapshot.rows[next_row + index];
+            let at = nearest_layout_caret_offset(row, target_x).unwrap_or(row.text_range.end);
+            let payload = if at < line_end(&lines, at) {
+                native_block_row_with_padding(&rows, row_payload)
+            } else {
+                row_payload.clone()
+            };
+            plans.push(PlannedFormattedEdit::literal(at..at, payload));
+            target = at;
+        }
+        if additional.len() > available {
+            // Missing geometry in a partial layout must be requested before
+            // this batch may create genuinely new rows beyond document EOF.
+            if let Err(error) = gj(
+                context.snapshot,
+                VisualPosition {
+                    text_offset: extent.range.end,
+                    affinity: BoundaryAffinity::Downstream,
+                },
+                additional.len(),
+                Some(target_x),
+            )
+            .map(|_| ())
+            {
+                return Ok(layout_error(error));
+            }
+            target = document.projection().text_tree().byte_len();
+            plans.push(appended_block_rows_plan(target, &additional[available..]));
+        }
+        let before = document.revision();
+        self.remember_visual();
+        let remembered = self.last_visual;
+        let mut caret = commit_planned_formatted_edits(
+            self,
+            document,
+            &lines,
+            plans,
+            target,
+            Association::AfterInsertion,
+        )?;
+        if kept_following && rows.len() == 1 {
+            caret = document
+                .hard_line_snapshot()
+                .previous_grapheme_boundary(caret)
+                .unwrap_or(caret);
+        }
+        self.delete_register(Some('-'), replaced, class);
+        self.visual_anchor = None;
+        self.leave_visual();
+        self.last_visual = remembered.map(|memory| {
+            Self::visual_memory_for_result_range(
+                document,
+                memory,
+                extent.range.start..caret.max(extent.range.start),
+            )
+        });
+        self.update_visual_marks();
+        self.cursor =
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), caret);
+        if !self.replaying {
+            self.last_repeat = Some(RepeatAction::VisualOperator {
+                command: VisualOperatorRepeat {
+                    operator: Operator::Change,
+                    shape,
+                    application_count: 1,
+                    register: Some('-'),
+                },
+                edits: None,
+            });
+        }
+        Ok(CommandOutput {
+            document_changed: document.revision() != before,
+            cursor_moved: true,
+            mode_changed: true,
+            ..CommandOutput::complete()
+        })
+    }
+
+    /// The Visual menu helper changes the range, then puts at its insertion
+    /// boundary (whole lines go above the retained joined line). Prepare both
+    /// intentions together, retaining private source and the line placeholder.
+    pub(super) fn paste_platform_lines_over_selection(
+        &mut self,
+        document: &mut crate::document::Document,
+        value: &super::RegisterValue,
+        keep_empty_line: bool,
+    ) -> Result<super::CommandOutput, crate::document::DocumentError> {
+        use super::*;
+        let extent = self.visual_extent(document);
+        let shape = self.visual_repeat_shape(document);
+        let lines = document.hard_line_snapshot();
+        let insertion = if value.kind == RegisterKind::Linewise {
+            line_start(&lines, extent.range.start)
+        } else {
+            extent.range.start
+        };
+        let replaced = register_value(document, &lines, &extent, None);
+        let class = ordinary_deletion_class(&lines, &extent);
+        let private = value
+            .clipboard_fragment()
+            .map(|fragment| {
+                document.prepare_native_clipboard_replacement(
+                    extent.range.clone(),
+                    fragment,
+                    &value.text,
+                    keep_empty_line,
+                )
+            })
+            .transpose()
+            .map_err(command_document_error)?
+            .flatten();
+        let plans = if insertion == extent.range.start {
+            let mut fragment = StructuredFragment::from_register(value);
+            if keep_empty_line {
+                fragment.hard_break_offsets.push(fragment.text.len());
+                fragment.text.push('\n');
+            }
+            vec![PlannedFormattedEdit {
+                range: extent.range.clone(),
+                fragment,
+            }]
+        } else {
+            vec![
+                PlannedFormattedEdit::literal(extent.range.clone(), String::new()),
+                PlannedFormattedEdit::from_register(insertion..insertion, value),
+            ]
+        };
+        let before = document.revision();
+        self.remember_visual();
+        let remembered = self.last_visual;
+        let target = if let Some((prepared, caret)) = private {
+            document
+                .commit_model_transaction(prepared)
+                .map_err(command_document_error)?;
+            caret
+        } else {
+            let caret = commit_planned_formatted_edits(
+                self,
+                document,
+                &lines,
+                plans,
+                insertion,
+                Association::AfterInsertion,
+            )?;
+            if keep_empty_line {
+                document
+                    .hard_line_snapshot()
+                    .previous_grapheme_boundary(caret)
+                    .unwrap_or(caret)
+            } else {
+                caret
+            }
+        };
+        self.delete_register(Some('-'), replaced, class);
+        self.visual_anchor = None;
+        self.leave_visual();
+        self.last_visual = remembered.map(|memory| {
+            Self::visual_memory_for_result_range(document, memory, insertion..target.max(insertion))
+        });
+        self.update_visual_marks();
+        self.cursor =
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), target);
+        if !self.replaying {
+            self.last_repeat = Some(RepeatAction::VisualOperator {
+                command: VisualOperatorRepeat {
+                    operator: Operator::Change,
+                    shape,
+                    application_count: 1,
+                    register: Some('-'),
+                },
+                edits: None,
+            });
+        }
+        Ok(CommandOutput {
+            document_changed: document.revision() != before,
+            cursor_moved: true,
+            mode_changed: true,
+            ..CommandOutput::complete()
+        })
+    }
+
     /// Platform Copy leaves every selection endpoint and presentation mode in
     /// place. Vim's yank operator retains its separate cursor/mode semantics.
     pub(super) fn copy_platform_selection(

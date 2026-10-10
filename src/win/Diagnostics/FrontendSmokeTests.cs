@@ -147,6 +147,42 @@ internal static class FrontendSmokeTests
             view.Command("i"); view.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); view.ClipboardText = "paste"; view.Paste(true);
             Check(doc.FormattedText() == "pasteabc", "Windows paste overrides literal-next input");
         });
+        foreach (bool insertMode in new[] { false, true })
+        {
+            string mode = insertMode ? "Insert" : "Normal";
+            Scenario("abc", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+                if (insertMode) view.Command("i");
+                view.ClipboardText = "ZZ"; view.Paste();
+                Check(doc.FormattedText() == "ZZabc" && view.Presentation.cursor_utf8_offset == 2
+                    && view.Presentation.mode == (insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL),
+                    $"native {mode} character paste inserts before the caret and leaves it after the inserted text");
+            });
+            Scenario("abc\ndef\nghi", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+                view.Command("jl"); if (insertMode) view.Command("i");
+                view.ClipboardText = "ZZ\nYY\n"; view.Paste(true);
+                Check(doc.FormattedText() == "abc\nZZ\nYY\ndef\nghi" && view.Presentation.cursor_utf8_offset == 10
+                    && view.Presentation.mode == (insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL),
+                    $"native {mode} linewise paste inserts above the current whole line");
+                view.Undo();
+                Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes("abc\ndef\nghi")),
+                    $"undo restores exact source after native {mode} linewise paste");
+            });
+            Scenario("\n# Please enter the commit message", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+                if (insertMode) view.Command("i");
+                view.ClipboardText = "Subject\n\nDetails\n"; view.Paste();
+                Check(doc.FormattedText() == "Subject\n\nDetails\n\n# Please enter the commit message",
+                    $"native {mode} paste on a blank first commit-message line starts at document byte zero");
+            });
+        }
+        Scenario("\n# commit guidance", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+            view.ClipboardText = "Subject\n"; view.Command("\"+p");
+            Check(doc.FormattedText() == "\nSubject\n# commit guidance", "explicit clipboard p keeps Vim put-after placement");
+        });
+        Scenario("abc", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
+            view.Command("d"); view.ClipboardText = "ZZ"; view.Paste(true);
+            Check(doc.FormattedText() == "ZZabc" && view.Presentation.mode == VIEM_MODE_NORMAL,
+                "native paste cancels a pending operator and keeps Normal mode");
+        });
         Scenario("alpha beta", VIEM_FORMAT_PLAIN_TEXT, (doc, view) => {
             view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key");
             view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT); view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT);

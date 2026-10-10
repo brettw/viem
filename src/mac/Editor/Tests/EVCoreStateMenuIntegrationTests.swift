@@ -619,7 +619,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertTrue(surface.presentation(for: .paste).isEnabled)
         surface.perform(menuCommand: .paste, sender: nil)
 
-        XCTAssertEqual(surface.formattedText, "Xb\nXd")
+        XCTAssertEqual(surface.formattedText, "Xb\nd")
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
 

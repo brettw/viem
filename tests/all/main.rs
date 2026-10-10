@@ -107,6 +107,7 @@ mod named_character_application;
 mod named_character_code_adjacency;
 mod native_document_options;
 mod native_line_navigation;
+mod native_paste;
 mod open_paragraph_styles;
 mod page_down_navigation;
 mod paragraph_editing_keys;

@@ -1379,20 +1379,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             return
         }
         performInput {
-            switch self.viewPresentation.mode {
-            case UInt32(VIEM_MODE_INSERT),
-                 UInt32(VIEM_MODE_REPLACE),
-                 UInt32(VIEM_MODE_COMMAND_LINE):
-                _ = try session.sendKey(
-                    kind: UInt32(VIEM_KEY_CONTROL_CHARACTER),
-                    codepoint: UInt32(Character("r").asciiValue!)
-                )
-                _ = try self.sendCommandCharacter("+", session: session)
-            default:
-                _ = try self.sendCommandCharacter("\"", session: session)
-                _ = try self.sendCommandCharacter("+", session: session)
-                _ = try self.sendCommandCharacter("p", session: session)
-            }
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_PASTE_CLIPBOARD))
         }
     }
 
