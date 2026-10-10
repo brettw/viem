@@ -70,6 +70,44 @@ final class EVLinksTests: XCTestCase {
         withExtendedLifetime(window) {}
     }
 
+    func testLineLinkUsesPhysicalSourceLineAndCentersInBothMarkdownViews() throws {
+        let source = "[Jump](#L83)\n\n" + (1...80).map { "**line \($0)**" }.joined(separator: "\n\n")
+        let backend = EVCoreDocumentBackend()
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 800, height: 350)
+        let window = NSWindow(contentRect: surface.view.bounds, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = surface.view
+        surface.viewDidLayout()
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput { try session.setViewMargins(.init(top: 17, left: 10, bottom: 29, right: 10)) }
+        for sourceView in [true, false] {
+            surface.performInput { _ = try session.setMarkdownSource(sourceView, expected: backend.documentState()) }
+            let state = surface.viewPresentation
+            surface.openLink(at: EVLinkMenuTarget(documentID: state.document_id, revision: state.document_revision, offset: 1))
+            XCTAssertNil(surface.commandOutput, surface.statusBarState.message)
+            let text = try backend.formattedText()
+            let line = try XCTUnwrap(text.range(of: sourceView ? "**line 41**" : "line 41"))
+            let offset = UInt64(text[..<line.lowerBound].utf8.count)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, offset)
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            let row = try XCTUnwrap(snapshot.rows.first { $0.text_start == offset })
+            let top = row.y
+            let bottom = row.y + row.ascent + row.descent + row.leading
+            XCTAssertEqual((top + bottom) / 2 - surface.viewportState.top,
+                (snapshot.info.viewport_height + 17 - 29) / 2, accuracy: 1)
+        }
+        let cursor = surface.viewPresentation.cursor_utf8_offset
+        let top = surface.viewportState.top
+        XCTAssertThrowsError(try surface.navigateToLinkFragment("L999"))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(surface.viewportState.top, top)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        withExtendedLifetime(window) {}
+    }
+
     func testContextMenuOpensCurrentLinkAndRejectsStaleMenuWithoutMovingSelection() throws {
         let backend = EVCoreDocumentBackend()
         try backend.read(source: Data("before [label](https://example.com/a?x=1&y=2) after".utf8), typeName: EVDocument.markdownSourceType)

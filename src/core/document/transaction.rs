@@ -759,6 +759,7 @@ fn history_transaction_summary(
     before_revision: Revision,
     after_revision: Revision,
     summary: &ModelChangeSummary,
+    layout_invalidation: Option<Range<usize>>,
 ) -> Option<HistoryTransactionSummary> {
     let semantic = history_semantic_kind(summary.kind)?;
     let source_patches = summary
@@ -772,6 +773,7 @@ fn history_transaction_summary(
         semantic,
         source_patches,
         summary.formatted_splices.clone(),
+        layout_invalidation,
     ))
 }
 
@@ -823,6 +825,9 @@ pub struct PreparedModelTransaction {
     expected_edit_group_generation: u64,
     summary: ModelChangeSummary,
     text_position_map: PositionMap,
+    /// Exact presentation dependency of a verified source-only mutation whose
+    /// visible text and paragraph topology are unchanged.
+    layout_invalidation: Option<Range<usize>>,
     planned_history_navigation: Option<HistoryNavigation>,
     publication: PreparedPublication,
 }
@@ -1330,6 +1335,7 @@ impl Document {
                     prepared.before_revision,
                     prepared.after_revision,
                     &prepared.summary,
+                    prepared.layout_invalidation.clone(),
                 )
                 .expect("a state publication has a source-changing semantic kind"),
                 self.default_history_restoration(&prepared.summary, &prepared.text_position_map)?,
@@ -1370,31 +1376,44 @@ impl Document {
         self.advance_code_presentation(&prepared.text_position_map);
         if prepared.after_revision != prepared.before_revision {
             let splices = prepared.summary.formatted_splices();
-            let local = (prepared.summary.projection_work().scope()
-                == ProjectionWorkScope::RegionalHardLines
-                && !splices.is_empty())
-            .then(|| {
-                let old = splices
-                    .iter()
-                    .map(|s| s.old_range().start)
-                    .min()
-                    .unwrap_or(0)
-                    ..splices.iter().map(|s| s.old_range().end).max().unwrap_or(0);
-                let delta = splices.iter().fold(0i128, |sum, s| {
-                    sum + s.inserted_len() as i128 - s.old_range().len() as i128
-                });
-                let new_end = usize::try_from(old.end as i128 + delta).ok()?;
-                Some(super::LocalFormattedChange {
-                    new: old.start..new_end,
-                    old,
+            let local = prepared
+                .layout_invalidation
+                .clone()
+                .map(|range| super::LocalFormattedChange {
+                    new: range.clone(),
+                    old: range,
                     old_line_counts,
                     new_line_counts: [
                         self.projection().presentation_line_count(false),
                         self.projection().presentation_line_count(true),
                     ],
                 })
-            })
-            .flatten();
+                .or_else(|| {
+                    (prepared.summary.projection_work().scope() == ProjectionWorkScope::RegionalHardLines
+                        && !splices.is_empty())
+                    .then(|| {
+                        let old = splices
+                            .iter()
+                            .map(|s| s.old_range().start)
+                            .min()
+                            .unwrap_or(0)
+                            ..splices.iter().map(|s| s.old_range().end).max().unwrap_or(0);
+                        let delta = splices.iter().fold(0i128, |sum, s| {
+                            sum + s.inserted_len() as i128 - s.old_range().len() as i128
+                        });
+                        let new_end = usize::try_from(old.end as i128 + delta).ok()?;
+                        Some(super::LocalFormattedChange {
+                            new: old.start..new_end,
+                            old,
+                            old_line_counts,
+                            new_line_counts: [
+                                self.projection().presentation_line_count(false),
+                                self.projection().presentation_line_count(true),
+                            ],
+                        })
+                    })
+                    .flatten()
+                });
             self.record_layout_change(super::LayoutChangeRecord {
                 before: prepared.before_revision,
                 after: prepared.after_revision,
@@ -1606,6 +1625,7 @@ impl Document {
             expected_edit_group_generation: self.edit_group_generation,
             summary,
             text_position_map,
+            layout_invalidation: None,
             planned_history_navigation,
             publication,
         }
@@ -4291,7 +4311,7 @@ impl Document {
             from: current,
             to: target,
         };
-        Ok(self.prepared(
+        let mut prepared = self.prepared(
             candidate.revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::HistoryNavigation,
@@ -4307,7 +4327,10 @@ impl Document {
             PreparedPublication::History {
                 target: target.node,
             },
-        ))
+        );
+        prepared.layout_invalidation =
+            self.history.layout_invalidation_between(current.node, target.node);
+        Ok(prepared)
     }
 
     fn build_verified_candidate(

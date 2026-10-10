@@ -20,6 +20,14 @@ impl LayoutSnapshot {
         reveal_vertical_range(height, self.view_insets(), bounds.end - bounds.start)
     }
 
+    /// Requested middle alignment; the caller materializes and clamps it
+    /// against proven document edges before publishing the viewport.
+    pub(crate) fn centered_row_viewport_top(&self, row: &VisualRow, height: f32) -> f32 {
+        let bounds = row.reveal_bounds();
+        let visible = self.reveal_vertical_range(row, height);
+        (bounds.start + bounds.end - visible.start - visible.end) / 2.0
+    }
+
     pub(crate) fn reveal_viewport_top(&self, row: &VisualRow, current: f32, height: f32) -> f32 {
         reveal_viewport_top(row, current, height, self.view_insets())
     }

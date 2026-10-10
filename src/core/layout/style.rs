@@ -522,7 +522,6 @@ impl DocumentLayoutStyles {
                 let mut container_box = super::BlockBoxStyle::from_resolved(&resolved);
                 if block.code_language_label && container.kind == crate::document::ContainerKind::CodeBlock {
                     container_box.language_label = Some(block.code_language.as_deref().map(crate::document::syntax::languages::display_name).unwrap_or_else(|| "None".into()));
-                    container_box.padding.top += 18.0;
                 }
                 container_box.inline_start = resolved.leading_indent;
                 container_box.inline_end = resolved.trailing_indent;
@@ -640,7 +639,6 @@ impl DocumentLayoutStyles {
                     let mut value = if container_body { super::BlockBoxStyle::default() } else { super::BlockBoxStyle::from_resolved(&paragraph) };
                     if block.code_language_label && !block.containers.iter().any(|member| member.container.kind == crate::document::ContainerKind::CodeBlock) {
                         value.language_label = Some(block.code_language.as_deref().map(crate::document::syntax::languages::display_name).unwrap_or_else(|| "None".into()));
-                        value.padding.top += 18.0;
                     }
                     value
                 },

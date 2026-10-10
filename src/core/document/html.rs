@@ -30,6 +30,19 @@ impl Tag {
     }
 }
 
+/// The outer preformatted owner admitted by Markdown's passive HTML parser.
+/// Ranges address the original decoded spelling, including excluded prefixes.
+pub(super) struct PreOwner {
+    pub opening: Range<usize>,
+    pub range: Range<usize>,
+    pub tag: Tag,
+}
+
+pub(super) fn pre_language(tag: &Tag) -> Option<String> {
+    let language = tag.attribute("lang")?.trim_matches(|ch: char| ch.is_ascii_whitespace());
+    (!language.is_empty()).then(|| super::syntax::detection::canonical_language(language))
+}
+
 /// Image attributes are passive metadata; dimensions are positive integer
 /// pixel requests, whose display bounds are enforced by layout.
 pub(super) fn image_metadata(
@@ -562,6 +575,7 @@ fn project_tokens(
     builder.list_indent_support = Some((list_editable, list_editable));
     let mut stack = vec![Frame::default()];
     let mut owners: Vec<super::containers::SourceContainer> = Vec::new();
+    let mut code_languages = Vec::new();
     let mut pending_break: Option<Range<usize>> = None;
     let mut pending_space: Option<Range<usize>> = None;
     let mut pending_space_style = CharacterProperties::default();
@@ -962,6 +976,9 @@ fn project_tokens(
                     owner.direct_formatting =
                         super::BlockDirectFormatting::shared(own_paragraph, own_character);
                     frame.container = Some(owners.len());
+                    if markdown_references && tag.name == "pre" && !inside_pre {
+                        code_languages.push((owners.len(), pre_language(&tag)));
+                    }
                     owners.push(owner);
                     // Box declarations belong to this owner, not to each of its
                     // paragraph descendants. Inherited text properties remain.
@@ -970,6 +987,7 @@ fn project_tokens(
                     frame.paragraph.trailing_indent = None;
                 }
                 if let Some(lang) = tag.attribute("lang").filter(|s| {
+                    !(markdown_references && tag.name == "pre") &&
                     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
                 }) {
                     frame.character.language = Some(lang.to_owned());
@@ -1113,6 +1131,25 @@ fn project_tokens(
         }
     }
     let mut result = builder.finish(start, end);
+    if !code_languages.is_empty() {
+        let mut blocks = result.blocks().to_vec();
+        for block in &mut blocks {
+            if block.style.0 != "Code Block" { continue; }
+            let at = result.provenance_touching(&(block.range.start..block.range.start)).into_iter()
+                .find(|span| span.formatted.start <= block.range.start &&
+                    (block.range.start < span.formatted.end || span.formatted.is_empty()))
+                .map(|span| span.source.start);
+            let Some(at) = at else { continue; };
+            let index = code_languages.partition_point(|(owner, _)| owners[*owner].range.start <= at);
+            if let Some((owner, language)) = index.checked_sub(1).and_then(|index| code_languages.get(index)) {
+                if at <= owners[*owner].range.end {
+                    block.code_language = language.clone();
+                    block.code_language_label = true;
+                }
+            }
+        }
+        result.install_paragraph_partition(blocks);
+    }
     result.install_inline_images(inline_images);
     result.install_source_containers(owners);
     super::links::style_html_links(&mut result, input, &lexical_tokens);

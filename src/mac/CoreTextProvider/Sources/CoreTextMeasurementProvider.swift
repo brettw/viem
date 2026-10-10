@@ -20,6 +20,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   private let imageResources: CoreTextImageResources
   private let ownsImageResources: Bool
   public var imagesDidChange: (@Sendable (UInt64, [String]) -> Void)?
+  /// Jobs remain pending until their main-thread resource publication completes.
+  var pendingImageLoadCount: Int { imageResources.pendingLoadCount }
 
   public func setImageDocumentURL(_ url: URL?) {
     if imageResources.setDocumentURL(url) { invalidateMetrics() }

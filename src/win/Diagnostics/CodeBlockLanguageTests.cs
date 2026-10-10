@@ -26,29 +26,47 @@ internal static class CodeBlockLanguageTests
         {
             var pane = window.ActivePane!; var view = await pane.Ready;
             await Task.Delay(80);
-            var state = document.State;
             var snapshot = view.Layout();
             var decoration = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
             var row = snapshot.Rows.Single(row => row.row_index == decoration.row_index);
-            var label = Encoding.UTF8.GetString(snapshot.DecorationLabels, checked((int)decoration.label_byte_start), checked((int)decoration.label_byte_length));
             bool staleRejected = false;
-            void Select(string language)
-            {
-                try { view.SetCodeBlockLanguage(state.document_id, state.document_revision, row.text_start, language); }
-                catch (InvalidOperationException) { staleRejected = true; }
-            }
-            menu = EditorPane.CodeBlockLanguageMenu(label, true, Select);
+            var viewport = view.Viewport;
+            var bounds = new global::Windows.Foundation.Rect(decoration.typographic_bounds.x - viewport.left,
+                decoration.typographic_bounds.y - viewport.top, decoration.typographic_bounds.width, decoration.typographic_bounds.height);
+            var center = new global::Windows.Foundation.Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
+            using var image = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
+            byte[] Draw() { using (var drawing = image.CreateDrawingSession()) pane.Draw(drawing); return image.GetPixelBytes(); }
+            pane.MoveCodeBlockLanguageHover(null);
+            Check(pane.CodeBlockLanguageOpacity(decoration) == .25f, "the code language overlay starts at 25% opacity");
+            byte[] idle = Draw(); int builds = pane.DrawingCacheBuilds; long shaped = view.Provider.ShapedCharacters;
+            pane.MoveCodeBlockLanguageHover(center);
+            Check(pane.CodeBlockLanguageOpacity(decoration) == 1, "hovering the code language overlay raises opacity to 100%");
+            byte[] hovered = Draw();
+            Check(!hovered.AsSpan().SequenceEqual(idle) && pane.DrawingCacheBuilds == builds
+                && view.Provider.ShapedCharacters == shaped && CoreView.SameLayout(view.LayoutInfo().identity, snapshot.Info.identity),
+                "selector hover changes native pixels without rebuilding text, reshaping or relayout");
+            pane.InvalidateDrawingCache();
+            Check(Draw().AsSpan().SequenceEqual(hovered), "rebuilt code drawing retains identical selector overlay pixels");
+            pane.MoveCodeBlockLanguageHover(null);
+            Check(Draw().AsSpan().SequenceEqual(idle), "leaving the selector restores its idle frame");
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                [new(center.X / pane.Canvas.ActualWidth, center.Y / pane.Canvas.ActualHeight)],
+                _ => Check(pane.CodeBlockLanguageFlyout != null && pane.CodeBlockLanguageOpacity(decoration) == 1,
+                    "a native selector click opens its menu at full opacity"), focusTarget: false);
+            menu = pane.CodeBlockLanguageFlyout ?? throw new InvalidOperationException("The native code language picker did not open.");
+            pane.MoveCodeBlockLanguageHover(null);
+            Check(pane.CodeBlockLanguageOpacity(decoration) == 1, "an open native language menu keeps full opacity after pointer exit");
             var none = (ToggleMenuFlyoutItem)menu.Items[0];
             var obscure = (MenuFlyoutSubItem)menu.Items[1];
             Check(none.Text == "None" && obscure.Text == "Obscure languages" && menu.Items[2] is MenuFlyoutSeparator,
                 "code block picker places Obscure languages immediately after None and before its divider");
             Check(menu.Items.Skip(3).Cast<ToggleMenuFlyoutItem>().Select(item => item.Text)
                 .SequenceEqual(DocumentModes.Languages.Where(language => language.Primary).Select(language => language.Name))
-                && menu.Items.OfType<ToggleMenuFlyoutItem>().Any(item => item.Text == "Objective-C") && obscure.Items.Count == 0,
-                "code block picker uses the shared sorted primary group including Objective-C and defers obscure controls");
+                && menu.Items.OfType<ToggleMenuFlyoutItem>().Any(item => item.Text == "Objective-C"),
+                "code block picker uses the shared sorted primary group including Objective-C");
             Check(!none.IsChecked && menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Rust").IsChecked,
                 "the native primary code block language entry reflects the captured label");
-            menu.ShowAt(pane.Canvas); await Task.Delay(40);
+            await Task.Delay(40);
             Check(obscure.Items.Cast<ToggleMenuFlyoutItem>().Select(item => item.Text)
                     .SequenceEqual(DocumentModes.Languages.Where(language => !language.Primary).Select(language => language.Name))
                 && obscure.Items.Count + menu.Items.Count - 3 == DocumentModes.Languages.Count,
@@ -60,6 +78,8 @@ internal static class CodeBlockLanguageTests
             Check(obscureChoice.Focus(FocusState.Programmatic), "obscure code block language takes native keyboard focus");
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
             menu.Hide();
+            pane.MoveCodeBlockLanguageHover(null);
+            Check(pane.CodeBlockLanguageOpacity(decoration) == .25f, "closing the menu without hover restores idle selector opacity");
             Check(!staleRejected && Encoding.UTF8.GetString(document.Source(document.State.document_revision))
                     == source.Replace("```rust", "```" + obscureLanguage.Id, StringComparison.Ordinal),
                 "native obscure code block choice changes only the captured fence annotation");
@@ -93,6 +113,20 @@ internal static class CodeBlockLanguageTests
                 && obscure.Items.Cast<ToggleMenuFlyoutItem>().All(item => !item.IsEnabled),
                 "read-only code block menus disable primary and obscure language actions");
             Check(pane.LastError == null, "code block language menu tests leave no presentation errors");
+            menu.Hide();
+            var survivor = window.SplitPane(pane, document); await survivor.Ready;
+            window.FocusPane(pane); await Task.Delay(80);
+            var closingLabel = view.Layout().Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
+            viewport = view.Viewport;
+            center = new(closingLabel.typographic_bounds.x - viewport.left + closingLabel.typographic_bounds.width / 2,
+                closingLabel.typographic_bounds.y - viewport.top + closingLabel.typographic_bounds.height / 2);
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                [new(center.X / pane.Canvas.ActualWidth, center.Y / pane.Canvas.ActualHeight)],
+                _ => { }, focusTarget: false);
+            menu = pane.CodeBlockLanguageFlyout ?? throw new InvalidOperationException("The closing pane's native language picker did not open.");
+            await window.ClosePane(pane, force: true);
+            Check(pane.CodeBlockLanguageFlyout == null && pane.CodeBlockLanguageOpacity(closingLabel) == .25f,
+                "closing a pane with its native language menu open retires selector ownership without querying detached geometry");
         }
         finally { menu?.Hide(); await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
     }
@@ -108,8 +142,9 @@ internal static class CodeBlockLanguageTests
             var snapshot = view.Layout();
             var label = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
             var row = snapshot.Rows.Single(row => row.row_index == label.row_index);
-            check(label.typographic_bounds.y + label.typographic_bounds.height <= row.y + .01,
-                "code language furniture fits above the literal body without editable positions");
+            check(label.typographic_bounds.y < row.y + row.ascent + row.descent + row.leading
+                && label.typographic_bounds.y + label.typographic_bounds.height > row.y,
+                "code language furniture overlays the literal body without reserving layout space or editable positions");
             return Encoding.UTF8.GetString(snapshot.DecorationLabels, checked((int)label.label_byte_start), checked((int)label.label_byte_length));
         }
         check(Label() == "Rust ▾" && Source() == source, "Windows exports the Markdown code language label without changing source");

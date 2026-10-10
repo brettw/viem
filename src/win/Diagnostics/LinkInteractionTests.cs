@@ -162,7 +162,8 @@ internal static class LinkInteractionTests
                 "an internal fragment navigates within the same document");
             Check(pane.LastError == null, "link popup tests complete without presentation errors");
             string linkedPath = Path.Combine(Path.GetTempPath(), "viem-linked-" + Guid.NewGuid().ToString("N") + ".md");
-            await File.WriteAllTextAsync(linkedPath, "# Local target");
+            await File.WriteAllTextAsync(linkedPath, "# Local target\n\n"
+                + string.Join("\n\n", Enumerable.Range(1, 80).Select(line => "**line" + line + "**")));
             try
             {
                 var existing = App.Instance.Windows.ToHashSet();
@@ -175,7 +176,7 @@ internal static class LinkInteractionTests
                     Check(FileIdentity.Same(linkedPane.Document.FilePath!, linkedPath) && window.Panes.Contains(pane),
                         "local document links open a new Viem window without replacing the source document");
                     var linkedView = await linkedPane.Ready;
-                    linkedView.Command("G$a"); linkedView.Text(" unsaved"); linkedView.Key(VIEM_KEY_ESCAPE);
+                    linkedView.Command("gg$a"); linkedView.Text(" unsaved"); linkedView.Key(VIEM_KEY_ESCAPE);
                     byte[] unsavedSource = linkedPane.Document.Source(linkedPane.Document.State.document_revision);
                     File.Delete(linkedPath);
                     var beforeReuse = App.Instance.Windows.ToHashSet();
@@ -186,6 +187,28 @@ internal static class LinkInteractionTests
                     Check(linkedPane.Document.IsDirty && unsavedSource.AsSpan().SequenceEqual(linkedPane.Document.Source(linkedPane.Document.State.document_revision))
                         && linkedView.Presentation.cursor_utf8_offset == 0,
                         "existing document links preserve unsaved source and navigate fragments after the backing file is removed");
+                    linkedView.Padding(17, 10, 29, 10);
+                    foreach (bool sourceView in new[] { true, false })
+                    {
+                        linkedView.SetMarkdownSource(sourceView);
+                        await window.OpenLinkedDocument(pane, new(LinkDestinationKind.Document, linkedPath, "L83"));
+                        string targetText = sourceView ? "**line41**" : "line41";
+                        ulong offset = (ulong)linkedPane.Document.FormattedText().IndexOf(targetText, StringComparison.Ordinal);
+                        Check(linkedView.Presentation.cursor_utf8_offset == offset && beforeReuse.SetEquals(App.Instance.Windows),
+                            "a physical source-line link focuses the unsaved existing pane in " + (sourceView ? "Source" : "WYSIWYG"));
+                        var layout = linkedView.Layout();
+                        var row = layout.Rows.Single(row => row.text_start == offset);
+                        float middle = row.y + (row.ascent + row.descent + row.leading) / 2;
+                        Check(Math.Abs(middle - linkedView.Viewport.top - (layout.Info.viewport_height + 17 - 29) / 2) < 1,
+                            "source-line links center the target row between the configured margins");
+                        Check(unsavedSource.AsSpan().SequenceEqual(linkedPane.Document.Source(linkedPane.Document.State.document_revision)),
+                            "source-line navigation leaves unsaved bytes unchanged");
+                    }
+                    ulong beforeMissingLine = linkedView.Presentation.cursor_utf8_offset;
+                    float beforeMissingTop = linkedView.Viewport.top;
+                    await window.OpenLinkedDocument(pane, new(LinkDestinationKind.Document, linkedPath, "L999"));
+                    Check(linkedView.Presentation.cursor_utf8_offset == beforeMissingLine && linkedView.Viewport.top == beforeMissingTop,
+                        "a missing source-line fragment leaves the destination caret and viewport unchanged");
                     await window.OpenLinkedDocument(pane, new(LinkDestinationKind.Document, linkedPath, "missing-heading"));
                     Check(linkedPane.LastError?.Message.Contains("heading", StringComparison.OrdinalIgnoreCase) == true && pane.LastError == null,
                         "a missing local-document fragment reports on the existing destination window");

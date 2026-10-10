@@ -487,6 +487,7 @@ impl VisualRow {
             .chain(
                 self.decorations
                     .iter()
+                    .filter(|decoration| decoration.kind != DecorationKind::CodeLanguage)
                     .map(|decoration| decoration.ink_bounds),
             );
         let mut bounds = ink.next()?;
@@ -3278,7 +3279,7 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
     // absolute right edge must not acquire the text content box's trailing
     // inset again, or fitting padded blocks create horizontal overflow.
     let decoration_right = row.decorations.iter()
-        .filter(|item| item.kind != DecorationKind::Text)
+        .filter(|item| !matches!(item.kind, DecorationKind::Text | DecorationKind::CodeLanguage))
         .flat_map(|item| [item.x + item.advance, item.ink_bounds.x + item.ink_bounds.width])
         .fold(viewport_width, f32::max);
     if let Some(cell) = &row.table_cell {
@@ -6436,10 +6437,16 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
         };
         if is_top {
             if let Some(language) = &style.language_label {
+                // Native frontends paint this overlay beneath the code glyphs;
+                // its bounds never reserve space in the normal-flow box.
                 let text = format!("{language} ▾");
-                let width = (text.chars().count() as f32 * 6.7 * scale).min(220.0 * scale).min((inner_rect.width - 8.0 * scale).max(0.0));
-                let bounds = LayoutRect { x: inner_rect.x + inner_rect.width - width - 4.0 * scale,
-                    y: inner_top + 2.0 * scale, width, height: 16.0 * scale };
+                let inset_x = (4.0 * scale).min(inner_rect.width * 0.5);
+                let inset_y = (2.0 * scale).min(inner_rect.height);
+                let width = (text.chars().count() as f32 * 6.7 * scale).min(220.0 * scale)
+                    .min((inner_rect.width - inset_x * 2.0).max(0.0));
+                let bounds = LayoutRect { x: inner_rect.x + inner_rect.width - width - inset_x,
+                    y: inner_top + inset_y, width,
+                    height: (16.0 * scale).min((inner_rect.height - inset_y).max(0.0)) };
                 let mut label_paint = ResolvedTextPaint::default();
                 label_paint.foreground = style.foreground;
                 label_paint.foreground_is_default = style.foreground_is_default;

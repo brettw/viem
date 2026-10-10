@@ -1,7 +1,7 @@
 //! Passive HTML embedded in Markdown. Attributes cannot install CSS, execute
 //! scripts, or load resources. Comments intentionally retain syntax.
 use super::*;
-use crate::document::html::{self, TokenKind};
+use crate::document::{html::{self, TokenKind}, ContainerAttributes, ContainerKind, ContainerMembership};
 
 #[cfg(test)]
 thread_local! {
@@ -25,6 +25,31 @@ pub(super) fn open_pre(source: &str) -> bool {
         } else if !html::void(&tag.name) { stack.push(tag.name); }
     }
     stack.iter().any(|name| name == "pre")
+}
+
+pub(super) fn pre_owners(source: &str, excluded: &[Range<usize>]) -> Vec<html::PreOwner> {
+    let mut stack: Vec<(String, Option<usize>)> = Vec::new();
+    let mut owners: Vec<html::PreOwner> = Vec::new();
+    for token in html::tokenize_without_ranges(source, excluded) {
+        let TokenKind::Tag(tag) = token.kind else { continue; };
+        if !allowed(&tag.name) { continue; }
+        if tag.end {
+            if let Some(index) = stack.iter().rposition(|(name, _)| name == &tag.name) {
+                for (_, owner) in &stack[index..] {
+                    if let Some(owner) = owner { owners[*owner].range.end = token.range.end; }
+                }
+                stack.truncate(index);
+            }
+        } else if !html::void(&tag.name) {
+            let owner = if tag.name == "pre" && !stack.iter().any(|(name, _)| name == "pre") {
+                let owner = owners.len();
+                owners.push(html::PreOwner { opening: token.range.clone(), range: token.range.start..source.len(), tag: tag.clone() });
+                Some(owner)
+            } else { None };
+            stack.push((tag.name, owner));
+        }
+    }
+    owners
 }
 
 pub(super) fn image_only_html(source: &str) -> bool {
@@ -204,6 +229,54 @@ impl MarkdownBuilder<'_> {
             }
         }
     }
+
+    /// Source keeps its physical rows and literal HTML. Preformatted owners
+    /// acquire code metadata on those rows without interpreting other HTML prose.
+    pub(super) fn source_html_blocks(
+        &self, range: Range<usize>, output: usize, kind: BlockKind, quote_depth: usize,
+        quotes: &[super::super::markdown_quotes::QuoteLine],
+    ) -> Vec<Block> {
+        let text = &self.source_text[range.clone()];
+        let excluded = quote_prefix_ranges(self.source_text, self.units, &range, quotes);
+        let owners = pre_owners(text, &excluded);
+        let endings: Vec<_> = text.match_indices('\n').map(|(at, _)| at).collect();
+        let rows: Vec<_> = owners.iter().map(|owner| {
+            let first = endings.partition_point(|at| *at < owner.opening.start);
+            let start = first.checked_sub(1).map_or(0, |index| endings[index] + 1);
+            let last = endings.partition_point(|at| *at < owner.range.end);
+            let end = endings.get(last).copied().unwrap_or(text.len());
+            (start..end, html::pre_language(&owner.tag))
+        }).collect();
+        let mut blocks = Vec::new();
+        let mut at = 0;
+        let mut push = |range: Range<usize>, language: Option<String>, code: bool| {
+            let mut block = Block::new(0, output + range.start..output + range.end, kind.clone(),
+                if code { "Code Block" } else { "Paragraph" }.into(), None);
+            block.quote_depth = quote_depth;
+            block.markdown_html = code;
+            block.code_language = language;
+            if code {
+                block.containers = vec![ContainerMembership {
+                    container: Arc::new(ContainerAttributes {
+                        id: super::super::containers::provisional_identity(), kind: ContainerKind::CodeBlock,
+                        style: "Code Block".into(), direct_formatting: None,
+                    }), starts_here: true, ends_here: true,
+                }].into();
+            }
+            blocks.push(block);
+        };
+        for (index, (row, language)) in rows.iter().enumerate() {
+            // Multiple owners on one physical row cannot supply independent
+            // Source code contexts; retain that row's ordinary literal owner.
+            if index.checked_sub(1).is_some_and(|previous| rows[previous].0.end >= row.start)
+                || rows.get(index + 1).is_some_and(|next| row.end >= next.0.start) { continue; }
+            if at < row.start { push(at..row.start - 1, None, false); }
+            push(row.clone(), language.clone(), true);
+            at = (row.end + usize::from(row.end < text.len())).min(text.len());
+        }
+        if at < text.len() || at == 0 { push(at..text.len(), None, false); }
+        blocks
+    }
 }
 
 pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revision) -> FormattedDocument {
@@ -228,7 +301,8 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
                 tag.attributes.retain(|(name, _)| matches!(name.as_str(), "src" | "alt" | "width" | "height"));
             }
             TokenKind::Tag(tag) if allowed(&tag.name) => {
-                tag.attributes.retain(|(name, _)| matches!(name.as_str(), "href" | "title" | "start" | "value" | "dir" | "align"));
+                let pre = tag.name == "pre";
+                tag.attributes.retain(|(name, _)| matches!(name.as_str(), "href" | "title" | "start" | "value" | "dir" | "align") || pre && name == "lang");
             }
             TokenKind::Tag(tag) => {
                 if tag.name == "img" { references.push(token.range.clone()); }
@@ -271,6 +345,21 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
 mod tests {
     use super::*;
     use crate::document::{Document, Encoding};
+
+    #[test]
+    fn passive_pre_owner_ranges_follow_ancestor_closure_and_original_prefixes() {
+        let source = "> <div>\n> <PRE LANG='c&#43;&#43;' lang=rust>\n> <pre lang=python>x</pre>\n> </div>\n> <pre lang=unknown>y";
+        let excluded: Vec<_> = source.match_indices("> ").map(|(at, _)| at..at + 2).collect();
+        let owners = pre_owners(source, &excluded);
+        assert_eq!(owners.len(), 2);
+        assert_eq!(&source[owners[0].opening.clone()], "<PRE LANG='c&#43;&#43;' lang=rust>");
+        assert_eq!(owners[0].range.end, source.find("</div>").unwrap() + "</div>".len());
+        assert_eq!(html::pre_language(&owners[0].tag).as_deref(), Some("cpp"));
+        assert_eq!(owners[1].range.end, source.len());
+        assert_eq!(html::pre_language(&owners[1].tag).as_deref(), Some("unknown"));
+        let attribute = owners[0].tag.attribute_range("lang").unwrap();
+        assert_eq!(&source[attribute], "'c&#43;&#43;'");
+    }
 
     #[test]
     fn scripted_paragraphs_and_deep_inline_scopes_complete_in_linear_style_work() {

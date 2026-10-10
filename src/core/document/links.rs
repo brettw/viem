@@ -1695,7 +1695,23 @@ impl Document {
         Ok(false)
     }
 
+    pub(crate) fn link_fragment_source_line(fragment: &str) -> Option<usize> {
+        let digits = fragment.strip_prefix('L')?;
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse::<usize>().ok()?.checked_sub(1)
+    }
+
     pub fn find_link_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {
+        if let Some(line) = Self::link_fragment_source_line(fragment) {
+            return self
+                .state()
+                .source_hard_lines
+                .get(line)
+                .map(|range| self.visible_point_for_source(range.start, true))
+                .transpose();
+        }
         if !self.format().is_markdown() {
             return Ok(None);
         }

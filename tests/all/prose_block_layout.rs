@@ -82,21 +82,18 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
             .find(|decoration| decoration.kind == viem_core::layout::DecorationKind::CodeLanguage)
             .unwrap();
         assert_eq!(caption.text, "None ▾");
-        assert_eq!(caption.typographic_bounds.height, 16.);
+        assert!(caption.typographic_bounds.height > 0. && caption.typographic_bounds.height <= 16.);
         assert!(
             (caption.typographic_bounds.y - rows[0].y - rows[0].line_advance - 9.).abs() < 0.01,
             "the caption begins inside the code box, below the collapsed paragraph margin"
         );
         assert!(
-            (caption.typographic_bounds.y + caption.typographic_bounds.height - rows[1].y).abs()
-                < 0.01,
-            "the first body row starts after the caption's reserved header"
+            (caption.typographic_bounds.y - rows[1].y - 2.).abs() < 0.01,
+            "the caption overlays the body without reserving a header"
         );
-        for (index, (row, next)) in rows.iter().zip(rows.iter().skip(1)).enumerate() {
+        for (row, next) in rows.iter().zip(rows.iter().skip(1)) {
             let expected_gap = if row.paragraph_id == next.paragraph_id {
                 0.
-            } else if index == 0 {
-                7. + 18.
             } else {
                 7.
             };

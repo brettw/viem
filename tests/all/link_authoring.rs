@@ -201,6 +201,198 @@ fn fragment_navigation_matches_headings_and_duplicate_suffixes() {
 }
 
 #[test]
+fn line_fragments_use_physical_source_lines_across_encodings_and_projections() {
+    let source = "# First\r\n\r\nprefix\r\n**target**\r\n\r\nlast";
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+        let bytes: Vec<u8> = match encoding {
+            Encoding::Utf8 => [b"\xef\xbb\xbf".as_slice(), source.as_bytes()].concat(),
+            Encoding::Utf16Le => [
+                vec![0xff, 0xfe],
+                source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+            ]
+            .concat(),
+            Encoding::Utf16Be => [
+                vec![0xfe, 0xff],
+                source.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+            ]
+            .concat(),
+            _ => unreachable!(),
+        };
+        for format in [
+            Format::Markdown,
+            Format::MarkdownSource,
+            Format::PlainText,
+            Format::Code,
+        ] {
+            let doc = Document::from_bytes(bytes.clone(), encoding, format).unwrap();
+            assert_eq!(doc.find_link_fragment("L1").unwrap(), Some(0));
+            for (fragment, text) in [
+                ("L3", "prefix"),
+                (
+                    "L4",
+                    if format == Format::Markdown {
+                        "target"
+                    } else {
+                        "**target**"
+                    },
+                ),
+            ] {
+                let at = doc.find_link_fragment(fragment).unwrap().unwrap();
+                assert!(
+                    doc.text()[at..].starts_with(text),
+                    "{format:?} {encoding:?} {fragment}"
+                );
+            }
+            for fragment in [
+                "L0",
+                "L7",
+                "L",
+                "L+3",
+                "L3-L4",
+                "L999999999999999999999999999999",
+            ] {
+                assert_eq!(
+                    doc.find_link_fragment(fragment).unwrap(),
+                    None,
+                    "{fragment}"
+                );
+            }
+            assert_eq!(doc.source_bytes(), bytes);
+        }
+    }
+    let doc = document("# L34\n\n# L3-L4", Format::Markdown);
+    assert_eq!(
+        doc.find_link_fragment("l34").unwrap(),
+        Some(0),
+        "other fragment spellings retain heading semantics"
+    );
+    assert!(doc.find_link_fragment("l3-l4").unwrap().is_some());
+}
+
+#[test]
+fn line_fragment_navigation_centers_and_clamps_without_editing_or_moving_other_views() {
+    use viem_core::layout::{EdgeInsets, MockTextMeasurementProvider};
+    use viem_core::Core;
+    let source = (1..=80)
+        .map(|line| format!("line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        let mut core = Core::new(document(&source, format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
+        let other = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
+        core.set_view_insets(
+            view,
+            EdgeInsets {
+                top: 17.,
+                bottom: 29.,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let id = core.document().id();
+        let revision = core.document().revision();
+        let history = core.document().history_status();
+        for (fragment, text) in [("L79", "line 40"), ("L1", "line 1"), ("L159", "line 80")] {
+            let outcome = core
+                .navigate_to_link_fragment(view, id, revision, fragment)
+                .unwrap()
+                .unwrap();
+            assert!(!outcome.document_changed);
+            let offset = core.command_state(view).unwrap().cursor();
+            assert_eq!(offset, core.document().text().find(text).unwrap());
+            let layout = core.layout(view).unwrap();
+            let snapshot = layout.snapshot().unwrap();
+            let geometry = snapshot
+                .logical_endpoint_geometry(offset, BoundaryAffinity::Downstream)
+                .unwrap();
+            let row = &snapshot.rows[geometry.row_index];
+            let ink = row.ink_bounds();
+            let start = ink.map_or(row.y, |ink| row.y.min(ink.y));
+            let end = ink.map_or(row.y + row.natural_height(), |ink| {
+                (row.y + row.natural_height()).max(ink.y + ink.height)
+            });
+            let requested = (start + end - 17. - (layout.height() - 29.)) / 2.;
+            let expected = requested.max(0.).min(
+                snapshot
+                    .maximum_viewport_top(layout.height())
+                    .unwrap_or(f32::INFINITY),
+            );
+            assert!(
+                (layout.viewport_top() - expected).abs() < 0.05,
+                "{format:?} {fragment}: {} vs {expected}",
+                layout.viewport_top()
+            );
+        }
+        let cursor = core.command_state(view).unwrap().cursor();
+        let top = core.layout(view).unwrap().viewport_top();
+        assert!(core
+            .navigate_to_link_fragment(view, id, revision, "L160")
+            .unwrap()
+            .is_none());
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+        assert_eq!(core.layout(view).unwrap().viewport_top(), top);
+        assert!(matches!(
+            core.navigate_to_link_fragment(view, id, Revision(revision.0 + 1), "L1"),
+            Err(viem_core::CoreError::Document(
+                DocumentError::WrongSnapshot { .. }
+            ))
+        ));
+        assert_eq!(core.command_state(other).unwrap().cursor(), 0);
+        assert_eq!(core.layout(other).unwrap().viewport_top(), 0.);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert_eq!(core.document().history_status(), history);
+    }
+}
+
+#[test]
+fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport() {
+    use viem_core::command::InputEvent;
+    use viem_core::layout::{LayoutCoverage, MockTextMeasurementProvider};
+    use viem_core::{Core, CoreEvent};
+    let mut core = Core::new(document(
+        &"paragraph\n\n".repeat(10_000),
+        Format::MarkdownSource,
+    ));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
+    core.handle(view, CoreEvent::Input(InputEvent::text("iunsaved ")))
+        .unwrap();
+    let id = core.document().id();
+    let revision = core.document().revision();
+    let (_, work) = measure_document_work(|| {
+        core.navigate_to_link_fragment(view, id, revision, "L19001")
+            .unwrap()
+            .unwrap()
+    });
+    assert_eq!(
+        core.command_state(view).unwrap().cursor(),
+        core.document()
+            .visible_point_for_source(
+                core.document()
+                    .physical_line(19000)
+                    .unwrap()
+                    .source_range
+                    .start,
+                true
+            )
+            .unwrap()
+    );
+    assert_eq!(work.source_full_materializations, 0, "{work:?}");
+    assert_eq!(work.source_decoded_bytes, 0, "{work:?}");
+    assert_eq!(work.formatted_full_materialized_bytes, 0, "{work:?}");
+    let coverage = &core.layout(view).unwrap().snapshot().unwrap().coverage;
+    assert!(
+        matches!(coverage, LayoutCoverage::PartialHardLines { hard_lines, .. } if hard_lines.len() < 100)
+    );
+    assert!(core
+        .document()
+        .physical_line(0)
+        .unwrap()
+        .text
+        .starts_with("unsaved paragraph"));
+}
+
+#[test]
 fn heading_picker_uses_navigation_fragments_and_omits_code_lookalikes() {
     let source = "# Hello, **World**!\n\n## Hello, **World**!\n\nSetext `title`\n===\n\n> ### Quoted heading\n\n- Parent\n  - #### ~~Nested~~ heading\n\n```\n# Not a heading\n```";
     for format in [Format::Markdown, Format::MarkdownSource] {

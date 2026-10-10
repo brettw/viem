@@ -1827,6 +1827,20 @@ final class EVCoreViewSession {
         }
     }
 
+    func navigateToLinkFragment(_ fragment: String) throws -> Bool {
+        let state = try document.documentState()
+        let bytes = Array(fragment.utf8)
+        var found: UInt8 = 0
+        _ = try bytes.withUnsafeBufferPointer { buffer in
+            try performCoreOperation("Navigate to link destination") { outcome in
+                viem_core_view_navigate_link_fragment(document.core, viewID, state.document_id,
+                    state.document_revision, ViemUtf8Slice(data: buffer.baseAddress, length: UInt64(buffer.count)),
+                    &found, outcome)
+            }
+        }
+        return found != 0
+    }
+
     @discardableResult
     func selectAll() throws -> ViemCoreOutcomeV1 {
         let state = try document.documentState()

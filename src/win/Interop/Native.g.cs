@@ -2298,7 +2298,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_code_block_language(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @offset, ViemUtf8Slice @language, ViemCoreOutcomeV1* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_find_link_fragment(ulong @core, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, ulong* @offset, byte* @found);
+    public static extern uint viem_core_view_navigate_link_fragment(ulong @core, ulong @view, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, byte* @found, ViemCoreOutcomeV1* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_link_destination(ulong @core, ulong @document_id, ulong @revision, ulong @text_offset, byte* @output, ulong @capacity, ulong* @required, byte* @found);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

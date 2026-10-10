@@ -71,6 +71,65 @@ final class EVThemeTests: XCTestCase {
       window.contentLayoutRect.height / 2)
   }
 
+  func testStatusFontSizeArrowsCommitPendingTextAndTrackThemeChanges() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-theme-stepper-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let configuration = EVConfigurationStore(directory: directory)
+    let store = EVThemeStore(configuration: configuration)
+    var theme = store.theme
+    theme.statusFontSize = 14.5
+    store.update(theme)
+    let settings = EVSettingsWindowController(store: store)
+    defer { settings.close() }
+    settings.showWindow(nil)
+    let window = try XCTUnwrap(settings.window)
+    window.makeKeyAndOrderFront(nil)
+    window.contentView?.layoutSubtreeIfNeeded()
+    let field = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSTextField }
+      .first { $0.accessibilityLabel() == "Status font size" })
+    let stepper = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSStepper }
+      .first { $0.accessibilityLabel() == "Adjust status font size" })
+    XCTAssertTrue(stepper.superview === field.superview)
+    let siblings = try XCTUnwrap(field.superview as? NSStackView).arrangedSubviews
+    XCTAssertEqual(try XCTUnwrap(siblings.firstIndex(of: stepper)), try XCTUnwrap(siblings.firstIndex(of: field)) + 1)
+    XCTAssertEqual(stepper.increment, 1)
+    XCTAssertEqual(stepper.minValue, 8)
+    XCTAssertEqual(stepper.maxValue, 32)
+    XCTAssertFalse(stepper.valueWraps)
+
+    func clickArrow(up: Bool) throws {
+      stepper.scrollToVisible(stepper.bounds)
+      let top = up != stepper.isFlipped
+      let location = stepper.convert(NSPoint(x: stepper.bounds.midX,
+        y: stepper.bounds.height * (top ? 0.75 : 0.25)), to: nil)
+      func event(_ type: NSEvent.EventType) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [],
+          timestamp: 0, windowNumber: window.windowNumber, context: nil,
+          eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+      }
+      NSApplication.shared.postEvent(try event(.leftMouseUp), atStart: true)
+      window.sendEvent(try event(.leftMouseDown))
+    }
+
+    try clickArrow(up: true)
+    XCTAssertEqual(store.theme.statusFontSize, 15.5)
+    XCTAssertEqual(field.doubleValue, 15.5)
+    try clickArrow(up: false)
+    XCTAssertEqual(store.theme.statusFontSize, 14.5)
+    XCTAssertTrue(window.makeFirstResponder(field))
+    let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+    editor.insertText("20.5", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+    try clickArrow(up: true)
+    XCTAssertEqual(store.theme.statusFontSize, 21.5)
+    theme = store.theme
+    theme.statusFontSize = 32
+    store.update(theme)
+    XCTAssertEqual(stepper.doubleValue, 32)
+    try clickArrow(up: true)
+    XCTAssertEqual(store.theme.statusFontSize, 32)
+    XCTAssertEqual(EVThemeStore(configuration: EVConfigurationStore(directory: directory)).theme.statusFontSize, 32)
+  }
+
   private func descendants(_ view: NSView?) -> [NSView] {
     guard let view else { return [] }
     return [view] + view.subviews.flatMap { descendants($0) }

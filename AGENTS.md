@@ -400,9 +400,12 @@ source and relative to the document URL; reject stale targets, control character
 and executable schemes. Heading fragments navigate the current document. Local
 file targets focus an existing view or pane of that document, preserving its
 unsaved edits; only documents without an open view receive a new Viem window.
-A local file's heading fragment navigates that chosen view. HTTP and HTTPS open
-the default browser. Native URL and document APIs perform these actions, never
-a shell. Preserve existing percent escapes and encode invalid bytes once.
+A local file's heading fragment navigates that chosen view. A `#L` fragment
+followed by a positive decimal line number navigates to the beginning of that
+physical source-file line in the chosen view, centering it within the valid
+scroll range. HTTP and HTTPS open the default browser. Native URL and document
+APIs perform these actions, never a shell. Preserve existing percent escapes
+and encode invalid bytes once.
 
 Markdown image insertion and location editing use native caret popups, with the
 image button beside Code Block. Selecting an image shows its location, explicit
@@ -479,12 +482,18 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
 - A code block is one container with one literal paragraph, internal hard breaks
   and spacing around the whole block. WYSIWYG code blocks expose a language
   selector inside their upper-right border, using the Code Block foreground.
+  It paints beneath the code text without reserving space or changing code,
+  caret or container geometry. Its opacity is 25% while idle and 100% while
+  hovered or its menu is open; it returns to 25% when neither applies.
   None uses rich Code Block text styling; a specified language uses the shared
   Code syntax styles while retaining Markdown container geometry. The first
   new block defaults to None; later blocks inherit the preceding block's language,
   or the following block's when none precedes them. Language edits preserve the
   body and unrelated source in one verified undoable transaction, without changing
-  any view's scroll position. A shorter block may leave blank canvas after the
+  any view's scroll position. Passive HTML `<pre lang="rust">` uses the same
+  highlighting and language selector; language edits change only its `lang`
+  attribute, and None removes that attribute while preserving the HTML body.
+  A shorter block may leave blank canvas after the
   content without adding text or caret rows. Syntax remains
   disposable and bounded to visible work. List/quote ownership survives a
   contained paragraph's heading or Code Block style.
@@ -1437,6 +1446,8 @@ of Settings opens, never at startup or during ordinary refreshes. Identify bundl
 themes by their shipped filename: offer Revert to replace their complete contents
 with the bundled original while keeping selection. Other saved themes offer Delete.
 Restoring missing themes must leave existing customizations and user themes alone.
+The Theme settings font-size control includes native up/down arrows, following
+the style inspector's numeric controls.
 
 Defaults remain sparse and source assignments/direct declarations take precedence.
 Source/WYSIWYG share defaults. Loading or changing themes never writes inherited

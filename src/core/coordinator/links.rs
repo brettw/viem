@@ -2,6 +2,86 @@
 use super::*;
 use crate::document::LinkEditIntent;
 impl<P: TextMeasurementProvider> Core<P> {
+    /// Explicit links resolve against current source, including unsaved edits.
+    /// Physical-line fragments center the recovered caret using the same row
+    /// bounds, reserved margins and scroll limits as viewport alignment.
+    pub fn navigate_to_link_fragment(
+        &mut self,
+        view: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        fragment: &str,
+    ) -> Result<Option<CoreOutcome>, CoreError> {
+        if !self.views.contains_key(&view) {
+            return Err(CoreError::UnknownView(view));
+        }
+        if document != self.document.id() {
+            return Err(DocumentError::WrongDocument.into());
+        }
+        if revision != self.document.revision() {
+            return Err(DocumentError::WrongSnapshot {
+                expected: self.document.revision(),
+                actual: revision,
+            }
+            .into());
+        }
+        let Some(offset) = self.document.find_link_fragment(fragment)? else {
+            return Ok(None);
+        };
+        let outcome = self.handle(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: revision,
+                text_offset: offset,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )?;
+        if Document::link_fragment_source_line(fragment).is_some() {
+            let centered = (|| -> Result<(), CoreError> {
+                // A newly materialized region can refine its absolute row heights.
+                // Re-evaluate the placement locally, with a finite retry budget.
+                for _ in 0..3 {
+                    let target = &self.views[&view];
+                    let snapshot = target.layout.snapshot().ok_or(LayoutError::NoRows)?;
+                    let position = target.commands.visual_position().unwrap_or(
+                        crate::command::layout_motion::VisualPosition {
+                            text_offset: offset,
+                            affinity: BoundaryAffinity::Downstream,
+                        },
+                    );
+                    let geometry = snapshot
+                        .logical_endpoint_geometry(position.text_offset, position.affinity)
+                        .or_else(|_| {
+                            snapshot.logical_endpoint_geometry(
+                                position.text_offset,
+                                if position.affinity == BoundaryAffinity::Downstream {
+                                    BoundaryAffinity::Upstream
+                                } else {
+                                    BoundaryAffinity::Downstream
+                                },
+                            )
+                        })?;
+                    let row = &snapshot.rows[geometry.row_index];
+                    let top = snapshot.centered_row_viewport_top(row, target.layout.height());
+                    let left = target.layout.viewport_left();
+                    let before = target.layout.viewport_top();
+                    self.materialize_requested_viewport(view, left, top)?;
+                    if (self.views[&view].layout.viewport_top() - before).abs() < 0.01 {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            // Cursor placement has succeeded. A failed disposable refinement
+            // must still publish that valid navigation to native views.
+            if let Err(error) = centered {
+                self.record_presentation_error(view, error);
+            }
+        }
+        Ok(Some(outcome))
+    }
+
     pub fn exit_link_typing(
         &mut self,
         view: ViewId,
@@ -147,5 +227,73 @@ impl<P: TextMeasurementProvider> Core<P> {
             layout_changed: true,
             composition_changes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::{MockTextMeasurementProvider, RegionalLayoutCacheLimits};
+
+    #[test]
+    fn failed_link_centering_publishes_the_revealed_cursor_and_retains_valid_geometry() {
+        let source = "line\n".repeat(200);
+        let mut core = Core::new(Document::new(source.clone()));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 180.);
+        let layout = &core.views[&view].layout;
+        let snapshot = layout.snapshot().unwrap();
+        let row = snapshot.rows.last().unwrap();
+        let offset = row.text_range.start;
+        let fragment = format!("L{}", row.hard_line_index + 1);
+        let top = row.reveal_bounds().end - layout.height();
+        let layout_revision = snapshot.revision;
+        assert!(row.hard_line_index < 199);
+        core.views
+            .get_mut(&view)
+            .unwrap()
+            .layout
+            .set_viewport_top(top)
+            .unwrap();
+        assert_eq!(
+            viewport_extension_needed(&core.views[&view]),
+            (false, false)
+        );
+        // Eviction preserves the exact displayed snapshot. Only extending the
+        // centered viewport will now require new provider work.
+        core.views
+            .get_mut(&view)
+            .unwrap()
+            .layout
+            .set_regional_cache_limits(RegionalLayoutCacheLimits {
+                max_hard_lines: 0,
+                max_visual_rows: 0,
+                max_estimated_bytes: 0,
+            });
+        core.views.get_mut(&view).unwrap().engine.clear_caches();
+        let provider = core.views.get_mut(&view).unwrap().engine.provider_mut();
+        let calls = provider.batch_calls();
+        provider.fail_next_batches(2, "linked centering failed");
+        let result = core
+            .navigate_to_link_fragment(
+                view,
+                core.document.id(),
+                core.document.revision(),
+                &fragment,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(result.layout_changed && !result.document_changed);
+        assert_eq!(core.command_state(view).unwrap().cursor(), offset);
+        assert_eq!(
+            core.views[&view].engine.provider().batch_calls(),
+            calls + 2,
+            "only the centering refinement attempted shaping and its bounded fallback"
+        );
+        let layout = core.layout(view).unwrap();
+        assert!(layout.last_error().is_some());
+        assert_eq!(layout.viewport_top(), top);
+        assert_eq!(layout.snapshot().unwrap().revision, layout_revision);
+        assert_eq!(core.document.source_bytes(), source.as_bytes());
+        assert!(!core.document.history_status().is_dirty);
     }
 }
