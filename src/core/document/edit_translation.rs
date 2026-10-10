@@ -58,7 +58,8 @@ impl Document {
             return Ok(Some(patches));
         }
         if self.format() == Format::Markdown && !edit.replacement.contains('\n') {
-            let literal = self.projection().style_spans_for_region(&edit.range).iter().any(|span| {
+            let nearby = edit.range.start.saturating_sub(1)..(edit.range.end + 1).min(self.projection().text_tree().byte_len());
+            let literal = self.projection().style_spans_for_region(&nearby).iter().any(|span| {
                 span.range.start <= edit.range.start && edit.range.end <= span.range.end
                     && matches!(&span.application, StyleApplication::Automatic(id) if matches!(id.0.as_str(), "Markdown reference" | "Comment"))
             });
@@ -111,6 +112,8 @@ impl Document {
             if let Some(patches) = markdown_list_structure::insertion_patches(self, payload)? {
                 return Ok(Some(patches));
             }
+        } else if let Some(patches) = markdown_list_structure::text_insertion_patches(self, edit)? {
+            return Ok(Some(patches));
         }
         if let Some(patches) =
             super::super::markdown_code::patches(self, &edit.range, &edit.replacement)?
@@ -234,6 +237,10 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
+            if self.preserve_edited_reference_rows(edits, patches)? {
+                markdown_block_styles::preserve_retained_literals(self, edits, patches)?;
+                return Ok(());
+            }
             if edits.iter().all(|edit|self.projection().table_at(edit.range.start).is_some_and(|table|edit.range==table.range)) {return Ok(());}
             if edits.iter().all(|edit|self.projection().table_cell_at(edit.range.start).is_some_and(|(_,_,cell)|edit.range.end<=cell.range.end)) {
                 super::super::markdown_code::preserve_edited_inline_delimiters(self,edits,patches)?;

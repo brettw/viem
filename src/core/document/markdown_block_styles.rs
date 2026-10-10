@@ -467,6 +467,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                 || block.style.0 == "Code Block"
                 || !matches!(
                     block.kind,
+                    BlockKind::Paragraph |
                     BlockKind::ListItem {
                         item_start: false,
                         ..
@@ -500,8 +501,10 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                 continue;
             }
             let mut count = 0;
+            let mut implicit_boundary = false;
             for boundary in boundaries {
                 let Some(source) = hard_boundary_contributor(document, boundary) else {
+                    implicit_boundary = true;
                     count = 4;
                     break;
                 };
@@ -517,10 +520,24 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                         .chars()
                         .all(char::is_whitespace)
                 }) {
+                    implicit_boundary = true;
                     count = 4;
                     break;
                 }
                 count += normalized.endings.len();
+            }
+            if implicit_boundary && block.kind == BlockKind::Paragraph && !block.markdown_html {
+                // Hidden structural syntax (for example a setext underline)
+                // owns a boundary here. Retain the emptied paragraph's body
+                // without changing that syntax or an unselected neighbor.
+                let at = projection.source_insertion_point(block.range.end, false)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if let Some(patch) = patches.iter_mut().find(|patch| {
+                    patch.range.end == at && patch.replacement.is_empty() && !patch.range.is_empty()
+                }) {
+                    patch.replacement = document.encoding().encode_fragment("<span></span>")?;
+                    continue;
+                }
             }
             if count >= 4 {
                 continue;
@@ -1234,10 +1251,14 @@ pub(super) fn preserve_split_boundaries<'a>(
         if range.is_empty() && range.start == line.start && index > 0 {
             let previous = crate::document::edit_boundary::paragraph_at(document, line.start - 1)?;
             if let Some(previous) = previous.filter(|block| block.style.0 == "Code Block") {
-                if let Some(fence) =
-                    crate::document::markdown_code::fenced_source(document, &previous)?
+                let fence = crate::document::markdown_code::fenced_source(document, &previous)?;
+                let end = if let Some(fence) = fence {
+                    fence.closing_content_end
+                } else {
+                    projection.source_insertion_point(previous.range.end, false)
+                };
                 {
-                    if let Some(end) = fence.closing_content_end {
+                    if let Some(end) = end {
                         let at = projection
                             .source_insertion_point(range.start, true)
                             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -1259,7 +1280,8 @@ pub(super) fn preserve_split_boundaries<'a>(
                                     + line_endings::normalize(&added, document.file_format())
                                         .endings
                                         .len();
-                            if added.text.chars().all(char::is_whitespace) && endings < 4 {
+                            if existing.text.chars().all(char::is_whitespace)
+                                && added.text.chars().all(char::is_whitespace) && endings < 4 {
                                 patch
                                     .replacement
                                     .extend(document.encoding().encode_fragment(

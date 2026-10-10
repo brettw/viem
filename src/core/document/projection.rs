@@ -1810,9 +1810,17 @@ impl FormattedDocument {
         compatibility_text
             .set(flat_text)
             .expect("a fresh compatibility cell is empty");
-        let source_ordered = provenance
-            .windows(2)
-            .all(|pair| pair[0].source.start <= pair[1].source.start);
+        // A caret seed contributes no character or source bytes. Its point
+        // can lie inside the following break's contributor (an empty list
+        // item's padding, for example) without reordering visible content.
+        let mut previous_source = None;
+        let source_ordered = provenance.iter()
+            .filter(|span| !span.formatted.is_empty() || !span.source.is_empty())
+            .all(|span| {
+                let ordered = previous_source.is_none_or(|before| before <= span.source.start);
+                previous_source = Some(span.source.start);
+                ordered
+            });
         let source_boundaries =
             IntervalRangeStore::new(source_text_boundaries(provenance.iter().cloned()));
         Self {
@@ -6358,6 +6366,23 @@ impl<'a> MarkdownBuilder<'a> {
         }
         let mut at = start;
         while at < end {
+            if self.in_table && !self.preserve_markers && self.source_text[at..].starts_with('\\') {
+                let slashes = self.source_text.as_bytes()[at..end].iter()
+                    .take_while(|byte| **byte == b'\\').count();
+                let pipe = at + slashes;
+                if pipe < end && self.source_text.as_bytes()[pipe] == b'|' {
+                    // Table grammar removes the final pipe escape first.
+                    // Ordinary inline parsing pairs the remaining slashes;
+                    // an odd remainder also escapes the literal pipe.
+                    let pairs = (slashes - 1) / 2;
+                    for pair in 0..pairs {
+                        self.emit_escaped(at + pair * 2, at + pair * 2 + 1);
+                    }
+                    self.emit_escaped(at + pairs * 2, pipe);
+                    at = pipe + 1;
+                    continue;
+                }
+            }
             if self.source_text[at..].starts_with('\\') {
                 if let Some(next) = self.next_boundary(at) {
                     if next < end {
@@ -6800,6 +6825,29 @@ mod tests {
 
     fn markdown(source: &str) -> FormattedDocument {
         markdown_at(source, Revision(1))
+    }
+
+    #[test]
+    fn empty_caret_seeds_do_not_reorder_real_source_contributors() {
+        let projected = markdown("- foo\n-   \n- bar\n");
+        assert!(projected.source_ordered);
+        for provenance in [
+            vec![
+                ProvenanceSpan { formatted: 0..1, source: 2..3 },
+                ProvenanceSpan { formatted: 1..2, source: 0..1 },
+            ],
+            vec![
+                ProvenanceSpan { formatted: 0..1, source: 2..3 },
+                ProvenanceSpan { formatted: 1..1, source: 0..1 },
+                ProvenanceSpan { formatted: 1..2, source: 3..4 },
+            ],
+        ] {
+            let projected = FormattedDocument::from_parts(
+                Revision(1), "ab".to_owned(), blocks_for_plain_text("ab"), Vec::new(),
+                provenance, Vec::new(), StyleSheet::default(), 0, 4,
+            );
+            assert!(!projected.source_ordered);
+        }
     }
 
     fn plain(text: String, revision: Revision) -> FormattedDocument {

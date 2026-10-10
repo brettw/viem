@@ -102,13 +102,9 @@ pub(super) fn markdown_image_at(text: &str, start: usize, end: usize) -> Option<
     image.range.start = start;
     Some(image)
 }
-fn markdown_bracket_at(text: &str, start: usize, end: usize, image: bool) -> Option<InlineLink> {
+pub(super) fn markdown_label_end(text: &str, start: usize, end: usize) -> Option<usize> {
     let bytes = text.as_bytes();
-    if end > bytes.len()
-        || bytes.get(start) != Some(&b'[')
-        || escaped(bytes, start)
-        || (!image && start > 0 && bytes[start - 1] == b'!' && !escaped(bytes, start - 1))
-    {
+    if end > bytes.len() || bytes.get(start) != Some(&b'[') {
         return None;
     }
     let mut at = start + 1;
@@ -157,7 +153,19 @@ fn markdown_bracket_at(text: &str, start: usize, end: usize, image: bool) -> Opt
         }
         at += 1;
     };
-    at = label_end + 1;
+    Some(label_end)
+}
+fn markdown_bracket_at(text: &str, start: usize, end: usize, image: bool) -> Option<InlineLink> {
+    let bytes = text.as_bytes();
+    if end > bytes.len()
+        || bytes.get(start) != Some(&b'[')
+        || escaped(bytes, start)
+        || (!image && start > 0 && bytes[start - 1] == b'!' && !escaped(bytes, start - 1))
+    {
+        return None;
+    }
+    let label_end = markdown_label_end(text, start, end)?;
+    let mut at = label_end + 1;
     if bytes.get(at) != Some(&b'(') || at >= end {
         return None;
     }

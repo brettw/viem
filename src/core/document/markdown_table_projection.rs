@@ -1,6 +1,7 @@
 //! Structural edits confined to an existing table parse only that table. The
 //! surrounding projection, text and source-line indexes retain shared subtrees.
 use super::*;
+use crate::document::MarkdownTable;
 impl Document {
     pub(super) fn prepare_table_local_reprojection(
         &self,
@@ -33,6 +34,11 @@ impl Document {
         // context. Ordinary cells and row/column operations remain self-contained.
         let old_source = table.source_range.clone();
         let source = apply_source_patches(&self.state().source, patches)?;
+        if self.table_header_prefix_changes(&source, table, patches)? {
+            // Without its leading pipe a header may merge into preceding
+            // prose. A table-only restart cannot prove that ownership.
+            return Ok(None);
+        }
         let new_source = old_source.start
             ..rebase_source_boundary(old_source.end, patches, Association::AfterInsertion)?;
         let revision = Revision(self.next_revision);
@@ -223,6 +229,30 @@ impl Document {
 }
 
 impl Document {
+    fn table_header_prefix_changes(
+        &self,
+        source: &super::super::source::SourceSnapshot,
+        table: &MarkdownTable,
+        patches: &[SourcePatch],
+    ) -> Result<bool, ModelTransactionError> {
+        if self.format() != Format::MarkdownSource { return Ok(false); }
+        let header = &table.source_rows[0].source_body;
+        let start = rebase_source_boundary(header.start, patches, Association::BeforeInsertion)?;
+        let end = rebase_source_boundary(header.end, patches, Association::AfterInsertion)?;
+        let leading_pipe = |bytes: Vec<u8>, at| -> Result<bool, ModelTransactionError> {
+            let text = self.encoding().decode_region(&bytes, at)?.text;
+            Ok(text.trim_start_matches([' ', '\t']).starts_with('|'))
+        };
+        // Four ASCII syntax characters cover GFM's optional three-column
+        // indentation and the pipe; UTF-16 needs two bytes per character.
+        let width = self.encoding().encode_fragment("    ")?.len();
+        let old = self.state().source.bytes_in(header.start..(header.start + width).min(header.end))
+            .ok_or(DocumentError::VerificationFailed)?;
+        let new = source.bytes_in(start..(start + width).min(end))
+            .ok_or(DocumentError::VerificationFailed)?;
+        Ok(leading_pipe(old, header.start)? != leading_pipe(new, start)?)
+    }
+
     pub(super) fn build_table_row_candidate(
         &self,
         source: &super::super::source::SourceSnapshot,
@@ -238,6 +268,9 @@ impl Document {
         let Some((table, _, _)) = self.projection().table_cell_at(first.range.start) else {
             return Ok(None);
         };
+        if self.table_header_prefix_changes(source, table, patches)? {
+            return Ok(None);
+        }
         let index = table
             .rows
             .partition_point(|row| row.range.start <= first.range.start)

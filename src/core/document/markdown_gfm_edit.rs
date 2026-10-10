@@ -319,7 +319,7 @@ impl Document {
     ) -> Result<(), ModelTransactionError> {
         let mut targets = Vec::new();
         for edit in edits {
-            let count = edit.replacement.bytes().take_while(|b| *b == b' ').count();
+            let count = edit.replacement.bytes().take_while(|b| matches!(b, b' ' | b'\t')).count();
             if count == 0 {
                 continue;
             }
@@ -328,7 +328,9 @@ impl Document {
                 .blocks_for_region(&edit.range)
                 .iter()
                 .find(|block| {
-                    matches!(block.kind, super::super::BlockKind::Heading(_))
+                    (matches!(block.kind, super::super::BlockKind::Heading(_))
+                        || matches!(block.kind, super::super::BlockKind::ListItem { .. })
+                            && block.style.0.starts_with("Heading"))
                         && block.range.start == edit.range.start
                 })
             {
@@ -361,13 +363,21 @@ impl Document {
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let decoded = self.encoding().decode_region(&bytes, at)?;
             let text = &decoded.text;
-            let indent = text.bytes().take_while(|b| *b == b' ').count();
-            let hashes = text[indent..].bytes().take_while(|b| *b == b'#').count();
+            let mut body = 0;
+            loop {
+                body += super::super::markdown_quotes::prefix(&text[body..]);
+                let Some(marker) = super::super::markdown_blocks::marker_prefix_length(&text[body..]) else {
+                    break;
+                };
+                body += marker;
+            }
+            let indent = text[body..].bytes().take_while(|b| *b == b' ').count();
+            let hashes = text[body + indent..].bytes().take_while(|b| *b == b'#').count();
             if !(1..=6).contains(&hashes) {
                 continue;
             }
-            let prefix = indent + hashes;
-            let spaces = text[prefix..].bytes().take_while(|b| *b == b' ').count();
+            let prefix = body + indent + hashes;
+            let spaces = text[prefix..].bytes().take_while(|b| matches!(b, b' ' | b'\t')).count();
             if spaces <= 1 {
                 continue;
             }
@@ -384,7 +394,8 @@ impl Document {
                     .len();
             support.push((
                 start..end,
-                self.encoding().encode_fragment(&"&#32;".repeat(count))?,
+                self.encoding().encode_fragment(&text[prefix + spaces - count..prefix + spaces]
+                    .bytes().map(|b| if b == b' ' { "&#32;" } else { "&#9;" }).collect::<String>())?,
             ));
         }
         let mut composition = PatchComposition::new(self.source_byte_len());

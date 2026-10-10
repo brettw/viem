@@ -1,7 +1,7 @@
 //! Verified table source transactions. Structural edits patch only affected
 //! rows/cells; original source remains the serialization authority.
 use super::*;
-use crate::document::{MarkdownTable, TableAlignment, TableEditIntent};
+use crate::document::{MarkdownTable, MarkdownTableCell, TableAlignment, TableEditIntent};
 
 fn unsupported(reason: &'static str) -> ModelTransactionError {
     DocumentError::UnsupportedTableEdit(reason).into()
@@ -845,7 +845,7 @@ impl Document {
             return Ok(None);
         }
         let Some((table, row, cell)) = self.projection().table_cell_at(edit.range.start) else {
-            return Ok(None);
+            return self.table_following_literal_pipe_patches(edit, affinity);
         };
         if edit.range == table.range && !edit.range.is_empty() {
             // The physical ending after the last row also supports the
@@ -888,13 +888,18 @@ impl Document {
                 )
                 .map(Some);
         }
-        if !edit.replacement.contains(['|', '\n']) {
-            return Ok(None);
-        }
         let in_code = match affinity.filter(|_| edit.range.is_empty()) {
             Some(affinity) => self.is_code_at(edit.range.start, affinity)?,
             None => self.projection().markdown_replacement_begins_in_code(&edit.range),
         };
+        if !in_code && !edit.replacement.contains(['|', '\n']) {
+            if let Some(patches) = self.table_edge_whitespace_patches(edit, cell, affinity)? {
+                return Ok(Some(patches));
+            }
+        }
+        if !edit.replacement.contains(['|', '\n']) {
+            return Ok(None);
+        }
         if in_code && edit.replacement.contains('\n') {
             return Err(unsupported(
                 "A literal code span cannot contain a table cell line break.",
@@ -929,6 +934,102 @@ impl Document {
 }
 
 impl Document {
+    /// A lone pipe is prose after a completed table. Adding text can make it
+    /// a body row, so retain its paragraph ownership with one separator ending.
+    fn table_following_literal_pipe_patches(
+        &self, edit: &TextEdit, affinity: Option<BoundaryAffinity>,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        if !edit.range.is_empty() || edit.replacement.is_empty() || edit.replacement.contains(['\r', '\n']) {
+            return Ok(None);
+        }
+        let Some(block) = self.projection().blocks_for_region(&edit.range).into_iter()
+            .find(|block| block.range.len() == 1 && block.range.start <= edit.range.start && edit.range.start <= block.range.end)
+        else { return Ok(None); };
+        if self.projection().text_tree().slice(block.range.clone()).map_err(DocumentError::FormattedTextStorage)? != "|" {
+            return Ok(None);
+        }
+        let tables = self.projection().tables();
+        let Some(table) = tables.partition_point(|table| table.range.end < block.range.start)
+            .checked_sub(1).and_then(|index| tables.get(index))
+            .filter(|table| table.range.end + 1 == block.range.start)
+        else { return Ok(None); };
+        let pipe = self.projection().source_range(block.range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+        if table.source_range.end != pipe.start || self.table_source_text(pipe.clone())? != "|" {
+            return Ok(None);
+        }
+        let at = super::super::source_edit::insertion_point(self.projection(), edit.range.start, affinity)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let syntax = escape_markdown_insert_in_encoding(&edit.replacement, self.encoding());
+        let ending = self.encoding().encode_fragment(self.file_format().spelling())?;
+        if at == pipe.start {
+            let mut syntax = self.encoding().encode_fragment(&syntax)?;
+            syntax.splice(0..0, ending);
+            Ok(Some(vec![SourcePatch::primary(at..at, syntax)]))
+        } else {
+            Ok(Some(vec![SourcePatch::primary(pipe.start..pipe.start, ending),
+                SourcePatch::primary(at..at, self.encoding().encode_fragment(&syntax)?)]))
+        }
+    }
+
+    /// Deletion/replacement can expose a retained cell space to GFM trimming.
+    /// Protect only those edge contributors, alongside the ordinary text edit.
+    fn table_edge_whitespace_patches(
+        &self,
+        edit: &TextEdit,
+        cell: &MarkdownTableCell,
+        affinity: Option<BoundaryAffinity>,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        let old = self.projection().text_tree().slice(cell.range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let selected = edit.range.start - cell.range.start..edit.range.end - cell.range.start;
+        let mut new = old.clone();
+        new.replace_range(selected.clone(), &edit.replacement);
+        let leading = new.len() - new.trim_start_matches([' ', '\t']).len();
+        let trailing = new.trim_end_matches([' ', '\t']).len().max(leading);
+        if leading == 0 && trailing == new.len() { return Ok(None); }
+        let mut supporting = Vec::new();
+        for (at, ch) in new.char_indices().filter(|(at, _)| *at < leading || *at >= trailing) {
+            let old_at = if at < selected.start { Some(at) }
+                else if at >= selected.start + edit.replacement.len() {
+                    Some(at + selected.len() - edit.replacement.len())
+                } else { None };
+            let Some(old_at) = old_at else { continue; };
+            let Some(source) = self.projection().source_range(
+                cell.range.start + old_at..cell.range.start + old_at + ch.len_utf8(),
+            ) else { return Err(DocumentError::AmbiguousProjection.into()); };
+            // Existing references already protect their whitespace. Never
+            // canonicalize their spelling or unrelated inline syntax.
+            if self.table_source_text(source.clone())? == ch.to_string() {
+                supporting.push(SourcePatch::primary(source,
+                    self.encoding().encode_fragment(if ch == ' ' { "&#32;" } else { "&#9;" })?));
+            }
+        }
+        let authored_edge = selected.start < leading && !edit.replacement.is_empty()
+            || selected.start + edit.replacement.len() > trailing && !edit.replacement.is_empty();
+        if supporting.is_empty() && !authored_edge { return Ok(None); }
+        let mut primary = if edit.range.is_empty() {
+            let at = super::super::source_edit::insertion_point(self.projection(), edit.range.start, affinity)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            vec![SourcePatch::primary(at..at,
+                self.encoding().encode_fragment(&self.table_literal_text(&edit.replacement))?)]
+        } else {
+            self.markdown_line_local_text_rewrite_patches(&edit.range, &edit.replacement)?
+                .ok_or(DocumentError::AmbiguousProjection)?
+        };
+        if authored_edge {
+            for patch in &mut primary {
+                let syntax = self.encoding().decode_region(&patch.replacement, patch.range.start)?.text;
+                let left = syntax.len() - syntax.trim_start_matches([' ', '\t']).len();
+                let right = syntax.trim_end_matches([' ', '\t']).len().max(left);
+                let protect = |value: &str| value.chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+                patch.replacement = self.encoding().encode_fragment(&format!("{}{}{}",
+                    protect(&syntax[..left]), &syntax[left..right], protect(&syntax[right..])))?;
+            }
+        }
+        primary.extend(supporting);
+        Ok(Some(primary))
+    }
+
     fn prepare_table_matrix_paste(
         &self,
         id: u64,
