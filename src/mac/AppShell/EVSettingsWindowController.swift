@@ -14,6 +14,18 @@ private final class EVThemeSettingsStack: NSStackView {
 private final class EVThemeSettingsSection: NSView {}
 
 @MainActor
+private final class EVThemeFontSizeStepper: NSStepper {
+  override var acceptsFirstResponder: Bool { true }
+
+  override func mouseDown(with event: NSEvent) {
+    guard isEnabled else { return }
+    // Commit the field's pending value before native tracking increments it.
+    window?.makeFirstResponder(self)
+    super.mouseDown(with: event)
+  }
+}
+
+@MainActor
 final class EVSettingsWindowController: NSWindowController, NSTableViewDataSource,
   NSTableViewDelegate, NSTextFieldDelegate
 {
@@ -40,6 +52,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
   private let fontSelect = NSPopUpButton()
+  private let fontSizeStepper = EVThemeFontSizeStepper()
   private let preview = EVThemePreview()
   private let persistenceDiagnostic = NSTextField(wrappingLabelWithString: "")
   private var selectedCategory = 1
@@ -339,8 +352,21 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     fontSelect.action = #selector(changeFont)
     fontSelect.setAccessibilityLabel("Status font family")
     fontSelect.widthAnchor.constraint(equalToConstant: 210).isActive = true
+    fontSizeStepper.controlSize = .small
+    fontSizeStepper.setContentCompressionResistancePriority(.required, for: .horizontal)
+    fontSizeStepper.valueWraps = false
+    fontSizeStepper.autorepeat = true
+    fontSizeStepper.isContinuous = true
+    fontSizeStepper.increment = 1
+    fontSizeStepper.minValue = 8
+    fontSizeStepper.maxValue = 32
+    fontSizeStepper.target = self
+    fontSizeStepper.action = #selector(changeFontSize(_:))
+    fontSizeStepper.setAccessibilityLabel("Adjust status font size")
+    let size = NSStackView(views: [numberField(6, "Status font size"), fontSizeStepper])
+    size.spacing = 3
     let fonts = NSStackView(views: [
-      label("Font"), fontSelect, numberField(6, "Status font size"), label("pt"),
+      label("Font"), fontSelect, size, label("pt"),
     ])
     fonts.spacing = 10
     stack.addArrangedSubview(section("Status bar", views: [statusColors, fonts]))
@@ -664,6 +690,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     ]
     for (tag, well) in wells { well.color = colors[tag].color }
     fields[6]?.doubleValue = theme.statusFontSize
+    fontSizeStepper.doubleValue = theme.statusFontSize
     let margins = viewPreferences.margins
     for (index, value) in [
       margins.top, margins.left, margins.bottom, margins.right,
@@ -705,6 +732,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     var theme = store.theme
     theme.statusFontFamily = fontSelect.titleOfSelectedItem ?? "System"
     store.update(theme)
+  }
+  @objc private func changeFontSize(_ sender: NSStepper) {
+    guard let field = fields[6] else { return }
+    field.doubleValue = sender.doubleValue
+    changeNumber(field)
   }
   @objc private func changeColor(_ sender: NSColorWell) {
     var theme = store.theme

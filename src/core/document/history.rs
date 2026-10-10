@@ -198,6 +198,7 @@ pub struct HistoryTransactionSummary {
     semantic: HistorySemanticChangeKind,
     source_patches: Vec<HistorySourcePatch>,
     formatted_splices: Vec<Splice>,
+    layout_invalidation: Option<std::ops::Range<usize>>,
 }
 
 impl HistoryTransactionSummary {
@@ -207,6 +208,7 @@ impl HistoryTransactionSummary {
         semantic: HistorySemanticChangeKind,
         source_patches: Vec<HistorySourcePatch>,
         formatted_splices: Vec<Splice>,
+        layout_invalidation: Option<std::ops::Range<usize>>,
     ) -> Self {
         Self {
             before_revision,
@@ -214,6 +216,7 @@ impl HistoryTransactionSummary {
             semantic,
             source_patches,
             formatted_splices,
+            layout_invalidation,
         }
     }
 
@@ -1104,6 +1107,29 @@ impl<T, M> History<T, M> {
         self.node_indexes
             .get(&node)
             .map(|index| &self.nodes[*index].state)
+    }
+
+    /// A source-only presentation dependency can be reversed unchanged on its
+    /// single transaction edge. Compound and nonadjacent history transitions
+    /// require the ordinary complete dependency invalidation.
+    pub(crate) fn layout_invalidation_between(
+        &self,
+        from: HistoryNodeId,
+        to: HistoryNodeId,
+    ) -> Option<std::ops::Range<usize>> {
+        let from = *self.node_indexes.get(&from)?;
+        let to = *self.node_indexes.get(&to)?;
+        let node = if self.nodes[from].parent == Some(to) {
+            &self.nodes[from]
+        } else if self.nodes[to].parent == Some(from) {
+            &self.nodes[to]
+        } else {
+            return None;
+        };
+        let [transaction] = node.incoming.as_ref()?.record.transactions.as_slice() else {
+            return None;
+        };
+        transaction.layout_invalidation.clone()
     }
 
     pub(crate) fn location_for_node(&self, node: HistoryNodeId) -> Option<HistoryLocation> {

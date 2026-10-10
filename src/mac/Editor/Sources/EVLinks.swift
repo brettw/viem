@@ -39,7 +39,7 @@ enum EVLinkError: LocalizedError {
         switch self {
         case .unsupportedDestination: "This link does not have a supported heading, web, or file destination."
         case .browserUnavailable: "The default web browser could not be opened."
-        case .missingFragment(let fragment): "No heading matches the link destination \(fragment)."
+        case .missingFragment(let fragment): "No heading or source line matches the link destination \(fragment)."
         }
     }
 }

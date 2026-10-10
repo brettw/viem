@@ -269,8 +269,8 @@ extension EVDocumentHostEffectHandling {
   }
 }
 
-/// Optional navigation capability used when a local document link has a heading
-/// fragment. The editor resolves it against the newly opened document snapshot.
+/// Optional navigation to a local document's heading or physical source line.
+/// The editor resolves it against the chosen view's current, possibly unsaved source.
 @MainActor
 public protocol EVLinkFragmentNavigating: AnyObject {
   func navigateToLinkFragment(_ fragment: String) throws

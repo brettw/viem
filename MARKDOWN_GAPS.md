@@ -78,6 +78,8 @@ separately in [BUGS.md](BUGS.md).
   the shared HTML projection; scripts, resource loading and author CSS are not
   enabled. Markdown inside HTML blocks stays literal. Named and numeric
   character references decode, including invalid-code-point replacements.
+  HTML `<pre lang="rust">` shares code-block highlighting and its language
+  selector; language edits preserve the HTML body and unrelated attributes.
   Comments remain visible in the new **Comment** character style.
 - **Prose continuation whitespace:** indentation and trailing whitespace at a
   soft source break fold to one space. Explicit hard breaks remain distinct.

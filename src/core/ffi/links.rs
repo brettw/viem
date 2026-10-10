@@ -230,37 +230,45 @@ pub unsafe extern "C" fn viem_core_view_edit_link(
     })
 }
 
+/// Explicit navigation to a heading or one-based physical source line. Lines
+/// are centered within proven scroll limits; missing targets leave the view
+/// unchanged. The fragment is percent-decoded and excludes '#'.
 /// # Safety
 /// All input and output regions must be valid, aligned and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_find_link_fragment(
+pub unsafe extern "C" fn viem_core_view_navigate_link_fragment(
     handle: ViemCoreHandle,
+    view: ViemViewId,
     document: u64,
     revision: u64,
     fragment: ViemUtf8Slice,
-    offset: *mut u64,
     found: *mut u8,
+    output: *mut ViemCoreOutcomeV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
             typed_pointer_region(fragment.data, fragment.length)?,
-            typed_pointer_region(offset, 1)?,
             typed_pointer_region(found, 1)?,
+            typed_pointer_region(output, 1)?,
         ])?;
         let fragment = str::from_utf8(unsafe { input_bytes(fragment.data, fragment.length)? })
             .map_err(|_| ViemStatus::InvalidUtf8)?;
-        let result = with_core(handle, |core| {
-            if core.document().id().0 != document {
-                return Err(ViemStatus::InvalidArgument);
-            }
-            validate_revision(core.document(), revision)?;
-            core.document()
-                .find_link_fragment(fragment)
-                .map_err(document_status)
+        unsafe { clear_outcome(output)? };
+        let result = with_core_mut(handle, |core| {
+            let outcome = core
+                .navigate_to_link_fragment(
+                    ViewId(view),
+                    DocumentId(document),
+                    Revision(revision),
+                    fragment,
+                )
+                .map_err(core_status)?;
+            let result = summarize_core_outcome(core, ViewId(view), outcome.as_ref())?;
+            Ok((result, outcome.is_some()))
         })?;
         unsafe {
-            offset.write(result.unwrap_or(0) as u64);
-            found.write(u8::from(result.is_some()));
+            output.write(result.0);
+            found.write(u8::from(result.1));
         }
         Ok(())
     })

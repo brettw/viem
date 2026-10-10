@@ -150,6 +150,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private(set) weak var surface: EVEditorSurfaceController?
     private lazy var tables = EVTableInteraction(editor: self)
     private var tableTrackingArea: NSTrackingArea?
+    private var codeBlockLanguageHoverLocation: NSPoint?
+    private(set) var codeBlockLanguageHoverRect: NSRect?
+    private var codeBlockLanguageMenuTarget: (documentID: UInt64, offset: UInt64)?
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
     private let completionPopup = EVCompletionPopup()
     let documentScrollbars: EVDocumentScrollbars
@@ -374,7 +377,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         caretHoverLocation = nil
         setCaretHoverRect(nil)
+        codeBlockLanguageHoverLocation = nil
+        updateCodeBlockLanguageHover()
         if newWindow == nil {
+            codeBlockLanguageMenuTarget = nil
             surface?.linkPopover.close()
             surface?.imagePopover.close()
             completionPopup.hide()
@@ -438,6 +444,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             context.clip(to: textViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
             drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect, in: context)
+            drawCodeBlockLanguages(snapshot, dirtyRect: dirtyRect, in: context)
             if let paint { drawPaintBackgrounds(clusters, paint: paint) }
             if !tables.drawSelection(snapshot, in: context) { drawSelection(snapshot, dirtyRect: dirtyRect, in: context) }
             drawText(snapshot, clusters: clusters, paint: paint, in: context)
@@ -467,6 +474,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         reconcileMarkedTextWithCore()
         updateNativeTextInputAvailability()
         updateDocumentScrollbars()
+        updateCodeBlockLanguageHover()
         updateCaretHover()
         updateCustomCaretPresentation()
         invalidatePresentationDamage()
@@ -2032,6 +2040,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         tables.moved(to: point)
+        codeBlockLanguageHoverLocation = point
+        updateCodeBlockLanguageHover()
         caretHoverLocation = point
         if let origin = caretHoverSuppressedAt,
            hypot(point.x - origin.x, point.y - origin.y) > Self.caretHoverMovementThreshold {
@@ -2041,8 +2051,40 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
     override func mouseExited(with event: NSEvent) {
         tables.hide()
+        codeBlockLanguageHoverLocation = nil
+        updateCodeBlockLanguageHover()
         caretHoverLocation = nil
         setCaretHoverRect(nil)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        codeBlockLanguageHoverLocation = convert(event.locationInWindow, from: nil)
+        updateCodeBlockLanguageHover()
+    }
+
+    private func updateCodeBlockLanguageHover() {
+        let previous = codeBlockLanguageHoverRect
+        codeBlockLanguageHoverRect = nil
+        if let point = codeBlockLanguageHoverLocation, textViewportRect.contains(point),
+           let snapshot = surface?.layoutSnapshot,
+           let item = snapshot.decorations.first(where: {
+               $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0
+                   && viewRect($0.typographic_bounds).contains(point)
+           }) {
+            codeBlockLanguageHoverRect = viewRect(item.typographic_bounds)
+        }
+        if previous != codeBlockLanguageHoverRect {
+            invalidateDrawing(in: [previous, codeBlockLanguageHoverRect].compactMap { $0?.insetBy(dx: -1, dy: -1).integral })
+        }
+    }
+
+    func codeBlockLanguageOpacity(for item: ViemLayoutDecorationV1, in snapshot: EVLayoutExport) -> CGFloat {
+        let hovered = codeBlockLanguageHoverRect == viewRect(item.typographic_bounds)
+        let menuOpen = codeBlockLanguageMenuTarget.map { target in
+            target.documentID == snapshot.info.identity.document_id
+                && row(for: item.row_index, in: snapshot.rows)?.text_start == target.offset
+        } ?? false
+        return hovered || menuOpen ? 1 : 0.25
     }
 
     func suppressCaretHoverForInput() {
@@ -2144,6 +2186,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         menu.addItem(.separator())
         for language in EVCodeLanguage.primaryLanguages { add(language.name, language: language.id, to: menu) }
         let bounds = viewRect(item.typographic_bounds)
+        codeBlockLanguageMenuTarget = (snapshot.info.identity.document_id, row.text_start)
+        invalidateDrawing(in: [bounds.insetBy(dx: -1, dy: -1).integral])
+        displayIfNeeded()
+        defer {
+            codeBlockLanguageMenuTarget = nil
+            codeBlockLanguageHoverLocation = window.map { convert($0.mouseLocationOutsideOfEventStream, from: nil) }
+            updateCodeBlockLanguageHover()
+            invalidateDrawing(in: [bounds.insetBy(dx: -1, dy: -1).integral])
+        }
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.minX, y: bounds.maxY), in: self)
         return true
     }
@@ -3339,23 +3390,32 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    private func drawCodeBlockLanguages(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
+        for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect)
+            where item.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 {
+            let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
+            let text = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .right
+            paragraph.lineBreakMode = .byTruncatingTail
+            let foreground = nativeForeground(item.paint)
+            let bounds = viewRect(item.typographic_bounds)
+            context.saveGState()
+            context.clip(to: bounds)
+            text.draw(in: bounds, withAttributes: [
+                .font: NSFont.systemFont(ofSize: CGFloat(item.font_size)),
+                .foregroundColor: foreground.withAlphaComponent(foreground.alphaComponent * codeBlockLanguageOpacity(for: item, in: snapshot)),
+                .paragraphStyle: paragraph])
+            context.restoreGState()
+        }
+    }
+
     /// Paragraph furniture is drawn from its own exact-layout export. It never
     /// participates in text slicing, caret, selection, search or accessibility text.
     private func drawParagraphDecorations(_ snapshot: EVLayoutExport, dirtyRect: NSRect, in context: CGContext) {
         guard let session = surface?.session, let scale = exactLayoutScale(for: snapshot) else { return }
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
-            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER) != 0 { continue }
-            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 {
-                let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
-                let text = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.alignment = .right
-                paragraph.lineBreakMode = .byTruncatingTail
-                text.draw(in: viewRect(item.typographic_bounds), withAttributes: [
-                    .font: NSFont.systemFont(ofSize: CGFloat(item.font_size)),
-                    .foregroundColor: nativeForeground(item.paint), .paragraphStyle: paragraph])
-                continue
-            }
+            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER | VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 { continue }
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
             let foreground = nativeForeground(item.paint)
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {

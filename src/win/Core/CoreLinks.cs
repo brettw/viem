@@ -67,9 +67,14 @@ internal sealed unsafe partial class CoreView
     {
         var state = Document.State;
         using var arena = new NativeArena(); var text = arena.Utf8(fragment);
-        ulong offset = 0; byte found = 0;
-        Check(viem_core_find_link_fragment(Document.Handle, state.document_id, state.document_revision, text, &offset, &found), "Find link destination");
-        if (found == 0) throw new InvalidOperationException("This heading was not found in the document.");
-        Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, state.document_revision);
+        bool found = false;
+        Apply(outcome => {
+            byte matched = 0;
+            uint status = viem_core_view_navigate_link_fragment(Document.Handle, Id, state.document_id,
+                state.document_revision, text, &matched, outcome);
+            found = matched != 0;
+            return status;
+        });
+        if (!found) throw new InvalidOperationException("This heading or source line was not found in the document.");
     }
 }

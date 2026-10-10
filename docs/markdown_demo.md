@@ -197,8 +197,9 @@ fn main() {
 }
 ```
 
-The language selector sits inside the block's upper-right corner and preserves
-the document's scroll position when changed. Choose None
+The language selector sits inside the block's upper-right corner, beneath its
+text, without changing code layout. It is 25% opaque until hovered or its menu
+is open. Language changes preserve the document's scroll position. Choose None
 to use its Code Block style. New blocks use the preceding block's language,
 or the following block's when there is no preceding block; the first defaults
 to None.
@@ -259,6 +260,15 @@ A visible <!-- inline comment --> uses the Comment character style.
 
 <pre>Preformatted HTML preserves
     indentation and line breaks.</pre>
+
+HTML preformatted blocks can specify a language with `lang`, using the same
+highlighting and language selector as fenced code. Changing the language edits
+only that attribute; None removes it and keeps the HTML body intact.
+
+<pre lang="rust">fn main() {
+    let answer = 42;
+    println!("answer: {answer}");
+}</pre>
 
 ## Intentional empty paragraphs
 

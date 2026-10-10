@@ -13,7 +13,7 @@ internal sealed partial class SettingsWindow
     private readonly Dictionary<string, ColorPicker> colors = [];
     private readonly Dictionary<string, Border> swatches = [];
     private readonly ComboBox statusFont = new() { IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center, ItemsSource = new[] { "System" }.Concat(FontCatalog.Families).ToArray() };
-    private readonly NumberBox statusSize = new() { Minimum = 8, Maximum = 32, Width = 92, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
+    private readonly NumberBox statusSize = new() { Minimum = 8, Maximum = 32, Width = 92, SmallChange = 1, LargeChange = 10, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
     private readonly TextBlock previewTitle = new() { Text = "A space for your words.", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
     private readonly TextBlock previewSelection = new() { Text = "Keep your own rhythm.", FontSize = 15, Padding = new(3, 1, 3, 1) };
     private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };

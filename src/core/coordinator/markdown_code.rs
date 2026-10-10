@@ -837,21 +837,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.markdown.revision = Some(revision);
         self.syntax.markdown.sheet_revision = Some(code_sheet.revision);
         self.syntax.markdown.document_sheet_revision = Some(document_sheet_revision);
-        if changed_metrics {
-            if let Some(origins) = viewport_origins {
-                for (id, left, top) in origins {
-                    if let Err(error) = self.restore_code_language_viewport(id, left, top) {
-                        self.record_presentation_error(id, error);
-                    }
+        // Paint-only publication also retires the snapshot configuration.
+        // Materialize it under the language action's numeric-origin policy,
+        // before a later ordinary refresh can refine a text anchor's y.
+        if let Some(origins) = viewport_origins {
+            for (id, left, top) in origins {
+                if let Err(error) = self.restore_code_language_viewport(id, left, top) {
+                    self.record_presentation_error(id, error);
                 }
             }
         }
-        // New font metrics can expose text outside this poll's old viewport
-        // requests. Let the next poll request that current visible coverage
-        // before it decides whether the language refresh is complete.
-        if !changed_metrics {
-            self.finish_code_language_refresh();
-        }
+        // Materialization can refine prefix heights and expose text outside
+        // this poll's old viewport requests, even after paint-only publication.
+        // Let the next poll request that current coverage before it decides
+        // whether the language refresh is complete.
         true
     }
 

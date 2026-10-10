@@ -274,6 +274,16 @@ internal static class StyleAndSettingsTests
             settings.StatusFont.SelectedItem = "Consolas"; settings.StatusSize.Value = 14; await Task.Delay(100);
             Check(preferences.StatusFontFamily == "Consolas" && preferences.StatusFontSize == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
+            Check(settings.StatusSize.SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Compact
+                && settings.StatusSize.SmallChange == 1 && settings.StatusSize.LargeChange == 10,
+                "theme font size uses the style inspector's native numeric arrows and steps");
+            settings.StatusSize.Focus(FocusState.Keyboard);
+            await InputRoutingTests.Key(VirtualKey.Up); await Task.Delay(100);
+            Check(preferences.StatusFontSize == 15 && settings.PreviewStatus.FontSize == 15,
+                "native theme font-size increment updates preferences and preview");
+            await InputRoutingTests.Key(VirtualKey.Down); await Task.Delay(100);
+            Check(preferences.StatusFontSize == 14 && settings.PreviewStatus.FontSize == 14,
+                "native theme font-size decrement updates preferences and preview");
             settings.ThemePicker.SelectedItem = "Default"; await Task.Delay(100);
             Check(!settings.DeleteTheme.IsEnabled, "Default has no Revert or Delete action");
             Check(StyleDefaultsLoadingTests.MatchesBuiltInTheme(preferences)

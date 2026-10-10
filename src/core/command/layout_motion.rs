@@ -395,7 +395,7 @@ pub fn align_viewport(
     let visible = snapshot.reveal_vertical_range(row, viewport.height);
     let requested = match alignment {
         ViewportAlignment::Top => bounds.start - visible.start,
-        ViewportAlignment::Middle => (bounds.start + bounds.end - visible.start - visible.end) / 2.0,
+        ViewportAlignment::Middle => snapshot.centered_row_viewport_top(row, viewport.height),
         ViewportAlignment::Bottom => bounds.end - visible.end,
     };
     Ok(Viewport {

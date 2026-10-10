@@ -5524,6 +5524,10 @@ pub(super) fn markdown_html_open_pre(source: &str) -> bool {
     markdown_html::open_pre(source)
 }
 
+pub(super) fn markdown_html_pre_owners(source: &str, excluded: &[Range<usize>]) -> Vec<super::html::PreOwner> {
+    markdown_html::pre_owners(source, excluded)
+}
+
 fn project_markdown(
     normalized: &NormalizedText,
     revision: Revision,
@@ -5903,8 +5907,11 @@ fn project_markdown_lines(
             while input_lines.get(line_index + 1).is_some_and(|next| builder.unit_at(next.start).is_some_and(|unit| unit.source.start < html.range.end)) { line_index += 1; }
             let range = input_lines[first].start..input_lines[line_index].end;
             let contains_table = markdown_html::contains_table(&normalized.text[range.clone()]);
-            let pre_ending = !preserve_markers && !contains_table && normalized.endings.get(line_index).is_some_and(|ending|
+            let pre_ending = !contains_table && normalized.endings.get(line_index).is_some_and(|ending|
                 ending.source.end == source_content_end && markdown_html::open_pre(&normalized.text[range.clone()]));
+            let range = if preserve_markers && pre_ending {
+                range.start..normalized.endings[line_index].normalized.end
+            } else { range };
             if preserve_markers || normalized.text[range.clone()].starts_with("<!--") || contains_table {
                 builder.emit_range(range.start, range.end);
                 if preserve_markers && !contains_table {
@@ -5913,8 +5920,13 @@ fn project_markdown_lines(
                 for ending in normalized.endings.iter().filter(|ending| range.contains(&ending.normalized.start)) {
                     hard_breaks.push(output_start + ending.normalized.start - range.start);
                 }
-                builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
-                builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
+                if preserve_markers && !contains_table {
+                    let blocks = builder.source_html_blocks(range.clone(), output_start, presented_kind(BlockKind::Paragraph), quote_depth, quote_context);
+                    builder.blocks.extend(blocks);
+                } else {
+                    builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
+                    builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
+                }
                 if normalized.text[range.clone()].starts_with("<!--") && output_start < builder.output.len() {
                     builder.styles.push(StyleSpan { range: output_start..builder.output.len(), application: StyleApplication::Automatic("Comment".into()) });
                 }

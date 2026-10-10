@@ -2942,10 +2942,13 @@ ViemStatus viem_core_view_set_code_block_language(
     uint64_t document_revision, uint64_t offset, ViemUtf8Slice language,
     ViemCoreOutcomeV1 *output);
 
-/* fragment is percent-decoded, excludes '#'; outputs name this exact revision. */
-ViemStatus viem_core_find_link_fragment(ViemCoreHandle core, uint64_t document_id,
-                                       uint64_t revision, ViemUtf8Slice fragment,
-                                       uint64_t *offset, uint8_t *found);
+/* Explicit navigation in this exact document revision. fragment is percent-
+ * decoded and excludes '#'. L<number> targets a one-based physical source line,
+ * centered within valid scroll limits; other fragments target Markdown headings.
+ * Missing targets set found=0 and leave the view unchanged. */
+ViemStatus viem_core_view_navigate_link_fragment(
+    ViemCoreHandle core, ViemViewId view, uint64_t document_id, uint64_t revision,
+    ViemUtf8Slice fragment, uint8_t *found, ViemCoreOutcomeV1 *outcome);
 
 /* Exact snapshot, two-pass UTF-8. Outputs must be disjoint. found distinguishes
  * no link from a link with an empty destination. No source or view mutation. */

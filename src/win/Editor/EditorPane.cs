@@ -117,7 +117,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += OnPointerMoved;
-        Canvas.PointerExited += (_, _) => { caretHoverLocation = null; SetCaretHover(null); };
+        Canvas.PointerEntered += (_, e) => MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position);
+        Canvas.PointerExited += (_, _) => { MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
             pressedPointer = null; dragging = false; wordSelectionDragging = false; Canvas.ReleasePointerCapture(e.Pointer);
@@ -220,6 +221,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     internal void InstallReplacement(CoreDocument document, CoreView? prepared)
     {
+        DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
         Document.Changed -= DocumentChanged;
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
@@ -443,6 +445,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position);
         if (pressedPointer != e.Pointer.PointerId || View == null) {
             var location = e.GetCurrentPoint(Canvas).Position;
             TableHover(location); MoveCaretHover(location); return;
@@ -519,6 +522,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { RefreshImagePopup(); }
             catch (CoreException error) { DismissImagePopup(suppress: false); PresentationWarning("image popup", error); }
             UpdateCaretHover();
+            UpdateCodeBlockLanguageHover();
             try { using (Diagnostics.InputPerformance.Measure("whitespace.export")) whitespace = View.Whitespace(snapshot.Info); }
             catch (CoreException error) { whitespace = null; PresentationWarning("whitespace markers", error); }
             try { RefreshCompletion(); }
@@ -639,11 +643,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
         // Source highlights, selection, then text: preserve the original layering.
         var scrollOffset = new System.Numerics.Vector2(drawnViewport.left - viewport.left, drawnViewport.top - viewport.top);
         drawing.DrawImage(cachedBackground, scrollOffset);
+        DrawCodeBlockLanguages(drawing);
         if (tableSelection.active == 0) foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
         DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
         DrawInlineImages(drawing);
-        DrawCodeBlockLanguages(drawing);
         if (CaretHoverRectangle is Rect hover && window.IsWindowActive) {
             var color = theme.Caret; color.A = (byte)Math.Round(color.A * .2);
             if (caretHoverMode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) drawing.FillRectangle(hover, color);
@@ -700,6 +704,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public void Dispose()
     {
         if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
+        DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         ResetImagePreviews(); imageCancellation.Dispose();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
