@@ -4374,6 +4374,7 @@ pub(crate) fn splice_line_local_projection(
     literal_topology: bool,
     edits: &[TextEdit],
     source_patches: &[super::SourcePatch],
+    retained_separator: Option<(Range<usize>, Range<usize>)>,
     next_projected_block_id: &mut u64,
 ) -> Result<(FormattedDocument, ProjectionSpliceStatistics), BlockIdentityError> {
     if regional.revision != revision
@@ -4918,6 +4919,18 @@ pub(crate) fn splice_line_local_projection(
     if trailing_break.is_some() {
         provenance_indices.end += 1;
     }
+    if let Some((old, new)) = &retained_separator {
+        let boundary = previous.provenance.get(provenance_indices.end)
+            .ok_or(BlockIdentityError::InvalidProjection)?;
+        if source_paragraphs || literal_topology
+            || boundary.formatted != (old_formatted.end..old_formatted.end + 1)
+            || boundary.source != *old || old.start < old_source.start || old.end > old_source.end
+            || new.start < new_source.start || new.end > new_source.end
+        {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        provenance_indices.end += 1;
+    }
     let old_provenance = previous
         .provenance
         .get_range(&provenance_indices)
@@ -4954,6 +4967,12 @@ pub(crate) fn splice_line_local_projection(
         let formatted = shift_range_i128(&boundary.formatted, new_formatted_end as i128 - old_formatted.end as i128)
             .ok_or(BlockIdentityError::InvalidProjection)?;
         regional_provenance.push(ProvenanceSpan { formatted, source: at..at });
+    }
+    if let Some((_, source)) = retained_separator {
+        regional_provenance.push(ProvenanceSpan {
+            formatted: new_formatted_end..new_formatted_end + 1,
+            source,
+        });
     }
     if literal_mapping {
         if let Some(first) = old_provenance.first().filter(|span| span.formatted.start < old_formatted.start) {
@@ -5764,11 +5783,7 @@ fn project_markdown_lines(
         let quote_depth = containers.iter().map(|container| container.quote_depth).max().unwrap_or(0);
         let list = containers.iter().rev().find(|container| container.list.is_some()).copied();
         let block_syntax = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= at))
-            .filter(|block| block.range.start <= source_end)
-            .filter(|block| !matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
-                || !list_context.iter().skip(list_context.partition_point(|(range, _)| range.end < block.content.end))
-                    .take_while(|(range, _)| range.start < block.range.end)
-                    .any(|(_, context)| context.marker.is_some() && context.content_start > block.content.end));
+            .filter(|block| block.range.start <= source_end);
         let quote = source_at.and_then(|at| quote_context
             .get(quote_context.partition_point(|line| line.range.start <= at).saturating_sub(1))
             .filter(|line| line.range.start <= at && at <= line.range.end));
@@ -6136,7 +6151,7 @@ fn project_markdown_lines(
             // Structural prefixes are source syntax. Empty blocks retain the
             // boundary after their prefix, including an empty ATX heading.
             let content_at = builder.unit_at(content_start)
-                .map_or(source_content_end, |unit| unit.source.start);
+                .map_or_else(|| block_syntax.map_or(source_content_end, |syntax| syntax.content.start), |unit| unit.source.start);
             let at = if matches!(kind, BlockKind::Heading(_)) { content_at } else {
                 context.map_or_else(|| quote.map_or(content_at, |quote| quote.content_start), |context| context.content_start)
             };

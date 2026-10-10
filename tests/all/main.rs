@@ -80,6 +80,8 @@ mod markdown_continuation_batch_deletion;
 mod markdown_cross_style_edits;
 mod markdown_deletion_audit;
 mod markdown_edit_audit;
+mod markdown_key_reprojections;
+mod markdown_inline_typing_regressions;
 mod markdown_indented_code;
 mod markdown_empty_continuations;
 mod markdown_inline_breaks;

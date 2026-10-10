@@ -18,6 +18,17 @@ impl Document {
         }) else {
             return Ok(None);
         };
+        // The final ending separates this table from the following source row
+        // (or exposes the terminal empty row in Source). The table-only parse
+        // omits that ending, so it cannot prove an edit which consumes it.
+        if let Some(last) = table.source_rows.last() {
+            let boundary = last.source_body.end..table.source_range.end;
+            if patches.iter().any(|patch| patch.range.start < boundary.end
+                && boundary.start < patch.range.end)
+            {
+                return Ok(None);
+            }
+        }
         // Prefix/container grammar and destruction of the header need broader
         // context. Ordinary cells and row/column operations remain self-contained.
         let old_source = table.source_range.clone();
@@ -141,6 +152,7 @@ impl Document {
             true,
             &edits,
             patches,
+            None,
             &mut next_id,
         )
         .map_err(super::super::block_identity_document_error)?;
@@ -352,6 +364,7 @@ impl Document {
             true,
             edits,
             patches,
+            None,
             &mut next_id,
         )
         .map_err(super::super::block_identity_document_error)?;

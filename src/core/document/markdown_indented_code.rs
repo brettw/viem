@@ -153,7 +153,8 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
             fence = Some(open);
             prose = false;
         } else {
-            prose = markdown_block_prefix(semantic, 0, semantic.len()).1 == BlockKind::Paragraph;
+            prose = !semantic.trim().is_empty()
+                && markdown_block_prefix(semantic, 0, semantic.len()).1 == BlockKind::Paragraph;
         }
         index += 1;
     }

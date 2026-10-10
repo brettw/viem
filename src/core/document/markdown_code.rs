@@ -54,7 +54,23 @@ pub(super) fn patches(
                 let quote = super::markdown_quotes::prefix(&prefix);
                 let marker = super::markdown_blocks::marker_prefix_length(&prefix[quote..]).unwrap_or(0);
                 let prefix = if marker > 0 { format!("{}{}{}", &prefix[..quote], " ".repeat(marker), &prefix[quote + marker..]) } else { prefix };
-                return Ok(Some(vec![(source, replacement.replace('\n', &format!("{}{prefix}", document.file_format().spelling())))]));
+                let mut syntax = replacement.replace('\n', &format!("{}{prefix}", document.file_format().spelling()));
+                if range.is_empty() && !replacement.is_empty() {
+                    if let Some(line) = code.lines.iter().find(|line| line.content_start == source.start) {
+                        let bytes = document.state().source.bytes_in(line.source.start..line.content_start)
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let existing = document.encoding().decode_region(&bytes, line.source.start)?.text;
+                        let quote = super::markdown_quotes::prefix(&existing);
+                        let columns = existing[quote..].bytes().fold(0, |column, byte| {
+                            column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+                        });
+                        // A retained blank line may have less than code's
+                        // required indent. Materializing text must supply it.
+                        let missing = (code.container_indent + 4).saturating_sub(columns);
+                        syntax.insert_str(0, &" ".repeat(missing));
+                    }
+                }
+                return Ok(Some(vec![(source, syntax)]));
             }
         }
     }
@@ -76,6 +92,11 @@ pub(super) fn patches(
         .is_some_and(|block| block.style.0 == "Code Block");
     if code_block && block.as_ref().is_some_and(|block| block.range.is_empty()) {
         return empty_body_patches(document, block.as_ref().unwrap(), replacement, quoted_code).map(Some);
+    }
+    if code_block {
+        if let Some(fence) = fenced_source(document, block.as_ref().unwrap())? {
+            return fenced_body_patches(document, block.as_ref().unwrap(), range, replacement, fence).map(Some);
+        }
     }
     if code_block && !replacement.contains(['`', '~']) {
         let block = block.as_ref().unwrap();
@@ -306,6 +327,97 @@ pub(super) fn patches(
         }
     }
     Ok(Some(result))
+}
+
+/// Keep literal edits inside their current fence. Only the touched physical
+/// lines and delimiter runs are inspected; untouched body bytes stay outside
+/// the supporting indentation and fence-growth patches.
+fn fenced_body_patches(
+    document: &Document,
+    block: &super::Block,
+    range: &Range<usize>,
+    replacement: &str,
+    fence: FencedSource,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    let projection = document.projection();
+    let start = projection.source_insertion_point(range.start, range.start != block.range.end)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let end = if range.is_empty() { start } else {
+        projection.source_insertion_point(range.end, range.end != block.range.end)
+            .ok_or(DocumentError::AmbiguousProjection)?
+    };
+    let source = start..end;
+    let lines = &document.state().source_hard_lines;
+    let first = lines.line_at_offset(start).and_then(|index| lines.get(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let last = lines.line_at_offset(end).and_then(|index| lines.get(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let read = |range: Range<usize>| {
+        let bytes = document.state().source.bytes_in(range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        document.encoding().decode_region(&bytes, range.start).map(|decoded| decoded.text)
+    };
+    let opening = read(fence.opening.clone())?;
+    let quote = super::markdown_quotes::prefix(&opening);
+    let list = matches!(block.kind, super::BlockKind::ListItem { .. });
+    let indent = if list { 0 } else {
+        opening[quote..].bytes().take_while(|byte| *byte == b' ').count()
+    };
+    let container = if list { fence.body_prefix.clone() } else { opening[..quote].to_owned() };
+    let prefix = format!("{container}{}", " ".repeat(indent));
+    let separator = format!("{}{prefix}", document.file_format().spelling());
+    let mut syntax = replacement.replace('\n', &separator);
+    let exposes_space = replacement.starts_with(' ')
+        || replacement.is_empty() && range.end < block.range.end
+            && projection.text_tree().slice(range.end..range.end + 1)
+                .is_ok_and(|next| next == " ");
+    if exposes_space
+        && projection.hard_line_at_offset(range.start)
+            .and_then(|index| projection.hard_line_range(index))
+            .is_some_and(|line| line.start == range.start)
+    {
+        let existing = read(first.start..start)?;
+        let quote = super::markdown_quotes::prefix(&existing);
+        let hidden = existing[quote..].bytes().take_while(|byte| *byte == b' ').count();
+        syntax.insert_str(0, &" ".repeat(indent.saturating_sub(hidden)));
+    }
+
+    let mut affected = document.state().source.bytes_in(first.start..last.end)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let encoded = document.encoding().encode_fragment(&syntax)?;
+    affected.splice(start - first.start..end - first.start, encoded);
+    let decoded = document.encoding().decode_region(&affected, first.start)?;
+    let normalized = super::line_endings::normalize(&decoded, document.file_format());
+    let needed = normalized.text.split('\n').filter_map(|raw| {
+        let quote = if block.quote_depth > 0 { super::markdown_quotes::prefix(raw) } else { 0 };
+        let mut raw = &raw[quote..];
+        if list {
+            let spaces = container[super::markdown_quotes::prefix(&container)..].len();
+            let skip = raw.bytes().take(spaces).take_while(|byte| *byte == b' ').count();
+            raw = &raw[skip..];
+        }
+        super::markdown_syntax::fence_close(raw, fence.delimiter, fence.width).then(|| {
+            raw.trim_start_matches(' ').bytes().take_while(|byte| *byte == fence.delimiter).count() + 1
+        })
+    }).max().unwrap_or(fence.width);
+    let mut patches = vec![(source, syntax)];
+    if needed > fence.width {
+        let marker = (fence.delimiter as char).to_string().repeat(needed);
+        let old = (fence.delimiter as char).to_string().repeat(fence.width);
+        let length = document.encoding().encode_fragment(&old)?.len();
+        patches.push((fence.opening_marker..fence.opening_marker + length, marker.clone()));
+        if let Some(closing) = fence.closing {
+            let raw = read(closing.clone())?;
+            let at = raw.find(fence.delimiter as char).ok_or(DocumentError::AmbiguousProjection)?;
+            let width = raw[at..].bytes().take_while(|byte| *byte == fence.delimiter).count();
+            if width < needed {
+                let begin = closing.start + document.encoding().encode_fragment(&raw[..at])?.len();
+                let length = document.encoding().encode_fragment(&(fence.delimiter as char).to_string().repeat(width))?.len();
+                patches.push((begin..begin + length, marker));
+            }
+        }
+    }
+    Ok(patches)
 }
 
 /// An empty code body may already own a blank physical line, or its insertion

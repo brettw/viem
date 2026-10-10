@@ -7,6 +7,7 @@ commit; the comparison audit after documentation commit `93a7c52` adds
 entries 49–59 and further reproductions below without changing parser code.
 Missing GitHub features and deliberate presentation differences are
 tracked in [MARKDOWN_GAPS.md](MARKDOWN_GAPS.md), not here.
+Resolved entries are removed; remaining numbers retain their audit identities.
 
 **(keys)** marks bugs reproduced by sending key events through `Core`, which is
 what a user sees. **(model API)** marks bugs reproduced only with
@@ -32,15 +33,15 @@ without establishing their keyboard entry path.
   projection was compared with a fresh `Document::from_bytes` of
   `source_bytes()`.
 
-Results:
+Historical audit results:
 
 - **WYSIWYG (99,253 edits):** 3,236 projections differed from a fresh parse.
   829 of those showed different visible text, and 1,785 differed only in
   Markdown reference styling. Separately, 11,185 edits failed with
   `VerificationFailed` and 79 with `AmbiguousProjection`.
 - **Source view (297,883 edits):** 134 panics, 1,877 divergences from a fresh
-  parse and 10 `VerificationFailed`. The panics were bug 1, now fixed.
-- **Other checks:** opening never panicked except in bug 2, now fixed. LF, CRLF and CR
+  parse and 10 `VerificationFailed`.
+- **Other checks:** LF, CRLF and CR
   copies of every example projected identically. The adversarial lines
   exercised in that run, up to 400 KB, projected in linear time; the URL
   family in bug 49 instead takes quadratic time.
@@ -55,56 +56,6 @@ edit in `tests/all/fuzz_markdown_edits.rs`, assert that the projection's
 text, blocks and style spans equal those of a fresh parse of
 `source_bytes()`.
 
-## Crashes
-
-1. **Deleting a table pipe in Source view panics (keys).** Open
-   `"| a  |\n| -- |\n"` as Markdown Source, put the cursor on the final `|` of
-   the first row and press `x`. It panics at the
-   `.expect("private projectors emit a valid current-adapter hard-line partition")`
-   in `FormattedDocument::from_parts`
-   ([projection.rs:1791](src/core/document/projection.rs#L1791)). The path is
-   `Document::build_table_row_candidate` then
-   `FormattedDocument::extract_table_row`. The FFI boundary returns
-   `ViemStatus::Panic` and the edit is lost. All 134 Source-view fuzz panics
-   took this path, including deleting the closing pipe of
-   `"| f\\|oo  |\n| ------ |\n..."`.
-
-   **Fixed.** The cause was wider than this edit. In Source view, a table
-   row whose line ends in two spaces was joined to the next row as a
-   hard-break continuation, because both rows are `Paragraph` blocks with
-   the same table style. Opening `"| a |  \n| - |\n| c |\n"` showed the
-   header and delimiter rows as one block, and typing anywhere in such a row
-   also panicked. The row-local candidate then owned no complete block.
-   Table rows are now excluded from hard-break joining in both views
-   (`project_markdown`). `extract_table_row` also checks that the row owns
-   complete blocks; if not, it declines the local candidate and the edit
-   falls back to ordinary reprojection. Regression:
-   `markdown_tables::source_rows_ending_in_hard_break_spaces_remain_separate_and_editable`.
-2. **Opening a table with a literal CR in Source view underflows.** Open
-   `"| a |\r\n| - |\n"` or `"| abc | def |\n| --- | -\r-- |\n"` as Markdown
-   Source. These have mixed endings, so `unix` detection makes `\r` content.
-   `next_start - range.end` in `install_flow_ranges`
-   ([projection.rs:1839](src/core/document/projection.rs#L1839)) subtracts
-   with overflow. Release builds wrap and record a huge `separator_length`.
-   The comparison audit also reproduced the panic with
-   `"|a|\r|-|\na\r# b"`. The same line-ending disagreement hides unrelated
-   text: default-Unix `"a\r# b"` displays only `b` in WYSIWYG, while
-   `"|a|\r|-|"` changes Source projection text to `"|a|\n|-|"`.
-   [`grammar_text`](src/core/document/markdown_syntax.rs#L283) masks literal
-   LF under Mac policy but leaves literal CR exposed to grammar line parsing.
-
-   **Fixed.** `grammar_text` now also masks every CR left after
-   normalization, since recognized endings all become LF. pulldown-cmark no
-   longer splits lines that Viem's line model and hand-written classifiers
-   keep whole. Under the Unix interpretation these inputs are now ordinary
-   paragraphs whose CR stays visible content. The hidden `a` in `"a\r# b"`
-   and the changed Source text for `"|a|\r|-|"` are fixed as well.
-   `install_flow_ranges` now validates its ranges against the projected
-   text. If they disagree, it installs no flow lines (layout uses physical
-   lines) instead of wrapping a separator length, and a debug assertion
-   reports the mismatch in tests. Regression:
-   `markdown_tables::literal_carriage_returns_are_line_content_rather_than_grammar_breaks`.
-
 ## Edits that commit but reopen differently
 
 After an edit, the regional reprojection
@@ -115,66 +66,6 @@ verification compares the request with it and accepts. The committed
 document no longer matches a fresh parse of its own bytes, so the screen
 shows one thing and save-and-reopen shows another. This breaks the
 semantic-correctness requirement in AGENTS.md.
-
-### Reproduced with keys
-
-3. **A setext underline on the following line is ignored.**
-   - In `"\n====\n"`, type `x` on the empty first line. The screen shows
-     paragraphs `x` and `====`; reopening gives an H1 `x`.
-   - (model API) In `"# Heading\n    foo\nHeading\n------\n    foo\n----\n"`,
-     type `x` before the last `    foo`. On reopen `----` becomes a setext
-     underline.
-   - (model API) In Source view, ```` "> ```\n> aaa\n\nbbb\n" ```` with
-     `- ` typed on a new final line shows a list item. Reopening gives an
-     H2 `bbb`.
-4. **Fenced code with an indented opener loses typed indentation.** In ```` " ```\n aaa\naaa\n```\n" ````, type a space before the second `aaa`.
-   The screen shows ` aaa`. The file gets ` aaa`, which the opener's
-   one-space indent strips, so reopening shows `aaa`. (model API) Two- and
-   three-space openers behave the same, for example ```` "  ```\naaa\n  aaa\naaa\n  ```\n" ````. The regional parse does not
-   see the opener's indentation.
-5. **An edit can turn a code line into a fence closer.**
-   - In ```` "```\naaa\n    ```\n" ````, delete one space before the
-     indented ```` ``` ````. The line becomes a valid closer. The screen
-     still shows it as code, and reopening shows only `aaa`.
-   - (model API) `" ~~~\n    ~~~\n"` with its first code space deleted
-     behaves the same.
-6. **Typing into an empty item with a bare marker destroys the marker.** In
-   `"1.\n  Text after.\n"` or `"-\n  foo\n"`, type `x` in the empty item. The
-   file gets `1.x` or `-x` with no space, which is not a list marker.
-   Reopening shows `1.x Text after.` as a plain paragraph. (model API)
-   `"*\n      <div>\n     <div>\n"` behaves the same.
-
-   - (document API) `"-\nparagraph"` with `replace(0..0, "X")` commits
-     live text `"X paragraph"` but saves `"-X\nparagraph"`, which reopens
-     as `"-X paragraph"`.
-   - (document API) `"text\n1.\nnext"` with `replace(5..5, "X")` commits
-     `"text\nX next"` but saves `"text\n1.X\nnext"`, which reopens as
-     `"text 1.X next"`.
-   The structured local candidate path
-   ([transaction.rs:4777](src/core/document/transaction.rs#L4777)) can
-   inherit the existing incorrect list context; verification must establish
-   the meaning of the patched source, including the marker boundary.
-7. **Typing into an empty ATX heading at end of file writes after it.**
-   - In `"## \n#\n### ###\n"`, type `x` in the last heading. The file
-     becomes `"...### ###\nx"`. Reopening shows the empty heading followed
-     by a paragraph `x`.
-   - (model API) `"### ###\n"` and `"### \n"` alone behave the same.
-   - `"### \n\nNext\n"` works.
-8. **Typing into a blank separator joins it to the following paragraph.**
-   - In ```` "> ```\n> aaa\n\nbbb\n" ````, type `x` on the blank line. The
-     file becomes `"...> aaa\nx\nbbb\n"`, which reopens as one paragraph
-     `x bbb`.
-   - (model API) Typing on the first line of `">\n> foo\n>  \n"` reopens as
-     `x foo`.
-   - (model API) Typing on the empty first line of `"\n<foo>\n"` (or
-     `"\n <foo>\n"`, `"\n   <foo>\n"`) does the same. `<foo>` stops being an HTML block and
-     joins: `x <foo>`.
-9. **Deleting a line ending after a table in Source view is not shown.**
-   - In `"| a | b |\n| - | - |\n| c | d |\n> q\n"`, press Backspace at the
-     start of `> q`. The file now contains `| c | d |> q`, but the screen
-     still shows the row and `> q` on separate lines.
-   - (model API) Deleting the final line ending after a table at end of
-     file also leaves the line ending on screen.
 
 ### Reproduced with the model API
 
@@ -234,34 +125,8 @@ semantic-correctness requirement in AGENTS.md.
     - In `"Hello World\n| abc | def |\n| --- | --- |\n| bar | baz |\n"`,
       delete the leading `|` of the header row. The screen keeps the table;
       reopening shows a paragraph.
-    - **Fixed with bug 1.** In `"foo|bar  \n---|---\nfoo|bar\n"`, deleting a
-      trailing space after `bar` merged the header and delimiter rows into
-      one block. That was the same hard-break row joining.
 
 ## Ordinary edits that are rejected
-
-### Reproduced with keys
-
-18. **Enter fails inside any multi-line fenced code block.** In ```` "```\nab\ncd\n```\n" ```` or ```` "```ruby\ndef foo(x)\n  return 3\nend\n```\n" ````, Enter in the
-    body fails with `FormattedPayloadCannotReproject`. The model API
-    reports `AmbiguousProjection` or `VerificationFailed`. Single-line
-    blocks work.
-19. **Typing after combined emphasis, strikethrough and strong fails.**
-    `"*~~__a__~~* b\n"` with typing after `a` fails. (model API) So does
-    typing at the end of the inner runs of
-    `"*~~__emphasis strike strong__~~* ~~*__strike emphasis strong__*~~\n"`
-    and of its variants that use code spans.
-20. **Typing next to an unmatched delimiter fails.** In `"**foo*\n"`, shown
-    as `*foo`, typing at the start fails. Through the model API it also
-    fails after the literal `*` of `"*foo**"`, and in `"__foo_"`,
-    `"____foo_"`, `"_foo____"`, `"****foo*bar*baz****"` and
-    `"**a.*.**a*.**."`.
-21. **Typing on a blank line inside an indented code block fails.** Example:
-    `"    a\n\n\n    b\n"`. (model API) Likewise
-    `"    chunk1\n\n    chunk2\n  \n \n \n    chunk3\n"`.
-22. **Enter at the start of some headings fails.** This applies to ATX
-    headings with a closing sequence (`"## foo ##\n"`) and to setext
-    headings (`"Foo *bar*\n=========\n"`).
 
 ### Reproduced with the model API
 
@@ -278,9 +143,8 @@ a user-facing reason rather than `VerificationFailed`.
 24. **Enter fails in lists with tab-indented content.** Examples: at the
     start of `foo` in `"- foo\n\n\t\tbar\n"`, and at the start of `bar` in
     `" - foo\n   - bar\n\t - baz\n"`.
-25. **Enter fails in and after indented code.** Examples: at the end of
-    `chunk1` in `"    chunk1\n\n    chunk2\n"`, and at the start of `bar`
-    in `"    foo\nbar\n"`.
+25. **Enter fails after indented code.** At the start of `bar` in
+    `"    foo\nbar\n"`, Enter is rejected.
 26. **Typing at the start of a list with an empty item fails.** Typing
     into the empty item of `"-   \n  foo\n"` fails, as does typing at the
     start of `foo` in `"- foo\n-   \n- bar\n"`. The latter works through
@@ -321,18 +185,6 @@ soft-break detection in
 
 ### Hidden or lost text
 
-31. **A list item's first line vanishes before an indented block start.**
-    - `"- item one\n  <div>block</div>\n"` shows only `block`.
-    - `"- item one\n  ***\n- two\n"` shows only a rule and `two`.
-    - `"1. Step one\n   ## Sub heading\n"` shows only the heading.
-    - `"- _t\n  # test\n  t_\n"` and
-      `"* A Heading:\n  # inside a list item\n"` lose their first lines.
-
-    Soft-break detection checks the continuation with
-    `markdown_block_prefix` on the raw line
-    ([paragraph_flow.rs:54](src/core/document/paragraph_flow.rs#L54)),
-    which ignores indented block starts. The lines are folded together, and
-    the heading, HTML or rule branch then replaces the folded line.
 32. **A trailing backslash at the end of a block is hidden and becomes a
     line break.** Examples:
     - `"foo\\\n"` at end of file, `"### foo\\\n"` and
@@ -370,10 +222,11 @@ soft-break detection in
 
     [markdown_blocks.rs:256](src/core/document/markdown_blocks.rs#L256)
     allows a marker up to `content_indent + 3` columns.
-37. **A paragraph after an empty item is pulled into the item.**
-    `"1.\n  Text after.\n"` and `"-\n  foo\n"` show the paragraph as the
-    item's text, with a leading space. GitHub shows an empty item followed
-    by a paragraph.
+37. **Empty-list continuation ownership and spacing are wrong.**
+    `"1.\n  Text after.\n"` pulls the following paragraph into the empty
+    ordered item, with a leading space. The paragraph belongs outside that
+    item. In `"-\n  foo\n"`, `foo` correctly belongs inside the bullet
+    item, but Viem adds an incorrect leading folded space.
 38. **A lazy `===` line in a quote moves out of the quote.** For
     `"> foo\nbar\n===\n"`, GitHub shows one quoted paragraph,
     `foo bar ===`. Viem moves `===` outside the quote, because
@@ -398,15 +251,11 @@ soft-break detection in
     so it treats the closer as a new fence. Later quote lines then get depth
     0 in the quote context used by editing. Rendering is still correct
     because the parser's containers take over.
-41. **A single-dash setext heading becomes a list.** For
-    `"Foo\n-\nbar\n"`, GitHub shows an H2 `Foo` and a paragraph `bar`.
-    Viem shows a paragraph, an empty bullet, and `bar` as list
-    continuation. The list-context filter on headings at
-    [projection.rs:5700-5705](src/core/document/projection.rs#L5700)
-    suppresses the heading.
-    (document API) In `"text\n-\nnext"`, `replace(5..5, "X")` commits
-    live `"text\nX\nnext"`, but saved `"text\n- X\nnext"` reopens as
-    `"text\nX next"`.
+41. **Prose after a single-dash setext heading inherits list treatment.**
+    In `"Foo\n-\nbar\n"`, `Foo` correctly becomes an H2, but `bar`
+    receives bullet-list continuation ownership and styling instead of an
+    ordinary paragraph. The manual list classifier retains the consumed
+    underline as a list marker.
 42. **Several container markers on one line are not nested.**
     `"- - foo\n"`, `"1. - 2. foo\n"`, `"- *foo\n  - - \n  baz*\n"` and
     `" - >*\n"` show literal `- foo`, `- 2. foo`, `- ` and `*` inside one

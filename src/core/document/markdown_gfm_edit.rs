@@ -2,6 +2,67 @@
 use super::replacement::PatchComposition;
 use super::*;
 impl Document {
+    pub(super) fn markdown_empty_heading_insertion_patches(
+        &self,
+        edit: &TextEdit,
+    ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
+        if self.format() != Format::Markdown
+            || !edit.range.is_empty()
+            || edit.replacement.is_empty()
+            || edit.replacement.contains('\n')
+            || !self
+                .projection()
+                .blocks_for_region(&edit.range)
+                .iter()
+                .any(|block| {
+                    block.range == edit.range
+                        && matches!(block.kind, super::super::BlockKind::Heading(_))
+                })
+        {
+            return Ok(None);
+        }
+        let at =
+            super::super::source_edit::insertion_point(self.projection(), edit.range.start, None)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+        let line = self
+            .state()
+            .source_hard_lines
+            .line_at_offset(at)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix_bytes = self
+            .state()
+            .source
+            .bytes_in(line.start..at)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix = self
+            .encoding()
+            .decode_region(&prefix_bytes, line.start)?
+            .text;
+        let hash = self.encoding().encode_fragment("#")?;
+        let closing_hash = self
+            .state()
+            .source
+            .bytes_in(at..(at + hash.len()).min(line.end))
+            .is_some_and(|bytes| bytes == hash);
+        let mut syntax = self.escape_markdown_source_text(at, &edit.replacement)?;
+        if prefix.ends_with('#') {
+            syntax.insert(0, ' ');
+        }
+        // The same authored space can delimit both empty body and closing
+        // sequence. New text needs its own separation from the closing hashes.
+        if closing_hash {
+            syntax.push(' ');
+        }
+        if syntax == edit.replacement {
+            return Ok(None);
+        }
+        Ok(Some(vec![SourcePatch::primary(
+            at..at,
+            self.encoding().encode_fragment(&syntax)?,
+        )]))
+    }
+
     pub(super) fn markdown_rule_text_patches(
         &self,
         edit: &TextEdit,

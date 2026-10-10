@@ -6,6 +6,285 @@ fn open(source: &str) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap()
 }
 
+fn assert_structural_key_edit(
+    source: &str,
+    at: usize,
+    key: viem_core::command::Key,
+    expected: &str,
+) {
+    use viem_core::command::{CommandStatus, InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+
+    let mut core = Core::new(open(source));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+    core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('i')))
+        .unwrap();
+    core.handle(
+        view,
+        CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: at,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        },
+    )
+    .unwrap();
+    let outcome = core
+        .handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key)))
+        .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+    assert_eq!(
+        outcome.command.unwrap().status,
+        CommandStatus::Complete,
+        "{source:?}"
+    );
+    core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+        .unwrap();
+    assert_eq!(core.document().text(), expected, "{source:?}");
+    let saved = core.document().source_bytes();
+    let fresh = open(std::str::from_utf8(&saved).unwrap());
+    assert_eq!(
+        core.document().text(),
+        fresh.text(),
+        "saved {:?}",
+        String::from_utf8_lossy(&saved)
+    );
+    assert_eq!(
+        core.document().projection().style_spans(),
+        fresh.projection().style_spans()
+    );
+    assert_eq!(
+        core.document()
+            .projection()
+            .blocks()
+            .iter()
+            .map(|block| (&block.range, &block.attributes))
+            .collect::<Vec<_>>(),
+        fresh
+            .projection()
+            .blocks()
+            .iter()
+            .map(|block| (&block.range, &block.attributes))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        core.document()
+            .hard_line_snapshot()
+            .capture(0..expected.len())
+            .unwrap()
+            .break_offsets(),
+        fresh
+            .hard_line_snapshot()
+            .capture(0..expected.len())
+            .unwrap()
+            .break_offsets()
+    );
+    core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u')))
+        .unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
+        .unwrap();
+    assert_eq!(core.document().source_bytes(), saved);
+    assert_eq!(core.document().text(), expected);
+}
+
+#[test]
+fn typing_in_bare_empty_list_item_retains_its_marker() {
+    for source in [
+        "1.\n  Text after.\n",
+        "-\n  foo\n",
+        "-\nparagraph",
+        "text\n1.\nnext",
+        "*\n      <div>\n     <div>\n",
+        "* \n      <div>\n     <div>\n",
+    ] {
+        let doc = open(source);
+        if source.starts_with('*') {
+            assert_eq!(doc.text(), "\n<div>\n");
+            assert_eq!(doc.projection().blocks()[1].style.0, "Code Block");
+        }
+        let at = doc
+            .projection()
+            .blocks()
+            .iter()
+            .find(|block| matches!(block.kind, BlockKind::ListItem { .. }))
+            .unwrap()
+            .range
+            .start;
+        let mut expected = doc.text().to_owned();
+        expected.insert(at, 'x');
+        assert_structural_key_edit(source, at, viem_core::command::Key::Char('x'), &expected);
+    }
+}
+
+#[test]
+fn typing_in_empty_eof_heading_stays_inside_heading() {
+    for source in [
+        "## \n#\n### ###\n",
+        "### ###\n",
+        "### \n",
+        "### \n\nNext\n",
+        "#\n",
+        "### ###",
+        "### ",
+    ] {
+        let doc = open(source);
+        let at = doc
+            .projection()
+            .blocks()
+            .iter()
+            .rev()
+            .find(|block| matches!(block.kind, BlockKind::Heading(_)) && block.range.is_empty())
+            .unwrap()
+            .range
+            .start;
+        let mut expected = doc.text().to_owned();
+        expected.insert(at, 'x');
+        assert_structural_key_edit(source, at, viem_core::command::Key::Char('x'), &expected);
+    }
+}
+
+#[test]
+fn bare_list_marker_typing_through_document_edits_matches_reopened_source() {
+    for (source, at, expected) in [
+        ("-\nparagraph", 0, "X paragraph"),
+        ("text\n1.\nnext", 5, "text\nX next"),
+    ] {
+        let mut doc = open(source);
+        doc.replace(at..at, "X").unwrap();
+        assert_eq!(doc.text(), expected);
+        let saved = doc.source_bytes();
+        let fresh = open(std::str::from_utf8(&saved).unwrap());
+        assert_eq!(fresh.text(), expected);
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), saved);
+        assert_eq!(doc.text(), expected);
+    }
+}
+
+#[test]
+fn list_prose_remains_visible_before_indented_block_starts() {
+    for (source, expected) in [
+        ("- item one\n  <div>block</div>\n", "item one\nblock"),
+        ("- item one\n  ***\n- two\n", "item one\n\ntwo"),
+        ("1. Step one\n   ## Sub heading\n", "Step one\nSub heading"),
+        ("- _t\n  # test\n  t_\n", "_t\ntest\nt_"),
+        (
+            "* A Heading:\n  # inside a list item\n",
+            "A Heading:\ninside a list item",
+        ),
+    ] {
+        let doc = open(source);
+        assert_eq!(doc.text(), expected, "{source:?}");
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn parser_setext_headings_keep_ownership_of_list_like_underlines() {
+    for (source, rendered, source_text) in [
+        ("bbb\n- ", "bbb", "bbb\n- "),
+        ("\nbbb\n- ", "\nbbb", "\nbbb\n- "),
+        ("aaa\n\nbbb\n- ", "aaa\nbbb", "aaa\nbbb\n- "),
+        ("> aaa\n\nbbb\n- ", "aaa\nbbb", "> aaa\nbbb\n- "),
+        (
+            "> ```\n> aaa\n\nbbb\n- ",
+            "aaa\n\nbbb",
+            "> ```\n> aaa\n\nbbb\n- ",
+        ),
+        (
+            "```\naaa\n```\n\nbbb\n- ",
+            "aaa\nbbb",
+            "```\naaa\n```\nbbb\n- ",
+        ),
+    ] {
+        for (format, expected) in [
+            (Format::Markdown, rendered),
+            (Format::MarkdownSource, source_text),
+        ] {
+            let doc =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            assert_eq!(doc.text(), expected, "{format:?} {source:?}");
+            let heading = doc.projection().blocks().last().unwrap();
+            assert_eq!(heading.kind, BlockKind::Heading(2), "{format:?} {source:?}");
+            assert_eq!(heading.style.0, "Heading2");
+            assert_eq!(doc.source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn empty_nested_dash_items_keep_list_ownership_after_keys_and_replacements() {
+    use viem_core::command::Key;
+    use viem_core::document::FileFormat;
+    let source = "- a\n  - b\n    - c\n      deep\n- tail";
+    for (at, key, expected) in [
+        (2, Key::Enter, "a\n\nb\nc deep\ntail"),
+        (4, Key::Enter, "a\nb\n\nc deep\ntail"),
+        (2, Key::Delete, "a\n\nc deep\ntail"),
+        (3, Key::Backspace, "a\n\nc deep\ntail"),
+    ] {
+        assert_structural_key_edit(source, at, key, expected);
+    }
+    for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for (file_format, ending) in [
+            (FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r"),
+        ] {
+            let source = "- a\n  - b\n  - c\n- d".replace('\n', ending);
+            let bytes = match encoding {
+                Encoding::Utf16Le => source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                Encoding::Utf16Be => source.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                _ => source.as_bytes().to_vec(),
+            };
+            for (range, replacement, expected) in [
+                (2..3, "", "a\n\nc\nd"),
+                (1..3, "\n", "a\n\nc\nd"),
+                (2..7, "", "a\n"),
+            ] {
+                let mut document = Document::from_bytes_with_file_format(
+                    bytes.clone(), encoding, Format::Markdown, file_format,
+                ).unwrap();
+                document.replace(range, replacement).unwrap();
+                assert_eq!(document.text(), expected);
+                let saved = document.source_bytes();
+                let fresh = Document::from_bytes_with_file_format(
+                    saved.clone(), encoding, Format::Markdown, file_format,
+                ).unwrap();
+                assert_eq!(fresh.text(), expected);
+                assert_eq!(
+                    document.projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>(),
+                    fresh.projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>(),
+                );
+                assert!(document.undo());
+                assert_eq!(document.source_bytes(), bytes);
+                assert!(document.redo());
+                assert_eq!(document.source_bytes(), saved);
+            }
+        }
+    }
+    let source = "- a\n\n  - b\n- c";
+    let mut document = open(source);
+    document.replace(2..3, "").unwrap();
+    assert_eq!(document.text(), "a\n\nc");
+    assert_eq!(document.source_bytes(), b"- a\n\n  - \n- c");
+    assert_eq!(open("- a\n\n  - \n- c").text(), document.text());
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), b"- a\n\n  - \n- c");
+}
+
+#[test]
+fn enter_at_heading_start_keeps_closing_sequence_and_setext_body() {
+    for source in ["## foo ##\n", "Foo *bar*\n=========\n"] {
+        let expected = format!("\n{}", open(source).text());
+        assert_structural_key_edit(source, 0, viem_core::command::Key::Enter, &expected);
+    }
+}
+
 #[test]
 fn fenced_code_is_one_paragraph_with_literal_internal_breaks() {
     for source in [

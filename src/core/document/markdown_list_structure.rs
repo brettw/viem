@@ -1,5 +1,6 @@
 //! Local source ownership for list edits whose labels are layout decorations.
 use super::*;
+use crate::document::BlockKind;
 
 /// Joining a paragraph boundary owns the following block prefix, which has no
 /// formatted characters. Inline delimiters remain attached to their content.
@@ -313,16 +314,20 @@ pub(super) fn empty_insertion_patches(
         .blocks_for_region(range)
         .iter()
         .any(|block| {
-            block.range == *range
+            block.range.start == range.start
                 && block.style.0 != "Code Block"
-                && matches!(block.kind, super::super::BlockKind::ListItem { .. })
+                && matches!(
+                    block.kind,
+                    super::super::BlockKind::ListItem {
+                        item_start: true,
+                        ..
+                    }
+                )
         })
     {
         return Ok(None);
     }
-    let at = document
-        .projection()
-        .source_insertion_point(range.start, true)
+    let at = super::super::source_edit::insertion_point(document.projection(), range.start, None)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let line = document
         .state()
@@ -336,14 +341,186 @@ pub(super) fn empty_insertion_patches(
         .bytes_in(line.start..at)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let prefix = document.encoding().decode_region(&bytes, line.start)?.text;
-    if prefix.ends_with([' ', '\t']) {
+    // A hidden inline opener is also before the first visible character, but
+    // it is content syntax, not a bare list marker that needs padding.
+    let mut remaining = prefix.as_str();
+    let mut has_list_marker = false;
+    loop {
+        let quote = super::super::markdown_quotes::prefix(remaining);
+        remaining = &remaining[quote..];
+        if remaining.trim_matches([' ', '\t']).is_empty() {
+            break;
+        }
+        let Some(marker) = super::super::markdown_blocks::marker_prefix_length(remaining) else {
+            return Ok(None);
+        };
+        if marker == remaining.len() && !remaining.ends_with([' ', '\t']) && at < line.end {
+            // A prefix ending in `*` is ambiguous in isolation: the next
+            // source unit distinguishes an empty marker from `*word*`.
+            let end = (at + document.encoding().scalar_source_width(' ')).min(line.end);
+            let following = document
+                .state()
+                .source
+                .bytes_in(at..end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let following = document.encoding().decode_region(&following, at)?.text;
+            if !following.starts_with([' ', '\t', '\r', '\n']) {
+                return Ok(None);
+            }
+        }
+        has_list_marker = true;
+        remaining = &remaining[marker..];
+    }
+    if !has_list_marker {
         return Ok(None);
     }
-    let syntax = format!(" {}", document.escape_markdown_source_text(at, text)?);
+    let needs_padding = !prefix.ends_with([' ', '\t']);
+    let following_code = document
+        .projection()
+        .blocks_for_region(
+            &(range.start..(range.start + 1).min(document.projection().text_tree().byte_len())),
+        )
+        .into_iter()
+        .find(|block| block.range.start == range.start + 1 && block.style.0 == "Code Block");
+    let needs_separator = if let Some(code) = following_code {
+        let source = document
+            .projection()
+            .source_range(code.range)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        document
+            .state()
+            .source_hard_lines
+            .line_at_offset(source.start)
+            .and_then(|index| document.state().source_hard_lines.get(index))
+            .is_some_and(|code_line| code_line.start == line.end)
+    } else {
+        false
+    };
+    if !needs_padding && !needs_separator {
+        return Ok(None);
+    }
+    let mut syntax = format!(
+        "{}{}",
+        if needs_padding { " " } else { "" },
+        document.escape_markdown_source_text(at, text)?
+    );
+    // Indented code can follow an empty list item without a blank row, but
+    // cannot interrupt its newly nonempty prose. Keep the unselected code
+    // owner by giving that existing boundary its minimal blank separator.
+    if needs_separator {
+        syntax.push_str(document.file_format().spelling());
+    }
     Ok(Some(vec![SourcePatch::primary(
         at..at,
         document.encoding().encode_fragment(&syntax)?,
     )]))
+}
+
+/// An empty nested dash item cannot interrupt its parent's prose: the dash
+/// would instead underline that prose as a Setext heading. Preserve the item
+/// with a local blank separator when an edit creates that ambiguous spelling.
+pub(super) fn preserve_empty_item_boundaries(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let projection = document.projection();
+    let mut candidates = std::collections::BTreeMap::new();
+    for edit in edits.iter().filter(|edit| {
+        edit.replacement.is_empty() || edit.replacement.contains('\n')
+    }) {
+        for block in projection.blocks_for_region(&edit.range) {
+            let BlockKind::ListItem { ordered: false, level, item_start: true, .. } = block.kind else {
+                continue;
+            };
+            if level == 0 || edit.range.start > block.range.start || block.range.start == 0 {
+                continue;
+            }
+            let Some(previous) = projection.blocks_for_region(&(block.range.start - 1..block.range.start))
+                .into_iter().filter(|previous| previous.range.end < block.range.start)
+                .max_by_key(|previous| previous.range.start) else { continue; };
+            if previous.range.is_empty() || edit.range.start < previous.range.end
+                || previous.style.0.starts_with("Heading") || previous.style.0 == "Code Block"
+                || previous.markdown_html
+                || !matches!(previous.kind, BlockKind::ListItem { level: parent, .. } if parent < level)
+            {
+                continue;
+            }
+            let boundary = previous.range.end..previous.range.end + 1;
+            if let Some(boundary) = projection.provenance_for_region(&boundary).into_iter()
+                .find(|span| span.formatted == boundary && !span.source.is_empty())
+                .map(|span| span.source)
+            {
+                if markdown_block_styles::explicit_paragraph_separator(document, &boundary, patches)? {
+                    continue;
+                }
+            }
+            let at = super::super::source_edit::insertion_point(projection, block.range.start, None)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let line = document.state().source_hard_lines.line_at_offset(at)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let prefix = document.state().source.bytes_in(line.start..at.min(line.start + 2048))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let prefix = document.encoding().decode_region(&prefix, line.start)?.text;
+            let prefix = &prefix[super::super::markdown_quotes::prefix(&prefix)..];
+            let indent = prefix.len() - prefix.trim_start_matches([' ', '\t']).len();
+            candidates.insert(line.start, (prefix[..indent].to_owned(), block.quote_depth));
+        }
+    }
+    if candidates.is_empty() { return Ok(()); }
+    let mut sorted = patches.clone();
+    sorted.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    let mut source = document.state().source.clone();
+    for patch in sorted.iter().rev() {
+        source = source.replace(patch.range.start, patch.range.end, patch.replacement.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+    }
+    let mut support = std::collections::BTreeMap::new();
+    for (old_start, (indent, depth)) in candidates {
+        let mut start = old_start;
+        let mut inside = false;
+        for patch in &sorted {
+            if patch.range.end <= old_start && !patch.range.is_empty()
+                || patch.range.end < old_start
+            {
+                start = start.checked_sub(patch.range.len())
+                    .and_then(|start| start.checked_add(patch.replacement.len()))
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+            } else if patch.range.start < old_start && old_start < patch.range.end {
+                start -= old_start - patch.range.start;
+                inside = true;
+                break;
+            }
+        }
+        let end = (start + 2048).min(source.len());
+        let bytes = source.bytes_in(start..end).ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = document.encoding().decode_region(&bytes, start)?;
+        let normalized = super::super::line_endings::normalize(&decoded, document.file_format());
+        let (row_start, text_start) = if inside {
+            let Some(ending) = normalized.endings.first() else { continue; };
+            (ending.source.end, ending.normalized.end)
+        } else { (start, 0) };
+        let ending = normalized.endings.iter().find(|ending| text_start <= ending.normalized.start);
+        if ending.is_none() && end < source.len() { continue; }
+        let row_end = ending.map_or(normalized.text.len(), |ending| ending.normalized.start);
+        let row = &normalized.text[text_start..row_end];
+        let quote = super::super::markdown_quotes::prefix(row);
+        let row = &row[quote..];
+        if row.starts_with(&indent) && row[indent.len()..].trim_end_matches([' ', '\t']) == "-" {
+            support.insert(row_start, depth);
+        }
+    }
+    if support.is_empty() { return Ok(()); }
+    let mut composition = super::replacement::PatchComposition::new(document.source_byte_len());
+    for patch in sorted.iter().rev() { composition.splice(patch.range.clone(), &patch.replacement); }
+    for (at, depth) in support.into_iter().rev() {
+        let blank = document.encoding().encode_fragment(&format!("{}{}",
+            "> ".repeat(depth as usize), document.file_format().spelling()))?;
+        composition.splice(at..at, &blank);
+    }
+    *patches = composition.source_patches();
+    Ok(())
 }
 
 /// Plain register paragraphs inherit the destination list, while their labels
