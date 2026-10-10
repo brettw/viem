@@ -174,6 +174,7 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let inline_html = self.format() == Format::Markdown
             && (matches!(block.kind, super::super::BlockKind::Heading(_))
+                || at == block.range.end
                 || self.text()[block.range.clone()].trim().is_empty());
         let syntax = if inline_html {
             // An ATX heading cannot span physical lines. Bare br is also

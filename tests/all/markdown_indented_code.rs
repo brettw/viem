@@ -215,3 +215,30 @@ fn clearing_indented_code_in_containers_removes_the_code_treatment() {
         }
     }
 }
+
+#[test]
+fn indented_code_after_grammar_block_boundaries_stays_literal_and_editable() {
+    for (source, expected) in [
+        ("---\n    *code*", "\n*code*"),
+        ("Title\n===\n    &amp;", "Title\n&amp;"),
+        ("#\n    *code*", "\n*code*"),
+        ("  # title\n    *code*", "title\n*code*"),
+        ("#\ttitle\n    *code*", "title\n*code*"),
+    ] {
+        for format in [Format::Markdown, Format::MarkdownSource] {
+            let mut document = open(source, format);
+            if format == Format::Markdown { assert_eq!(document.text(), expected, "{source:?}"); }
+            assert_eq!(document.projection().blocks().last().unwrap().style.0, "Code Block", "{source:?} {format:?}");
+            let at = document.text().rfind('*').or_else(|| document.text().rfind('&')).unwrap();
+            document.replace(at..at + 1, "").unwrap_or_else(|error| panic!("{source:?} {format:?}: {error:?}"));
+            let saved = document.source_bytes();
+            let fresh = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
+            assert_eq!(document.text(), fresh.text(), "{source:?} {format:?}");
+            assert_eq!(document.projection().blocks().last().unwrap().style.0, "Code Block");
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
+    }
+}

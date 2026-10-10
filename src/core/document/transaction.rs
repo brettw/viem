@@ -2371,7 +2371,12 @@ impl Document {
             // harmless even when the inaccessible prefix was ordinary prose.
             String::new()
         };
-        let body_prefix = &prefix[super::markdown_quotes::prefix(&prefix)..];
+        let mut body_start = super::markdown_quotes::prefix(&prefix);
+        while let Some(marker) = super::markdown_blocks::marker_prefix_length(&prefix[body_start..]) {
+            body_start += marker;
+            body_start += super::markdown_quotes::prefix(&prefix[body_start..]);
+        }
+        let body_prefix = &prefix[body_start..];
         let list_padding = super::markdown_blocks::marker_prefix_length(body_prefix)
             == Some(body_prefix.len())
             || (body_prefix.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
@@ -5589,6 +5594,29 @@ impl Document {
         ) else {
             return Err(failed());
         };
+        // Source syntax can reassign every continuation row of the edited
+        // paragraph or item, for example when an empty marker gains a body.
+        // These rows belong to the captured grammar owner; outer rows remain proof
+        // boundaries even when their physical text is unchanged.
+        let mut affected_rows = first_edited..last_edited + 1;
+        if !inherited_blocks {
+            let owners = self.projection().blocks_for_region(&(first.range.start..last.range.end));
+            let items: std::collections::BTreeSet<_> = owners.iter().filter_map(|block| {
+                block.containers.iter().rev()
+                    .find(|member| member.container.kind == super::ContainerKind::ListItem)
+                    .map(|member| member.container.id)
+            }).collect();
+            for block in self.projection().blocks_for_region(&region.old_formatted) {
+                if !owners.iter().any(|owner| owner.id == block.id)
+                    && !block.containers.iter().any(|member| items.contains(&member.container.id)) {
+                    continue;
+                }
+                let Some(start) = self.projection().hard_line_at_offset(block.range.start) else { continue; };
+                let Some(end) = self.projection().hard_line_at_offset(block.range.end) else { continue; };
+                affected_rows.start = affected_rows.start.min(start);
+                affected_rows.end = affected_rows.end.max(end + 1);
+            }
+        }
         // Rows after the edited rows move by the number of breaks it adds.
         let delta = self.markdown_source_row_delta(edits)?;
         let new_line = |line: usize| {
@@ -5693,7 +5721,7 @@ impl Document {
             }
         }
         for line in region.hard_lines.clone() {
-            if (first_edited..=last_edited).contains(&line) {
+            if affected_rows.contains(&line) {
                 continue;
             }
             let (Some(old_row), Some(new_row)) = (
@@ -6365,7 +6393,10 @@ impl Document {
             }
         }
 
-        let mut source_lines = if self.state().source_hard_lines.len()
+        // Equal row counts do not establish a Markdown mapping: paragraph
+        // separators can hide source rows while inline <br> creates others.
+        let mut source_lines = if !self.format().is_markdown()
+            && self.state().source_hard_lines.len()
             == self.projection().hard_line_count()
         {
             hard_lines.clone()

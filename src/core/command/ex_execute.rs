@@ -3464,10 +3464,10 @@ mod tests {
             copied.source_bytes(),
             b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
         );
-        assert_eq!(copied.text(), "H\n  one\ntwo\ntail\nH\n  one");
+        assert_eq!(copied.text(), "H\none\ntwo\ntail\nH\none");
         assert_eq!(
             copied_outcome.navigation,
-            Some(ExNavigation::TextOffset("H\n  one\ntwo\ntail\nH\n  ".len()))
+            Some(ExNavigation::TextOffset("H\none\ntwo\ntail\nH\n".len()))
         );
         assert_eq!(
             copied_outcome
@@ -3495,10 +3495,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(moved.source_bytes(), b"_two_\n\ntail\n\n# H\n\n  **one**");
-        assert_eq!(moved.text(), "two\ntail\nH\n  one");
+        assert_eq!(moved.text(), "two\ntail\nH\none");
         assert_eq!(
             moved_outcome.navigation,
-            Some(ExNavigation::TextOffset("two\ntail\nH\n  ".len()))
+            Some(ExNavigation::TextOffset("two\ntail\nH\n".len()))
         );
         assert_eq!(
             moved_outcome

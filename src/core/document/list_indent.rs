@@ -325,6 +325,7 @@ fn markdown_patches(
     target: &Targets,
     unindent: bool,
 ) -> Result<Vec<SourcePatch>, DocumentError> {
+    let original = input;
     let quotes = super::super::markdown_quotes::classify(input);
     let stripped = super::super::markdown_quotes::strip(input, &quotes);
     let input = &stripped;
@@ -367,11 +368,23 @@ fn markdown_patches(
         let context = contexts[reference_line]
             .as_ref()
             .ok_or(DocumentError::AmbiguousProjection)?;
-        input.text[lines[reference_line].start..context.content_start]
-            .bytes()
-            .fold(0usize, |column, byte| {
+        // Tabs advance from the physical source column, including quote
+        // markers. Removing those prefixes before counting changes the list
+        // padding and can make the intended child a lazy prose continuation.
+        let source = converter
+            .source_range(context.content_start..context.content_start)
+            .start;
+        let at = original
+            .units
+            .get(original.units.partition_point(|unit| unit.source.start < source))
+            .map_or(original.text.len(), |unit| unit.normalized.start);
+        let physical_columns = |range: Range<usize>| {
+            original.text[range].bytes().fold(0usize, |column, byte| {
                 column + if byte == b'\t' { 4 - column % 4 } else { 1 }
             })
+        };
+        physical_columns(quotes[reference_line].range.start..at)
+            - physical_columns(quotes[reference_line].range.start..quotes[reference_line].content_start)
     };
     let delta = if unindent {
         original_indent.checked_sub(desired_indent)

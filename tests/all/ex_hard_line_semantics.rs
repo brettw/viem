@@ -209,7 +209,7 @@ fn command_line_markdown_transfer_targets_last_copied_line_first_nonblank() {
         document.source_bytes(),
         b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
     );
-    assert_eq!(commands.cursor(), "H\n  one\ntwo\ntail\nH\n  ".len());
+    assert_eq!(commands.cursor(), "H\none\ntwo\ntail\nH\n".len());
 }
 
 #[test]

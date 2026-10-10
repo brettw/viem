@@ -281,7 +281,7 @@ fn typing_before_an_indented_setext_neighbor_matches_reopening() {
         assert_eq!(document.text(), expected);
         assert_eq!(
             document.source_bytes(),
-            b"# Heading\n    foo\nHeading\n------\nx    foo\n\n----\n"
+            b"# Heading\n    foo\nHeading\n------\n    xfoo\n----\n"
         );
         assert_reopened(&document);
     }

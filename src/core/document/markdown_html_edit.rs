@@ -205,7 +205,11 @@ impl Document {
         if regions.is_empty() || uncovered_grammar {
             return Ok(None);
         }
-        let base = self.translate_source_edits(edits.iter().map(|edit| (edit, None)))?;
+        let mut base = self.translate_source_edits(edits.iter().map(|edit| (edit, None)))?;
+        // Literal comment edits publish explicit patches, so preserve their
+        // adjacent visible whitespace before the ordinary translation path
+        // is bypassed. A newly opened paragraph must retain its old spaces.
+        markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, &mut base)?;
         if let Ok(prepared) =
             self.prepare_text_edits_with_patches(edits.to_vec(), Some(base.clone()))
         {
@@ -326,6 +330,7 @@ impl Document {
                 ));
             }
         }
+        markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, &mut patches)?;
         self.prepare_text_edits_with_patches(edits.to_vec(), Some(patches))
             .map(Some)
     }
@@ -345,6 +350,12 @@ impl Document {
                     .any(|block| block.markdown_html)
             })
         {
+            return Ok(None);
+        }
+        // Empty rule paragraphs need their format-owned tag replacement;
+        // inserting prose immediately after hr would retain an extra rule.
+        if edits.iter().any(|edit| self.projection().blocks_for_region(&edit.range).iter()
+            .any(|block| block.thematic_break && block.range == edit.range)) {
             return Ok(None);
         }
         // Comments and literal reference syntax retain their exact spelling.

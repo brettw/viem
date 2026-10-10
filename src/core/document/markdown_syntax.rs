@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Clone, Debug)]
 pub(super) enum InlineKind {
-    Emphasis, Strong, Strike, Reference, Autolink, Html,
+    Emphasis, Strong, Strike, Reference, Autolink, Html, Link,
     Image { destination: String, text: String, inline: bool },
 }
 #[derive(Clone, Debug)]
@@ -21,7 +21,7 @@ pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTr
     let source = format!("x {}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
     let mut events=Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter();
-    while let Some((event, span)) = events.next() {
+    while let Some((event, mut span)) = events.next() {
         if span.start < 2 || span.end > range.len() + 2 { continue; }
         let raw = &source[span.clone()];
         let (kind, padding) = match event {
@@ -29,6 +29,11 @@ pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTr
             Event::Start(Tag::Strong) => (InlineKind::Strong, 2),
             Event::Start(Tag::Strikethrough) => (InlineKind::Strike, raw.bytes().take_while(|b| *b == b'~').count().min(2)),
             Event::Start(Tag::Image { dest_url, link_type, .. }) => {
+                // pulldown's collapsed-reference interval ends at the label;
+                // the consumed empty suffix still belongs to the image.
+                if link_type == LinkType::Collapsed && source[span.end..].starts_with("[]") {
+                    span.end += 2;
+                }
                 let mut alt = String::new();
                 let mut depth=1;
                 for (event,_) in events.by_ref() {
@@ -43,7 +48,14 @@ pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTr
                 (InlineKind::Image { destination: dest_url.into_string(), text: alt, inline: link_type == LinkType::Inline }, 0)
             },
             Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. }) => (InlineKind::Autolink, 1),
-            Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => continue,
+            Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => {
+                let Some(label_end) = super::links::markdown_label_end(&source, span.start, span.end) else { continue; };
+                let start = range.start + span.start - 2;
+                let end = range.start + span.end - 2;
+                result.insert(start, Inline { range: start..end,
+                    inner: start + 1..range.start + label_end - 2, kind: InlineKind::Link });
+                continue;
+            },
             Event::Start(Tag::Link { .. }) => (InlineKind::Reference, 0),
             Event::InlineHtml(_) => (InlineKind::Html, 0),
             _ => continue,
@@ -92,10 +104,13 @@ pub(super) fn autolink(text: &str, at: usize, end: usize) -> Option<(usize, Stri
     if url {
         if previous.is_some_and(|c| !c.is_whitespace() && !matches!(c, '*' | '_' | '~' | '(')) { return None; }
         let mut length = tail.find(|c: char| c.is_whitespace() || c == '<').unwrap_or(tail.len());
+        let mut excess_closes = tail[..length].bytes().fold(0isize, |balance, byte| {
+            balance + isize::from(byte == b')') - isize::from(byte == b'(')
+        });
         loop {
             let value = &tail[..length];
             if value.ends_with(['?', '!', '.', ',', ':', '*', '_', '~']) { length -= 1; continue; }
-            if value.ends_with(')') && value.bytes().filter(|c| *c == b')').count() > value.bytes().filter(|c| *c == b'(').count() { length -= 1; continue; }
+            if value.ends_with(')') && excess_closes > 0 { length -= 1; excess_closes -= 1; continue; }
             if value.ends_with(';') {
                 if let Some(amp) = value.rfind('&').filter(|amp| value[*amp + 1..length - 1].bytes().all(|c| c.is_ascii_alphanumeric())) { length = amp; continue; }
             }
@@ -114,7 +129,7 @@ pub(super) fn autolink(text: &str, at: usize, end: usize) -> Option<(usize, Stri
     let mut length = domain.bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')).count();
     while domain[..length].ends_with('.') { length -= 1; }
     let domain = &domain[..length];
-    if !domain.contains('.') || !domain.ends_with(|c: char| c.is_ascii_alphabetic()) || domain.contains('_') { return None; }
+    if !domain.contains('.') || domain.ends_with(['-', '_']) || domain.split('.').any(str::is_empty) { return None; }
     let finish = local + 1 + length;
     Some((at + finish, format!("mailto:{}", &tail[..finish])))
 }
@@ -152,6 +167,11 @@ pub(super) struct CodeSyntax {
 }
 #[derive(Default)]
 pub(super) struct Blocks {
+    pub paragraphs: Vec<Range<usize>>,
+    pub soft_breaks: Vec<Range<usize>>,
+    pub hard_breaks: Vec<Range<usize>>,
+    pub inline_code: Vec<Range<usize>>,
+    pub inline_links: Vec<Range<usize>>,
     pub blocks: Vec<BlockSyntax>,
     pub containers: Vec<Container>,
     pub owners: Vec<super::containers::SourceContainer>,
@@ -174,6 +194,14 @@ impl Blocks {
         let mut active_code = None;
         for (event, range) in parser.into_offset_iter() {
             if matches!(event, Event::InlineHtml(_)) { result.inline_html.push(range.clone()); }
+            match &event {
+                Event::Start(Tag::Paragraph) => result.paragraphs.push(range.clone()),
+                Event::SoftBreak => result.soft_breaks.push(range.clone()),
+                Event::HardBreak => result.hard_breaks.push(range.clone()),
+                Event::Code(_) => result.inline_code.push(range.clone()),
+                Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => result.inline_links.push(range.clone()),
+                _ => {}
+            }
             match event {
                 Event::Start(Tag::BlockQuote(_)) => {
                     quotes += 1;
@@ -280,12 +308,21 @@ impl Blocks {
         for container in &mut self.containers { container.range = at(container.range.start)..at(container.range.end); }
         for range in &mut self.definitions { *range = at(range.start)..at(range.end); }
         for range in &mut self.inline_html { *range = at(range.start)..at(range.end); }
+        for ranges in [&mut self.paragraphs, &mut self.soft_breaks, &mut self.hard_breaks,
+            &mut self.inline_code, &mut self.inline_links] {
+            for range in ranges { *range = at(range.start)..at(range.end); }
+        }
         self
     }
 
     pub(super) fn recognizes_inline_html(&self, source: &Range<usize>) -> bool {
         self.inline_html.binary_search_by_key(&source.start, |range| range.start).ok()
             .is_some_and(|index| self.inline_html[index] == *source)
+    }
+
+    pub(super) fn recognizes_inline_link(&self, source: &Range<usize>) -> bool {
+        self.inline_links.binary_search_by_key(&source.start, |range| range.start).ok()
+            .is_some_and(|index| self.inline_links[index] == *source)
     }
 }
 

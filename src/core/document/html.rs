@@ -500,6 +500,7 @@ fn emit_block_boundary(builder: &mut Builder<'_>, stack: &[Frame], range: Range<
     } else {
         builder.paragraph_break(range);
     }
+    builder.thematic_break = false;
 }
 
 /// Import a clipboard fragment with conventional elements and inline CSS.
@@ -567,6 +568,7 @@ fn project_tokens(
     let mut pending_space_named = None;
     let mut pending_space_is_segment_break = false;
     let mut paragraph_seen = false;
+    let mut ignored_pre_end = 0;
     let container_items = list_container_items(&tokens);
     let atomic_extents = if tokens
         .iter()
@@ -694,6 +696,33 @@ fn project_tokens(
                             }
                         }
                     }
+                    continue;
+                }
+                if tag.name == "hr" && !stack.last().unwrap().hidden && !stack.last().unwrap().opaque {
+                    pending_space = None;
+                    if let Some(range) = pending_break.take() {
+                        emit_block_boundary(&mut builder, &stack, range);
+                    }
+                    if !builder.paragraph_is_empty() {
+                        builder.paragraph_break(token.range.start..token.range.start);
+                    }
+                    let frame = stack.last().unwrap();
+                    builder.kind = BlockKind::Paragraph;
+                    builder.paragraph = frame.paragraph.clone();
+                    builder.paragraph_style = None;
+                    builder.defaults = frame.character.clone();
+                    builder.named_character = None;
+                    builder.thematic_break = true;
+                    builder.empty_boundary_at(token.range.end);
+                    builder.provenance.push(super::ProvenanceSpan {
+                        formatted: builder.text.len()..builder.text.len(),
+                        source: builder.source_range(token.range.clone()),
+                    });
+                    // The rule has a real editable empty paragraph. Its
+                    // following boundary appears only if later content needs
+                    // it, just as a terminal Markdown rule has no extra row.
+                    pending_break = Some(token.range.end..token.range.end);
+                    paragraph_seen = true;
                     continue;
                 }
                 let mut frame = stack.last().cloned().unwrap_or_default();
@@ -833,7 +862,7 @@ fn project_tokens(
                 match tag.name.as_str() {
                     "b" | "strong" => frame.character.bold = Some(true),
                     "i" | "em" => frame.character.slant = Some(FontSlant::Italic),
-                    "u" => frame.character.underline = Some(true),
+                    "u" | "ins" => frame.character.underline = Some(true),
                     "sup" => { frame.character.superscript = Some(true); frame.character.subscript = Some(false); }
                     "sub" => { frame.character.subscript = Some(true); frame.character.superscript = Some(false); }
                     "s" | "strike" | "del" => frame.character.strikethrough = Some(true),
@@ -858,7 +887,7 @@ fn project_tokens(
                     frame.preserve_whitespace = true;
                     frame.preserve_newlines = true;
                     frame.paragraph_style = Some("Code Block".into());
-                } else if tag.name == "code" {
+                } else if matches!(tag.name.as_str(), "code" | "kbd" | "samp" | "tt") {
                     frame.named_character = Some("Code".into());
                 } else if containing_item.is_some()
                     && tag.name.len() == 2
@@ -972,6 +1001,7 @@ fn project_tokens(
                             .map_or(0, |(_, length)| length)
                     };
                     inner_start += ignored;
+                    ignored_pre_end = inner_start;
                 }
                 if paragraph_element && !inside_pre && !frame.hidden && !frame.opaque {
                     if let Some(range) = pending_break.take() {
@@ -998,7 +1028,11 @@ fn project_tokens(
                 if frame.hidden || frame.opaque {
                     continue;
                 }
-                let mut at = token.range.start;
+                // The ignored initial pre LF is source trivia, including a
+                // numeric reference spelling. Clipboard tree construction
+                // already omits it; lexical Markdown tokens need the same
+                // omission before emitting their visible text.
+                let mut at = token.range.start.max(ignored_pre_end);
                 while at < token.range.end {
                     let (value, consumed) = reference(&input.text[at..token.range.end], false)
                         .unwrap_or_else(|| {
@@ -1083,6 +1117,22 @@ fn project_tokens(
     result.install_source_containers(owners);
     super::links::style_html_links(&mut result, input, &lexical_tokens);
     result
+}
+
+/// CommonMark references require a semicolon and bounded numeric spellings;
+/// HTML tokenization deliberately retains its more permissive recovery rules.
+pub(super) fn markdown_reference(input: &str) -> Option<(String, usize)> {
+    let (value, consumed) = reference(input, false)?;
+    let spelling = input.get(..consumed)?;
+    if !spelling.ends_with(';') { return None; }
+    if let Some(numeric) = spelling.strip_prefix("&#") {
+        let digits = numeric.strip_suffix(';')?;
+        let (digits, maximum) = if digits.starts_with(['x', 'X']) {
+            (&digits[1..], 6)
+        } else { (digits, 7) };
+        if digits.len() > maximum { return None; }
+    }
+    Some((value, consumed))
 }
 
 pub(super) fn reference(input: &str, attribute: bool) -> Option<(String, usize)> {

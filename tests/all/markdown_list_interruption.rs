@@ -211,3 +211,61 @@ fn unindent_repairs_retained_numbered_children_with_original_encoding_and_quotes
         assert_eq!(document.source_bytes(), edited);
     }
 }
+
+#[test]
+fn grammar_owned_list_markers_preserve_literal_continuations_and_nested_items() {
+    let mut failures = Vec::new();
+    for (source, expected, levels) in [
+        ("foo\n*\n\nfoo\n1.\n", "foo *\nfoo 1.", vec![]),
+        ("*foo bar\n*\n", "*foo bar *", vec![]),
+        (";\n*\n%\n", "; * %", vec![]),
+        (";\n* \n%\n", "; * %", vec![]),
+        ("- a\n - b\n  - c\n   - d\n    - e\n", "a\nb\nc\nd - e", vec![0, 0, 0, 0]),
+        ("1. a\n\n  2. b\n\n    3. c\n", "a\nb\n3. c", vec![0, 0]),
+        ("1.\n  Text after.\n", "\nText after.", vec![0]),
+        ("-\n  foo\n", "foo", vec![0]),
+        ("- ```\n  code\n- next\n", "code\nnext", vec![0, 0]),
+        ("- ```\na\n```\ntail", "\na\ntail", vec![0]),
+        ("<div>\n```\n</div>\n\n- a\n- b\n", "```\na\nb", vec![0, 0]),
+        ("Foo\n-\nbar\n", "Foo\nbar", vec![]),
+        ("- - foo\n", "foo", vec![1]),
+        ("1. - 2. foo\n", "foo", vec![2]),
+        ("- *foo\n  - - \n  baz*\n", "*foo\n\nbaz*", vec![0, 2, 0]),
+        (" - >*\n", "", vec![1]),
+        ("- a\n  > - b\n  >   c\n", "a\nb c", vec![0, 1]),
+    ] {
+        let document = open(source.as_bytes(), Format::Markdown);
+        if document.text() != expected { failures.push(format!("{source:?}: text {:?}, expected {expected:?}", document.text())); }
+        let actual = document.projection().blocks().iter().filter_map(|block| {
+            if let BlockKind::ListItem { level, .. } = block.kind { Some(level) } else { None }
+        }).collect::<Vec<_>>();
+        if actual != levels { failures.push(format!("{source:?}: levels {actual:?}, expected {levels:?}")); }
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn grammar_owned_quote_context_keeps_lazy_prose_and_retires_at_real_blocks() {
+    for (source, expected, depths) in [
+        ("> foo\nbar\n===\n", "foo bar ===", vec![1]),
+        ("> a\n#\tfoo", "a\nfoo", vec![1, 0]),
+        ("> a\n2. b", "a\nb", vec![1, 0]),
+        ("- ```\n  code\n  ```\n\n> quote\n", "code\nquote", vec![0, 1]),
+    ] {
+        let document = open(source.as_bytes(), Format::Markdown);
+        assert_eq!(document.text(), expected, "{source:?}");
+        assert_eq!(document.projection().blocks().iter().map(|block| block.quote_depth).collect::<Vec<_>>(), depths, "{source:?}");
+        let at = document.text().len() - 1;
+        let mut edited = open(source.as_bytes(), Format::Markdown);
+        edited.replace(at..at, "X").unwrap();
+        let saved = edited.source_bytes();
+        let fresh = open(&saved, Format::Markdown);
+        assert_eq!(edited.text(), fresh.text(), "{source:?}");
+        assert_eq!(edited.projection().blocks().iter().map(|block| (&block.kind, block.quote_depth)).collect::<Vec<_>>(), fresh.projection().blocks().iter().map(|block| (&block.kind, block.quote_depth)).collect::<Vec<_>>());
+        assert!(edited.undo());
+        assert_eq!(edited.source_bytes(), source.as_bytes());
+        assert!(edited.redo());
+        assert_eq!(edited.source_bytes(), saved);
+    }
+}

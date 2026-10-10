@@ -237,8 +237,10 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
-            if self.preserve_edited_reference_rows(edits, patches)? {
+            if self.preserve_edited_reference_content(edits, patches)? {
+                markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
                 markdown_block_styles::preserve_retained_literals(self, edits, patches)?;
+                self.repair_markdown_reference_spaces(edits, patches)?;
                 return Ok(());
             }
             if edits.iter().all(|edit|self.projection().table_at(edit.range.start).is_some_and(|table|edit.range==table.range)) {return Ok(());}

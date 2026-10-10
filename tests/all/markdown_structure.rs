@@ -95,7 +95,6 @@ fn typing_in_bare_empty_list_item_retains_its_marker() {
         "1.\n  Text after.\n",
         "-\n  foo\n",
         "-\nparagraph",
-        "text\n1.\nnext",
         "*\n      <div>\n     <div>\n",
         "* \n      <div>\n     <div>\n",
     ] {
@@ -148,8 +147,8 @@ fn typing_in_empty_eof_heading_stays_inside_heading() {
 #[test]
 fn bare_list_marker_typing_through_document_edits_matches_reopened_source() {
     for (source, at, expected) in [
-        ("-\nparagraph", 0, "X paragraph"),
-        ("text\n1.\nnext", 5, "text\nX next"),
+        ("-\nparagraph", 0, "X\nparagraph"),
+        ("text\n1.\nnext", 5, "text X1. next"),
     ] {
         let mut doc = open(source);
         doc.replace(at..at, "X").unwrap();
@@ -721,7 +720,7 @@ fn decorated_labels_are_absent_from_text_and_empty_item_boundaries_keep_source()
         Encoding::Utf16Le,
         Encoding::Utf16Be,
     ] {
-        for source in ["+ ", "01) ", "- First\n- ", "- First\n  + "] {
+        for source in ["+ ", "01) ", "- First\n- ", "- First\n\n  + "] {
             let bytes = encode(encoding, source);
             let mut document =
                 Document::from_bytes(bytes.clone(), encoding, Format::Markdown).unwrap();

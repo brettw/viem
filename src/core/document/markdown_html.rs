@@ -12,6 +12,21 @@ fn allowed(name: &str) -> bool {
     matches!(name, "a" | "abbr" | "b" | "bdi" | "bdo" | "blockquote" | "br" | "cite" | "code" | "del" | "details" | "div" | "dl" | "dt" | "dd" | "em" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "hr" | "i" | "ins" | "kbd" | "li" | "mark" | "ol" | "p" | "pre" | "q" | "s" | "samp" | "small" | "span" | "strike" | "strong" | "summary" | "tt" | "u" | "sup" | "sub" | "ul" | "var" | "wbr")
 }
 
+/// Whether the admitted passive HTML still has a preformatted owner at this
+/// boundary. Closing an ancestor retires nested scopes exactly as projection
+/// does; unsupported tags remain literal and cannot change that ownership.
+pub(super) fn open_pre(source: &str) -> bool {
+    let mut stack = Vec::new();
+    for token in html::tokenize(source) {
+        let TokenKind::Tag(tag) = token.kind else { continue; };
+        if !allowed(&tag.name) { continue; }
+        if tag.end {
+            if let Some(index) = stack.iter().rposition(|name| name == &tag.name) { stack.truncate(index); }
+        } else if !html::void(&tag.name) { stack.push(tag.name); }
+    }
+    stack.iter().any(|name| name == "pre")
+}
+
 pub(super) fn image_only_html(source: &str) -> bool {
     html::tokenize(source).into_iter().all(|token| match token.kind {
         TokenKind::Tag(tag) => allowed(&tag.name) && (!html::block(&tag.name) || matches!(tag.name.as_str(), "p" | "div")),
@@ -83,6 +98,14 @@ impl MarkdownBuilder<'_> {
         }
         let output = self.output.len();
         let source = self.unit_at(range.start).unwrap().source.start..self.unit_at(range.end - 1).unwrap().source.end;
+        // Source quote prefixes remain literal inside a multiline tag. Its
+        // metadata was already parsed without those prefixes by the owning
+        // paragraph; parsing the raw spelling again would duplicate it or
+        // include quote markers in an attribute value.
+        if self.preserve_markers && self.inline_images.last().is_some_and(|image| image.source == source) {
+            self.emit_range(range.start, range.end);
+            return;
+        }
         if let Some(mut image) = html::image_metadata(tag, output..output, source.clone(), self.preserve_markers)
             .filter(|_| self.source_syntax.recognizes_inline_html(&source)) {
             if self.preserve_markers { self.emit_range(range.start, range.end); } else {
@@ -97,6 +120,23 @@ impl MarkdownBuilder<'_> {
             let start = self.output.len();
             self.emit_range(range.start, range.end);
             if tag.name == "img" { self.styles.push(StyleSpan { range: start..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) }); }
+            return;
+        }
+        if !tag.end && tag.name == "hr" && !self.preserve_markers {
+            if self.output.len() > self.inline_paragraph_start && !self.output.ends_with('\n') {
+                let at = self.output.len();
+                self.inline_hard_breaks.push(at);
+                self.output.push('\n');
+                self.provenance.push(ProvenanceSpan { formatted: at..at + 1, source: source.start..source.start });
+            }
+            let at = self.output.len();
+            self.inline_rules.push(at);
+            self.provenance.push(ProvenanceSpan { formatted: at..at, source: source.clone() });
+            self.provenance.push(ProvenanceSpan { formatted: at..at, source: source.end..source.end });
+            self.inline_hard_breaks.push(at);
+            self.output.push('\n');
+            self.provenance.push(ProvenanceSpan { formatted: at..at + 1, source: source.end..source.end });
+            self.inline_paragraph_start = self.output.len();
             return;
         }
         if tag.end {

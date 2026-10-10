@@ -150,8 +150,9 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
    `<textarea>`, and the
    [GitHub markup implementation](https://github.com/github/markup/blob/master/lib/github/markup/markdown.rb)
    enables that filter. Their literal appearance alone is not a missing
-   rendering feature. Supported `<pre>`, inline styles and `<hr>` have
-   projection defects tracked in [BUGS.md](BUGS.md), bugs 51–53 and 59.
+   rendering feature. Supported `<pre>`, inline styles and `<hr>` retain
+   their passive semantics, including literal preformatted whitespace and
+   thematic-rule paragraph boundaries.
 8. **Character references in the C1 range.** Numeric references from 0x80
    to 0x9F decode through Windows-1252, as in HTML5, so `&#x80;` shows `€`.
    GitHub's cmark-gfm decodes them as the C1 control code points. The current
@@ -190,9 +191,9 @@ Markdown source, caret, deletion, replacement, formatting and layout audits.
 The selected audit fixtures are covered; the full GFM example corpus and
 GitHub's HTML sanitizer are broader than those fixtures. An October 9, 2026
 run of the CommonMark spec examples, the GFM examples and pulldown-cmark's
-regression suite against both views found the parsing and editing defects
-listed in [BUGS.md](BUGS.md); fix those before treating the corresponding
-constructs as conforming. Continue differential
+regression suite against both views found parsing and editing defects recorded
+in [BUGS.md](BUGS.md). The numbered parser reports now have focused regression
+coverage; that does not establish full-corpus conformance. Continue differential
 coverage of malformed/container nesting, tabs at every depth, Unicode
 punctuation, autolink edge cases, HTML recovery and allowed-tag presentation.
 Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
@@ -215,9 +216,7 @@ Natural paragraph direction and ordinary mixed-direction table content retain
 their direction across slices; carrying explicit control stacks is separate
 typography work.
 
-Reference-sensitive source edits are intended to use a complete parse so
+Reference-sensitive source edits use a complete parse so
 changes to remote definitions cannot leave stale styling. Ordinary prose/list
-edits retain regional projection. Some edits still miss that path, leaving
-stale reference styling and presentation (see [BUGS.md](BUGS.md), bug 10). A
-cached definition dependency index is a future performance improvement for
-very large reference-heavy files.
+edits retain regional projection. A cached definition dependency index is a
+future performance improvement for very large reference-heavy files.

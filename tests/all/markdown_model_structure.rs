@@ -143,7 +143,7 @@ fn heading_body_whitespace_stays_visible_inside_list_owners() {
             " ",
             "- _t\n  # &#32;test\n  t_\n",
         ),
-        ("* > foo", 0, " ", "* >  foo"),
+        ("* > foo", 0, " ", "* > &#32;foo"),
     ] {
         assert_model_edit(source, TextEdit::new(at..at, text), expected_source);
     }
@@ -192,7 +192,7 @@ fn empty_item_typing_preserves_its_break_and_unrelated_caret_seeds() {
     assert_model_edit(
         "-   \n  foo\n",
         TextEdit::new(0..0, "x"),
-        "-   x\\\n  foo\n",
+        "-   \n  xfoo\n",
     );
     assert_model_edit(
         "- foo\n-   \n- bar\n",

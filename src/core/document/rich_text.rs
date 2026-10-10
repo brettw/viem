@@ -20,6 +20,7 @@ pub(super) struct Builder<'a> {
     pub style_sheet: StyleSheet,
     pub paragraph_style: Option<super::StyleId>,
     pub named_character: Option<super::StyleId>,
+    pub thematic_break: bool,
     line_start: usize,
     paragraph_start: usize,
     paragraphs: Vec<Block>,
@@ -42,6 +43,7 @@ impl<'a> Builder<'a> {
             style_sheet: StyleSheet::default(),
             paragraph_style: None,
             named_character: None,
+            thematic_break: false,
             line_start: 0,
             paragraph_start: 0,
             paragraphs: Vec::new(),
@@ -152,6 +154,9 @@ impl<'a> Builder<'a> {
     pub fn line_is_empty(&self) -> bool {
         self.text.len() == self.line_start
     }
+    pub fn paragraph_is_empty(&self) -> bool {
+        self.text.len() == self.paragraph_start
+    }
     pub fn empty_boundary_at(&mut self, input_at: usize) {
         if self.line_is_empty() {
             if let Some(index) = self.pending_empty_seed.take() {
@@ -244,6 +249,7 @@ impl<'a> Builder<'a> {
             style,
             super::BlockDirectFormatting::shared(self.paragraph.clone(), self.defaults.clone()),
         );
+        block.thematic_break = self.thematic_break;
         if let Some((indent, unindent)) = self
             .list_indent_support
             .filter(|_| matches!(self.kind, BlockKind::ListItem { .. }))

@@ -568,7 +568,18 @@ impl Document {
                 )];
                 return self.prepare_markdown_source_syntax_edit(edit, patches);
             }
-            return self.prepare_text_edits_with_patches(vec![edit], None);
+            let source_at = self
+                .projection()
+                .source_insertion_point(at, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let syntax = spell_logical_breaks(&edit.replacement, self.file_format());
+            return self.prepare_markdown_source_syntax_edit(
+                edit,
+                vec![SourcePatch::primary(
+                    source_at..source_at,
+                    self.encoding().encode_fragment(&syntax)?,
+                )],
+            );
         }
         let source = self
             .projection()
@@ -1104,6 +1115,24 @@ impl Document {
             replacement = prefix;
         }
         let mut patches = vec![SourcePatch::primary(range, replacement)];
+        if at == block.range.end {
+            let next = self.projection().blocks_for_region(&(at + 1..at + 1))
+                .into_iter().find(|next| next.range.start == at + 1);
+            if next.is_some_and(|next| matches!(next.kind, BlockKind::ListItem { item_start: false, .. })) {
+                // A blank line after a newly empty marker ends that item in
+                // GFM. Its following body already supplies the next paragraph,
+                // so retain one ending and keep that body within the new item.
+                if let Some(row) = self.state().source_hard_lines.line_at_offset(source_at)
+                    .and_then(|index| self.state().source_hard_lines.get(index + 1)) {
+                    let bytes = self.state().source.bytes_in(row.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let decoded = self.encoding().decode_region(&bytes, row.start)?;
+                    if decoded.text.trim_matches(['\r', '\n']).is_empty() {
+                        patches.push(SourcePatch::primary(row, Vec::new()));
+                    }
+                }
+            }
+        }
         self.preserve_markdown_edit_boundaries(
             std::slice::from_ref(&edit),
             std::iter::once(&edit.range),

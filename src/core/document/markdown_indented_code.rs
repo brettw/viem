@@ -1,7 +1,6 @@
 //! GFM indented code classification, before paragraph whitespace is folded.
 //! Source coordinates keep the same ownership in both Markdown presentations.
 use super::line_endings::NormalizedText;
-use super::projection::{markdown_block_prefix, markdown_fence, BlockKind};
 use std::ops::Range;
 
 #[derive(Clone, Debug)]
@@ -39,10 +38,13 @@ fn strip_indent_from(text: &str, target: usize, mut column: usize) -> Option<(us
 }
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
+    let syntax =
+        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input))
+            .to_source(input);
     let quotes = super::markdown_quotes::classify(input);
     let body = super::markdown_quotes::strip(input, &quotes);
     let lines = super::paragraph_flow::source_lines(&body);
-    let lists = super::markdown_blocks::classify(&body);
+    let lists = super::markdown_blocks::classify_with_syntax(&body, &syntax);
     let original = super::paragraph_flow::source_lines(input);
     let source_at = |input: &NormalizedText, at: usize| {
         input
@@ -59,36 +61,11 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
     };
     let mut result = Vec::new();
     let mut index = 0;
-    let mut prose = false;
-    let mut fence = None;
     while index < lines.len() {
         let line = &lines[index];
         let text = &body.text[line.clone()];
         let context = lists[index].as_ref();
-        if index > 0 && quotes[index].depth != quotes[index - 1].depth {
-            // A fence cannot survive the end of its quote container. The next
-            // line can independently begin an indented code block.
-            fence = None;
-        }
-        if index > 0
-            && (quotes[index].depth != quotes[index - 1].depth
-                || context
-                    .zip(lists[index - 1].as_ref())
-                    .is_some_and(|(a, b)| a.paragraph != b.paragraph))
-        {
-            prose = false;
-        }
-        if let Some((delimiter, width)) = fence {
-            let prefix = context.map_or(0, |line| line.content_start - lines[index].start);
-            if super::markdown_syntax::fence_close(&text[prefix..], delimiter, width) {
-                fence = None;
-            }
-            index += 1;
-            prose = false;
-            continue;
-        }
         if text.trim().is_empty() {
-            prose = false;
             index += 1;
             continue;
         }
@@ -100,12 +77,27 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
             base + 4,
             if marker.is_some() { base } else { 0 },
         );
-        if let Some((skip, padding)) = indent.filter(|_| !prose || marker.is_some()) {
+        let source_start = source_at(input, original[index].start);
+        let source_end = source_at(input, original[index].end);
+        let grammar_code = syntax
+            .code
+            .get(
+                syntax
+                    .code
+                    .partition_point(|code| code.range.end <= source_start),
+            )
+            .filter(|code| {
+                !code.fenced && code.range.start <= source_end && source_start < code.range.end
+            });
+        if let Some((skip, padding)) = indent.filter(|_| grammar_code.is_some()) {
             let depth = quotes[index].depth;
             let mut code_lines = Vec::new();
             let mut next = index;
             let mut last_nonblank = index;
-            while next < lines.len() && quotes[next].depth == depth {
+            while next < lines.len()
+                && quotes[next].depth == depth
+                && source_at(input, original[next].start) < grammar_code.unwrap().range.end
+            {
                 let row = &lines[next];
                 let raw = &body.text[row.clone()];
                 let blank = raw.trim().is_empty();
@@ -145,16 +137,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
                 container_indent: base,
             });
             index = last_nonblank + 1;
-            prose = false;
             continue;
-        }
-        let semantic = context.map_or(text, |context| &body.text[context.content_start..line.end]);
-        if let Some(open) = markdown_fence(semantic) {
-            fence = Some(open);
-            prose = false;
-        } else {
-            prose = !semantic.trim().is_empty()
-                && markdown_block_prefix(semantic, 0, semantic.len()).1 == BlockKind::Paragraph;
         }
         index += 1;
     }

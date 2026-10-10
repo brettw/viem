@@ -77,6 +77,33 @@ impl Document {
         {
             return Ok(None);
         }
+        // HTML rules retain their entire tag as an empty formatted contributor;
+        // Markdown rules retain only a caret seed. Their projected block owner
+        // also records whether replacement prose needs literal HTML spelling.
+        if let Some(source) = self.projection().provenance_touching(&edit.range).into_iter()
+            .find(|span| span.formatted == edit.range && !span.source.is_empty())
+            .map(|span| span.source)
+        {
+            let html_block = self.projection().blocks_for_region(&edit.range).iter()
+                .any(|block| block.thematic_break && block.markdown_html && block.range == edit.range);
+            let mut replacement = String::new();
+            if html_block {
+                for text in edit.replacement.split('\n') {
+                    replacement.push_str("<p>");
+                    replacement.push_str(&super::markdown_html_edit::literal_html(text, self.encoding()));
+                    replacement.push_str("</p>");
+                }
+            } else {
+                let ending = self.file_format().spelling();
+                if edit.range.start > 0 { replacement.push_str(ending); replacement.push_str(ending); }
+                for (index, text) in edit.replacement.split('\n').enumerate() {
+                    if index > 0 { replacement.push_str(ending); replacement.push_str(ending); }
+                    replacement.push_str(&self.escape_markdown_source_text(source.start, text)?);
+                }
+                if edit.range.end < self.text().len() { replacement.push_str(ending); replacement.push_str(ending); }
+            }
+            return Ok(Some(vec![SourcePatch::primary(source, self.encoding().encode_fragment(&replacement)?)]));
+        }
         let at = self
             .projection()
             .source_insertion_point(edit.range.start, true)
@@ -373,15 +400,14 @@ impl Document {
             }
             let indent = text[body..].bytes().take_while(|b| *b == b' ').count();
             let hashes = text[body + indent..].bytes().take_while(|b| *b == b'#').count();
-            if !(1..=6).contains(&hashes) {
-                continue;
-            }
-            let prefix = body + indent + hashes;
+            let heading = (1..=6).contains(&hashes);
+            let prefix = if heading { body + indent + hashes } else { body };
             let spaces = text[prefix..].bytes().take_while(|b| matches!(b, b' ' | b'\t')).count();
-            if spaces <= 1 {
+            let required = usize::from(heading);
+            if spaces <= required {
                 continue;
             }
-            let count = count.min(spaces - 1);
+            let count = count.min(spaces - required);
             let start = at
                 + self
                     .encoding()
@@ -419,35 +445,88 @@ impl Document {
         edits: &[TextEdit],
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
+        let mut references = Vec::new();
         let mut definitions = Vec::new();
         for edit in edits {
             // Joining at the end of a definition can make newly authored
             // whitespace part of its literal spelling as well.
             let region = edit.range.start.saturating_sub(1)..edit.range.end;
             for span in self.projection().style_spans_for_region(&region) {
-                if span.application == StyleApplication::Automatic("Markdown reference".into())
-                    && self.text()[span.range.clone()]
-                        .trim_start()
-                        .starts_with('[')
-                    && self.text()[span.range.clone()].contains("]:")
-                {
-                    if let Some(source) = self.projection().source_range(span.range) {
-                        definitions.push(source);
+                if span.application != StyleApplication::Automatic("Markdown reference".into()) {
+                    continue;
+                }
+                if let Some(source) = self.projection().source_range(span.range.clone()) {
+                    if self.text()[span.range.clone()].trim_start().starts_with('[')
+                        && self.text()[span.range].contains("]:") {
+                        definitions.push(source.clone());
                     }
+                    references.push(source);
                 }
             }
         }
-        if !definitions.is_empty() {
-            let entity = self.encoding().encode_fragment("&#32;")?;
-            for patch in patches {
-                if patch.replacement == entity
-                    && definitions.iter().any(|range| {
-                        range.start <= patch.range.start && patch.range.start <= range.end
-                    })
-                {
-                    patch.replacement = self.encoding().encode_fragment(" ")?;
+        let entity = self.encoding().encode_fragment("&#32;")?;
+        let space = self.encoding().encode_fragment(" ")?;
+        let targets = patches.iter().enumerate().filter_map(|(index, patch)| {
+            ((patch.replacement == space || patch.replacement == entity)
+                && references.iter().any(|range| range.start <= patch.range.start
+                    && patch.range.start <= range.end)).then_some(index)
+        }).collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        let mut ordered = patches.clone();
+        validate_source_patches(&mut ordered)?;
+        let candidate = apply_source_patches(&self.state().source, &ordered)?;
+        let input = normalize(&self.encoding().decode(&candidate.bytes())?, self.file_format());
+        let projected = super::super::projection::project(
+            &input, Format::Markdown, self.revision(), 0, candidate.len());
+        let mapper = super::super::rich_text::Builder::new(&input, self.revision());
+        let (_, candidate_definitions) = super::super::markdown_syntax::definitions(&input.text);
+        let candidate_definitions = candidate_definitions.into_iter()
+            .map(|range| mapper.source_range(range)).collect::<Vec<_>>();
+        let mut protect = Vec::new();
+        let mut retired = Vec::new();
+        for index in targets {
+            let patch = &patches[index];
+            let start = rebase_source_boundary(patch.range.start, &ordered, Association::BeforeInsertion)?;
+            let range = start..start + patch.replacement.len();
+            if patch.replacement == entity {
+                // Definition text is deliberately literal. An entity is
+                // needed only after its edited definition has become prose.
+                let literal = candidate_definitions.iter().any(|definition|
+                    definition.start <= range.start && range.end <= definition.end);
+                if !literal {
+                    continue;
+                }
+                if definitions.iter().any(|definition| definition.start <= patch.range.start
+                    && patch.range.end <= definition.end) {
+                    patches[index].replacement = space.clone();
+                    continue;
+                }
+            } else if projected.provenance_contained_in_source(&range).iter().any(|span| {
+                span.source.start <= range.start && range.end <= span.source.end
+                    && projected.text_tree().slice(span.formatted.clone()).as_deref() == Ok(" ")
+            }) {
+                continue;
+            }
+            protect.push(index);
+            // A trailing replacement can leave a valid shortened definition
+            // whose trailing space is trivia. Retire that one definition so
+            // the protected space has ordinary prose entity semantics.
+            for definition in &definitions {
+                let at = rebase_source_boundary(definition.start, &ordered, Association::BeforeInsertion)?;
+                if candidate_definitions.iter().any(|candidate| candidate.start <= at && at < candidate.end)
+                    && !ordered.iter().any(|patch| patch.range.start <= definition.start
+                        && definition.start < patch.range.end) {
+                    retired.push(definition.start);
                 }
             }
+        }
+        for index in protect { patches[index].replacement = entity.clone(); }
+        retired.sort_unstable();
+        retired.dedup();
+        for at in retired {
+            patches.push(SourcePatch::primary(at..at, self.encoding().encode_fragment("\\")?));
         }
         Ok(())
     }
