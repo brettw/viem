@@ -1,5 +1,5 @@
-//! Link recognition and on-demand destinations. This is an original parser for
-//! Markdown inline links; it shares Viem's passive HTML tokenizer and entities.
+//! Link recognition and on-demand destinations. Grammar-owned intervals select
+//! Markdown links; source-local parsing retains their editable delimiters.
 use super::html::TokenKind;
 use super::line_endings::NormalizedText;
 use super::*;
@@ -44,7 +44,7 @@ fn decode_destination(value: &str) -> String {
             result.push(bytes[at + 1] as char);
             at += 2;
         } else if bytes[at] == b'&' {
-            if let Some((text, count)) = super::html::reference(&value[at..], false) {
+            if let Some((text, count)) = super::html::markdown_reference(&value[at..]) {
                 result.push_str(&text);
                 at += count;
             } else {
@@ -107,11 +107,26 @@ pub(super) fn markdown_label_end(text: &str, start: usize, end: usize) -> Option
     if end > bytes.len() || bytes.get(start) != Some(&b'[') {
         return None;
     }
+    // Brackets inside a grammar-recognized HTML tag or angle autolink do
+    // not participate in the surrounding label's bracket balance.
+    let source = format!("x {}", &text[start..end]);
+    let atoms: Vec<_> = pulldown_cmark::Parser::new(&source).into_offset_iter()
+        .filter_map(|(event, range)| (range.start >= 2 && matches!(event,
+            pulldown_cmark::Event::InlineHtml(_) | pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+                link_type: pulldown_cmark::LinkType::Autolink | pulldown_cmark::LinkType::Email, ..
+            }))).then(|| start + range.start - 2..start + range.end - 2))
+        .collect();
+    let mut atom = 0;
     let mut at = start + 1;
     let mut depth = 1;
     let label_end = loop {
         if at >= end {
             return None;
+        }
+        while atom < atoms.len() && atoms[atom].end <= at { atom += 1; }
+        if let Some(range) = atoms.get(atom).filter(|range| range.start == at) {
+            at = range.end;
+            continue;
         }
         match bytes[at] {
             b'\\' if at + 1 < end && bytes[at + 1].is_ascii_punctuation() => {
@@ -228,6 +243,9 @@ fn markdown_bracket_at(text: &str, start: usize, end: usize, image: bool) -> Opt
         let close = if bytes[at] == b'(' { b')' } else { bytes[at] };
         at += 1;
         while at < end && bytes[at] != close {
+            if close == b')' && bytes[at] == b'(' {
+                return None;
+            }
             if bytes[at] == b'\\' && at + 1 < end && bytes[at + 1].is_ascii_punctuation() {
                 at += 1;
             }
@@ -508,10 +526,7 @@ impl Document {
                 None
             }
         };
-        for (at, _) in input.text.match_indices('[') {
-            let Some(link) = markdown_inline_at(&input.text, at, input.text.len()) else {
-                continue;
-            };
+        for link in markdown_links_in(&input.text, 0..input.text.len()) {
             let displayed = if self.format().is_source_view() {
                 &link.range
             } else {
@@ -640,51 +655,15 @@ impl Document {
     }
 }
 
-/// Scan one paragraph in source order, respecting the tighter binding of code.
-/// Used when a source view's physical-line parser cannot see a whole link.
+/// Recognize complete source constructs through the grammar, including the
+/// precedence of HTML, autolinks, code, and resolved reference links.
 pub(super) fn markdown_links_in(text: &str, range: Range<usize>) -> Vec<InlineLink> {
-    let bytes = text.as_bytes();
-    let mut at = range.start;
-    let mut links = Vec::new();
-    while at < range.end {
-        match bytes[at] {
-            b'\\' if at + 1 < range.end && bytes[at + 1].is_ascii_punctuation() => at += 2,
-            b'`' => {
-                let count = bytes[at..range.end]
-                    .iter()
-                    .take_while(|&&b| b == b'`')
-                    .count();
-                let mut scan = at + count;
-                let mut closing = None;
-                while scan < range.end {
-                    if bytes[scan] == b'`' {
-                        let run = bytes[scan..range.end]
-                            .iter()
-                            .take_while(|&&b| b == b'`')
-                            .count();
-                        if run == count {
-                            closing = Some(scan + run);
-                            break;
-                        }
-                        scan += run;
-                    } else {
-                        scan += 1;
-                    }
-                }
-                at = closing.unwrap_or(at + count);
-            }
-            b'[' => {
-                if let Some(link) = markdown_inline_at(text, at, range.end) {
-                    at = link.range.end;
-                    links.push(link);
-                } else {
-                    at += 1;
-                }
-            }
-            _ => at += 1,
-        }
-    }
-    links
+    pulldown_cmark::Parser::new(&text[range.clone()]).into_offset_iter().filter_map(|(event, span)| {
+        if !matches!(event, pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link {
+            link_type: pulldown_cmark::LinkType::Inline, ..
+        })) { return None; }
+        markdown_inline_at(text, range.start + span.start, range.start + span.end)
+    }).collect()
 }
 
 /// Native link authoring is a document intention, independent of Vim grammar.

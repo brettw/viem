@@ -287,13 +287,9 @@ pub(super) fn preserve_deleted_boundary_spaces(
                 continue;
             }
             let replacement = if visible == "\n" {
-                // Joining later content can absorb an earlier inline break
-                // into the following paragraph separator. A following break
-                // may instead legitimately acquire the newly empty body's
-                // source contributor; preserve_join_boundaries owns that side.
-                if edit.range.end <= span.formatted.start && !edit.replacement.contains('\n') {
-                    continue;
-                }
+                // A retained hard break also needs protection when deleting
+                // all of its preceding body turns the source row into a blank
+                // separator. The candidate below decides whether it survives.
                 let bytes = document
                     .state()
                     .source

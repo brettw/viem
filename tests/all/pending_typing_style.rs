@@ -424,7 +424,8 @@ fn whitespace_does_not_create_empty_markdown_spans_and_counts_replay_style() {
         toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
         core.handle(view, CoreEvent::Input(InputEvent::Text(" ".into())))
             .unwrap();
-        assert_eq!(core.document().source_bytes(), b" x");
+        assert_eq!(core.document().source_bytes(), if format.is_source_view() { b" x".as_slice() } else { b"&#32;x".as_slice() });
+        assert_eq!(core.document().text(), " x");
         core.handle(view, CoreEvent::Input(InputEvent::Text("é".into())))
             .unwrap();
         core.handle(view, key(Key::Escape)).unwrap();

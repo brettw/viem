@@ -89,6 +89,7 @@ mod markdown_inline_typing_regressions;
 mod markdown_indented_code;
 mod markdown_empty_continuations;
 mod markdown_inline_breaks;
+mod markdown_inline_audit;
 mod markdown_tables;
 mod markdown_table_layout;
 mod markdown_table_coordinator;

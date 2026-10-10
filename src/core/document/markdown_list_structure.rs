@@ -436,17 +436,19 @@ pub(super) fn empty_insertion_patches(
         &(range.start..(range.start + 1).min(document.projection().text_tree().byte_len())),
     ).contains(&range.start) && document.projection().blocks_for_region(range).iter()
         .any(|block| block.range.start == range.start && range.start < block.range.end);
-    let following_code = document
+    let following_block = document
         .projection()
         .blocks_for_region(
             &(range.start..(range.start + 1).min(document.projection().text_tree().byte_len())),
         )
         .into_iter()
-        .find(|block| block.range.start == range.start + 1 && block.style.0 == "Code Block");
-    let needs_separator = if let Some(code) = following_code {
+        .find(|block| block.range.start == range.start + 1
+            && (block.style.0 == "Code Block"
+                || matches!(block.kind, super::super::BlockKind::Paragraph)));
+    let needs_separator = if let Some(block) = following_block {
         let source = document
             .projection()
-            .source_range(code.range)
+            .source_range(block.range)
             .ok_or(DocumentError::AmbiguousProjection)?;
         document
             .state()
@@ -465,9 +467,9 @@ pub(super) fn empty_insertion_patches(
         if needs_padding { " " } else { "" },
         document.escape_markdown_source_text(at, text)?
     );
-    // Indented code can follow an empty list item without a blank row, but
-    // cannot interrupt its newly nonempty prose. Keep the unselected code
-    // owner by giving that existing boundary its minimal blank separator.
+    // Prose or indented code can follow an empty item without becoming its
+    // body. Filling the item makes that ending a lazy prose continuation;
+    // keep the unselected owner through the smallest blank separator.
     if needs_separator {
         syntax.push_str(document.file_format().spelling());
     } else if needs_break {
@@ -490,6 +492,44 @@ pub(super) fn preserve_empty_item_boundaries(
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
     let projection = document.projection();
+    for edit in edits.iter().filter(|edit| edit.replacement.is_empty()) {
+        for block in projection.blocks_for_region(&edit.range) {
+            if block.range.is_empty() || edit.range != block.range
+                || !matches!(block.kind, BlockKind::ListItem { item_start: true, .. }) {
+                continue;
+            }
+            let next = projection.blocks_for_region(&(block.range.end + 1..block.range.end + 1))
+                .into_iter().find(|next| next.range.start == block.range.end + 1);
+            if !next.as_ref().is_some_and(|next|
+                matches!(next.kind, BlockKind::ListItem { item_start: false, .. })) {
+                continue;
+            }
+            let at = projection.source_insertion_point(block.range.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let Some(row) = document.state().source_hard_lines.line_at_offset(at)
+                .and_then(|index| document.state().source_hard_lines.get(index + 1)) else { continue; };
+            let bytes = document.state().source.bytes_in(row.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, row.start)?;
+            let text = decoded.text.trim_end_matches(['\r', '\n']);
+            if text[super::super::markdown_quotes::prefix(text)..].trim().is_empty()
+                && !patches.iter().any(|patch| patch.range.start < row.end && row.start < patch.range.end) {
+                if next.as_ref().unwrap().style.0 == "Code Block" {
+                    // Literal code keeps a boundary after a bare marker.
+                    patches.push(SourcePatch::primary(row, Vec::new()));
+                } else {
+                    // Prose needs its retained separator and an empty first
+                    // body; otherwise it collapses or leaves the item's owner.
+                    let end = projection.source_insertion_point(block.range.end, false)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    if let Some(patch) = patches.iter_mut().find(|patch|
+                        patch.range.start < end && end <= patch.range.end && patch.replacement.is_empty()) {
+                        patch.replacement = document.encoding().encode_fragment("<span></span>")?;
+                    }
+                }
+            }
+        }
+    }
     let mut candidates = std::collections::BTreeMap::new();
     for edit in edits.iter().filter(|edit| {
         edit.replacement.is_empty() || edit.replacement.contains('\n')

@@ -134,6 +134,26 @@ pub(super) fn patches_with_separator(
         .collect::<Vec<_>>();
     let mut syntax = String::new();
     let mut supporting = Vec::new();
+    if replacement.starts_with('\n') && current.iter().any(|&index| scopes[index].marker.starts_with(['*', '_', '~'])) {
+        // A source space immediately before a split remains visible.
+        // Closing emphasis after whitespace cannot close the delimiter;
+        // a folded ending also leaves it on a separate source row. Spell only
+        // the retained contributor as a reference so the local closing
+        // delimiter keeps its original inline meaning.
+        if let Some(previous) = document.previous_grapheme_boundary(range.start) {
+            let retained = previous..range.start;
+            if projection.text_tree().slice(retained.clone()).as_deref() == Ok(" ") {
+                if let Some(span) = projection.source_range(retained).filter(|span| span.end <= source.start) {
+                    let bytes = document.state().source.bytes_in(span.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                    let decoded = document.encoding().decode_region(&bytes, span.start)?;
+                    let normalized = normalize(&decoded, document.file_format());
+                    if normalized.text == " " || normalized.text.contains('\n') && !normalized.endings.is_empty() {
+                        supporting.push(SourcePatch::primary(span, document.encoding().encode_fragment("&#32;")?));
+                    }
+                }
+            }
+        }
+    }
     let mut line_start = false;
     for (index, segment) in replacement.split('\n').enumerate() {
         if index > 0 {

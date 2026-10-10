@@ -61,7 +61,7 @@ fn reference_fragment(spelling: &str, definitions: &RefDefs<'_>) -> ReferenceFra
 }
 
 impl Document {
-    pub(super) fn preserve_edited_reference_rows(
+    pub(super) fn preserve_edited_reference_content(
         &self,
         edits: &[TextEdit],
         patches: &mut Vec<SourcePatch>,
@@ -104,6 +104,33 @@ impl Document {
             {
                 continue;
             }
+            // Whitespace authored beside a folded definition ending must add
+            // a visible space, rather than merge into its source indentation.
+            // Retire just this definition and protect the new whitespace; its
+            // untouched continuation endings can keep folding as prose.
+            let force_prose = edits.iter().any(|edit| {
+                edit.range.is_empty() && edit.replacement.chars().any(|ch| matches!(ch, ' ' | '\t'))
+                    && self.projection().source_insertion_point(edit.range.start, true)
+                        .is_some_and(|at| source.start <= at && at <= source.end)
+                    && (self.projection().source_insertion_point(edit.range.start, true) == Some(source.start)
+                        || self.projection().provenance_touching(&edit.range).iter().any(|span| {
+                            source.start <= span.source.start && span.source.end <= source.end
+                                && self.text().get(span.formatted.clone()) == Some(" ")
+                                && self.state().source.bytes_in(span.source.clone())
+                                    .and_then(|bytes| self.encoding().decode_region(&bytes, span.source.start).ok())
+                                    .is_some_and(|decoded| decoded.text.contains(['\n', '\r']))
+                        }))
+            });
+            if force_prose {
+                for patch in patches.iter_mut().filter(|patch| patch.range.is_empty()
+                    && source.start <= patch.range.start && patch.range.start <= source.end) {
+                    let replacement = self.encoding().decode_region(&patch.replacement, patch.range.start)?.text;
+                    if replacement.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                        patch.replacement = self.encoding().encode_fragment(&replacement.chars()
+                            .map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>())?;
+                    }
+                }
+            }
             let mut bytes = self
                 .state()
                 .source
@@ -135,7 +162,7 @@ impl Document {
                     || body.starts_with("+ ")
                     || body.starts_with("+\t")
             });
-            if !structural_prefix
+            if !force_prose && !structural_prefix
                 && retained_definitions.iter().any(|range| {
                     candidate.text[..range.start]
                         .chars()
@@ -145,25 +172,19 @@ impl Document {
             {
                 continue;
             }
-            if !retained_definitions.is_empty() || structural_prefix {
+            if force_prose || !retained_definitions.is_empty() || structural_prefix {
                 // A shortened definition would expose its previously literal
-                // destination/title rows as folded prose. Retire that partial
-                // definition with one escape, then retain the old row edges.
+                // destination/title as interpreted prose. Retire that partial
+                // definition with one escape, keeping its literal content.
                 if let Some(offset) = input.text[definition.clone()].find('[') {
                     let opener = mapper
                         .source_range(definition.start + offset..definition.start + offset + 1);
                     if !patches.iter().any(|patch| {
                         patch.range.start < opener.end && opener.start < patch.range.end
                     }) {
-                        let insertion = self.encoding().encode_fragment("\\")?;
-                        if let Some(patch) = patches.iter_mut().find(|patch| {
-                            patch.range.is_empty() && patch.range.start == opener.start
-                        }) {
-                            patch.replacement.extend(insertion);
-                        } else {
-                            support
-                                .push(SourcePatch::primary(opener.start..opener.start, insertion));
-                        }
+                        support.push(SourcePatch::primary(
+                            opener, self.encoding().encode_fragment("\\[")?,
+                        ));
                     }
                 }
             }
@@ -210,51 +231,7 @@ impl Document {
                 }
                 patch.replacement = self.encoding().encode_fragment(&protected)?;
             }
-            for (offset, ch) in input.text[definition.clone()].char_indices() {
-                if ch != '\n' || definition.start + offset + 1 >= definition.end {
-                    continue;
-                }
-                let normalized_at = definition.start + offset;
-                let ending = mapper.source_range(normalized_at..normalized_at + 1);
-                if patches
-                    .iter()
-                    .any(|patch| patch.range.start < ending.end && ending.start < patch.range.end)
-                {
-                    continue;
-                }
-                let insertion = self.encoding().encode_fragment("\\")?;
-                if let Some(patch) = patches
-                    .iter_mut()
-                    .find(|patch| patch.range.is_empty() && patch.range.start == ending.start)
-                {
-                    patch.replacement.extend(insertion);
-                } else {
-                    support.push(SourcePatch::primary(ending.start..ending.start, insertion));
-                }
-                // A definition's visible continuation indentation belongs to
-                // its literal label. It must survive becoming ordinary prose.
-                for (offset, ch) in input.text[normalized_at + 1..definition.end].char_indices() {
-                    if !matches!(ch, ' ' | '\t') {
-                        break;
-                    }
-                    let at = normalized_at + 1 + offset;
-                    let range = mapper.source_range(at..at + ch.len_utf8());
-                    if patches
-                        .iter()
-                        .any(|patch| patch.range.start < range.end && range.start < patch.range.end)
-                    {
-                        continue;
-                    }
-                    support.push(SourcePatch::primary(
-                        range,
-                        self.encoding().encode_fragment(if ch == ' ' {
-                            "&#32;"
-                        } else {
-                            "&#9;"
-                        })?,
-                    ));
-                }
-            }
+
         }
         patches.extend(support);
         Ok(literal_definition_edits)

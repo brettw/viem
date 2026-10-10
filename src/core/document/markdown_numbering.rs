@@ -293,8 +293,11 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let text = state.encoding.decode_region(&bytes, line.start)?.text;
         let quote = super::super::markdown_quotes::prefix(&text);
-        let start =
-            quote + text[quote..].len() - text[quote..].trim_start_matches([' ', '\t']).len();
+        let BlockKind::ListItem { level, .. } = block.kind else {
+            return Err(DocumentError::AmbiguousProjection);
+        };
+        let (start, content) = ordered_marker_prefix(&text, level)
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let digits = text[start..].bytes().take_while(u8::is_ascii_digit).count();
         if digits == 0 || !matches!(text.as_bytes().get(start + digits), Some(b'.' | b')')) {
             return Err(DocumentError::AmbiguousProjection);
@@ -311,14 +314,12 @@ impl Document {
                 state.encoding.encode_fragment(&spelling)?,
             ));
         }
-        let content = super::super::markdown_blocks::marker_prefix_length(&text[quote..])
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let content_columns = columns(&text[quote..quote + content]);
+        let content_columns = columns(&text[quote..content]);
         let new_prefix = format!(
             "{}{}{}",
             &text[quote..start],
             spelling,
-            &text[start + digits..quote + content]
+            &text[start + digits..content]
         );
         let delta = columns(&new_prefix) as isize - content_columns as isize;
         if delta != 0 {
@@ -378,6 +379,30 @@ impl Document {
         }
         Ok(())
     }
+}
+
+fn ordered_marker_prefix(text: &str, level: u8) -> Option<(usize, usize)> {
+    let mut at = 0;
+    let mut marker = None;
+    // One physical row can open several nested items, with quotes between
+    // their markers. The parsed level bounds the prefixes that belong to
+    // this item's marker rather than to its literal body.
+    for depth in 0..=level {
+        at += super::super::markdown_quotes::prefix(&text[at..]);
+        let tail = &text[at..];
+        let indent = tail.len() - tail.trim_start_matches([' ', '\t']).len();
+        if depth > 0 && columns(&tail[..indent]) > 3 {
+            break;
+        }
+        let Some(content) = super::super::markdown_blocks::marker_prefix_length(tail) else {
+            break;
+        };
+        let start = at + indent;
+        let ordered = text.as_bytes()[start].is_ascii_digit();
+        at += content;
+        marker = Some((start, at, ordered));
+    }
+    marker.and_then(|(start, content, ordered)| ordered.then_some((start, content)))
 }
 
 fn columns(text: &str) -> usize {

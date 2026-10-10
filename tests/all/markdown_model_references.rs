@@ -221,3 +221,20 @@ fn invalidating_a_definition_preserves_unselected_reference_label_bytes() {
         reopened(&doc);
     }
 }
+
+#[test]
+fn multiline_reference_definitions_keep_their_grammar_paragraph_boundaries() {
+    for (source, expected, paragraphs) in [
+        ("[foo]:\n/url\n'title'\n", "[foo]: /url 'title'", 1),
+        ("[foo]: /url '\ntitle\nline1\n'", "[foo]: /url ' title line1 '", 1),
+        ("   [foo]: \n      /url  \n           'the title'  \n", "[foo]: /url 'the title'", 1),
+        ("[\nfoo\n]: /url\nbar\n", "[ foo ]: /url\nbar", 2),
+        ("[foo]: /url\n\"title\" ok\n", "[foo]: /url\n\"title\" ok", 2),
+        ("[foo]: /url\n===\n[foo]\n", "[foo]: /url\n=== [foo]", 2),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(document.text(), expected, "{source:?}");
+        assert_eq!(document.projection().blocks().len(), paragraphs, "{source:?}");
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}

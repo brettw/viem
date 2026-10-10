@@ -281,7 +281,7 @@ fn tabbed_markers_use_columns_and_preserve_the_original_marker_bytes() {
         let mut document = open(source, Format::Markdown);
         let at = document.text().find("two").unwrap();
         assert!(document.list_indent_capabilities(at..at).0, "{source:?}");
-        apply(&mut document, at..at, false).unwrap();
+        apply(&mut document, at..at, false).unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
         assert_eq!(levels(&document)[1].1, 1);
         assert!(String::from_utf8_lossy(&document.source_bytes()).contains("\ttwo"));
         apply(&mut document, at..at, true).unwrap();

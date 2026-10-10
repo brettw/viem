@@ -46,8 +46,8 @@ fn quote_containers_project_bodies_and_keep_original_bytes() {
         ),
         (
             "> outer\n>> inner\n> outer again",
-            "outer\ninner\nouter again",
-            vec!["Paragraph", "Paragraph", "Paragraph"],
+            "outer\ninner outer again",
+            vec!["Paragraph", "Paragraph"],
         ),
         (
             "> quote\n# Heading",

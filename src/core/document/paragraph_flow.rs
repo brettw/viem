@@ -2,7 +2,6 @@
 //! Markdown projection normalizes prose whitespace; source views retain every
 //! character and use the same classification only for optional layout flow.
 use super::line_endings::{LineEnding, LogicalUnit, NormalizedText};
-use super::projection::{markdown_block_prefix, BlockKind};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
@@ -27,73 +26,18 @@ pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
     markdown_soft_breaks_with_syntax(input, &syntax)
 }
 
+/// Only grammar-owned prose breaks may fold. Looking at the surrounding
+/// physical lines invents breaks in code, HTML and empty container prefixes.
 fn markdown_soft_breaks_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
-    let quotes = super::markdown_quotes::classify(input);
-    if quotes.iter().all(|line| line.depth == 0) {
-        return markdown_soft_breaks_without_quotes(input, syntax);
-    }
-    let body = super::markdown_quotes::strip(input, &quotes);
-    let soft = markdown_soft_breaks_without_quotes(&body, syntax);
-    input.endings.iter().enumerate().filter_map(|(index, ending)| {
-        (quotes[index].depth == quotes[index + 1].depth
-            && soft.contains(&body.endings[index].normalized.start))
-            .then_some(ending.normalized.start)
+    input.endings.iter().filter_map(|ending| {
+        let soft = syntax.soft_breaks.get(syntax.soft_breaks.partition_point(|range| range.end <= ending.source.start))
+            .is_some_and(|range| range.start <= ending.source.start && ending.source.end <= range.end);
+        // Reference definitions stay visible, but their physical continuation
+        // lines belong to the same deliberately literal paragraph.
+        let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.source.start))
+            .is_some_and(|range| range.start <= ending.source.start && ending.source.end < range.end);
+        (soft || definition).then_some(ending.normalized.start)
     }).collect()
-}
-
-fn markdown_soft_breaks_without_quotes(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
-    let lines = source_lines(input);
-    let (lists, literal_markers) = super::markdown_blocks::classify_with_literal_markers(input);
-    let mut prose = Vec::with_capacity(lines.len());
-    for (index, line) in lines.iter().enumerate() {
-        let text = &input.text[line.clone()];
-        let start = source_at(input, line.start);
-        let end = source_at(input, line.end);
-        let code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= start))
-            .is_some_and(|code| code.range.start <= end && start < code.range.end);
-        let (_, kind) = markdown_block_prefix(&input.text, line.start, line.end);
-        prose.push(
-            !code
-                && !text.trim().is_empty()
-                && (kind == BlockKind::Paragraph || literal_markers[index]),
-        );
-    }
-    input
-        .endings
-        .iter()
-        .enumerate()
-        .filter_map(|(i, ending)| {
-            let previous = &input.text[lines[i].clone()];
-            let literal = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= ending.source.start))
-                .is_some_and(|code| code.range.start <= ending.source.start);
-            let next_start = source_at(input, lines[i + 1].start);
-            let next_end = source_at(input, lines[i + 1].end);
-            // Grammar scopes can start after indentation on the next row.
-            // Folding their preceding ending would move earlier prose into
-            // that code/HTML owner before the projection sees its boundary.
-            let enters_code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= next_start))
-                .is_some_and(|code| next_start <= code.range.start && code.range.start <= next_end);
-            let enters_block = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= next_start))
-                .is_some_and(|block| next_start <= block.range.start && block.range.start <= next_end);
-            let table_boundary = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= ending.source.start)).is_some_and(|table| table.range.start <= ending.source.end);
-            let block_boundary = table_boundary || syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.source.start)).is_some_and(|block| {
-                let touches = block.range.start <= ending.source.end && ending.source.start < block.range.end;
-                touches && !(matches!(block.role, super::markdown_syntax::BlockRole::Heading(_))
-                    && block.content.start <= ending.source.start && ending.source.end < block.content.end)
-            }) || syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= ending.source.start)).is_some_and(|range| range.start <= ending.source.end);
-            (!literal && !block_boundary && !enters_code && !enters_block && ((prose[i]
-                && prose.get(i + 1) == Some(&true)
-                && lists[i].is_none()
-                && lists.get(i + 1).is_some_and(Option::is_none)
-                || lists[i]
-                    .as_ref()
-                    .zip(lists.get(i + 1).and_then(Option::as_ref))
-                    .is_some_and(|(a, b)| a.paragraph == b.paragraph && !a.code && !b.code))
-                && !previous.ends_with("  ")
-                && !previous.ends_with('\\')))
-            .then_some(ending.normalized.start)
-        })
-        .collect()
 }
 
 pub(super) fn flow_ranges(input: &NormalizedText, soft: &BTreeSet<usize>) -> Vec<Range<usize>> {
@@ -148,7 +92,7 @@ fn markdown_projection_with_soft_breaks(
     syntax: &super::markdown_syntax::Blocks,
 ) -> (NormalizedText, BTreeSet<usize>) {
     let lines = source_lines(input);
-    let lists = super::markdown_blocks::classify(input);
+    let lists = super::markdown_blocks::classify_with_syntax(input, syntax);
     let quotes = super::markdown_quotes::classify(input);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
@@ -156,10 +100,45 @@ fn markdown_projection_with_soft_breaks(
     while i < input.endings.len() {
         let text = &input.text[quotes[i].content_start..lines[i].end];
         let ending = &input.endings[i];
+        let html = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= ending.source.start))
+            .is_some_and(|block| {
+                if !matches!(block.role, super::markdown_syntax::BlockRole::Html) || block.range.start > ending.source.start { return false; }
+                if ending.source.end < block.range.end { return true; }
+                let start = input.units.get(input.units.partition_point(|unit| unit.source.start < block.range.start))
+                    .map_or(ending.normalized.start, |unit| unit.normalized.start);
+                super::projection::markdown_html_open_pre(&input.text[start..ending.normalized.start])
+            });
+        if html {
+            // Markdown whitespace rules do not run inside passive HTML blocks.
+            i += 1;
+            continue;
+        }
+        let inline_code = syntax.inline_code.get(syntax.inline_code.partition_point(|range| range.end <= ending.source.start))
+            .is_some_and(|range| range.start <= ending.source.start && ending.source.end <= range.end);
+        if inline_code {
+            if !preserve_markers { replacements.push((ending.normalized.clone(), " ", false)); }
+            i += 1;
+            continue;
+        }
+        let hard = syntax.hard_breaks.get(syntax.hard_breaks.partition_point(|range| range.end <= ending.source.start))
+            .is_some_and(|range| range.start <= ending.source.start && ending.source.end <= range.end);
         let code = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= ending.source.start));
         if code.is_some_and(|code| code.range.start <= ending.source.start && ending.source.start < code.body_end) {
             // Literal endings follow parser-owned code scopes. Removing quote
             // prefixes must not let a fence consume a different container.
+            i += 1;
+            continue;
+        }
+        if !preserve_markers && lists[i].as_ref().is_some_and(|line|
+            line.marker.is_some() && input.text[line.content_start..lines[i].end].trim().is_empty()
+                && lists.get(i + 1).and_then(Option::as_ref).is_some_and(|next|
+                    !next.code && matches!((&line.kind, &next.kind),
+                        (super::BlockKind::ListItem { ordered: a, ordinal: b, level: c, .. },
+                         super::BlockKind::ListItem { ordered: d, ordinal: e, level: f, item_start: false, .. })
+                            if (a, b, c) == (d, e, f)))) {
+            // An empty marker is structure before its first body, not prose
+            // that contributes a leading folded space or an empty paragraph.
+            replacements.push((ending.normalized.clone(), "", false));
             i += 1;
             continue;
         }
@@ -202,10 +181,10 @@ fn markdown_projection_with_soft_breaks(
                 i = last;
             } else if preserve_markers {
                 // An ordinary terminal source ending remains editable.
-                if text.ends_with("  ") || text.ends_with('\\') {
+                if hard {
                     explicit.insert(ending.source.end);
                 }
-            } else if !text.ends_with("  ") && !text.ends_with('\\') {
+            } else if !hard {
                 replacements.push((ending.normalized.clone(), "", false));
             } else {
                 let count = if text.ends_with('\\') {
@@ -220,7 +199,7 @@ fn markdown_projection_with_soft_breaks(
                 ));
                 explicit.insert(ending.source.end);
             }
-        } else if text.ends_with("  ") || text.ends_with('\\') {
+        } else if hard {
             if !preserve_markers {
                 let count = if text.ends_with('\\') {
                     1
@@ -244,14 +223,34 @@ fn markdown_projection_with_soft_breaks(
         // the whole row so that extra literal code spaces are never stripped.
         let indented = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= start))
             .is_some_and(|code| !code.fenced && code.range.start <= end && start < code.range.end);
+        let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= start))
+            .is_some_and(|range| range.start <= end && start < range.end);
         if let Some(context) = context
             .as_ref()
-            .filter(|context| !preserve_markers && context.marker.is_none() && !indented)
+            .filter(|context| !preserve_markers && context.marker.is_none() && !indented && !definition)
         {
             if context.content_start > lines[index].start
                 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start))
             {
                 replacements.push((lines[index].start..context.content_start, "", false));
+            }
+        }
+    }
+    if !preserve_markers {
+        for (index, line) in lines.iter().enumerate() {
+            let start = source_at(input, line.start);
+            let end = source_at(input, line.end);
+            let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= start))
+                .is_some_and(|range| range.start <= end && start < range.end);
+            if !definition { continue; }
+            let text = &input.text[line.clone()];
+            let leading = text.len() - text.trim_start_matches([' ', '\t']).len();
+            if leading > 0 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start)) {
+                replacements.push((line.start..line.start + leading, "", false));
+            }
+            let trailing = text.trim_end_matches([' ', '\t']).len();
+            if trailing < text.len() && input.endings.get(index).is_none_or(|ending| !soft.contains(&ending.normalized.start)) {
+                replacements.push((line.start + trailing..line.end, "", false));
             }
         }
     }

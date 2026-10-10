@@ -187,6 +187,101 @@ fn typing_before_literal_html_preserves_its_visible_rows_and_punctuation() {
 }
 
 #[test]
+fn preformatted_html_retains_literal_lines_and_local_edits() {
+    for (source, text) in [
+        ("<pre>a\n\nb</pre>", "a\n\nb"),
+        ("<pre>a\\\nb</pre>", "a\\\nb"),
+        ("<pre>a  \nb</pre>", "a  \nb"),
+        ("<pre>a\n\n", "a\n\n"),
+        ("<pre>a\\\n", "a\\\n"),
+        ("<pre>a  \n", "a  \n"),
+    ] {
+        for format in [Format::Markdown, Format::MarkdownSource] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            assert_eq!(document.text(), if format.is_source_view() { source } else { text });
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            let needle = if source.contains('b') { 'b' } else { 'a' };
+            let at = document.text().rfind(needle).unwrap();
+            document.replace(at..at + 1, "c").unwrap();
+            let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, format).unwrap();
+            assert_eq!(document.text(), fresh.text());
+            assert_eq!(document.source_bytes(), source.replace(needle, "c").as_bytes());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.text(), fresh.text());
+        }
+    }
+}
+
+#[test]
+fn preformatted_html_ignores_exactly_one_initial_newline() {
+    for (source, text) in [
+        ("<pre>\nfoo</pre>", "foo"),
+        ("<pre>&#10;foo</pre>", "foo"),
+        ("<pre>\n\nfoo</pre>", "\nfoo"),
+        ("<pre>&#10;&#10;foo</pre>", "\nfoo"),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(document.text(), text, "{source:?}");
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        let at = text.find('f').unwrap();
+        edit(&mut document, at..at + 1, "F");
+    }
+}
+
+#[test]
+fn inline_html_treatments_match_inside_passive_blocks() {
+    for tag in ["kbd", "samp", "tt", "ins"] {
+        let inline = format!("a<{tag}>b</{tag}>c");
+        let block = format!("<div>{inline}</div>");
+        let inline_document = Document::from_bytes(inline.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let block_document = Document::from_bytes(block.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(block_document.text(), "abc");
+        for at in 0..3 {
+            assert_eq!(
+                DocumentLayoutStyles::character_at(block_document.projection(), at, false).unwrap(),
+                DocumentLayoutStyles::character_at(inline_document.projection(), at, false).unwrap(),
+                "{tag} at {at}",
+            );
+        }
+        assert_eq!(block_document.source_bytes(), block.as_bytes());
+    }
+}
+
+#[test]
+fn passive_html_rules_create_editable_furniture_boundaries() {
+    use viem_core::{Core, layout::{DecorationKind, MockTextMeasurementProvider}};
+    for (source, text, rules) in [
+        ("<div>a<hr>b</div>", "a\n\nb", 1),
+        ("two<hr>three", "two\n\nthree", 1),
+        ("<hr>", "", 1),
+        ("<hr><hr>", "\n", 2),
+        ("a<hr>", "a\n", 1),
+        ("<hr>b", "\nb", 1),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(document.text(), text, "{source:?}");
+        assert_eq!(document.projection().blocks().iter().filter(|block| block.thematic_break).count(), rules, "{source:?}");
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        let rule_at = document.projection().blocks().iter().find(|block| block.thematic_break).unwrap().range.start;
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert_eq!(snapshot.rows.iter().flat_map(|row| &row.decorations).filter(|decoration| decoration.kind == DecorationKind::ThematicBreak).count(), rules);
+        if let Some(at) = text.find(['a', 't', 'b']) {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            edit(&mut document, at..at + 1, "X");
+        }
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        edit(&mut document, rule_at..rule_at, "X");
+        let source_document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        assert_eq!(source_document.text(), source);
+        assert!(source_document.projection().blocks().iter().all(|block| !block.thematic_break));
+    }
+}
+
+#[test]
 fn unsupported_inline_tag_name_cannot_activate_semantic_html() {
     let mut doc = Document::from_bytes(
         b"before <bravo> after".to_vec(),
@@ -213,12 +308,12 @@ fn unsupported_inline_tag_name_cannot_activate_semantic_html() {
 }
 
 #[test]
-fn breaking_multiline_reference_definition_retains_visible_rows() {
+fn breaking_multiline_reference_definition_retains_visible_content() {
     let source = "[Foo bar]:\n<my url>\n'title'\n\n[Foo bar]\n";
     let mut doc =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     edit(&mut doc, 9..9, "x");
-    assert_eq!(doc.text(), "[Foo bar]x:\n<my url>\n'title'\n[Foo bar]");
+    assert_eq!(doc.text(), "[Foo bar]x: <my url> 'title'\n[Foo bar]");
 }
 
 #[test]

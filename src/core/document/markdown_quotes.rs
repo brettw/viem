@@ -1,7 +1,7 @@
 //! Physical Markdown quote containers, retained independently of their body
 //! syntax so headings, lists, code, and lazy prose keep their source spelling.
 use super::line_endings::NormalizedText;
-use super::projection::{markdown_block_prefix, markdown_fence, BlockKind};
+use super::projection::{markdown_fence, BlockKind};
 use std::ops::Range;
 
 pub(super) fn empty_insertion_patches(
@@ -73,7 +73,8 @@ pub(super) fn is_fenced_block(
     if block.style.0 != "Block quote" && block.quote_depth == 0 {
         return Ok(false);
     }
-    if !document.format().is_source_view() && !block.range.is_empty()
+    if !document.format().is_source_view()
+        && !block.range.is_empty()
         && !document
             .projection()
             .style_spans_for_region(&block.range)
@@ -94,7 +95,15 @@ pub(super) fn is_fenced_block(
     let index = lines
         .line_at_offset(at)
         .ok_or(super::DocumentError::AmbiguousProjection)?;
-    for line in [Some(index), index.checked_sub(1).filter(|_| !document.format().is_source_view())].into_iter().flatten() {
+    for line in [
+        Some(index),
+        index
+            .checked_sub(1)
+            .filter(|_| !document.format().is_source_view()),
+    ]
+    .into_iter()
+    .flatten()
+    {
         let source = lines
             .get(line)
             .ok_or(super::DocumentError::AmbiguousProjection)?;
@@ -144,62 +153,56 @@ fn prefix_with_limit(text: &str, limit: usize) -> (usize, usize) {
 }
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
-    let mut previous_depth = 0;
-    let mut lazy = false;
-    let mut fence: Option<(usize, u8, usize)> = None;
+    let syntax =
+        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input));
+    let mut active = Vec::new();
+    let mut next = 0;
     super::paragraph_flow::source_lines(input)
         .into_iter()
         .map(|range| {
-            let text = &input.text[range.clone()];
-            let (prefix, mut depth) = if fence.is_some_and(|(depth, _, _)| depth == 0) {
-                (0, 0)
-            } else {
-                prefix_with_limit(text, fence.map_or(usize::MAX, |(depth, _, _)| depth))
-            };
-            let body = &text[prefix..];
-            let (_, kind) = markdown_block_prefix(body, 0, body.len());
-            let prose = !body.trim().is_empty()
-                && kind == BlockKind::Paragraph
-                && markdown_fence(body).is_none()
-                && !body.starts_with("    ")
-                && !body.starts_with('\t')
-                && !thematic_or_setext(body);
-            if depth == 0 && previous_depth > 0 && lazy && prose && fence.is_none() {
-                depth = previous_depth;
-            }
-            if let Some((quote_depth, delimiter, length)) = fence {
-                if depth != quote_depth
-                    || super::markdown_syntax::fence_close(body, delimiter, length)
-                {
-                    fence = None;
+            active.retain(|container: &&super::markdown_syntax::Container| {
+                range.start < container.range.end
+            });
+            while let Some(container) = syntax
+                .containers
+                .get(next)
+                .filter(|container| container.range.start <= range.end)
+            {
+                if range.start < container.range.end {
+                    active.push(container);
                 }
-                lazy = false;
-            } else if let Some((delimiter, length)) = markdown_fence(body) {
-                fence = Some((depth, delimiter, length));
-                lazy = false;
-            } else {
-                lazy = depth > 0 && (prose || matches!(kind, BlockKind::ListItem { .. }));
+                next += 1;
             }
-            previous_depth = depth;
+            let depth = active
+                .iter()
+                .map(|container| container.quote_depth)
+                .max()
+                .unwrap_or(0);
+            let mut content_start =
+                range.start + prefix_with_limit(&input.text[range.clone()], depth).0;
+            // A quote may begin after a list marker on the same physical row.
+            // Its parser-owned start supplies the prefix that a row-only scan misses.
+            for container in active.iter().filter(|container| {
+                container.list.is_none()
+                    && range.start <= container.range.start
+                    && container.range.start <= range.end
+            }) {
+                content_start = content_start.max(
+                    container.range.start
+                        + prefix_with_limit(
+                            &input.text[container.range.start..range.end],
+                            container.quote_depth,
+                        )
+                        .0,
+                );
+            }
             QuoteLine {
-                content_start: range.start + prefix,
                 range,
+                content_start,
                 depth,
             }
         })
         .collect()
-}
-
-fn thematic_or_setext(text: &str) -> bool {
-    let body = text.trim();
-    let Some(marker @ (b'-' | b'*' | b'_' | b'=')) = body.bytes().next() else {
-        return false;
-    };
-    let count = body.bytes().filter(|byte| *byte == marker).count();
-    count >= if marker == b'=' { 1 } else { 3 }
-        && body
-            .bytes()
-            .all(|byte| byte == marker || matches!(byte, b' ' | b'\t'))
 }
 
 pub(super) fn strip(input: &NormalizedText, lines: &[QuoteLine]) -> NormalizedText {
