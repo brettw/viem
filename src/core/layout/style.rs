@@ -158,6 +158,9 @@ pub struct DocumentLayoutStyles {
     /// Default Paragraph font, excluding authored character spans and the
     /// current paragraph's named style. Whitespace geometry uses this basis.
     pub whitespace_shaping_style: ResolvedTextStyle,
+    /// Ordinary paragraph spacing, independent of the paragraphs currently
+    /// materialized. Screen paging uses it with the default font's metrics.
+    pub default_line_spacing: LineSpacing,
     pub style_sheet_revision: StyleSheetRevision,
     pub document_insets: EdgeInsets,
     pub canvas_background: Color,
@@ -678,6 +681,7 @@ impl DocumentLayoutStyles {
             table_context: None,
             recovery_diagnostic: None,
             whitespace_shaping_style,
+            default_line_spacing: whitespace_paragraph.line_spacing,
             style_sheet_revision: sheet.revision,
             document_insets: EdgeInsets {
                 top: resolved_document.padding_top,

@@ -1325,9 +1325,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
             styles.search_paint_overlay.as_ref(),
         );
+        let default_row_advance = self.default_row_advance(
+            document_id, document_revision,
+            if view.default_style_is_override { &view.default_style } else { &styles.whitespace_shaping_style },
+            styles.default_line_spacing, view.scale,
+            measurement_environment_id, metrics_generation, &control,
+        )?;
         Ok((
             RegionalLayoutSnapshot {
                 whitespace_unit,
+                default_row_advance,
                 revision: layout_revision,
                 document_id,
                 document_revision,

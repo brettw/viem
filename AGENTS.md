@@ -1664,6 +1664,13 @@ generation. Missing visual stops never enlarge a logical edit's grapheme range.
   extent for wheel, keyboard and scrollbars. Estimates are not authoritative
   clamps. Repeated endpoint paging is stationary; explicit scrolling must not
   be undone by a subsequent generic caret reveal.
+  Full-page keys and Ctrl-F/Ctrl-B move by the usable screen height with two
+  ordinary paragraph rows of overlap, capped at half a screen for small views.
+  The distance is independent of visible styles and table column count, and
+  counts multiply it equally in either direction. Preserve the caret's screen
+  baseline and desired x as closely as visible geometry permits; choosing the
+  caret must not change the page's scroll distance. Proven document endpoints
+  clamp the final page.
 - Cursor movement and active search matches reveal horizontal overflow in both
   wrapping modes. Cursor movement minimally reveals the complete cursor cell.
   Search centers the cursor, then shifts as little as possible to fit the match's
