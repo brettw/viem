@@ -107,6 +107,18 @@ enum Expr {
     Call(String, Vec<Expr>),
 }
 
+pub(super) fn catchable_error(error: &str) -> Option<String> {
+    if error.starts_with("unknown setup variable:") {
+        Some(format!("E108: {error}"))
+    } else if error.starts_with("unknown syntax setup variable:") {
+        Some(format!("E121: {error}"))
+    } else if error.starts_with("E392:") || error.starts_with("E484:") {
+        Some(error.into())
+    } else {
+        None
+    }
+}
+
 #[derive(Clone)]
 struct Function {
     signature: Arc<str>,
@@ -145,6 +157,7 @@ pub(super) struct Setup<'a> {
     source_file: String,
     keyword_option: String,
     highlights: BTreeSet<String>,
+    syntax_clusters: BTreeMap<String, (String, Vec<String>)>,
     emitted: Option<Vec<String>>,
     fuel: usize,
     storage_reserved: usize,
@@ -168,6 +181,7 @@ impl<'a> Setup<'a> {
             source_file: String::new(),
             keyword_option: "@,48-57,_,192-255".into(),
             highlights,
+            syntax_clusters: BTreeMap::new(),
             emitted: None,
             fuel: 8_000_000,
             storage_reserved: context
@@ -180,6 +194,36 @@ impl<'a> Setup<'a> {
     }
     pub(super) fn set_filetype(&mut self, filetype: &str) {
         self.filetype = filetype.to_owned();
+    }
+    pub(super) fn matches_exception(&mut self, source: &str, exception: &str) -> Result<bool, String> {
+        if source.is_empty() { return Ok(true); }
+        let (pattern, tail) = super::delimited(source)?;
+        if !tail.trim().is_empty() { return Err("invalid setup catch pattern suffix".into()); }
+        let pattern = VimPattern::compile(&pattern, false, VimRegexLimits::default())?;
+        let cancel = self.cancel;
+        pattern.is_match_text_with_control(exception, &mut self.fuel,
+            &mut || cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)))
+    }
+    pub(super) fn update_syntax_cluster(&mut self, name: &str, groups: &[String]) -> Result<(), String> {
+        let bytes = name.len() + groups.iter().map(String::len).sum::<usize>();
+        self.reserve_storage(bytes.saturating_mul(2).saturating_add(128))?;
+        self.charge(bytes)?;
+        self.syntax_clusters.insert(name.to_ascii_lowercase(), (name.into(), groups.to_vec()));
+        Ok(())
+    }
+    pub(super) fn append_syntax_cluster_group(&mut self, name: &str, group: &str) -> Result<(), String> {
+        self.reserve_storage(name.len().saturating_add(group.len()).saturating_mul(2).saturating_add(128))?;
+        self.charge(name.len() + group.len())?;
+        self.syntax_clusters.entry(name.to_ascii_lowercase())
+            .or_insert_with(|| (name.into(), Vec::new())).1.push(group.into());
+        Ok(())
+    }
+    pub(super) fn clear_syntax_cluster(&mut self, name: Option<&str>) {
+        if let Some(name) = name {
+            self.syntax_clusters.remove(&name.to_ascii_lowercase());
+        } else {
+            self.syntax_clusters.clear();
+        }
     }
     pub(super) fn set_keyword_option(&mut self, value: &str) {
         self.keyword_option = value.to_owned();
@@ -262,6 +306,8 @@ impl<'a> Setup<'a> {
         self.charge(
             bytes
                 .saturating_add(functions_bytes)
+                .saturating_add(self.syntax_clusters.iter().map(|(key, (name, groups))|
+                    key.len() + name.len() + groups.iter().map(String::len).sum::<usize>()).sum::<usize>())
                 .saturating_add(self.highlights.iter().map(String::len).sum::<usize>()),
         )?;
         let mut hash = std::collections::hash_map::DefaultHasher::new();
@@ -271,6 +317,7 @@ impl<'a> Setup<'a> {
         self.filename.hash(&mut hash);
         self.keyword_option.hash(&mut hash);
         self.highlights.hash(&mut hash);
+        self.syntax_clusters.hash(&mut hash);
         for (name, (scope, function)) in &self.global_functions {
             name.hash(&mut hash);
             function.signature.hash(&mut hash);

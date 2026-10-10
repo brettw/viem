@@ -77,13 +77,14 @@ fn markdown_tree_sitter_highlighting_requires_code_mode_and_preserves_native_vie
 }
 
 #[test]
-fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
-    for (filename, source) in [
+fn json_and_jsonc_open_as_literal_code_with_their_distinct_bundled_languages() {
+    for (filename, source, language) in [
         (
             "settings.json",
             "{\"enabled\": true, \"text\": \"a\\\"b\"}\n",
+            "json",
         ),
-        ("settings.jsonc", "// settings\n{\"enabled\": true}\n"),
+        ("settings.jsonc", "// settings\n{\"enabled\": true}\n", "jsonc"),
     ] {
         let document = Document::from_bytes(
             source.as_bytes().to_vec(),
@@ -96,7 +97,7 @@ fn json_and_jsonc_open_as_literal_code_with_the_bundled_json_language() {
         assert_eq!(core.document().format(), Format::Code);
         assert_eq!(
             core.code_language_detection().unwrap().language.as_deref(),
-            Some("json")
+            Some(language)
         );
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(!core.document().is_dirty());
@@ -172,6 +173,62 @@ fn detected_git_commit_syntax_uses_custom_comments_after_crlf_decoding() {
     }
     assert_eq!(core.document().source_bytes(), source.as_bytes());
     assert!(!core.document().is_dirty());
+}
+
+#[test]
+fn detected_languages_preserve_bytes_and_actual_bundled_highlighting() {
+    use viem_core::document::{FormattedTextTree, syntax::{
+        Coverage, SyntaxInputIdentity, SyntaxInputSnapshot,
+        vim::{VimBudget, VimLoadLimits, VimProgram, VimSession, VimSetupContext},
+    }};
+    for (filename, source, language, token, style) in [
+        (".zshrc", "autoload -Uz compinit\r\nsetopt auto_cd\r\n", "zsh", "auto_cd", "Constant"),
+        (".zshrc.local", "repeat 3 do print hello; done\r\n", "zsh", "repeat", "Repeat"),
+        ("script.sh", "#!/usr/bin/env zsh\r\nsetopt auto_cd\r\n", "zsh", "auto_cd", "Constant"),
+        (".bashrc", "shopt -s nullglob\r\n", "bash", "shopt", "Statement"),
+        (".profile", "printf 'hello'\r\n", "sh", "printf", "Statement"),
+        (".kshrc", "autoload helper\r\n", "ksh", "autoload", "Statement"),
+        ("script.mksh", "autoload helper\r\nbind '^L=clear-screen'\r\n", "mksh", "autoload", "Statement"),
+        ("settings.jsonc", "// settings\r\n{\"enabled\": true}\r\n", "jsonc", "// settings", "Comment"),
+        ("Main.scala", "object Main {\r\n  val answer = 42\r\n}\r\n", "scala", "object", "Keyword"),
+    ] {
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+            let bytes = encoded(source, encoding);
+            let document = Document::from_bytes_with_file_format(
+                bytes.clone(), encoding, Format::PlainText, FileFormat::Dos,
+            ).unwrap();
+            let revision = document.revision();
+            let mut core = Core::<MockTextMeasurementProvider>::new(document);
+            core.initialize_code_detection(filename, true).unwrap();
+            assert_eq!(core.document().format(), Format::Code, "{filename}");
+            assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some(language));
+            let text = core.document().text();
+            let input = SyntaxInputSnapshot::new(
+                SyntaxInputIdentity { document: 1, revision: 1, generation: 1 },
+                FormattedTextTree::try_from_text(text).unwrap(),
+            );
+            let mut context = VimSetupContext::from_input(&input);
+            context.filename = Some(filename.into());
+            let program = VimProgram::load_directory_with_context(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/vim/runtime/syntax"),
+                language, VimLoadLimits::default(), &context,
+                &std::sync::atomic::AtomicBool::new(false),
+            ).unwrap_or_else(|diagnostics| panic!("{filename}: {diagnostics:?}"));
+            let mut session = VimSession::new(program);
+            let result = (0..256).find_map(|_| {
+                let result = session.highlight(&input, 0..text.len(), VimBudget { allow_provisional: false, ..Default::default() });
+                assert!(result.diagnostics.is_empty(), "{filename}: {:?}", result.diagnostics);
+                (!result.stats.yielded).then_some(result)
+            }).expect("detected syntax must finish within bounded slices");
+            assert_eq!(result.coverage, Coverage::Exact);
+            let start = text.find(token).unwrap();
+            assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style),
+                "{filename}: {:?}", result.runs);
+            assert_eq!(core.document().source_bytes(), bytes);
+            assert_eq!(core.document().revision(), revision);
+            assert!(!core.document().is_dirty());
+        }
+    }
 }
 
 #[test]

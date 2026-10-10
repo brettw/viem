@@ -1,5 +1,97 @@
 use super::*;
 
+#[test]
+fn bundled_zsh_highlights_shell_options_and_commands() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = "autoload -Uz compinit\nsetopt auto_cd\nrepeat 3 do\n  print \"${(U)USER}\"\ndone\n";
+    let mut req = request(text, "zsh", 1);
+    req.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    req.configuration.filename = Some("/writing/.zshrc".into());
+    let result = finish(&mut BackendProvider::default(), &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    for (token, style) in [("autoload", "Keyword"), ("auto_cd", "Constant"), ("repeat", "Repeat")] {
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style),
+            "{token}: {:?}; {:?}", result.runs, result.diagnostics);
+    }
+}
+
+#[test]
+fn detected_jsonc_uses_native_comment_syntax_without_json_comment_errors() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = "// settings\n{\"enabled\": true, /* preference */ \"name\": \"writer\"}\n";
+    let mut req = request(text, "jsonc", 1);
+    req.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    req.configuration.filename = Some("/writing/settings.jsonc".into());
+    req.configuration.language = crate::document::syntax::detection::detect(
+        &req.input, "settings.jsonc",
+        &crate::document::syntax::detection::LanguageSelection::Automatic, &[],
+    ).language;
+    assert_eq!(req.configuration.language.as_deref(), Some("jsonc"));
+    let result = finish(&mut BackendProvider::default(), &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    for token in ["// settings", "/* preference */"] {
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == "Comment"),
+            "{token}: {:?}; {:?}", result.runs, result.diagnostics);
+        assert!(!result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == "Error"));
+    }
+}
+
+#[test]
+fn bundled_scala_highlights_keywords_numbers_and_comments() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = "object Main {\n  val answer = 42\n  // answer\n}\n";
+    let mut req = request(text, "scala", 1);
+    req.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    req.configuration.filename = Some("/writing/Main.scala".into());
+    let result = finish(&mut BackendProvider::default(), &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    for (token, style) in [("object", "Keyword"), ("val", "Keyword"), ("42", "Number"), ("// answer", "Comment")] {
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style),
+            "{token}: {:?}; {:?}", result.runs, result.diagnostics);
+    }
+}
+
+#[test]
+fn bundled_shell_dialects_and_typescript_jsx_keep_their_native_syntax() {
+    let _registry = treesitter::package_registry_test_guard();
+    for (language, text, expected) in [
+        ("sh", "printf 'hello'\n", "Statement"),
+        ("bash", "shopt -s nullglob\n", "Statement"),
+        ("ksh", "autoload helper\n", "Statement"),
+        ("dash", "printf 'hello'\n", "Statement"),
+        ("mksh", "autoload helper\nbind '^L=clear-screen'\n", "Statement"),
+        ("csh", "setenv EDITOR viem\n", "Statement"),
+        ("tcsh", "bindkey -e\n", "Statement"),
+        ("tsx", "const element: JSX.Element = <div title=\"yes\">hello</div>;\n", "htmlTagName"),
+    ] {
+        let mut req = request(text, language, 1);
+        req.configuration.vim_directory =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+        let mut provider = BackendProvider::default();
+        provider.configure(&req);
+        // Exercise the Vim path even for a dialect with a preferred grammar.
+        provider.primary = None;
+        provider.primary_failure = None;
+        let result = finish(&mut provider, &req);
+        assert_eq!(result.coverage, Coverage::Exact, "{language}: {:?}", result.diagnostics);
+        assert!(result.runs.iter().any(|run| run.name.as_str() == expected),
+            "{language}: {:?}; {:?}", result.runs, result.diagnostics);
+        if language == "mksh" {
+            for token in ["autoload", "bind"] {
+                let start = text.find(token).unwrap();
+                assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == "Statement"),
+                    "{language}: {token}: {:?}; {:?}", result.runs, result.diagnostics);
+            }
+        }
+    }
+}
+
 fn gitcommit_request(text: &str, revision: u64) -> SyntaxRequest {
     let mut req = request(text, "gitcommit", revision);
     req.configuration.vim_directory =

@@ -113,6 +113,21 @@ fn absent_primary_uses_vim_and_unavailable_vim_stays_missing() {
 }
 
 #[test]
+fn json_comments_and_javascript_jsx_retain_grammar_highlighting() {
+    let _registry = treesitter::package_registry_test_guard();
+    for (language, text, token, style) in [
+        ("json", "// settings\n{\"enabled\": true}\n", "// settings", "Comment"),
+        ("javascript", "const element = <div>hello</div>;\n", "div", "Tag.builtin"),
+    ] {
+        let result = finish(&mut BackendProvider::default(), &request(text, language, 1));
+        assert_eq!(result.coverage, Coverage::Exact, "{language}: {:?}", result.diagnostics);
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style),
+            "{language}: {:?}; {:?}", result.runs, result.diagnostics);
+    }
+}
+
+#[test]
 fn registry_reload_without_edit_replaces_fallback_with_empty_primary() {
     let _registry = treesitter::package_registry_test_guard();
     const ID: &str = "provider-registry-test";

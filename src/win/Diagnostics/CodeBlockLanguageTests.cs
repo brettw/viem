@@ -2,13 +2,101 @@
 using System.Text;
 using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Viem.Windows.Core;
+using Viem.Windows.Editor;
+using Viem.Windows.Shell;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Diagnostics;
 
 internal static class CodeBlockLanguageTests
 {
+    internal static async Task RunMenu(Preferences preferences)
+    {
+        void Check(bool value, string name)
+        { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+        const string source = "before\n\n```rust\nfn main() {}\n```\n\nafter";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        MenuFlyout? menu = null;
+        try
+        {
+            var pane = window.ActivePane!; var view = await pane.Ready;
+            await Task.Delay(80);
+            var state = document.State;
+            var snapshot = view.Layout();
+            var decoration = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
+            var row = snapshot.Rows.Single(row => row.row_index == decoration.row_index);
+            var label = Encoding.UTF8.GetString(snapshot.DecorationLabels, checked((int)decoration.label_byte_start), checked((int)decoration.label_byte_length));
+            bool staleRejected = false;
+            void Select(string language)
+            {
+                try { view.SetCodeBlockLanguage(state.document_id, state.document_revision, row.text_start, language); }
+                catch (InvalidOperationException) { staleRejected = true; }
+            }
+            menu = EditorPane.CodeBlockLanguageMenu(label, true, Select);
+            var none = (ToggleMenuFlyoutItem)menu.Items[0];
+            var obscure = (MenuFlyoutSubItem)menu.Items[1];
+            Check(none.Text == "None" && obscure.Text == "Obscure languages" && menu.Items[2] is MenuFlyoutSeparator,
+                "code block picker places Obscure languages immediately after None and before its divider");
+            Check(menu.Items.Skip(3).Cast<ToggleMenuFlyoutItem>().Select(item => item.Text)
+                .SequenceEqual(DocumentModes.Languages.Where(language => language.Primary).Select(language => language.Name))
+                && menu.Items.OfType<ToggleMenuFlyoutItem>().Any(item => item.Text == "Objective-C") && obscure.Items.Count == 0,
+                "code block picker uses the shared sorted primary group including Objective-C and defers obscure controls");
+            Check(!none.IsChecked && menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Rust").IsChecked,
+                "the native primary code block language entry reflects the captured label");
+            menu.ShowAt(pane.Canvas); await Task.Delay(40);
+            Check(obscure.Items.Cast<ToggleMenuFlyoutItem>().Select(item => item.Text)
+                    .SequenceEqual(DocumentModes.Languages.Where(language => !language.Primary).Select(language => language.Name))
+                && obscure.Items.Count + menu.Items.Count - 3 == DocumentModes.Languages.Count,
+                "opening the code block picker retains the complete catalogue in its two shared language groups");
+            var obscureLanguage = DocumentModes.Languages.First(language => !language.Primary);
+            var obscureChoice = obscure.Items.Cast<ToggleMenuFlyoutItem>().Single(item => item.Text == obscureLanguage.Name);
+            Check(obscure.Focus(FocusState.Programmatic), "code block obscure flyout takes native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Right); await Task.Delay(40);
+            Check(obscureChoice.Focus(FocusState.Programmatic), "obscure code block language takes native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            menu.Hide();
+            Check(!staleRejected && Encoding.UTF8.GetString(document.Source(document.State.document_revision))
+                    == source.Replace("```rust", "```" + obscureLanguage.Id, StringComparison.Ordinal),
+                "native obscure code block choice changes only the captured fence annotation");
+            view.Undo();
+            Check(document.Source(document.State.document_revision).AsSpan().SequenceEqual(Encoding.UTF8.GetBytes(source)),
+                "the native obscure language choice retains exact one-step undo");
+            view.Redo();
+
+            var expected = document.State;
+            menu = EditorPane.CodeBlockLanguageMenu(obscureLanguage.Name + " ▾", true, language =>
+            {
+                try { view.SetCodeBlockLanguage(expected.document_id, expected.document_revision, row.text_start, language); }
+                catch (InvalidOperationException) { staleRejected = true; }
+            });
+            obscure = (MenuFlyoutSubItem)menu.Items[1];
+            Check(((FontIcon)obscure.Icon).Glyph == "\uE73E", "an obscure code block language checks its containing flyout");
+            menu.ShowAt(pane.Canvas); await Task.Delay(40);
+            Check(obscure.Items.Cast<ToggleMenuFlyoutItem>().Single(item => item.Text == obscureLanguage.Name).IsChecked,
+                "an obscure code block language retains its native child check");
+            view.SetCodeBlockLanguage(expected.document_id, expected.document_revision, row.text_start, "rust");
+            var python = menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Python");
+            Check(python.Focus(FocusState.Programmatic), "primary code block language takes native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40); menu.Hide();
+            Check(staleRejected && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "a native language choice cannot refresh away its captured stale source revision");
+
+            menu = EditorPane.CodeBlockLanguageMenu("Rust ▾", false, _ => throw new InvalidOperationException("read-only choice invoked"));
+            menu.ShowAt(pane.Canvas); await Task.Delay(40);
+            obscure = (MenuFlyoutSubItem)menu.Items[1];
+            Check(!obscure.IsEnabled && menu.Items.OfType<ToggleMenuFlyoutItem>().All(item => !item.IsEnabled)
+                && obscure.Items.Cast<ToggleMenuFlyoutItem>().All(item => !item.IsEnabled),
+                "read-only code block menus disable primary and obscure language actions");
+            Check(pane.LastError == null, "code block language menu tests leave no presentation errors");
+        }
+        finally { menu?.Hide(); await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
+    }
+
     internal static void Run(CanvasDevice device, DispatcherQueue dispatcher, Action<bool, string> check)
     {
         const string source = "before\n\n```rust\nfn main() {}\n```\n\nafter";

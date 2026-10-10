@@ -14,7 +14,9 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         }
     }
 
-    private func trackLanguagePicker(_ surface: EVEditorSurfaceController, keys: [(UInt16, String)], enabled: Bool = true) throws {
+    @discardableResult
+    private func trackLanguagePicker(_ surface: EVEditorSurfaceController, keys: [(UInt16, String)],
+                                     enabled: Bool = true, selected: String = "Rust") throws -> NSMenu {
         let window = try XCTUnwrap(surface.editorView.window)
         window.contentView?.layoutSubtreeIfNeeded()
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
@@ -53,12 +55,22 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         let menu = try XCTUnwrap(tracker.menu, "clicking the language furniture must start the actual native menu")
         XCTAssertEqual(menu.items.first?.title, "None")
-        XCTAssertTrue(menu.items[1].isSeparatorItem)
-        XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { $0.isEnabled == enabled },
+        XCTAssertTrue(menu.showsStateColumn)
+        XCTAssertEqual(menu.items[1].title, "Obscure languages")
+        let obscure = try XCTUnwrap(menu.items[1].submenu)
+        XCTAssertTrue(obscure.showsStateColumn)
+        XCTAssertTrue(menu.items[2].isSeparatorItem)
+        XCTAssertEqual(menu.items.dropFirst(3).map(\.title), EVCodeLanguage.primaryLanguages.map(\.name))
+        XCTAssertEqual(obscure.items.map(\.title), EVCodeLanguage.obscureLanguages.map(\.name))
+        let choices = menu.items.filter { !$0.isSeparatorItem && $0.submenu == nil } + obscure.items
+        XCTAssertEqual(choices.filter { $0.state == .on }.map(\.title), [selected])
+        XCTAssertEqual(menu.items[1].state, obscure.items.contains { $0.state == .on } ? .on : .off)
+        XCTAssertTrue((menu.items.filter { !$0.isSeparatorItem } + obscure.items).allSatisfy { $0.isEnabled == enabled },
             "language authoring choices must follow the document's editing policy")
         if keys.contains(where: { $0.0 == 36 }) {
             XCTAssertEqual(tracker.highlighted.last, "None", "native menu highlights: \(tracker.highlighted)")
         }
+        return menu
     }
 
     func testNativeCodeLanguageMenuEscapeAndNoneSelectionPreserveCaretAndUndo() throws {
@@ -83,8 +95,23 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         let session = try XCTUnwrap(surface.session)
         let caret = surface.viewPresentation.cursor_utf8_offset
         let mode = surface.viewPresentation.mode
-        try trackLanguagePicker(surface, keys: [(53, "\u{1b}")])
+        let firstMenu = try trackLanguagePicker(surface, keys: [(53, "\u{1b}")])
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+        XCTAssertEqual(surface.viewPresentation.mode, mode)
+        let zig = try XCTUnwrap(firstMenu.items[1].submenu?.item(withTitle: "Zig"))
+        XCTAssertTrue(NSApplication.shared.sendAction(try XCTUnwrap(zig.action), to: zig.target, from: zig))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data(source.replacingOccurrences(of: "```rust", with: "```zig").utf8))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+        XCTAssertEqual(surface.viewPresentation.mode, mode)
+        let capturedMenu = try trackLanguagePicker(surface, keys: [(53, "\u{1b}")], selected: "Zig")
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: UnicodeScalar("u").value)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        let staleZig = try XCTUnwrap(capturedMenu.items[1].submenu?.item(withTitle: "Zig"))
+        XCTAssertTrue(NSApplication.shared.sendAction(try XCTUnwrap(staleZig.action), to: staleZig.target, from: staleZig))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8),
+            "overflow choices must reject the revision captured before undo")
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
         XCTAssertEqual(surface.viewPresentation.mode, mode)
         try trackLanguagePicker(surface, keys: [(115, "\u{f729}"), (36, "\r")])

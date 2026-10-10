@@ -23,20 +23,41 @@ internal sealed partial class EditorPane
             var revision = snapshot.Info.identity.document_revision;
             var offset = row.text_start;
             var label = Encoding.UTF8.GetString(snapshot.DecorationLabels, checked((int)item.label_byte_start), checked((int)item.label_byte_length));
-            var menu = new MenuFlyout();
             bool canEdit = (Document.State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) == 0;
-            void Add(string title, string language)
-            {
-                var choice = new ToggleMenuFlyoutItem { Text = title, IsChecked = label == title + " ▾", IsEnabled = canEdit };
-                choice.Click += (_, _) => Run(() => View?.SetCodeBlockLanguage(document, revision, offset, language));
-                menu.Items.Add(choice);
-            }
-            Add("None", ""); menu.Items.Add(new MenuFlyoutSeparator());
-            foreach (var language in DocumentModes.Languages) Add(language.Name, language.Id);
+            var menu = CodeBlockLanguageMenu(label, canEdit,
+                language => Run(() => View?.SetCodeBlockLanguage(document, revision, offset, language)));
             menu.ShowAt(Canvas, new Microsoft.UI.Xaml.Controls.Primitives.FlyoutShowOptions { Position = new(bounds.X, bounds.Bottom) });
             return true;
         }
         return false;
+    }
+
+    internal static MenuFlyout CodeBlockLanguageMenu(string label, bool canEdit, Action<string> select)
+    {
+        var menu = new MenuFlyout();
+        ToggleMenuFlyoutItem Choice(string title, string language)
+        {
+            var choice = new ToggleMenuFlyoutItem { Text = title, IsChecked = label == title + " ▾", IsEnabled = canEdit };
+            choice.Click += (_, _) => select(language);
+            return choice;
+        }
+        var obscure = new MenuFlyoutSubItem { Text = "Obscure languages", AccessKey = "O", IsEnabled = canEdit,
+            IsAccessKeyScope = true, ExitDisplayModeOnAccessKeyInvoked = false,
+            Icon = new FontIcon { FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"), FontSize = 12, Width = 16,
+                Glyph = DocumentModes.Languages.Any(language => !language.Primary && label == language.Name + " ▾") ? "\uE73E" : "" } };
+        bool loaded = false;
+        obscure.Loaded += (_, _) =>
+        {
+            if (loaded) return;
+            foreach (var language in DocumentModes.Languages.Where(language => !language.Primary))
+                obscure.Items.Add(Choice(language.Name, language.Id));
+            loaded = true;
+        };
+        var none = Choice("None", ""); none.AccessKey = "N";
+        menu.Items.Add(none); menu.Items.Add(obscure); menu.Items.Add(new MenuFlyoutSeparator());
+        foreach (var language in DocumentModes.Languages.Where(language => language.Primary))
+            menu.Items.Add(Choice(language.Name, language.Id));
+        return menu;
     }
 
     private void DrawCodeBlockLanguages(CanvasDrawingSession drawing)

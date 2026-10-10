@@ -2120,19 +2120,29 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let label = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)
         let menu = NSMenu(title: "Code block language")
         menu.autoenablesItems = false
+        menu.showsStateColumn = true
         let canEdit = (try? surface.backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0
-        func add(_ title: String, language: String) {
+        func add(_ title: String, language: String, to destination: NSMenu) {
             let choice = NSMenuItem(title: title, action: #selector(chooseCodeBlockLanguage(_:)), keyEquivalent: "")
             choice.target = self
             choice.isEnabled = canEdit
             choice.state = label == "\(title) ▾" ? .on : .off
             choice.representedObject = CodeBlockLanguageTarget(documentID: snapshot.info.identity.document_id,
                 revision: snapshot.info.identity.document_revision, offset: row.text_start, language: language)
-            menu.addItem(choice)
+            destination.addItem(choice)
         }
-        add("None", language: "")
+        add("None", language: "", to: menu)
+        let obscure = NSMenu(title: "Obscure languages")
+        obscure.autoenablesItems = false
+        obscure.showsStateColumn = true
+        for language in EVCodeLanguage.obscureLanguages { add(language.name, language: language.id, to: obscure) }
+        let obscureItem = NSMenuItem(title: "Obscure languages", action: nil, keyEquivalent: "")
+        obscureItem.submenu = obscure
+        obscureItem.isEnabled = canEdit
+        obscureItem.state = obscure.items.contains { $0.state == .on } ? .on : .off
+        menu.addItem(obscureItem)
         menu.addItem(.separator())
-        for language in EVCodeLanguage.all { add(language.name, language: language.id) }
+        for language in EVCodeLanguage.primaryLanguages { add(language.name, language: language.id, to: menu) }
         let bounds = viewRect(item.typographic_bounds)
         menu.popUp(positioning: nil, at: NSPoint(x: bounds.minX, y: bounds.maxY), in: self)
         return true

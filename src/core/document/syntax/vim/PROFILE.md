@@ -1,4 +1,4 @@
-# Native Vim syntax profile 4
+# Native Vim syntax profile 5
 
 The native compiler evaluates the bounded setup language below and emits ordered
 syntax declarations. Compilation is atomic. An active unsupported command, option, pattern, include,
@@ -62,6 +62,18 @@ Active unsupported editor, process, file-writing, or network
 commands still reject the whole program. Runtime `try` handlers can handle
 supported setup errors; they cannot conceal a compatibility failure.
 
+Setup functions also support bounded `try`/`catch`/`finally`, preserving returns,
+loop flow and the enclosing exception state. Only modeled Vim setup errors are
+catchable; unsupported operations, cancellation and exhausted budgets remain
+fatal. The `execute()` expression accepts only a read-only `syntax list @cluster`
+query against preceding declarations, returning cluster names and membership.
+Unknown clusters raise E392, as used by the bundled Zsh containment helper.
+Setup functions also accept the equivalent read-only `syntax list @cluster`
+statement, optionally prefixed by `silent`, as used by Scala's containment helper.
+The wrapper does not grant any other Ex-command capability.
+Queries after deferred generated declarations are rejected to avoid stale reads;
+`execute()` never provides arbitrary Ex execution or editor access.
+
 Highlight group and cluster identities are case-insensitive and retain their
 first spelling. `hlexists()` observes native default highlight identities and
 groups registered by preceding declarations; color values remain Code policy.
@@ -103,7 +115,8 @@ alongside transitive syntax files, so worker eviction preserves interpretation.
 Cancelled setup compilations remain retryable and never become cached
 syntax-load failures.
 Optional external editor capabilities are unavailable. Runtime globals
-start absent; declarations within a syntax package may assign bounded values.
+start absent except for deterministic defaults needed by a selected shell
+dialect; declarations within a syntax package may assign bounded values.
 The Vim runtime's default embedded-language selections remain in effect.
 
 `sync fromstart`, `minlines`, `maxlines`, and `linebreaks` configure recovery.

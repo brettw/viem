@@ -126,6 +126,10 @@ fn deferred_declaration_queries_are_rejected_across_nested_calls() {
             "NestedQuery()",
             vec!["call EmitGroup()", "return QueryGroup()"],
         ),
+        (
+            "ClusterQuery()",
+            vec!["call EmitGroup()", "return execute('syn list @Existing')"],
+        ),
     ] {
         setup
             .define_function(
@@ -140,6 +144,37 @@ fn deferred_declaration_queries_are_rejected_across_nested_calls() {
         // A failed call cannot leak its pending output into the next call.
         assert!(setup.call_statement("QueryGroup()").unwrap().is_empty());
     }
+}
+
+#[test]
+fn function_try_handlers_preserve_return_exception_and_compatibility_failures() {
+    let mut setup = Setup::new(&VimSetupContext::default(), None);
+    for (signature, body) in [
+        ("Probe()", "try\nlet value = execute('syn list @Missing')\nreturn 'wrong'\ncatch /E392/\nreturn 'TOP'\nfinally\nlet cleaned = 1\nendtry"),
+        ("SilentProbe()", "try\nsilent syn list @Existing\nreturn '@Existing'\ncatch /E392/\nreturn 'TOP'\nendtry"),
+        ("Nested()", "try\nlet value = missing\ncatch /E121:/\nlet inner = Probe()\nif v:exception !~# '^E121:'\nreturn 'wrong'\nendif\nreturn inner\nendtry"),
+        ("Unsafe()", "try\ncall system('No such file or directory')\ncatch\nreturn 'hidden'\nfinally\nreturn 'hidden again'\nendtry"),
+        ("Unsupported()", "try\nunsupported No such file or directory\ncatch\nreturn 'hidden'\nendtry"),
+        ("SilentUnsafe()", "try\nsilent call system('date')\ncatch\nreturn 'hidden'\nendtry"),
+        ("Loop()", "for item in [1, 2]\ntry\nbreak\nfinally\nlet cleaned = 1\nendtry\nendfor\nreturn item"),
+    ] {
+        setup.define_function(signature, &body.lines().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+    }
+    assert_eq!(setup.evaluate("Probe()").unwrap(), Value::Text("TOP".into()));
+    assert_eq!(setup.evaluate("SilentProbe()").unwrap(), Value::Text("TOP".into()));
+    assert_eq!(setup.evaluate("Nested()").unwrap(), Value::Text("TOP".into()));
+    assert_eq!(setup.evaluate("exists('v:exception')").unwrap(), Value::Number(0));
+    assert_eq!(setup.evaluate("Loop()").unwrap(), Value::Number(1));
+    for expression in ["Unsafe()", "Unsupported()", "SilentUnsafe()"] {
+        let error = setup.evaluate(expression).unwrap_err();
+        assert!(error.contains("unsupported") || error.contains("only syntax cluster inspection"), "{error}");
+    }
+    setup.update_syntax_cluster("Existing", &["First".into(), "@Nested".into()]).unwrap();
+    assert_eq!(setup.evaluate("SilentProbe()").unwrap(), Value::Text("@Existing".into()));
+    assert_eq!(setup.evaluate("execute('syntax list @existing')").unwrap(),
+        Value::Text("\n--- Syntax items ---\nExisting cluster=First,@Nested ".into()));
+    setup.clear_syntax_cluster(Some("EXISTING"));
+    assert!(setup.evaluate("execute('syn list @Existing')").unwrap_err().starts_with("E392:"));
 }
 
 #[test]
