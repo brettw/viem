@@ -51,7 +51,7 @@ pub(super) fn joining_patches(
     let bytes = document
         .state()
         .source
-        .bytes_in(line.start..line.end.min(line.start + 512))
+        .bytes_in(line.start..line.end.min((line.start + 512).max(at)))
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
     let quote = super::super::markdown_quotes::prefix(&decoded.text);
@@ -70,15 +70,50 @@ pub(super) fn joining_patches(
         prefix += decoded.text[prefix..].len()
             - decoded.text[prefix..].trim_start_matches([' ', '\t']).len();
     }
-    let start = projection
+    let mut start = projection
         .source_range(first.range.end..first.range.end + 1)
         .ok_or(DocumentError::AmbiguousProjection)?
         .start;
-    let end = line.start
+    // A heading's closing sequence is hidden syntax before its ending. Once
+    // another body is joined there, that sequence would become literal text.
+    if first.style.0.starts_with("Heading") {
+        if let Some(body) = projection.source_range(first.range.clone()) {
+            let first_line = document.state().source_hard_lines.line_at_offset(body.start)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = document.state().source.bytes_in(
+                first_line.start..first_line.end.min(first_line.start + 512),
+            ).ok_or(DocumentError::AmbiguousProjection)?;
+            let first_prefix = document.encoding().decode_region(&bytes, first_line.start)?.text;
+            if atx_body_prefix(&first_prefix).is_some() {
+                let bytes = document.state().source.bytes_in(body.end..start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded_suffix = document.encoding().decode_region(&bytes, body.end)?;
+                let suffix = &decoded_suffix.text;
+                let trimmed = suffix.trim_end_matches([' ', '\t']);
+                let hashes = trimmed.bytes().rev().take_while(|byte| *byte == b'#').count();
+                let closing = trimmed.len() - hashes;
+                let retained = if hashes > 0 && (trimmed[..closing].ends_with([' ', '\t'])
+                    || closing == 0 && first.range.is_empty()) {
+                    trimmed[..closing].trim_end_matches([' ', '\t'])
+                } else { trimmed };
+                start = decoded_suffix.source_boundary(retained.len())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+            } else {
+                start = start.min(body.end);
+            }
+        }
+    }
+    let end = if last.style.0.starts_with("Heading") {
+        // Block syntax stops before inline opening delimiters. Text provenance
+        // starts after those delimiters, so it cannot own the entire prefix.
+        decoded.source_boundary(atx_body_prefix(&decoded.text).unwrap_or(prefix))
+            .ok_or(DocumentError::AmbiguousProjection)?
+    } else { line.start
         + document
             .encoding()
             .encode_fragment(&decoded.text[..prefix])?
-            .len();
+            .len() };
     let mut sources = vec![start..end];
     for selected in [range.start..first.range.end, last.range.start..range.end] {
         if !selected.is_empty() {
@@ -175,6 +210,28 @@ pub(super) fn joining_patches(
         }
     }
     Ok(Some(patches))
+}
+
+fn atx_body_prefix(text: &str) -> Option<usize> {
+    let mut at = 0;
+    loop {
+        at += super::super::markdown_quotes::prefix(&text[at..]);
+        let Some(marker) = super::super::markdown_blocks::marker_prefix_length(&text[at..]) else {
+            break;
+        };
+        at += marker;
+    }
+    let indent = text[at..].bytes().take_while(|byte| *byte == b' ').count();
+    if indent > 3 { return None; }
+    at += indent;
+    let hashes = text[at..].bytes().take_while(|byte| *byte == b'#').count();
+    if !(1..=6).contains(&hashes) { return None; }
+    at += hashes;
+    if text.as_bytes().get(at).is_some_and(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+        return None;
+    }
+    at += text[at..].bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
+    Some(at)
 }
 
 pub(super) fn deletion_patches(
@@ -375,6 +432,10 @@ pub(super) fn empty_insertion_patches(
         return Ok(None);
     }
     let needs_padding = !prefix.ends_with([' ', '\t']);
+    let needs_break = document.projection().hard_breaks_for_region(
+        &(range.start..(range.start + 1).min(document.projection().text_tree().byte_len())),
+    ).contains(&range.start) && document.projection().blocks_for_region(range).iter()
+        .any(|block| block.range.start == range.start && range.start < block.range.end);
     let following_code = document
         .projection()
         .blocks_for_region(
@@ -396,7 +457,7 @@ pub(super) fn empty_insertion_patches(
     } else {
         false
     };
-    if !needs_padding && !needs_separator {
+    if !needs_padding && !needs_separator && !needs_break {
         return Ok(None);
     }
     let mut syntax = format!(
@@ -409,6 +470,10 @@ pub(super) fn empty_insertion_patches(
     // owner by giving that existing boundary its minimal blank separator.
     if needs_separator {
         syntax.push_str(document.file_format().spelling());
+    } else if needs_break {
+        // Empty marker padding can contribute a retained hard break. Filling
+        // the marker would consume that padding and turn its ending soft.
+        syntax.push('\\');
     }
     Ok(Some(vec![SourcePatch::primary(
         at..at,
@@ -529,13 +594,36 @@ pub(super) fn insertion_patches(
     document: &Document,
     edit: &FormattedPayloadEdit,
 ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
+    paragraph_insertion_patches(document, &edit.range, edit.payload.text(),
+        edit.payload.break_offsets(), edit.boundary_affinity)
+}
+
+/// Native text intentions and captured payloads share list paragraph syntax.
+/// Reusing the item's marker retains its continuation/code indentation even
+/// when the existing body begins on the far side of an inserted paragraph.
+pub(super) fn text_insertion_patches(
+    document: &Document,
+    edit: &TextEdit,
+) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
+    if !edit.replacement.contains('\n') { return Ok(None); }
+    let breaks = edit.replacement.match_indices('\n').map(|(at, _)| at).collect::<Vec<_>>();
+    paragraph_insertion_patches(document, &edit.range, &edit.replacement, &breaks, None)
+}
+
+fn paragraph_insertion_patches(
+    document: &Document,
+    range: &Range<usize>,
+    text: &str,
+    breaks: &[usize],
+    affinity: Option<BoundaryAffinity>,
+) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
     if document.format() != Format::Markdown
-        || !edit.range.is_empty()
-        || edit.payload.break_offsets().is_empty()
+        || !range.is_empty()
+        || breaks.is_empty()
     {
         return Ok(None);
     }
-    let at = edit.range.start;
+    let at = range.start;
     let block = document
         .projection()
         .blocks_for_region(&(at..at))
@@ -596,11 +684,9 @@ pub(super) fn insertion_patches(
         .find(|ch| !ch.is_ascii_digit())
         .ok_or(DocumentError::AmbiguousProjection)?;
     let insert_before_label = at == owner.range.start
-        && edit
-            .payload
-            .break_offsets()
+        && breaks
             .last()
-            .is_some_and(|last| *last + 1 == edit.payload.text().len());
+            .is_some_and(|last| *last + 1 == text.len());
     let mut syntax = String::new();
     if insert_before_label {
         syntax.push_str(quote_prefix);
@@ -613,13 +699,13 @@ pub(super) fn insertion_patches(
     }
     let mut start = 0;
     let mut number = ordinal;
-    for &boundary in edit.payload.break_offsets() {
+    for &boundary in breaks {
         syntax.push_str(&escape_markdown_insert_in_encoding(
-            &edit.payload.text()[start..boundary],
+            &text[start..boundary],
             document.encoding(),
         ));
         syntax.push_str(document.file_format().spelling());
-        if !(insert_before_label && boundary + 1 == edit.payload.text().len()) {
+        if !(insert_before_label && boundary + 1 == text.len()) {
             syntax.push_str(quote_prefix);
             syntax.push_str(indent);
             number = number.saturating_add(1);
@@ -632,7 +718,7 @@ pub(super) fn insertion_patches(
         start = boundary + 1;
     }
     syntax.push_str(&escape_markdown_insert_in_encoding(
-        &edit.payload.text()[start..],
+        &text[start..],
         document.encoding(),
     ));
     let source_at = if insert_before_label {
@@ -642,7 +728,7 @@ pub(super) fn insertion_patches(
             .projection()
             .source_insertion_point(
                 at,
-                edit.boundary_affinity != Some(BoundaryAffinity::Upstream),
+                affinity != Some(BoundaryAffinity::Upstream),
             )
             .ok_or(DocumentError::AmbiguousProjection)?
     };

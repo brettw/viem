@@ -826,9 +826,19 @@ pub(super) fn delimiter_ranges(
     document: &Document,
     source: &Range<usize>,
 ) -> Result<Option<(Range<usize>, Range<usize>)>, DocumentError> {
+    if document.projection().map_source_boundary(document.revision(), source.start,
+        super::BoundaryAffinity::Downstream).ok().is_some_and(|point| {
+            document.projection().blocks_for_region(&(point.formatted_offset..point.formatted_offset))
+                .iter().any(|block| block.style.0 == "Code Block")
+        })
+    {
+        // Block fences own literal endings and their own empty-body repair.
+        return Ok(None);
+    }
     let tick = document.encoding().encode_fragment("`")?;
     let space = document.encoding().encode_fragment(" ")?;
     let slash = document.encoding().encode_fragment("\\")?;
+    let ending = document.encoding().encode_fragment(document.file_format().spelling())?;
     let width = tick.len();
     let matches = |at: usize, spelling: &[u8]| {
         document
@@ -842,9 +852,14 @@ pub(super) fn delimiter_ranges(
     let mut right = source.end;
     if left >= width && matches(left - width, &space) {
         left -= width;
+    } else if left >= ending.len() && matches(left - ending.len(), &ending) {
+        // GFM normalizes an ending to a space before trimming code padding.
+        left -= ending.len();
     }
     if matches(right, &space) {
         right += width;
+    } else if matches(right, &ending) {
+        right += ending.len();
     }
     let open_end = left;
     let close_start = right;
@@ -1003,7 +1018,8 @@ pub(super) fn preserve_edited_inline_delimiters(
             let closing = read(&run.closing)?;
             let left_pad = opening.trim_start_matches('`');
             let right_pad = closing.trim_end_matches('`');
-            let raw = format!("{left_pad}{body}{right_pad}");
+            let raw = format!("{left_pad}{body}{right_pad}")
+                .replace(document.file_format().spelling(), " ");
             let projected = if raw.starts_with(' ')
                 && raw.ends_with(' ')
                 && !raw.chars().all(|character| character == ' ')

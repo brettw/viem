@@ -26,6 +26,8 @@ mod markdown_code_style;
 mod markdown_code_language;
 #[path = "markdown_gfm_edit.rs"]
 mod markdown_gfm_edit;
+#[path = "markdown_reference_edit.rs"]
+mod markdown_reference_edit;
 #[path = "markdown_table_edit.rs"]
 mod markdown_table_edit;
 #[path = "markdown_table_projection.rs"]
@@ -2049,6 +2051,7 @@ impl Document {
             )?;
         }
         if !authored_syntax {
+            self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
         }
         let repaired_utf16 =
@@ -2497,9 +2500,29 @@ impl Document {
             new_end,
         );
         let inherited_blocks = self.can_inherit_markdown_source_list_context(edits);
-        Ok(self
+        if self
             .verify_markdown_source_region(&region, &regional, edits, inherited_blocks)
-            .is_err())
+            .is_err()
+        {
+            return Ok(true);
+        }
+        // Source edits can change folded separator whitespace without changing
+        // the regional row count or owners. Prove the literal splice as well
+        // before selecting the text-preserving candidate path.
+        let mut expected = self.projection().text_tree()
+            .slice(region.old_formatted.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        for edit in edits.iter().rev() {
+            if edit.range.start < region.old_formatted.start
+                || edit.range.end > region.old_formatted.end
+            {
+                return Ok(true);
+            }
+            expected.replace_range(edit.range.start - region.old_formatted.start
+                ..edit.range.end - region.old_formatted.start, &edit.replacement);
+        }
+        Ok(regional.text_tree().slice(0..regional.text_tree().byte_len())
+            .map_err(DocumentError::FormattedTextStorage)? != expected)
     }
 
     fn prepare_formatted_payload_edits(
@@ -4522,6 +4545,11 @@ impl Document {
                     parser_input.units.retain(|unit| unit.normalized.start < end);
                     parser_input.endings.retain(|ending| ending.normalized.start < end);
                 }
+                if self.can_inherit_markdown_list_context(edits, source_patches) {
+                    parser_input = self.markdown_list_region_body_input(
+                        &parser_input, &region.old_formatted, region.old_source.start, source_patches,
+                    )?;
+                }
                 let mut regional_projection = {
                     project(
                         &parser_input,
@@ -4831,6 +4859,9 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
+        if markdown_html_edit::edit_changes_literal_html_grammar(self, edits)? {
+            return Ok(None);
+        }
         if self.markdown_edit_needs_reference_context(edits) {
             return Ok(None);
         }
@@ -4860,8 +4891,39 @@ impl Document {
                 && !edit.replacement.chars().any(|ch| !ch.is_alphanumeric())
                 && self.table_source_text(cell.source_range.clone()).is_ok_and(|text| text.chars().all(|ch| ch.is_alphanumeric() || matches!(ch, ' ' | '\t')))
         });
+        if markdown_table && self.format() == Format::Markdown {
+            let (_, _, cell) = self.projection().table_cell_at(edit.range.start).unwrap();
+            let mut text = self.projection().text_tree().slice(cell.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            text.replace_range(edit.range.start - cell.range.start..edit.range.end - cell.range.start, &edit.replacement);
+            if text.starts_with([' ', '\t']) || text.ends_with([' ', '\t']) {
+                // Cell-edge whitespace is parsed, not inherited. Its protection
+                // must be verified against a newly parsed table row.
+                return Ok(None);
+            }
+        }
         if self.format().is_source_view() && !markdown_table {return Ok(None);}
         let markdown_code = self.format() == Format::Markdown;
+        let inline_sample = edit.range.start.saturating_sub(1)
+            ..(edit.range.end + 1).min(self.projection().text_tree().byte_len());
+        let markdown_inline_code = markdown_code
+            && self.projection().style_spans_for_region(&inline_sample).iter().any(|span| {
+                span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)
+                    && span.range.start <= edit.range.start && edit.range.end <= span.range.end
+                    && self.projection().source_range(span.range.clone()).is_some_and(|source| {
+                        super::markdown_code::delimiter_ranges(self, &source).is_ok_and(|delimiters| {
+                            delimiters.is_some_and(|(opening, closing)| {
+                                let Ok(ending) = self.encoding().encode_fragment(self.file_format().spelling()) else { return false; };
+                                // A trimmed multiline scope can restart on a
+                                // body row without its backticks. Ordinary
+                                // inline scopes retain their parsing path.
+                                opening.len() >= ending.len() && closing.len() >= ending.len()
+                                    && self.state().source.bytes_in(opening.end - ending.len()..opening.end).as_deref() == Some(ending.as_slice())
+                                    && self.state().source.bytes_in(closing.start..closing.start + ending.len()).as_deref() == Some(ending.as_slice())
+                            })
+                        })
+                    })
+            });
         let markdown_list = markdown_code
             && self
                 .projection()
@@ -4881,7 +4943,7 @@ impl Document {
                 .blocks_for_region(&edit.range)
                 .iter()
                 .any(|block| block.style.0 == "Code Block")
-                && !markdown_list && !markdown_table
+                && !markdown_list && !markdown_table && !markdown_inline_code
                 || edit.replacement.contains(['`', '~'])
                 || markdown_list && edit.replacement.contains(['*', '_', '#', '\\']))
         {
@@ -5122,7 +5184,11 @@ impl Document {
             decoded_bytes = parsed_bytes + old_patch_bytes.len();
         }
 
-        let sampled_at = if edit.range.is_empty() {
+        let sampled_at = if edit.range.is_empty() && edit.range.start == edited_line.start {
+            // A hard row's start has only its body-side character context.
+            // The preceding source ending is not a Code character sample.
+            edit.range.start
+        } else if edit.range.is_empty() {
             self.projection()
                 .provenance_for_region(
                     &(edit.range.start.saturating_sub(4)
@@ -5326,6 +5392,112 @@ impl Document {
                 .iter()
                 .any(|body| body.start <= patch.range.start && patch.range.end <= body.end)
         })
+    }
+
+    /// Ancestor list markers can lie before the regional restart. Remove only
+    /// the old prose body's hidden indentation, keeping source coordinates and
+    /// all visible contributors. Otherwise a continuation is parsed as code
+    /// before its validated list ownership is restored.
+    fn markdown_list_region_body_input(
+        &self,
+        input: &super::line_endings::NormalizedText,
+        old_formatted: &Range<usize>,
+        old_source_start: usize,
+        patches: &[SourcePatch],
+    ) -> Result<super::line_endings::NormalizedText, ModelTransactionError> {
+        let Some(first_source) = input.units.first().map(|unit| unit.source.start) else {
+            return Ok(input.clone());
+        };
+        let Ok(capture_start) = self.projection().map_source_boundary(
+            self.revision(), old_source_start, BoundaryAffinity::Downstream,
+        ) else { return Ok(input.clone()); };
+        let blocks = self.projection().blocks_for_region(
+            &(capture_start.formatted_offset.min(old_formatted.start)..old_formatted.end),
+        );
+        let mut omitted_items = std::collections::BTreeMap::new();
+        for block in &blocks {
+            let Some(item) = block.containers.iter().rev()
+                .find(|member| member.container.kind == super::ContainerKind::ListItem)
+            else { continue; };
+            let omitted = omitted_items.entry(item.container.id).or_insert(true);
+            if item.starts_here {
+                let at = self.projection().source_insertion_point(block.range.start, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let row = self.state().source_hard_lines.line_at_offset(at)
+                    .and_then(|index| self.state().source_hard_lines.get(index))
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let row_start = rebase_source_boundary(row.start, patches, Association::BeforeInsertion)?;
+                if row_start >= first_source {
+                    *omitted = false;
+                }
+            }
+        }
+        let mut prefixes = std::collections::BTreeMap::new();
+        for span in self.projection().provenance_for_region(old_formatted) {
+            let owner = blocks.partition_point(|block| block.range.start <= span.formatted.start)
+                .checked_sub(1).and_then(|index| blocks.get(index));
+            if span.formatted.is_empty() || span.source.is_empty()
+                || !owner.is_some_and(|block| {
+                    span.formatted.end <= block.range.end && block.style.0 != "Code Block"
+                        && matches!(block.kind, super::BlockKind::ListItem { .. })
+                        && block.containers.iter().rev()
+                            .find(|member| member.container.kind == super::ContainerKind::ListItem)
+                            .is_some_and(|member| omitted_items.get(&member.container.id) == Some(&true))
+                })
+            {
+                continue;
+            }
+            let Some(index) = self.state().source_hard_lines.line_at_offset(span.source.start) else { continue; };
+            let row = self.state().source_hard_lines.get(index).ok_or(DocumentError::VerificationFailed)?;
+            if span.source.end > row.end || prefixes.contains_key(&row.start) {
+                continue;
+            }
+            if self.projection().text_tree().slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?.chars().all(|ch| ch == '\n')
+            {
+                continue;
+            }
+            prefixes.insert(row.start, span.source.start);
+        }
+        let mut removed = Vec::new();
+        for (start, visible) in prefixes {
+            let start = rebase_source_boundary(start, patches, Association::BeforeInsertion)?;
+            let visible = rebase_source_boundary(visible, patches, Association::BeforeInsertion)?;
+            let first = input.units.partition_point(|unit| unit.source.start < start);
+            let end = input.units.partition_point(|unit| unit.source.end <= visible);
+            if first >= end { continue; }
+            let prefix = &input.text[input.units[first].normalized.start..input.units[end - 1].normalized.end];
+            let quote = super::markdown_quotes::prefix(prefix);
+            let white = prefix[quote..].bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
+            if white > 0 {
+                let at = input.units[first].normalized.start + quote;
+                removed.push(at..at + white);
+            }
+        }
+        let mut result = super::line_endings::NormalizedText {
+            text: String::new(), units: Vec::with_capacity(input.units.len()),
+            endings: Vec::with_capacity(input.endings.len()), encoding: input.encoding,
+        };
+        let mut ending = 0;
+        let mut hidden = 0;
+        for unit in &input.units {
+            while hidden < removed.len() && removed[hidden].end <= unit.normalized.start { hidden += 1; }
+            if removed.get(hidden).is_some_and(|range| range.contains(&unit.normalized.start)) { continue; }
+            let start = result.text.len();
+            result.text.push_str(&input.text[unit.normalized.clone()]);
+            let mut next = unit.clone();
+            next.normalized = start..result.text.len();
+            while ending < input.endings.len() && input.endings[ending].normalized.start < unit.normalized.start {
+                ending += 1;
+            }
+            if let Some(original) = input.endings.get(ending).filter(|ending| ending.normalized == unit.normalized) {
+                let mut original = original.clone();
+                original.normalized = next.normalized.clone();
+                result.endings.push(original);
+            }
+            result.units.push(next);
+        }
+        Ok(result)
     }
 
     /// A regional Markdown Source reparse is exact only when the region does
@@ -5741,18 +5913,13 @@ impl Document {
             }
             if self
                 .projection()
-                .style_spans_for_region(&edit.range)
+                .style_spans_for_region(&(edit.range.start.saturating_sub(1)
+                    ..edit.range.end.saturating_add(1).min(self.projection().text_tree().byte_len())))
                 .iter()
-                .any(|span| {
-                    span.application == StyleApplication::Automatic("Markdown reference".into())
-                        && self
-                            .projection()
-                            .text_tree()
-                            .slice(span.range.clone())
-                            .is_ok_and(|text| {
-                                super::markdown_syntax::needs_reference_context(&text)
-                            })
-                })
+                // Reference definitions may span several physical rows. A
+                // continuation row has no bracket of its own, but carries the
+                // same global dependency; boundary insertions touch it too.
+                .any(|span| span.application == StyleApplication::Automatic("Markdown reference".into()))
             {
                 return true;
             }
@@ -5788,6 +5955,9 @@ impl Document {
         source_patches: &[SourcePatch],
         authored_syntax: bool,
     ) -> Result<Option<LineLocalProjectionRegion>, ModelTransactionError> {
+        if markdown_html_edit::edit_changes_literal_html_grammar(self, edits)? {
+            return Ok(None);
+        }
         if self.markdown_edit_needs_reference_context(edits) {
             return Ok(None);
         }

@@ -3,6 +3,82 @@
 //! there is no standalone HTML editing document or HTML-mode transaction.
 use super::*;
 
+/// Literal HTML and comments can change block ownership without introducing a
+/// line ending. Those edits need authoritative parsing rather than a text stub.
+pub(super) fn edit_changes_literal_html_grammar(
+    document: &Document,
+    edits: &[TextEdit],
+) -> Result<bool, DocumentError> {
+    if document.format() != Format::Markdown {
+        return Ok(false);
+    }
+    let projection = document.projection();
+    let len = projection.text_tree().byte_len();
+    for edit in edits {
+        let nearby = edit.range.start.saturating_sub(1)..(edit.range.end + 1).min(len);
+        let comment = projection
+            .style_spans_for_region(&nearby)
+            .iter()
+            .any(|span| span.application == StyleApplication::Automatic("Comment".into()));
+        let punctuation = |byte: u8| matches!(byte, b'<' | b'>' | b'-' | b'\n' | b'\r');
+        if comment
+            && (edit.replacement.bytes().any(punctuation)
+                || projection
+                    .text_tree()
+                    .slice(edit.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?
+                    .bytes()
+                    .any(punctuation)
+                || [edit.range.start.saturating_sub(1), edit.range.start]
+                    .into_iter()
+                    .any(|at| {
+                        projection
+                            .text_tree()
+                            .byte_chunk_at(at)
+                            .first()
+                            .is_some_and(|byte| punctuation(*byte))
+                    }))
+        {
+            return Ok(true);
+        }
+        if comment {
+            continue;
+        }
+        for block in projection.blocks_for_region(&nearby) {
+            if block.style.0 == "Code Block" {
+                continue;
+            }
+            if edit.range.start == block.range.start
+                && projection
+                    .text_tree()
+                    .byte_chunk_at(block.range.start)
+                    .first()
+                    == Some(&b'<')
+            {
+                return Ok(true);
+            }
+            // A small name edit can activate a supported tag only near its
+            // opening angle. Long unrelated prose and attribute values do not
+            // require global HTML grammar work. The supported vocabulary's
+            // longest name is shorter than this bounded neighborhood.
+            for at in
+                (edit.range.start.saturating_sub(16).max(block.range.start)..edit.range.start).rev()
+            {
+                let Some(&byte) = projection.text_tree().byte_chunk_at(at).first() else {
+                    break;
+                };
+                if byte == b'<' {
+                    return Ok(true);
+                }
+                if byte.is_ascii_whitespace() || byte == b'>' || !byte.is_ascii() {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn literal_html(text: &str, encoding: super::super::Encoding) -> String {
     let mut output = String::new();
     for ch in text.chars() {
@@ -24,10 +100,243 @@ pub(super) fn literal_html(text: &str, encoding: super::super::Encoding) -> Stri
 }
 
 impl Document {
+    /// A visible comment or unsupported tag is editable text. If editing its
+    /// spelling activates a different grammar, protect that smallest literal
+    /// construct, retaining its enclosing passive HTML and neighboring markup.
+    fn prepare_markdown_literal_html_edits(
+        &self,
+        edits: &[TextEdit],
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if !edit_changes_literal_html_grammar(self, edits)? {
+            return Ok(None);
+        }
+        let projection = self.projection();
+        let len = projection.text_tree().byte_len();
+        let mut regions: Vec<(Range<usize>, bool)> = Vec::new();
+        for edit in edits {
+            let nearby = edit.range.start.saturating_sub(1)..(edit.range.end + 1).min(len);
+            for block in projection.blocks_for_region(&nearby) {
+                let spans = projection.style_spans_for_region(&block.range);
+                let mut comments: Vec<Range<usize>> = Vec::new();
+                for span in spans.iter().filter(|span| {
+                    span.application == StyleApplication::Automatic("Comment".into())
+                }) {
+                    if let Some(last) = comments
+                        .last_mut()
+                        .filter(|last| last.end == span.range.start)
+                    {
+                        last.end = span.range.end;
+                    } else {
+                        comments.push(span.range.clone());
+                    }
+                }
+                for range in comments {
+                    if range.start <= edit.range.start && edit.range.end <= range.end {
+                        regions.push((range, block.markdown_html));
+                    }
+                }
+                if !block.markdown_html
+                    && !regions.iter().any(|(range, _)| {
+                        range.start <= edit.range.start && edit.range.end <= range.end
+                    })
+                    && projection
+                        .text_tree()
+                        .byte_chunk_at(block.range.start)
+                        .first()
+                        == Some(&b'<')
+                {
+                    regions.push((block.range.clone(), false));
+                }
+            }
+        }
+        let decoded = self.encoding().decode(&self.source_bytes())?;
+        let input = normalize(&decoded, self.file_format());
+        let mapper = super::super::rich_text::Builder::new(&input, self.revision());
+        // Unsupported inline tags have visible, exact source contributors even
+        // inside an otherwise semantic HTML block. Recognize them by that
+        // relation rather than maintaining a second allowed-tag catalogue.
+        for token in super::super::html::tokenize(&input.text) {
+            if !matches!(token.kind, super::super::html::TokenKind::Tag(_)) {
+                continue;
+            }
+            let source = mapper.source_range(token.range.clone());
+            let contributors = projection.provenance_contained_in_source(&source);
+            let Some(start) = contributors
+                .iter()
+                .filter(|span| !span.formatted.is_empty())
+                .map(|span| span.formatted.start)
+                .min()
+            else {
+                continue;
+            };
+            let Some(end) = contributors.iter().map(|span| span.formatted.end).max() else {
+                continue;
+            };
+            let range = start..end;
+            if !edits
+                .iter()
+                .any(|edit| range.start <= edit.range.start && edit.range.end <= range.end)
+                || projection
+                    .text_tree()
+                    .slice(range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?
+                    != input.text[token.range]
+            {
+                continue;
+            }
+            let html = projection
+                .blocks_for_region(&range)
+                .iter()
+                .any(|block| block.markdown_html);
+            regions.push((range, html));
+        }
+        regions.sort_by_key(|(range, _)| (range.start, range.end));
+        regions.dedup();
+        let mut uncovered_grammar = false;
+        for edit in edits {
+            if edit_changes_literal_html_grammar(self, std::slice::from_ref(edit))?
+                && !regions.iter().any(|(range, _)| {
+                    range.start <= edit.range.start && edit.range.end <= range.end
+                })
+            {
+                uncovered_grammar = true;
+            }
+        }
+        if regions.is_empty() || uncovered_grammar {
+            return Ok(None);
+        }
+        let base = self.translate_source_edits(edits.iter().map(|edit| (edit, None)))?;
+        if let Ok(prepared) =
+            self.prepare_text_edits_with_patches(edits.to_vec(), Some(base.clone()))
+        {
+            return Ok(Some(prepared));
+        }
+        let mut patches = base;
+        for (range, html) in regions {
+            let Some(source) = projection.source_range(range.clone()) else {
+                continue;
+            };
+            let old = self
+                .state()
+                .source
+                .bytes_in(source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let original = self.encoding().decode_region(&old, source.start)?;
+            let original = normalize(&original, self.file_format());
+            let mut text = projection
+                .text_tree()
+                .slice(range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if original.text != text {
+                continue;
+            }
+            for edit in edits
+                .iter()
+                .rev()
+                .filter(|edit| range.start <= edit.range.start && edit.range.end <= range.end)
+            {
+                text.replace_range(
+                    edit.range.start - range.start..edit.range.end - range.start,
+                    &edit.replacement,
+                );
+            }
+            let comments: Vec<_> = super::super::html::tokenize(&text)
+                .into_iter()
+                .filter_map(|token| {
+                    let raw = &text[token.range.clone()];
+                    (matches!(token.kind, super::super::html::TokenKind::Opaque)
+                        && raw.starts_with("<!--")
+                        && raw.ends_with("-->"))
+                    .then_some(token.range)
+                })
+                .collect();
+            // Retained scalar contributors are copied verbatim. Only insert
+            // protection beside newly active punctuation or an old hard row;
+            // do not re-encode the comment body or its surrounding construct.
+            for (offset, ch) in original.text.char_indices() {
+                let formatted = range.start + offset;
+                if edits
+                    .iter()
+                    .any(|edit| edit.range.start <= formatted && formatted < edit.range.end)
+                {
+                    continue;
+                }
+                let shift: isize = edits
+                    .iter()
+                    .filter(|edit| range.start <= edit.range.start && edit.range.end <= formatted)
+                    .map(|edit| edit.replacement.len() as isize - edit.range.len() as isize)
+                    .sum();
+                let new_offset = (offset as isize + shift) as usize;
+                let in_comment = !html
+                    && comments
+                        .iter()
+                        .any(|comment| comment.start <= new_offset && new_offset < comment.end);
+                let protection = if ch == '\n' && !html {
+                    Some("\\".to_owned())
+                } else if !in_comment
+                    && (matches!(ch, '<' | '&')
+                        || !html && matches!(ch, '*' | '_' | '~' | '`' | '[' | ']' | '\\'))
+                {
+                    Some(if html {
+                        match ch {
+                            '<' => "&lt;",
+                            '&' => "&amp;",
+                            _ => unreachable!(),
+                        }
+                        .to_owned()
+                    } else {
+                        format!("\\{ch}")
+                    })
+                } else {
+                    None
+                };
+                let Some(protection) = protection else {
+                    continue;
+                };
+                let Some(contributor) =
+                    projection.source_range(formatted..formatted + ch.len_utf8())
+                else {
+                    continue;
+                };
+                let candidate = if ch == '\n' {
+                    contributor.start..contributor.start
+                } else {
+                    contributor.clone()
+                };
+                if patches.iter().any(|patch| {
+                    patch.range.start < candidate.end && candidate.start < patch.range.end
+                        || candidate.is_empty()
+                            && patch.range.start < candidate.start
+                            && candidate.start < patch.range.end
+                }) {
+                    continue;
+                }
+                let bytes = self
+                    .state()
+                    .source
+                    .bytes_in(contributor.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let raw = self.encoding().decode_region(&bytes, contributor.start)?;
+                if ch != '\n' && raw.text != ch.to_string() {
+                    continue;
+                }
+                patches.push(SourcePatch::primary(
+                    candidate,
+                    self.encoding().encode_fragment(&protection)?,
+                ));
+            }
+        }
+        self.prepare_text_edits_with_patches(edits.to_vec(), Some(patches))
+            .map(Some)
+    }
+
     pub(super) fn prepare_markdown_html_text_edits(
         &self,
         edits: &[TextEdit],
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if let Some(prepared) = self.prepare_markdown_literal_html_edits(edits)? {
+            return Ok(Some(prepared));
+        }
         if self.format() != Format::Markdown
             || !edits.iter().any(|edit| {
                 self.projection()
@@ -118,10 +427,39 @@ impl Document {
                         .ok_or(DocumentError::AmbiguousProjection)?;
                         vec![at..at]
                     } else {
-                        super::super::source_edit::visible_runs(self.projection(), &expanded.range)?
-                            .into_iter()
-                            .map(|run| run.source)
-                            .collect()
+                        match super::super::source_edit::visible_runs(
+                            self.projection(),
+                            &expanded.range,
+                        ) {
+                            Ok(runs) => runs.into_iter().map(|run| run.source).collect(),
+                            Err(_) => {
+                                let mut runs = Vec::new();
+                                let mut at = expanded.range.start;
+                                for span in self.projection().provenance_for_region(&expanded.range)
+                                {
+                                    if span.formatted.is_empty() {
+                                        continue;
+                                    }
+                                    if span.formatted.start != at
+                                        || span.formatted.end > expanded.range.end
+                                    {
+                                        return Err(DocumentError::AmbiguousProjection);
+                                    }
+                                    at = span.formatted.end;
+                                    if span.source.is_empty() {
+                                        if self.text()[span.formatted] != *"\n" {
+                                            return Err(DocumentError::AmbiguousProjection);
+                                        }
+                                    } else {
+                                        runs.push(span.source);
+                                    }
+                                }
+                                if at != expanded.range.end {
+                                    return Err(DocumentError::AmbiguousProjection);
+                                }
+                                runs
+                            }
+                        }
                     };
                     let replacement = self
                         .encoding()
@@ -190,8 +528,9 @@ impl Document {
             if scratch.text() != &self.text()[start..end] {
                 return Ok(None);
             }
-            let converted = super::super::markdown_serialization::markdown_document(scratch.projection())
-                .replace('\n', self.file_format().spelling());
+            let converted =
+                super::super::markdown_serialization::markdown_document(scratch.projection())
+                    .replace('\n', self.file_format().spelling());
             let mut replacement = self.encoding().encode_fragment(&converted)?;
             let ending = self
                 .encoding()
@@ -345,8 +684,10 @@ impl Document {
                 };
                 if !close.end
                     || open.end
-                    || !(html::heading_or_paragraph(&close.name) || close.name == "div")
-                    || !(html::heading_or_paragraph(&open.name) || open.name == "div")
+                    || !(html::heading_or_paragraph(&close.name)
+                        || matches!(close.name.as_str(), "div" | "li"))
+                    || !(html::heading_or_paragraph(&open.name)
+                        || matches!(open.name.as_str(), "div" | "li"))
                 {
                     continue;
                 }
@@ -469,6 +810,31 @@ impl Document {
 mod tests {
     use super::*;
     use crate::document::Encoding;
+
+    #[test]
+    fn literal_grammar_guard_skips_stable_semantic_html_and_unicode_prose() {
+        for source in [
+            "<div>ordinary prose</div>",
+            "é ordinary prose",
+            "<!-- stable comment -->",
+            "<!--foobar-->",
+        ] {
+            let document =
+                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                    .unwrap();
+            let at = if source == "<!--foobar-->" {
+                5
+            } else if source.starts_with("<!--") {
+                8
+            } else {
+                3
+            };
+            assert!(
+                !edit_changes_literal_html_grammar(&document, &[TextEdit::new(at..at, "x")],)
+                    .unwrap()
+            );
+        }
+    }
 
     #[test]
     fn passive_html_text_edits_keep_tags_and_entity_boundaries() {

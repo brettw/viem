@@ -217,7 +217,9 @@ pub(super) fn split_row(text: &str, range: Range<usize>) -> (Vec<Range<usize>>, 
         match bytes[at] {
             b'\\' => slashes += 1,
             b'|' => {
-                if slashes % 2 == 0 {
+                // GFM tables remove one backslash immediately before a
+                // pipe before inline parsing, including after another slash.
+                if slashes == 0 {
                     pipes.push(at);
                 }
                 slashes = 0;
