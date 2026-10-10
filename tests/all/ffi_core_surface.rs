@@ -4931,6 +4931,73 @@ fn view_presentation_exports_what_the_caret_occupies() {
 }
 
 #[test]
+fn view_presentation_preserves_pending_vim_input_for_native_accelerators() {
+    let core = create_core(b"first\nsecond", ViemDocumentOptions::default());
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, &mut *context);
+    let mut outcome = ViemCoreOutcomeV1::default();
+    let send = |input: ViemKeyInputV1, outcome: &mut ViemCoreOutcomeV1| {
+        assert_eq!(
+            unsafe { test_send_key(core.handle, view, &input, outcome) },
+            ViemStatus::Ok
+        );
+    };
+    let pending = || {
+        let mut presentation = ViemViewPresentationV1::default();
+        assert_eq!(
+            unsafe { viem_core_view_presentation(core.handle, view, &mut presentation) },
+            ViemStatus::Ok
+        );
+        presentation.flags & VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING != 0
+    };
+    let character = |value| key(VIEM_KEY_CHARACTER, value as u32);
+    let control = |value| key(VIEM_KEY_CONTROL_CHARACTER, value as u32);
+    assert!(!pending());
+    for inputs in [
+        vec![character('2')],
+        vec![character('"')],
+        vec![character('"'), character('a')],
+        vec![character('d')],
+        vec![character('g')],
+        vec![character('f')],
+        vec![control('w')],
+        vec![character('i'), control('g')],
+        vec![character('i'), control('o')],
+        vec![character('i'), control('q')],
+        vec![character(':')],
+        vec![character(':'), control('r')],
+    ] {
+        for input in inputs {
+            send(input, &mut outcome);
+        }
+        assert!(pending(), "pending grammar must own the next input");
+        send(key(VIEM_KEY_ESCAPE, 0), &mut outcome);
+        // Escape ends literal-next input first; a second Escape can finish Insert.
+        send(key(VIEM_KEY_ESCAPE, 0), &mut outcome);
+        assert!(!pending(), "cancelled grammar must release native accelerators");
+    }
+    // Counts and explicit registers consumed by an Insert command are settled
+    // typing state, so formatting remains available while that Insert continues.
+    for prefix in ["3i", "\"ai"] {
+        for value in prefix.chars() {
+            send(character(value), &mut outcome);
+        }
+        assert!(!pending(), "settled {prefix:?} must allow native formatting");
+        send(key(VIEM_KEY_ESCAPE, 0), &mut outcome);
+    }
+    // A partial mapping owns input even when its first key is a complete motion.
+    for value in ":nnoremap jj h".chars() {
+        send(character(value), &mut outcome);
+    }
+    send(key(VIEM_KEY_ENTER, 0), &mut outcome);
+    assert!(!pending());
+    send(character('j'), &mut outcome);
+    assert!(pending());
+    send(character('j'), &mut outcome);
+    assert!(!pending());
+}
+
+#[test]
 fn link_destination_ffi_checks_snapshot_boundaries_and_output_aliases() {
     let core = create_core("[café](https://example.com/é) tail".as_bytes(), ViemDocumentOptions {
         format: VIEM_FORMAT_MARKDOWN,

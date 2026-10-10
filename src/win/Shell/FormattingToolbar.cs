@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Interop;
+using Viem.Windows.Input;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
@@ -85,7 +86,7 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(script, ToolbarAction.Subscript, "Subscript", "x₂", literal: true);
         var codeLink = Group(); row.Children.Add(codeLink);
         Add(codeLink, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
-        AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link");
+        AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link (" + KeyPolicy.FormattingShortcut(NativeAction.Link) + ")");
         InsertLink.Click += (_, _) => ExecuteLink();
         codeLink.Children.Add(InsertLink);
         var block = Group(); row.Children.Add(block);
@@ -123,10 +124,22 @@ internal sealed partial class FormattingToolbar : UserControl
             : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
-        AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label);
+        AutomationProperties.SetName(button, label);
+        string shortcut = Shortcut(action);
+        ToolTipService.SetToolTip(button, shortcut.Length == 0 ? label : label + " (" + shortcut + ")");
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
     }
+
+    internal static string Shortcut(ToolbarAction action) => KeyPolicy.FormattingShortcut(action switch
+    {
+        ToolbarAction.CharacterCode => NativeAction.CharacterCode,
+        ToolbarAction.Superscript => NativeAction.Superscript,
+        ToolbarAction.Subscript => NativeAction.Subscript,
+        ToolbarAction.Bullets => NativeAction.Bullets,
+        ToolbarAction.Numbers => NativeAction.Numbers,
+        _ => NativeAction.None
+    });
 
     private static Border BlockQuoteIcon(ButtonBase owner)
     {
@@ -200,9 +213,11 @@ internal sealed partial class FormattingToolbar : UserControl
         if (Visibility == Visibility.Visible) Refresh();
     }
 
-    internal void Refresh()
+    internal void Refresh() => Refresh(includeHidden: false);
+
+    private void Refresh(bool includeHidden)
     {
-        if (refreshing || Visibility != Visibility.Visible || View is not { Id: not 0 } view) return;
+        if (refreshing || !includeHidden && Visibility != Visibility.Visible || View is not { Id: not 0 } view) return;
         using var timing = Diagnostics.InputPerformance.Measure("toolbar.refresh");
         refreshing = true;
         try
@@ -330,13 +345,13 @@ internal sealed partial class FormattingToolbar : UserControl
         var context = view.LinkContext();
         if (view.HasSelection && context.Linked && context.CanRemoveSelection) Run(() => view.ToggleLink(context));
         else if (!view.HasSelection && context.Linked) Run(() => view.ToggleLink(context));
-        else if (pane is { } target) target.Run(() => target.ShowInsertLink(insertOnly: true));
+        else if (pane is { } target) { target.Run(() => target.ShowInsertLink(insertOnly: true)); return; }
         RestoreEditorFocus();
     }
     internal void Execute(ToolbarAction action)
     {
         if (View is not { } view) return;
-        Refresh();
+        Refresh(includeHidden: true);
         if (!Buttons[action].IsEnabled || Buttons[action].Visibility != Visibility.Visible) return;
         Run(() => {
             switch (action)

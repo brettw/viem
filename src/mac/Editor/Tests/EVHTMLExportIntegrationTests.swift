@@ -11,6 +11,9 @@ final class EVHTMLExportIntegrationTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-html-export-core-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+        try EVStyleTestFixtures.configure(configuration, declarations: [
+            (.baseParagraph, .characterWeight, .unsigned(400)),
+        ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(source.utf8), typeName: type, filename: filename, allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

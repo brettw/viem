@@ -3470,6 +3470,29 @@ impl Document {
         else {
             return Ok(self.no_op_prepared());
         };
+        if enabled
+            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+        {
+            let coverage = semantic_style_coverage(
+                &self.projection().style_spans_for_region(&range),
+                style,
+            );
+            if coverage.iter().any(|span| ranges_overlap(span, &range)) {
+                // Author only the uncovered runs. The typing adapter can move
+                // an adjacent closing delimiter, or repair it with passive
+                // HTML when Markdown's delimiter rules require that.
+                let mut scratch = self.scratch_document();
+                let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+                for uncovered in subtract_style_coverage(&range, &coverage).into_iter().rev() {
+                    let prepared = scratch.prepare_typing_markdown_style(uncovered, style, true)?;
+                    for patch in prepared.summary.source_patches.iter().rev() {
+                        sources.splice(patch.range(), patch.replacement());
+                    }
+                    scratch.commit_model_transaction(prepared)?;
+                }
+                source_patches = sources.source_patches();
+            }
+        }
 
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
@@ -3679,7 +3702,9 @@ impl Document {
                     && range.end <= span.range.end
             })
             .collect::<Vec<_>>();
-        if enabled && !matching.is_empty() {
+        if enabled
+            && subtract_style_coverage(range, &semantic_style_coverage(&spans, style)).is_empty()
+        {
             return Ok(None);
         }
         if !enabled {
@@ -6829,6 +6854,45 @@ fn preferred_markdown_style_marker(style: SemanticInlineStyle) -> &'static str {
     markdown_style_markers(style)[0]
 }
 
+fn semantic_style_coverage(spans: &[StyleSpan], style: SemanticInlineStyle) -> Vec<Range<usize>> {
+    let mut ranges = spans
+        .iter()
+        .filter(|span| span.application == StyleApplication::Semantic(style))
+        .map(|span| span.range.clone())
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|range| (range.start, range.end));
+    let mut coverage: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(previous) = coverage.last_mut().filter(|previous| range.start <= previous.end) {
+            previous.end = previous.end.max(range.end);
+        } else {
+            coverage.push(range);
+        }
+    }
+    coverage
+}
+
+fn subtract_style_coverage(range: &Range<usize>, coverage: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut uncovered = Vec::new();
+    let mut at = range.start;
+    for covered in coverage {
+        if covered.end <= at {
+            continue;
+        }
+        if range.end <= covered.start {
+            break;
+        }
+        if at < covered.start {
+            uncovered.push(at..covered.start);
+        }
+        at = at.max(covered.end);
+    }
+    if at < range.end {
+        uncovered.push(at..range.end);
+    }
+    uncovered
+}
+
 fn semantic_style_edit_was_exactly_projected(
     before: &[StyleSpan],
     after: &[StyleSpan],
@@ -6849,6 +6913,27 @@ fn semantic_style_edit_was_exactly_projected(
         return false;
     }
 
+    // Semantic emphasis is a boolean treatment. Extending an existing scope
+    // may merge adjacent spans, but must produce exactly the requested coverage
+    // and retain every unrelated style span, including nested treatments.
+    let expected_coverage = if enabled {
+        semantic_style_coverage(&expected, style)
+    } else {
+        semantic_style_coverage(before, style)
+            .into_iter()
+            .flat_map(|covered| subtract_style_coverage(&covered, std::slice::from_ref(range)))
+            .collect()
+    };
+    if expected_coverage != semantic_style_coverage(after, style) {
+        return false;
+    }
+    expected.retain(|span| span.application != StyleApplication::Semantic(style));
+    let mut unmatched = after
+        .iter()
+        .filter(|span| span.application != StyleApplication::Semantic(style))
+        .cloned()
+        .collect::<Vec<_>>();
+
     // Named Code is the editable appearance of the semantic code marker.
     // Its assignment is created/removed by the same source delimiters.
     if style == SemanticInlineStyle::Code {
@@ -6862,10 +6947,9 @@ fn semantic_style_edit_was_exactly_projected(
             expected.remove(index);
         }
     }
-    if expected.len() != after.len() {
+    if expected.len() != unmatched.len() {
         return false;
     }
-    let mut unmatched = after.to_vec();
     expected.into_iter().all(|span| {
         unmatched
             .iter()

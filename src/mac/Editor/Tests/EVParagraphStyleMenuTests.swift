@@ -131,8 +131,8 @@ import XCTest
             XCTAssertEqual(try backend.serializedSource(typeName: type), quoted)
         }
         let (_, plain, _) = try surface("Words", type: "public.plain-text")
-        let quote = try XCTUnwrap(plain.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "Block quote" })
-        XCTAssertFalse(quote.presentation.isEnabled)
+        XCTAssertNil(plain.currentStyleMenuCatalogue()?.entries.first { $0.stableID == "Block quote" },
+                     "Plain Text does not generate Markdown-only paragraph styles")
     }
 
     func testBlockQuoteMenuAtDocumentEndCreatesBlankQuoteReadyForTyping() throws {

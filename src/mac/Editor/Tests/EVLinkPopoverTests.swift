@@ -51,8 +51,34 @@ final class EVLinkPopoverTests: XCTestCase {
         }
     }
 
+    func testCommandKOpensInsertionOrEditingWithoutChangingExistingLinks() throws {
+        for (type, source, selectionLength, text, destination) in [
+            (EVDocument.markdownType, "word", 0, "", ""),
+            (EVDocument.markdownType, "word", 4, "word", ""),
+            (EVDocument.markdownSourceType, "[label](next.md \"title\") tail", 0, "label", "next.md"),
+        ] {
+            let (backend, surface, window) = try editor(source, type: type)
+            defer { surface.linkPopover.close(); window.close() }
+            let formatted = try backend.formattedText() as NSString
+            let location = destination.isEmpty ? 0 : formatted.range(of: "label").location + 1
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: location, length: selectionLength))
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "k",
+                charactersIgnoringModifiers: "k", isARepeat: false, keyCode: 40))
+            XCTAssertTrue(surface.editorView.performKeyEquivalent(with: event), type)
+            XCTAssertTrue(surface.linkPopover.isEditing, type)
+            XCTAssertEqual(surface.linkPopover.textField.stringValue, text, type)
+            XCTAssertEqual(surface.linkPopover.destinationField.stringValue, destination, type)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8), type)
+            surface.linkPopover.close(restoreFocus: true)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8), type)
+            XCTAssertFalse(surface.canUndo)
+        }
+    }
+
     private func trackHeadingPicker(_ combo: NSComboBox, keys: [(UInt16, String)]) throws {
         let window = try XCTUnwrap(combo.window)
+        _ = try XCTUnwrap(window.screen, "Native dropdown tracking requires WindowServer access; run the test host outside the execution sandbox")
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertTrue(window.makeFirstResponder(combo))
         let location = combo.convert(NSPoint(x: combo.bounds.maxX - 8, y: combo.bounds.midY), to: nil)

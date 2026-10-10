@@ -217,6 +217,14 @@ internal static class InputRoutingTests
     internal static async Task RunZoom(EditorPane pane)
     {
         var view = pane.View!;
+        foreach (var (key, codepoint) in new[] { (VirtualKey.E, 'e'), (VirtualKey.K, 'k') })
+        {
+            var unshifted = KeyPolicy.Route(key, true, false, false, formatting: true);
+            Check(unshifted.Kind == VIEM_KEY_CONTROL_CHARACTER && unshifted.Codepoint == codepoint,
+                $"unshifted Ctrl+{key} retains its Vim control key");
+            Check(KeyPolicy.Route(key, true, true, true, formatting: true).Action == NativeAction.None,
+                $"AltGr+Shift+{key} remains keyboard-layout text input");
+        }
         var equal = (VirtualKey)187;
         var minus = (VirtualKey)189;
         foreach (var key in new[] { equal, minus })

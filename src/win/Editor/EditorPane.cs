@@ -281,15 +281,17 @@ internal sealed partial class EditorPane : Grid, IDisposable
         SuppressCaretHoverForInput();
         if (View == null) return;
         var key = e.Key; bool control = Down(VirtualKey.Control), shift = Down(VirtualKey.Shift), alt = Down(VirtualKey.Menu);
-        var route = KeyPolicy.Route(key, control, shift, alt);
+        var route = EditorKeyRoute(key, control, shift, alt);
         if (composing && route.Action == NativeAction.None) return; // Native IME owns composition navigation/commit.
-        if (route.Kind == 0 && route.Action == NativeAction.None) return;
+        bool formattingCandidate = KeyPolicy.IsFormattingAction(KeyPolicy.Route(key, control, shift, alt, formatting: true).Action);
+        if (route.Kind == 0 && route.Action == NativeAction.None && !formattingCandidate) return;
         e.Handled = true;
         // Commit earlier characters before Escape, Backspace, Enter, etc.
         CaptureCommittedText();
         Enqueue(async () => {
-            // A preceding queued key may have entered literal-next input.
-            route = KeyPolicy.Route(key, control, shift, alt, (View.Presentation.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0);
+            // Drain preceding text/keys before deciding whether the chord is
+            // formatting or belongs to a pending Vim command/literal input.
+            route = EditorKeyRoute(key, control, shift, alt);
             switch (route.Action)
             {
                 case NativeAction.Copy: await Copy(false); break;
@@ -309,11 +311,29 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.Save: await window.Save(this); break;
                 case NativeAction.SaveAs: await window.Save(this, true); break;
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;
+                case NativeAction.CharacterCode: window.ExecuteFormattingAction(ToolbarAction.CharacterCode); break;
+                case NativeAction.Superscript: window.ExecuteFormattingAction(ToolbarAction.Superscript); break;
+                case NativeAction.Subscript: window.ExecuteFormattingAction(ToolbarAction.Subscript); break;
+                case NativeAction.Bullets: window.ExecuteFormattingAction(ToolbarAction.Bullets); break;
+                case NativeAction.Numbers: window.ExecuteFormattingAction(ToolbarAction.Numbers); break;
+                case NativeAction.Link: PresentInsertLink(insertOnly: false); break;
                 default: if (route.Kind != 0) View.Key(route.Kind, route.Codepoint, route.Modifiers); break;
             }
             if (key == VirtualKey.Escape) { DismissLinkPopup(); DismissImagePopup(); }
         });
     }
+    internal KeyRoute EditorKeyRoute(VirtualKey key, bool control, bool shift, bool alt)
+    {
+        if (View is not { } view) return KeyPolicy.Route(key, control, shift, alt);
+        var state = view.Presentation;
+        bool formatting = KeyPolicy.IsFormattingAction(KeyPolicy.Route(key, control, shift, alt, formatting: true).Action)
+            && CanUseFormattingCommands;
+        return KeyPolicy.Route(key, control, shift, alt,
+            literal: (state.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0, formatting: formatting);
+    }
+    internal bool CanUseFormattingCommands => IsActive && !composing && View is { } view && !view.Composing
+        && CoreDocument.IsMarkdown(Document.State.format) && !Document.IsReadOnly && view.HasFormattingSelection
+        && (view.Presentation.flags & (VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING | VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE)) == 0;
     private void Enqueue(Func<Task> action)
     {
         async Task Next(Task previous)
@@ -325,6 +345,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         }
         inputQueue = Next(inputQueue);
     }
+#if DEBUG
+    internal void HoldInputForTest(Task gate) => Enqueue(() => gate);
+#endif
     private async void ClipboardChanged(object? sender, object e) { await RefreshClipboard(false); }
     private async Task<bool> RefreshClipboard(bool reportFailure = true)
     {

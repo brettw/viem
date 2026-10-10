@@ -1,7 +1,7 @@
 use viem_core::document::{
     Document, DocumentError, Encoding, FileFormat, Format, HistoryNavigationRequest,
     MappingOutcome, ModelChangeKind, ModelRequest, ModelTransactionError, SemanticInlineStyle,
-    TextEdit, TextRange,
+    StyleApplication, TextEdit, TextRange,
 };
 
 fn edit_request(document: &Document, edits: Vec<TextEdit>) -> ModelRequest {
@@ -9,6 +9,38 @@ fn edit_request(document: &Document, edits: Vec<TextEdit>) -> ModelRequest {
         document: document.id(),
         revision: document.revision(),
         edits,
+    }
+}
+
+#[test]
+fn mixed_semantic_style_extends_only_the_selected_text() {
+    for (source, range, style, expected) in [
+        ("**alpha** beta", 0..7, SemanticInlineStyle::Strong, "**alpha b**eta"),
+        ("*alpha* beta", 2..7, SemanticInlineStyle::Emphasis, "*alpha b*eta"),
+        ("**al*pha*** beta", 0..7, SemanticInlineStyle::Strong, "**al*pha***<strong> b</strong>eta"),
+        ("alpha **beta**", 3..10, SemanticInlineStyle::Strong, "alp<strong>ha </strong>**beta**"),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let text = document.text().to_owned();
+        let before_styles = document.projection().style_spans().to_vec();
+        document.set_semantic_style(range, style, true).unwrap();
+        assert_eq!(document.source_bytes(), expected.as_bytes(), "{source}");
+        assert_eq!(document.text(), text);
+        assert_eq!(document.history_status().node_count, 2);
+        let after_styles = document.projection().style_spans().to_vec();
+        assert_eq!(
+            before_styles.iter().filter(|span| span.application != StyleApplication::Semantic(style)).collect::<Vec<_>>(),
+            after_styles.iter().filter(|span| span.application != StyleApplication::Semantic(style)).collect::<Vec<_>>(),
+        );
+        let reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), text);
+        assert_eq!(reopened.projection().style_spans(), after_styles);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert_eq!(document.projection().style_spans(), before_styles);
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert_eq!(document.projection().style_spans(), after_styles);
     }
 }
 

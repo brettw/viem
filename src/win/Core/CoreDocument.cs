@@ -77,6 +77,7 @@ internal sealed unsafe class CoreDocument : IDisposable
         }
         catch { Dispose(); throw; }
     }
+    public static bool IsMarkdown(uint format) => format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
     public static uint FormatForPath(string? path) => Path.GetExtension(path ?? "").ToLowerInvariant() switch
     {
         ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN_SOURCE,

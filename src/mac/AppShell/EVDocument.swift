@@ -7,6 +7,8 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case markdownSource
     case code
 
+    public var isMarkdown: Bool { self == .markdown || self == .markdownSource }
+
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         let value = try container.decode(String.self)

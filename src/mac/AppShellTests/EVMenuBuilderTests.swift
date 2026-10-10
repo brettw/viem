@@ -56,6 +56,9 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(menu.items.map(\.title), [
             "Viem", "File", "Edit", "Style", "View", "Window", "Help",
         ])
+        let style = try submenu("Style", of: menu)
+        XCTAssertEqual(style.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title },
+                       ["Theme", "-", "Paragraph", "Character", "-", "Edit Styles…", "-", "Reload style sheet"])
         XCTAssertTrue(application.windowsMenu === menu.item(withTitle: "Window")?.submenu)
         XCTAssertTrue(application.helpMenu === menu.item(withTitle: "Help")?.submenu)
         // The builder attaches a Services submenu under the application menu
@@ -112,6 +115,15 @@ final class EVMenuBuilderTests: XCTestCase {
             "Edit/Find/Jump to Selection": ("j", [.command]),
             "Edit/Emoji & Symbols": (" ", [.command, .control]),
             "Style/Edit Styles…": (String(UnicodeScalar(NSF8FunctionKey)!), []),
+            "Style/Bold": ("b", [.command]),
+            "Style/Italic": ("i", [.command]),
+            "Style/Underline": ("u", [.command]),
+            "Style/Superscript": ("+", [.control, .command]),
+            "Style/Subscript": ("-", [.control, .command]),
+            "Style/Code (Character)": ("c", [.option, .command]),
+            "Style/Link…": ("k", [.command]),
+            "Style/Paragraph/Bulleted List": ("8", [.shift, .command]),
+            "Style/Paragraph/Numbered List": ("7", [.shift, .command]),
             "Style/Paragraph/Base Paragraph": ("0", [.command]),
             "Style/Paragraph/Heading 1": ("1", [.command]),
             "Style/Paragraph/Heading 2": ("2", [.command]),
@@ -136,6 +148,8 @@ final class EVMenuBuilderTests: XCTestCase {
                 path
             )
         }
+        let accelerators = actual.map { "\($0.value.keyEquivalentModifierMask.rawValue):\($0.value.keyEquivalent)" }
+        XCTAssertEqual(Set(accelerators).count, accelerators.count, "Every installed accelerator must be distinct")
     }
 
     func testEveryMenuCommandAppearsExactlyOnceAndUsesItsExpectedRoute() {
@@ -147,7 +161,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let grouped = Dictionary(grouping: tagged, by: \.0)
 
         let commandsWithoutMenuItems: Set<EVMenuCommand> = [
-            .baseParagraphStyle, .removeList, .bold, .italic, .strikethrough,
+            .baseParagraphStyle, .removeList, .strikethrough,
         ]
         let menuCommands = Set(EVMenuCommand.allCases).subtracting(commandsWithoutMenuItems)
         XCTAssertEqual(Set(grouped.keys), menuCommands)
@@ -164,6 +178,7 @@ final class EVMenuBuilderTests: XCTestCase {
         ]
         let coreSelector = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
         let styleSelector = #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:))
+        let formattingSelector = #selector(EVFormattingCommandRouting.performEditorFormattingCommand(_:))
         for (command, item) in tagged {
             if nativeDocumentCommands.contains(command) {
                 XCTAssertNotEqual(item.action, coreSelector, "\(command) must remain NSDocument-owned")
@@ -171,10 +186,39 @@ final class EVMenuBuilderTests: XCTestCase {
                 XCTAssertEqual(item.action, nativeAction, "\(command) must reach native field editors")
             } else if styleCommands.contains(command) {
                 XCTAssertEqual(item.action, styleSelector, "\(command) must use the typed style route")
+            } else if command.formattingShortcut != nil {
+                XCTAssertEqual(item.action, formattingSelector, "\(command) must belong to the focused document editor")
+                let isInline = command != .bulletedList && command != .numberedList
+                XCTAssertEqual(item.isHidden, isInline, "Inline controls stay in the toolbar; list menu items remain visible")
+                if isInline { XCTAssertTrue(item.allowsKeyEquivalentWhenHidden) }
             } else {
                 XCTAssertEqual(item.action, coreSelector, "\(command) must use the editor route")
             }
             XCTAssertNil(item.target, "\(command) must use the responder chain")
+        }
+    }
+
+    func testListShortcutMatcherUsesTheActiveKeyboardLayoutForShiftedDigits() throws {
+        for (digit, code, command) in [("7", UInt16(26), EVMenuCommand.numberedList), ("8", UInt16(28), .bulletedList)] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [.command, .shift], timestamp: 0, windowNumber: 0, context: nil,
+                characters: "localized symbol", charactersIgnoringModifiers: "localized symbol", isARepeat: false, keyCode: code))
+            guard event.characters(byApplyingModifiers: []) == digit else {
+                throw XCTSkip("The active input source does not put numeric keys at the fixture's positions")
+            }
+            XCTAssertEqual(EVMenuCommand.formattingCommand(for: event), command)
+        }
+
+        for symbol in ["&", "*"] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [.command, .shift], timestamp: 0, windowNumber: 0, context: nil,
+                characters: symbol, charactersIgnoringModifiers: symbol, isARepeat: false, keyCode: 22))
+            guard let unshifted = event.characters(byApplyingModifiers: []), !unshifted.isEmpty,
+                  unshifted != "7", unshifted != "8" else {
+                throw XCTSkip("The fixture's active numeric key translation is not available")
+            }
+            XCTAssertNil(EVMenuCommand.formattingCommand(for: event),
+                         "A shifted symbol from the \(unshifted) key must not invoke a 7/8 accelerator")
         }
     }
 

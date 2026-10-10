@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Shell;
+using Windows.System;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Diagnostics;
@@ -47,10 +48,77 @@ internal static class FormattingToolbarTests
     {
         await LazyConstruction(preferences);
         await CharacterCaretContext(preferences);
+        await KeyboardShortcuts(preferences);
         TablePickerTests.Run();
         await TableInteractionTests.Run(preferences);
         await LinkInteractionTests.Run(preferences);
         await ImageInteractionTests.Run(preferences);
+    }
+
+    private static async Task KeyboardShortcuts(Preferences preferences)
+    {
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        {
+            const string source = "alpha beta";
+            var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
+            bool showToolbar = preferences.ShowFormattingToolbar(format);
+            preferences.SetFormattingToolbar(format, false);
+            var window = new EditorWindow(preferences, document);
+            App.Instance.Windows.Add(window); window.Activate();
+            var pane = window.ActivePane!; var view = await pane.Ready;
+            try
+            {
+                await Task.Delay(100); pane.FocusEditor();
+                Check(!window.ToolbarCreated, "hidden toolbar starts unconstructed");
+                foreach (var (action, key, shift) in new[] {
+                    (ToolbarAction.CharacterCode, VirtualKey.E, true),
+                    (ToolbarAction.Superscript, (VirtualKey)190, false),
+                    (ToolbarAction.Subscript, (VirtualKey)188, false),
+                    (ToolbarAction.Bullets, VirtualKey.Number8, true),
+                    (ToolbarAction.Numbers, VirtualKey.Number7, true) })
+                {
+                    view.SelectAll(); await InputRoutingTests.Key(key, control: true, shift: shift);
+                    Check(action switch {
+                        ToolbarAction.CharacterCode => view.SelectedNamedStyles().Character == "Code" && window.Toolbar.Visibility == Visibility.Collapsed,
+                        ToolbarAction.Superscript => view.SuperscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
+                        ToolbarAction.Subscript => view.SubscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
+                        ToolbarAction.Bullets => view.SelectedNamedStyles().ListState(VIEM_LIST_STYLE_BULLET) == VIEM_SEMANTIC_STYLE_STATE_ON,
+                        _ => view.SelectedNamedStyles().ListState(VIEM_LIST_STYLE_NUMBERED) == VIEM_SEMANTIC_STYLE_STATE_ON
+                    }, $"native formatting shortcut applies {action} in format {format}");
+                    view.Key(VIEM_KEY_ESCAPE); view.Undo();
+                }
+                view.SelectAll(); await InputRoutingTests.Key(VirtualKey.K, control: true, shift: true);
+                Check(pane.LinkEditorVisible && pane.LinkTextValue == source, $"native link shortcut opens the selected text in format {format}");
+                pane.DismissLinkPopup(); pane.FocusEditor();
+                if (format == VIEM_FORMAT_MARKDOWN_SOURCE) continue;
+                view.EditLink(view.LinkContext(), source, "https://example.test");
+                view.Key(VIEM_KEY_ESCAPE); view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+                await InputRoutingTests.Key(VirtualKey.K, control: true, shift: true);
+                Check(pane.LinkEditorVisible && pane.LinkDestinationValue == "https://example.test", "link shortcut edits an existing link");
+                pane.DismissLinkPopup(); pane.FocusEditor(); view.Undo();
+                view.Key(VIEM_KEY_ESCAPE);
+                view.Command("d"); Check(!pane.CanUseFormattingCommands, "pending Vim input disables formatting"); view.Key(VIEM_KEY_ESCAPE);
+                view.Command(":"); Check(!pane.CanUseFormattingCommands, "command prompts disable formatting"); view.Key(VIEM_KEY_ESCAPE);
+                view.Command("i"); view.BeginComposition(); Check(!pane.CanUseFormattingCommands, "composition disables formatting"); view.CancelComposition(); view.Key(VIEM_KEY_ESCAPE);
+                document.SetReadOnly(true); Check(!pane.CanUseFormattingCommands, "read-only buffers disable formatting"); document.SetReadOnly(false);
+                var gate = new TaskCompletionSource<bool>();
+                view.Command("g"); pane.HoldInputForTest(gate.Task); pane.FocusEditor();
+                try { await InputRoutingTests.Text("g"); await InputRoutingTests.Key((VirtualKey)190, control: true); }
+                finally { gate.SetResult(true); }
+                await Task.Delay(100);
+                Check(view.Presentation.mode == VIEM_MODE_INSERT && view.SuperscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
+                    "formatting candidate waits for queued text to finish the Vim command");
+                view.Text("X"); view.Key(VIEM_KEY_ESCAPE); view.Undo();
+                Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                    "queued formatting shortcut and typing preserve exact undo");
+                view.Key(VIEM_KEY_ESCAPE); view.Command("i"); view.Key(VIEM_KEY_CONTROL_CHARACTER, 'q');
+                await InputRoutingTests.Key(VirtualKey.K, control: true, shift: true);
+                Check(!pane.LinkEditorVisible && Encoding.UTF8.GetString(document.Source(document.State.document_revision)).Contains('\u000b'),
+                    "literal Ctrl+Shift+K inserts Vim Ctrl+K instead of opening a link");
+                Check(pane.LastError == null, "formatting shortcut diagnostics have no native errors", pane.LastError?.ToString());
+            }
+            finally { preferences.SetFormattingToolbar(format, showToolbar); await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        }
     }
 
     private static async Task CharacterCaretContext(Preferences preferences)

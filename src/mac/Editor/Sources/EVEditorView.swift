@@ -1517,26 +1517,26 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     @objc(delete:) func deleteDocumentSelection(_ sender: Any?) { if !performCommandLineMenu(.delete) { surface?.perform(menuCommand: .delete, sender: sender) } }
     override func selectAll(_ sender: Any?) { if !performCommandLineMenu(.selectAll) { surface?.perform(menuCommand: .selectAll, sender: sender) } }
 
+    var formattingInputAvailable: Bool {
+        !compositionActive && !corePromptInputPending && surface?.commandLine?.prompt == nil
+            && (surface?.viewPresentation.flags ?? 0) & UInt32(VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING) == 0
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Consume only this editor's accelerators. Disabled formatting cannot
+        // fall through to another menu equivalent such as a heading command.
+        if isActiveTextSurface, let command = EVMenuCommand.formattingCommand(for: event) {
+            guard formattingInputAvailable, let surface else { return false }
+            guard surface.acceptCompletionForNativeInput() else { return true }
+            if surface.presentation(for: command).isEnabled {
+                surface.perform(menuCommand: command, sender: event)
+            }
+            return true
+        }
         // Native menu shortcuts (including Save/Close) can be consumed before
         // keyDown. Let core accept the preview before AppKit handles them.
         if isActiveTextSurface, event.modifierFlags.contains(.command),
            surface?.acceptCompletionForNativeInput() == false { return true }
-        // Inline formatting remains available from the keyboard without a
-        // Format menu, and only the focused document editor owns these keys.
-        if isActiveTextSurface, !compositionActive, !corePromptInputPending,
-           let surface, surface.commandLine?.prompt == nil,
-           event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.command] {
-            let command: EVMenuCommand? = switch event.charactersIgnoringModifiers?.lowercased() {
-            case "b": .bold
-            case "i": .italic
-            default: nil
-            }
-            if let command, surface.presentation(for: command).isEnabled {
-                surface.perform(menuCommand: command, sender: event)
-                return true
-            }
-        }
         return super.performKeyEquivalent(with: event)
     }
 

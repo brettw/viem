@@ -438,20 +438,21 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
-    func testCoreTextPreviewReceivesCommittedEffectiveValuesWithThemeDefaults() throws {
+    func testCoreTextPreviewResolvesThemeForegroundAndRetainsContextualBorderColors() throws {
         let headingKey = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
         let (backend, surface, editor) = try makeEditor(source: "# Heading", style: headingKey)
         defer { withExtendedLifetime(surface) {} }
         let definition = try XCTUnwrap(try backend.styleSheetSnapshot().definition(for: headingKey))
-        let expectedValues = definition.properties.reduce(into: [EVStyleProperty: EVStyleValue]()) {
-            values, entry in
-            if entry.key == .characterForeground && entry.value.usesThemeDefault {
-                let foreground = editor.themeStore.theme.foreground
-                values[entry.key] = .color(EVStyleColor(red: Float(foreground.red), green: Float(foreground.green), blue: Float(foreground.blue), alpha: Float(foreground.alpha)))
-            } else if let effective = entry.value.effective { values[entry.key] = effective }
+        let foreground = editor.themeStore.theme.foreground
+        XCTAssertTrue(try XCTUnwrap(definition.properties[.characterForeground]).usesThemeDefault)
+        XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterForeground],
+                       .color(EVStyleColor(red: Float(foreground.red), green: Float(foreground.green),
+                                          blue: Float(foreground.blue), alpha: Float(foreground.alpha))))
+        for edge: EVStyleProperty in [.blockBorderTopColor, .blockBorderRightColor, .blockBorderBottomColor, .blockBorderLeftColor] {
+            XCTAssertTrue(try XCTUnwrap(definition.properties[edge]).usesTextColor)
+            XCTAssertNil(editor.inspection.preview.effectiveValues[edge],
+                         "Contextual borders must inherit the preview's text color instead of a stored fallback")
         }
-
-        XCTAssertEqual(editor.inspection.preview.effectiveValues, expectedValues)
         XCTAssertNil(definition.properties[.characterFontFamilies]?.declared)
         XCTAssertEqual(editor.inspection.preview.requestedFontFamilies, ["system-ui"])
         XCTAssertEqual(editor.inspection.preview.kind, .paragraph)

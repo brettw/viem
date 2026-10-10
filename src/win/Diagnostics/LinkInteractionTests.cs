@@ -37,7 +37,7 @@ internal static class LinkInteractionTests
             view.Place(1, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             Check(window.Toolbar.InsertLink.IsEnabled && window.Toolbar.InsertLink.IsChecked == true
                 && AutomationProperties.GetName(window.Toolbar.InsertLink) == "Link"
-                && ToolTipService.GetToolTip(window.Toolbar.InsertLink) as string == "Link",
+                && ToolTipService.GetToolTip(window.Toolbar.InsertLink) as string == "Link (Ctrl+Shift+K)",
                 "Markdown has an accessible link toolbar action reflecting the Normal caret");
             Check(pane.LinkPopupVisible && !pane.LinkEditorVisible, "the caret reveals the compact link toolbar");
             Check(pane.LinkSummary == "alpha" && pane.LinkPopupWidth < 360, "the compact toolbar fits its link label within the previous maximum width");

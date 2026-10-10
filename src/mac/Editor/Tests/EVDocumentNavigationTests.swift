@@ -80,8 +80,14 @@ import XCTest
                 }
                 view.binding = binding
                 view.keyDown(with: try key(119, control: false))
-                let endOffset = binding == .document ? 17 : 12
-                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(endOffset - (insertMode ? 0 : 1)))
+                let middleEnd = source.utf8.count - "\nlast".utf8.count
+                let endOffset: Int
+                switch binding {
+                case .line: endOffset = middleEnd - (insertMode ? 0 : 1)
+                case .paragraph: endOffset = middleEnd
+                case .document: endOffset = source.utf8.count - (insertMode ? 0 : 1)
+                }
+                XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(endOffset))
                 view.keyDown(with: try key(115, control: false))
                 XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, binding == .document ? 0 : 6)
                 XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
@@ -114,19 +120,23 @@ import XCTest
         withExtendedLifetime(window) {}
     }
 
-    func testMarkdownInsertLineAndParagraphSelectorsFollowWrappedRowsAndPhysicalMode() throws {
-        // Keep the second visual row inside the first physical source line.
-        let source = Array(repeating: "one two three four five six seven eight nine ten eleven twelve", count: 3)
-            .joined(separator: " ") + "\nTail"
+    func testMarkdownInsertLineSelectorsFollowLinePolicyAndParagraphSelectorsKeepSemanticBoundaries() throws {
+        // A semantic paragraph spans wrapped rows and two physical source
+        // lines. A following paragraph makes its end an interior boundary.
+        let firstSourceLine = Array(repeating: "one two three four five six seven eight nine ten eleven twelve", count: 3)
+            .joined(separator: " ")
+        let firstParagraph = firstSourceLine + " Tail"
+        let source = firstSourceLine + "\nTail\n\nNext paragraph"
         let selectors = [
-            (#selector(NSResponder.moveToBeginningOfLine(_:)), #selector(NSResponder.moveToEndOfLine(_:))),
-            (#selector(NSResponder.moveToBeginningOfParagraph(_:)), #selector(NSResponder.moveToEndOfParagraph(_:))),
+            (#selector(NSResponder.moveToBeginningOfLine(_:)), #selector(NSResponder.moveToEndOfLine(_:)), false),
+            (#selector(NSResponder.moveToBeginningOfParagraph(_:)), #selector(NSResponder.moveToEndOfParagraph(_:)), true),
         ]
-        for (beginning, end) in selectors {
+        for (beginning, end, paragraph) in selectors {
             let (backend, surface, session, window) = try makeSurface(source, width: 240, typeName: EVDocument.markdownType)
             let row = try XCTUnwrap(surface.layoutSnapshot?.rows.dropFirst().first)
             XCTAssertGreaterThan(row.text_start, 0)
-            XCTAssertLessThan(row.text_end, UInt64(source.utf8.count - 5))
+            XCTAssertLessThan(row.text_end, UInt64(firstSourceLine.utf8.count))
+            XCTAssertTrue(try backend.formattedText().hasPrefix(firstParagraph + "\n"))
             surface.performInput {
                 let layout = try XCTUnwrap(surface.layoutSnapshot)
                 let geometry = try session.caretGeometry(offset: row.text_start + 1,
@@ -135,15 +145,18 @@ import XCTest
                 _ = try session.sendText("i")
             }
             surface.editorView.doCommand(by: beginning)
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_start)
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, paragraph ? 0 : row.text_start)
             surface.editorView.doCommand(by: end)
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, row.text_end)
-            XCTAssertEqual(surface.viewPresentation.cursor_affinity, UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset,
+                paragraph ? UInt64(firstParagraph.utf8.count) : row.text_end)
+            XCTAssertEqual(surface.viewPresentation.cursor_affinity, UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM),
+                paragraph ? "Paragraph end" : "Wrapped row end")
             surface.performInput { try session.setLineMode(.physicalSource) }
             surface.editorView.doCommand(by: beginning)
             XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
             surface.editorView.doCommand(by: end)
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count - 5))
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset,
+                UInt64((paragraph ? firstParagraph : firstSourceLine).utf8.count))
             XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
             XCTAssertFalse(backend.persistenceState.isDirty)

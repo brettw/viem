@@ -218,6 +218,15 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         return EVMenuItemPresentation(isEnabled: !active && context.canInsert, state: active ? .on : .off)
     }
 
+    var editorPresentation: EVMenuItemPresentation {
+        guard let surface, surface.commandLine?.prompt == nil, let session = surface.session,
+              surface.documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
+              !session.hasActiveComposition, let selection = try? session.listSelection(),
+              let context = try? readContext(session: session, selection: selection) else { return .disabled }
+        return EVMenuItemPresentation(isEnabled: context.item?.editable == true || context.canInsert,
+            state: context.linked ? .on : .off)
+    }
+
     func performToolbarAction() {
         guard toolbarPresentation.isEnabled, let surface, let session = surface.session else { return }
         do {
