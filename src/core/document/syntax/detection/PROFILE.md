@@ -1,6 +1,6 @@
 # Portable language detection profile
 
-Profile version 4 uses decoded normalized physical source and never executes Vimscript,
+Profile version 5 uses decoded normalized physical source and never executes Vimscript,
 filetype autocommands, shell commands, regular expressions, or package callbacks.
 An explicit language (including None) precedes modelines, user filename rules,
 bundled filename rules with content disambiguation, shebangs, and finally content
@@ -35,6 +35,27 @@ Git's exact `COMMIT_EDITMSG`, `MERGE_MSG`, `SQUASH_MSG`, `TAG_EDITMSG`,
 including inside worktree Git directories. These names are case-sensitive and
 do not match backup suffixes or parent-directory names. Explicit formats,
 language choices, modelines, and user filename associations retain precedence.
+
+Shell dialects remain distinct: Zsh names, extensions, modelines and interpreters
+select `zsh`, Bash selects `bash`, and ordinary `.sh`/`.profile` names default to
+portable `sh`. Generic shell names inspect a recognized shell shebang before
+selecting the dialect, including Csh/Tcsh, Zsh and KornShell scripts named `.sh`.
+Explicit formats, selections, modelines and user filename associations still
+precede this check. `.kshrc`/`.ksh` select `ksh`; Dash and mksh have distinct
+interpreter/extension IDs. The native Vim loader supplies their bounded dialect
+flags before sourcing the bundled `sh.vim`, matching Vim's filetype setup
+without depending on an installed shell. Zsh theme and Zunit suffixes are
+recognized. Lower-priority shell-rc basename prefixes retain local variants,
+including `.envrc.*` variants with the same interpreter check,
+while known suffixes (for example `.zshrc.py`) win and compressed suffixes are
+excluded. Detection never reads a user's shell configuration from the filesystem.
+
+The alias audit retains JavaScript/JSX under `javascript` because its bundled
+grammar supports JSX and Vim's `javascriptreact.vim` is a compatibility shim.
+TypeScript JSX keeps `tsx`, including the dedicated `typescriptreact.vim` fallback.
+JSONC automatic detection retains `jsonc` so its native Vim program clears JSON's
+comment errors and supplies comment rules. Tree-sitter JSON's comment support
+does not justify flattening the dialect when the native fallback differs.
 
 The audit deliberately leaves ambiguous suffixes such as `.tex`, `.r`, `.f`,
 `.d`, `.cl`, `.cls`, `.edn`, `.sc`, `.pp`, `.tf`, and `.reg` without new blanket

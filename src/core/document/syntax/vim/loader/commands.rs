@@ -1006,17 +1006,7 @@ impl Loader<'_> {
             file,
             &body[..branches.first().copied().unwrap_or(body.len())],
         );
-        let thrown = self.errors.get(before).and_then(|e| {
-            if e.message.starts_with("unknown setup variable:") {
-                Some(format!("E108: {}", e.message))
-            } else if e.message.starts_with("unknown syntax setup variable:") {
-                Some(format!("E121: {}", e.message))
-            } else if e.message.contains("No such file or directory") {
-                Some(format!("E484: {}", e.message))
-            } else {
-                None
-            }
-        });
+        let thrown = self.errors.get(before).and_then(|e| super::setup::catchable_error(&e.message));
         let mut caught = false;
         let mut exception_before = None;
         for (n, &at) in branches.iter().enumerate() {

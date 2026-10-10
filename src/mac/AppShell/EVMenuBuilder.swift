@@ -23,6 +23,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private var viewMenu: NSMenu?
     private var codeModeMenu: NSMenu?
     private var codeModeItem: NSMenuItem?
+    private var obscureCodeModeMenu: NSMenu?
+    private var obscureCodeModeItem: NSMenuItem?
     private var modeItems: [NSMenuItem] = []
     private var themeMenu: NSMenu?
     let themeActions: EVThemeActions
@@ -85,7 +87,15 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // AppKit may request validation again while a mouse is held down.
         // Keep the tracked NSMenuItem objects and their geometry stable.
         guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
-        if menu === viewMenu || menu === codeModeMenu { updateDocumentModes(); return }
+        if menu === viewMenu || menu === codeModeMenu || menu === obscureCodeModeMenu {
+            // Descending into a flyout retains the state captured when its
+            // parent opened, including the revision verified by its actions.
+            guard ![viewMenu, codeModeMenu, obscureCodeModeMenu].compactMap({ $0 }).contains(where: {
+                trackingMenus.contains(ObjectIdentifier($0))
+            }) else { return }
+            updateDocumentModes()
+            return
+        }
         if menu === themeMenu { rebuildThemeMenu(menu); return }
         if let role = styleMenuRoles[ObjectIdentifier(menu)] {
             rebuildStyleMenu(menu, role: role)
@@ -338,8 +348,18 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         code.showsStateColumn = true
         codeModeMenu = code
         code.addItem(documentModeItem("Auto (Plain Text)", choice: .automatic))
+        let obscure = NSMenu(title: "Obscure languages")
+        obscure.delegate = self
+        obscure.showsStateColumn = true
+        obscureCodeModeMenu = obscure
+        for language in EVCodeLanguage.obscureLanguages {
+            obscure.addItem(documentModeItem(language.name, choice: .code(language.id)))
+        }
+        let obscureItem = submenuItem("Obscure languages", submenu: obscure)
+        obscureCodeModeItem = obscureItem
+        code.addItem(obscureItem)
         code.addItem(.separator())
-        for language in EVCodeLanguage.all {
+        for language in EVCodeLanguage.primaryLanguages {
             code.addItem(documentModeItem(language.name, choice: .code(language.id)))
         }
         let codeItem = submenuItem("Code", submenu: code)
@@ -381,6 +401,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let state = documentModeProvider()?.currentDocumentMode()
         codeModeItem?.state = state?.format == "code" ? .on : .off
         codeModeItem?.isEnabled = state != nil
+        obscureCodeModeItem?.isEnabled = state != nil
+        obscureCodeModeItem?.state = .off
         for item in modeItems {
             guard let action = item.representedObject as? EVDocumentModeMenuAction else { continue }
             action.expected = state
@@ -395,6 +417,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             case let .code(id): selected = state?.format == "code" && state?.automatic == false && state?.language == id
             }
             item.state = selected ? .on : .off
+            if selected && item.menu === obscureCodeModeMenu { obscureCodeModeItem?.state = .on }
         }
     }
 

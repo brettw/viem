@@ -29,14 +29,30 @@ pub(super) fn language(base: &str, extension: &str) -> Option<&'static str> {
     // Broad filename variants lose to a recognized extension, as in Vim.
     if base.starts_with("Dockerfile.") || base.starts_with("Containerfile.") { return Some("dockerfile"); }
     if base.starts_with("Makefile.") || base.starts_with("makefile.") || base.starts_with("GNUmakefile.") { return Some("make"); }
+    // Vim's shell-rc wildcard rules are deliberately lower priority than
+    // recognized suffixes. Compressed artifacts must retain Text fallback.
+    if !matches!(extension, "gz" | "bz2" | "Z" | "xz" | "zip" | "tgz") {
+        if [".zsh", ".zlog", ".zcompdump", "zsh", "zlog"].iter().any(|prefix| base.starts_with(prefix)) { return Some("zsh"); }
+        if [".bashrc", ".bash_profile", ".bash-profile", ".bash_logout", ".bash-logout", ".bash_aliases", ".bash-aliases", "bash-fc.", "bash-fc-"].iter().any(|prefix| base.starts_with(prefix)) { return Some("bash"); }
+        if base.starts_with(".kshrc") { return Some("ksh"); }
+        if base.starts_with(".envrc.") { return Some("sh"); }
+        if base.starts_with(".profile") { return Some("sh"); }
+        if base.starts_with(".tcshrc") { return Some("tcsh"); }
+        if base.starts_with(".cshrc") || base.starts_with(".login") { return Some("csh"); }
+    }
     base.contains("vimrc").then_some("vim")
 }
 
 const NAMES: &[(&str, &str)] = &[
     (".Rhistory", "r"),
     (".Rprofile", "r"),
+    (".alias", "csh"),
+    (".bash-aliases", "bash"),
+    (".bash-history", "bash"),
+    (".bash-logout", "bash"),
     (".bash-profile", "bash"),
     (".bash_aliases", "bash"),
+    (".bash_history", "bash"),
     (".bash_logout", "bash"),
     (".bash_profile", "bash"),
     (".bashrc", "bash"),
@@ -48,6 +64,7 @@ const NAMES: &[(&str, &str)] = &[
     (".dockerignore", "gitignore"),
     (".editorconfig", "editorconfig"),
     (".emacs", "lisp"),
+    (".envrc", "sh"),
     (".exrc", "vim"),
     (".fdignore", "gitignore"),
     (".gitattributes", "gitattributes"),
@@ -55,24 +72,26 @@ const NAMES: &[(&str, &str)] = &[
     (".gitignore", "gitignore"),
     (".gitmodules", "gitconfig"),
     (".ignore", "gitignore"),
-    (".kshrc", "bash"),
+    (".kshrc", "ksh"),
+    (".login", "csh"),
     (".lua_history", "lua"),
     (".netrwhist", "vim"),
     (".npmignore", "gitignore"),
     (".ocamlinit", "ocaml"),
     (".prettierignore", "gitignore"),
-    (".profile", "bash"),
+    (".profile", "sh"),
     (".rgignore", "gitignore"),
     (".tcshrc", "tcsh"),
     (".vscodeignore", "gitignore"),
     (".yamllint", "yaml"),
-    (".zcompdump", "bash"),
-    (".zlogin", "bash"),
-    (".zlogout", "bash"),
-    (".zprofile", "bash"),
-    (".zsh_history", "bash"),
-    (".zshenv", "bash"),
-    (".zshrc", "bash"),
+    (".zcompdump", "zsh"),
+    (".zfbfmarks", "zsh"),
+    (".zlogin", "zsh"),
+    (".zlogout", "zsh"),
+    (".zprofile", "zsh"),
+    (".zsh_history", "zsh"),
+    (".zshenv", "zsh"),
+    (".zshrc", "zsh"),
     ("BSDmakefile", "make"),
     ("Brewfile", "ruby"),
     ("CMakeCache.txt", "cmakecache"),
@@ -104,6 +123,9 @@ const NAMES: &[(&str, &str)] = &[
     ("bash.bashrc", "bash"),
     ("bashrc", "bash"),
     ("build.xml", "ant"),
+    ("csh.cshrc", "csh"),
+    ("csh.login", "csh"),
+    ("csh.logout", "csh"),
     ("dockerfile", "dockerfile"),
     ("git-rebase-todo", "gitrebase"),
     ("makefile", "make"),
@@ -112,7 +134,10 @@ const NAMES: &[(&str, &str)] = &[
     ("meson.options", "meson"),
     ("meson_options.txt", "meson"),
     ("poetry.lock", "toml"),
+    ("tcsh.login", "tcsh"),
+    ("tcsh.tcshrc", "tcsh"),
     ("uv.lock", "toml"),
+    ("zprofile", "zsh"),
 ];
 
 const SUFFIXES: &[(&str, &str)] = &[
@@ -186,6 +211,7 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("cxx", "cpp"),
     ("cxxm", "cpp"),
     ("dart", "dart"),
+    ("dash", "dash"),
     ("diff", "diff"),
     ("dockerfile", "dockerfile"),
     ("dot", "dot"),
@@ -194,6 +220,7 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("dtd", "dtd"),
     ("dtx", "tex"),
     ("el", "lisp"),
+    ("envrc", "sh"),
     ("erb", "eruby"),
     ("erl", "erlang"),
     ("es", "javascript"),
@@ -252,9 +279,10 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("jsm", "javascript"),
     ("json", "json"),
     ("json5", "json5"),
-    ("jsonc", "json"),
+    ("jsonc", "jsonc"),
     ("jsp", "jsp"),
     ("jsx", "javascript"),
+    ("ksh", "ksh"),
     ("kt", "kotlin"),
     ("ktm", "kotlin"),
     ("kts", "kotlin"),
@@ -277,6 +305,7 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("mk", "make"),
     ("mkd", "markdown"),
     ("mkdn", "markdown"),
+    ("mksh", "mksh"),
     ("ml", "ocaml"),
     ("mli", "ocaml"),
     ("mll", "ocaml"),
@@ -337,7 +366,7 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("scala", "scala"),
     ("scm", "scheme"),
     ("scss", "scss"),
-    ("sh", "bash"),
+    ("sh", "sh"),
     ("sld", "scheme"),
     ("slnf", "json"),
     ("slnx", "xml"),
@@ -391,7 +420,9 @@ const EXTENSIONS: &[(&str, &str)] = &[
     ("yml", "yaml"),
     ("zig", "zig"),
     ("zon", "zig"),
-    ("zsh", "bash"),
+    ("zsh", "zsh"),
+    ("zsh-theme", "zsh"),
+    ("zunit", "zsh"),
 ];
 
 const CASE_INSENSITIVE_EXTENSIONS: &[(&str, &str)] = &[

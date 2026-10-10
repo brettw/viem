@@ -143,6 +143,29 @@ pub(super) fn directory_with_reads(
     }
     l.setup = Setup::new(context, l.cancel);
     l.setup.set_filetype(language);
+    // Vim's filetype autocommands set these flags before loading sh.vim.
+    // Portable detection retains that dialect without executing autocommands.
+    let source_language = match language {
+        "ksh" => {
+            // Let sh.vim's shebang branches select a precise ksh release when
+            // supplied; the default only selects generic KornShell without one.
+            l.setup.assign("g:is_kornshell = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            "sh"
+        }
+        "dash" => {
+            l.setup.assign(&format!("b:is_{language} = 1")).map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            "sh"
+        }
+        "mksh" => {
+            l.setup.assign("b:is_kornshell = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            l.setup.assign("b:is_mksh = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            "sh"
+        }
+        _ => language,
+    };
+    for byte in language.bytes().chain([0]) {
+        l.program.generation = (l.program.generation ^ u64::from(byte)).wrapping_mul(1099511628211);
+    }
     for b in b"\0filename\0"
         .iter()
         .copied()
@@ -155,7 +178,7 @@ pub(super) fn directory_with_reads(
     for b in context.prefix.bytes() {
         l.program.generation = (l.program.generation ^ u64::from(b)).wrapping_mul(1099511628211);
     }
-    l.file(&format!("{language}.vim"));
+    l.file(&format!("{source_language}.vim"));
     *reads = l.setup.reads.clone();
     l.finish()
 }
@@ -344,7 +367,7 @@ impl<'a> Loader<'a> {
         let path = match root.join(name).canonicalize() {
             Ok(p) => p,
             Err(e) => {
-                self.err(name, 0, e.to_string());
+                self.err(name, 0, format!("E484: {e}"));
                 return;
             }
         };
@@ -371,7 +394,7 @@ impl<'a> Loader<'a> {
         let metadata = match std::fs::metadata(&path) {
             Ok(m) => m,
             Err(e) => {
-                self.err(name, 0, e.to_string());
+                self.err(name, 0, format!("E484: {e}"));
                 return;
             }
         };
@@ -386,7 +409,7 @@ impl<'a> Loader<'a> {
                 .read_to_end(&mut bytes)
         });
         if let Err(e) = read {
-            self.err(name, 0, e.to_string());
+            self.err(name, 0, format!("E484: {e}"));
             return;
         }
         if bytes.len() > remaining {
@@ -547,6 +570,7 @@ impl<'a> Loader<'a> {
             if rest.trim().is_empty() {
                 self.program.rules.clear();
                 self.program.clusters.clear();
+                self.setup.clear_syntax_cluster(None);
                 self.program.multiline = false;
                 self.setup.unlet("b:current_syntax", true)?;
             } else {
@@ -554,6 +578,7 @@ impl<'a> Loader<'a> {
                     if let Some(cluster) = group.strip_prefix('@') {
                         let cluster = self.program.intern_cluster_name(cluster);
                         self.program.clusters.remove(&cluster);
+                        self.setup.clear_syntax_cluster(Some(&cluster));
                     } else {
                         self.program
                             .rules
@@ -590,6 +615,10 @@ impl<'a> Loader<'a> {
             };
             if source.is_empty() {
                 return Err("syntax include requires a source file".into());
+            }
+            if let Some(cluster) = &cluster {
+                let groups = self.program.clusters.entry(cluster.clone()).or_default();
+                self.setup.update_syntax_cluster(cluster, groups)?;
             }
             self.include_stack.push(cluster);
             let result = if let Some(patterns) = source.strip_prefix("runtime! ") {
@@ -660,6 +689,7 @@ impl<'a> Loader<'a> {
                     return Err(format!("unsupported cluster option: {token}"));
                 }
             }
+            self.setup.update_syntax_cluster(group, &self.program.clusters[group])?;
             return Ok(());
         }
         let mut options = RuleOptions::default();
@@ -916,6 +946,7 @@ impl<'a> Loader<'a> {
                     let groups = self.program.clusters.entry(cluster.clone()).or_default();
                     if !groups.iter().any(|name| name == group) {
                         groups.push(group.to_owned());
+                        self.setup.append_syntax_cluster_group(cluster, group)?;
                     }
                 }
             }

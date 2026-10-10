@@ -111,6 +111,33 @@ fn catalogue_is_complete_unique_sorted_and_excludes_runtime_utilities() {
 }
 
 #[test]
+fn both_language_picker_tiers_preserve_the_catalogue_and_shared_policy() {
+    use viem_core::document::syntax::languages::supported_languages;
+    let languages = supported_languages();
+    let primary = languages.iter().filter(|language| language.primary).collect::<Vec<_>>();
+    let obscure = languages.iter().filter(|language| !language.primary).collect::<Vec<_>>();
+    assert_eq!(primary.len() + obscure.len(), languages.len());
+    assert!(primary.len() < 60, "the main menu must remain curated");
+    assert!(obscure.len() > 600, "specialist choices remain available");
+    for id in ["objc", "astro", "bash", "c", "c_sharp", "cmake", "cpp", "css", "dart",
+        "diff", "dockerfile", "dosbatch", "dosini", "gitcommit", "go", "graphql", "html",
+        "java", "javascript", "json", "jsonc", "kotlin", "lua", "make", "markdown",
+        "mermaid", "php", "ps1", "python", "r", "ruby", "rust", "scss", "sh", "sql", "swift",
+        "terraform", "tex", "toml", "tsx", "typescript", "typst", "vim", "vue", "xml", "yaml"] {
+        assert!(primary.iter().any(|language| language.id == id), "main menu: {id}");
+    }
+    for id in ["ada", "clojure", "cobol", "hcl", "json5", "julia", "matlab", "nix",
+        "perl", "proto", "scala", "zig", "zsh", "ksh", "dash", "mksh", "colortest", "hitest", "qf"] {
+        assert!(obscure.iter().any(|language| language.id == id), "overflow menu: {id}");
+    }
+    // The same classification travels through the C ABI JSON catalogue.
+    let json = serde_json::to_value(languages).unwrap();
+    let objective_c = json.as_array().unwrap().iter().find(|language| language["id"] == "objc").unwrap();
+    assert_eq!(objective_c["name"], "Objective-C");
+    assert_eq!(objective_c["primary"], true);
+}
+
+#[test]
 fn auto_detects_bounded_physical_source_in_every_view_and_encoding() {
     use viem_core::document::syntax::detection::DETECTION_BYTE_LIMIT;
     for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {

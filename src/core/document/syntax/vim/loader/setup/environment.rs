@@ -8,6 +8,28 @@ impl Setup<'_> {
         values: &[Value],
     ) -> Result<Value, String> {
         match (name, values) {
+            ("execute", [Value::Text(command)]) => {
+                // A syntax package may inspect an existing cluster to choose
+                // containment. This is one read-only query, never Ex execution.
+                if self.emitted.as_ref().is_some_and(|pending|
+                    pending.iter().any(|command| !command.trim().is_empty())) {
+                    return Err("setup syntax query after pending generated commands is unsupported".into());
+                }
+                let mut words = command.split_whitespace();
+                let (Some("syn" | "syntax"), Some("list"), Some(cluster), None) =
+                    (words.next(), words.next(), words.next(), words.next()) else {
+                    return Err("setup execute supports only syntax cluster inspection".into());
+                };
+                let cluster = cluster.strip_prefix('@').filter(|name|
+                    !name.is_empty() && name.len() <= 128 && name.bytes().all(|byte|
+                        byte.is_ascii_alphanumeric() || byte == b'_'))
+                    .ok_or("invalid syntax inspection cluster")?;
+                let Some((name, groups)) = self.syntax_clusters.get(&cluster.to_ascii_lowercase()) else {
+                    return Err(format!("E392: No such syntax cluster: {cluster}"));
+                };
+                Ok(Value::Text(format!("\n--- Syntax items ---\n{name} cluster={} ",
+                    if groups.is_empty() { "NONE".into() } else { groups.join(",") })))
+            }
             ("expand", [Value::Text(expression)])
                 if expression.starts_with('%') || expression.starts_with("<sfile>") =>
             {

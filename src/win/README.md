@@ -153,8 +153,11 @@ fullscreen bounds do not replace the saved normal frame.
   directory unless that would traverse the root or cross drives; narrow panes
   trim paths from the left while keeping the mode column a fixed width. Right-click
   the filename to copy its full path or its path relative to the working directory.
-- View starts with Plain text, Markdown, and Code mode overrides. Code lists Auto
-  followed by the bundled languages in case-insensitive alphabetical order.
+- View starts with Plain text, Markdown, and Code mode overrides. Code lists Auto,
+  an Obscure languages flyout, a divider, and the primary languages. Each language
+  group follows the shared catalogue in case-insensitive alphabetical order;
+  every bundled choice remains available. Markdown code-block language pickers use
+  the same groups, with None in place of Auto.
   Auto shows the detected language, keeps Markdown in literal Code, and uses
   Plain text when no language is detected. Checkmarks reflect the current mode
   and language choice. Mode switches preserve source bytes and the bound filename.
@@ -285,7 +288,9 @@ Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
 Font indexing overlaps WinUI initialization. Hidden formatting toolbars are
 created only when shown; visible Markdown reserves their space before the first
-editor layout. The full Code language menu is populated on its first opening.
+editor layout. Primary Code language controls are created when View first opens;
+Obscure languages controls are deferred until Code first opens. Both paths use
+native row loading, including keyboard, access-key and UI Automation entry.
 `VIEM_TEST_TOOLBAR_ONLY=startup` selects the focused native startup/toolbar checks;
 use `VIEM_TEST_MENU_KEYS_ONLY=1` for access-key and window-focus coverage.
 Set `VIEM_FORCE_BUNDLED_FONTS=1` to exercise the bundled fallback even when matching

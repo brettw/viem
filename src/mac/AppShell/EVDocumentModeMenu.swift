@@ -4,9 +4,12 @@ import CViemCore
 public struct EVCodeLanguage: Decodable, Equatable, Sendable {
     public let id: String
     public let name: String
+    public let primary: Bool
     public static let all: [EVCodeLanguage] = (try? EVDocumentModeJSON.read {
         viem_copy_code_languages_json($0, $1, $2)
     }) ?? []
+    public static let primaryLanguages = all.filter(\.primary)
+    public static let obscureLanguages = all.filter { !$0.primary }
 }
 
 public struct EVDocumentModeState: Decodable, Sendable {

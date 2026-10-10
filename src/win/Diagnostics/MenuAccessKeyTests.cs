@@ -33,7 +33,8 @@ internal static class MenuAccessKeyTests
         {
             "Open Recent" => Label(item) == "Clear Menu",
             "Theme" => Label(item) is "Default" or "New theme…" or "Theme Settings…",
-            "Code" => Label(item).StartsWith("Auto (", StringComparison.Ordinal),
+            "Code" => Label(item).StartsWith("Auto (", StringComparison.Ordinal) || item is MenuFlyoutSubItem,
+            "Obscure languages" => false,
             _ => item.Tag is not StyleKey
         };
         Check(commands.Where(Fixed).All(item => item.AccessKey.Length != 0),
@@ -75,12 +76,19 @@ internal static class MenuAccessKeyTests
 
             var viewMenu = window.Menu.Items.Single(menu => menu.Title == "View");
             var code = viewMenu.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Code");
-            Check(code.Items.Count == 2, "opening File leaves the deferred Code languages unconstructed");
+            var obscure = (MenuFlyoutSubItem)code.Items[1];
+            Check(code.Items.Count == 3 && obscure.Items.Count == 0,
+                "opening File leaves both deferred Code language groups unconstructed");
             pane.FocusEditor(); await Task.Delay(80);
             await InputRoutingTests.Key(VirtualKey.V, alt: true);
             await InputRoutingTests.Key(VirtualKey.C);
-            Check(code.Items.Count == DocumentModes.Languages.Count + 2 && code.Items[0].IsLoaded,
-                "first native Alt+V then C opens the complete deferred language submenu");
+            Check(code.Items.Count == DocumentModes.Languages.Count(language => language.Primary) + 3
+                && obscure.Items.Count == DocumentModes.Languages.Count(language => !language.Primary) && code.Items[0].IsLoaded,
+                "first native Alt+V then C populates the shared primary and obscure language groups");
+            CheckScope("Code", code.Items);
+            await InputRoutingTests.Key(VirtualKey.O);
+            Check(obscure.Items[0].IsLoaded, "native O access key opens Obscure languages within the Code submenu");
+            await InputRoutingTests.Key(VirtualKey.Escape);
             await InputRoutingTests.Key(VirtualKey.Escape);
             await InputRoutingTests.Key(VirtualKey.Escape);
 

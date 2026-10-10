@@ -605,8 +605,12 @@ rules. Do not infer extensions from syntax filenames or limit detection to
 Tree-sitter's smaller package set. Preserve ambiguous-name and Text fallbacks.
 
 View offers per-document Plain text, Markdown, and Code overrides above its
-other controls. Code contains Auto, a separator, and every supported language
-sorted case-insensitively by display name. Check the actual top-level mode and
+other controls. Code contains Auto, an Obscure languages flyout, a separator,
+and the curated main language choices. Markdown code-block pickers use None,
+the same flyout, a separator, and the same main choices. Keep every supported
+language available in exactly one tier, sorted case-insensitively by display
+name within each tier. Both frontends and both pickers consume the shared core
+classification. Check the actual top-level mode and
 the chosen Auto/language entry; reserve check space in unchecked rows. Check the
 Code submenu itself where native controls support it. Auto includes its detected
 language in the label, independent of any forced language. Code > Auto keeps

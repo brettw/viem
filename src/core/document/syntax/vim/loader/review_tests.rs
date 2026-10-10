@@ -131,6 +131,16 @@ endtry
 }
 
 #[test]
+fn unsupported_commands_cannot_spoof_a_catchable_missing_file_error() {
+    let errors = compile(
+        "try.vim",
+        "try\nunsupported No such file or directory\ncatch /E484:/\nsyn keyword Wrong wrong\nendtry",
+        VimLoadLimits::default(),
+    ).unwrap_err();
+    assert!(errors.iter().any(|error| error.message.contains("unsupported")));
+}
+
+#[test]
 fn expanded_nonlocal_control_flow_is_diagnosed() {
     for control in ["break", "continue", "finish"] {
         let source =

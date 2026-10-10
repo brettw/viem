@@ -9,9 +9,11 @@ pub(super) enum Statement {
     Bind(String),
     Emit(String),
     Call(String),
+    InspectCluster(String),
     If(String, Vec<Statement>, Vec<Statement>),
     For(String, String, Vec<Statement>),
     While(String, Vec<Statement>),
+    Try(Vec<Statement>, Vec<(String, Vec<Statement>)>, Vec<Statement>),
     Break,
     Continue,
     Unsupported(String),
@@ -75,8 +77,9 @@ fn block(body: &[String], at: &mut usize, depth: usize) -> Result<Vec<Statement>
     }
     let mut statements = Vec::new();
     while let Some(line) = body.get(*at) {
-        if matches!(line.as_str(), "else" | "endif" | "endfor" | "endwhile")
+        if matches!(line.as_str(), "else" | "endif" | "endfor" | "endwhile" | "catch" | "finally" | "endtry")
             || line.starts_with("elseif ")
+            || line.starts_with("catch ")
         {
             break;
         }
@@ -91,6 +94,8 @@ fn block(body: &[String], at: &mut usize, depth: usize) -> Result<Vec<Statement>
             "let" => Statement::Bind(rest.into()),
             "execute" | "exec" | "exe" => Statement::Emit(rest.into()),
             "call" | "cal" => Statement::Call(rest.into()),
+            "silent" => Statement::InspectCluster(rest.into()),
+            "syn" | "syntax" => Statement::InspectCluster(line.clone()),
             "if" => conditional(rest.into(), body, at, depth + 1)?,
             "for" => {
                 let (name, values) = rest
@@ -110,6 +115,25 @@ fn block(body: &[String], at: &mut usize, depth: usize) -> Result<Vec<Statement>
                 }
                 *at += 1;
                 Statement::While(rest.into(), statements)
+            }
+            "try" if rest.is_empty() => {
+                let attempt = block(body, at, depth + 1)?;
+                let mut handlers = Vec::new();
+                while let Some(line) = body.get(*at) {
+                    if line != "catch" && !line.starts_with("catch ") { break; }
+                    let pattern = line.strip_prefix("catch").unwrap().trim().to_owned();
+                    *at += 1;
+                    handlers.push((pattern, block(body, at, depth + 1)?));
+                }
+                let finalizer = if body.get(*at).map(String::as_str) == Some("finally") {
+                    *at += 1;
+                    block(body, at, depth + 1)?
+                } else { Vec::new() };
+                if body.get(*at).map(String::as_str) != Some("endtry") {
+                    return Err("unterminated setup function try".into());
+                }
+                *at += 1;
+                Statement::Try(attempt, handlers, finalizer)
             }
             "break" => Statement::Break,
             "continue" => Statement::Continue,
@@ -232,6 +256,14 @@ fn run_block(
             Statement::Call(source) => {
                 evaluate(setup, source, arguments, depth)?;
             }
+            Statement::InspectCluster(source) => {
+                setup.charge(source.len())?;
+                let value = setup.environment_builtin("execute", &[Value::Text(source.clone())])?;
+                if value.bytes() > MAX_VALUE_BYTES {
+                    return Err("syntax setup value byte budget exceeded".into());
+                }
+                setup.charge(value.bytes())?;
+            }
             Statement::If(source, yes, no) => {
                 let branch = if evaluate(setup, source, arguments, depth)?.truth()? {
                     yes
@@ -273,6 +305,35 @@ fn run_block(
                         _ => {}
                     }
                 }
+            }
+            Statement::Try(attempt, handlers, finalizer) => {
+                let mut result = run_block(setup, attempt, arguments, depth + 1);
+                let mut exception_before = None;
+                if let Err(error) = &result {
+                    // Only modeled Vim errors are catchable. Compatibility,
+                    // cancellation and work-budget failures stay fatal.
+                    if let Some(exception) = super::catchable_error(error) {
+                        for (pattern, handler) in handlers {
+                            if setup.matches_exception(pattern, &exception)? {
+                                exception_before = Some(setup.set_exception(Some(exception))?);
+                                result = run_block(setup, handler, arguments, depth + 1);
+                                break;
+                            }
+                        }
+                    }
+                }
+                let final_result = run_block(setup, finalizer, arguments, depth + 1);
+                if let Some(previous) = exception_before {
+                    setup.set_exception(previous)?;
+                }
+                // A finally return cannot conceal an unsupported operation.
+                let flow = match (result, final_result) {
+                    (Err(error), _) => return Err(error),
+                    (_, Err(error)) => return Err(error),
+                    (flow, Ok(Flow::Next)) => flow?,
+                    (_, Ok(flow)) => flow,
+                };
+                if !matches!(flow, Flow::Next) { return Ok(flow); }
             }
             Statement::Break => return Ok(Flow::Break),
             Statement::Continue => return Ok(Flow::Continue),

@@ -10,7 +10,7 @@ pub use profile::{
 };
 
 pub const DETECTION_BYTE_LIMIT: usize = 64 * 1024;
-pub const PROFILE_VERSION: u32 = 4;
+pub const PROFILE_VERSION: u32 = 5;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LanguageSelection {
     Automatic,
@@ -38,7 +38,8 @@ pub fn canonical_language(language: &str) -> String {
         "ts" => "typescript",
         "objective-c" | "objectivec" => "objc",
         "py" => "python",
-        "sh" | "zsh" | "shell" => "bash",
+        "shell" => "sh",
+        "kornshell" => "ksh",
         value => value,
     }
     .to_owned()
@@ -156,6 +157,15 @@ pub(crate) fn detect_sampled_lines(
         }
         let language = filenames::language(base, extension);
         if let Some(language) = language {
+            // Vim's generic shell suffix/name rules inspect the interpreter;
+            // they must not mask a .sh script's actual shell dialect.
+            if language == "sh" {
+                if let Some((_, first)) = samples.iter().find(|(line, _)| *line == 0) {
+                    if let Some(dialect) = shebang(first).filter(|id| is_shell_language(id)) {
+                        return result(Some(dialect), "shell filename interpreter", inspected);
+                    }
+                }
+            }
             return result(
                 Some(language.into()),
                 "bundled filename association",
@@ -248,7 +258,8 @@ fn shebang(line: &str) -> Option<String> {
                 "node" | "nodejs" | "deno" | "bun" => "javascript",
                 "ruby" => "ruby",
                 "perl" => "perl",
-                "sh" | "bash" | "zsh" => "bash",
+                "sh" | "bash" | "zsh" | "dash" | "mksh" | "ksh" | "csh" | "tcsh" => interpreter,
+                "ksh88" | "ksh93" | "ksh93u+" | "ksh93u-" | "ksh93v" | "ksh2020" => "ksh",
                 "fish" => "fish",
                 "pwsh" | "powershell" => "ps1",
                 "lua" | "luajit" => "lua",
@@ -258,6 +269,10 @@ fn shebang(line: &str) -> Option<String> {
         }
         .into(),
     )
+}
+
+fn is_shell_language(language: &str) -> bool {
+    matches!(language, "sh" | "bash" | "zsh" | "dash" | "mksh" | "ksh" | "csh" | "tcsh" | "fish")
 }
 
 fn glob(pattern: &str, v: &[char], fuel: &mut usize) -> bool {
@@ -331,6 +346,40 @@ mod tests {
             .as_deref(),
             Some("unknown123")
         );
+    }
+    #[test]
+    fn shell_dialects_survive_names_interpreters_and_explicit_selection() {
+        for (filename, expected) in [
+            (".zshrc", "zsh"), (".zshenv", "zsh"), (".zprofile", "zsh"),
+            (".zlogin", "zsh"), (".zlogout", "zsh"), (".zcompdump", "zsh"),
+            (".zsh_history", "zsh"), (".zfbfmarks", "zsh"), ("zprofile", "zsh"),
+            ("zshrc", "zsh"), ("zshenv", "zsh"), (".zshrc.local", "zsh"),
+            (".zshrc_work", "zsh"), (".zcompdump-host", "zsh"),
+            ("prompt.zsh-theme", "zsh"), ("check.zunit", "zsh"),
+            (".bashrc.local", "bash"), (".bash-profile_work", "bash"),
+            (".bash_history", "bash"), (".kshrc", "ksh"), (".kshrc.local", "ksh"),
+            ("script.ksh", "ksh"), ("script.dash", "dash"), ("script.mksh", "mksh"),
+            (".profile", "sh"), (".profile_local", "sh"), ("script.sh", "sh"),
+            (".envrc", "sh"), (".envrc.local", "sh"), (".envrc.py", "python"),
+            (".tcshrc.local", "tcsh"), ("csh.login", "csh"),
+            (".zshrc.py", "python"), ("zsh.vim", "vim"), (".bashrc.rs", "rust"),
+        ] {
+            assert_eq!(detect(&input(""), filename, &LanguageSelection::Automatic, &[]).language.as_deref(), Some(expected), "{filename}");
+        }
+        for filename in [".zshrc.gz", ".zshrc.xz", ".kshrc.bz2", ".envrc.gz"] {
+            assert_eq!(detect(&input(""), filename, &LanguageSelection::Automatic, &[]).language, None, "{filename}");
+        }
+        for language in ["sh", "bash", "zsh", "dash", "mksh", "ksh", "csh", "tcsh"] {
+            let source = input(&format!("#!/usr/bin/env -S {language} -f\n"));
+            for filename in ["script", "script.sh", ".profile", ".envrc", ".envrc.local"] {
+                assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &[]).language.as_deref(), Some(language), "{filename}: {language}");
+            }
+            assert_eq!(detect(&source, "script.py", &LanguageSelection::Automatic, &[]).language.as_deref(), Some("python"));
+            assert_eq!(detect(&input(&format!("# vim: ft={language}")), "script.py", &LanguageSelection::Automatic, &[]).language.as_deref(), Some(language));
+            assert_eq!(detect(&input(""), "script.py", &LanguageSelection::Language(language.into()), &[]).language.as_deref(), Some(language));
+        }
+        assert_eq!(canonical_language("shell"), "sh");
+        assert_eq!(canonical_language("kornshell"), "ksh");
     }
     #[test]
     fn vim_runtime_filenames_use_basename_rules_and_preserve_precedence() {
@@ -437,7 +486,7 @@ mod tests {
             ("profile.Ps1", "ps1"), ("module.PSM1", "ps1"), ("module.psd1", "ps1"),
             ("session.pssc", "ps1"), ("format.ps1xml", "ps1xml"), ("script.VBS", "vb"),
             ("script.wsf", "wsh"), ("script.fish", "fish"), ("script.tcsh", "tcsh"),
-            (".bash_profile", "bash"), (".zshrc", "bash"), (".cshrc", "csh"),
+            (".bash_profile", "bash"), (".zshrc", "zsh"), (".cshrc", "csh"),
             ("api.ixx", "cpp"), ("api.csx", "c_sharp"), ("api.swiftinterface", "swift"),
             ("main.kt", "kotlin"), ("build.gradle.kts", "kotlin"), ("build.gradle", "groovy"),
             ("main.scala", "scala"), ("main.cljc", "clojure"), ("main.hs", "haskell"),
@@ -484,7 +533,7 @@ mod tests {
             ("main.c", "c"), ("main.C", "cpp"), ("main.h", "c"), ("main.H", "cpp"),
             ("Dockerfile.py", "python"), ("Containerfile.json", "json"),
             ("Makefile.rs", "rust"), ("vimrc.py", "python"),
-            ("settings.jsonc", "json"), ("page.XHTML", "html"),
+            ("settings.jsonc", "jsonc"), ("page.XHTML", "html"),
         ] {
             assert_eq!(detect(&source, filename, &LanguageSelection::Automatic, &[]).language.as_deref(), Some(expected), "{filename}");
         }

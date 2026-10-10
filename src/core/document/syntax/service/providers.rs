@@ -1006,7 +1006,7 @@ fn edits_for(
 fn vim_language(language: &str) -> &str {
     match language {
         "c_sharp" => "cs",
-        "tsx" | "typescriptreact" => "typescript",
+        "tsx" => "typescriptreact",
         "javascriptreact" => "javascript",
         other => other,
     }

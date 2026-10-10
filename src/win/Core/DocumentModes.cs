@@ -6,7 +6,7 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Core;
 
-internal sealed record CodeLanguage(string Id, string Name);
+internal sealed record CodeLanguage(string Id, string Name, bool Primary);
 internal sealed record DocumentModeState(ulong DocumentId, ulong Revision, string Format, bool Automatic, string? Language, string DetectedName);
 
 internal static unsafe class DocumentModes
@@ -15,7 +15,8 @@ internal static unsafe class DocumentModes
     private static CodeLanguage[] ReadLanguages()
     {
         using var json = JsonDocument.Parse(Copy((p, n, r) => viem_copy_code_languages_json(p, n, r)));
-        return json.RootElement.EnumerateArray().Select(v => new CodeLanguage(v.GetProperty("id").GetString()!, v.GetProperty("name").GetString()!)).ToArray();
+        return json.RootElement.EnumerateArray().Select(v => new CodeLanguage(v.GetProperty("id").GetString()!,
+            v.GetProperty("name").GetString()!, v.GetProperty("primary").GetBoolean())).ToArray();
     }
     public static DocumentModeState Read(CoreDocument document)
     {

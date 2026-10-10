@@ -30,10 +30,10 @@ internal sealed partial class EditorWindow
     }
     private MenuFlyoutItem ActionItem(string text, string accessKey, Action action, string shortcut = "", Func<bool>? enabled = null)
         => Item(text, accessKey, () => { action(); ActivePane?.FocusEditor(); return Task.CompletedTask; }, shortcut, enabled);
-    private ToggleMenuFlyoutItem Toggle(string text, string accessKey, Action<bool> action, Func<bool>? state = null)
+    private ToggleMenuFlyoutItem Toggle(string text, string accessKey, Action<bool> action, Func<bool>? state = null, bool validateOnLoad = true)
     {
         var item = new ToggleMenuFlyoutItem { Text = text, AccessKey = accessKey };
-        item.Loaded += (_, _) => ValidateMenus();
+        if (validateOnLoad) item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(() => { action(item.IsChecked); ActivePane?.FocusEditor(); return Task.CompletedTask; });
         if (state != null) checks.Add((item, state));
         return item;
