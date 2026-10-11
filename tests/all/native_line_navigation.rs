@@ -94,7 +94,7 @@ fn native_line_navigation_preserves_committed_insert_and_its_undo_unit() {
 }
 
 #[test]
-fn native_line_navigation_clamps_and_uses_hard_lines_and_graphemes() {
+fn native_line_navigation_clamps_to_numbered_source_lines_and_graphemes() {
     let text = "  e\u{301} first line wraps across many rows\n\t👩‍💻 last";
     let mut core = Core::new(Document::new(text));
     let view = core.add_view(MockTextMeasurementProvider::new(), 45.0, 48.0);
@@ -117,7 +117,32 @@ fn native_line_navigation_clamps_and_uses_hard_lines_and_graphemes() {
         let mut core = Core::new(Document::new(text));
         let view = core.add_view(MockTextMeasurementProvider::new(), 100.0, 48.0);
         go_to_line(&mut core, view, u64::MAX);
-        assert_eq!(core.command_state(view).unwrap().cursor(), text.len());
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+    }
+}
+
+#[test]
+fn native_line_navigation_uses_physical_lines_in_both_markdown_views_and_line_modes() {
+    use viem_core::command::LineMode;
+    use viem_core::document::{Encoding, Format};
+    let source = "# heading\n\nfirst\n  continuation\n\n```text\nbody\n```\n";
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 70.0, 100.0);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            for (line, needle) in [(4, "continuation"), (7, "body")] {
+                go_to_line(&mut core, view, line);
+                assert_eq!(core.command_state(view).unwrap().cursor(), core.document().text().find(needle).unwrap());
+                assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), line as usize - 1);
+            }
+            go_to_line(&mut core, view, 6);
+            assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 5,
+                "a hidden fence keeps the addressed source line identity");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert!(!core.document().history_status().is_dirty);
+        }
     }
 }
 

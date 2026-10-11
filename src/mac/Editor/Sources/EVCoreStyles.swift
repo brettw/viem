@@ -38,6 +38,7 @@ enum EVStyleKind: Int, CaseIterable {
     case list
     case listItem
     case table
+    case container
 
     var isContainer: Bool { self != .paragraph && self != .character }
 
@@ -45,7 +46,7 @@ enum EVStyleKind: Int, CaseIterable {
         switch self {
         case .paragraph: "Paragraph"
         case .character: "Character"
-        case .quote, .codeBlock, .list, .listItem, .table: "Container"
+        case .quote, .codeBlock, .list, .listItem, .table, .container: "Container"
         }
     }
 
@@ -96,6 +97,8 @@ struct EVStyleDefinitionFlags: OptionSet, Equatable {
     static let internalSyntax = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL))
     static let internalList = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_INTERNAL_LIST))
     static let implicit = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_IMPLICIT))
+    static let lineNumber = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_LINE_NUMBER))
+    static let currentLineNumber = Self(rawValue: UInt32(VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER))
 
     var isBase: Bool {
         contains(.baseParagraph)
@@ -344,6 +347,14 @@ struct EVStyleSheetSnapshot: Equatable {
         definition(for: EVStyleKey(namespace: namespace, id: id))
     }
 
+    /// Chrome identity is core-owned. A content style may have the same name.
+    func lineNumberDefinition(current: Bool) -> EVStyleDefinition? {
+        definitions.first {
+            $0.key.namespace == .block && $0.flags.contains([.internalSyntax, .lineNumber])
+                && $0.flags.contains(.currentLineNumber) == current
+        }
+    }
+
     var fallbackDefinition: EVStyleDefinition? {
         definition(for: .baseParagraph) ?? definitions.first
     }
@@ -363,7 +374,7 @@ struct EVStyleSheetSnapshot: Equatable {
 
     func compatibleFollowingStyles(for selected: EVStyleDefinition) -> [EVStyleDefinition] {
         guard selected.kind == .paragraph else { return [] }
-        return definitions.filter { $0.kind == .paragraph }
+        return definitions.filter { $0.kind == .paragraph && !$0.flags.contains(.internalSyntax) }
     }
 
     private func rolesCanInherit(child: EVStyleKind, parent: EVStyleKind) -> Bool {
@@ -817,6 +828,7 @@ enum EVCoreStyleBridge {
                 case UInt32(VIEM_STYLE_ROLE_LIST): kind = .list
                 case UInt32(VIEM_STYLE_ROLE_LIST_ITEM): kind = .listItem
                 case UInt32(VIEM_STYLE_ROLE_TABLE): kind = .table
+                case UInt32(VIEM_STYLE_ROLE_CONTAINER): kind = .container
                 default: throw EVStyleBridgeError.malformedSnapshot("unknown block role \(raw.role)")
                 }
             }

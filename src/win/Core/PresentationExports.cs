@@ -62,8 +62,8 @@ internal sealed unsafe partial class CoreView
         var range = New<ViemFormattedUtf8RangeV1>(); range.identity = New<ViemFormattedSnapshotIdentityV1>(); range.identity.document_id = state.document_id; range.identity.document_revision = state.document_revision; range.utf8_start = start; range.utf8_end = end;
         return Copy((p, n, r) => { var expected = range; return viem_core_copy_clipboard_json(Document.Handle, &expected, p, n, r); });
     }
-    public void ReadFile(byte[] bytes, ulong document, ulong revision, ulong afterLine)
-        => Apply(o => { fixed (byte* p = bytes) return viem_core_view_read_file(Document.Handle, Id, document, revision, afterLine, p, (ulong)bytes.Length, o); });
+    public void ReadFile(byte[] bytes, ulong document, ulong revision, ulong afterOffset, bool source)
+        => Apply(o => { fixed (byte* p = bytes) return viem_core_view_read_file(Document.Handle, Id, document, revision, source ? 1u : 0u, afterOffset, p, (ulong)bytes.Length, o); });
     public HostEffects? SourceLine(string line, uint depth)
         => Send((c, o, e) => { byte[] bytes = Encoding.UTF8.GetBytes(line); fixed (byte* p = bytes) return viem_core_view_source_line(Document.Handle, Id, depth, p, (ulong)bytes.Length, c, o, e); }, false);
 }

@@ -33,6 +33,8 @@ pub struct DocumentWorkStatistics {
     pub projection_persistent_nodes_visited: usize,
     pub projection_persistent_nodes_copied: usize,
     pub formatted_full_materialized_bytes: usize,
+    /// Complete logical contributors inspected while retaining moved identities.
+    pub source_relocation_graphemes_visited: usize,
 }
 
 impl DocumentWorkStatistics {
@@ -63,7 +65,8 @@ impl DocumentWorkStatistics {
             projected_formatted_bytes,
             projection_persistent_nodes_visited,
             projection_persistent_nodes_copied,
-            formatted_full_materialized_bytes
+            formatted_full_materialized_bytes,
+            source_relocation_graphemes_visited
         );
 
     }

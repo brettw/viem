@@ -27,6 +27,7 @@ mod empty_markdown_list_input;
 mod encoding_lossless;
 mod eof_motion_semantics;
 mod ex_checktime;
+mod ex_address_regions;
 mod ex_file_commands;
 mod ex_global_addresses;
 mod ex_goto;
@@ -63,6 +64,7 @@ mod layout_cache_bounds;
 mod layout_direction;
 mod layout_jobs;
 mod layout_list_decorations;
+mod line_numbers;
 mod line_ending_open_policy;
 mod link_edit_verification;
 mod links;
@@ -186,3 +188,7 @@ mod image_styles;
 mod html_images;
 
 mod native_arrows;
+
+mod ex_address_substitute;
+
+mod ex_address_files;

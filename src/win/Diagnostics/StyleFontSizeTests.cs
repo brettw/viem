@@ -158,13 +158,13 @@ internal static class StyleFontSizeTests
             AssertSize(inspector.ThemeView, 1, "Heading1", 120, 24);
             Check(document.Source(document.State.document_revision).SequenceEqual(originalSource),
                 "changing theme font-size units preserves source and its undo history");
-            double priorStatusSize = preferences.StatusFontSize;
-            preferences.Set("theme", "statusFontSize", System.Text.Json.Nodes.JsonValue.Create(priorStatusSize == 11 ? 12 : 11));
+            var priorCaret = preferences.Theme.Caret;
+            preferences.Set("theme", "caret", Preferences.ColorJson(priorCaret == Theme.Rgb(1, 2, 3) ? Theme.Rgb(4, 5, 6) : Theme.Rgb(1, 2, 3)));
             inspector.UndoThemeForTesting();
             Check(inspector.FontSizeUnitControl.SelectedIndex == 0 && inspector.FontSizeControl.Value == 24,
                 "unrelated appearance changes preserve theme font-size Undo without touching source history");
             inspector.RedoThemeForTesting();
-            preferences.Set("theme", "statusFontSize", System.Text.Json.Nodes.JsonValue.Create(priorStatusSize));
+            preferences.Set("theme", "caret", Preferences.ColorJson(priorCaret));
             AssertSize(inspector.ThemeView, 1, "Heading1", 120, 24);
             Check(inspector.FontSizeControl.Value == 120 && inspector.FontSizeControl.Minimum == 10
                 && inspector.FontSizeControl.Maximum == 1000 && inspector.FontSizeControl.SmallChange == 1,

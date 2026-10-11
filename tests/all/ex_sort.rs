@@ -252,7 +252,7 @@ fn markdown_source_reorders_literal_syntax() {
 #[test]
 fn markdown_rich_paragraphs_keep_delimiters_and_styles() {
     let mut doc = source("__z__\n\n**a**\n\nplain", Format::Markdown);
-    run(&mut doc, ":sort");
+    run(&mut doc, ":.,$sort");
     assert_eq!(doc.text(), "a\nplain\nz");
     assert_eq!(doc.source_bytes(), b"**a**\n\nplain\n\n__z__");
 }
@@ -373,7 +373,7 @@ fn numeric_overflow_saturates_and_pattern_resource_failure_is_atomic() {
 #[test]
 fn markdown_multiline_soft_paragraph_reorders_as_one_styled_line() {
     let mut doc = source("__zebra\nlast__\n\n**apple**", Format::Markdown);
-    run(&mut doc, ":sort");
+    run(&mut doc, ":.,$sort");
     assert_eq!(doc.text(), "apple\nzebra last");
     assert_eq!(doc.source_bytes(), b"**apple**\n\n__zebra\nlast__");
 }
@@ -494,7 +494,10 @@ fn visual_ex_escape_remembers_selection_and_foreign_edit_makes_prefill_stale() {
         .handle(first, CoreEvent::Input(InputEvent::Key(Key::Enter)))
         .unwrap();
     assert!(
-        matches!(output.command.unwrap().status, CommandStatus::Error(message) if message.contains("stale"))
+        matches!(output.command.unwrap().status,
+            CommandStatus::ExError(viem_core::command::ExCommandError::Execute(
+                viem_core::command::ex_execute::ExExecuteError::StalePlan { expected, actual }
+            )) if expected != actual)
     );
     assert_eq!(core.document().text(), "Xz\na\noutside");
     assert_eq!(core.command_state(first).unwrap().mode(), Mode::Normal);

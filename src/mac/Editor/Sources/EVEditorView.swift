@@ -156,6 +156,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private let insertionIndicator = NSTextInsertionIndicator(frame: .zero)
     private let completionPopup = EVCompletionPopup()
     let documentScrollbars: EVDocumentScrollbars
+    let lineNumberGutter = EVLineNumberGutter()
+    private(set) var lineNumberGutterWidth: CGFloat = 0
     private var markedTextValue = ""
     private var markedSelection = NSRange(location: NSNotFound, length: 0)
     private var markedTextTarget: EVMarkedTextTarget?
@@ -251,6 +253,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             self.surface?.viewDidLayout()
         }
         addSubview(documentScrollbars, positioned: .above, relativeTo: nil)
+        lineNumberGutter.isHidden = true
+        addSubview(lineNumberGutter, positioned: .above, relativeTo: nil)
         caretAppearanceObserver = NotificationCenter.default.addObserver(
             forName: .viemCaretAppearanceDidChange,
             object: EVCaretAppearanceResolver.shared,
@@ -303,13 +307,53 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     var layoutViewportSize: CGSize {
         let size = Self.layoutViewportSize(for: bounds.size)
         let chrome = documentScrollbars.contentInsets
-        return CGSize(width: max(1, size.width - chrome.left - chrome.right),
+        return CGSize(width: max(1, size.width - chrome.left - chrome.right - lineNumberGutterWidth),
                       height: max(1, size.height - chrome.top - chrome.bottom))
     }
 
     override func layout() {
         super.layout()
         layoutDocumentScrollbars()
+        lineNumberGutter.frame = NSRect(x: 0, y: 0, width: lineNumberGutterWidth, height: bounds.height)
+    }
+
+    func synchronizeLineNumberWidth() throws -> Bool {
+        guard let surface, let session = surface.session else { return false }
+        let enabled = try session.number()
+        let width: CGFloat
+        if enabled {
+            let info = try session.lineNumberInfo()
+            let sheet = try surface.backend.styleSheetSnapshot()
+            let viewport = try session.viewportState()
+            width = lineNumberGutter.width(lineCount: info.source_line_count, sheet: sheet,
+                scale: CGFloat(viewport.scale), metricsGeneration: session.provider.metricsGeneration)
+        } else { width = 0 }
+        lineNumberGutter.isHidden = !enabled
+        guard width != lineNumberGutterWidth else { return false }
+        let old = lineNumberGutterWidth
+        lineNumberGutterWidth = width
+        lineNumberGutter.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        surface.lineNumberGutterWidthWillChange?(old, width)
+        needsLayout = true
+        lastOverlayDrawingState = nil
+        needsDisplay = true
+        return true
+    }
+
+    func updateLineNumberPresentation() {
+        guard lineNumberGutterWidth > 0, let session = surface?.session else {
+            lineNumberGutter.present(bands: [], viewportTop: 0)
+            return
+        }
+        let exported = session.optionalPresentation("line numbers", fallback: nil as (ViemLineNumberSnapshotInfoV1, [EVLineNumberBand])?) {
+            let info = try session.lineNumberInfo()
+            return (info, try session.lineNumberBands(info))
+        }
+        guard let (info, bands) = exported else {
+            lineNumberGutter.present(bands: [], viewportTop: 0)
+            return
+        }
+        lineNumberGutter.present(bands: bands, viewportTop: CGFloat(info.viewport.y))
     }
     override var acceptsFirstResponder: Bool { true }
 
@@ -1421,7 +1465,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         viewport: ViemViewportStateV1
     ) -> NSRect {
         NSRect(
-            x: CGFloat(rect.x) + Self.canvasInsets.left - CGFloat(viewport.left),
+            x: CGFloat(rect.x) + Self.canvasInsets.left + lineNumberGutterWidth - CGFloat(viewport.left),
             y: CGFloat(rect.y) + Self.canvasInsets.top - CGFloat(viewport.top),
             width: CGFloat(rect.width),
             height: CGFloat(rect.height)
@@ -1433,14 +1477,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         viewport: ViemViewportStateV1
     ) -> CGPoint {
         CGPoint(
-            x: point.x - Self.canvasInsets.left + CGFloat(viewport.left),
+            x: point.x - Self.canvasInsets.left - lineNumberGutterWidth + CGFloat(viewport.left),
             y: point.y - Self.canvasInsets.top + CGFloat(viewport.top)
         )
     }
 
     var textViewportRect: NSRect {
         NSRect(
-            x: Self.canvasInsets.left,
+            x: Self.canvasInsets.left + lineNumberGutterWidth,
             y: Self.canvasInsets.top,
             width: layoutViewportSize.width,
             height: layoutViewportSize.height
@@ -1448,8 +1492,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func layoutDocumentScrollbars() {
-        documentScrollbars.frame = NSRect(x: bounds.minX, y: bounds.minY,
-            width: bounds.width, height: bounds.height)
+        documentScrollbars.frame = NSRect(x: bounds.minX + lineNumberGutterWidth, y: bounds.minY,
+            width: max(0, bounds.width - lineNumberGutterWidth), height: bounds.height)
         documentScrollbars.needsLayout = true
     }
 
@@ -3976,14 +4020,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     func layoutPoint(fromViewPoint point: CGPoint) -> CGPoint {
         CGPoint(
-            x: point.x - Self.canvasInsets.left + viewportOrigin.x,
+            x: point.x - Self.canvasInsets.left - lineNumberGutterWidth + viewportOrigin.x,
             y: point.y - Self.canvasInsets.top + viewportOrigin.y
         )
     }
 
     func viewPoint(fromLayoutPoint point: CGPoint) -> CGPoint {
         CGPoint(
-            x: point.x + Self.canvasInsets.left - viewportOrigin.x,
+            x: point.x + Self.canvasInsets.left + lineNumberGutterWidth - viewportOrigin.x,
             y: point.y + Self.canvasInsets.top - viewportOrigin.y
         )
     }

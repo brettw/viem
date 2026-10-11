@@ -263,6 +263,7 @@ impl CompositionSession {
             edit,
             caret_offset,
             markdown_exit: None,
+            source_insertion: None,
             prepared,
         })
     }
@@ -287,21 +288,49 @@ impl CompositionSession {
         // Assistance affects only the committed payload. The live IME overlay
         // and its selection/generation remain owned by the input method.
         let mut assisted = self.clone();
-        assisted.marked_text = value.text;
+        assisted.marked_text = value.text.clone();
+        if self.replacement_range().is_empty()
+            && self.replacement_range().start == commands.cursor()
+            && !assisted.marked_text.is_empty()
+        {
+            if let Some(at) = commands.pending_source_destination(document)
+                .map_err(CompositionError::Document)?
+            {
+                let payload = FormattedTextPayload::new(&document.hard_line_snapshot(),
+                    assisted.marked_text.clone(), value.hard_break_offsets().to_vec())
+                    .map_err(|_| CompositionError::Document(DocumentError::FormattedPayloadCannotReproject))?;
+                let (prepared, caret, source) = document.prepare_insertion_at_source(at, payload,
+                    commands.typing_named_style(), commands.typing_properties())
+                    .map_err(composition_model_error)?;
+                let candidate = document.prepared_candidate_document(&prepared)
+                    .map_err(CompositionError::Document)?;
+                let start = candidate.visible_point_for_source(at.offset(), true)
+                    .map_err(CompositionError::Document)?;
+                return Ok(CompositionCommitRequest {
+                    document_id: self.target.document_id,
+                    expected_revision: self.target.revision,
+                    generation: self.generation,
+                    edit: TextEdit::new(self.replacement_range(), assisted.marked_text),
+                    caret_offset: caret.offset(), markdown_exit: None,
+                    source_insertion: Some((start, source)), prepared,
+                });
+            }
+        }
         if let Some(selection) = commands.table_selection(document) {
-            let (prepared, caret_offset) = document.prepare_table_edit(
+            let (mut prepared, caret_offset) = document.prepare_table_edit(
                 document.id(), document.revision(), crate::document::TableEditIntent::ReplaceCells {
                     table: selection.table, rows: selection.rows(), columns: selection.columns(),
                     text: assisted.marked_text.clone(), anchor_row: selection.anchor_row,
                     anchor_column: selection.anchor_column,
                 },
             ).map_err(composition_model_error)?;
+            document.attach_prepared_source_map(&mut prepared).map_err(composition_model_error)?;
             return Ok(CompositionCommitRequest {
                 document_id: self.target.document_id,
                 expected_revision: self.target.revision,
                 generation: self.generation,
                 edit: TextEdit::new(self.replacement_range(), assisted.marked_text),
-                caret_offset, markdown_exit: None, prepared,
+                caret_offset, markdown_exit: None, source_insertion: None, prepared,
             });
         }
         let inherited = document.replacement_typing_context(self.replacement_range())
@@ -346,13 +375,14 @@ impl CompositionSession {
         )
         .expect("composition literal text has validated semantic break offsets");
         let typing = FormattedPayloadEdit::new(edit.range.clone(), payload).with_boundary_affinity(affinity);
-        let (prepared, caret_offset, _, markdown_exit) = if autodetect && document.format() == crate::document::Format::Markdown {
+        let (mut prepared, caret_offset, _, markdown_exit) = if autodetect && document.format() == crate::document::Format::Markdown {
             document.prepare_markdown_typing_batch(typing, named, values, inherited, false, exit)
         } else if link_disabled {
             document.prepare_insertion_without_link(typing, named, values, inherited).map(|(p, c, s)| (p, c, s, None))
         } else {
             document.prepare_insertion_with_typing_context(typing, named, values, inherited).map(|(p, c, s)| (p, c, s, None))
         }.map_err(composition_model_error)?;
+        document.attach_prepared_source_map(&mut prepared).map_err(composition_model_error)?;
         Ok(CompositionCommitRequest {
             document_id: self.target.document_id,
             expected_revision: self.target.revision,
@@ -360,6 +390,7 @@ impl CompositionSession {
             edit,
             caret_offset,
             markdown_exit,
+            source_insertion: None,
             prepared,
         })
     }
@@ -616,6 +647,7 @@ pub struct CompositionCommitRequest {
     edit: TextEdit,
     caret_offset: usize,
     markdown_exit: Option<usize>,
+    source_insertion: Option<(usize, crate::document::SourcePoint)>,
     prepared: PreparedModelTransaction,
 }
 
@@ -635,6 +667,9 @@ impl fmt::Debug for CompositionCommitRequest {
 
 impl CompositionCommitRequest {
     pub(crate) fn markdown_exit(&self) -> Option<usize> { self.markdown_exit }
+    pub(crate) fn source_insertion(&self) -> Option<(usize, crate::document::SourcePoint)> {
+        self.source_insertion
+    }
     pub fn document_id(&self) -> DocumentId {
         self.document_id
     }

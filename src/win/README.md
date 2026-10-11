@@ -202,6 +202,27 @@ uses application resources. Retired `code.vimSyntaxDirectory` values are
 ignored and removed on the next successful settings write; unrelated fields
 survive and resource paths are never saved.
 
+`:set number` (`:set nu`) shows a gutter with physical source line numbers;
+`:set nonumber` hides it. View > Show line numbers toggles the current view's
+option and shows its checkmark. Wrapped source lines use one vertically centered
+number. The built-in **Line number** and **Current line number**
+styles control their fonts, alignment, padding, margins and borders. Gutter
+width reserves the widest numeral for the document's required digit count and
+both styles. A restored single-document window grows or shrinks from the left
+where monitor space allows; multiple documents, vertical splits, maximized and
+fullscreen windows consume space within their content viewports.
+
+Status appearance is configured through the built-in **Status bar** and
+**Status bar command** styles. The status container uses its font, padding,
+colors and borders; command text remains clipped within that container and
+does not change its height. Status styles are shared across stylesheet families
+so all panes retain a consistent status-bar height. Retired appearance values
+are ignored without migration. Ordinary status labels and command input use
+the full font shaping properties. Selectable command output uses native text
+controls, which honor family, face stretch, size, weight, slant and tracking;
+custom variable axes and OpenType features are not applied to that output.
+`VIEM_TEST_CHROME_ONLY=1` selects the native gutter and status-style diagnostics.
+
 The normative list of known Mac differences is in the **Windows frontend
 requirements** section of [`AGENTS.md`](../../AGENTS.md). In particular,
 printing, AppKit text services and Versions, full document accessibility,

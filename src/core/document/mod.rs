@@ -148,7 +148,7 @@ pub use transaction::{
     ClipboardFragment, TableClipboardCell, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
-    SourcePatch, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
+    SourcePatch, PhysicalSourceTransform, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
     StylePropertyTarget, StyleTransactionError,
 };
 pub use transfer::HardLineTransfer;
@@ -1202,6 +1202,12 @@ impl Document {
     /// formatted text, so a no-op open/save is byte exact.
     pub fn source_bytes(&self) -> Vec<u8> {
         self.state().source.bytes()
+    }
+
+    pub fn source_bytes_in(&self, range: std::ops::Range<usize>) -> Result<Vec<u8>, DocumentError> {
+        self.state().source.bytes_in(range.clone()).ok_or(DocumentError::InvalidRange {
+            start: range.start, end: range.end, length: self.source_byte_len(),
+        })
     }
 
     pub fn source_byte_len(&self) -> usize {

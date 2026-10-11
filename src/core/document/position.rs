@@ -1028,7 +1028,7 @@ struct SurvivingContent {
     target_start: usize,
 }
 
-/// A revision-tagged, composable monotonic position map.
+/// A revision-tagged, composable position map, including moved identities.
 ///
 /// Construction compiles splice steps into piecewise affine boundary maps and
 /// surviving-content intervals. Composition combines those representations
@@ -1045,6 +1045,7 @@ pub struct PositionMap {
     target_len: usize,
     forward: CompiledTransition,
     reverse: CompiledTransition,
+    source_transition: Option<Box<PositionMap>>,
 }
 
 impl PositionMap {
@@ -1054,7 +1055,7 @@ impl PositionMap {
         [&self.forward, &self.reverse].into_iter().map(|transition| {
             transition.ordinal.iter().map(|map| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>()).sum::<usize>()
                 + transition.surviving_content.capacity() * std::mem::size_of::<SurvivingContent>()
-        }).sum()
+        }).sum::<usize>() + self.source_transition.as_ref().map_or(0, |map| std::mem::size_of::<PositionMap>() + map.owned_heap_bytes())
     }
 
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
@@ -1062,6 +1063,7 @@ impl PositionMap {
             for ordinal in &transition.ordinal { visitor.vector(&ordinal.pieces, 0); }
             visitor.vector(&transition.surviving_content, 0);
         }
+        if let Some(map) = &self.source_transition { map.visit_retained_memory(visitor); }
     }
 
     pub fn identity(
@@ -1079,6 +1081,7 @@ impl PositionMap {
             target_len: length,
             forward: CompiledTransition::identity(length),
             reverse: CompiledTransition::identity(length),
+            source_transition: None,
         }
     }
 
@@ -1269,7 +1272,74 @@ impl PositionMap {
             target_len,
             forward: CompiledTransition::from_step(&step)?,
             reverse: CompiledTransition::from_step(&reverse_step)?,
+            source_transition: None,
         })
+    }
+
+    /// Exact source lineage accompanying a formatted transition, when available.
+    pub fn source_position_map(&self) -> Option<&PositionMap> {
+        self.source_transition.as_deref()
+    }
+
+    pub(crate) fn with_source_position_map(mut self, source: PositionMap) -> Self {
+        debug_assert_eq!(self.document, source.document);
+        debug_assert_eq!(self.source_revision, source.source_revision);
+        debug_assert_eq!(self.target_revision, source.target_revision);
+        self.source_transition = Some(Box::new(source));
+        self
+    }
+
+    /// Preserve original content relocated by a transaction. The surrounding
+    /// splice map still owns deletion/insertion boundaries on their outside
+    /// sides; inward-associated endpoints follow the relocated content.
+    pub(crate) fn with_relocated_content(
+        mut self,
+        mut relocations: Vec<(Range<usize>, usize)>,
+    ) -> Result<Self, PositionError> {
+        relocations.sort_unstable_by_key(|(range, _)| range.start);
+        for (index, (range, target)) in relocations.iter().enumerate() {
+            if range.start > range.end {
+                return Err(PositionError::InvertedRange { start: range.start, end: range.end });
+            }
+            if range.end > self.source_len {
+                return Err(PositionError::InvalidBoundary { domain: self.domain,
+                    offset: range.end, length: self.source_len });
+            }
+            let target_end = target.checked_add(range.len()).ok_or(PositionError::ArithmeticOverflow)?;
+            if target_end > self.target_len {
+                return Err(PositionError::InvalidBoundary { domain: self.domain,
+                    offset: target_end, length: self.target_len });
+            }
+            if index > 0 && relocations[index - 1].0.end > range.start {
+                return Err(PositionError::OverlappingSplices {
+                    first: relocations[index - 1].0.clone(), second: range.clone(),
+                });
+            }
+        }
+        let mut reverse = relocations.iter().map(|(range, target)|
+            (*target..*target + range.len(), range.start)).collect::<Vec<_>>();
+        reverse.sort_unstable_by_key(|(range, _)| range.start);
+        for pair in reverse.windows(2) {
+            if pair[0].0.end > pair[1].0.start {
+                return Err(PositionError::OverlappingSplices {
+                    first: pair[0].0.clone(), second: pair[1].0.clone(),
+                });
+            }
+        }
+        self.forward.relocate_content(&relocations)?;
+        self.reverse.relocate_content(&reverse)?;
+        Ok(self)
+    }
+
+    pub(crate) fn preserved_content_ranges(
+        &self, range: Range<usize>,
+    ) -> Result<Option<Vec<Range<usize>>>, PositionError> {
+        if range.start > range.end || range.end > self.source_len {
+            return Err(PositionError::InvalidBoundary { domain: self.domain,
+                offset: range.end, length: self.source_len });
+        }
+        let (ranges, deleted) = self.forward.map_content_range(range)?;
+        Ok((!deleted).then_some(ranges))
     }
 
     pub fn document(&self) -> DocumentId {
@@ -1300,9 +1370,18 @@ impl PositionMap {
     /// Composed maps report aggregate replacements, not intermediate edits.
     /// This walks only the compacted change boundaries, never document text.
     pub(crate) fn replacements(&self) -> impl Iterator<Item = (Range<usize>, Range<usize>)> + '_ {
+        // Relocated content may be out of target order. Retain an ordered
+        // subsequence for the disposable presentation-change summary; its
+        // omitted moved ranges are explicit replacements, never inverted gaps.
+        let mut retained_target_end = 0;
         self.forward.surviving_content.iter()
             .map(|piece| (piece.source.clone(), piece.target_start))
             .chain(std::iter::once((self.source_len..self.source_len, self.target_len)))
+            .filter(move |(source, target_start)| {
+                if *target_start < retained_target_end { return false; }
+                retained_target_end = *target_start + source.len();
+                true
+            })
             .scan((0, 0), |(source_end, target_end), (source, target_start)| {
                 let replaced = (*source_end..source.start, *target_end..target_start);
                 *target_end = target_start + source.len();
@@ -1342,6 +1421,12 @@ impl PositionMap {
             target_len: next.target_len,
             forward: self.forward.then(&next.forward)?,
             reverse: next.reverse.then(&self.reverse)?,
+            source_transition: match (&self.source_transition, &next.source_transition) {
+                (Some(first), Some(second)) => Some(Box::new(first.then(second)?)),
+                (None, Some(second)) if self.source_revision == self.target_revision => Some(second.clone()),
+                (Some(first), None) if next.source_revision == next.target_revision => Some(first.clone()),
+                _ => None,
+            },
         })
     }
 
@@ -1363,6 +1448,7 @@ impl PositionMap {
             target_len: self.source_len,
             forward: self.reverse.clone(),
             reverse: self.forward.clone(),
+            source_transition: self.source_transition.as_ref().map(|map| map.inverted().map(Box::new)).transpose()?,
         })
     }
 
@@ -1484,6 +1570,49 @@ impl PositionMap {
 }
 
 impl CompiledTransition {
+    fn relocate_content(&mut self, relocations: &[(Range<usize>, usize)]) -> Result<(), PositionError> {
+        for (index, ordinal) in self.ordinal.iter_mut().enumerate() {
+            ordinal.relocate_content(relocations, ordinal_policy(index).0)?;
+        }
+        let mut content = Vec::new();
+        let mut first = 0;
+        for piece in &self.surviving_content {
+            let mut cursor = piece.source.start;
+            while first < relocations.len() && relocations[first].0.end <= cursor { first += 1; }
+            let mut index = first;
+            while index < relocations.len() && relocations[index].0.start < piece.source.end {
+                let range = &relocations[index].0;
+                if cursor < range.start {
+                    content.push(SurvivingContent { source: cursor..range.start,
+                        target_start: piece.target_start + cursor - piece.source.start });
+                }
+                cursor = cursor.max(range.end).min(piece.source.end);
+                index += 1;
+            }
+            if cursor < piece.source.end {
+                content.push(SurvivingContent { source: cursor..piece.source.end,
+                    target_start: piece.target_start + cursor - piece.source.start });
+            }
+        }
+        content.extend(relocations.iter().map(|(source, target_start)| SurvivingContent {
+            source: source.clone(), target_start: *target_start,
+        }).filter(|piece| !piece.source.is_empty()));
+        content.sort_unstable_by_key(|piece| piece.source.start);
+        let mut normalized: Vec<SurvivingContent> = Vec::with_capacity(content.len());
+        for piece in content {
+            if let Some(previous) = normalized.last_mut() {
+                if previous.source.end == piece.source.start
+                    && previous.target_start + previous.source.len() == piece.target_start {
+                    previous.source.end = piece.source.end;
+                    continue;
+                }
+            }
+            normalized.push(piece);
+        }
+        self.surviving_content = normalized;
+        Ok(())
+    }
+
     fn identity(length: usize) -> Self {
         Self {
             ordinal: std::array::from_fn(|_| CompiledOrdinalMap::identity(length)),
@@ -1545,10 +1674,8 @@ impl CompiledTransition {
         }
         let mut mapped = Vec::new();
         let mut surviving_bytes = 0usize;
-        for piece in &self.surviving_content {
-            if piece.source.end <= range.start {
-                continue;
-            }
+        let first = self.surviving_content.partition_point(|piece| piece.source.end <= range.start);
+        for piece in &self.surviving_content[first..] {
             if piece.source.start >= range.end {
                 break;
             }
@@ -1585,6 +1712,55 @@ impl CompiledTransition {
 }
 
 impl CompiledOrdinalMap {
+    fn relocate_content(&mut self, relocations: &[(Range<usize>, usize)], association: Association)
+        -> Result<(), PositionError> {
+        let mut overlays = Vec::with_capacity(relocations.len());
+        for (range, target) in relocations {
+            if range.is_empty() {
+                if association == Association::AfterInsertion {
+                    overlays.push(OrdinalPiece { start: range.start, end: range.end,
+                        mapping: OrdinalMapping::Linear {
+                            delta: signed_difference(*target, range.start)?, status: ResolvedStatus::Moved,
+                        } });
+                }
+                continue;
+            }
+            let start = range.start + usize::from(association == Association::BeforeInsertion);
+            let end = range.end - usize::from(association == Association::AfterInsertion);
+            if start <= end {
+                let delta = signed_difference(*target, range.start)?;
+                overlays.push(OrdinalPiece { start, end,
+                    mapping: OrdinalMapping::Linear { delta,
+                        status: if delta == 0 { ResolvedStatus::Exact } else { ResolvedStatus::Moved } } });
+            }
+        }
+        let mut result = Vec::with_capacity(self.pieces.len() + overlays.len().saturating_mul(2));
+        let mut index = 0;
+        for piece in &self.pieces {
+            let mut cursor = piece.start;
+            while index < overlays.len() && overlays[index].end < cursor { index += 1; }
+            while index < overlays.len() && overlays[index].start <= piece.end {
+                let overlay = &overlays[index];
+                if cursor < overlay.start {
+                    result.push(OrdinalPiece { start: cursor, end: overlay.start - 1,
+                        mapping: piece.mapping.clone() });
+                }
+                let end = overlay.end.min(piece.end);
+                result.push(OrdinalPiece { start: cursor.max(overlay.start), end,
+                    mapping: overlay.mapping.clone() });
+                cursor = end.checked_add(1).ok_or(PositionError::ArithmeticOverflow)?;
+                if overlay.end > piece.end { break; }
+                index += 1;
+            }
+            if cursor <= piece.end {
+                result.push(OrdinalPiece { start: cursor, end: piece.end,
+                    mapping: piece.mapping.clone() });
+            }
+        }
+        self.pieces = normalize_ordinal_pieces(result)?;
+        Ok(())
+    }
+
     fn identity(length: usize) -> Self {
         Self {
             pieces: vec![OrdinalPiece {
@@ -2015,17 +2191,16 @@ fn compose_surviving_content(
     second: &[SurvivingContent],
 ) -> Result<Vec<SurvivingContent>, PositionError> {
     let mut result = Vec::new();
-    let mut second_index = 0usize;
     for first_piece in first {
         let first_target = first_piece.target_start
             ..first_piece
                 .target_start
                 .checked_add(first_piece.source.len())
                 .ok_or(PositionError::ArithmeticOverflow)?;
-        while second_index < second.len() && second[second_index].source.end <= first_target.start {
-            second_index += 1;
-        }
-        let mut scan = second_index;
+        // A move makes target intervals nonmonotonic even though original
+        // source intervals remain ordered. Start each target lookup from the
+        // indexed frontier rather than carrying a monotonic scan past it.
+        let mut scan = second.partition_point(|piece| piece.source.end <= first_target.start);
         while let Some(second_piece) = second.get(scan) {
             if second_piece.source.start >= first_target.end {
                 break;

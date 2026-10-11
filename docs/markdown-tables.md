@@ -262,8 +262,9 @@ contributing cell ranges. Formatting or replacement cannot treat its bounding
 source interval as selected. A replacement of a structural boundary must follow
 explicit table semantics or fail unchanged; it cannot merge cells accidentally.
 
-Ex addresses use formatted hard lines in that row-major order: each explicit
-line inside a cell is a hard line. Visual line motions/operators address a line
+Absolute Ex addresses use physical source rows, including hidden delimiter
+syntax. Contextual Ex addresses follow the view's line mode; displayed rows
+inside cells keep their exact owner boundaries. Visual line motions/operators address a line
 inside the active cell, and do not select neighboring cells merely because they
 share a screen baseline. Geometric Up/Down movement follows lines inside that
 cell, then the same column of the preceding/following table row, retaining

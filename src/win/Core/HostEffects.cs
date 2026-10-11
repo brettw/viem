@@ -1,3 +1,4 @@
+using System.Text;
 using Viem.Windows.Interop;
 using static Viem.Windows.Interop.Native;
 using static Viem.Windows.Interop.Abi;
@@ -28,7 +29,10 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
                 f, (ulong)formats.Length, b, (ulong)breaks.Length, s, (ulong)bytes.Length, &info), "Copy effects");
         var writes = clipboard.Select((c, i) => new ClipboardWrite(Text(bytes, c.plain_text),
             System.Text.Encoding.UTF8.GetString(Copy((p, n, r) => viem_effect_batch_copy_clipboard_json(handle, (ulong)i, p, n, r))))).ToArray();
-        string[] output = lines.Select(l => Text(bytes, l.text))
+        var printed = requests.Where(r => r.kind == VIEM_EX_FRONTEND_PRINT_LINES)
+            .SelectMany(request => lines.Skip(checked((int)request.first_payload)).Take(checked((int)request.payload_count))
+                .Select(line => FormatPrintedLine(bytes, request.flags, line)));
+        string[] output = printed
             .Concat(marks.Select(m => $"{(char)m.name}  {m.hard_line_index + 1}:{m.grapheme_column + 1}  {Text(bytes, m.line_text)}"))
             .Concat(registers.Select(r => $"\"{(char)r.name}  {Text(bytes, r.text)}"))
             .Concat(jumps.Select(j => $"{j.list_index + 1}  {j.hard_line_index + 1}:{j.grapheme_column + 1}  {Text(bytes, j.line_text)}"))
@@ -41,5 +45,20 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
                 selectionOptions[option.name] = option.scalar_value == 0 ? "0" : "1";
         return new(writes, requests.Select(r => new FrontendRequest(r, Text(bytes, r.text))).ToArray(), output, selectionOptions);
     }
-    private static string OptionName(uint name) => name switch { 1 => "wrap", 2 => "linebreak", 3 => "fileformat", 5 => "ignorecase", 6 => "smartcase", 7 => "wrapscan", 8 => "textwidth", 9 => "autoindent", 10 => "tabstop", 11 => "shiftwidth", 12 => "softtabstop", 13 => "expandtab", 14 => "smarttab", 17 => "list", 18 => "listchars", 19 => "hlsearch", 20 => "incsearch", VIEM_EX_OPTION_AUTOSELECT => "autoselect", VIEM_EX_OPTION_KEYMODEL => "keymodel", VIEM_EX_OPTION_SELECTMODE => "selectmode", _ => $"option {name}" };
+    private static string FormatPrintedLine(byte[] bytes, uint flags, ViemExTextLineV1 line)
+    {
+        string text = Text(bytes, line.text);
+        if ((flags & VIEM_EX_FRONTEND_LIST) != 0)
+        {
+            text = string.Concat(text.EnumerateRunes().Select(rune => rune.Value switch
+            {
+                <= 31 => "^" + (char)(rune.Value + 64),
+                127 => "^?",
+                >= 128 and <= 159 => $"<{rune.Value:x2}>",
+                _ => rune.ToString()
+            })) + "$";
+        }
+        return (flags & VIEM_EX_FRONTEND_NUMBER) != 0 ? $"{line.hard_line_index + 1}\t{text}" : text;
+    }
+    private static string OptionName(uint name) => name switch { 1 => "wrap", 2 => "linebreak", 3 => "fileformat", 5 => "ignorecase", 6 => "smartcase", 7 => "wrapscan", 8 => "textwidth", 9 => "autoindent", 10 => "tabstop", 11 => "shiftwidth", 12 => "softtabstop", 13 => "expandtab", 14 => "smarttab", 17 => "list", 18 => "listchars", 19 => "hlsearch", 20 => "incsearch", VIEM_EX_OPTION_AUTOSELECT => "autoselect", VIEM_EX_OPTION_KEYMODEL => "keymodel", VIEM_EX_OPTION_SELECTMODE => "selectmode", VIEM_EX_OPTION_NUMBER => "number", _ => $"option {name}" };
 }

@@ -12,6 +12,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     public var viewController: NSViewController { self }
     public var defaultColumnWidth: CGFloat? { try? session?.defaultColumnWidth() }
     public var windowFocusPoint: NSPoint? { editorView.windowFocusPoint }
+    public var lineNumberGutterWidth: CGFloat { isViewLoaded ? editorView.lineNumberGutterWidth : 0 }
+    public var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)?
     public var defaultLineHeight: CGFloat? { try? session?.defaultLineHeight() }
     public private(set) var statusBarState = EVStatusBarState()
     public var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
@@ -149,6 +151,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         fatalError("init(coder:) is unavailable")
     }
 
+    public func inheritLineNumberOption(from surface: any EVEditorSurface) {
+        guard let previous = surface as? EVEditorSurfaceController, let oldSession = previous.session, let session else { return }
+        do {
+            try session.setNumber(oldSession.number())
+            if isViewLoaded { refreshPresentation() }
+        } catch { report(error) }
+    }
+
     public override func loadView() {
         EVStartupPerformance.mark("surface.load.begin")
         defer { EVStartupPerformance.mark("surface.load.end") }
@@ -181,6 +191,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if let session {
             let viewport = try session.viewportState()
             _ = try prepared.setWrap(viewport.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP) != 0)
+            try prepared.setNumber(session.number())
             _ = try prepared.setScale(CGFloat(viewport.scale))
             if replacement.sourceFormat == backend.sourceFormat {
                 try prepared.setLineMode(session.lineMode())
@@ -262,6 +273,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             if advancingSearch { _ = session.optionalPresentation("search highlights", fallback: false) { try session.pollSearch() } }
             try session.refreshLayoutIfNeeded()
+            if isViewLoaded, session.optionalPresentation("line-number gutter", fallback: false, {
+                try editorView.synchronizeLineNumberWidth()
+            }) {
+                let size = editorView.layoutViewportSize
+                _ = try session.resize(width: size.width, height: size.height)
+                try session.refreshLayoutIfNeeded()
+            }
             if session.optionalPresentation("syntax highlighting", fallback: false, {
                 try backend.waitForSyntax(viewID: session.viewID)
             }) {
@@ -464,6 +482,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             session.backgroundLayout.update()
             updateStatusBar()
             if isViewLoaded {
+                editorView.updateLineNumberPresentation()
                 editorView.applyPresentation()
                 linkPopover.refresh()
                 imagePopover.refresh()
@@ -825,6 +844,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .encodingUTF8, .encodingLatin1, .encodingUTF16LE, .encodingUTF16BE:
             let expected = documentState
             performInput { _ = try session.setEncoding(self.encodingValue(menuCommand), expected: expected) }
+        case .showLineNumbers:
+            performInput { try session.setNumber(!session.number()) }
         case .showInvisibleCharacters:
             guard layoutSnapshot?.whitespace.applicable == true else { return }
             performInput { try session.setVisibleWhitespace(!(self.layoutSnapshot?.whitespace.enabled ?? true)) }
@@ -952,6 +973,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 isEnabled: true,
                 state: documentState.encoding == encodingValue(menuCommand) ? .on : .off
             )
+        case .showLineNumbers:
+            EVMenuItemPresentation(isEnabled: session != nil, state: (try? session?.number()) == true ? .on : .off)
         case .showInvisibleCharacters:
             EVMenuItemPresentation(isEnabled: layoutSnapshot?.whitespace.applicable == true,
                                   state: layoutSnapshot?.whitespace.enabled == true ? .on : .off)
@@ -1748,9 +1771,9 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         }
     }
 
-    public func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws {
+    public func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws {
         guard let session else { throw EVCoreFrontendError.unsupportedHostEffect }
-        _ = try session.readFile(bytes, after: after, expected: expected)
+        _ = try session.readFile(bytes, after: after, source: source, expected: expected)
         refreshPresentation()
     }
 
@@ -1829,11 +1852,12 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             documentRevision: effect.documentRevision,
             force: force,
             path: path,
-            hardLineRange: effect.hardLineRange,
+            sourceByteRange: effect.sourceByteRange,
             initialHeightRows: initialHeightRows,
             verticalSplit: effect.flags & UInt32(VIEM_EX_FRONTEND_VERTICAL) != 0,
             argumentNavigation: effect.argumentNavigation,
-            readAfterLine: effect.readAfterLine,
+            readAfterOffset: effect.readAfterOffset,
+            readAfterIsSource: effect.readAfterIsSource,
             exitStatus: effect.exitStatus.map { Int32(bitPattern: $0) } ?? 1
         )
     }
@@ -1878,6 +1902,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         let name: String
         switch option.name {
         case UInt32(VIEM_EX_OPTION_WRAP): name = "wrap"
+        case UInt32(VIEM_EX_OPTION_NUMBER): name = "number"
         case UInt32(VIEM_EX_OPTION_FILE_FORMAT): name = "fileformat"
         case UInt32(VIEM_EX_OPTION_FILE_FORMATS): name = "fileformats"
         case 5: name = "ignorecase"

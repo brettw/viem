@@ -28,7 +28,7 @@ internal sealed partial class EditorWindow
         await OpenPath(App.Instance.Arguments[checked((int)index)], false, (r.flags & VIEM_EX_FRONTEND_FORCE) != 0);
         var opened = App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, App.Instance.Arguments[(int)index]));
         if (opened != null) opened.RememberedArgument = index;
-        if ((r.flags & VIEM_EX_FRONTEND_HAS_LINE) != 0) opened?.View?.GoToLine(r.argument_line);
+        if ((r.flags & VIEM_EX_FRONTEND_HAS_LINE) != 0) opened?.View?.GoToLine(r.argument_line == 0 ? ulong.MaxValue : r.argument_line);
     }
     private async Task RenameDocument(EditorPane pane, string path)
     {
@@ -87,9 +87,9 @@ internal sealed partial class EditorWindow
     }
     private static unsafe (byte[] Bytes, bool Complete) HardLineBytes(CoreDocument doc, ViemExFrontendRequestV1 request)
     {
-        // Ex's range is inclusive; the source-copy API takes a half-open range.
+        // Ranged writes carry exact half-open source-byte bounds.
         bool all = false;
-        byte[] bytes = Copy((p, n, r) => { uint complete = 0; var status = viem_core_copy_hard_line_source_bytes(doc.Handle, request.document_id, request.document_revision, request.hard_line_start, checked(request.hard_line_end + 1), p, n, r, &complete); all = complete != 0; return status; });
+        byte[] bytes = Copy((p, n, r) => { uint complete = 0; var status = viem_core_copy_source_range_bytes(doc.Handle, request.document_id, request.document_revision, request.hard_line_start, request.hard_line_end, p, n, r, &complete); all = complete != 0; return status; });
         return (bytes, all);
     }
     private async Task CheckExternalChanges()

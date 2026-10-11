@@ -39,6 +39,30 @@ final class EVDocumentWindowPlacementTests: XCTestCase {
     XCTAssertEqual(reopened.documentWindowFrame, saved)
   }
 
+  func testGutterGrowthAndRemovalPreserveContentWidthAndScreenOriginWhenRoomExists() {
+    let frame = NSRect(x: 200, y: 100, width: 700, height: 500)
+    let grown = EVDocumentWindowPlacement.frameForGutterChange(frame, delta: 31, screen: desktop, minimumWidth: 480)
+    XCTAssertEqual(grown, NSRect(x: 169, y: 100, width: 731, height: 500))
+    XCTAssertEqual(grown.minX + 31, frame.minX)
+    XCTAssertEqual(grown.width - 31, frame.width)
+    XCTAssertEqual(EVDocumentWindowPlacement.frameForGutterChange(grown, delta: -31, screen: desktop, minimumWidth: 480), frame)
+  }
+
+  func testGutterUsesRightSpaceOnlyWhenLeftSpaceRunsOutAndClampsToMonitor() {
+    let frame = NSRect(x: 10, y: 100, width: 700, height: 500)
+    let grown = EVDocumentWindowPlacement.frameForGutterChange(frame, delta: 31, screen: desktop, minimumWidth: 480)
+    XCTAssertEqual(grown.minX, desktop.minX)
+    XCTAssertEqual(grown.width - 31, frame.width)
+    XCTAssertTrue(desktop.contains(grown))
+    let full = NSRect(x: 0, y: 100, width: 1600, height: 500)
+    XCTAssertEqual(EVDocumentWindowPlacement.frameForGutterChange(full, delta: 31, screen: desktop, minimumWidth: 480), full)
+    let minimum = NSRect(x: 300, y: 100, width: 480, height: 500)
+    let removed = EVDocumentWindowPlacement.frameForGutterChange(minimum, delta: -31, screen: desktop, minimumWidth: 480)
+    XCTAssertEqual(removed.size, minimum.size)
+    XCTAssertEqual(removed.minX, minimum.minX + 31,
+      "When the minimum prevents shrinking, still preserve the content's screen position")
+  }
+
   func testOffscreenFrameMovesBeforeAnyDimensionShrinks() {
     let saved = NSRect(x: 1350, y: -100, width: 1000, height: 700)
     let fitted = EVDocumentWindowPlacement.fitting(saved, to: [desktop])

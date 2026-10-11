@@ -1335,6 +1335,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             RegionalLayoutSnapshot {
                 whitespace_unit,
                 default_row_advance,
+                default_font_metrics: self.default_font_metrics.clone(),
                 revision: layout_revision,
                 document_id,
                 document_revision,

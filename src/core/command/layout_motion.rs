@@ -876,6 +876,21 @@ pub(crate) fn complete_horizontal_demand(snapshot: &LayoutSnapshot, offset: usiz
     LayoutMotionError::OutsideMaterializedCoverage(demand)
 }
 
+/// Resolve an explicit Ex endpoint in its own bounded presentation band.
+/// The focus makes input retry acquire the target directly, without shaping
+/// every preceding line to manufacture a global visual ordinal.
+pub(crate) fn exact_ex_address_demand(snapshot: &LayoutSnapshot,
+    requested_hard_lines: Range<usize>, offset: usize) -> LayoutMotionError {
+    LayoutMotionError::OutsideMaterializedCoverage(LayoutDemand {
+        document_id: snapshot.document_id, document_revision: snapshot.document_revision,
+        layout_revision: snapshot.revision, configuration_generation: snapshot.configuration_generation,
+        metrics_generation: snapshot.metrics_generation, edge: LayoutDemandEdge::Both,
+        materialized_hard_lines: snapshot.coverage.hard_lines(), requested_hard_lines,
+        minimum_additional_visual_rows: 0, horizontal_focus_offset: Some(offset),
+        horizontal_x_bits: None, complete_horizontal_geometry: true,
+    })
+}
+
 fn validate_viewport(viewport: Viewport) -> Result<(), LayoutMotionError> {
     if !viewport.top.is_finite()
         || !viewport.height.is_finite()

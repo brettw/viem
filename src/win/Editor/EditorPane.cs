@@ -30,7 +30,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
     internal ulong? InitialHeightLines { get; set; }
     internal bool InitialVerticalSplit { get; set; }
-    internal Point WindowFocusPoint { get { try { if (View != null) { var caret = View.CaretGeometry(); var viewport = View.Viewport; return new(caret.rect.x - viewport.left, caret.rect.y - viewport.top); } } catch { } return new(ActualWidth / 2, ActualHeight / 2); } }
+    internal bool? InitialNumber { get; set; }
+    internal Point WindowFocusPoint { get { try { if (View != null) { var caret = View.CaretGeometry(); var viewport = View.Viewport; return new(caret.rect.x - viewport.left + GutterWidth, caret.rect.y - viewport.top); } } catch { } return new(ActualWidth / 2, ActualHeight / 2); } }
     private readonly EditorWindow window;
     private readonly Preferences preferences;
     internal CanvasControl Canvas { get; } = new();
@@ -52,6 +53,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly DispatcherTimer blink = new();
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
+    private bool refreshPending;
     private bool active;
     public bool IsActive { get => active; set { active = value; if (!value) { DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); } Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
@@ -90,13 +92,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
         this.window = window; Document = document; this.preferences = preferences;
         prompt = new(this, preferences) { Visibility = Visibility.Collapsed };
         RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); RowDefinitions.Add(new() { Height = GridLength.Auto }); RowDefinitions.Add(new() { Height = GridLength.Auto });
-        ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        Children.Add(Canvas); Children.Add(inputLayer); inputLayer.Children.Add(input);
+        ColumnDefinitions.Add(new() { Width = GridLength.Auto }); ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        BuildLineNumbers();
+        Children.Add(Canvas); SetColumn(Canvas, 1); Children.Add(inputLayer); SetColumn(inputLayer, 1); inputLayer.Children.Add(input);
         completionBorder.Child = completionList; inputLayer.Children.Add(completionBorder);
         completionList.ItemClick += (_, e) => { if (View != null && completion != null) { int index = Array.IndexOf(completion.Items, (string)e.ClickedItem); Run(() => View.AcceptCompletion(completion, index)); FocusEditor(); } };
-        Children.Add(vertical); SetColumn(vertical, 1);
-        Children.Add(horizontal); SetRow(horizontal, 1);
-        Children.Add(status); SetRow(status, 2); SetColumnSpan(status, 2);
+        Children.Add(vertical); SetColumn(vertical, 2);
+        Children.Add(horizontal); SetRow(horizontal, 1); SetColumn(horizontal, 1);
+        Children.Add(status); SetRow(status, 2); SetColumnSpan(status, 3);
         BuildStatus();
         AutomationProperties.SetName(input, "Viem document input"); AutomationProperties.SetName(Canvas, "Document");
         AutomationProperties.SetName(vertical, "Vertical document scroll"); AutomationProperties.SetName(horizontal, "Horizontal document scroll");
@@ -193,6 +196,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         View.Changed += Refresh; View.Effects += ApplyEffects;
+        if (InitialNumber is { } number) { View.Number(number); InitialNumber = null; }
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);
         window.PaneReady(this);
@@ -208,6 +212,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             prepared.Wrap((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0);
             prepared.Zoom(viewport.scale);
             prepared.LineMode(View.CurrentLineMode);
+            prepared.Number(View.NumberEnabled);
             if (document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE) prepared.ParagraphFlow(View.ParagraphFlowEnabled);
             prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);
@@ -242,11 +247,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         InvalidateDrawingCache();
         var theme = preferences.Theme;
-        Background = new SolidColorBrush(theme.Background); status.Background = new SolidColorBrush(theme.StatusBackground);
-        status.BorderBrush = PaneStackPanel.SeparatorBrush(preferences); status.BorderThickness = new(0, 1, 0, 0);
-        mode.Foreground = message.Foreground = location.Foreground = new SolidColorBrush(theme.StatusForeground);
-        foreach (var label in new[] { mode, message, location }) { label.FontFamily = new FontFamily(preferences.StatusFontFamily); label.FontSize = preferences.StatusFontSize; }
-        status.Height = Math.Max(28, preferences.StatusFontSize + 12);
+        Background = new SolidColorBrush(theme.Background);
         ApplyStatusTheme();
         Canvas.Invalidate();
     }
@@ -482,7 +483,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public void Refresh()
     {
         using var measurement = Diagnostics.InputPerformance.Measure("refresh");
-        if (View == null || refreshing || disposed) return;
+        if (View == null || disposed) return;
+        if (refreshing) { refreshPending = true; return; }
         refreshing = true;
         try
         {
@@ -501,6 +503,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; viewport = View.Viewport;
+            try { RefreshLineNumbers(); }
+            catch (CoreException error) { lineNumbers = null; lineNumberCanvas.Invalidate(); PresentationWarning("line numbers", error); }
             RefreshImagePreviews();
             RefreshTableInteraction();
             mode.Text = presentation.mode switch {
@@ -543,10 +547,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
         catch (Exception e) {
             // A previous source/device snapshot cannot become the new frame
             // merely because exporting its replacement failed.
-            snapshot = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
-            InvalidateDrawingCache(); Canvas.Invalidate(); Report(e);
+            snapshot = null; lineNumbers = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
+            InvalidateDrawingCache(); Canvas.Invalidate(); lineNumberCanvas.Invalidate(); Report(e);
         }
-        finally { refreshing = false; scrollUpdating = false; }
+        finally {
+            refreshing = false; scrollUpdating = false;
+            if (refreshPending) { refreshPending = false; DispatcherQueue.TryEnqueue(Refresh); }
+        }
     }
     private void PresentationWarning(string name, CoreException error)
     {
@@ -709,6 +716,6 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ResetImagePreviews(); imageCancellation.Dispose();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
         InvalidateDrawingCache();
-        View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); Canvas.RemoveFromVisualTree();
+        ClearNumberLayouts(); ClearStatusText(); View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); statusBox.RemoveFromVisualTree(); statusTextCanvas.RemoveFromVisualTree(); lineNumberCanvas.RemoveFromVisualTree(); Canvas.RemoveFromVisualTree();
     }
 }

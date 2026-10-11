@@ -270,7 +270,42 @@ extension EVConfigurationStore {
     guard Self.styleNames.contains(name) else { throw invalid("Unknown style format") }
     let object = try Self.readObject(data)
     try Self.validateStyleVersion(object, named: name)
-    try updateActiveTheme(styleNames: [name], replacingInvalidFile: replacingInvalidFile) { candidate in
+    // Status chrome has one theme-wide authority. Only edited reserved
+    // definitions propagate; all document-specific typography stays local.
+    let sharedIDs = Set(["Status bar", "Status bar command"])
+    var incoming = object["block_styles"] as? [[String: Any]] ?? []
+    var previous = (try styleDefaults(named: name)).flatMap { try? Self.readObject($0) }?["block_styles"] as? [[String: Any]] ?? []
+    if name == "code" {
+      // Code files store deltas: omitted built-ins restore generated defaults,
+      // including when a configuration undo clears a chrome override.
+      let baseline = ((try EVThemeFile.builtin()["styles"] as? [String: Any])?["code"] as? [String: Any])?["block_styles"] as? [[String: Any]] ?? []
+      for entry in baseline where sharedIDs.contains(entry["id"] as? String ?? "")
+          && !incoming.contains(where: { $0["id"] as? String == entry["id"] as? String }) {
+        incoming.append(entry)
+      }
+      // An omitted prior delta already means the generated definition. An
+      // unrelated Code edit must not publish those defaults over shared edits.
+      for entry in baseline where sharedIDs.contains(entry["id"] as? String ?? "")
+          && !previous.contains(where: { $0["id"] as? String == entry["id"] as? String }) {
+        previous.append(entry)
+      }
+    }
+    func comparable(_ value: Any) -> Any {
+      if let object = value as? [String: Any] {
+        return object.filter { !($0.value is NSNull) }.mapValues(comparable)
+      }
+      if let array = value as? [Any] { return array.map(comparable) }
+      return value
+    }
+    let changed = incoming.filter { entry in
+      guard let id = entry["id"] as? String, sharedIDs.contains(id) else { return false }
+      let old = previous.first { $0["id"] as? String == id }
+      guard let old, let previous = comparable(old) as? [String: Any],
+            let next = comparable(entry) as? [String: Any] else { return true }
+      return !NSDictionary(dictionary: previous).isEqual(to: next)
+    }
+    let changedFamilies = changed.isEmpty ? [name] : Self.styleNames
+    try updateActiveTheme(styleNames: changedFamilies, replacingInvalidFile: replacingInvalidFile) { candidate in
       var styles = candidate["styles"] as? [String: Any] ?? [:]
       // Code export includes suppression records and is a complete authority.
       // For other sheets retain future fields on surviving definitions only.
@@ -281,6 +316,23 @@ extension EVConfigurationStore {
         styles[name] = complete
       } else {
         styles[name] = Self.mergeThemeStyleSheet(styles[name] as? [String: Any] ?? [:], object)
+      }
+      if !changed.isEmpty {
+        let builtins = try EVThemeFile.builtin()["styles"] as? [String: Any] ?? [:]
+        for family in Self.styleNames where family != name {
+          var target = styles[family] as? [String: Any] ?? builtins[family] as? [String: Any] ?? [:]
+          var definitions = target["block_styles"] as? [[String: Any]] ?? []
+          for entry in changed {
+            let id = entry["id"] as? String
+            if let index = definitions.firstIndex(where: { $0["id"] as? String == id }) {
+              let merged = Self.mergeThemeStyleSheet(["block_styles": [definitions[index]]], ["block_styles": [entry]])
+              definitions[index] = (merged["block_styles"] as? [[String: Any]])?.first ?? entry
+            }
+            else { definitions.append(entry) }
+          }
+          target["block_styles"] = definitions
+          styles[family] = target
+        }
       }
       candidate["styles"] = styles
     }

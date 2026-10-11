@@ -853,7 +853,7 @@ struct CommandLineState {
     return_mode: Mode,
     count: usize,
     operator: Option<PendingOperator>,
-    visual_range_revision: Option<Revision>,
+    retained_visual_range: Option<ex_addresses::ResolvedExRange>,
     incremental_navigation: Vec<SearchDirection>,
     incremental_navigation_input: Option<String>,
 }
@@ -957,6 +957,10 @@ struct InsertSession {
     /// dot until this session records another edit fragment.
     preserve_normal_repeat: bool,
     unit_floor: usize,
+    /// Exact physical change destination while its new empty source line has
+    /// no visible editing caret. Both points follow checked source maps.
+    source_destination: Option<crate::document::SourcePoint>,
+    source_floor: Option<crate::document::SourcePoint>,
     repeat_operator: Option<OperatorRepeat>,
     repeat_visual_operator: Option<VisualOperatorRepeat>,
     /// Character-at-a-time undo for the uninterrupted Replace-mode frontier.
@@ -1158,6 +1162,8 @@ struct OperatorTarget {
 pub(crate) struct ExNormalTarget {
     pub(crate) anchor: TextAnchor,
     pub(crate) hard_line_id: u64,
+    pub(crate) domain: ex_addresses::ExLineDomain,
+    pub(crate) source: Option<crate::document::SourcePoint>,
 }
 
 /// A compound command which the serial core coordinator must replay one input
@@ -1191,11 +1197,25 @@ impl ExNormalReplayPlan {
     pub(crate) fn bound_target(&self, index: usize) -> Result<Option<ExNormalTarget>, PositionError> {
         let Some(mut target) = self.targets[index] else { return Ok(None); };
         if let Some(map) = self.global_map.as_ref() {
+            if let Some(source) = target.source {
+                target.source = match map.source_position_map() {
+                    Some(source_map) => match source_map.map_source_point(source,
+                        Association::AfterInsertion, DeletionRecovery::PreferFollowingThenPreceding)? {
+                        MappingOutcome::Exact(point) | MappingOutcome::Moved(point)
+                        | MappingOutcome::RecoveredFromProvenance(point) => Some(point),
+                        MappingOutcome::CollapsedByDeletion(_) | MappingOutcome::Ambiguous(_)
+                        | MappingOutcome::Unresolvable(_) => return Ok(None),
+                    },
+                    None if source.revision() == map.target_revision() => Some(source),
+                    None => return Ok(None),
+                };
+            }
             target.anchor = match map.map_text_anchor(target.anchor)? {
                 MappingOutcome::Exact(anchor) | MappingOutcome::Moved(anchor)
                 | MappingOutcome::RecoveredFromProvenance(anchor) => anchor,
                 MappingOutcome::CollapsedByDeletion(_) | MappingOutcome::Ambiguous(_)
-                | MappingOutcome::Unresolvable(_) => return Ok(None),
+                | MappingOutcome::Unresolvable(_) if target.source.is_none() => return Ok(None),
+                _ => target.anchor,
             };
         }
         Ok(Some(target))
@@ -1211,6 +1231,7 @@ pub(crate) struct CommandStep {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RepeatTarget {
     ViewLine(line_mode::LineShape, usize),
+    PhysicalLineAddress(OperatorMotion),
     Motion(OperatorMotion),
     Lines,
     TextObject(TextObject),
@@ -1365,8 +1386,10 @@ pub struct CommandInterpreter {
     last_command_line: Option<String>,
     ex_state: ExExecutionState,
     wrap: bool,
+    number: bool,
     line_mode: LineMode,
     line_layout: Option<LayoutSnapshot>,
+    ex_address_endpoints: Option<ex_addresses::ExAddressEndpointCache>,
     physical_cursor: Option<line_mode::PhysicalCursor>,
     visual_source_anchor: Option<crate::document::SourcePoint>,
     fileformats: Vec<FileFormat>,
@@ -1460,6 +1483,30 @@ impl Default for CommandInterpreter {
 }
 
 impl CommandInterpreter {
+    fn rebase_insert_source_positions(&mut self, map: &PositionMap) -> Result<bool, PositionError> {
+        let Some(session) = self.insert_session.as_mut() else { return Ok(true); };
+        for (point, association) in [
+            (&mut session.source_destination, Association::AfterInsertion),
+            (&mut session.source_floor, Association::BeforeInsertion),
+        ] {
+            let Some(previous) = *point else { continue; };
+            if previous.revision() == map.target_revision() { continue; }
+            if previous.revision() != map.source_revision() { return Ok(false); }
+            let Some(source_map) = map.source_position_map() else { return Ok(false); };
+            let Some(next) = source_map.map_source_point(previous, association,
+                DeletionRecovery::PreferFollowingThenPreceding)?.value().copied() else { return Ok(false); };
+            *point = Some(next);
+        }
+        Ok(true)
+    }
+
+    pub(super) fn retire_source_destination(&mut self) {
+        if let Some(session) = self.insert_session.as_mut() {
+            session.source_destination = None;
+            session.source_floor = None;
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             mappings: Default::default(),
@@ -1505,8 +1552,10 @@ impl CommandInterpreter {
             last_command_line: None,
             ex_state: ExExecutionState::default(),
             wrap: false,
+            number: false,
             line_mode: LineMode::Visual,
             line_layout: None,
+            ex_address_endpoints: None,
             physical_cursor: None,
             visual_source_anchor: None,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
@@ -1933,7 +1982,15 @@ impl CommandInterpreter {
         // publishes its validated post-change slot to every view after this
         // position-map preparation, so an inactive view must not discard the
         // shared pre-publication value here.
+        if !next.rebase_insert_source_positions(map)? { return Ok(false); }
+        next.rebase_physical_cursor(map, anchors.cursor.association())?;
+        let source_positions = next.insert_session.as_ref()
+            .map(|session| (session.source_destination, session.source_floor));
         next.retire_typing_context();
+        if let (Some(session), Some((destination, floor))) = (next.insert_session.as_mut(), source_positions) {
+            session.source_destination = destination;
+            session.source_floor = floor;
+        }
         next.position_revision = Some(map.target_revision());
         *self = next;
         Ok(true)
@@ -1973,6 +2030,7 @@ impl CommandInterpreter {
         }
 
         let mut next = self.clone();
+        if !next.rebase_insert_source_positions(map)? { return Ok(false); }
 
         if !cursor_was_moved && self.cursor == before.cursor {
             let Some(mapped) = mapped_anchor(map, anchors.cursor)? else {
@@ -1981,6 +2039,7 @@ impl CommandInterpreter {
             next.cursor = mapped;
             next.boundary_affinity = anchors.cursor.affinity();
         }
+        next.rebase_physical_cursor(map, anchors.cursor.association())?;
 
         if let (Some(previous), Some(current), Some(anchor)) = (
             before.insert_session.as_ref(),
@@ -2269,11 +2328,17 @@ impl CommandInterpreter {
         }
         if self.mode == Mode::CommandLine {
             return matches!(event, InputEvent::Key(Key::Enter))
-                && self
-                    .command_line_state
-                    .as_ref()
-                    .is_some_and(|state| state.return_mode == Mode::VisualBlock);
+                && self.command_line_state.as_ref().is_some_and(|state| {
+                    state.return_mode == Mode::VisualBlock || state.kind == CommandLineKind::Ex
+                        && self.line_mode == LineMode::Visual
+                        && parse_ex(&state.buffer.input).is_ok_and(|command|
+                            ex_addresses::ex_command_requires_visual_layout(&command,
+                                self.global_replay_depth > 0))
+                });
         }
+        if self.line_mode == LineMode::Visual
+            && matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock)
+            && matches!(event, InputEvent::Key(Key::Char(':'))) { return true; }
         if self.visual_block_insert.is_some() {
             return false;
         }
@@ -2396,6 +2461,25 @@ impl CommandInterpreter {
         }
     }
 
+    pub(crate) fn is_ex_address_layout_input(&self, event: &InputEvent) -> bool {
+        self.mode == Mode::CommandLine && self.line_mode == LineMode::Visual
+            && matches!(event, InputEvent::Key(key) if self.normalized_input_key(*key) == Key::Enter)
+            && self.command_line_state.as_ref().is_some_and(|state| state.kind == CommandLineKind::Ex)
+    }
+
+    pub(crate) fn is_counted_viewport_alignment_input(&self, event: &InputEvent) -> bool {
+        matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock)
+            && matches!(self.pending, Pending::Z { count_explicit: true, .. })
+            && matches!(event, InputEvent::Key(key)
+                if matches!(self.normalized_input_key(*key), Key::Char('t' | 'z' | 'b')))
+    }
+
+    pub(crate) fn restore_pending_layout_checkpoint(&mut self, checkpoint: &Self) {
+        let endpoints = self.ex_address_endpoints.clone();
+        *self = checkpoint.clone();
+        self.ex_address_endpoints = endpoints;
+    }
+
     /// Whether layout acquisition must retain the viewport used by this input.
     /// Caret-relative commands can reveal an unmaterialized caret, but viewport
     /// motions must resolve their target against the viewport before the command.
@@ -2463,6 +2547,10 @@ impl CommandInterpreter {
             Mode::CommandLine => false,
         }
     }
+
+    /// Native gutters and Ex share this view-local presentation option.
+    pub fn number(&self) -> bool { self.number }
+    pub fn set_number(&mut self, enabled: bool) { self.number = enabled; }
 
     pub(crate) fn set_layout_options(&mut self, wrap: bool) {
         self.wrap = wrap;
@@ -2936,7 +3024,7 @@ impl CommandInterpreter {
         self.clear_pending();
         self.position_revision = Some(document.revision());
         let line = usize::try_from(line).unwrap_or(usize::MAX).max(1);
-        let mut output = self.goto_line(document, line);
+        let mut output = self.goto_physical_line(document, line);
         output.mode_changed = old_mode != Mode::Normal;
         output
     }
@@ -2993,6 +3081,24 @@ impl CommandInterpreter {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn accept_external_source_insertion(
+        &mut self,
+        document: &Document,
+        authored_start: usize,
+        source_caret: crate::document::SourcePoint,
+    ) {
+        debug_assert_eq!(source_caret.document(), document.id());
+        debug_assert_eq!(source_caret.revision(), document.revision());
+        self.boundary_affinity = BoundaryAffinity::Upstream;
+        self.typing_style.inherited = None;
+        self.remember_physical_cursor(document, source_caret.offset());
+        if let Some(session) = self.insert_session.as_mut() {
+            session.unit_floor = authored_start;
+            session.source_destination = None;
+            session.source_floor = None;
+        }
     }
 
     pub fn handle(
@@ -3118,7 +3224,7 @@ impl CommandInterpreter {
             Ok(mut output) => {
                 if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
                     document.rollback_command_checkpoint(model_checkpoint);
-                    *self = checkpoint;
+                    self.restore_pending_layout_checkpoint(&checkpoint);
                     context.viewport = viewport;
                     context.viewport_command = false;
                     return Ok(output);
@@ -3241,6 +3347,9 @@ impl CommandInterpreter {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         let event = self.normalized_input_event(event);
+        if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
+            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
+        }
         if self.handles_literal_input(&event) || self.is_cancel_input(&event)
             || (context.document().format() == Format::Markdown && self.markdown_autodetect()
                 && matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -4512,6 +4621,7 @@ impl CommandInterpreter {
                 register,
             } => {
                 let output = match key {
+                    Key::Char('g') if count_explicit => self.goto_physical_line(document, count),
                     Key::Char('g') => self.goto_line(document, count),
                     Key::Char('e') => {
                         self.move_cursor(document, Motion::WordEndBackward(false), count)
@@ -4869,21 +4979,20 @@ impl CommandInterpreter {
             Key::Char('}') => self.move_cursor_as_jump(document, Motion::Paragraph(true), count),
             Key::Char('%') => {
                 if let Some(percent) = explicit_count {
-                    let lines = document.hard_line_snapshot();
-                    let Some(line) = percentage_line(&lines, percent) else {
+                    let Some(line) = physical_percentage_line(document, percent) else {
                         return Some(invalid_percentage(percent));
                     };
-                    self.goto_line(document, line)
+                    self.goto_physical_line(document, line)
                 } else {
                     self.match_pair_motion(document)
                 }
             }
             Key::Char('*') => self.search_word_at_cursor(document, true, true, count),
             Key::Char('#') => self.search_word_at_cursor(document, false, true, count),
-            Key::Char('G') => self.goto_line(
-                document,
-                explicit_count.unwrap_or_else(|| document.line_count()),
-            ),
+            Key::Char('G') => match explicit_count {
+                Some(line) => self.goto_physical_line(document, line),
+                None => self.goto_line(document, document.line_count()),
+            },
             _ => {
                 self.count = explicit_count;
                 return None;
@@ -4947,7 +5056,7 @@ impl CommandInterpreter {
                     _ => CommandOutput::unsupported("find expects text"),
                 });
             }
-            Pending::G { count, .. } => {
+            Pending::G { count, count_explicit, .. } => {
                 let output = match key {
                     Key::Char('e') => {
                         self.move_cursor(document, Motion::WordEndBackward(false), count)
@@ -4955,6 +5064,7 @@ impl CommandInterpreter {
                     Key::Char('E') => {
                         self.move_cursor(document, Motion::WordEndBackward(true), count)
                     }
+                    Key::Char('g') if count_explicit => self.goto_physical_line(document, count),
                     Key::Char('g') => self.goto_line(document, count),
                     Key::Char('_') => self.move_cursor(document, Motion::LastNonBlank, count),
                     Key::Char('*') => self.search_word_at_cursor(document, true, false, count),
@@ -5148,19 +5258,18 @@ impl CommandInterpreter {
             Key::Char('}') => self.move_cursor_as_jump(document, Motion::Paragraph(true), count),
             Key::Char('%') => {
                 if let Some(percent) = explicit_count {
-                    let lines = document.hard_line_snapshot();
-                    let Some(line) = percentage_line(&lines, percent) else {
+                    let Some(line) = physical_percentage_line(document, percent) else {
                         return Some(invalid_percentage(percent));
                     };
-                    self.goto_line(document, line)
+                    self.goto_physical_line(document, line)
                 } else {
                     self.match_pair_motion(document)
                 }
             }
-            Key::Char('G') => self.goto_line(
-                document,
-                explicit_count.unwrap_or_else(|| document.line_count()),
-            ),
+            Key::Char('G') => match explicit_count {
+                Some(line) => self.goto_physical_line(document, line),
+                None => self.goto_line(document, document.line_count()),
+            },
             Key::Ctrl('o' | 'O') => self.navigate_jump(document, false, count),
             Key::Ctrl('i' | 'I') => self.navigate_jump(document, true, count),
             _ => {
@@ -5914,7 +6023,7 @@ impl CommandInterpreter {
                 }
             };
         }
-        if let Pending::G { count, .. } = self.pending {
+        if let Pending::G { count, count_explicit, .. } = self.pending {
             let pending = self.pending;
             self.pending = Pending::None;
             let output = match key {
@@ -5942,7 +6051,13 @@ impl CommandInterpreter {
                 Key::Char('g') => self.apply_visual_block_logical_motion(
                     document,
                     context,
-                    |commands, document| commands.goto_line(document, count),
+                    |commands, document| {
+                        if count_explicit {
+                            commands.goto_physical_line(document, count)
+                        } else {
+                            commands.goto_line(document, count)
+                        }
+                    },
                 ),
                 Key::Char('_') => self.apply_visual_block_logical_motion(
                     document,
@@ -6015,16 +6130,7 @@ impl CommandInterpreter {
             self.pending = Pending::None;
             let checkpoint = self.clone();
             let viewport = context.viewport;
-            let mut output = if count_explicit {
-                self.apply_visual_block_logical_motion(document, context, |commands, document| {
-                    commands.goto_line(document, count)
-                })
-            } else {
-                CommandOutput::complete()
-            };
-            if output.status == CommandStatus::Complete {
-                output.merge(self.align_current_row(context, alignment));
-            }
+            let output = self.align_counted_row(document, context, alignment, count, count_explicit);
             if output.status != CommandStatus::Complete {
                 *self = checkpoint;
                 context.viewport = viewport;
@@ -6255,11 +6361,10 @@ impl CommandInterpreter {
                 context,
                 |commands, document| {
                     if let Some(percent) = explicit_count {
-                        let lines = document.hard_line_snapshot();
-                        let Some(line) = percentage_line(&lines, percent) else {
+                        let Some(line) = physical_percentage_line(document, percent) else {
                             return invalid_percentage(percent);
                         };
-                        commands.goto_line(document, line)
+                        commands.goto_physical_line(document, line)
                     } else {
                         commands.match_pair_motion(document)
                     }
@@ -6269,10 +6374,10 @@ impl CommandInterpreter {
                 document,
                 context,
                 |commands, document| {
-                    commands.goto_line(
-                        document,
-                        explicit_count.unwrap_or_else(|| document.line_count()),
-                    )
+                    match explicit_count {
+                        Some(line) => commands.goto_physical_line(document, line),
+                        None => commands.goto_line(document, document.line_count()),
+                    }
                 },
             )),
             Key::Ctrl('o' | 'O') => Ok(self.apply_visual_block_logical_motion(
@@ -8200,28 +8305,69 @@ impl CommandInterpreter {
         count: usize,
         count_explicit: bool,
     ) -> CommandOutput {
-        let old_cursor = self.cursor;
-        let old_affinity = self.boundary_affinity;
-        let old_visual_position = self.visual_position;
-        let old_desired_x = self.desired_x;
-        let old_preferred_column = self.preferred_column;
+        let checkpoint = self.clone();
+        let snapshot = context.snapshot;
+        let target_demand = |commands: &Self, point: usize, requested: Option<Range<usize>>| {
+            let flow = snapshot.coverage.document_hard_line_count() != document.line_count();
+            let Some(line) = document.projection().presentation_line_at_offset(point, flow) else {
+                return LayoutMotionError::TextDoesNotMatchLayout;
+            };
+            let mut band = requested.unwrap_or(line..line + 1);
+            band.start = band.start.min(line);
+            band.end = band.end.max(line + 1);
+            if let Some((anchor, active)) = commands.active_visual_block_endpoint_offsets() {
+                for at in [anchor, active] {
+                    let Some(line) = document.projection().presentation_line_at_offset(at, flow) else {
+                        return LayoutMotionError::TextDoesNotMatchLayout;
+                    };
+                    band.start = band.start.min(line);
+                    band.end = band.end.max(line + 1);
+                }
+            }
+            layout_motion::exact_ex_address_demand(snapshot, band, point)
+        };
         if count_explicit {
-            let lines = document.hard_line_snapshot();
-            self.cursor = first_nonblank_document(document, &lines, nth_line_start(&lines, count));
+            let (source, point) = match self.physical_line_destination(document, count) {
+                Ok(destination) => destination,
+                Err(error) => return CommandOutput {
+                    status: CommandStatus::Error(format!("physical line navigation failed: {error}")),
+                    ..CommandOutput::complete()
+                },
+            };
+            self.cursor = point;
             self.boundary_affinity = BoundaryAffinity::Downstream;
             self.visual_position = None;
             self.desired_x = None;
             self.preferred_column = None;
+            self.remember_physical_cursor(document, source);
+            let position = match self.current_visual_position(context.snapshot) {
+                Ok(position) => position,
+                Err(_) => {
+                    let demand = target_demand(&checkpoint, point, None);
+                    *self = checkpoint;
+                    return layout_error(demand);
+                }
+            };
+            if self.mode == Mode::VisualBlock {
+                let installed = self.install_visual_position(document, context.snapshot, position);
+                if installed.status != CommandStatus::Complete {
+                    *self = checkpoint;
+                    return installed;
+                }
+            }
         }
         let mut output = self.align_current_row(context, alignment);
+        if count_explicit {
+            if let CommandStatus::NeedsMoreLayout(LayoutMotionError::OutsideMaterializedCoverage(demand)) = &output.status {
+                let focused = target_demand(&checkpoint, self.cursor, Some(demand.requested_hard_lines()));
+                output = layout_error(focused);
+            }
+        }
         if output.status == CommandStatus::Complete {
-            output.cursor_moved |= self.cursor != old_cursor;
+            output.cursor_moved |= self.cursor != checkpoint.cursor
+                || self.physical_cursor != checkpoint.physical_cursor;
         } else {
-            self.cursor = old_cursor;
-            self.boundary_affinity = old_affinity;
-            self.visual_position = old_visual_position;
-            self.desired_x = old_desired_x;
-            self.preferred_column = old_preferred_column;
+            *self = checkpoint;
         }
         output
     }
@@ -8954,6 +9100,16 @@ impl CommandInterpreter {
             Ok(count) => count,
             Err(error) => return Ok(CommandOutput::count_error(error)),
         };
+        if (pending.g_prefix && key == Key::Char('g'))
+            || (!pending.g_prefix && has_explicit_count && key == Key::Char('G'))
+            || (!pending.g_prefix && has_explicit_count && key == Key::Char('%'))
+        {
+            let motion = if key == Key::Char('%') {
+                OperatorMotion::Percentage
+            } else { OperatorMotion::FirstLine };
+            return self.apply_physical_address_operator(document, pending.operator,
+                motion, count, pending.register);
+        }
         let long_case_doubled = pending.g_prefix
             && pending.operator.is_g_prefixed()
             && key == Key::Char(pending.operator.doubled_key());
@@ -9322,6 +9478,8 @@ impl CommandInterpreter {
                         replaying_program: false,
                         preserve_normal_repeat: false,
                         unit_floor: self.cursor,
+                        source_destination: None,
+                        source_floor: None,
                         repeat_operator: None,
                         repeat_visual_operator: None,
                         replace_journal: Vec::new(),
@@ -10313,6 +10471,9 @@ impl CommandInterpreter {
                 Ok(value) => value,
                 Err(output) => return Ok(output),
             };
+            if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
+                return self.insert_register_payload(document, &value);
+            }
             let snapshot = document.hard_line_snapshot();
             let edit_end = if self.mode == Mode::Replace {
                 replacement_payload_end(&snapshot, self.cursor, &value)
@@ -10357,6 +10518,21 @@ impl CommandInterpreter {
                 session.unit_floor = self.cursor;
             }
             return Ok(output);
+        }
+        if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
+            if matches!(key, Key::Enter | Key::ShiftEnter) {
+                return self.insert_hidden_source_break(document);
+            }
+            if key == Key::Tab {
+                return self.insert_hidden_source_payload(document, &RegisterValue::characterwise("\t"));
+            }
+            if matches!(key, Key::Ctrl('t' | 'T')) {
+                return self.insert_hidden_source_payload(document,
+                    &RegisterValue::characterwise(" ".repeat(self.indentation_options().shift_width())));
+            }
+            if matches!(key, Key::BackTab | Key::Ctrl('w' | 'W' | 'u' | 'U' | 'd' | 'D')) {
+                return self.edit_mode_backspace(document);
+            }
         }
         if key != Key::Backspace {
             if let Some(request) = self.paragraph_key_request(document, key)? {
@@ -10421,6 +10597,7 @@ impl CommandInterpreter {
             Key::Ctrl('w' | 'W') => self.insert_delete_motion(document, EditSessionStep::DeleteWord),
             Key::Ctrl('u' | 'U') => self.insert_delete_motion(document, EditSessionStep::DeleteToLineStart),
             Key::Ctrl('o' | 'O') => {
+                self.retire_source_destination();
                 self.insert_controls = Default::default();
                 document.end_edit_group();
                 self.invalidate_replace_restoration();
@@ -10836,6 +11013,72 @@ impl CommandInterpreter {
         self.insert_register_payload(document, &value)
     }
 
+    fn pending_source_destination(&self, document: &Document) -> Result<Option<crate::document::SourcePoint>, DocumentError> {
+        let Some(at) = self.insert_session.as_ref().and_then(|session| session.source_destination) else { return Ok(None); };
+        if at.document() != document.id() { return Err(DocumentError::WrongDocument); }
+        if at.revision() != document.revision() { return Err(DocumentError::WrongSnapshot {
+            expected: at.revision(), actual: document.revision(),
+        }); }
+        document.source_point(at.offset()).map_err(|_| DocumentError::AmbiguousProjection)?;
+        Ok(Some(at))
+    }
+
+    fn insert_hidden_source_payload(&mut self, document: &mut Document, value: &RegisterValue) -> Result<CommandOutput, DocumentError> {
+        let at = self.pending_source_destination(document)?.ok_or(DocumentError::AmbiguousProjection)?;
+        if value.text.is_empty() { return Ok(CommandOutput::complete()); }
+        let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), value.text.clone(), value.hard_break_offsets().to_vec())
+            .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+        let (prepared, caret, source) = document.prepare_insertion_at_source(at, payload,
+            self.typing_style.named.as_ref(), &self.typing_style.values).map_err(command_document_error)?;
+        if !self.rebase_insert_source_positions(prepared.text_position_map()).map_err(command_position_document_error)? {
+            return Err(DocumentError::AmbiguousProjection);
+        }
+        let candidate = document.prepared_candidate_document(&prepared)?;
+        let authored_start = candidate.visible_point_for_source(at.offset(), true)?;
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        self.cursor = caret.offset();
+        self.boundary_affinity = BoundaryAffinity::Upstream;
+        self.typing_style.inherited = None;
+        self.remember_physical_cursor(document, source.offset());
+        if let Some(session) = self.insert_session.as_mut() {
+            session.unit_floor = authored_start;
+            session.source_destination = None;
+            session.source_floor = None;
+            session.record_inserted(value, None);
+        }
+        Ok(CommandOutput { document_changed: true, cursor_moved: true, ..CommandOutput::complete() })
+    }
+
+    fn insert_hidden_source_break(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
+        let at = self.pending_source_destination(document)?.ok_or(DocumentError::AmbiguousProjection)?;
+        self.commit_hidden_source_edit(document, at.offset()..at.offset(), "\n", EditSessionStep::IndentedEnter)
+    }
+
+    fn commit_hidden_source_edit(&mut self, document: &mut Document, range: Range<usize>, replacement: &str,
+        step: EditSessionStep) -> Result<CommandOutput, DocumentError> {
+        let removed = document.physical_source_text(range.clone())?;
+        let prepared = document.prepare_model_request(ModelRequest::ReplacePhysicalSource {
+            document: document.id(), revision: document.revision(), range, replacement: replacement.to_owned(),
+        }).map_err(command_document_error)?;
+        if !self.rebase_insert_source_positions(prepared.text_position_map()).map_err(command_position_document_error)? {
+            return Err(DocumentError::AmbiguousProjection);
+        }
+        let changed = !prepared.is_no_op();
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        let at = self.pending_source_destination(document)?.ok_or(DocumentError::AmbiguousProjection)?;
+        self.cursor = document.visible_point_for_source(at.offset(), true)?;
+        self.remember_physical_cursor(document, at.offset());
+        if let Some(session) = self.insert_session.as_mut() {
+            if replacement.is_empty() { session.record_deleted(&removed, step); }
+            else { session.record_inserted(&RegisterValue::characterwise(replacement), Some(step)); }
+            if !document.source_insertion_requires_materialization(at)? {
+                session.source_destination = None;
+                session.source_floor = None;
+            }
+        }
+        Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() })
+    }
+
     fn insert_literal_text(
         &mut self,
         document: &mut Document,
@@ -10854,6 +11097,9 @@ impl CommandInterpreter {
         document: &mut Document,
         value: &RegisterValue,
     ) -> Result<CommandOutput, DocumentError> {
+        if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
+            return self.insert_hidden_source_payload(document, value);
+        }
         if let Some(output) = self.paste_table_matrix(document, value, 1)? { return Ok(output); }
         let intent = value;
         let value = self.assist_typing_input_payload(
@@ -11154,6 +11400,20 @@ impl CommandInterpreter {
         &mut self,
         document: &mut Document,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(at) = self.pending_source_destination(document)? {
+            let floor = self.insert_session.as_ref().and_then(|session| session.source_floor)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            if floor.revision() != document.revision() { return Err(DocumentError::WrongSnapshot {
+                expected: floor.revision(), actual: document.revision(),
+            }); }
+            if at.offset() <= floor.offset() { return Ok(CommandOutput::complete()); }
+            let line = document.physical_line_at_source(at.offset())?;
+            let index = line.index.saturating_sub(1);
+            let (_, previous_content) = document.physical_line_ranges(index)?;
+            let start = previous_content.end.max(floor.offset());
+            if start >= at.offset() { return Ok(CommandOutput::complete()); }
+            return self.commit_hidden_source_edit(document, start..at.offset(), "", EditSessionStep::Backspace);
+        }
         if self.mode == Mode::Replace {
             let journal_entry = self
                 .insert_session
@@ -11236,6 +11496,13 @@ impl CommandInterpreter {
         &mut self,
         document: &mut Document,
     ) -> Result<CommandOutput, DocumentError> {
+        if let Some(at) = self.pending_source_destination(document)? {
+            let line = document.physical_line_at_source(at.offset())?;
+            if line.content_range.end == at.offset() && line.source_range.end > at.offset() {
+                return self.commit_hidden_source_edit(document, at.offset()..line.source_range.end, "", EditSessionStep::Delete);
+            }
+            return Ok(CommandOutput::complete());
+        }
         self.invalidate_replace_restoration();
         let Some(end) = document
             .hard_line_snapshot()
@@ -11265,6 +11532,10 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
+        let source_destination = if matches!(placement, InsertPlacement::Before | InsertPlacement::After) {
+            self.retained_physical_cursor_source(document)
+                .filter(|at| document.source_insertion_requires_materialization(*at).unwrap_or(false))
+        } else { None };
         // A named menu choice in Normal mode targets the next typing session.
         // Keep its sparse direct overrides separate from the named identity.
         if self.typing_style.named.is_none() {
@@ -11303,6 +11574,8 @@ impl CommandInterpreter {
             replaying_program: false,
             preserve_normal_repeat: false,
             unit_floor: self.cursor,
+            source_destination,
+            source_floor: source_destination,
             repeat_operator: None,
             repeat_visual_operator: None,
             replace_journal: Vec::new(),
@@ -11460,7 +11733,10 @@ impl CommandInterpreter {
                         EditSessionStep::ListEnter => {
                             self.handle_edit_mode_key(document, Key::Enter)?
                         }
-                        EditSessionStep::IndentedEnter => self.insert_indented_break(document)?,
+                        EditSessionStep::IndentedEnter => {
+                            if self.pending_source_destination(document)?.is_some() { self.insert_hidden_source_break(document)? }
+                            else { self.insert_indented_break(document)? }
+                        }
                         EditSessionStep::Tab => self.insert_tab(document)?,
                         EditSessionStep::ShiftIndent { outdent } => self.insert_shift(document, *outdent)?,
                         EditSessionStep::ResetIndent { restore } => self.reset_insert_indent(document, *restore)?,
@@ -11611,6 +11887,8 @@ impl CommandInterpreter {
             replaying_program: false,
             preserve_normal_repeat: false,
             unit_floor: self.cursor,
+            source_destination: None,
+            source_floor: None,
             repeat_operator: None,
             repeat_visual_operator: None,
             replace_journal: Vec::new(),
@@ -12249,6 +12527,17 @@ impl CommandInterpreter {
         {
             return self.toggle_at_cursor(document, count);
         }
+        if let RepeatTarget::PhysicalLineAddress(motion) = command.target {
+            let mut output = self.apply_physical_address_operator(document,
+                command.operator, motion, count, command.register)?;
+            if command.operator == Operator::Change {
+                if let Some(program) = edits {
+                    output.merge(self.replay_edit_session_program(document, &program, 1, false)?);
+                }
+                output.merge(self.finish_insert(document)?);
+            }
+            return Ok(output);
+        }
         if let RepeatTarget::ViewLine(shape, applications) = command.target {
             let mut output = self.apply_mode_line_operator_repeated(
                 document,
@@ -12267,7 +12556,7 @@ impl CommandInterpreter {
             return Ok(output);
         }
         let extent = match &command.target {
-            RepeatTarget::ViewLine(..) => unreachable!("handled above"),
+            RepeatTarget::ViewLine(..) | RepeatTarget::PhysicalLineAddress(..) => unreachable!("handled above"),
             RepeatTarget::Motion(motion) => {
                 self.resolve_operator_extent(document, command.operator, *motion, count)
             }
@@ -12665,9 +12954,18 @@ impl CommandInterpreter {
         let Some(_) = document.hard_line_at_offset(anchor.max(active)) else {
             return CommandOutput::unsupported("Visual selection has no ending hard line");
         };
-        // Ex addresses complete logical hard lines, including when the source
-        // selection was characterwise or a rectangle of wrapped visual rows.
-        // Leaving Visual records its stable reselect memory before the prompt.
+        // Keep the exact selected line units before leaving Visual. A later
+        // resize must not inflate the range to a newly wrapped paragraph.
+        let anchor_position = VisualPosition { text_offset: anchor,
+            affinity: BoundaryAffinity::Downstream };
+        let active_position = self.visual_position.filter(|position|
+            position.text_offset == active || active == self.cursor)
+            .unwrap_or(VisualPosition { text_offset: active, affinity: self.boundary_affinity });
+        let retained = match self.capture_visual_ex_range(document, anchor_position, active_position) {
+            Ok(range) => range,
+            Err(ex_addresses::ExAddressResolutionError::Execute(error)) => return ex_global::ex_error(error),
+            Err(ex_addresses::ExAddressResolutionError::Layout(error)) => return layout_error(error),
+        };
         if self.mode == Mode::VisualBlock {
             self.leave_visual_block();
         } else {
@@ -12676,7 +12974,7 @@ impl CommandInterpreter {
         self.enter_command_line(CommandLineKind::Ex);
         let state = self.command_line_state.as_mut().unwrap();
         state.buffer.set("'<,'>".into());
-        state.visual_range_revision = Some(document.revision());
+        state.retained_visual_range = Some(retained);
         CommandOutput {
             mode_changed: true,
             ..CommandOutput::pending()
@@ -12694,7 +12992,7 @@ impl CommandInterpreter {
             return_mode,
             count: 1,
             operator: None,
-            visual_range_revision: None,
+            retained_visual_range: None,
             incremental_navigation: Vec::new(),
             incremental_navigation_input: None,
         });
@@ -12710,18 +13008,6 @@ impl CommandInterpreter {
             return Ok(CommandOutput::unsupported("command line"));
         };
         self.mode = state.return_mode;
-        if state
-            .visual_range_revision
-            .is_some_and(|revision| revision != document.revision())
-        {
-            return Ok(CommandOutput {
-                status: CommandStatus::Error(
-                    "Visual Ex range is stale; reselect the range".into(),
-                ),
-                mode_changed: true,
-                ..CommandOutput::complete()
-            });
-        }
         match state.kind {
             CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
                 let direction = match state.kind {
@@ -12775,15 +13061,23 @@ impl CommandInterpreter {
                 })
             }
             CommandLineKind::Ex => {
-                let command = state.buffer.input;
+                let command = state.buffer.input.clone();
                 if command.is_empty() {
                     return Ok(CommandOutput {
                         mode_changed: true,
                         ..CommandOutput::complete()
                     });
                 }
+                let previous_last_command = self.last_command_line.clone();
                 if self.global_replay_depth == 0 { self.last_command_line = Some(command.clone()); }
-                let output = self.execute_ex_command(document, &command);
+                let output = self.execute_ex_command_with_visual_range(document, &command,
+                    state.retained_visual_range.as_ref());
+                if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
+                    self.last_command_line = previous_last_command;
+                    self.mode = Mode::CommandLine;
+                    self.command_line_state = Some(state);
+                    return Ok(output);
+                }
                 if self.global_replay_depth == 0 && !matches!(
                     output.status,
                     CommandStatus::Error(_) | CommandStatus::ExError(_)
@@ -12809,6 +13103,11 @@ impl CommandInterpreter {
     }
 
     fn execute_ex_command(&mut self, document: &mut Document, input: &str) -> CommandOutput {
+        self.execute_ex_command_with_visual_range(document, input, None)
+    }
+
+    fn execute_ex_command_with_visual_range(&mut self, document: &mut Document, input: &str,
+        retained: Option<&ex_addresses::ResolvedExRange>) -> CommandOutput {
         if let Some(result) = self.mappings.execute(input) {
             self.mapping_pending.clear();
             return match result {
@@ -12816,7 +13115,7 @@ impl CommandInterpreter {
                 Err(message) => CommandOutput { status: CommandStatus::Error(message), ..CommandOutput::complete() },
             };
         }
-        let mut command = match parse_ex(input) {
+        let command = match parse_ex(input) {
             Ok(command) => command,
             Err(error) => {
                 return CommandOutput {
@@ -12837,13 +13136,15 @@ impl CommandInterpreter {
         if self.global_replay_depth > 0 && !ex_global::allowed(&command.action) {
             return ex_global::ex_error(ExExecuteError::UnsupportedGlobalCommand);
         }
-        let address_search = match self.bind_ex_addresses(document, &mut command) {
-            Ok(search) => search,
-            Err(error) => return ex_global::ex_error(error),
+        let addresses = match self.prepare_ex_addresses_with_visual_range(document, &command,
+            retained, search_regex::RegexLimits::default()) {
+            Ok(addresses) => addresses,
+            Err(ex_addresses::ExAddressResolutionError::Execute(error)) => return ex_global::ex_error(error),
+            Err(ex_addresses::ExAddressResolutionError::Layout(error)) => return layout_error(error),
         };
+        let address_search = addresses.search.clone();
         if matches!(command.action, ExAction::Global { .. }) {
-            if let Some(search) = address_search { self.last_search = Some(search); }
-            return self.execute_ex_global(document, &command);
+            return self.execute_ex_global(document, &command, &addresses);
         }
         if let ExAction::Delete(arguments) | ExAction::Yank(arguments) = &command.action {
             if let Err(mut output) = self.require_register_write(arguments.register) {
@@ -12893,10 +13194,12 @@ impl CommandInterpreter {
         });
         let jump_origin = jump_origin.flatten();
         let context = ExExecutionContext {
+            resolved_addresses: Some(addresses),
             current_line: document
                 .hard_line_at_offset(self.cursor.min(document.projection().text_tree().byte_len()))
                 .expect("a command cursor resolves to one hard line"),
             wrap: self.wrap,
+            number: self.number,
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
             selection_options: self.selection_options.clone(),
@@ -13030,6 +13333,11 @@ impl CommandInterpreter {
                 );
                 self.boundary_affinity = BoundaryAffinity::Downstream;
             }
+            Some(ExNavigation::PhysicalSourceOffset(source)) => {
+                self.cursor = document.visible_point_for_source(source, true).expect("Ex source navigation was verified before publication");
+                self.boundary_affinity = BoundaryAffinity::Downstream;
+                self.remember_physical_cursor(document, source);
+            }
             Some(ExNavigation::HistoryRestoration) => {
                 self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     self.cursor.min(document.projection().text_tree().byte_len()),
@@ -13056,7 +13364,7 @@ impl CommandInterpreter {
             // it again through the edit (for example :sort starting at zero).
             cursor_moved: self.cursor != old_cursor
                 || (outcome.document_changed
-                    && matches!(outcome.navigation, Some(ExNavigation::TextOffset(_)))),
+                    && matches!(outcome.navigation, Some(ExNavigation::TextOffset(_) | ExNavigation::PhysicalSourceOffset(_)))),
             document_changed: outcome.document_changed,
             mode_changed: true,
             history_navigation: matches!(
@@ -13107,7 +13415,7 @@ impl CommandInterpreter {
                 targets[index] = None;
                 continue;
             };
-            self.prepare_ex_normal_line(document, position);
+            self.prepare_ex_normal_target(document, target, position);
 
             let (line_output, map) = document.capture_position_maps(|document| {
                 Ok::<_, std::convert::Infallible>(
@@ -13153,9 +13461,9 @@ impl CommandInterpreter {
         document: &Document,
         request: &ExNormalRequest,
     ) -> Option<Vec<Option<ExNormalTarget>>> {
-        (request.range.start..=request.range.end)
+        self.resolved_ex_range_units(document, &request.range).ok()?.into_iter()
             .map(|line| {
-                let start = document.line_start(line)?;
+                let start = line.position.text_offset;
                 let hard_line_id = hard_line_id_at_start(document, start)?;
                 let point = document.text_point(start).ok()?;
                 Some(Some(ExNormalTarget {
@@ -13168,6 +13476,8 @@ impl CommandInterpreter {
                         )
                         .ok()?,
                     hard_line_id,
+                    domain: line.domain,
+                    source: line.source.as_ref().and_then(|range| document.source_point(range.start).ok()),
                 }))
             })
             .collect()
@@ -13179,6 +13489,7 @@ impl CommandInterpreter {
         self.cursor = position;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
+        self.physical_cursor = None;
         self.desired_x = None;
         self.preferred_column = None;
         self.visual_anchor = None;
@@ -13193,6 +13504,13 @@ impl CommandInterpreter {
             self.insert_normal_once = None;
         }
         self.clear_pending();
+    }
+
+    pub(crate) fn prepare_ex_normal_target(&mut self, document: &Document, target: ExNormalTarget, position: usize) {
+        self.prepare_ex_normal_line(document, position);
+        if let Some(source) = target.source {
+            self.remember_physical_cursor(document, source.offset());
+        }
     }
 
     fn execute_normal_event_text(
@@ -13325,6 +13643,7 @@ impl CommandInterpreter {
                     self.search_options.wrapscan = *value
                 }
                 (ExOptionName::Wrap, ExOptionValue::Boolean(value)) => self.wrap = *value,
+                (ExOptionName::Number, ExOptionValue::Boolean(value)) => self.number = *value,
                 (ExOptionName::TextWidth, ExOptionValue::OptionalNumber(value)) => {
                     self.text_width.set_local(*value);
                 }
@@ -14991,6 +15310,15 @@ fn percentage_line(lines: &HardLineSnapshot, percent: usize) -> Option<usize> {
     })
 }
 
+fn physical_percentage_line(document: &Document, percent: usize) -> Option<usize> {
+    (1..=100).contains(&percent).then(|| {
+        document.physical_source_line_number_count()
+            .saturating_mul(percent)
+            .div_ceil(100)
+            .max(1)
+    })
+}
+
 fn invalid_percentage(percent: usize) -> CommandOutput {
     CommandOutput {
         status: CommandStatus::Error(format!(
@@ -15707,9 +16035,15 @@ pub(crate) fn ex_normal_target_position(
     document: &Document,
     target: ExNormalTarget,
 ) -> Option<usize> {
+    if let Some(source) = target.source {
+        if source.document() != document.id() || source.revision() != document.revision() {
+            return None;
+        }
+        return document.visible_point_for_source(source.offset(), true).ok();
+    }
     let line = document.hard_line_at_offset(target.anchor.offset())?;
     (document.projection().hard_line_id(line) == Some(target.hard_line_id))
-        .then(|| document.line_start(line)).flatten()
+        .then_some(target.anchor.offset())
 }
 
 pub(crate) fn rebase_ex_normal_targets(
@@ -15721,6 +16055,19 @@ pub(crate) fn rebase_ex_normal_targets(
         let Some(mut target) = *slot else {
             continue;
         };
+        if let Some(source) = target.source {
+            target.source = match map.source_position_map() {
+                Some(source_map) => match source_map.map_source_point(source,
+                    Association::AfterInsertion, DeletionRecovery::PreferFollowingThenPreceding)? {
+                    MappingOutcome::Exact(point) | MappingOutcome::Moved(point)
+                    | MappingOutcome::RecoveredFromProvenance(point) => Some(point),
+                    MappingOutcome::CollapsedByDeletion(_) | MappingOutcome::Ambiguous(_)
+                    | MappingOutcome::Unresolvable(_) => { *slot = None; continue; }
+                },
+                None if source.revision() == document.revision() => Some(source),
+                None => { *slot = None; continue; }
+            };
+        }
         let mapped = match map.map_text_anchor(target.anchor)? {
             MappingOutcome::Exact(anchor)
             | MappingOutcome::Moved(anchor)
@@ -15728,13 +16075,20 @@ pub(crate) fn rebase_ex_normal_targets(
             MappingOutcome::CollapsedByDeletion(_)
             | MappingOutcome::Ambiguous(_)
             | MappingOutcome::Unresolvable(_) => {
-                *slot = None;
-                continue;
+                if target.source.is_none() {
+                    *slot = None;
+                    continue;
+                }
+                let at = document.visible_point_for_source(target.source.unwrap().offset(), true)
+                    .map_err(|_| PositionError::ArithmeticOverflow)?;
+                document.text_anchor(document.text_point(at).map_err(|_| PositionError::ArithmeticOverflow)?, Association::AfterInsertion,
+                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)
+                    .map_err(|_| PositionError::ArithmeticOverflow)?
             }
         };
         let retained = document.hard_line_at_offset(mapped.offset())
             .and_then(|line| document.projection().hard_line_id(line)) == Some(target.hard_line_id);
-        if !retained {
+        if !retained && target.source.is_none() {
             *slot = None;
             continue;
         }
@@ -17344,7 +17698,7 @@ mod tests {
     }
 
     #[test]
-    fn forced_mac_normal_motions_use_projected_hard_lines_for_plain_markdown_and_latin1() {
+    fn forced_mac_motions_keep_literal_lf_and_percent_uses_physical_lines() {
         for format in [Format::PlainText, Format::Markdown] {
             for encoding in [Encoding::Utf8, Encoding::Latin1] {
                 let mut document = forced_mac_document(format, encoding);
@@ -17365,7 +17719,8 @@ mod tests {
                 keys(&mut commands, &mut document, "$");
                 assert_eq!(commands.cursor(), 4, "$ uses the Mac hard-line end");
                 keys(&mut commands, &mut document, "50%");
-                assert_eq!(commands.cursor(), 0, "percentage sees two hard lines");
+                assert_eq!(commands.cursor(), if format == Format::Markdown { 2 } else { 0 },
+                    "percentage includes the physical Markdown separator line");
                 keys(&mut commands, &mut document, "G");
                 assert_eq!(commands.cursor(), 2, "G sees two hard lines");
 
@@ -18257,7 +18612,7 @@ mod tests {
     }
 
     #[test]
-    fn counted_z_targets_a_hard_line_before_aligning_the_viewport() {
+    fn counted_z_targets_a_physical_line_before_aligning_the_viewport() {
         let text = "one\ntwo\nthree\n  four\nfive\nsix\nseven";
         for (command, alignment) in [
             ('t', ViewportAlignment::Top),
@@ -18922,7 +19277,7 @@ mod tests {
         assert_eq!(commands.cursor(), 4);
         assert_eq!(
             navigation.ex_outcome.as_ref().unwrap().navigation,
-            Some(ExNavigation::TextOffset(4))
+            Some(ExNavigation::PhysicalSourceOffset(5))
         );
 
         keys(&mut commands, &mut document, ":write! copy.txt");
@@ -21164,6 +21519,39 @@ mod tests {
         let output = keys(&mut commands, &mut document, "101%");
         assert!(matches!(output.status, CommandStatus::Error(_)));
         assert_eq!(document.text(), original);
+    }
+
+    #[test]
+    fn counted_g_does_not_record_noop_or_source_only_jumps() {
+        let mut document = Document::from_bytes(
+            b"# heading\n\n```text\nbody\n```\n\nafter".to_vec(),
+            crate::document::Encoding::Utf8, crate::document::Format::Markdown,
+        ).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "1G");
+        assert!(commands.jumps.is_empty());
+        keys(&mut commands, &mut document, "3G");
+        let jumps = commands.jumps.clone();
+        let jump_index = commands.jump_index;
+        keys(&mut commands, &mut document, "4G");
+        assert_eq!(commands.physical_source_line_index(&document).unwrap(), 3);
+        assert_eq!(commands.jumps, jumps);
+        assert_eq!(commands.jump_index, jump_index);
+        key(&mut commands, &mut document, Key::Ctrl('o'));
+        assert_eq!(commands.cursor(), 0);
+        key(&mut commands, &mut document, Key::Ctrl('i'));
+        assert_eq!(commands.cursor(), document.text().find("body").unwrap());
+    }
+
+    #[test]
+    fn late_counted_g_queries_only_its_source_line_after_a_local_edit() {
+        let mut document = Document::new("row text\n".repeat(100_000));
+        document.insert(0, "X").unwrap();
+        assert!(!document.projection().compatibility_text_is_materialized());
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "90000G");
+        assert_eq!(commands.physical_source_line_index(&document).unwrap(), 89_999);
+        assert!(!document.projection().compatibility_text_is_materialized());
     }
 
     #[test]

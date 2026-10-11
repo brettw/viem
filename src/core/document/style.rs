@@ -73,10 +73,36 @@ impl StyleId {
     }
 
     pub fn is_internal(&self) -> bool {
-        matches!(
-            self.0.as_str(),
-            "* Incremental match"
-        )
+        self.builtin_block_display_name().is_some() || self.0 == "* Incremental match"
+    }
+
+    /// Reserved identities apply only in their own namespace. A character
+    /// definition can independently use a block identity or display name.
+    pub(crate) fn is_internal_in(&self, namespace: StyleNamespace) -> bool {
+        match namespace {
+            StyleNamespace::Block => self.builtin_block_display_name().is_some(),
+            StyleNamespace::Character => self.0 == "* Incremental match",
+        }
+    }
+
+    pub(crate) fn builtin_block_display_name(&self) -> Option<&'static str> {
+        match self.0.as_str() {
+            "Builtin line number" => Some("Line number"),
+            "Builtin current line number" => Some("Current line number"),
+            "Status bar" => Some("Status bar"),
+            "Status bar command" => Some("Status bar command"),
+            _ => None,
+        }
+    }
+
+    /// Previously saved gutter records used the stable ID as the display name.
+    /// Normalize only that fixed metadata while retaining their declarations.
+    pub(crate) fn normalize_saved_builtin_block_name(&self, name: &mut String) {
+        if matches!(self.0.as_str(), "Builtin line number" | "Builtin current line number")
+            && *name == self.0
+        {
+            *name = self.builtin_block_display_name().unwrap().into();
+        }
     }
 }
 
@@ -142,11 +168,13 @@ pub enum BlockRole {
     List,
     ListItem,
     Table,
+    /// Internal presentation boxes that are never assigned to source content.
+    Container,
 }
 
 impl BlockRole {
     pub const fn is_container(self) -> bool {
-        matches!(self, Self::Quote | Self::CodeBlock | Self::List | Self::ListItem | Self::Table)
+        matches!(self, Self::Quote | Self::CodeBlock | Self::List | Self::ListItem | Self::Table | Self::Container)
     }
 }
 
@@ -583,6 +611,7 @@ impl StyleSheet {
             theme_generation: 0,
         };
         sheet.install_incremental_match_style();
+        sheet.install_chrome_styles();
         sheet
     }
 }
@@ -1374,9 +1403,15 @@ impl StyleSheet {
         }
     }
     pub(crate) fn retain_internal_styles(&mut self, previous: &Self) {
+        for style in previous.block_styles().filter(|style| style.id.is_internal_in(StyleNamespace::Block)) {
+            self.block_styles.insert(style.id.clone(), style.clone());
+            if let Some(metadata) = previous.block_style_metadata(&style.id) {
+                self.block_metadata.insert(style.id.clone(), metadata.clone());
+            }
+        }
         for style in previous
             .character_styles()
-            .filter(|style| style.id.is_internal())
+            .filter(|style| style.id.is_internal_in(StyleNamespace::Character))
         {
             self.character_styles
                 .insert(style.id.clone(), style.clone());
@@ -1476,6 +1511,67 @@ impl StyleSheet {
             }
         }
         sheet
+    }
+
+    /// Editable presentation definitions with fixed identity and relationships.
+    /// Native chrome consumes them independently of source assignments.
+    fn install_chrome_styles(&mut self) {
+        let foreground = Color { red: 0.68, green: 0.78, blue: 0.91, alpha: 1.0 };
+        let background = Color { red: 0.02, green: 0.055, blue: 0.12, alpha: 1.0 };
+        let zero_box = BlockProperties {
+            margin_top: Some(0.0), margin_right: Some(0.0), margin_bottom: Some(0.0), margin_left: Some(0.0),
+            padding_top: Some(0.0), padding_right: Some(0.0), padding_bottom: Some(0.0), padding_left: Some(0.0),
+            border_top_width: Some(0.0), border_right_width: Some(0.0), border_bottom_width: Some(0.0), border_left_width: Some(0.0),
+            ..Default::default()
+        };
+        let character = CharacterProperties {
+            font_families: Some(vec!["system-ui".into()]), font_face: Some(String::new()), font_axes: Some(BTreeMap::new()),
+            size: Some(11.0.into()), weight: Some(400), slant: Some(FontSlant::Upright), bold: Some(false),
+            underline: Some(false), strikethrough: Some(false), superscript: Some(false), subscript: Some(false),
+            letter_spacing: Some(0.0), open_type_features: Some(BTreeMap::new()),
+            ..Default::default()
+        };
+        let definitions = [
+            BlockStyle { id: "Builtin line number".into(), based_on: Some(self.base_paragraph.clone()),
+                next_paragraph_style: None, role: BlockRole::Paragraph, character: character.clone(),
+                block: BlockProperties { padding_left: Some(4.0), padding_right: Some(4.0), border_right_width: Some(1.0),
+                    alignment: Some(ParagraphAlignment::End), ..zero_box.clone() } },
+            BlockStyle { id: "Builtin current line number".into(), based_on: Some("Builtin line number".into()),
+                next_paragraph_style: None, role: BlockRole::Paragraph, character: CharacterProperties::default(), block: BlockProperties::default() },
+            BlockStyle { id: "Status bar".into(), based_on: Some(self.base_paragraph.clone()),
+                next_paragraph_style: None, role: BlockRole::Container,
+                character: CharacterProperties { foreground: Some(foreground), ..character },
+                block: BlockProperties { background: Some(background), padding_left: Some(10.5), padding_right: Some(10.5),
+                    padding_top: Some(5.0), padding_bottom: Some(5.0), border_top_width: Some(1.0),
+                    border_top_color: Some(foreground), ..zero_box.clone() } },
+            BlockStyle { id: "Status bar command".into(), based_on: Some("Status bar".into()),
+                next_paragraph_style: None, role: BlockRole::Container,
+                character: CharacterProperties { foreground: Some(background), ..Default::default() },
+                block: BlockProperties { background: Some(foreground), border_top_width: Some(0.0), border_right_width: Some(0.0),
+                    border_bottom_width: Some(0.0), border_left_width: Some(0.0), ..Default::default() } },
+        ];
+        for style in definitions {
+            self.block_metadata.insert(style.id.clone(), StyleDefinitionMetadata::generated(
+                style.id.builtin_block_display_name().expect("chrome identities have fixed display metadata")));
+            self.block_styles.insert(style.id.clone(), style);
+        }
+    }
+
+    /// Only the two core-owned paragraph definitions identify gutter paint.
+    /// Names shared by document or syntax styles confer no chrome authority.
+    pub(crate) fn builtin_line_number_kind(&self, style: &BlockStyle) -> Option<bool> {
+        let current = match style.id.0.as_str() {
+            "Builtin line number" => false,
+            "Builtin current line number" => true,
+            _ => return None,
+        };
+        let parent = if current { StyleId::from("Builtin line number") } else { self.base_paragraph.clone() };
+        let metadata = self.block_style_metadata(&style.id)?;
+        (style.role == BlockRole::Paragraph && style.based_on.as_ref() == Some(&parent)
+            && style.next_paragraph_style.is_none()
+            && metadata.origin == StyleDefinitionOrigin::GeneratedConfiguration
+            && Some(metadata.display_name.as_str()) == style.id.builtin_block_display_name())
+            .then_some(current)
     }
 
     pub fn block_style_count(&self) -> usize {
@@ -1587,7 +1683,7 @@ impl StyleSheet {
                 display_name: display_name.clone(),
                 origin: metadata.origin,
             };
-            validate_definition_metadata(id, &metadata)?;
+            validate_definition_metadata(namespace, id, &metadata)?;
             return Ok(StyleDefinitionEdit::UpdateMetadata {
                 namespace,
                 id: id.clone(),
@@ -1662,8 +1758,10 @@ impl StyleSheet {
         has_assignment: bool,
         required_origin: StyleDefinitionOrigin,
     ) -> Result<bool, StyleError> {
-        if edit.style_id().is_internal() {
+        if edit.style_id().is_internal_in(if edit.is_block() { StyleNamespace::Block } else { StyleNamespace::Character }) {
             let allowed = match edit {
+                StyleDefinitionEdit::UpdateBlock(style) => self.block_style(&style.id)
+                    .is_some_and(|old| old.based_on == style.based_on && old.role == style.role && old.next_paragraph_style == style.next_paragraph_style),
                 StyleDefinitionEdit::UpdateCharacter(style) => self
                     .character_style(&style.id)
                     .is_some_and(|old| old.based_on == style.based_on),
@@ -1782,7 +1880,7 @@ impl StyleSheet {
                 if metadata.origin != origin {
                     return Err(StyleError::InvalidDefinitionMetadata(id.clone()));
                 }
-                validate_definition_metadata(id, metadata)?;
+                validate_definition_metadata(*namespace, id, metadata)?;
                 let current = match namespace {
                     StyleNamespace::Block => candidate.block_metadata.get_mut(id),
                     StyleNamespace::Character => candidate.character_metadata.get_mut(id),
@@ -1935,7 +2033,7 @@ impl StyleSheet {
         if style.id == self.base_paragraph {
             return Err(StyleError::CannotReplaceBaseStyle(style.id));
         }
-        validate_definition_metadata(&style.id, &metadata)?;
+        validate_definition_metadata(StyleNamespace::Block, &style.id, &metadata)?;
         validate_character_properties(&style.id, &style.character)?;
         validate_block_properties(&style)?;
         self.validate_block_parent(&style)?;
@@ -1961,7 +2059,7 @@ impl StyleSheet {
         style: CharacterStyle,
         metadata: StyleDefinitionMetadata,
     ) -> Result<(), StyleError> {
-        validate_definition_metadata(&style.id, &metadata)?;
+        validate_definition_metadata(StyleNamespace::Character, &style.id, &metadata)?;
         validate_character_properties(&style.id, &style.properties)?;
         if let Some(parent) = &style.based_on {
             if !self.character_styles.contains_key(parent) {
@@ -2554,6 +2652,9 @@ impl StyleSheet {
                 role: style.role,
             });
         }
+        if next.is_internal_in(StyleNamespace::Block) {
+            return Err(StyleError::InvalidNextParagraphStyle { style: style.id.clone(), next: next.clone() });
+        }
         if next == &style.id {
             return Ok(());
         }
@@ -2977,15 +3078,15 @@ pub(super) fn validate_character_properties(
 }
 
 fn validate_definition_metadata(
+    namespace: StyleNamespace,
     id: &StyleId,
     metadata: &StyleDefinitionMetadata,
 ) -> Result<(), StyleError> {
-    let invalid_internal = id.is_internal()
+    let invalid_internal = id.is_internal_in(namespace)
         && (metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration
-            || metadata.display_name != if *id == StyleId::incremental_match() {
-                "Incremental match"
-            } else {
-                id.0.as_str()
+            || metadata.display_name != match namespace {
+                StyleNamespace::Character => "Incremental match",
+                StyleNamespace::Block => id.builtin_block_display_name().unwrap(),
             });
     if metadata.display_name.trim().is_empty() || metadata.display_name.contains('\0') || invalid_internal {
         Err(StyleError::InvalidDefinitionMetadata(id.clone()))
@@ -4665,4 +4766,93 @@ mod variable_font_tests {
         assert_eq!(shape.font_face, "Condensed");
         assert_eq!(shape.font_axes["wdth"], 75.0);
     }
+}
+
+#[cfg(test)]
+mod chrome_tests {
+    use super::*;
+
+    #[test]
+    fn chrome_styles_are_available_in_every_format_with_fixed_sparse_inheritance() {
+        for format in [super::super::Format::PlainText, super::super::Format::Code,
+            super::super::Format::Markdown, super::super::Format::MarkdownSource] {
+            let sheet = StyleSheet::for_format(format);
+            let line = sheet.resolve_paragraph_style(&sheet.base_paragraph, &"Builtin line number".into(), None,
+                &BlockProperties::default(), &CharacterProperties::default()).unwrap();
+            let current = sheet.resolve_paragraph_style(&sheet.base_paragraph, &"Builtin current line number".into(), None,
+                &BlockProperties::default(), &CharacterProperties::default()).unwrap();
+            assert_eq!(line, current);
+            assert_eq!(line.character.font_families, vec!["system-ui".to_owned()]);
+            assert_eq!(line.character.size, 11.0);
+            assert_eq!(line.border_right_width, 1.0);
+
+            assert_eq!(sheet.block_style_metadata(&"Builtin line number".into()).unwrap().display_name, "Line number");
+            assert_eq!(sheet.block_style_metadata(&"Builtin current line number".into()).unwrap().display_name, "Current line number");
+            let style = sheet.block_style(&"Builtin current line number".into()).unwrap();
+            assert_eq!(style.character, CharacterProperties::default());
+            assert_eq!(style.block, BlockProperties::default());
+            assert_eq!(style.based_on, Some("Builtin line number".into()));
+            let bar = sheet.resolve_container_style(&"Status bar".into()).unwrap();
+            let command = sheet.resolve_container_style(&"Status bar command".into()).unwrap();
+            assert_eq!(bar.character.size, 11.0);
+            assert_eq!(bar.character.font_families, command.character.font_families);
+            assert_eq!(bar.character.size, command.character.size);
+            assert_eq!(bar.background, Some(command.character.foreground));
+            assert_eq!(Some(bar.character.foreground), command.background);
+            assert_eq!(command.border_top_width, 0.0);
+        }
+    }
+
+    #[test]
+    fn saved_gutter_labels_normalize_metadata_without_losing_declarations() {
+        let sheet = StyleSheet::plain_text();
+        let mut saved: serde_json::Value = serde_json::from_slice(&sheet.default_configuration_json(
+            &DocumentStyleAssignment::new(sheet.base_paragraph.clone())).unwrap()).unwrap();
+        for entry in saved["block_styles"].as_array_mut().unwrap() {
+            if matches!(entry["id"].as_str(), Some("Builtin line number" | "Builtin current line number")) {
+                entry["name"] = entry["id"].clone();
+                entry["character"] = serde_json::json!({"size":19,"bold":true});
+                entry["block"] = serde_json::json!({"padding_left":7,"border_right_width":2});
+            }
+        }
+        for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
+            crate::document::Format::MarkdownSource] {
+            let (loaded, diagnostics) = StyleSheet::for_format(format)
+                .with_default_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
+            assert!(diagnostics.is_empty(), "{format:?}: {diagnostics:?}");
+            for id in ["Builtin line number", "Builtin current line number"] {
+                let id: StyleId = id.into();
+                let style = loaded.block_style(&id).unwrap();
+                assert_eq!(style.character.size, Some(FontSize::Points(19.0)));
+                assert_eq!(style.character.bold, Some(true));
+                assert_eq!(style.block.padding_left, Some(7.0));
+                assert_eq!(style.block.border_right_width, Some(2.0));
+                assert_eq!(loaded.block_style_metadata(&id).unwrap().display_name, id.builtin_block_display_name().unwrap());
+                assert!(loaded.builtin_line_number_kind(style).is_some());
+            }
+        }
+        saved["version"] = serde_json::json!(3);
+        let loaded = code::parse_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        for id in ["Builtin line number", "Builtin current line number"] {
+            let id: StyleId = id.into();
+            let style = loaded.block_style(&id).unwrap();
+            assert_eq!(style.character.size, Some(FontSize::Points(19.0)));
+            assert_eq!(style.block.padding_left, Some(7.0));
+            assert_eq!(loaded.block_style_metadata(&id).unwrap().display_name, id.builtin_block_display_name().unwrap());
+        }
+    }
+
+    #[test]
+    fn internal_block_declarations_edit_without_allowing_relationship_changes() {
+        let mut sheet = StyleSheet::plain_text();
+        let id: StyleId = "Status bar".into();
+        let mut edited = sheet.block_style(&id).unwrap().clone();
+        edited.character.size = Some(19.0.into());
+        assert!(sheet.apply_configuration_edit(&StyleDefinitionEdit::UpdateBlock(edited.clone()), StyleSheetRevision(2), false).unwrap());
+        assert_eq!(sheet.resolve_container_style(&"Status bar command".into()).unwrap().character.size, 19.0);
+        edited.based_on = Some("Status bar command".into());
+        assert!(sheet.apply_configuration_edit(&StyleDefinitionEdit::UpdateBlock(edited), StyleSheetRevision(3), false).is_err());
+        assert!(sheet.apply_configuration_edit(&StyleDefinitionEdit::DeleteBlock(id), StyleSheetRevision(3), false).is_err());
+    }
+
 }

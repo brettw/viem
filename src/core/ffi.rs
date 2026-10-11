@@ -41,6 +41,8 @@ pub use search::*;
 mod prelayout;
 pub use prelayout::*;
 mod whitespace;
+mod line_numbers;
+pub use line_numbers::*;
 pub use whitespace::*;
 mod html_export;
 pub use html_export::*;
@@ -58,7 +60,7 @@ use crate::command::composition::{
 };
 use crate::command::ex_execute::{
     ExFileRequest, ExFrontendRequest, ExInfoRequest, ExNavigation, ExOptionDisplay, ExOptionName,
-    ExOptionValue, ExOutcome, HardLineRange,
+    ExOptionValue, ExOutcome, ResolvedExRange,
 };
 use crate::command::visual_block::{
     resolve_block_selection, resolve_block_selection_to_line_end, VisualBlockError,
@@ -532,8 +534,10 @@ pub const VIEM_EX_FRONTEND_LITERAL: u32 = 1 << 5;
 pub const VIEM_EX_FRONTEND_HAS_COUNT: u32 = 1 << 6;
 pub const VIEM_EX_FRONTEND_WRITE_FIRST: u32 = 1 << 7;
 pub const VIEM_EX_FRONTEND_HAS_LINE: u32 = 1 << 8;
+pub const VIEM_EX_FRONTEND_READ_SOURCE: u32 = 1 << 14;
 
 pub const VIEM_EX_OPTION_WRAP: u32 = 1;
+pub const VIEM_EX_OPTION_NUMBER: u32 = 24;
 pub const VIEM_EX_OPTION_LINEBREAK: u32 = 2;
 pub const VIEM_EX_OPTION_FILE_FORMAT: u32 = 3;
 pub const VIEM_EX_OPTION_FILE_FORMATS: u32 = 4;
@@ -755,8 +759,10 @@ pub const VIEM_EX_TEXT_LINE_V1_SIZE: u32 = size_of::<ViemExTextLineV1>() as u32;
 /// One raw Ex host request in command execution order.
 ///
 /// `text` is the optional path, `:normal` command string, or concatenated
-/// Unicode mark/register-name scalar sequence according to `kind`. Hard-line
-/// ranges are inclusive and zero based. Option indices apply only to OPTIONS.
+/// Unicode mark/register-name scalar sequence according to `kind`. PRINT/NORMAL
+/// use inclusive addressed-unit indices; WRITE uses half-open source-byte bounds.
+/// READ exports an insertion offset in source bytes when READ_SOURCE is set,
+/// otherwise formatted UTF-8. Option indices apply only to OPTIONS.
 /// `first_payload..+payload_count` selects the corresponding mark, register,
 /// jump, or text-line array for those four info-request kinds.
 #[repr(C)]
@@ -1267,6 +1273,7 @@ pub const VIEM_STYLE_ROLE_CODE_BLOCK: u32 = 4;
 pub const VIEM_STYLE_ROLE_LIST: u32 = 5;
 pub const VIEM_STYLE_ROLE_LIST_ITEM: u32 = 6;
 pub const VIEM_STYLE_ROLE_TABLE: u32 = 7;
+pub const VIEM_STYLE_ROLE_CONTAINER: u32 = 8;
 
 pub const VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION: u32 = 2;
 pub const VIEM_STYLE_ORIGIN_SYNTHETIC_READ_ONLY: u32 = 3;
@@ -1278,6 +1285,10 @@ pub const VIEM_STYLE_DEFINITION_INTERNAL: u32 = 1 << 5;
 pub const VIEM_STYLE_DEFINITION_INTERNAL_LIST: u32 = 1 << 6;
 /// A generated Code syntax definition that has not been edited or persisted.
 pub const VIEM_STYLE_DEFINITION_IMPLICIT: u32 = 1 << 7;
+/// Trusted core paragraph definitions used only by the line-number gutter.
+pub const VIEM_STYLE_DEFINITION_LINE_NUMBER: u32 = 1 << 8;
+/// The current-line variant also carries LINE_NUMBER and INTERNAL.
+pub const VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER: u32 = 1 << 9;
 
 pub const VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS: u32 = 1 << 0;
 pub const VIEM_STYLE_CAPABILITY_EDIT_PARENT: u32 = 1 << 1;
@@ -3370,6 +3381,7 @@ enum OwnedExInfoPayload {
 }
 
 fn capture_resolved_point(
+    document: &Document,
     snapshot: &crate::document::HardLineSnapshot,
     utf8_offset: usize,
 ) -> OwnedResolvedPoint {
@@ -3385,7 +3397,9 @@ fn capture_resolved_point(
         .expect("a hard-line range is a valid UTF-8 range");
     OwnedResolvedPoint {
         utf8_offset,
-        hard_line_index: line.index(),
+        hard_line_index: document.projection().source_insertion_point(utf8_offset, true)
+            .and_then(|source| document.physical_line_index_at_source(source).ok())
+            .unwrap_or(0).min(document.physical_source_line_number_count().saturating_sub(1)),
         hard_line_range: range,
         grapheme_column,
         line_text,
@@ -3420,7 +3434,7 @@ fn capture_ex_info_payloads(
                         .into_iter()
                         .map(|(name, offset)| OwnedResolvedMark {
                             name,
-                            point: capture_resolved_point(&snapshot, offset),
+                            point: capture_resolved_point(document, &snapshot, offset),
                         })
                         .collect(),
                 ))
@@ -3467,30 +3481,18 @@ fn capture_ex_info_payloads(
                         .map(|(list_index, offset)| OwnedResolvedJump {
                             list_index,
                             current: current == Some(list_index),
-                            point: capture_resolved_point(&snapshot, *offset),
+                            point: capture_resolved_point(document, &snapshot, *offset),
                         })
                         .collect(),
                 ))
             }
             ExFrontendRequest::Info(ExInfoRequest::PrintLines { range, .. }) => {
                 Some(OwnedExInfoPayload::TextLines(
-                    (range.start..=range.end)
-                        .map(|index| {
-                            snapshot.line(index).expect(
-                                "a committed Ex print range resolves in its post-turn snapshot",
-                            )
-                        })
-                        .map(|line| {
-                            let range = line.content_range();
-                            OwnedResolvedTextLine {
-                                hard_line_index: line.index(),
-                                utf8_range: range.clone(),
-                                text: snapshot
-                                    .slice_utf8(range)
-                                    .expect("a hard-line range is valid UTF-8"),
-                            }
-                        })
-                        .collect(),
+                    crate::command::ex_execute::addressed_text_lines(document, range)
+                        .expect("committed Ex output preserves its exact addressed units")
+                        .into_iter().map(|(index, range, text)| OwnedResolvedTextLine {
+                            hard_line_index: index, utf8_range: range, text,
+                        }).collect(),
                 ))
             }
             ExFrontendRequest::Info(ExInfoRequest::Options(_))
@@ -3525,6 +3527,9 @@ impl OwnedEffectBatch {
             return None;
         }
         if let Some(ex) = command.ex_outcome.as_mut() {
+            if matches!(ex.navigation, Some(ExNavigation::PhysicalSourceOffset(_))) {
+                ex.navigation = Some(ExNavigation::TextOffset(commands.cursor()));
+            }
             let options = ex.option_effects.iter().filter(|effect| matches!(effect.name, ExOptionName::KeyModel | ExOptionName::SelectMode | ExOptionName::AutoSelect))
                 .map(|effect| crate::command::ex_execute::ExOptionDisplay { name: effect.name.clone(), value: effect.new_value.clone() }).collect::<Vec<_>>();
             if !options.is_empty() { ex.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::Options(options))); }
@@ -3584,6 +3589,7 @@ fn register_kind_to_ffi(kind: RegisterKind) -> u32 {
 fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
     match name {
         ExOptionName::Wrap => VIEM_EX_OPTION_WRAP,
+        ExOptionName::Number => VIEM_EX_OPTION_NUMBER,
         ExOptionName::FileFormat => VIEM_EX_OPTION_FILE_FORMAT,
         ExOptionName::FileFormats => VIEM_EX_OPTION_FILE_FORMATS,
         ExOptionName::IgnoreCase => VIEM_EX_OPTION_IGNORECASE,
@@ -3658,12 +3664,19 @@ fn set_ex_path(
     Ok(())
 }
 
-fn set_ex_range(output: &mut ViemExFrontendRequestV1, range: Option<HardLineRange>) {
+fn set_ex_range(output: &mut ViemExFrontendRequestV1, range: Option<&ResolvedExRange>) -> Result<(), ViemStatus> {
     if let Some(range) = range {
         output.flags |= VIEM_EX_FRONTEND_HAS_RANGE;
-        output.hard_line_start = range.start as u64;
-        output.hard_line_end = range.end as u64;
+        if matches!(output.kind, VIEM_EX_FRONTEND_WRITE | VIEM_EX_FRONTEND_WRITE_QUIT) {
+            let source = range.source.as_ref().ok_or(ViemStatus::InternalError)?;
+            output.hard_line_start = checked_export_count(source.start)?;
+            output.hard_line_end = checked_export_count(source.end)?;
+        } else {
+            output.hard_line_start = checked_export_count(range.start.index)?;
+            output.hard_line_end = checked_export_count(range.end.index)?;
+        }
     }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3771,7 +3784,8 @@ fn export_ex_frontend_request(
             }
             ExFileRequest::Read { path, after } => {
                 output.kind = VIEM_EX_FRONTEND_READ;
-                output.hard_line_start = checked_export_count(*after)?;
+                output.hard_line_start = checked_export_count(after.offset)?;
+                if after.source { output.flags |= VIEM_EX_FRONTEND_READ_SOURCE; }
                 set_ex_path(&mut output, strings, path.as_deref())?;
             }
             ExFileRequest::Source { path } => {
@@ -3846,7 +3860,7 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_WRITE;
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
                 set_ex_path(&mut output, strings, path.as_deref())?;
-                set_ex_range(&mut output, *range);
+                set_ex_range(&mut output, range.as_ref())?;
             }
             ExFileRequest::SaveAs { path, force } => {
                 output.kind = VIEM_EX_FRONTEND_SAVE_AS;
@@ -3869,7 +3883,7 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_WRITE_QUIT;
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
                 set_ex_path(&mut output, strings, path.as_deref())?;
-                set_ex_range(&mut output, *range);
+                set_ex_range(&mut output, range.as_ref())?;
             }
             ExFileRequest::Xit { path, force } => {
                 output.kind = VIEM_EX_FRONTEND_XIT;
@@ -3984,7 +3998,7 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_PRINT_LINES;
                 output.flags |= u32::from(*number) * VIEM_EX_FRONTEND_NUMBER;
                 output.flags |= u32::from(*list) * VIEM_EX_FRONTEND_LIST;
-                set_ex_range(&mut output, Some(*range));
+                set_ex_range(&mut output, Some(range))?;
                 let Some(OwnedExInfoPayload::TextLines(resolved)) = payload else {
                     return Err(ViemStatus::InternalError);
                 };
@@ -4008,7 +4022,7 @@ fn export_ex_frontend_request(
             output.kind = VIEM_EX_FRONTEND_NORMAL;
             output.flags |= u32::from(request.literal) * VIEM_EX_FRONTEND_LITERAL;
             output.text = push_effect_text(strings, &request.commands)?;
-            set_ex_range(&mut output, Some(request.range));
+            set_ex_range(&mut output, Some(&request.range))?;
         }
     }
     Ok(output)
@@ -4070,6 +4084,7 @@ fn export_effect_batch(
             flags |= VIEM_EFFECT_BATCH_EX_HAS_NAVIGATION;
             match navigation {
                 ExNavigation::TextOffset(offset) => navigation_utf8_offset = offset as u64,
+                ExNavigation::PhysicalSourceOffset(_) => return Err(ViemStatus::InternalError),
                 ExNavigation::HistoryRestoration => {
                     flags |= VIEM_EFFECT_BATCH_EX_NAVIGATION_HISTORY;
                 }
@@ -5259,6 +5274,7 @@ fn style_role_to_ffi(role: BlockRole) -> u32 {
         BlockRole::List => VIEM_STYLE_ROLE_LIST,
         BlockRole::ListItem => VIEM_STYLE_ROLE_LIST_ITEM,
         BlockRole::Table => VIEM_STYLE_ROLE_TABLE,
+        BlockRole::Container => VIEM_STYLE_ROLE_CONTAINER,
 
     }
 }
@@ -5814,7 +5830,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
             .concat(),
-            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table => [
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table | BlockRole::Container => [
                 PARAGRAPH_STYLE_PROPERTIES.as_slice(),
                 CHARACTER_STYLE_PROPERTIES.as_slice(),
             ]
@@ -5845,7 +5861,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     )?;
                 }
             }
-            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table => {
+            BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table | BlockRole::Container => {
                 let resolved = sheet
                     .resolve_assigned_paragraph_style_with_contributions(
                         &assignment,
@@ -5891,6 +5907,11 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         } else {
             ViemStyleStringRefV1::default()
         };
+        if style.id.is_internal_in(StyleNamespace::Block) { flags |= VIEM_STYLE_DEFINITION_INTERNAL; }
+        if let Some(current) = sheet.builtin_line_number_kind(style) {
+            flags |= VIEM_STYLE_DEFINITION_LINE_NUMBER;
+            if current { flags |= VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER; }
+        }
         if is_base_paragraph {
             flags |= VIEM_STYLE_DEFINITION_BASE_PARAGRAPH;
         }
@@ -5900,7 +5921,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             namespace: VIEM_STYLE_NAMESPACE_BLOCK,
             role: style_role_to_ffi(style.role),
             origin: style_origin_to_ffi(metadata.origin),
-            capabilities: (generated_style_capabilities(
+            capabilities: if style.id.is_internal_in(StyleNamespace::Block) { VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS } else { (generated_style_capabilities(
                 metadata.origin,
                 is_base_paragraph,
                 Some(style.role),
@@ -5910,7 +5931,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                 VIEM_STYLE_CAPABILITY_ASSIGN
             } else {
                 0
-            },
+            } },
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
             parent_id,
@@ -5951,7 +5972,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         }
         let is_base = false;
         let mut flags = 0;
-        if style.id.is_internal() {
+        if style.id.is_internal_in(StyleNamespace::Character) {
             flags |= VIEM_STYLE_DEFINITION_INTERNAL;
         }
         if sheet.is_implicit_character(&style.id) {
@@ -5969,7 +5990,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             namespace: VIEM_STYLE_NAMESPACE_CHARACTER,
             role: VIEM_STYLE_ROLE_NONE,
             origin: style_origin_to_ffi(metadata.origin),
-            capabilities: if style.id.is_internal() {
+            capabilities: if style.id.is_internal_in(StyleNamespace::Character) {
                 VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS
             } else {
                 generated_style_capabilities(
@@ -9324,7 +9345,7 @@ pub unsafe extern "C" fn viem_core_view_set_selection_origin(handle: ViemCoreHan
     })
 }
 
-/// Enter Normal mode and reveal a clamped one-based logical hard line.
+/// Enter Normal mode and reveal a clamped one-based physical source-file line.
 /// Pending input is cancelled without executing it or changing source.
 ///
 /// # Safety
@@ -10591,7 +10612,7 @@ mod tests {
         use crate::command::clipboard::{ClipboardContent, ClipboardTarget, ClipboardWriteRequest};
         use crate::command::ex_execute::{
             ExFileRequest, ExFrontendRequest, ExInfoRequest, ExNavigation, ExNormalRequest,
-            ExOptionDisplay, ExOptionName, ExOptionValue, ExOutcome, HardLineRange,
+            ExOptionDisplay, ExOptionName, ExOptionValue, ExOutcome, ResolvedExRange,
         };
         use crate::command::{RegisterKind, RegisterValue};
         use crate::document::{DocumentId, Revision};
@@ -10602,7 +10623,21 @@ mod tests {
             std::str::from_utf8(&arena[start..start + length]).unwrap()
         }
 
-        let file_range = HardLineRange::new(2, 4).unwrap();
+        fn fixture_range(start: usize, end: usize) -> ResolvedExRange {
+            use crate::command::ex_execute::{ExLineDomain, ResolvedExLine};
+            let line = |index| ResolvedExLine {
+                domain: ExLineDomain::PhysicalSource, index,
+                content: index..index + 1, text: index..index + 1,
+                source: Some(index..index + 1), source_content: Some(index..index + 1),
+                position: crate::command::layout_motion::VisualPosition {
+                    text_offset: index, affinity: crate::document::BoundaryAffinity::Downstream,
+                },
+            };
+            ResolvedExRange { document: DocumentId(0xdecaf), revision: Revision(42),
+                start: line(start), end: line(end), text: start..end + 1,
+                source: Some(start..end), lines: Vec::new() }
+        }
+        let file_range = fixture_range(2, 4);
         let mut ex = ExOutcome::default();
         ex.document_changed = true;
         ex.navigation = Some(ExNavigation::TextOffset(37));
@@ -10627,7 +10662,7 @@ mod tests {
             ExFrontendRequest::File(ExFileRequest::WriteQuit {
                 path: None,
                 force: true,
-                range: Some(HardLineRange::new(0, 1).unwrap()),
+                range: Some(fixture_range(0, 1)),
             }),
             ExFrontendRequest::File(ExFileRequest::Xit {
                 path: Some("終了.txt".into()),
@@ -10660,12 +10695,12 @@ mod tests {
                 },
             ])),
             ExFrontendRequest::Info(ExInfoRequest::PrintLines {
-                range: HardLineRange::new(5, 7).unwrap(),
+                range: fixture_range(5, 7),
                 number: true,
                 list: true,
             }),
             ExFrontendRequest::Normal(ExNormalRequest {
-                range: HardLineRange::new(8, 9).unwrap(),
+                range: fixture_range(8, 9),
                 commands: "gUiwé".into(),
                 literal: true,
             }),
@@ -11485,8 +11520,8 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.definition_count, 25);
-        assert_eq!(info.property_count, 954);
+        assert_eq!(info.definition_count, 29);
+        assert_eq!(info.property_count, 1114);
         assert_ne!(info.string_bytes, 0);
 
         let mut count_info = ViemStyleSheetInfoV1::default();
@@ -14415,16 +14450,16 @@ pub unsafe extern "C" fn viem_core_view_set_encoding_with_effects(
     })
 }
 
-/// Copy exact source bytes for an explicit semantic hard-line range.
+/// Copy exact source bytes for an explicit revision-bound source byte range.
 /// # Safety
 /// Outputs must be aligned writable and disjoint; nonzero capacity needs bytes.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_copy_hard_line_source_bytes(
+pub unsafe extern "C" fn viem_core_copy_source_range_bytes(
     handle: ViemCoreHandle,
     document: u64,
     revision: u64,
-    first_line: u64,
-    end_line: u64,
+    source_start: u64,
+    source_end: u64,
     output: *mut u8,
     capacity: u64,
     out_required: *mut u64,
@@ -14447,13 +14482,14 @@ pub unsafe extern "C" fn viem_core_copy_hard_line_source_bytes(
                 return Err(ViemStatus::InvalidArgument);
             }
             validate_revision(doc, revision)?;
-            let range = doc
-                .source_byte_range_for_hard_lines(
-                    checked_length(first_line)?..checked_length(end_line)?,
-                )
-                .map_err(|_| ViemStatus::PolicyRequired)?;
-            let complete = range.start == 0 && range.end == doc.source_byte_len();
-            Ok((doc.source_bytes()[range].to_vec(), complete))
+            let mut range = checked_length(source_start)?..checked_length(source_end)?;
+            doc.source_point(range.start).map_err(|_| ViemStatus::InvalidArgument)?;
+            doc.source_point(range.end).map_err(|_| ViemStatus::InvalidArgument)?;
+            if range.start > range.end { return Err(ViemStatus::InvalidArgument); }
+            let first = doc.physical_line_ranges(0).map_err(|_| ViemStatus::InvalidArgument)?.0.start;
+            let complete = (range.start == 0 || range.start == first) && range.end == doc.source_byte_len();
+            if complete { range.start = 0; }
+            Ok((doc.source_bytes_in(range).map_err(|_| ViemStatus::InvalidArgument)?, complete))
         })?;
         unsafe {
             out_required.write(bytes.len() as u64);

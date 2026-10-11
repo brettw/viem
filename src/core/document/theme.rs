@@ -37,10 +37,6 @@ pub struct Appearance {
     pub background: ThemeColor,
     pub caret: ThemeColor,
     pub selection: ThemeColor,
-    pub status_foreground: ThemeColor,
-    pub status_background: ThemeColor,
-    pub status_font_family: String,
-    pub status_font_size: f64,
 }
 
 impl Appearance {
@@ -50,23 +46,15 @@ impl Appearance {
             Self {
                 foreground: rgb(0.08, 0.09, 0.11),
                 background: rgb(1.0, 1.0, 1.0),
-                status_foreground: rgb(0.88, 0.90, 0.93),
-                status_background: rgb(0.12, 0.13, 0.15),
                 caret: rgb(0.06, 0.24, 0.49),
                 selection: ThemeColor::new(0.12, 0.39, 0.73, 0.28),
-                status_font_family: "System".into(),
-                status_font_size: 11.0,
             }
         } else {
             Self {
                 foreground: rgb(0.90, 0.93, 0.98),
                 background: rgb(0.035, 0.085, 0.17),
-                status_foreground: rgb(0.68, 0.78, 0.91),
-                status_background: rgb(0.02, 0.055, 0.12),
                 caret: rgb(0.76, 0.86, 1.0),
                 selection: ThemeColor::new(0.39, 0.65, 1.0, 0.38),
-                status_font_family: "System".into(),
-                status_font_size: 11.0,
             }
         }
     }
@@ -76,21 +64,11 @@ impl Appearance {
             self.background,
             self.caret,
             self.selection,
-            self.status_foreground,
-            self.status_background,
         ]
         .into_iter()
         .all(ThemeColor::valid)
         {
             return Err("Theme colors must be finite sRGB components in 0...1".into());
-        }
-        if !self.status_font_size.is_finite()
-            || !(8.0..=32.0).contains(&self.status_font_size)
-            || self.status_font_family.is_empty()
-            || self.status_font_family.chars().count() >= 256
-            || self.status_font_family.chars().any(char::is_control)
-        {
-            return Err("Invalid status font".into());
         }
         Ok(())
     }
@@ -153,6 +131,14 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
         // Native resolvers map this portable family to their system UI font.
         if let Some(blocks) = value["block_styles"].as_array_mut() {
             for block in blocks {
+                if block["id"] == "Status bar" {
+                    block["character"]["foreground"] = serde_json::json!({"red": 0.88, "green": 0.90, "blue": 0.93, "alpha": 1.0});
+                    block["block"]["background"] = serde_json::json!({"red": 0.12, "green": 0.13, "blue": 0.15, "alpha": 1.0});
+                    block["block"]["border_top_color"] = block["character"]["foreground"].clone();
+                } else if block["id"] == "Status bar command" {
+                    block["character"]["foreground"] = serde_json::json!({"red": 0.12, "green": 0.13, "blue": 0.15, "alpha": 1.0});
+                    block["block"]["background"] = serde_json::json!({"red": 0.88, "green": 0.90, "blue": 0.93, "alpha": 1.0});
+                }
                 if block["id"] == "Paragraph" {
                     block["character"]["font_families"] = serde_json::json!(["system-ui"]);
                 }
@@ -162,12 +148,7 @@ pub fn default_json(preset: u32) -> Result<Vec<u8>, String> {
     };
     // Both sheet schemas serialize the same normalized style records. A full
     // Code v3 image keeps preset files independent of future generated defaults.
-    let mut code: Value = serde_json::from_slice(
-        &code_style::default_sheet()
-            .default_configuration_json(&DocumentStyleAssignment::new("Paragraph".into()))
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
+    let mut code = defaults(super::Format::Code)?;
     code["version"] = 3.into();
     code["suppressed_character_ids"] = Value::Array(Vec::new());
     serde_json::to_vec_pretty(&ThemeFile {
@@ -244,8 +225,13 @@ mod tests {
             let text = &value["styles"]["text"];
             let blocks = text["block_styles"].as_array().unwrap();
             let characters = text["character_styles"].as_array().unwrap();
-            assert_eq!(blocks.len(), 1);
-            assert_eq!(blocks[0]["id"], "Paragraph");
+            let mut ids = blocks.iter().map(|block| block["id"].as_str().unwrap()).collect::<Vec<_>>();
+            ids.sort_unstable();
+            assert_eq!(ids, ["Builtin current line number", "Builtin line number", "Paragraph", "Status bar", "Status bar command"]);
+            for (id, name) in [("Builtin line number", "Line number"),
+                ("Builtin current line number", "Current line number")] {
+                assert_eq!(blocks.iter().find(|block| block["id"] == id).unwrap()["name"], name);
+            }
             assert_eq!(characters.len(), 1);
             assert_eq!(characters[0]["id"], "* Incremental match");
         }

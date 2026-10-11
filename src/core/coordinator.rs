@@ -54,6 +54,8 @@ mod completion_layout;
 mod search;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
+mod line_numbers;
+pub use line_numbers::LineNumberRegion;
 mod restoration;
 pub use restoration::ViewRestoration;
 use viewport::capture_caret_baseline_anchor;
@@ -299,7 +301,7 @@ pub enum StyleEditGroupError {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
-    ReadFile { document: DocumentId, revision: Revision, after: usize, bytes: Vec<u8> },
+    ReadFile { document: DocumentId, revision: Revision, after: crate::command::ex_execute::ExInsertionPoint, bytes: Vec<u8> },
     FlushMappingPrefix,
     FlushMappingPrefixWithClipboard(ClipboardCommandContext),
     EditCommandLine(crate::command::CommandLineEditRequest),
@@ -452,8 +454,8 @@ pub enum CoreEvent {
         document: DocumentId,
         revision: Revision,
     },
-    /// Enter Normal mode and reveal the first nonblank grapheme of a logical
-    /// hard line in the exact snapshot, without interpreting pending input.
+    /// Enter Normal mode and reveal the first nonblank grapheme of a physical
+    /// source-file line in the exact snapshot, without interpreting pending input.
     /// Lines are one-based; zero selects the first and excess selects the last.
     GoToLine {
         document: DocumentId,
@@ -965,7 +967,7 @@ pub struct Core<P: TextMeasurementProvider> {
     syntax: syntax::CoreSyntax,
     buffer_commands: BufferCommandState,
     whitespace_defaults: crate::layout::WhitespacePresentationOptions,
-    startup_view_options: Option<(bool, crate::command::VisibleWhitespaceSetting)>,
+    startup_view_options: Option<(bool, crate::command::VisibleWhitespaceSetting, bool)>,
     views: BTreeMap<ViewId, View<P>>,
     next_view: Option<u64>,
     next_layout_job: Option<u64>,
@@ -1680,9 +1682,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
 
         let (path, force, range, quit_after_success) = match request {
-            ExFileRequest::Write { path, force, range } => (path.as_deref(), *force, *range, false),
+            ExFileRequest::Write { path, force, range } => (path.as_deref(), *force, range.as_ref(), false),
             ExFileRequest::WriteQuit { path, force, range } => {
-                (path.as_deref(), *force, *range, true)
+                (path.as_deref(), *force, range.as_ref(), true)
             }
             ExFileRequest::Xit { path: None, force } if !self.document.is_dirty() => {
                 return Ok(PreparedExFileRequest::Host(tagged(ExFileRequest::Quit {
@@ -1765,32 +1767,27 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         path: Option<&str>,
         force: bool,
-        range: Option<crate::command::ex_execute::HardLineRange>,
+        range: Option<&crate::command::ex_execute::ResolvedExRange>,
     ) -> Result<ArtifactWriteIntent, CoreError> {
-        let line_count = self.document.line_count();
-        // Validate and resolve an explicit line range before applying write
-        // policy.  In particular, a malformed range aimed at the current
-        // artifact is a range error, not Vim's E140 partial-write refusal.
-        let ranged_scope = match range {
-            Some(range) => {
-                let end =
-                    range
-                        .end
-                        .checked_add(1)
-                        .ok_or(HardLineSourceRangeError::InvalidRange {
-                            start: range.start,
-                            end: usize::MAX,
-                            line_count,
-                        })?;
-                Some(ArtifactWriteScope::PrimarySourceBytes(
-                    self.document
-                        .source_byte_range_for_hard_lines(range.start..end)?,
-                ))
+        if let Some(range) = range {
+            if range.document != self.document.id() { return Err(DocumentError::WrongDocument.into()); }
+            if range.revision != self.document.revision() {
+                return Err(DocumentError::WrongSnapshot { expected: range.revision,
+                    actual: self.document.revision() }.into());
             }
+        }
+        let source_range = match range {
+            Some(range) => Some(self.document.addressed_source_range(range.text.clone(),
+                range.start.source.as_ref().map(|source| source.start),
+                range.end.source.as_ref().map(|source| source.end))?),
             None => None,
         };
-        let range_is_whole_document = range
-            .is_some_and(|range| range.start == 0 && range.end.checked_add(1) == Some(line_count));
+        let range_is_whole_document = source_range.as_ref().is_some_and(|range| {
+            // The first editable source boundary may follow an encoding BOM.
+            range.start == self.document.physical_line_ranges(0).map_or(0, |(line, _)| line.start)
+                && range.end == self.document.source_byte_len()
+        });
+        let ranged_scope = source_range.map(ArtifactWriteScope::PrimarySourceBytes);
         let requested_destination = path.map(ArtifactPath::from);
         let targets_current_binding = match (
             requested_destination.as_ref(),
@@ -1801,14 +1798,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             _ => false,
         };
 
-        if targets_current_binding
-            && range.is_some_and(|range| {
-                range.start != 0 || range.end.checked_add(1) != Some(line_count)
-            })
-            && !force
-        {
+        if targets_current_binding && range.is_some() && !range_is_whole_document && !force {
+            let range = range.expect("partial current write has an explicit range");
             return Err(CoreError::PartialCurrentWriteRequiresForce {
-                range: range.expect("partial current write has an explicit range"),
+                range: crate::command::ex_execute::HardLineRange {
+                    start: range.start.index, end: range.end.index,
+                },
             });
         }
 
@@ -3038,6 +3033,111 @@ impl<P: TextMeasurementProvider> Core<P> {
         unreachable!("a formatted document always has one hard line")
     }
 
+    /// Finite scrolling inside a giant wrapped hard line resumes the same
+    /// bounded checkpoints as caret reveal. Only disposable staged geometry
+    /// changes here; the caller validates and publishes the final viewport.
+    fn materialize_long_line_requested_viewport(
+        &mut self,
+        view_id: ViewId,
+        staged_layout: &mut ViewLayout,
+        requirements: LayoutProviderRequirements,
+        context: LayoutExecutionContext,
+        target_line: usize,
+        offset: f64,
+        horizontal_focus: Option<(usize, Option<f32>)>,
+    ) -> Result<Option<Vec<LongLineLayoutCheckpoint>>, CoreError> {
+        let flow = self.presentation_flow(view_id);
+        let projection = self.document.projection();
+        let count = projection.presentation_line_count(flow);
+        let range = projection.presentation_line_range(target_line, flow)
+            .ok_or(LayoutError::InvalidTextOffset(projection.text_tree().byte_len()))?;
+        if !staged_layout.wrap() || range.len() <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
+            return Ok(None);
+        }
+        let height = staged_layout.height().max(f32::EPSILON);
+        let mut checkpoint = {
+            let view = self.views.get_mut(&view_id).expect("validated scrolling view");
+            view.long_line_checkpoints.discard_stale(&self.document, staged_layout, requirements);
+            view.long_line_checkpoints.before_height(range, (offset as f32 - height).max(0.))
+        };
+        let mut line = target_line;
+        let mut preceding: Option<crate::layout::RegionalLayoutSnapshot> = None;
+        let mut checkpoints = Vec::new();
+        loop {
+            let target_prefix = staged_layout.hard_line_prefix_height(target_line).map_err(LayoutError::from)?.height();
+            let target_height = staged_layout.hard_line_range_height(target_line..target_line + 1).map_err(LayoutError::from)?;
+            let effective_offset = if target_height.is_exact() { offset.min(target_height.height()) } else { offset };
+            let top = (target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32;
+            let line_prefix = staged_layout.hard_line_prefix_height(line).map_err(LayoutError::from)?.height() as f32;
+            let relative_top = top - line_prefix;
+            let work_start = checkpoint.as_ref().map(LongLineLayoutCheckpoint::next_text_offset);
+            let region = match checkpoint.take() {
+                Some(checkpoint) => ViewportLayoutRegion::resume_long_line(checkpoint, top, height)?,
+                None => ViewportLayoutRegion::new(line..line + 1, top, height)?,
+            };
+            let region = match horizontal_focus {
+                Some((offset, desired_x)) => region.with_horizontal_focus(offset, desired_x),
+                None => region,
+            };
+            let job = self.allocate_layout_job_id()?;
+            let request = prepare_layout_job(&self.document, staged_layout, requirements, job,
+                LayoutJobPriority::NewlyExposedRows, LayoutJobRegion::Viewport(region),
+                LayoutCancellationToken::new())?;
+            let mut candidate = {
+                let view = self.views.get_mut(&view_id).expect("scrolling view remains attached");
+                compute_layout_job(&mut view.engine, &request, context)?
+            };
+            let next = candidate.next_long_line_checkpoint().cloned();
+            if let Some(next) = &next {
+                let start = work_start.unwrap_or(candidate.regional_snapshot().lines()[0].hard_line_range().start);
+                if next.next_text_offset() <= start {
+                    return Err(LayoutJobError::InvalidLongLineCheckpoint("finite-scroll continuation did not advance").into());
+                }
+                checkpoints.push(next.clone());
+                if checkpoints.len() > 256 { checkpoints.remove(0); }
+            }
+            let current = &candidate.regional_snapshot().lines()[0];
+            let ends_before_target = current.rows().last().is_some_and(|row| row.y + row.height() < relative_top);
+            if ends_before_target && next.is_some() {
+                candidate.retain_viewport_tail(preceding.as_ref().filter(|previous|
+                    previous.lines().len() == 1 && previous.hard_lines().end == line + 1));
+                preceding = Some(candidate.regional_snapshot().clone());
+                checkpoint = next;
+                continue;
+            }
+            if let Some(previous) = &preceding {
+                if previous.hard_lines().end == line + 1 {
+                    candidate.prepend_long_line_slice_in_range(previous, relative_top..relative_top + height);
+                } else {
+                    candidate.prepend_adjacent_region(previous);
+                }
+            }
+            let retained = candidate.regional_snapshot().clone();
+            install_layout_job(staged_layout, LayoutInstallTarget {
+                document_id: self.document.id(), document_revision: self.document.revision(),
+                measurement_environment_id: requirements.measurement_environment_id,
+                metrics_generation: requirements.metrics_generation,
+            }, candidate)?;
+            let target_prefix = staged_layout.hard_line_prefix_height(target_line).map_err(LayoutError::from)?.height();
+            let target_height = staged_layout.hard_line_range_height(target_line..target_line + 1).map_err(LayoutError::from)?;
+            let effective_offset = if target_height.is_exact() { offset.min(target_height.height()) } else { offset };
+            staged_layout.set_viewport_top((target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32)?;
+            let snapshot = staged_layout.snapshot().ok_or(LayoutError::NoRows)?;
+            let missing = snapshot.missing_viewport_edges(staged_layout.viewport_top(), height);
+            if !missing.0 && !missing.1 { return Ok(Some(checkpoints)); }
+            if missing.0 {
+                return Err(LayoutError::OutsideMaterializedCoverage.into());
+            }
+            preceding = Some(retained);
+            if let Some(next) = next {
+                checkpoint = Some(next);
+            } else {
+                line += 1;
+                if line >= count { return Ok(Some(checkpoints)); }
+            }
+        }
+    }
+
     /// Stage and atomically install the exact local layout needed for an
     /// absolute vertical presentation request. The requested y is first
     /// resolved through the compact height index. Its hard line and within-line
@@ -3188,6 +3288,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 immediate_layout_context,
                 horizontal_focus,
             )?;
+        } else if let Some(checkpoints) = self.materialize_long_line_requested_viewport(
+            view_id, &mut staged_layout, requirements, immediate_layout_context,
+            target_line, offset_from_target_line, horizontal_focus,
+        )? {
+            new_checkpoints = checkpoints;
         } else {
             let estimated_line_top = staged_layout
                 .hard_line_prefix_height(target_line)
@@ -3338,6 +3443,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         view_id: ViewId,
         intent: ImmediateLayoutIntent,
+        target_geometry_only: bool,
     ) -> Result<bool, CoreError> {
         let document_revision = self.document.revision();
         let needs_layout = {
@@ -3360,7 +3466,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         || snapshot.measurement_environment_id
                             != requirements.measurement_environment_id
                         || snapshot.metrics_generation != requirements.metrics_generation
-                        || (intent != ImmediateLayoutIntent::PreserveViewport
+                        || (!target_geometry_only && intent != ImmediateLayoutIntent::PreserveViewport
                             && (!snapshot.coverage.contains_text_offset(cursor)
                                 || !snapshot.horizontal_text_is_materialized(cursor)))
                         || (visual_block_endpoints.is_some() && snapshot.has_horizontal_materialization())
@@ -3368,7 +3474,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             !snapshot.coverage.contains_text_offset(anchor)
                                 || !snapshot.coverage.contains_text_offset(active)
                         })
-                        || snapshot.missing_viewport_edges(top, view.layout.height()) != (false, false)
+                        || (!target_geometry_only && snapshot.missing_viewport_edges(top, view.layout.height()) != (false, false))
                 })
         };
         if needs_layout {
@@ -4397,6 +4503,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let current_revision = self.document.revision();
         let mut composition_changes = Vec::new();
         for (id, view) in &mut self.views {
+            view.commands.recover_physical_cursor_display(&self.document)?;
             if let Some(session) = view.composition.take() {
                 view.composition_layout = None;
                 composition_changes.push(ViewCompositionChange {
@@ -4515,7 +4622,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let changed = committed.after_revision() != committed.before_revision();
         debug_assert!(changed);
 
-        for (id, commands) in next_commands {
+        for (id, mut commands) in next_commands {
+            if id != view_id { commands.recover_physical_cursor_display(&self.document)?; }
             self.views
                 .get_mut(&id)
                 .expect("prepared view remains attached during serial dispatch")
@@ -4574,11 +4682,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             _ => None,
         };
-        let preflight = match quote_at_end {
+        let mut preflight = match quote_at_end {
             Some(prepared) => prepared,
             None => self.document.prepare_model_request(request.clone())
                 .map_err(command_model_transaction_error)?,
         };
+        self.document.attach_prepared_source_map(&mut preflight)
+            .map_err(command_model_transaction_error)?;
         if preflight.is_no_op() {
             self.publish_select_typing(view_id, pending_typing);
             return Ok(CoreOutcome {
@@ -4992,6 +5102,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     actual: anchors.revision(),
                 }));
             }
+            commands.recover_physical_cursor_display(&self.document)?;
             rebased.push((id, commands));
         }
         self.views
@@ -5097,7 +5208,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         if failed {
             commands.restore_failed_command(checkpoint.commands);
         } else {
-            *commands = checkpoint.commands;
+            commands.restore_pending_layout_checkpoint(&checkpoint.commands);
         }
         self.edit_group_owner = checkpoint.edit_group_owner;
         self.edit_group_restoration = checkpoint.edit_group_restoration;
@@ -5693,10 +5804,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                                     <= view.layout.viewport_top() + view.layout.height()
                         })
                         .map(|geometry| (caret.0, Some(geometry.rect.x)));
-                    // A view showing the document end stays pinned to it. The end
-                    // request measures backward from the end and publishes only the
-                    // terminal viewport, where preserving the anchor inside a long
-                    // final paragraph would publish its whole resumed slice.
+                    // A scrolled view showing the document end stays pinned to
+                    // it. A fitting document instead retains its top origin.
+                    // Both requests preserve an explicit horizontal caret focus;
+                    // source anchors inside giant table cells need not remain
+                    // covered after their provisional columns are refined.
                     let text_len = self.document.projection().text_tree().byte_len();
                     // An acknowledged image publication uses the same-size
                     // Resize entry point only to replace stale render geometry.
@@ -5707,6 +5819,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             requirements.metrics_generation)
                         && view.layout.snapshot().is_some_and(|snapshot|
                             snapshot.metrics_generation != requirements.metrics_generation);
+                    let at_top = view.layout.viewport_top() == 0.0;
                     let at_end = !image_resource_refresh && view.layout.snapshot().is_some_and(|snapshot| {
                         snapshot.document_id == self.document.id()
                             && snapshot.document_revision == self.document.revision()
@@ -5731,7 +5844,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         self.materialize_requested_viewport_with_focus(
                             view_id,
                             left,
-                            f32::MAX,
+                            if at_top { 0.0 } else { f32::MAX },
                             horizontal_focus,
                         )?;
                         if horizontal_focus.is_some() {
@@ -5990,7 +6103,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::Input(input) => {
                 let was_visual_block = self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some();
-                let (requires_layout, layout_intent) = {
+                let (requires_layout, layout_intent, target_geometry_only) = {
                     let target_view = self
                         .views
                         .get(&view_id)
@@ -6005,10 +6118,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                     } else {
                         ImmediateLayoutIntent::RevealCaret
                     };
-                    (requires_layout, intent)
+                    (requires_layout, intent, target_view.commands.is_ex_address_layout_input(&input)
+                        || target_view.commands.is_counted_viewport_alignment_input(&input))
                 };
                 let layout_is_stale = if requires_layout {
-                    self.ensure_command_layout(view_id, layout_intent)?
+                    self.ensure_command_layout(view_id, layout_intent, target_geometry_only)?
                 } else {
                     false
                 };
@@ -6093,7 +6207,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if matches!(command.status, CommandStatus::NeedsMoreLayout(_)) {
                     debug_assert_eq!(self.document.revision(), before);
                     if let Some((checkpoint, _)) = active_position_state.as_ref() {
-                        target_view.commands = checkpoint.clone();
+                        target_view.commands.restore_pending_layout_checkpoint(checkpoint);
                     }
                     target_view.layout.set_viewport_top(old_viewport_top)?;
                     return Ok(CoreOutcome {
@@ -6240,8 +6354,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 actual: anchors.revision(),
                             }));
                         }
+                        commands.recover_physical_cursor_display(&self.document)?;
                         commands.capture_position_anchors(&self.document)?;
-                        rebased.push((id, commands));
+                        commands.recover_physical_cursor_display(&self.document)?;
+            rebased.push((id, commands));
                     }
                     let history_after = self.document.history_status().current;
                     if history_navigation {
@@ -6452,6 +6568,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                             ),
                         Err(error) => Err(CoreError::Layout(error)),
                     }
+                } else if target_geometry_only && !viewport_command && self.views[&view_id].layout.snapshot().is_some_and(|snapshot|
+                    snapshot.missing_viewport_edges(old_viewport_top, self.views[&view_id].layout.height())
+                        != (false, false)) {
+                    self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)
                 } else {
                     let view = self
                         .views
@@ -6744,7 +6864,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .get_mut(&view_id)
                             .expect("replay view remains attached")
                             .commands
-                            .prepare_ex_normal_line(&self.document, position);
+                            .prepare_ex_normal_target(&self.document, target, position);
                         accumulator.command_mut().cursor_moved |= old_cursor != position;
                         accumulator.command_mut().mode_changed |= old_mode != Mode::Normal;
                         self.publish_buffer_commands(view_id);
@@ -7274,6 +7394,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let inserted_text = request.edit().replacement.clone();
         let caret_offset = request.caret_offset();
         let markdown_exit = request.markdown_exit();
+        let source_insertion = request.source_insertion();
         let before = request.prepared_model_transaction().before_revision();
         let planned_after = request.prepared_model_transaction().after_revision();
         let changed = planned_after != before;
@@ -7343,6 +7464,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
         target_commands.restore_typing_link_disabled(typing_link_disabled);
+        if let Some((authored_start, source_caret)) = source_insertion {
+            target_commands.accept_external_source_insertion(&self.document, authored_start, source_caret);
+        }
         target_commands.note_markdown_typing_exit(&self.document, markdown_exit)
             .expect("Markdown preparation validated the committed syntax boundary");
         for (id, commands) in next_commands {
@@ -9493,6 +9617,37 @@ mod tests {
             coverage.len() < 100,
             "a deep offset in one wrapped line must not expand into unrelated hard lines: {coverage:?}"
         );
+    }
+
+    #[test]
+    fn vertical_scroll_metric_retry_resumes_a_giant_wrapped_line_locally() {
+        let (provider, _, calls, generation) = ControlledFailureProvider::new_counted();
+        let changes = Arc::clone(&provider.metric_changes_after_shape);
+        let source = "wrapped word ".repeat(30_000);
+        let mut core = Core::new(Document::new(&source));
+        let view = core.add_view(provider, 400.0, 100.0);
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(f32::MAX) }).unwrap();
+        let top = core.layout(view).unwrap().hard_line_range_height(0..1).unwrap().height() as f32 * 0.75;
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(0.0) }).unwrap();
+        core.views.get_mut(&view).unwrap().layout.set_regional_cache_limits(
+            crate::layout::RegionalLayoutCacheLimits { max_hard_lines: 0, ..Default::default() });
+        core.views.get_mut(&view).unwrap().engine.clear_caches();
+        let before_calls = calls.load(Ordering::Acquire);
+        changes.store(1, Ordering::Release);
+
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(top) }).unwrap();
+
+        let layout = core.layout(view).unwrap();
+        let snapshot = layout.snapshot().unwrap();
+        let coverage = snapshot.coverage.vertical_range().unwrap();
+        assert_eq!(generation.load(Ordering::Acquire), 2);
+        assert!((layout.viewport_top() - top).abs() < 0.05);
+        assert!(coverage.start <= top && top + layout.height() <= coverage.end);
+        assert!(snapshot.rows.len() < 100);
+        assert!(snapshot.rows[0].text_range.start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
+        assert!(calls.load(Ordering::Acquire) - before_calls <= 12);
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 
     #[test]

@@ -2049,6 +2049,14 @@ impl FormattedDocument {
                 offset: anchor.offset(),
             }));
         }
+        // Empty paragraphs have no owned content leaf. Their neighboring
+        // separator allocations can follow other rows in a permutation, while
+        // the retained paragraph identity names the empty owner itself.
+        if let Some(identity) = anchor.projected_block_boundary().filter(|block| block.block_len() == 0) {
+            if let Some(offset) = self.resolve_block_boundary(identity) {
+                return Ok(MappingOutcome::Moved(TextPoint { document, revision: self.revision, offset }));
+            }
+        }
         if let Some((preceding, following)) = anchor.projected_leaf_boundaries() {
             let preceding = preceding.and_then(|identity| self.resolve_leaf_boundary(identity));
             let following = following.and_then(|identity| self.resolve_leaf_boundary(identity));
@@ -2223,6 +2231,99 @@ impl FormattedDocument {
         }
         self.text = persistent;
         Ok(())
+    }
+
+    /// Reuse original contributor storage after a verified source permutation.
+    /// Source lineage proves ownership; the local text comparison guards the
+    /// disposable projection against transplanting an interpreted contributor.
+    pub(crate) fn install_relocated_text_storage(
+        &mut self,
+        previous: &Self,
+        relocations: &[(Range<usize>, usize)],
+    ) -> Result<(), FormattedTextError> {
+        let mut text = self.text.clone();
+        for (source, target) in relocations {
+            if source.is_empty() { continue; }
+            let end = target.checked_add(source.len()).ok_or(FormattedTextError::ArithmeticOverflow)?;
+            if previous.text.slice(source.clone())? != text.slice(*target..end)? {
+                return Err(FormattedTextError::ResultTextMismatch);
+            }
+            let original = previous.text.subrope(source.clone())?;
+            text = text.splice_subrope(*target..end, &original)?;
+        }
+        self.text = text;
+        Ok(())
+    }
+
+    /// Retain complete literal paragraph identities after exact source moves.
+    /// Empty paragraphs use these identities because they have no body slice.
+    /// Donor IDs can survive an ordinary join at a patch edge; retire those
+    /// local duplicates before installing the explicit owner correspondence.
+    pub(crate) fn install_relocated_literal_line_ids(
+        &mut self,
+        previous: &Self,
+        relocations: &[(Range<usize>, usize)],
+        changed: &[Range<usize>],
+        mut next_id: u64,
+    ) -> Result<u64, BlockIdentityError> {
+        if self.literal_encoding.is_none() || previous.literal_encoding.is_none()
+            || self.blocks.len() != self.hard_lines.len() {
+            return Err(BlockIdentityError::InvalidProjection);
+        }
+        let mut assignments = std::collections::BTreeMap::new();
+        let mut transferred = std::collections::HashSet::new();
+        for (source, destination) in relocations {
+            for old in previous.blocks.query_touching(source) {
+                if old.range.start < source.start || old.range.end > source.end
+                    || (!source.is_empty() && old.range.start == source.end) {
+                    continue;
+                }
+                let start = destination.checked_add(old.range.start - source.start)
+                    .ok_or(BlockIdentityError::Exhausted)?;
+                let end = start.checked_add(old.range.len()).ok_or(BlockIdentityError::Exhausted)?;
+                let Some(index) = self.blocks.index_touching_point(start) else { continue; };
+                let Some(target) = self.blocks.get(index).filter(|block| block.range == (start..end)) else { continue; };
+                if target.kind != old.kind { continue; }
+                if !transferred.insert(old.id) || assignments.insert(index, old.id).is_some() {
+                    return Err(BlockIdentityError::InvalidProjection);
+                }
+            }
+        }
+        if assignments.is_empty() { return Ok(next_id); }
+        let mut affected = std::collections::BTreeMap::new();
+        for range in changed {
+            for block in self.blocks.query_touching(range) {
+                let index = self.blocks.index_touching_point(block.range.start)
+                    .ok_or(BlockIdentityError::InvalidProjection)?;
+                affected.insert(index, block);
+            }
+        }
+        for index in assignments.keys() {
+            affected.entry(*index).or_insert(self.blocks.get(*index).ok_or(BlockIdentityError::InvalidProjection)?);
+        }
+        let mut stats = RangeSpliceStats::default();
+        for (index, mut block) in affected {
+            let old_id = block.id;
+            if let Some(id) = assignments.get(&index) {
+                block.id = *id;
+            } else if transferred.contains(&block.id) {
+                block.id = next_id;
+                next_id = next_id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;
+            }
+            if block.id == old_id { continue; }
+            let mut line = self.hard_lines.get(index).ok_or(BlockIdentityError::InvalidProjection)?;
+            if line.range != block.range { return Err(BlockIdentityError::InvalidProjection); }
+            line.id = block.id;
+            self.blocks = self.blocks.splice(index..index + 1, vec![block], 0, 0, &mut stats)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+            self.hard_lines = self.hard_lines.splice(index..index + 1, vec![line], 0, 0, &mut stats)
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+        }
+        super::work_statistics::record(|work| {
+            work.projection_persistent_nodes_visited += stats.nodes_visited;
+            work.projection_persistent_nodes_copied += stats.nodes_copied;
+        });
+        Ok(next_id)
     }
 
     /// Reuse both canonical rope and compatibility flat storage when a full
@@ -3676,6 +3777,96 @@ impl FormattedDocument {
                 pair[0].source.end <= pair[1].source.start
                     && pair[0].formatted.end <= pair[1].formatted.start
             })
+    }
+
+    /// Bounded lookup bands for explicitly relocated source intervals. These
+    /// bands only locate contributors; their exact source mapping decides
+    /// whether their identity can be retained. Whole graphemes at an edge may
+    /// therefore be inspected without expanding the declared source edit.
+    pub(crate) fn source_grapheme_lookup_ranges(
+        &self,
+        source_ranges: impl IntoIterator<Item = Range<usize>>,
+    ) -> Result<Vec<Range<usize>>, FormattedTextError> {
+        let mut ranges = Vec::new();
+        for source in source_ranges {
+            if source.is_empty() { continue; }
+            // A parser may reorder visible children. Query every local source
+            // contributor rather than assuming endpoint order describes all
+            // of them; compact/partial runs still need the nearest-edge band.
+            let contained = self.provenance_contained_in_source(&source);
+            if contained.is_empty() {
+                let Some(start) = self.nearest_text_boundary_for_source(source.start, true) else { continue; };
+                let Some(end) = self.nearest_text_boundary_for_source(source.end, false) else { continue; };
+                ranges.push(start.min(end)..start.max(end));
+            } else {
+                ranges.extend(contained.into_iter().map(|span| span.formatted));
+            }
+        }
+        self.grapheme_lookup_ranges(ranges)
+    }
+
+    /// Merge local contributor inspection bands and include a whole logical
+    /// grapheme at either edge. This does not widen a source edit or selection.
+    pub(crate) fn grapheme_lookup_ranges(
+        &self,
+        ranges: impl IntoIterator<Item = Range<usize>>,
+    ) -> Result<Vec<Range<usize>>, FormattedTextError> {
+        let mut ranges: Vec<_> = ranges.into_iter().collect();
+        for range in &mut ranges {
+            if range.start > range.end || range.end > self.text.byte_len() {
+                return Err(FormattedTextError::InvalidRange {
+                    start: range.start, end: range.end, length: self.text.byte_len(),
+                });
+            }
+            if !self.is_logical_grapheme_boundary(range.start)? {
+                range.start = self.previous_logical_grapheme_boundary(range.start)?.unwrap_or(0);
+            }
+            if !self.is_logical_grapheme_boundary(range.end)? {
+                range.end = self.next_logical_grapheme_boundary(range.end)?.unwrap_or(self.text.byte_len());
+            }
+        }
+        ranges.retain(|range| !range.is_empty());
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            if let Some(previous) = merged.last_mut().filter(|previous| range.start <= previous.end) {
+                previous.end = previous.end.max(range.end);
+            } else {
+                merged.push(range);
+            }
+        }
+        Ok(merged)
+    }
+
+    /// Relocation counterpart of `source_range`, restricted to a whole logical
+    /// grapheme band. It reads canonical rope slices and indexed provenance,
+    /// leaving compatibility text and unrelated provenance unmaterialized.
+    pub(crate) fn source_grapheme_ranges_in(
+        &self,
+        range: &Range<usize>,
+    ) -> Result<Vec<(usize, String, Option<Range<usize>>)>, FormattedTextError> {
+        if range.start > range.end || range.end > self.text.byte_len() {
+            return Err(FormattedTextError::InvalidRange {
+                start: range.start, end: range.end, length: self.text.byte_len(),
+            });
+        }
+        for at in [range.start, range.end] {
+            if !self.is_logical_grapheme_boundary(at)? {
+                return Err(FormattedTextError::NotGraphemeBoundary(at));
+            }
+        }
+        let mut result = Vec::new();
+        let mut at = range.start;
+        while at < range.end {
+            let end = self.next_logical_grapheme_boundary(at)?
+                .ok_or(FormattedTextError::UnicodeBoundaryResolutionFailed)?;
+            if end > range.end { return Err(FormattedTextError::NotGraphemeBoundary(range.end)); }
+            let item = self.text.slice(at..end)?;
+            result.push((at, item, self.source_range(at..end)));
+            at = end;
+        }
+        super::work_statistics::record(|stats| stats.source_relocation_graphemes_visited += result.len());
+        Ok(result)
     }
 
     /// Batch counterpart of `source_range` for a complete reprojection diff.
@@ -7084,6 +7275,27 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn local_contributor_lookup_includes_whole_graphemes_and_reordered_children() {
+        let document = super::super::Document::from_bytes("before\n\ne\u{301} after".as_bytes().to_vec(),
+            super::super::Encoding::Utf8, Format::Markdown).unwrap();
+        let projection = document.projection();
+        let ranges = projection.source_grapheme_lookup_ranges([9..11]).unwrap();
+        assert_eq!(ranges.len(), 1);
+        let items = projection.source_grapheme_ranges_in(&ranges[0]).unwrap();
+        assert_eq!(items, vec![(7, "e\u{301}".into(), Some(8..11))]);
+
+        let base = plain("ABC".into(), Revision(0));
+        let projection = FormattedDocument::from_parts(Revision(0), "ABC".into(), base.blocks().to_vec(),
+            vec![], vec![ProvenanceSpan { formatted: 0..1, source: 2..3 },
+                ProvenanceSpan { formatted: 1..2, source: 0..1 },
+                ProvenanceSpan { formatted: 2..3, source: 1..2 }],
+            vec![], StyleSheet::default(), 0, 3);
+        assert_eq!(projection.source_grapheme_lookup_ranges([0..2]).unwrap(), vec![1..3]);
+        assert_eq!(projection.source_grapheme_ranges_in(&(1..3)).unwrap(),
+            vec![(1, "B".into(), Some(0..1)), (2, "C".into(), Some(1..2))]);
     }
 
     #[test]

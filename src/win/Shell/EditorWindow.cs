@@ -239,13 +239,17 @@ internal sealed partial class EditorWindow : Window
     {
         pane ??= ActivePane;
         if (pane == null || !Panes.Contains(pane)) throw new InvalidOperationException("No room to split the current view.");
-        paneGrid.RequireSplitRoom(pane, Math.Max(28, preferences.StatusFontSize + 12), vertical);
+        paneGrid.RequireSplitRoom(pane, preferences.StatusHeight, vertical);
     }
 
     internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false)
     {
         RequireSplitRoom(pane, vertical);
         var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical);
+        if (pane.View is { } origin) {
+            if (added.View is { } attached) attached.Number(origin.NumberEnabled);
+            else added.InitialNumber = origin.NumberEnabled;
+        }
         SyncPaneOrder();
         paneGrid.UpdateLayout();
         added.InitialHeightLines = lines; added.InitialVerticalSplit = vertical;
@@ -638,8 +642,11 @@ internal sealed partial class EditorWindow : Window
                         case VIEM_EX_FRONTEND_NORMAL: pane.View.Command(request.Text); break;
                         case VIEM_EX_FRONTEND_ARGUMENT: await NavigateArgument(pane, request); break;
                         case VIEM_EX_FRONTEND_READ:
-                            byte[] read = await File.ReadAllBytesAsync(ResolvePath(request.Text));
-                            pane.View.ReadFile(read, r.document_id, r.document_revision, r.hard_line_start); break;
+                            string readPath = request.Text.Length == 0
+                                ? pane.Document.FilePath ?? throw new InvalidOperationException("No file name.")
+                                : ResolvePath(request.Text);
+                            byte[] read = await File.ReadAllBytesAsync(readPath);
+                            pane.View.ReadFile(read, r.document_id, r.document_revision, r.hard_line_start, (r.flags & VIEM_EX_FRONTEND_READ_SOURCE) != 0); break;
                         case VIEM_EX_FRONTEND_SOURCE:
                             if (sourceDepth >= 16) throw new InvalidOperationException("Maximum :source nesting depth reached.");
                             string scriptPath = ResolvePath(request.Text);

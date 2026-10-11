@@ -69,9 +69,10 @@ internal sealed partial class Preferences
     public bool CaretHoverEffect => Get("editing", "caretHoverEffect", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", false);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
-    public Theme Theme => ReadTheme(activeTheme);
-    public string StatusFontFamily => Get("theme", "statusFontFamily", "System") is "System" or "system-ui" ? "Segoe UI" : Get("theme", "statusFontFamily", "Segoe UI");
-    public double StatusFontSize => Get("theme", "statusFontSize", 11d);
+    public Theme Theme {
+        get { var canvas = ReadTheme(activeTheme); var status = StatusStyles.Status;
+            return canvas with { StatusForeground = status.Foreground, StatusBackground = status.Background }; }
+    }
     public uint TextWidth => Get("editing", "textWidth", 80u);
     public byte[] Indentation => Json(root["editing"]?["indentation"], new JsonObject());
     public byte[] Whitespace => Json(root["editing"]?["whitespacePresentation"], new JsonObject());
@@ -96,7 +97,6 @@ internal sealed partial class Preferences
     public static JsonObject ThemeJson(Theme theme) => new()
     {
         ["background"] = ColorJson(theme.Background), ["foreground"] = ColorJson(theme.Foreground),
-        ["statusBackground"] = ColorJson(theme.StatusBackground), ["statusForeground"] = ColorJson(theme.StatusForeground),
         ["caret"] = ColorJson(theme.Caret), ["selection"] = ColorJson(theme.Selection)
     };
     public static JsonObject ColorJson(Color color) => new() { ["red"] = color.R / 255d, ["green"] = color.G / 255d, ["blue"] = color.B / 255d, ["alpha"] = color.A / 255d };
@@ -109,7 +109,7 @@ internal sealed partial class Preferences
             byte Component(string key, double defaultValue) => (byte)Math.Round((color[key]?.GetValue<double>() ?? defaultValue) * 255);
             return Color.FromArgb(Component("alpha", 1), Component("red", 0), Component("green", 0), Component("blue", 0));
         }
-        return new(ColorValue("background", fallback.Background), ColorValue("foreground", fallback.Foreground), ColorValue("statusBackground", fallback.StatusBackground), ColorValue("statusForeground", fallback.StatusForeground), ColorValue("caret", fallback.Caret), ColorValue("selection", fallback.Selection));
+        return new(ColorValue("background", fallback.Background), ColorValue("foreground", fallback.Foreground), fallback.StatusBackground, fallback.StatusForeground, ColorValue("caret", fallback.Caret), ColorValue("selection", fallback.Selection));
     }
     private static void Validate(JsonObject value)
     {

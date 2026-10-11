@@ -168,7 +168,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     let window = try XCTUnwrap(controller.window)
     window.setContentSize(NSSize(width: 700, height: 500))
     XCTAssertEqual(controller.editorSurface.viewController.view.frame.width, 700, accuracy: 0.5)
-    XCTAssertEqual(controller.editorSurface.viewController.view.frame.height, 475, accuracy: 0.5)
+    XCTAssertEqual(controller.editorSurface.viewController.view.frame.height, 500 - EVStatusBarView.preferredHeight, accuracy: 0.5)
     window.orderOut(nil)
     controller.showWindow(nil)
 
@@ -176,7 +176,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     XCTAssertEqual(window.contentLayoutRect.height, 500, accuracy: 0.5)
     let geometry = try XCTUnwrap(controller.currentGeometry)
     XCTAssertEqual(geometry.editor.width, 700, accuracy: 0.5)
-    XCTAssertEqual(geometry.editor.height, 475, accuracy: 0.5)
+    XCTAssertEqual(geometry.editor.height, 500 - EVStatusBarView.preferredHeight, accuracy: 0.5)
   }
 
   func testInitialShowRestoresStoredFrameAndRecordsLaterResize() throws {

@@ -140,7 +140,7 @@ impl FormattedDocument {
             if let Some(indices) = starts.get(&point) {
                 for index in indices {
                     match &spans[*index].application {
-                        StyleApplication::Named(id) if !id.is_internal() => {
+                        StyleApplication::Named(id) if !id.is_internal_in(crate::document::StyleNamespace::Character) => {
                             active_characters.insert(*index, id.clone());
                         }
 

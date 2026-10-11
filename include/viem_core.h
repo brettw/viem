@@ -203,8 +203,6 @@ typedef struct ViemFormattedPointInfoV1 {
   uint64_t utf8_offset;
   uint64_t utf16_offset;
   uint64_t hard_line_index;
-  /* For READ, hard_line_start is the one-based line after which to insert;
-     zero inserts before the first line. It is not a selected range. */
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t grapheme_column;
@@ -437,8 +435,10 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_FRONTEND_HAS_COUNT (1u << 6)
 #define VIEM_EX_FRONTEND_WRITE_FIRST (1u << 7)
 #define VIEM_EX_FRONTEND_HAS_LINE (1u << 8)
+#define VIEM_EX_FRONTEND_READ_SOURCE (1u << 14)
 
 #define VIEM_EX_OPTION_WRAP 1u
+#define VIEM_EX_OPTION_NUMBER 24u
 #define VIEM_EX_OPTION_LINEBREAK 2u
 #define VIEM_EX_OPTION_FILE_FORMAT 3u
 #define VIEM_EX_OPTION_FILE_FORMATS 4u
@@ -598,8 +598,11 @@ typedef struct ViemExTextLineV1 {
 /*
  * One raw Ex request in execution order. text references the copied UTF-8
  * arena and is an optional path, :normal command string, or concatenated
- * Unicode mark/register-name sequence according to kind. Ranges are inclusive
- * zero-based hard-line indices. Option indices address the option array.
+ * Unicode mark/register-name sequence according to kind. PRINT/NORMAL ranges
+ * carry inclusive zero-based addressed-unit indices. WRITE/WRITE_QUIT carry
+ * exact half-open source-byte bounds. For READ, hard_line_start is an insertion
+ * offset in source bytes when READ_SOURCE is set, otherwise formatted UTF-8.
+ * Option indices address the option array.
  * first_payload/payload_count address the mark, register, jump, or text-line
  * array selected by the info-request kind.
  */
@@ -1034,6 +1037,7 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_ROLE_LIST 5u
 #define VIEM_STYLE_ROLE_LIST_ITEM 6u
 #define VIEM_STYLE_ROLE_TABLE 7u
+#define VIEM_STYLE_ROLE_CONTAINER 8u
 
 
 #define VIEM_STYLE_ORIGIN_GENERATED_CONFIGURATION 2u
@@ -1046,6 +1050,10 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_DEFINITION_INTERNAL_LIST (1u << 6)
 /* A generated Code syntax definition that has not been edited or persisted. */
 #define VIEM_STYLE_DEFINITION_IMPLICIT (1u << 7)
+/* Trusted core paragraph definitions used only by the line-number gutter. */
+#define VIEM_STYLE_DEFINITION_LINE_NUMBER (1u << 8)
+/* The current-line variant also carries LINE_NUMBER and INTERNAL. */
+#define VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER (1u << 9)
 
 #define VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS (1u << 0)
 #define VIEM_STYLE_CAPABILITY_EDIT_PARENT (1u << 1)
@@ -2502,7 +2510,7 @@ ViemStatus viem_core_view_set_selection_origin(
     ViemCoreHandle core, ViemViewId view, uint32_t origin, uint32_t return_mode,
     ViemCoreOutcomeV1 *out_outcome);
 
-/* Enter Normal mode and reveal the first nonblank grapheme on a logical hard
+/* Enter Normal mode and reveal the first nonblank grapheme on a physical source
  * line in the exact document revision. Lines are one-based; zero selects the
  * first and excess (including UINT64_MAX) selects the last. Pending input is
  * cancelled without executing it, changing source, or recording a macro key. */
@@ -2599,6 +2607,42 @@ typedef struct ViemViewLineLocationV1 {
 #define VIEM_VIEW_LINE_LOCATION_V1_SIZE ((uint32_t)sizeof(ViemViewLineLocationV1))
 /* One-based fields; line==0 means use exact hard_line/fragment fallback. */
 ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, ViemViewLineLocationV1 *out_location);
+
+
+#define VIEM_LINE_NUMBER_SNAPSHOT_ENABLED 1u
+#define VIEM_LINE_NUMBER_REGION_ESTIMATED 1u
+/* This displayed representative owns the visual row containing the caret. */
+#define VIEM_LINE_NUMBER_REGION_CURRENT (1u << 1)
+typedef struct ViemLineNumberSnapshotInfoV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  ViemLayoutSnapshotIdentityV1 identity;
+  ViemLayoutRectV1 viewport;
+  uint64_t source_line_count;
+  uint64_t current_source_line;
+  uint64_t region_count;
+} ViemLineNumberSnapshotInfoV1;
+#define VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE ((uint32_t)sizeof(ViemLineNumberSnapshotInfoV1))
+typedef struct ViemLineNumberRegionV1 {
+  uint64_t source_line;
+  uint32_t flags;
+  uint32_t reserved;
+  float top;
+  float bottom;
+} ViemLineNumberRegionV1;
+/* View-local native preference. It changes no source, history or layout. */
+ViemStatus viem_core_view_number(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
+ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
+/* One-based physical source lines independent of command line mode. Regions
+ * intersect the viewport but retain their full wrapped line bounds. Entirely
+ * hidden syntax has no independent glyph band; visible folded source lines
+ * share their rendered band. ESTIMATED marks huge partially measured lines.
+ * These queries perform no shaping or text materialization. */
+ViemStatus viem_core_view_line_number_snapshot_info(ViemCoreHandle core, ViemViewId view,
+                                                  ViemLineNumberSnapshotInfoV1 *out_info);
+ViemStatus viem_core_view_copy_line_number_regions(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, const ViemLayoutRectV1 *expected_viewport,
+    ViemLineNumberRegionV1 *regions, uint64_t capacity, uint64_t *out_count);
 
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
@@ -2830,7 +2874,8 @@ ViemStatus viem_core_view_edit_command_line(ViemCoreHandle core, ViemViewId view
 
 ViemStatus viem_core_view_set_markdown_source_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetMarkdownSourceV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
 ViemStatus viem_core_view_set_encoding_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetEncodingV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
-ViemStatus viem_core_copy_hard_line_source_bytes(ViemCoreHandle core, uint64_t document, uint64_t revision, uint64_t first_line, uint64_t end_line, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
+/* Copy exact half-open source-byte bounds from the named source revision. */
+ViemStatus viem_core_copy_source_range_bytes(ViemCoreHandle core, uint64_t document, uint64_t revision, uint64_t source_start, uint64_t source_end, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
 
 /* Versioned clipboard JSON exports use the ordinary two-call buffer contract.
  * Ranges are exact formatted snapshots. Effects remain valid after mutations.
@@ -2989,7 +3034,7 @@ ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *outpu
 #define VIEM_SOURCE_MAX_COMMANDS 10000u
 #define VIEM_SOURCE_MAX_DEPTH 16u
 ViemStatus viem_core_view_read_file(ViemCoreHandle core, ViemViewId view,
-    uint64_t document_id, uint64_t revision, uint64_t after_line,
+    uint64_t document_id, uint64_t revision, uint32_t source, uint64_t after_offset,
     const uint8_t *bytes, uint64_t length, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_source_line(ViemCoreHandle core, ViemViewId view,
     uint32_t depth, const uint8_t *text, uint64_t length,

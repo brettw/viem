@@ -11,6 +11,24 @@ final class EVWindowCommandTests: XCTestCase {
     override var acceptsFirstResponder: Bool { true }
   }
 
+  /// SwiftPM can run behind another foreground application. Model key focus
+  /// as the editor fixtures do while preserving native event dispatch.
+  private final class PointerTestWindow: NSWindow {
+    private var keyForTesting = false
+    override var isKeyWindow: Bool { keyForTesting }
+    // Match EVDocumentWindow: SwiftPM's host can have no assigned screen while
+    // ordering, when NSWindow's default would collapse to its fitting minimum.
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+      guard let screen else { return frameRect }
+      return super.constrainFrameRect(frameRect, to: screen)
+    }
+    func makeKeyForTesting() {
+      guard !keyForTesting else { return }
+      keyForTesting = true
+      NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: self)
+    }
+  }
+
   private final class Surface: EVEditorSurface {
     let viewController: NSViewController = {
       let controller = NSViewController()
@@ -362,11 +380,16 @@ final class EVWindowCommandTests: XCTestCase {
       application.sendEvent(event)
     }
     window.contentView?.layoutSubtreeIfNeeded()
+    (window as? PointerTestWindow)?.makeKeyForTesting()
+    // Reassert the declared fixture after pending initial-ordering events, as
+    // makeWindow does for document windows after showWindow.
+    window.setContentSize(NSSize(width: 600, height: 600))
+    window.contentView?.layoutSubtreeIfNeeded()
   }
 
   /// Drive native window hit-testing, recognizers and deferred button clicks.
   /// Queue trailing events before mouseDown because controls can enter tracking.
-  private func pointerGesture(window: NSWindow, points: [NSPoint]) throws {
+  private func dispatchPointerGesture(window: NSWindow, points: [NSPoint]) throws {
     let events = try points.enumerated().map { index, point in
       try XCTUnwrap(NSEvent.mouseEvent(
         with: index == 0 ? .leftMouseDown : index == points.count - 1 ? .leftMouseUp : .leftMouseDragged,
@@ -397,11 +420,22 @@ final class EVWindowCommandTests: XCTestCase {
     RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
   }
 
-  func testEyeClicksAndDragsUseTheNativeGesturePath() throws {
+  private func pointerGesture(window: NSWindow, points: [NSPoint]) async throws {
+    try dispatchPointerGesture(window: window, points: points)
+    // AppKit releases deferred clicks on the main queue. A nested run loop in
+    // a synchronous main-actor test cannot drain that queue; yield the actor as
+    // the native measurement-click fixtures do.
+    await withCheckedContinuation { continuation in
+      DispatchQueue.main.async { continuation.resume() }
+    }
+  }
+
+  func testEyeClicksAndDragsUseTheNativeGesturePath() async throws {
     let container = try stack(panes: 3)
-    let window = NSWindow(contentRect: container.view.bounds,
+    let window = PointerTestWindow(contentRect: container.view.bounds,
       styleMask: [.titled, .resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.tabbingMode = .disallowed
     container.view.translatesAutoresizingMaskIntoConstraints = false
     window.contentView = container.view
     window.setContentSize(NSSize(width: 600, height: 600))
@@ -419,14 +453,15 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertTrue(button.isEnabled)
     let hitPoint = container.view.superview?.convert(eye, from: nil) ?? eye
     XCTAssertTrue(container.view.hitTest(hitPoint) === button)
-    XCTAssertEqual(container.view.bounds.height, 600, accuracy: 1)
-    try pointerGesture(window: window, points: [eye, eye])
+    XCTAssertEqual(container.view.bounds.height, 600, accuracy: 1,
+      "window frame: \(window.frame), content frame: \(container.view.frame), root bounds: \(container.view.bounds), screen: \(String(describing: window.screen))")
+    try await pointerGesture(window: window, points: [eye, eye])
     XCTAssertEqual(surface.statusClicks, 1, "a plain eye click toggles line mode (active: \(NSApplication.shared.isActive), key: \(window.isKeyWindow))")
-    try pointerGesture(window: window, points: [eye, NSPoint(x: eye.x, y: eye.y - 40), NSPoint(x: eye.x, y: eye.y - 40)])
+    try await pointerGesture(window: window, points: [eye, NSPoint(x: eye.x, y: eye.y - 40), NSPoint(x: eye.x, y: eye.y - 40)])
     XCTAssertEqual(surface.statusClicks, 1, "dragging the eye must consume its click")
     XCTAssertEqual(barTops(container)[0] - start[0], 40, accuracy: 1)
     let movedEye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-    try pointerGesture(window: window, points: [movedEye,
+    try await pointerGesture(window: window, points: [movedEye,
       NSPoint(x: movedEye.x, y: movedEye.y - 800),
       NSPoint(x: movedEye.x, y: movedEye.y - 850),
       NSPoint(x: movedEye.x, y: movedEye.y - 838),
@@ -439,13 +474,13 @@ final class EVWindowCommandTests: XCTestCase {
     let bottomButton = try XCTUnwrap(bottom.statusBar.subviews.compactMap { $0 as? NSButton }.first)
     let bottomEye = bottomButton.convert(NSPoint(x: bottomButton.bounds.midX, y: bottomButton.bounds.midY), to: nil)
     let beforeBottom = barTops(container)
-    try pointerGesture(window: window, points: [bottomEye, bottomEye])
+    try await pointerGesture(window: window, points: [bottomEye, bottomEye])
     XCTAssertEqual(bottomSurface.statusClicks, 1)
     XCTAssertEqual(barTops(container), beforeBottom)
     checkBars(container)
   }
 
-  func testVerticalNativeSplittersPushReverseAndStatusClicksFocusWithoutDragFocus() throws {
+  func testVerticalNativeSplittersPushReverseAndStatusClicksFocusWithoutDragFocus() async throws {
     let container = try stack(panes: 1)
     let first = container.panes[0]
     let second = EVDocumentContentViewController(editorSurface: Surface())
@@ -455,25 +490,34 @@ final class EVWindowCommandTests: XCTestCase {
     container.perform(.setWidth(columns: nil))
     try container.insert(third, splitting: second, vertical: true)
     container.perform(.equalizeHeights)
-    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled,.resizable], backing: .buffered, defer: false)
+    let window = PointerTestWindow(contentRect: container.view.bounds, styleMask: [.titled,.resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.tabbingMode = .disallowed
     container.view.translatesAutoresizingMaskIntoConstraints = false
     window.contentView = container.view
     window.setContentSize(NSSize(width: 600,height: 600))
     window.makeKeyAndOrderFront(nil)
     defer { window.close() }
     prepareForPointerEvents(in: window)
+    XCTAssertEqual(container.view.bounds.size, NSSize(width: 600, height: 600),
+      "window frame: \(window.frame), content frame: \(container.view.frame), root bounds: \(container.view.bounds), screen: \(String(describing: window.screen))")
     XCTAssertTrue(container.panes.allSatisfy { $0.view.frame.width >= 100 })
     XCTAssertTrue(container.panes.allSatisfy { $0.statusBar.dragDidMove == nil })
     let divider = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.sorted { $0.frame.minX < $1.frame.minX }.first)
     XCTAssertEqual(divider.frame.width,5)
     let grab = divider.convert(NSPoint(x:2.5,y:divider.bounds.midY),to:nil)
-    var sawDragCursor = false
+    var dragCursorTransitions: [Bool] = []
     let move = divider.dragDidMove
-    divider.dragDidMove = { delta in sawDragCursor = NSCursor.current == NSCursor.resizeLeftRight; move?(delta) }
+    divider.dragDidMove = { delta in
+      dragCursorTransitions.append(NSCursor.current == NSCursor.resizeLeftRight)
+      move?(delta)
+    }
     container.focusPane(at: 2)
-    try pointerGesture(window:window,points:[grab,NSPoint(x:grab.x+800,y:grab.y),NSPoint(x:grab.x+850,y:grab.y),NSPoint(x:grab.x+838,y:grab.y),NSPoint(x:grab.x+838,y:grab.y)])
-    XCTAssertTrue(sawDragCursor)
+    try await pointerGesture(window:window,points:[grab,NSPoint(x:grab.x+800,y:grab.y),NSPoint(x:grab.x+850,y:grab.y),NSPoint(x:grab.x+838,y:grab.y),NSPoint(x:grab.x+838,y:grab.y)])
+    // Assert the transition into dragging. Later cursor-rectangle updates may
+    // reflect the real pointer's location while synthetic moves resize views.
+    XCTAssertEqual(dragCursorTransitions.first, true,
+      "The first native drag must install the resize cursor; observed: \(dragCursorTransitions)")
     XCTAssertTrue(container.activePane === third,"a splitter drag preserves focus")
     XCTAssertEqual(first.view.frame.width,378,accuracy:1)
     XCTAssertEqual(second.view.frame.width,112,accuracy:1)
@@ -484,40 +528,43 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertThrowsError(try container.requireSplitRoom(in:first,vertical:true))
     container.view.layoutSubtreeIfNeeded()
     let statusPoint = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
-    try pointerGesture(window:window,points:[statusPoint,statusPoint])
+    try await pointerGesture(window:window,points:[statusPoint,statusPoint])
     XCTAssertTrue(container.activePane === second,"a plain status background click focuses its buffer")
     let below = EVDocumentContentViewController(editorSurface:Surface())
     try container.insert(below,splitting:second)
     container.focusPane(at:container.panes.firstIndex(where:{$0 === third})!)
     let point = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
-    var upDownCursor = false
+    var statusCursorTransitions: [Bool] = []
     let statusMove = second.statusBar.dragDidMove
-    second.statusBar.dragDidMove = { delta in upDownCursor = NSCursor.current == NSCursor.resizeUpDown; statusMove?(delta) }
-    try pointerGesture(window:window,points:[point,NSPoint(x:point.x,y:point.y-30),NSPoint(x:point.x,y:point.y-30)])
-    XCTAssertTrue(upDownCursor)
+    second.statusBar.dragDidMove = { delta in
+      statusCursorTransitions.append(NSCursor.current == NSCursor.resizeUpDown)
+      statusMove?(delta)
+    }
+    try await pointerGesture(window:window,points:[point,NSPoint(x:point.x,y:point.y-30),NSPoint(x:point.x,y:point.y-30)])
+    XCTAssertEqual(statusCursorTransitions.first, true,
+      "The first native drag must install the resize cursor; observed: \(statusCursorTransitions)")
     XCTAssertTrue(container.activePane === third,"a status-bar drag preserves focus")
     XCTAssertNil(below.statusBar.dragDidMove)
   }
 
   func testVerticalSplitStatusHeightsAndTextAlignmentSurviveNarrowingAndWidening() throws {
     func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
-    let appearance = EVThemeStore.shared.theme
-    defer { EVThemeStore.shared.update(appearance) }
+    let previousStyles = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
+    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previousStyles, named: "text") }
     let container = try stack(panes: 1)
     let first = container.panes[0]
     let second = EVDocumentContentViewController(editorSurface: Surface())
     try container.insert(second, splitting: first, vertical: true)
     let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
     window.isReleasedWhenClosed = false
+    window.tabbingMode = .disallowed
     window.contentView = container.view
     window.setContentSize(NSSize(width: 840, height: 600))
     window.makeKeyAndOrderFront(nil)
     defer { window.close() }
     container.focusPane(at: 0)
     for (family, size) in [("System", 11.0), ("Georgia", 16), ("Helvetica", 24)] {
-      var theme = appearance
-      theme.statusFontFamily = family; theme.statusFontSize = size
-      EVThemeStore.shared.update(theme)
+      try editStatusStyle(character: ["font_families": [family], "size": size])
       for columns in [20, 50, 12, 70, 20] {
         container.perform(.setWidth(columns: columns))
         container.view.layoutSubtreeIfNeeded()
@@ -526,10 +573,7 @@ final class EVWindowCommandTests: XCTestCase {
           let bar = pane.statusBar
           XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight, accuracy: 0.01)
           XCTAssertEqual(bar.bounds.height, bar.frame.height, accuracy: 0.01)
-          let separator = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSBox }.first)
-          let separatorRect = separator.alignmentRect(forFrame: separator.convert(separator.bounds, to: bar))
-          XCTAssertEqual(separatorRect.height, 1, accuracy: 0.01)
-          XCTAssertEqual(separatorRect.maxY, bar.bounds.maxY, accuracy: 0.01)
+          XCTAssertEqual(EVThemeStore.shared.chromeStyles.statusBar.topBorder.width, 1)
           let button = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first)
           let buttonText = try XCTUnwrap(button.cell).titleRect(forBounds: button.bounds)
           let buttonY = button.convert(buttonText, to: bar).midY

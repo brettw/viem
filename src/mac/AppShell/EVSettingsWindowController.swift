@@ -14,18 +14,6 @@ private final class EVThemeSettingsStack: NSStackView {
 private final class EVThemeSettingsSection: NSView {}
 
 @MainActor
-private final class EVThemeFontSizeStepper: NSStepper {
-  override var acceptsFirstResponder: Bool { true }
-
-  override func mouseDown(with event: NSEvent) {
-    guard isEnabled else { return }
-    // Commit the field's pending value before native tracking increments it.
-    window?.makeFirstResponder(self)
-    super.mouseDown(with: event)
-  }
-}
-
-@MainActor
 final class EVSettingsWindowController: NSWindowController, NSTableViewDataSource,
   NSTableViewDelegate, NSTextFieldDelegate
 {
@@ -51,8 +39,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private weak var visibleWhitespaceCheckbox: NSButton?
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
-  private let fontSelect = NSPopUpButton()
-  private let fontSizeStepper = EVThemeFontSizeStepper()
   private let preview = EVThemePreview()
   private let persistenceDiagnostic = NSTextField(wrappingLabelWithString: "")
   private var selectedCategory = 1
@@ -338,38 +324,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     colors.columnSpacing = 14
     colors.rowSpacing = 10
     stack.addArrangedSubview(section("Editor", views: [colors]))
-    let statusColors = NSGridView(views: [
-      [
-        label("Text"), colorWell(4, "Status text color"), label("Background"),
-        colorWell(5, "Status background color"),
-      ]
-    ])
-    statusColors.columnSpacing = 14
-    fontSelect.removeAllItems()
-    fontSelect.addItems(
-      withTitles: ["System"] + NSFontManager.shared.availableFontFamilies.sorted())
-    fontSelect.target = self
-    fontSelect.action = #selector(changeFont)
-    fontSelect.setAccessibilityLabel("Status font family")
-    fontSelect.widthAnchor.constraint(equalToConstant: 210).isActive = true
-    fontSizeStepper.controlSize = .small
-    fontSizeStepper.setContentCompressionResistancePriority(.required, for: .horizontal)
-    fontSizeStepper.valueWraps = false
-    fontSizeStepper.autorepeat = true
-    fontSizeStepper.isContinuous = true
-    fontSizeStepper.increment = 1
-    fontSizeStepper.minValue = 8
-    fontSizeStepper.maxValue = 32
-    fontSizeStepper.target = self
-    fontSizeStepper.action = #selector(changeFontSize(_:))
-    fontSizeStepper.setAccessibilityLabel("Adjust status font size")
-    let size = NSStackView(views: [numberField(6, "Status font size"), fontSizeStepper])
-    size.spacing = 3
-    let fonts = NSStackView(views: [
-      label("Font"), fontSelect, size, label("pt"),
-    ])
-    fonts.spacing = 10
-    stack.addArrangedSubview(section("Status bar", views: [statusColors, fonts]))
+    let chromeHint = NSTextField(wrappingLabelWithString:
+      "Status bar appearance is configured by the Status bar and Status bar command styles in the Text theme stylesheet.")
+    stack.addArrangedSubview(section("Status bar", views: [chromeHint]))
     for child in stack.arrangedSubviews where child is EVThemeSettingsSection {
       child.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
     }
@@ -685,17 +642,13 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     deleteTheme.isEnabled = store.currentThemeName != nil
     let theme = store.theme
     let colors = [
-      theme.foreground, theme.background, theme.caret, theme.selection, theme.statusForeground,
-      theme.statusBackground,
+      theme.foreground, theme.background, theme.caret, theme.selection,
     ]
     for (tag, well) in wells { well.color = colors[tag].color }
-    fields[6]?.doubleValue = theme.statusFontSize
-    fontSizeStepper.doubleValue = theme.statusFontSize
     let margins = viewPreferences.margins
     for (index, value) in [
       margins.top, margins.left, margins.bottom, margins.right,
     ].enumerated() { fields[10 + index]?.doubleValue = value }
-    fontSelect.selectItem(withTitle: theme.statusFontFamily)
     preview.theme = theme
   }
   @objc private func restoreViewMargins() {
@@ -728,16 +681,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
-  @objc private func changeFont() {
-    var theme = store.theme
-    theme.statusFontFamily = fontSelect.titleOfSelectedItem ?? "System"
-    store.update(theme)
-  }
-  @objc private func changeFontSize(_ sender: NSStepper) {
-    guard let field = fields[6] else { return }
-    field.doubleValue = sender.doubleValue
-    changeNumber(field)
-  }
   @objc private func changeColor(_ sender: NSColorWell) {
     var theme = store.theme
     let color = EVThemeColor(sender.color)
@@ -746,8 +689,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     case 1: theme.background = color
     case 2: theme.caret = color
     case 3: theme.selection = color
-    case 4: theme.statusForeground = color
-    default: theme.statusBackground = color
+    default: return
     }
     store.update(theme)
   }
@@ -756,20 +698,14 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       refresh()
       return
     }
-    if sender.tag == 6 {
-      var theme = store.theme
-      theme.statusFontSize = value
-      store.update(theme)
-    } else {
-      var margins = viewPreferences.margins
-      switch sender.tag {
-      case 10: margins.top = value
-      case 11: margins.left = value
-      case 12: margins.bottom = value
-      default: margins.right = value
-      }
-      viewPreferences.setMargins(margins)
+    var margins = viewPreferences.margins
+    switch sender.tag {
+    case 10: margins.top = value
+    case 11: margins.left = value
+    case 12: margins.bottom = value
+    default: margins.right = value
     }
+    viewPreferences.setMargins(margins)
     refresh()
   }
 }
@@ -799,10 +735,11 @@ private final class EVThemePreview: NSView {
     theme.caret.color.setFill()
     NSRect(x: x + 195, y: y, width: 11, height: 22).fill()
     let status = NSRect(x: 0, y: bounds.height - 26, width: bounds.width, height: 26)
-    theme.statusBackground.color.setFill()
+    let chrome = EVThemeStore.shared.chromeStyles.statusBar
+    (chrome.background ?? theme.background.color).setFill()
     status.fill()
     ("NORMAL     ◉ Ln 1, Col 1     UTF-8    Markdown" as NSString).draw(
       at: NSPoint(x: 12, y: status.minY + 6),
-      withAttributes: [.font: theme.statusFont, .foregroundColor: theme.statusForeground.color])
+      withAttributes: [.font: chrome.font, .foregroundColor: chrome.foreground])
   }
 }

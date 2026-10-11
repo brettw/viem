@@ -104,6 +104,17 @@ public final class EVDocumentWindowPlacement {
       && frame.maxX.isFinite && frame.maxY.isFinite
   }
 
+  /// Reserve gutter chrome while preserving content width first, then its
+  /// screen position. Growing from the left keeps the content in place; an
+  /// unavailable left strip requires moving the content to the right.
+  static func frameForGutterChange(_ frame: NSRect, delta: CGFloat,
+                                  screen: NSRect, minimumWidth: CGFloat) -> NSRect {
+    guard isValid(frame), isValid(screen), delta.isFinite else { return frame }
+    let width = min(screen.width, max(minimumWidth, frame.width + delta))
+    let x = min(max(frame.minX - delta, screen.minX), screen.maxX - width)
+    return NSRect(x: x, y: frame.minY, width: width, height: frame.height)
+  }
+
   /// Preserve both dimensions whenever translation alone can fit the frame.
   /// An unavailable display falls back to the nearest remaining visible frame.
   static func fitting(_ frame: NSRect, to screens: [NSRect]) -> NSRect {

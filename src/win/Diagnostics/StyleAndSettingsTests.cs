@@ -248,14 +248,15 @@ internal static class StyleAndSettingsTests
         string? priorTheme = preferences.SelectedTheme, priorPath = preferences.SelectedThemePath;
         string paperPath = preferences.ThemeFiles.Single(file => file.Name == "Paper").Path; byte[] priorPaper = File.ReadAllBytes(paperPath);
         string discoveredThemePath = Path.Combine(preferences.ThemesDirectory, "Discovered-" + Guid.NewGuid().ToString("N")[..8] + ".json");
-        var theme = preferences.Theme; string font = preferences.Get("theme", "statusFontFamily", "System"); double size = preferences.StatusFontSize;
+        var theme = preferences.Theme;
         byte[] source = pane.Document.Source(pane.Document.State.document_revision);
         bool priorMarkdownAutodetect = preferences.MarkdownAutodetect;
         try {
             Check(settings.Categories.Items.Count == 3 && settings.Categories.SelectedIndex == 1 && settings.CurrentPage.Visibility == Visibility.Visible, "settings opens Theme beside a three-category sidebar without Code");
             await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(settings), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".settings.png");
-            Check(settings.StatusFont.ActualHeight is > 0 and <= 28 && settings.NewTheme.ActualHeight <= 32, $"separate settings window inherits compact control density ({settings.StatusFont.ActualHeight}, {settings.NewTheme.ActualHeight})");
-            Check(Children<TextBox>(settings.StatusFont).Any(t => t.Text == settings.StatusFont.Text && t.Text.Length > 0), "status font appears in the editable picker on first opening");
+            Check(settings.NewTheme.ActualHeight is > 0 and <= 32, "separate settings window inherits compact control density");
+            Check(!Children<ComboBox>(settings.RootControl).Any(control => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(control) == "Status font"),
+                "Settings retires the status font picker in favor of built-in styles");
             File.WriteAllBytes(discoveredThemePath, priorPaper);
             byte[] beforeDiscovery = File.ReadAllBytes(Path.Combine(preferences.DirectoryPath, "config.json"));
             settings.ThemePicker.IsDropDownOpen = true; await Task.Delay(100);
@@ -271,23 +272,17 @@ internal static class StyleAndSettingsTests
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Path == discoveredThemePath);
             Check(settings.DeleteTheme.Content as string == "Delete", "user themes offer Delete in Settings");
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper");
-            settings.StatusFont.SelectedItem = "Consolas"; settings.StatusSize.Value = 14; await Task.Delay(100);
-            Check(preferences.StatusFontFamily == "Consolas" && preferences.StatusFontSize == 14
+            var statusStyles = System.Text.Json.Nodes.JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT))!;
+            var status = statusStyles["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Status bar")!;
+            status["character"]!["font_families"] = new System.Text.Json.Nodes.JsonArray("Consolas");
+            status["character"]!["size"] = 14;
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, System.Text.Encoding.UTF8.GetBytes(statusStyles.ToJsonString())); await Task.Delay(100);
+            Check(preferences.StatusStyles.Status.Family == "Consolas" && preferences.StatusStyles.Status.Size == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
-            Check(settings.StatusSize.SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Compact
-                && settings.StatusSize.SmallChange == 1 && settings.StatusSize.LargeChange == 10,
-                "theme font size uses the style inspector's native numeric arrows and steps");
-            settings.StatusSize.Focus(FocusState.Keyboard);
-            await InputRoutingTests.Key(VirtualKey.Up); await Task.Delay(100);
-            Check(preferences.StatusFontSize == 15 && settings.PreviewStatus.FontSize == 15,
-                "native theme font-size increment updates preferences and preview");
-            await InputRoutingTests.Key(VirtualKey.Down); await Task.Delay(100);
-            Check(preferences.StatusFontSize == 14 && settings.PreviewStatus.FontSize == 14,
-                "native theme font-size decrement updates preferences and preview");
             settings.ThemePicker.SelectedItem = "Default"; await Task.Delay(100);
             Check(!settings.DeleteTheme.IsEnabled, "Default has no Revert or Delete action");
             Check(StyleDefaultsLoadingTests.MatchesBuiltInTheme(preferences)
-                && settings.StatusSize.Value == preferences.StatusFontSize, "Default selection restores built-in colors and status typography");
+                && settings.PreviewStatus.FontSize == preferences.StatusStyles.Status.Size, "Default selection restores built-in colors and status typography");
             for (int index = 0; index < 3; index++) {
                 settings.Categories.SelectedIndex = index; await Task.Delay(100);
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
@@ -306,7 +301,7 @@ internal static class StyleAndSettingsTests
         finally {
             settings.Close(); File.Delete(discoveredThemePath); Preferences.AtomicWrite(paperPath, priorPaper);
             preferences.Set("editing", "markdownAutodetect", priorMarkdownAutodetect);
-            var json = Preferences.ThemeJson(theme); json["statusFontFamily"] = font; json["statusFontSize"] = size;
+            var json = Preferences.ThemeJson(theme);
             preferences.SelectTheme(priorTheme, priorPath);
             preferences.SetSections(new() { ["theme"] = json }); window.Activate(); pane.FocusEditor();
         }

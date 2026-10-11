@@ -83,7 +83,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
         }
     }
 
-    func testInitialLineUsesLogicalLinesAndClampsWithoutEditing() throws {
+    func testInitialLineUsesPhysicalLinesAndClampsWithoutEditing() throws {
         let source = "first\n  βeta\nlast"
         for (line, expected) in [(UInt64(2), UInt64(8)), (0, 0), (999, 14), (UInt64.max, 14)] {
             let backend = EVCoreDocumentBackend()

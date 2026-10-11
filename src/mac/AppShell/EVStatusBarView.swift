@@ -1,29 +1,43 @@
 import AppKit
+import CoreText
+import ViemCoreTextProvider
 
 @MainActor
 public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public static var preferredHeight: CGFloat {
-    max(25, ceil(EVThemeStore.shared.theme.statusFontSize + 14))
+    let style = EVThemeStore.shared.chromeStyles.statusBar
+    return ceil(style.fontHeight + style.padding.top + style.padding.bottom
+      + style.topBorder.width + style.bottomBorder.width)
   }
 
-  /// The platform's standard window corner radius. AppKit exposes no API for
-  /// it, so it is stated here; the inset policy below is what matters.
-  public static let windowCornerRadius: CGFloat = 16
-
-  /// Width of the strip a rounded corner clips by more than one point.
-  ///
-  /// At horizontal distance `x` from the edge, a corner of radius `r` has
-  /// removed `r - sqrt(r² - (r - x)²)` of height. Solving that for one point
-  /// gives `x = r - sqrt(2r - 1)`. Insetting by it keeps text clear of the
-  /// curve without wasting the whole radius.
-  public static func cornerInset(forRadius radius: CGFloat) -> CGFloat {
-    guard radius > 1 else { return 0 }
-    return max(0, radius - (2 * radius - 1).squareRoot())
+  /// Shared status text inset comes from the style box.
+  public static var contentInset: CGFloat {
+    let style = EVThemeStore.shared.chromeStyles.statusBar
+    return style.padding.left + style.leftBorder.width
   }
-
-  /// Every status line uses the same inset, including panes in the middle of a
-  /// window whose corners are square, so that all of them align.
-  public static var contentInset: CGFloat { cornerInset(forRadius: windowCornerRadius) }
+  private var barStyle: EVChromeStyle { EVThemeStore.shared.chromeStyles.statusBar }
+  private var promptStyle: EVChromeStyle { EVThemeStore.shared.chromeStyles.statusCommand }
+  private var barTextAttributes: [NSAttributedString.Key: Any] {
+    var attributes: [NSAttributedString.Key: Any] = [.font: barStyle.font, .foregroundColor: barStyle.foreground]
+    attributes.merge(letterSpacingAttributes(barStyle.letterSpacing)) { _, new in new }
+    return attributes
+  }
+  private func applyLabelAttributes() {
+    for label in [modeLabel, filePathLabel, messageLabel] {
+      var attributes = barTextAttributes
+      if label === messageLabel { attributes[.foregroundColor] = barStyle.foreground.withAlphaComponent(0.75) }
+      label.attributedStringValue = NSAttributedString(string: label.stringValue, attributes: attributes)
+    }
+  }
+  private var contentBox: NSRect {
+    NSRect(x: barStyle.leftBorder.width, y: barStyle.bottomBorder.width,
+      width: max(0, bounds.width - barStyle.leftBorder.width - barStyle.rightBorder.width),
+      height: max(0, bounds.height - barStyle.topBorder.width - barStyle.bottomBorder.width))
+  }
+  private var leftInsetConstraint: NSLayoutConstraint!
+  private var rightInsetConstraint: NSLayoutConstraint!
+  private var leftCenterConstraint: NSLayoutConstraint!
+  private var rightCenterConstraint: NSLayoutConstraint!
 
   /// Space between the command area and the caret position widget.
   static let commandAreaGap: CGFloat = 5
@@ -57,6 +71,18 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   private var themeObserver: NSObjectProtocol?
   private var heightConstraint: NSLayoutConstraint!
   private var currentState = EVStatusBarState()
+  private struct CommandShape {
+    let prompt: String
+    let text: String
+    let font: NSFont
+    let letterSpacing: CGFloat
+    let line: CTLine
+    let utf16Positions: [Int: Int]
+    let caretStops: [(utf8: Int, x: CGFloat)]
+  }
+  /// Only the current command is retained. Moving its cursor or selecting text
+  /// reuses the same full-line shaping, including ligatures and bidi context.
+  private var commandShape: CommandShape?
 
   private let modeLabel = NSTextField(labelWithString: "")
   private let messageLabel = NSTextField(labelWithString: "")
@@ -73,6 +99,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     didSet {
       guard filePath != oldValue else { return }
       filePathLabel.stringValue = filePath
+      applyLabelAttributes()
       filePathLabel.toolTip = filePath
       filePathLabel.setAccessibilityLabel("File: \(filePath)")
     }
@@ -102,10 +129,6 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     setAccessibilityLabel("Editor status")
     addGestureRecognizer(resizeGesture)
     addGestureRecognizer(clickGesture)
-
-    let separator = NSBox()
-    separator.boxType = .separator
-    separator.translatesAutoresizingMaskIntoConstraints = false
 
     wantsLayer = true
     layer?.masksToBounds = true
@@ -147,7 +170,6 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     commandCaret.isHidden = true
     commandCaret.automaticModeOptions = [.showEffectsView, .showWhileTracking]
 
-    addSubview(separator)
     addSubview(leftGroup)
     addSubview(locationLabel)
     addSubview(commandCaret)
@@ -155,18 +177,12 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     leftGroupTrailingConstraint = leftGroup.trailingAnchor.constraint(
       lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14)
     let inset = Self.contentInset
-    NSLayoutConstraint.activate([
-      heightConstraint,
-      separator.leadingAnchor.constraint(equalTo: leadingAnchor),
-      separator.trailingAnchor.constraint(equalTo: trailingAnchor),
-      separator.topAnchor.constraint(equalTo: topAnchor),
-      separator.heightAnchor.constraint(equalToConstant: 1),
-      leftGroup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
-      leftGroup.centerYAnchor.constraint(equalTo: centerYAnchor),
-      leftGroupTrailingConstraint,
-      locationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
-      locationLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-    ])
+    leftInsetConstraint = leftGroup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset)
+    rightInsetConstraint = locationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset)
+    leftCenterConstraint = leftGroup.centerYAnchor.constraint(equalTo: centerYAnchor)
+    rightCenterConstraint = locationLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+    NSLayoutConstraint.activate([heightConstraint, leftInsetConstraint, leftCenterConstraint,
+      leftGroupTrailingConstraint, rightInsetConstraint, rightCenterConstraint])
 
     themeObserver = NotificationCenter.default.addObserver(
       forName: .viemThemeDidChange, object: EVThemeStore.shared, queue: .main
@@ -222,44 +238,51 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     controls.close.setAccessibilityLabel("Close command output")
     addSubview(controls.close)
     outputControls = controls
-    applyOutputTheme(EVThemeStore.shared.theme)
+    applyOutputTheme()
   }
 
-  private func applyOutputTheme(_ theme: EVTheme) {
+  private func applyOutputTheme() {
     guard let controls = outputControls else { return }
-    controls.text.font = commandFont
-    controls.text.textColor = theme.statusForeground.color
+    controls.text.font = barStyle.font
+    controls.text.typingAttributes = [.font: barStyle.font, .foregroundColor: barStyle.foreground]
+      .merging(letterSpacingAttributes(barStyle.letterSpacing)) { _, new in new }
+    controls.text.textColor = barStyle.foreground
     controls.text.insertionPointColor = .clear
-    controls.close.contentTintColor = theme.statusForeground.color
+    controls.close.contentTintColor = barStyle.foreground
   }
 
   private func updateLocationTitle() {
     locationLabel.attributedTitle = NSAttributedString(
       string: currentState.location,
-      attributes: [.font: locationLabel.font ?? EVThemeStore.shared.theme.statusFont,
-                   .foregroundColor: EVThemeStore.shared.theme.statusForeground.color])
+      attributes: barTextAttributes)
     locationLabel.invalidateIntrinsicContentSize()
   }
 
   private func applyTheme() {
-    let theme = EVThemeStore.shared.theme
-    let font = theme.statusFont
-    layer?.backgroundColor = theme.statusBackground.color.cgColor
+    let style = barStyle
+    let font = style.font
+    layer?.backgroundColor = style.background?.cgColor
     modeLabel.font = font
     messageLabel.font = font
     filePathLabel.font = font
-    filePathLabel.textColor = theme.statusForeground.color
+    filePathLabel.textColor = style.foreground
     modeWidthConstraint.constant = ceil([
       "NORMAL", "INSERT", "REPLACE", "VISUAL", "VISUAL LINE", "VISUAL BLOCK",
       "SELECTION", "SELECT", "SELECT LINE", "SELECT BLOCK", "COMMAND",
-    ].map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0) + 4
-    modeLabel.textColor = theme.statusForeground.color
-    messageLabel.textColor = theme.statusForeground.color.withAlphaComponent(0.75)
+    ].map { ($0 as NSString).size(withAttributes: barTextAttributes).width }.max() ?? 0) + 4
+    modeLabel.textColor = style.foreground
+    messageLabel.textColor = style.foreground.withAlphaComponent(0.75)
     locationLabel.font = font
-    locationLabel.contentTintColor = theme.statusForeground.color
+    locationLabel.contentTintColor = style.foreground
+    applyLabelAttributes()
     updateLocationTitle()
-    applyOutputTheme(theme)
+    applyOutputTheme()
     heightConstraint.constant = Self.preferredHeight
+    leftInsetConstraint.constant = style.leftBorder.width + style.padding.left
+    rightInsetConstraint.constant = -(style.rightBorder.width + style.padding.right)
+    let center = (style.bottomBorder.width + style.padding.bottom - style.topBorder.width - style.padding.top) / 2
+    leftCenterConstraint.constant = center
+    rightCenterConstraint.constant = center
     needsLayout = true
     needsDisplay = true
     updateCommandCaret()
@@ -335,27 +358,64 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     fatalError("init(coder:) is unavailable")
   }
 
-  /// Monospaced so a typed command lines up with what the core measures.
-  private var commandFont: NSFont {
-    .monospacedSystemFont(ofSize: EVThemeStore.shared.theme.statusFontSize, weight: .regular)
+  private var commandFont: NSFont { promptStyle.font }
+  private var commandTextAttributes: [NSAttributedString.Key: Any] {
+    var attributes: [NSAttributedString.Key: Any] = [.font: commandFont, .foregroundColor: promptStyle.foreground]
+    attributes.merge(letterSpacingAttributes(promptStyle.letterSpacing)) { _, new in new }
+    return attributes
   }
 
   /// The command area runs from the leading window edge to the caret position
   /// widget, less the gap. Its background reaches the edge; its text does not.
   var commandAreaRect: NSRect {
-    let limit = max(0, locationLabel.frame.minX - Self.commandAreaGap)
-    return NSRect(x: 0, y: 0, width: limit, height: bounds.height)
+    let box = contentBox
+    let limit = min(box.maxX, max(box.minX, locationLabel.frame.minX - Self.commandAreaGap))
+    return NSRect(x: box.minX, y: box.minY, width: limit - box.minX, height: box.height)
   }
 
-  /// Horizontal offset of one UTF-8 position within the drawn command text,
-  /// before scrolling.
-  private func commandTextX(upTo utf8Offset: Int, in command: EVStatusCommandLine) -> CGFloat {
-    let text = command.displayText
-    let limit = command.prompt.utf8.count + max(0, utf8Offset)
-    guard let prefix = String(bytes: Array(text.utf8.prefix(limit)), encoding: .utf8) else {
-      return 0
+  private func shapeCommand(_ command: EVStatusCommandLine) -> CommandShape {
+    let font = commandFont
+    let spacing = promptStyle.letterSpacing
+    if let shape = commandShape, shape.prompt == command.prompt, shape.text == command.text,
+      shape.font.isEqual(font), shape.letterSpacing == spacing
+    {
+      return shape
     }
-    return (prefix as NSString).size(withAttributes: [.font: commandFont]).width
+    let line = CTLineCreateWithAttributedString(NSAttributedString(
+      string: command.displayText, attributes: commandTextAttributes))
+    let promptLength = command.prompt.utf16.count
+    var utf16Positions = [0: promptLength]
+    var utf8Offset = 0
+    var utf16Offset = promptLength
+    // Composition can place the caret at a scalar boundary within a grapheme.
+    // Keep those UTF-8 positions distinct from the pointer's grapheme stops.
+    for scalar in command.text.unicodeScalars {
+      utf8Offset += scalar.utf8.count
+      utf16Offset += scalar.utf16.count
+      utf16Positions[utf8Offset] = utf16Offset
+    }
+    var caretStops = [(utf8: 0, x: CTLineGetOffsetForStringIndex(line, promptLength, nil))]
+    utf8Offset = 0
+    utf16Offset = promptLength
+    for character in command.text {
+      let text = String(character)
+      utf8Offset += text.utf8.count
+      utf16Offset += text.utf16.count
+      caretStops.append((utf8: utf8Offset, x: CTLineGetOffsetForStringIndex(line, utf16Offset, nil)))
+    }
+    let shape = CommandShape(prompt: command.prompt, text: command.text, font: font,
+      letterSpacing: spacing, line: line, utf16Positions: utf16Positions, caretStops: caretStops)
+    commandShape = shape
+    return shape
+  }
+
+  /// Horizontal offset of one UTF-8 position within the fully shaped command,
+  /// before scrolling. Measuring a prefix would lose following ligature context.
+  private func commandTextX(upTo utf8Offset: Int, in command: EVStatusCommandLine) -> CGFloat {
+    let shape = shapeCommand(command)
+    let offset = min(max(0, utf8Offset), command.text.utf8.count)
+    guard let index = shape.utf16Positions[offset] else { return 0 }
+    return CTLineGetOffsetForStringIndex(shape.line, index, nil)
   }
 
   /// Scroll applied so the caret stays inside the command area.
@@ -372,14 +432,12 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let origin = Self.contentInset - commandScroll(command)
     var best = 0
     var distance = CGFloat.greatestFiniteMagnitude
-    var offset = 0
-    for character in Array(command.text) + ["\u{0}"] {
-      let x = origin + commandTextX(upTo: offset, in: command)
+    for stop in shapeCommand(command).caretStops {
+      let x = origin + stop.x
       if abs(x - point.x) < distance {
         distance = abs(x - point.x)
-        best = offset
+        best = stop.utf8
       }
-      offset += String(character).utf8.count
     }
     return best
   }
@@ -397,12 +455,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
 
   public override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
+    drawBorders(barStyle, in: bounds)
     guard let command = currentState.commandLine else { return }
-    let theme = EVThemeStore.shared.theme
-    // Inverse of the rest of the status line, and the background runs all the
-    // way to the leading window edge even though the text is inset.
-    let background = theme.statusForeground.color
-    let foreground = theme.statusBackground.color
+    let background = promptStyle.background ?? .clear
+    let foreground = promptStyle.foreground
     let area = commandAreaRect
     background.setFill()
     area.fill()
@@ -410,7 +466,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let font = commandFont
     let text = command.displayText
     let rendered = NSMutableAttributedString(
-      string: text, attributes: [.font: font, .foregroundColor: foreground])
+      string: text, attributes: commandTextAttributes)
     let length = rendered.length
     if let marked = command.markedDisplayRange, NSMaxRange(marked) <= length {
       rendered.addAttributes(
@@ -425,11 +481,11 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let lineHeight = ceil(font.ascender - font.descender + font.leading)
     let origin = NSPoint(
       x: Self.contentInset - commandScroll(command),
-      y: floor((bounds.height - lineHeight) / 2))
+      y: floor(commandAreaRect.midY - lineHeight / 2))
     NSGraphicsContext.saveGraphicsState()
     NSBezierPath(rect: NSRect(
-      x: Self.contentInset, y: 0,
-      width: max(0, area.width - Self.contentInset), height: area.height)).setClip()
+      x: Self.contentInset, y: area.minY,
+      width: max(0, area.maxX - Self.contentInset), height: area.height)).setClip()
     rendered.draw(at: origin)
     // Preserve the thin command caret's geometry when outlining it steadily.
     if !currentState.isActive {
@@ -440,15 +496,27 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     NSGraphicsContext.restoreGraphicsState()
   }
 
+  private func drawBorders(_ style: EVChromeStyle, in rect: NSRect) {
+    for (border, edge) in [
+      (style.topBorder, NSRect(x: rect.minX, y: rect.maxY - style.topBorder.width, width: rect.width, height: style.topBorder.width)),
+      (style.rightBorder, NSRect(x: rect.maxX - style.rightBorder.width, y: rect.minY, width: style.rightBorder.width, height: rect.height)),
+      (style.bottomBorder, NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: style.bottomBorder.width)),
+      (style.leftBorder, NSRect(x: rect.minX, y: rect.minY, width: style.leftBorder.width, height: rect.height)),
+    ] where border.width > 0 {
+      (border.color ?? style.foreground).setFill(); edge.fill()
+    }
+  }
+
   /// Caret rectangle for the command line, in this view's coordinates.
   private func commandCaretFrame(_ command: EVStatusCommandLine) -> NSRect {
     let font = commandFont
     let lineHeight = ceil(font.ascender - font.descender + font.leading)
     let x = Self.contentInset - commandScroll(command)
       + commandTextX(upTo: command.cursorUTF8Offset, in: command)
-    return NSRect(
-      x: floor(x), y: floor((bounds.height - lineHeight) / 2), width: 2, height: lineHeight
-    )
+    let clipped = NSRect(
+      x: floor(x), y: floor(commandAreaRect.midY - lineHeight / 2), width: 2, height: lineHeight
+    ).intersection(commandAreaRect)
+    return clipped.isNull ? .zero : clipped
   }
 
   private func updateCommandCaret() {
@@ -457,8 +525,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       commandCaret.isHidden = true
       return
     }
-    commandCaret.frame = commandCaretFrame(command)
-    commandCaret.color = EVThemeStore.shared.theme.statusBackground.color
+    let frame = commandCaretFrame(command)
+    guard !frame.isEmpty else {
+      commandCaret.displayMode = .hidden
+      commandCaret.isHidden = true
+      return
+    }
+    commandCaret.frame = frame
+    commandCaret.color = promptStyle.foreground
     commandCaret.isHidden = false
     commandCaret.displayMode = .automatic
   }
@@ -492,8 +566,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       var rect = control.bounds
       if let label = control as? NSTextField {
         rect = label.cell?.titleRect(forBounds: rect) ?? rect
-        let width = min(rect.width, (label.stringValue as NSString).size(
-          withAttributes: [.font: label.font ?? EVThemeStore.shared.theme.statusFont]).width)
+        let width = min(rect.width, label.attributedStringValue.size().width)
         if label.alignment == .right { rect.origin.x = rect.maxX - width }
         else if label.alignment == .center { rect.origin.x = rect.midX - width / 2 }
         rect.size.width = width
@@ -534,13 +607,13 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       let inset = Self.contentInset
       let buttonWidth = min(20, max(0, area.width - inset))
       controls.close.frame = NSRect(
-        x: inset, y: 0, width: buttonWidth, height: bounds.height)
+        x: inset, y: area.minY, width: buttonWidth, height: area.height)
       let textStart = min(area.maxX, controls.close.frame.maxX + 6)
-      let font = commandFont
-      let lineHeight = ceil(font.ascender - font.descender + font.leading)
-      controls.scroll.frame = NSRect(
-        x: textStart, y: floor((bounds.height - lineHeight) / 2),
-        width: max(0, area.maxX - textStart), height: lineHeight)
+      let lineHeight = barStyle.fontHeight
+      let outputFrame = NSRect(
+        x: textStart, y: floor(area.midY - lineHeight / 2),
+        width: max(0, area.maxX - textStart), height: lineHeight).intersection(area)
+      controls.scroll.frame = outputFrame.isNull ? .zero : outputFrame
       controls.text.minSize = controls.scroll.contentSize
       controls.text.sizeToFit()
     }
@@ -551,6 +624,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   public func apply(_ state: EVStatusBarState) {
     let previous = currentState
     currentState = state
+    if state.commandLine == nil { commandShape = nil }
     let showingOutput = state.commandLine == nil && state.commandOutput != nil
     setLeftGroupHidden(state.commandLine != nil || showingOutput || bounds.width < 320)
     if state.commandOutput != nil { ensureOutputControls() }
@@ -565,6 +639,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     }
     modeLabel.stringValue = state.mode
     messageLabel.stringValue = state.message
+    applyLabelAttributes()
     messageLabel.isHidden = state.message.isEmpty
     if previous.location != state.location { updateLocationTitle() }
     if previous.lineMode != state.lineMode || locationLabel.image == nil {

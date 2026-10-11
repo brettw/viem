@@ -214,22 +214,24 @@ internal sealed partial class StyleWindow : Window
             Title = ThemeStyleTitle;
             documentPicker.SelectedIndex = Array.IndexOf(documentFormats, styleDocument.State.format);
             restoreCodeDefaults.Visibility = view.UsesGlobalStyles ? Visibility.Visible : Visibility.Collapsed;
-            var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0).ToArray();
+            var styles = sheet.Styles.Where(s => s.Native.role != VIEM_STYLE_ROLE_DOCUMENT).ToArray();
             var chosen = styles.FirstOrDefault(s => s.Key == key) ?? styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0) ?? styles[0];
             if (selected != null && selected.Key != chosen.Key) {
                 DismissColorPickers();
                 blockLock.IsChecked = false;
             }
             selected = chosen;
-            styleType.Text = selected.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? "Paragraph"
+            styleType.Text = (selected.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) != 0 ? "Built-in"
+                : selected.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? "Paragraph"
                 : selected.Namespace == 2 ? "Character" : "Container";
             styleTypeIcon.Content = StyleIcons.Icon(StyleIcons.Kind(selected));
             if (!ReferenceEquals(catalogueSheet, sheet)) {
                 var catalogue = new List<object>();
                 var sections = new[] {
-                    ("Paragraph", styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)),
-                    ("Container", styles.Where(s => s.Native.role >= VIEM_STYLE_ROLE_QUOTE)),
-                    ("Character", styles.Where(s => s.Namespace == 2))
+                    ("Paragraph", styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0)),
+                    ("Container", styles.Where(s => s.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0)),
+                    ("Character", styles.Where(s => s.Namespace == 2 && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0)),
+                    ("Built-in", styles.Where(s => (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) != 0))
                 }.Select(section => (Title: section.Item1, Styles: section.Item2.OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase).ToArray()))
                     .Where(section => section.Styles.Length > 0).ToArray();
                 foreach (var section in sections) {
@@ -237,7 +239,7 @@ internal sealed partial class StyleWindow : Window
                     catalogue.AddRange(section.Styles);
                 }
                 if (!SameChoices(stylePicker, catalogue)) stylePicker.ItemsSource = catalogue;
-                var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH)).ToArray();
+                var following = new object[] { "Same Style" }.Concat(styles.Where(s => s.Native.role == VIEM_STYLE_ROLE_PARAGRAPH && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0)).ToArray();
                 if (!SameChoices(next, following)) next.ItemsSource = following;
                 catalogueSheet = sheet;
             }

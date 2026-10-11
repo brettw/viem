@@ -183,13 +183,14 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
   public let documentRevision: UInt64
   public let force: Bool
   public let path: String?
-  public let hardLineRange: ClosedRange<UInt64>?
+  public let sourceByteRange: Range<UInt64>?
   /// Initial text-area height in default paragraph lines, or width in default
   /// paragraph columns when verticalSplit is true.
   public let initialHeightRows: Int?
   public let verticalSplit: Bool
   public let argumentNavigation: EVArgumentNavigation?
-  public let readAfterLine: UInt64?
+  public let readAfterOffset: UInt64?
+  public let readAfterIsSource: Bool
   public let exitStatus: Int32
 
   public init(
@@ -198,11 +199,12 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     documentRevision: UInt64,
     force: Bool = false,
     path: String? = nil,
-    hardLineRange: ClosedRange<UInt64>? = nil,
+    sourceByteRange: Range<UInt64>? = nil,
     initialHeightRows: Int? = nil,
     verticalSplit: Bool = false,
     argumentNavigation: EVArgumentNavigation? = nil,
-    readAfterLine: UInt64? = nil,
+    readAfterOffset: UInt64? = nil,
+    readAfterIsSource: Bool = false,
     exitStatus: Int32 = 1
   ) {
     self.kind = kind
@@ -210,11 +212,12 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     self.documentRevision = documentRevision
     self.force = force
     self.path = path
-    self.hardLineRange = hardLineRange
+    self.sourceByteRange = sourceByteRange
     self.initialHeightRows = initialHeightRows
     self.verticalSplit = verticalSplit
     self.argumentNavigation = argumentNavigation
-    self.readAfterLine = readAfterLine
+    self.readAfterOffset = readAfterOffset
+    self.readAfterIsSource = readAfterIsSource
     self.exitStatus = exitStatus
   }
 }
@@ -375,6 +378,12 @@ public protocol EVEditorSurface: AnyObject {
   /// Caret position in top-left pane coordinates for directional focus.
   var windowFocusPoint: NSPoint? { get }
 
+  /// Fixed chrome outside the document's content viewport. The callback runs
+  /// after installing its new width and before resizing the core viewport.
+  var lineNumberGutterWidth: CGFloat { get }
+  var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)? { get set }
+  func inheritLineNumberOption(from surface: any EVEditorSurface)
+
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
   func perform(statusOption: EVStatusBarOption)
@@ -383,7 +392,7 @@ public protocol EVEditorSurface: AnyObject {
   func htmlExportData() async throws -> Data
   /// Startup line in the first argument; UInt64.max selects its last line.
   func goToLine(_ line: UInt64)
-  func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws
+  func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws
   func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest]
   func dismissCommandOutput()
   /// Resume editor input after leaving the selectable status message.
@@ -398,12 +407,18 @@ extension EVEditorSurface {
   public var defaultLineHeight: CGFloat? { nil }
   public var defaultColumnWidth: CGFloat? { nil }
   public var windowFocusPoint: NSPoint? { nil }
+  public var lineNumberGutterWidth: CGFloat { 0 }
+  public var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)? {
+    get { nil }
+    set {}
+  }
+  public func inheritLineNumberOption(from surface: any EVEditorSurface) {}
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
   public func htmlExportData() async throws -> Data { throw EVDocumentHostError.unsupportedRequest }
   public func goToLine(_ line: UInt64) {}
-  public func insertFileContents(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
+  public func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
   public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] { throw EVDocumentHostError.unsupportedRequest }
   public func dismissCommandOutput() {}
   public func handleStatusMessageKey(_ event: NSEvent) {}
@@ -424,7 +439,7 @@ public protocol EVDocumentBackend: AnyObject {
   func updateFilename(_ filename: String)
   func serializedSource(typeName: String) throws -> Data
   func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot
-  func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot
+  func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot
   func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws
   func recoverySnapshot() throws -> EVRecoverySnapshot
   func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws
@@ -437,7 +452,7 @@ extension EVDocumentBackend {
   public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
     try read(source: source, typeName: typeName)
   }
-  public func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot { throw EVDocumentHostError.preparedWriteUnavailable }
+  public func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot { throw EVDocumentHostError.preparedWriteUnavailable }
   public func recoverySnapshot() throws -> EVRecoverySnapshot {
     throw EVRecoveryError.backendUnavailable
   }

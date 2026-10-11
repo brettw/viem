@@ -1875,6 +1875,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         Ok(RegionalLayoutSnapshot {
             whitespace_unit: styles.whitespace_shaping_style.size * view.scale * 0.5,
             default_row_advance,
+            default_font_metrics: self.default_font_metrics.clone(),
             revision,
             document_id,
             document_revision,

@@ -58,6 +58,137 @@
           "name" : "Base Paragraph",
           "next_paragraph_style" : null,
           "role" : "Paragraph"
+        },
+        {
+          "id": "Builtin line number",
+          "name": "Line number",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {}
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 0,
+            "padding_right": 4,
+            "padding_bottom": 0,
+            "padding_left": 4,
+            "border_top_width": 0,
+            "border_right_width": 1,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "alignment": "End"
+          }
+        },
+        {
+          "id": "Builtin current line number",
+          "name": "Current line number",
+          "based_on": "Builtin line number",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {},
+          "block": {}
+        },
+        {
+          "id": "Status bar",
+          "name": "Status bar",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {},
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 5,
+            "padding_right": 10.5,
+            "padding_bottom": 5,
+            "padding_left": 10.5,
+            "border_top_width": 1,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "background": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            },
+            "border_top_color": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          }
+        },
+        {
+          "id": "Status bar command",
+          "name": "Status bar command",
+          "based_on": "Status bar",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            }
+          },
+          "block": {
+            "background": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            },
+            "border_top_width": 0,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0
+          }
         }
       ],
       "character_styles" : [
@@ -1277,6 +1408,137 @@
           "name" : "Table header",
           "next_paragraph_style" : null,
           "role" : "Paragraph"
+        },
+        {
+          "id": "Builtin line number",
+          "name": "Line number",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {}
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 0,
+            "padding_right": 4,
+            "padding_bottom": 0,
+            "padding_left": 4,
+            "border_top_width": 0,
+            "border_right_width": 1,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "alignment": "End"
+          }
+        },
+        {
+          "id": "Builtin current line number",
+          "name": "Current line number",
+          "based_on": "Builtin line number",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {},
+          "block": {}
+        },
+        {
+          "id": "Status bar",
+          "name": "Status bar",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {},
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 5,
+            "padding_right": 10.5,
+            "padding_bottom": 5,
+            "padding_left": 10.5,
+            "border_top_width": 1,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "background": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            },
+            "border_top_color": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          }
+        },
+        {
+          "id": "Status bar command",
+          "name": "Status bar command",
+          "based_on": "Status bar",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            }
+          },
+          "block": {
+            "background": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            },
+            "border_top_width": 0,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0
+          }
         }
       ],
       "character_styles" : [
@@ -2418,6 +2680,137 @@
           "name" : "Base Paragraph",
           "next_paragraph_style" : null,
           "role" : "Paragraph"
+        },
+        {
+          "id": "Builtin line number",
+          "name": "Line number",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {}
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 0,
+            "padding_right": 4,
+            "padding_bottom": 0,
+            "padding_left": 4,
+            "border_top_width": 0,
+            "border_right_width": 1,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "alignment": "End"
+          }
+        },
+        {
+          "id": "Builtin current line number",
+          "name": "Current line number",
+          "based_on": "Builtin line number",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {},
+          "block": {}
+        },
+        {
+          "id": "Status bar",
+          "name": "Status bar",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {},
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 5,
+            "padding_right": 10.5,
+            "padding_bottom": 5,
+            "padding_left": 10.5,
+            "border_top_width": 1,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "background": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            },
+            "border_top_color": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          }
+        },
+        {
+          "id": "Status bar command",
+          "name": "Status bar command",
+          "based_on": "Status bar",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            }
+          },
+          "block": {
+            "background": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            },
+            "border_top_width": 0,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0
+          }
         }
       ],
       "character_styles" : [
@@ -2541,6 +2934,137 @@
           "name" : "Base Paragraph",
           "next_paragraph_style" : null,
           "role" : "Paragraph"
+        },
+        {
+          "id": "Builtin line number",
+          "name": "Line number",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {}
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 0,
+            "padding_right": 4,
+            "padding_bottom": 0,
+            "padding_left": 4,
+            "border_top_width": 0,
+            "border_right_width": 1,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "alignment": "End"
+          }
+        },
+        {
+          "id": "Builtin current line number",
+          "name": "Current line number",
+          "based_on": "Builtin line number",
+          "next_paragraph_style": null,
+          "role": "Paragraph",
+          "character": {},
+          "block": {}
+        },
+        {
+          "id": "Status bar",
+          "name": "Status bar",
+          "based_on": "Paragraph",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "font_families": [
+              "system-ui"
+            ],
+            "font_face": "",
+            "font_axes": {},
+            "size": 11,
+            "weight": 400,
+            "slant": "Upright",
+            "bold": false,
+            "underline": false,
+            "strikethrough": false,
+            "superscript": false,
+            "subscript": false,
+            "letter_spacing": 0,
+            "open_type_features": {},
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          },
+          "block": {
+            "margin_top": 0,
+            "margin_right": 0,
+            "margin_bottom": 0,
+            "margin_left": 0,
+            "padding_top": 5,
+            "padding_right": 10.5,
+            "padding_bottom": 5,
+            "padding_left": 10.5,
+            "border_top_width": 1,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0,
+            "background": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            },
+            "border_top_color": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            }
+          }
+        },
+        {
+          "id": "Status bar command",
+          "name": "Status bar command",
+          "based_on": "Status bar",
+          "next_paragraph_style": null,
+          "role": "Container",
+          "character": {
+            "foreground": {
+              "alpha": 1,
+              "blue": 0.15,
+              "green": 0.13,
+              "red": 0.12
+            }
+          },
+          "block": {
+            "background": {
+              "alpha": 1,
+              "blue": 0.93,
+              "green": 0.9,
+              "red": 0.88
+            },
+            "border_top_width": 0,
+            "border_right_width": 0,
+            "border_bottom_width": 0,
+            "border_left_width": 0
+          }
         }
       ],
       "character_styles" : [
@@ -2599,20 +3123,6 @@
       "blue" : 0.72999999999999998,
       "green" : 0.39000000000000001,
       "red" : 0.12
-    },
-    "statusBackground" : {
-      "alpha" : 1,
-      "blue" : 0.14999999999999999,
-      "green" : 0.13,
-      "red" : 0.12
-    },
-    "statusFontFamily" : "System",
-    "statusFontSize" : 11,
-    "statusForeground" : {
-      "alpha" : 1,
-      "blue" : 0.93000000000000005,
-      "green" : 0.90000000000000002,
-      "red" : 0.88
     }
   },
   "version" : 1

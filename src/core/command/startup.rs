@@ -248,14 +248,15 @@ impl super::CommandInterpreter {
         diagnostics
     }
 
-    pub(crate) fn startup_view_options(&self) -> (bool, super::VisibleWhitespaceSetting) {
-        (self.wrap, self.visible_whitespace.clone())
+    pub(crate) fn startup_view_options(&self) -> (bool, super::VisibleWhitespaceSetting, bool) {
+        (self.wrap, self.visible_whitespace.clone(), self.number)
     }
     pub(crate) fn install_startup_view_options(
         &mut self,
-        options: &(bool, super::VisibleWhitespaceSetting),
+        options: &(bool, super::VisibleWhitespaceSetting, bool),
     ) {
         self.wrap = options.0;
         self.visible_whitespace = options.1.clone();
+        self.number = options.2;
     }
 }

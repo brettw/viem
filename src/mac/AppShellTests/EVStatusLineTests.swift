@@ -1,10 +1,11 @@
 import AppKit
+import CoreText
 import XCTest
 
 @testable import ViemAppShell
 
 /// Status line layout: the caret position widget is right-aligned, contents
-/// clear the window's rounded corner, and an active command line replaces the
+/// honor the style's padding, and an active command line replaces the
 /// left group in inverse colors.
 @MainActor
 final class EVStatusLineTests: XCTestCase {
@@ -31,20 +32,29 @@ final class EVStatusLineTests: XCTestCase {
     try XCTUnwrap(descendants(bar).first { $0.accessibilityLabel() == "Mode: NORMAL" })
   }
 
-  func testCornerInsetIsTheWidthTheCornerClipsByMoreThanOnePoint() {
-    // At x = r - sqrt(2r - 1) the corner has removed exactly one point of
-    // height, which is the definition this inset uses.
-    for radius in [4.0, 10.0, 16.0, 24.0] as [CGFloat] {
-      let inset = EVStatusBarView.cornerInset(forRadius: radius)
-      let clipped = radius - (radius * radius - (radius - inset) * (radius - inset)).squareRoot()
-      XCTAssertEqual(clipped, 1, accuracy: 0.001, "radius \(radius)")
-      XCTAssertGreaterThan(inset, 0, "radius \(radius)")
-      XCTAssertLessThan(inset, radius, "radius \(radius)")
-    }
-    // A square or nearly square corner clips nothing worth insetting.
-    XCTAssertEqual(EVStatusBarView.cornerInset(forRadius: 0), 0)
-    XCTAssertEqual(EVStatusBarView.cornerInset(forRadius: 1), 0)
-    XCTAssertGreaterThan(EVStatusBarView.contentInset, 0)
+  func testStatusInsetsAndHeightUseTheStyleBox() {
+    let style = EVThemeStore.shared.chromeStyles.statusBar
+    XCTAssertEqual(EVStatusBarView.contentInset, style.padding.left + style.leftBorder.width)
+    XCTAssertEqual(EVStatusBarView.preferredHeight, ceil(style.fontHeight + style.padding.top + style.padding.bottom
+      + style.topBorder.width + style.bottomBorder.width))
+  }
+
+  func testOversizedCommandFontClipsInsideBarWithoutChangingContainerHeight() throws {
+    let previous = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
+    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previous, named: "text") }
+    try editStatusStyle(character: ["size": 11], block: ["padding_top": 2, "padding_bottom": 3,
+      "border_top_width": 4, "border_bottom_width": 2, "margin_top": 80, "alignment": "End"])
+    let height = EVStatusBarView.preferredHeight
+    let bar = makeBar()
+    try editStatusStyle(id: "Status bar command", character: ["size": 70, "letter_spacing": 4])
+    bar.apply(EVStatusBarState(commandLine: EVStatusCommandLine(prompt: ":", text: "write", cursorUTF8Offset: 5), isActive: true))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertEqual(EVStatusBarView.preferredHeight, height)
+    XCTAssertEqual(bar.frame.height, height)
+    let caret = try XCTUnwrap(bar.commandCaretRect())
+    XCTAssertGreaterThanOrEqual(caret.minY, 2)
+    XCTAssertLessThanOrEqual(caret.maxY, bar.bounds.maxY - 4)
+    XCTAssertTrue(bar.commandAreaRect.contains(caret))
   }
 
   func testCaretPositionIsRightAlignedAndEverythingElseIsLeftAligned() throws {
@@ -153,7 +163,7 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertEqual(area.minX, 0)
     XCTAssertEqual(area.maxX, location.frame.minX - 5, accuracy: 0.5)
 
-    // Its text and caret are inset by the corner amount.
+    // Its text and caret use the status container's leading padding.
     let caret = try XCTUnwrap(bar.commandCaretRect())
     XCTAssertGreaterThanOrEqual(caret.minX, EVStatusBarView.contentInset)
     XCTAssertLessThan(caret.maxX, area.maxX)
@@ -236,6 +246,51 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertLessThan(inside.minX, caret.minX)
   }
 
+  func testCommandCaretUsesFullProportionalShapingAndUnicodeScalarPositions() throws {
+    let previous = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
+    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previous, named: "text") }
+    let text = "AV office café e\u{301} 🙂"
+    let bar = makeBar(width: 900)
+    // The same command must invalidate its cached shape when font or tracking
+    // changes. Ligature/kerning context comes from the complete command line.
+    for (size, spacing) in [(24.0, 1.25), (20, 0)] {
+      try editStatusStyle(id: "Status bar command", character: [
+        "font_families": ["Georgia"], "size": size, "letter_spacing": spacing,
+        "open_type_features": ["liga": 1],
+      ])
+      let style = EVThemeStore.shared.chromeStyles.statusCommand
+      var attributes: [NSAttributedString.Key: Any] = [.font: style.font]
+      if spacing != 0 { attributes[.tracking] = spacing; attributes[.ligature] = 1 }
+      let line = CTLineCreateWithAttributedString(NSAttributedString(string: ":" + text, attributes: attributes))
+      var utf8 = 0
+      var utf16 = 1 // The prompt is part of the shaped line.
+      for scalar in text.unicodeScalars {
+        bar.apply(EVStatusBarState(commandLine: EVStatusCommandLine(
+          prompt: ":", text: text, cursorUTF8Offset: utf8), isActive: true))
+        bar.layoutSubtreeIfNeeded()
+        let caret = try XCTUnwrap(bar.commandCaretRect())
+        let expected = CTLineGetOffsetForStringIndex(line, utf16, nil)
+        XCTAssertEqual(caret.minX, floor(EVStatusBarView.contentInset + expected), accuracy: 0.01,
+          "UTF-8 cursor \(utf8) must map to UTF-16 position \(utf16) in the whole shaped line")
+        utf8 += scalar.utf8.count
+        utf16 += scalar.utf16.count
+      }
+      bar.apply(EVStatusBarState(commandLine: EVStatusCommandLine(
+        prompt: ":", text: text, cursorUTF8Offset: utf8), isActive: true))
+      bar.layoutSubtreeIfNeeded()
+      var characterUTF8 = 0
+      var characterUTF16 = 1
+      for character in text {
+        let x = EVStatusBarView.contentInset + CTLineGetOffsetForStringIndex(line, characterUTF16, nil)
+        XCTAssertEqual(bar.commandUTF8Offset(at: NSPoint(x: x, y: bar.bounds.midY)), characterUTF8,
+          "Pointer selection must use grapheme boundaries")
+        let characterText = String(character)
+        characterUTF8 += characterText.utf8.count
+        characterUTF16 += characterText.utf16.count
+      }
+    }
+  }
+
   func testOrdinaryStatusAndCommandPromptsDoNotConstructOutputControls() throws {
     let bar = makeBar()
     bar.dragDidMove = { _ in }
@@ -256,20 +311,18 @@ final class EVStatusLineTests: XCTestCase {
   }
 
   func testDeferredOutputUsesCurrentThemeAndPreservesSelectionAcrossStatusUpdates() throws {
-    let previousTheme = EVThemeStore.shared.theme
-    defer { EVThemeStore.shared.update(previousTheme) }
+    let previousStyles = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
+    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previousStyles, named: "text") }
     let bar = makeBar()
-    var theme = previousTheme
-    theme.statusFontFamily = "System"
-    theme.statusFontSize = 15
-    theme.statusForeground = EVThemeColor(0.2, 0.6, 0.8)
-    EVThemeStore.shared.update(theme)
+    let tint = EVThemeColor(0.2, 0.6, 0.8)
+    try editStatusStyle(character: ["font_families": ["system-ui"], "size": 15,
+      "foreground": ["red": tint.red, "green": tint.green, "blue": tint.blue, "alpha": 1]])
     XCTAssertNil(bar.outputTextView, "a theme change must not initialize hidden output")
     bar.apply(EVStatusBarState(commandOutput: "Selected output", isActive: true))
     bar.layoutSubtreeIfNeeded()
     let text = try XCTUnwrap(bar.outputTextView)
     XCTAssertEqual(text.font?.pointSize, 15)
-    XCTAssertEqual(text.textColor, theme.statusForeground.color)
+    XCTAssertEqual(text.textColor, EVThemeStore.shared.chromeStyles.statusBar.foreground)
     text.setSelectedRange(NSRange(location: 0, length: 8))
 
     bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "Selected output"))
@@ -278,11 +331,10 @@ final class EVStatusLineTests: XCTestCase {
     XCTAssertEqual(location.attributedTitle.string, "Ln 12, Col 34")
     XCTAssertEqual((location.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 15)
 
-    theme.statusFontSize = 17
-    theme.statusForeground = EVThemeColor(0.8, 0.4, 0.1)
-    EVThemeStore.shared.update(theme)
+    try editStatusStyle(character: ["size": 17,
+      "foreground": ["red": 0.8, "green": 0.4, "blue": 0.1, "alpha": 1]])
     XCTAssertEqual(text.font?.pointSize, 17)
-    XCTAssertEqual(text.textColor, theme.statusForeground.color)
+    XCTAssertEqual(text.textColor, EVThemeStore.shared.chromeStyles.statusBar.foreground)
     XCTAssertEqual((location.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 17)
     XCTAssertEqual(text.selectedRange(), NSRange(location: 0, length: 8))
 
@@ -317,7 +369,7 @@ final class EVStatusLineTests: XCTestCase {
       XCTAssertLessThanOrEqual(scroll.frame.maxX, bar.commandAreaRect.maxX)
       XCTAssertLessThan(scroll.frame.maxX, location.frame.minX)
       XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight)
-      XCTAssertEqual(text.textColor, EVThemeStore.shared.theme.statusForeground.color)
+      XCTAssertEqual(text.textColor, EVThemeStore.shared.chromeStyles.statusBar.foreground)
       XCTAssertFalse(bar.isCommandCaretShowing)
       var dismissed = false
       bar.commandOutputDidDismiss = { dismissed = true }

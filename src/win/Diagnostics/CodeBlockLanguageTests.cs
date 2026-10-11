@@ -184,7 +184,7 @@ internal static class CodeBlockLanguageTests
             + string.Concat(Enumerable.Repeat("after\n\n", 100));
         using var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(document, device, dispatcher, 700, 400);
-        view.GoToLine(101);
+        view.GoToLine(202);
         var snapshot = view.Layout();
         var label = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
         var row = snapshot.Rows.Single(item => item.row_index == label.row_index);

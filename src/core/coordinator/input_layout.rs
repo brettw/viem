@@ -95,7 +95,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .ok_or(CoreError::UnknownView(view_id))?;
         let snapshot = view.layout.snapshot().ok_or(LayoutError::NoRows)?;
         if demand.horizontal_focus().is_some() {
-            return Ok(Some(demand.requested_hard_lines()));
+            let requested = demand.requested_hard_lines();
+            return Ok((requested.len() <= MAX_INPUT_LAYOUT_LINES).then_some(requested));
         }
         let top = view.layout.viewport_top();
         let bottom = top + view.layout.height();
@@ -200,6 +201,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.install_view_layout_job(view_id, candidate)?;
         let view = self.views.get_mut(&view_id).expect("validated view");
         view.viewport_anchor = preserved_anchor;
+        if demand.horizontal_focus().is_some() && preserved_anchor.is_some_and(|anchor|
+            view.layout.snapshot().is_some_and(|snapshot|
+                !snapshot.coverage.contains_text_offset(anchor.anchor.offset()))) {
+            // A distant Ex endpoint is temporary preparation geometry. Keep
+            // the old viewport until submission chooses its final presentation.
+            view.layout.set_viewport_top(top)?;
+            return Ok(());
+        }
         restore_viewport_anchor(view)?;
         update_viewport_anchor(&self.document, view);
         Ok(())
@@ -350,6 +359,66 @@ mod tests {
         assert_eq!(actual.len(), expected.len(), "source byte length");
         assert_eq!(actual.iter().zip(expected.bytes()).position(|(left, right)| *left != right), None,
             "first differing source byte");
+    }
+
+    #[test]
+    fn ex_last_endpoint_refills_directly_and_preserves_the_pending_prompt() {
+        let source = format!("{}tail", "line\n".repeat(99_999));
+        let mut core = Core::new(Document::new(source));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
+        let revision = core.document.revision();
+        let calls = core.views[&view].engine.provider().request_calls();
+        core.handle(view, key(Key::Char(':'))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Text("$".into()))).unwrap();
+        let pending = core.handle(view, key(Key::Enter)).unwrap().command.unwrap();
+        let CommandStatus::NeedsMoreLayout(LayoutMotionError::OutsideMaterializedCoverage(demand)) = pending.status
+            else { panic!("offscreen contextual endpoint must demand exact geometry"); };
+        assert_eq!(demand.requested_hard_lines(), 99_999..100_000);
+        assert_eq!(core.command_state(view).unwrap().command_line(), Some("$"));
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        assert_eq!(core.document.revision(), revision);
+        let result = core.handle_with_layout(view, key(Key::Enter)).unwrap();
+        assert_eq!(result.command.unwrap().status, CommandStatus::Complete);
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document.line_start(99_999).unwrap());
+        assert!(core.views[&view].engine.provider().request_calls() - calls < 128,
+            "the last endpoint must not shape preceding lines");
+        core.handle(view, key(Key::Char(':'))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Text("$-2".into()))).unwrap();
+        let result = core.handle_with_layout(view, key(Key::Enter)).unwrap();
+        assert_eq!(result.command.unwrap().status, CommandStatus::Complete);
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document.line_start(99_997).unwrap());
+        assert!(!core.document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn numeric_ex_jump_to_a_late_line_stays_physical_and_bounded() {
+        let mut core = Core::new(Document::new(format!("{}tail", "line\n".repeat(99_999))));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
+        let calls = core.views[&view].engine.provider().request_calls();
+        core.handle(view, key(Key::Char(':'))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Text("90000".into()))).unwrap();
+        let result = core.handle_with_layout(view, key(Key::Enter)).unwrap();
+        assert_eq!(result.command.unwrap().status, CommandStatus::Complete);
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document.line_start(89_999).unwrap());
+        assert!(core.views[&view].engine.provider().request_calls() - calls < 128);
+        assert!(!core.document.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn contextual_ex_range_keeps_its_start_while_resolving_a_distant_end() {
+        let mut core = Core::new(Document::new(format!("{}tail", "line\n".repeat(999))));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 120.0);
+        core.handle(view, key(Key::Char(':'))).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Text(".,$p".into()))).unwrap();
+        let pending = core.handle(view, key(Key::Enter)).unwrap().command.unwrap();
+        assert!(matches!(pending.status, CommandStatus::NeedsMoreLayout(_)));
+        let result = core.handle_with_layout(view, key(Key::Enter)).unwrap().command.unwrap();
+        assert_eq!(result.status, CommandStatus::Complete);
+        let outcome = result.ex_outcome.unwrap();
+        let ExFrontendRequest::Info(crate::command::ex_execute::ExInfoRequest::PrintLines { range, .. }) =
+            &outcome.frontend_requests[0] else { panic!("print request"); };
+        assert_eq!(range.text, 0..core.document.projection().text_tree().byte_len());
+        assert!(range.lines.is_empty(), "printing an endpoint range needs no interior layout");
     }
 
     #[test]

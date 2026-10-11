@@ -66,7 +66,7 @@ final class EVVerticalSplitter: NSView {
     NSRect(x:bounds.width-1,y:0,width:1,height:bounds.height).fill()
   }
   override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
-  private func applyTheme() { layer?.backgroundColor = EVThemeStore.shared.theme.statusBackground.color.cgColor; needsDisplay = true }
+  private func applyTheme() { layer?.backgroundColor = EVThemeStore.shared.chromeStyles.statusBar.background?.cgColor; needsDisplay = true }
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
   override func mouseDown(with event: NSEvent) {
     guard let window else { return }

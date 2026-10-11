@@ -333,7 +333,7 @@ extension EVStyleKind {
   fileprivate var menuRole: EVStyleMenuRole {
     switch self {
     case .character: .character
-    case .paragraph, .quote, .codeBlock, .list, .listItem, .table: .paragraph
+    case .paragraph, .quote, .codeBlock, .list, .listItem, .table, .container: .paragraph
     }
   }
 }

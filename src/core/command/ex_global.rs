@@ -1,6 +1,6 @@
 //! Two-pass global commands: select stable line identities, then replay Ex.
-use super::ex::{ExCommand, ExRange};
-use super::ex_execute::{resolve_range, HardLineRange};
+use super::ex::ExCommand;
+use super::ex_addresses::{ExAddressResolutionError, ResolvedExAddresses, ResolvedExRange};
 use super::search_regex::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
 use super::*;
 
@@ -53,6 +53,7 @@ impl CommandInterpreter {
         &mut self,
         document: &mut Document,
         command: &ExCommand,
+        addresses: &ResolvedExAddresses,
     ) -> CommandOutput {
         let ExAction::Global {
             pattern,
@@ -88,19 +89,12 @@ impl CommandInterpreter {
             pattern.clone()
         };
         let selected = (|| -> Result<_, ExExecuteError> {
-            let current = document
-                .hard_line_at_offset(self.cursor)
-                .ok_or(ExExecuteError::AddressOverflow)?;
-            let default_range = if self.global_replay_depth > 0 {
-                None
-            } else {
-                Some(ExRange::WholeFile)
-            };
-            let range = resolve_range(
-                command.range.as_ref().or(default_range.as_ref()),
-                current,
-                document.line_count(),
-            )?;
+            let range = addresses.range.as_ref().ok_or(ExExecuteError::UnresolvedAddress)?;
+            let units = self.resolved_ex_range_units(document, range).map_err(|error| match error {
+                ExAddressResolutionError::Execute(error) => error,
+                ExAddressResolutionError::Layout(_) => ExExecuteError::UnsupportedCommand(
+                    ":global range requires exact displayed rows".into()),
+            })?;
             let limits = RegexLimits::default();
             let regex = CompiledRegex::compile(
                 &pattern,
@@ -111,36 +105,44 @@ impl CommandInterpreter {
             let input = RegexInput::new(&snapshot);
             let mut work = RegexWork::new(limits);
             let mut matching = std::collections::BTreeSet::new();
-            let mut next = range.start;
-            while next <= range.end {
-                let start = snapshot
-                    .line(next)
-                    .ok_or(ExExecuteError::AddressOverflow)?
-                    .content_range()
-                    .start;
-                let Some(matched) = regex.find(&input, start, snapshot.text_length(), &mut work)?
+            let scope = super::ex_execute::addressed_match_scope(document, range)?;
+            let mut next = scope.start;
+            while next <= scope.end {
+                let Some(matched) = regex.find(&input, next, snapshot.text_length(), &mut work)?
                 else {
                     break;
                 };
-                let line = snapshot
-                    .line_at_offset(matched.range().start)
-                    .map_err(|_| ExExecuteError::AddressOverflow)?
-                    .index();
-                if line > range.end {
+                let bounds = matched.range();
+                if bounds.start > scope.end {
                     break;
                 }
-                matching.insert(line);
+                if bounds.end <= scope.end && super::ex_execute::addressed_match_eligible(document, range, bounds.clone())? {
+                    // The prepared units define replay identity. Mixed ranges
+                    // may contain local visual/formatted rows whose indexes
+                    // differ from the source line containing the match.
+                    let unit = if range.start.domain == ex_addresses::ExLineDomain::PhysicalSource
+                        && range.end.domain == ex_addresses::ExLineDomain::PhysicalSource {
+                        let source_line = super::ex_execute::addressed_match_line(document, range, bounds.start)?;
+                        units.binary_search_by_key(&source_line, |unit| unit.index).ok()
+                    } else {
+                        let index = units.partition_point(|unit|
+                            unit.content.end <= bounds.start && unit.content.start < bounds.start);
+                        (!units.is_empty()).then_some(index.min(units.len().saturating_sub(1)))
+                    };
+                    if let Some(unit) = unit { matching.insert(unit); }
+                }
                 if matching.len() > GLOBAL_TARGET_LIMIT {
                     return Err(ExExecuteError::Regex(
                         search_regex::RegexError::RegexResourceLimit("global target lines"),
                     ));
                 }
-                next = line + 1;
+                next = snapshot.next_grapheme_boundary(bounds.start)
+                    .unwrap_or_else(|| snapshot.text_length().saturating_add(1));
             }
             let inverse = *invert ^ command.bang;
             let mut targets = Vec::new();
-            for line in range.start..=range.end {
-                if matching.contains(&line) == inverse {
+            for (index, unit) in units.into_iter().enumerate() {
+                if matching.contains(&index) == inverse {
                     continue;
                 }
                 if targets.len() >= GLOBAL_TARGET_LIMIT {
@@ -149,9 +151,10 @@ impl CommandInterpreter {
                     ));
                 }
                 let request = ExNormalRequest {
-                    range: HardLineRange {
-                        start: line,
-                        end: line,
+                    range: ResolvedExRange {
+                        document: document.id(), revision: document.revision(),
+                        start: unit.clone(), end: unit.clone(), text: unit.text.clone(),
+                        source: unit.source.clone(), lines: vec![unit],
                     },
                     commands: String::new(),
                     literal: true,
@@ -236,7 +239,7 @@ impl CommandInterpreter {
             else {
                 continue;
             };
-            self.prepare_ex_normal_line(document, position);
+            self.prepare_ex_normal_target(document, target.unwrap(), position);
             let (line, map) = document.capture_position_maps(|document| {
                 let mut line = CommandOutput::complete();
                 for event in &replay.events {
@@ -295,8 +298,9 @@ mod tests {
         let mut document = Document::new(format!("needle\n{}needle", "row\n".repeat(20_000)));
         let mut commands = CommandInterpreter::new();
         let global = parse_ex(":g/needle/y a").unwrap();
+        let addresses = commands.resolve_ex_addresses(&document, &global, RegexLimits::default()).unwrap();
         assert_eq!(
-            commands.execute_ex_global(&mut document, &global).status,
+            commands.execute_ex_global(&mut document, &global, &addresses).status,
             CommandStatus::Complete
         );
         assert!(!document.projection().compatibility_text_is_materialized());
@@ -309,15 +313,48 @@ mod tests {
         );
         assert_eq!(commands.cursor(), 0);
         assert!(!document.projection().compatibility_text_is_materialized());
-        let mut excessive = Document::new("x\n".repeat(GLOBAL_TARGET_LIMIT));
+        let mut excessive = Document::new("x\n".repeat(GLOBAL_TARGET_LIMIT + 1));
         let mut commands = CommandInterpreter::new();
         let global = parse_ex(":g/^/d").unwrap();
+        let addresses = commands.resolve_ex_addresses(&excessive, &global, RegexLimits::default()).unwrap();
         assert!(format!(
             "{:?}",
-            commands.execute_ex_global(&mut excessive, &global).status
+            commands.execute_ex_global(&mut excessive, &global, &addresses).status
         )
         .contains("global target lines"));
         assert!(!excessive.undo());
         assert!(!excessive.projection().compatibility_text_is_materialized());
+    }
+
+    #[test]
+    fn visual_global_tests_each_selected_wrapped_row_and_replays_exact_anchors() {
+        let original = "abc def ghi jkl mno pqr stu vwx yz\ntail";
+        let mut core = crate::Core::new(Document::new(original));
+        let view = core.add_view(crate::layout::MockTextMeasurementProvider::new(), 55.0, 500.0);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap().clone();
+        for character in ":.,.+2g/./normal iX".chars() {
+            core.handle(view, crate::CoreEvent::Input(InputEvent::Key(Key::Char(character)))).unwrap();
+        }
+        let output = core.handle(view, crate::CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        assert_eq!(output.command.unwrap().status, CommandStatus::Complete);
+        let mut expected = original.to_owned();
+        for row in snapshot.rows[..3].iter().rev() { expected.insert(row.text_range.start, 'X'); }
+        assert_eq!(core.document().text(), expected);
+        core.handle(view, crate::CoreEvent::Input(InputEvent::Key(Key::Char('u')))).unwrap();
+        assert_eq!(core.document().text(), original);
+    }
+
+    #[test]
+    fn headless_mixed_global_matches_prepared_formatted_units() {
+        let source = b"one\ncontinuation\n\nsecond\n\nthird";
+        let mut document = Document::from_bytes(source.to_vec(),
+            crate::document::Encoding::Utf8, crate::document::Format::Markdown).unwrap();
+        let mut commands = CommandInterpreter::new();
+        let output = commands.execute_ex_command(&mut document, ":2,$g/third/normal iX");
+        assert_eq!(output.status, CommandStatus::Complete);
+        assert_eq!(document.text(), "one continuation\nsecond\nXthird");
+        assert_eq!(document.source_bytes(), b"one\ncontinuation\n\nsecond\n\nXthird");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source);
     }
 }

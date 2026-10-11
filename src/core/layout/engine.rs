@@ -538,6 +538,10 @@ pub struct LayoutSnapshot {
     /// Default paragraph row advance in scaled layout points. This is stable
     /// across visible headings, images and table cells.
     pub default_row_advance: f32,
+    pub(super) default_font_metrics: Option<DefaultFontMetrics>,
+    // Only installed hard lines are represented. These relative flow distances
+    // exclude paragraph/canvas spacing from partial text-band estimates.
+    hard_line_text_insets: BTreeMap<usize, HardLineTextInsets>,
     pub revision: LayoutRevision,
     pub document_id: DocumentId,
     pub document_revision: Revision,
@@ -579,6 +583,13 @@ pub struct LayoutSnapshot {
     /// shaping cluster may contain several legal logical edit boundaries.
     grapheme_boundaries: Vec<usize>,
     horizontal_materialization: Option<HorizontalMaterialization>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HardLineTextInsets {
+    before: f32,
+    after: f32,
+    after_is_exact: bool,
 }
 
 /// Exact layout for one hard line. Row `y` values are relative to the start of
@@ -773,6 +784,7 @@ impl RegionalHardLineLayout {
 pub struct RegionalLayoutSnapshot {
     whitespace_unit: f32,
     default_row_advance: f32,
+    default_font_metrics: Option<DefaultFontMetrics>,
     revision: LayoutRevision,
     document_id: DocumentId,
     document_revision: Revision,
@@ -1860,6 +1872,9 @@ fn layout_epsilon(value: f32) -> f32 {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutJobViewConfiguration {
     pub(super) cached_lines: BTreeMap<usize, Arc<RegionalHardLineLayout>>,
+    /// One intrinsic font measurement, without glyph or render resources.
+    /// Its complete dependency key is rechecked by the worker engine.
+    pub(super) default_font_metrics: Option<DefaultFontMetrics>,
     pub(super) whitespace: WhitespaceConfiguration,
     width: f32,
     height: f32,
@@ -2682,6 +2697,7 @@ impl ViewLayout {
     ) -> LayoutJobViewConfiguration {
         LayoutJobViewConfiguration {
             cached_lines: BTreeMap::new(),
+            default_font_metrics: None,
             whitespace: self.whitespace.clone(),
             width: self.width,
             height: self.height,
@@ -2803,7 +2819,27 @@ impl ViewLayout {
         requested_viewport_top: f32,
     ) -> Result<LayoutRevision, ViewHeightIndexError> {
         let prepared = self.prepare_layout_job_region(region)?;
-        let mut snapshot = partial_snapshot_from_region(&prepared.region, &prepared.height_index)?;
+        let mut snapshot = partial_snapshot_from_region(&prepared.region, &prepared.height_index, self.scale)?;
+        if let Some(previous) = self.snapshot.as_ref().filter(|previous| {
+            previous.document_id == snapshot.document_id
+                && previous.document_revision == snapshot.document_revision
+                && previous.configuration_generation == snapshot.configuration_generation
+                && previous.measurement_environment_id == snapshot.measurement_environment_id
+                && previous.metrics_generation == snapshot.metrics_generation
+                && previous.document_style_revision == snapshot.document_style_revision
+        }) {
+            // Keep a measured trailing flow distance when a later viewport
+            // contains only the middle of this same line. Retain only keys in
+            // the new local snapshot, so this cannot grow with scrolling.
+            for (index, insets) in &mut snapshot.hard_line_text_insets {
+                if !insets.after_is_exact {
+                    if let Some(old) = previous.hard_line_text_insets.get(index).filter(|old| old.after_is_exact) {
+                        insets.after = old.after;
+                        insets.after_is_exact = true;
+                    }
+                }
+            }
+        }
         if let Some(previous) = self.snapshot.as_ref().filter(|previous| {
             previous.content_width_is_exact
                 && previous.document_id == snapshot.document_id
@@ -2993,6 +3029,11 @@ impl LayoutSnapshot {
     pub fn has_provisional_table_widths(&self) -> bool { self.rows.iter().any(|row| row.table_widths_are_exact == Some(false)) }
     pub fn tables(&self) -> &[TableGeometry] { &self.tables }
 
+    pub(crate) fn hard_line_text_band_insets(&self, index: usize) -> Option<(f32, f32, bool)> {
+        self.hard_line_text_insets.get(&index).map(|insets|
+            (insets.before, insets.after, insets.after_is_exact))
+    }
+
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
         for row in Arc::make_mut(&mut self.rows) {
@@ -3006,12 +3047,36 @@ impl LayoutSnapshot {
 fn partial_snapshot_from_region(
     region: &RegionalLayoutSnapshot,
     height_index: &ViewHeightIndex,
+    scale: f32,
 ) -> Result<LayoutSnapshot, ViewHeightIndexError> {
     let prefix = height_index.prefix_height(region.hard_lines.start)?;
     let mut rows = Vec::new();
+    let mut hard_line_text_insets = BTreeMap::new();
     for line in &region.lines {
         let line_top =
             height_as_layout_unit(height_index.prefix_height(line.hard_line_index)?.height())?;
+        if line.rows.first().is_some_and(|row| row.table_cell.is_none()) {
+            let before = if line.hard_line_index == 0 {
+                block_box::editable_flow_position(None,
+                    region.content_insets.top + block_box::before(&line.inputs.paragraph) * scale, scale).0
+            } else { 0. };
+            let last = line.rows.last().expect("nonempty line");
+            let has_final_row = line.height_is_exact && !last.wraps_to_next
+                && last.text_range.end == line.hard_line_range.end;
+            let after_is_exact = has_final_row || line.inputs.next.is_some_and(|(new_paragraph, gap)|
+                !new_paragraph || gap >= 0.);
+            let after = if has_final_row {
+                line.height as f32 - last.y - last.height()
+            } else {
+                match line.inputs.next {
+                    Some((true, gap)) => gap * scale,
+                    Some((false, _)) => 0.,
+                    None => block_box::after(&line.inputs.paragraph) * scale + region.content_insets.bottom,
+                }
+            };
+            hard_line_text_insets.insert(line.hard_line_index,
+                HardLineTextInsets { before, after, after_is_exact });
+        }
         for relative_row in &line.rows {
             let mut row = relative_row.clone();
             translate_row_vertically(&mut row, line_top)?;
@@ -3087,6 +3152,8 @@ fn partial_snapshot_from_region(
         tables: tables::collect_tables(&rows),
         whitespace_unit: region.whitespace_unit,
         default_row_advance: region.default_row_advance,
+        default_font_metrics: region.default_font_metrics.clone(),
+        hard_line_text_insets,
         revision: region.revision,
         document_id: region.document_id,
         document_revision: region.document_revision,
@@ -3671,7 +3738,8 @@ struct LayoutRunControl<'a> {
 
 /// One intrinsic font-metrics entry, without glyphs or native render leases.
 /// The ordinary paragraph basis is shared by every viewport layout job.
-struct DefaultFontMetrics {
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct DefaultFontMetrics {
     style: ResolvedTextStyle,
     scale_bits: u32,
     measurement_environment_id: MeasurementEnvironmentId,
@@ -4671,6 +4739,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let result = RegionalLayoutSnapshot {
             whitespace_unit,
             default_row_advance,
+            default_font_metrics: self.default_font_metrics.clone(),
             revision: layout_revision,
             document_id,
             document_revision,
@@ -5141,6 +5210,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             return Err(LayoutError::MetricsChangedDuringShape.into());
         }
         let mut decorated_table_line = None;
+        let mut hard_line_text_insets = BTreeMap::new();
         for row in &mut rows {
             if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(&row.hard_line_range)) {
                 if row.table_cell.is_none() || decorated_table_line == Some(row.hard_line_index) { continue; }
@@ -5156,6 +5226,16 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             previous_style.map_or(0., block_box::after) * view.scale,
             content_insets.bottom,
         );
+        if let Some(last) = rows.last().filter(|row| row.table_cell.is_none()) {
+            // Other line boundaries can recover their nonnegative gap from
+            // local style inputs. Only the document end needs retained ink
+            // overflow and canvas spacing, independent of document length.
+            hard_line_text_insets.insert(last.hard_line_index, HardLineTextInsets {
+                before: if last.hard_line_index == 0 { rows[0].y } else { 0. },
+                after: y - last.y - last.height(),
+                after_is_exact: true,
+            });
+        }
         let row_content_widths = rows
             .iter()
             .map(|row| content_width_from_row(row, view.width))
@@ -5189,6 +5269,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             tables: tables::collect_tables(&rows),
             whitespace_unit,
             default_row_advance,
+            default_font_metrics: self.default_font_metrics.clone(),
+            hard_line_text_insets,
             revision: layout_revision,
             document_id,
             document_revision,
@@ -5268,6 +5350,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             metrics_generation,
             control,
         )
+    }
+
+    pub(super) fn reuse_captured_font_metrics(&mut self, view: &LayoutJobViewConfiguration) {
+        if let Some(metrics) = &view.default_font_metrics {
+            self.default_font_metrics = Some(metrics.clone());
+        }
     }
 
     /// Measure only the unstyled ordinary paragraph font. Reusing the bounded
@@ -7251,7 +7339,7 @@ mod tests {
             .set_exact_height(2, region.lines()[0].height())
             .unwrap();
         let line_top = height_index.prefix_height(2).unwrap().height() as f32;
-        let snapshot = partial_snapshot_from_region(&region, &height_index).unwrap();
+        let snapshot = partial_snapshot_from_region(&region, &height_index, 1.).unwrap();
         let positioned_row = &snapshot.rows[0];
 
         assert!((positioned_row.y - (relative_row.y + line_top)).abs() < 1.0e-5);
@@ -7279,7 +7367,7 @@ mod tests {
             .set_exact_height(2, visible_region.lines()[0].height())
             .unwrap();
         let old_snapshot =
-            partial_snapshot_from_region(&visible_region, &old_height_index).unwrap();
+            partial_snapshot_from_region(&visible_region, &old_height_index, 1.).unwrap();
 
         let changed_region = lay_out_regional_line(&mut engine, &document, &view, 0);
         let mut new_height_index = old_height_index.clone();
@@ -7547,7 +7635,7 @@ mod tests {
         assert!((region.default_row_advance - base_advance).abs() < 0.001);
         let mut height_index = ViewHeightIndex::new_estimated(1, 20.0).unwrap();
         height_index.set_exact_height(0, region.lines[0].height()).unwrap();
-        let snapshot = partial_snapshot_from_region(&region, &height_index).unwrap();
+        let snapshot = partial_snapshot_from_region(&region, &height_index, 1.).unwrap();
         assert!((snapshot.default_row_advance - base_advance).abs() < 0.001);
         let requests = engine.provider().request_calls();
         engine.layout_hard_line_region_cancellable(

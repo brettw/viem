@@ -28,7 +28,7 @@ final class EVExternalFileChangeTests: XCTestCase {
       beforeSaveSnapshot?()
       return EVDocumentSaveSnapshot(data: data, documentID: persistenceState.documentID, documentRevision: persistenceState.documentRevision)
     }
-    func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+    func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot {
       EVDocumentSaveSnapshot(data: Data("selected source".utf8), documentID: persistenceState.documentID,
         documentRevision: persistenceState.documentRevision, isCompleteSource: false)
     }
@@ -224,7 +224,7 @@ final class EVExternalFileChangeTests: XCTestCase {
     var prompts = 0
     document.externalSaveDecisionHandler = { _ in prompts += 1; return false }
     let request = EVDocumentHostRequest(kind: .writeQuit, documentID: 1, documentRevision: 0,
-      force: true, hardLineRange: 0...0)
+      force: true, sourceByteRange: 0..<1)
     let completed = expectation(description: "cancel forced ranged write")
     window.perform(documentHostRequests: [request]) { result in
       switch result {

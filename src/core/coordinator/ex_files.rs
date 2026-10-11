@@ -27,7 +27,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view: ViewId,
         document: DocumentId,
         revision: Revision,
-        after: usize,
+        after: crate::command::ex_execute::ExInsertionPoint,
         bytes: &[u8],
     ) -> Result<CoreOutcome, CoreError> {
         if document != self.document.id() {
@@ -75,11 +75,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .capture_history_restoration(&self.document)?;
         let outcome = self.apply_native_model_request(
             view,
-            ModelRequest::ApplyFragmentEdits {
-                document,
-                revision,
-                edits: vec![edit],
-            },
+            edit,
         )?;
         if !outcome.document_changed {
             return Ok(outcome);
@@ -96,7 +92,46 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.document.history_status().current.node,
             HistoryRestoration::new(before, after),
         )?;
-        self.ensure_command_layout(view, ImmediateLayoutIntent::RevealCaret)?;
+        if let Err(error) = self.ensure_command_layout(view, ImmediateLayoutIntent::RevealCaret, false) {
+            self.record_presentation_error(view, error);
+        }
         Ok(outcome)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::ex_execute::ExInsertionPoint;
+    use crate::layout::{MeasurementError, MockTextMeasurementProvider};
+
+    #[test]
+    fn read_commit_survives_persistent_presentation_failure_and_remains_undoable() {
+        let mut core = Core::new(Document::new("tail"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300., 120.);
+        let document = core.document.id();
+        let revision = core.document.revision();
+        let calls = core.views[&view].engine.provider().batch_calls();
+        // Both the native transaction refresh and the final read-cursor
+        // refresh exhaust default-font recovery. A one-shot failure would
+        // recover before the old final ensure_command_layout propagation.
+        core.views.get_mut(&view).unwrap().engine.provider_mut()
+            .fail_next_batches(64, "persistent read presentation failure");
+        let outcome = core.handle(view, CoreEvent::ReadFile {
+            document, revision, after: ExInsertionPoint { offset: 0, source: true },
+            bytes: b"  imported\n".to_vec(),
+        }).unwrap();
+        assert!(outcome.document_changed);
+        assert_eq!(core.document.source_bytes(), b"  imported\ntail");
+        assert_eq!(core.command_state(view).unwrap().cursor(), 2);
+        assert!(core.views[&view].engine.provider().batch_calls() >= calls + 4,
+            "the failure must persist through both refresh attempts");
+        assert_eq!(core.layout(view).unwrap().snapshot().unwrap().document_revision, revision);
+        assert!(matches!(core.layout(view).unwrap().last_error(),
+            Some(LayoutError::Measurement(MeasurementError::Provider(message)))
+                if message == "persistent read presentation failure"));
+        core.views.get_mut(&view).unwrap().engine.provider_mut().fail_next_batches(0, "");
+        core.handle(view, CoreEvent::Input(InputEvent::Key(crate::command::Key::Char('u')))).unwrap();
+        assert_eq!(core.document.source_bytes(), b"tail");
     }
 }

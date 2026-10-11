@@ -60,7 +60,7 @@ let package = Package(
         ),
         .target(
             name: "ViemAppShell",
-            dependencies: ["CViemCore", "ViemBlockingTransport"],
+            dependencies: ["CViemCore", "ViemBlockingTransport", "ViemCoreTextProvider"],
             path: "src/mac/AppShell",
             linkerSettings: [
                 .linkedFramework("AppKit"),

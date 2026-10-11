@@ -4615,12 +4615,12 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     let mut complete = 99;
     assert_eq!(
         unsafe {
-            viem_core_copy_hard_line_source_bytes(
+            viem_core_copy_source_range_bytes(
                 core.handle,
                 state.document_id,
                 state.document_revision,
-                1,
-                2,
+                9,
+                23,
                 ptr::null_mut(),
                 0,
                 &mut required,
@@ -4634,12 +4634,12 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     let mut bytes = vec![0; required as usize];
     assert_eq!(
         unsafe {
-            viem_core_copy_hard_line_source_bytes(
+            viem_core_copy_source_range_bytes(
                 core.handle,
                 state.document_id,
                 state.document_revision,
-                1,
-                2,
+                9,
+                23,
                 bytes.as_mut_ptr(),
                 bytes.len() as u64,
                 &mut required,
@@ -4651,12 +4651,12 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     assert_eq!(bytes, b"**second**\r\n\r\n");
     assert_eq!(
         unsafe {
-            viem_core_copy_hard_line_source_bytes(
+            viem_core_copy_source_range_bytes(
                 core.handle,
                 state.document_id + 1,
                 state.document_revision,
-                1,
-                2,
+                9,
+                23,
                 ptr::null_mut(),
                 0,
                 &mut required,
@@ -4667,12 +4667,12 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     );
     assert_eq!(
         unsafe {
-            viem_core_copy_hard_line_source_bytes(
+            viem_core_copy_source_range_bytes(
                 core.handle,
                 state.document_id,
                 state.document_revision + 1,
-                1,
-                2,
+                9,
+                23,
                 ptr::null_mut(),
                 0,
                 &mut required,
@@ -4683,19 +4683,19 @@ fn ranged_source_export_preserves_delimiters_and_rejects_stale_identity() {
     );
     assert_eq!(
         unsafe {
-            viem_core_copy_hard_line_source_bytes(
+            viem_core_copy_source_range_bytes(
                 core.handle,
                 state.document_id,
                 state.document_revision,
-                2,
-                1,
+                23,
+                9,
                 ptr::null_mut(),
                 0,
                 &mut required,
                 &mut complete,
             )
         },
-        ViemStatus::PolicyRequired
+        ViemStatus::InvalidArgument
     );
     assert_eq!(document_state(&core), state);
 }

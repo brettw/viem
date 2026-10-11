@@ -10,8 +10,8 @@ pub enum LineMode {
 }
 /// Cached exact source position for source-only lines. It is reused only in
 /// the named source snapshot and while its accompanying text point still
-/// equals the current cursor. An edit invalidates it; the current persistent
-/// text cursor then supplies the declared visible-boundary recovery policy.
+/// equals the current cursor. Committed source maps explicitly rebase both
+/// coordinates; missing lineage retires the disposable cache.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PhysicalCursor {
     source: crate::document::SourcePoint,
@@ -68,18 +68,130 @@ impl CommandInterpreter {
             .source_insertion_point(self.cursor, true)
             .unwrap_or(0))
     }
+    /// Source-backed current line without decoding its possibly huge body.
+    pub fn physical_source_line_index(&self, document: &Document) -> Result<usize, DocumentError> {
+        document.physical_line_index_at_source(self.physical_source_cursor(document)?)
+    }
+
     fn physical_line(
         &self,
         document: &Document,
     ) -> Result<crate::document::PhysicalSourceLine, DocumentError> {
         document.physical_line_at_source(self.physical_source_cursor(document)?)
     }
-    fn remember_physical_cursor(&mut self, document: &Document, at: usize) {
+    pub(super) fn remember_physical_cursor(&mut self, document: &Document, at: usize) {
         self.physical_cursor = document
             .source_point(at)
             .ok()
             .zip(document.text_point(self.cursor).ok())
             .map(|(source, text)| PhysicalCursor { source, text });
+    }
+
+    pub(super) fn retained_physical_cursor_source(&self, document: &Document) -> Option<crate::document::SourcePoint> {
+        self.physical_cursor.filter(|cached| cached.source.document() == document.id()
+            && cached.source.revision() == document.revision()
+            && cached.text.revision() == document.revision()
+            && cached.text.offset() == self.cursor).map(|cached| cached.source)
+    }
+
+    pub(super) fn rebase_physical_cursor(
+        &mut self, map: &PositionMap, association: Association,
+    ) -> Result<(), PositionError> {
+        let Some(previous) = self.physical_cursor else { return Ok(()); };
+        if previous.source.revision() == map.target_revision() { return Ok(()); }
+        if previous.source.revision() != map.source_revision()
+            || previous.text.revision() != map.source_revision() {
+            self.physical_cursor = None;
+            return Ok(());
+        }
+        let Some(source_map) = map.source_position_map() else {
+            self.physical_cursor = None;
+            return Ok(());
+        };
+        let source = source_map.map_source_point(previous.source, association,
+            DeletionRecovery::PreferFollowingThenPreceding)?.value().copied();
+        let text = map.map_text_point(previous.text, association, self.boundary_affinity,
+            DeletionRecovery::PreferFollowingThenPreceding)?.value().copied();
+        self.physical_cursor = source.zip(text)
+            .filter(|(_, text)| text.offset() == self.cursor)
+            .map(|(source, text)| PhysicalCursor { source, text });
+        Ok(())
+    }
+
+    /// Recover only the displayed caret from a retained exact source identity.
+    /// Hidden syntax can supply no unique glyph; the existing downstream
+    /// presentation policy selects its usable neighboring caret geometry.
+    pub(crate) fn recover_physical_cursor_display(
+        &mut self, document: &Document,
+    ) -> Result<bool, DocumentError> {
+        let Some(cached) = self.physical_cursor else { return Ok(false); };
+        if cached.source.document() != document.id()
+            || cached.source.revision() != document.revision()
+            || cached.text.revision() != document.revision()
+            || cached.text.offset() != self.cursor {
+            self.physical_cursor = None;
+            return Ok(false);
+        }
+        let visible = document.visible_point_for_source(cached.source.offset(), true)?;
+        self.cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) { visible } else {
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), visible)
+        };
+        self.remember_physical_cursor(document, cached.source.offset());
+        Ok(true)
+    }
+    /// Absolute line addresses use file-line ordinals in every view mode.
+    /// The final editable boundary is not a numbered file line.
+    pub(super) fn physical_line_destination(
+        &self,
+        document: &Document,
+        one_based: usize,
+    ) -> Result<(usize, usize), DocumentError> {
+        let index = one_based
+            .saturating_sub(1)
+            .min(document.physical_source_line_number_count().saturating_sub(1));
+        let source = document.physical_first_nonblank_source(index)?;
+        let point = document.visible_point_for_source(source, true)?;
+        Ok((
+            source,
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), point),
+        ))
+    }
+
+    pub(super) fn goto_physical_line(
+        &mut self,
+        document: &Document,
+        one_based: usize,
+    ) -> CommandOutput {
+        let (source, point) = match self.physical_line_destination(document, one_based) {
+            Ok(destination) => destination,
+            Err(error) => {
+                return CommandOutput {
+                    status: CommandStatus::Error(format!("physical line navigation failed: {error}")),
+                    ..CommandOutput::complete()
+                };
+            }
+        };
+        let old = self.cursor;
+        let old_source = self.physical_source_cursor(document).ok();
+        self.cursor = point;
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        self.visual_position = None;
+        self.preferred_column = None;
+        self.desired_x = None;
+        self.visual_to_line_end = false;
+        self.remember_physical_cursor(document, source);
+        let output = CommandOutput {
+            cursor_moved: old != self.cursor || old_source != Some(source),
+            ..CommandOutput::complete()
+        };
+        if old != self.cursor {
+            self.record_successful_jump(document, old, output)
+        } else {
+            if output.cursor_moved {
+                self.retire_typing_context();
+            }
+            output
+        }
     }
     pub fn line_mode(&self) -> LineMode {
         self.line_mode
@@ -570,6 +682,74 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         self.apply_mode_line_operator_repeated(document, operator, shape, count, register, 1)
     }
+    pub(super) fn apply_physical_address_operator(
+        &mut self,
+        document: &mut Document,
+        operator: Operator,
+        motion: OperatorMotion,
+        count: usize,
+        register: Option<char>,
+    ) -> Result<CommandOutput, DocumentError> {
+        let address = if motion == OperatorMotion::Percentage {
+            let Some(address) = physical_percentage_line(document, count) else {
+                return Ok(invalid_percentage(count));
+            };
+            address
+        } else { count };
+        let current = self.physical_source_line_index(document)?;
+        let target = address.saturating_sub(1)
+            .min(document.physical_source_line_number_count().saturating_sub(1));
+        let (first, _) = document.physical_line_ranges(current.min(target))?;
+        let (last, _) = document.physical_line_ranges(current.max(target))?;
+        let source = first.start..last.end;
+        let a = document.visible_point_for_source(source.start, true)?;
+        let b = document.visible_point_for_source(source.end, false)?;
+        if matches!(operator, Operator::Format | Operator::FormatKeepCursor) {
+            return self.apply_operator_with_repeat(document, operator,
+                MotionExtent { range: a.min(b)..a.max(b), kind: MotionKind::Linewise },
+                register, RepeatTarget::PhysicalLineAddress(motion), count);
+        }
+        let origin = if target != current {
+            Some(document.text_anchor(document.text_point(self.cursor)?,
+                Association::AfterInsertion, BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding).map_err(command_position_document_error)?)
+        } else { None };
+        let (result, map) = document.capture_position_maps(|document| self.apply_mode_line_extent(document,
+            operator, LineShape::Whole, count, register,
+            LineExtent { text: a.min(b)..a.max(b), source: Some(source), whole: true }, 1));
+        let mut output = result?;
+        if operator == Operator::Yank && target < current && output.status == CommandStatus::Complete {
+            let old_cursor = self.cursor;
+            let old_line = document.physical_line(current)?;
+            let old_source = self.physical_source_cursor(document)?
+                .clamp(old_line.content_range.start, old_line.content_range.end);
+            let column = document.physical_source_text(old_line.content_range.start..old_source)?.graphemes(true).count();
+            let line = document.physical_line(target)?;
+            let prefix = line.text.trim_end_matches('\n').graphemes(true).take(column).collect::<String>();
+            let source = line.content_range.start + document.encoding().encode_fragment(&prefix)?.len();
+            self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                document.visible_point_for_source(source, true)?);
+            self.remember_physical_cursor(document, source);
+            self.boundary_affinity = BoundaryAffinity::Downstream;
+            output.cursor_moved = self.cursor != old_cursor;
+        }
+        if let Some(origin) = origin {
+            if output.document_changed || operator == Operator::Yank {
+                if let Some(mapped) = mapped_anchor(&map, origin).map_err(command_position_document_error)? {
+                    self.record_jump(document, mapped, self.cursor);
+                }
+            }
+        }
+        if !self.replaying && operator != Operator::Yank && (output.document_changed || operator == Operator::Change) {
+            let command = OperatorRepeat { operator, target: RepeatTarget::PhysicalLineAddress(motion), count, register };
+            if operator == Operator::Change {
+                if let Some(session) = self.insert_session.as_mut() { session.repeat_operator = Some(command); }
+            } else {
+                self.last_repeat = Some(RepeatAction::Operator { command, edits: None });
+            }
+        }
+        Ok(output)
+    }
     pub(super) fn apply_mode_line_operator_repeated(
         &mut self,
         document: &mut Document,
@@ -635,22 +815,33 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         let before = document.revision();
+        let mut physical_change_at = None;
         let mut output = if let Some(mut source) = extent.source {
             let source_len = document.source_byte_len();
-            let normalized = document.physical_source_text(source.clone())?;
-            let value = if extent.whole {
-                RegisterValue::linewise(if normalized.ends_with('\n') {
-                    normalized.clone()
-                } else {
-                    format!("{normalized}\n")
-                })
-            } else {
-                RegisterValue::characterwise(normalized.clone())
-            };
+            let payload = document.physical_source_payload(source.clone())?;
+            let normalized = payload.text().to_owned();
+            let mut register_text = normalized.clone();
+            let mut breaks = payload.break_offsets().to_vec();
+            if extent.whole && !breaks.last().is_some_and(|index| index + 1 == register_text.len()) {
+                breaks.push(register_text.len());
+                register_text.push('\n');
+            }
+            let value = RegisterValue::try_new(register_text,
+                if extent.whole { RegisterKind::Linewise } else { RegisterKind::Characterwise }, breaks)
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
             if operator == Operator::Yank {
                 self.yank_register(register, value);
                 return Ok(CommandOutput::complete());
             }
+            let transform = match operator {
+                Operator::Lowercase => Some(crate::document::PhysicalSourceTransform::Lowercase),
+                Operator::Uppercase => Some(crate::document::PhysicalSourceTransform::Uppercase),
+                Operator::ToggleCase => Some(crate::document::PhysicalSourceTransform::ToggleCase),
+                Operator::Indent => Some(crate::document::PhysicalSourceTransform::Indent { spaces: 4usize.saturating_mul(applications) }),
+                Operator::Outdent => Some(crate::document::PhysicalSourceTransform::Outdent { spaces: 4usize.saturating_mul(applications) }),
+                Operator::Reindent => Some(crate::document::PhysicalSourceTransform::TrimIndent),
+                _ => None,
+            };
             let replacement = match operator {
                 Operator::Delete | Operator::Change => {
                     if operator == Operator::Change && extent.whole && source.end < source_len {
@@ -659,28 +850,11 @@ impl CommandInterpreter {
                         String::new()
                     }
                 }
-                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
-                    change_case(&normalized, operator)
-                }
+                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => String::new(),
                 Operator::Format | Operator::FormatKeepCursor => {
                     unreachable!("reflow bypasses view-line extents")
                 }
-                Operator::Indent | Operator::Outdent | Operator::Reindent => normalized
-                    .split_inclusive('\n')
-                    .map(|line| match operator {
-                        Operator::Indent => {
-                            format!("{}{line}", " ".repeat(4usize.saturating_mul(applications)))
-                        }
-                        Operator::Outdent => line[line
-                            .bytes()
-                            .take_while(|byte| *byte == b' ')
-                            .take(4usize.saturating_mul(applications))
-                            .count()..]
-                            .to_owned(),
-                        Operator::Reindent => line.trim_start_matches([' ', '\t']).to_owned(),
-                        _ => unreachable!(),
-                    })
-                    .collect::<String>(),
+                Operator::Indent | Operator::Outdent | Operator::Reindent => String::new(),
                 Operator::Yank => unreachable!(),
             };
             if operator == Operator::Delete
@@ -696,7 +870,15 @@ impl CommandInterpreter {
             if operator == Operator::Change {
                 document.begin_edit_group();
             }
-            document.replace_physical_source(source.clone(), replacement)?;
+            if let Some(transform) = transform {
+                document.apply_model_request(ModelRequest::TransformPhysicalSource {
+                    document: document.id(), revision: document.revision(), range: source.clone(), transform,
+                }).map_err(command_document_error)?;
+            } else {
+                let result = document.replace_physical_source(source.clone(), replacement);
+                if result.is_err() && operator == Operator::Change { document.end_edit_group(); }
+                result?;
+            }
             if matches!(operator, Operator::Delete | Operator::Change) {
                 self.delete_register(
                     register,
@@ -711,6 +893,10 @@ impl CommandInterpreter {
             self.cursor = document
                 .visible_point_for_source(source.start.min(document.source_byte_len()), true)?;
             self.remember_physical_cursor(document, source.start.min(document.source_byte_len()));
+            if operator == Operator::Change {
+                physical_change_at = Some(document.source_point(source.start.min(document.source_byte_len()))
+                    .map_err(|_| DocumentError::AmbiguousProjection)?);
+            }
             CommandOutput {
                 document_changed: before != document.revision(),
                 cursor_moved: true,
@@ -810,6 +996,14 @@ impl CommandInterpreter {
         if operator == Operator::Change {
             output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
             self.typing_style.inherited = inherited_typing;
+            if let Some(at) = physical_change_at {
+                if document.source_insertion_requires_materialization(at)? {
+                    if let Some(session) = self.insert_session.as_mut() {
+                        session.source_destination = Some(at);
+                        session.source_floor = Some(at);
+                    }
+                }
+            }
             // The change itself already opened the shared undo group.
             document.end_edit_group();
         } else {
