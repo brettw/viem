@@ -7,6 +7,38 @@ import XCTest
 final class EVStylePropertyLayoutTests: XCTestCase {
     private let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
 
+    func testTabChangesKeepPreviewAndCloseAtFixedBottomPositions() throws {
+        let (_, surface, editor, window) = try makeEditor()
+        defer { window.orderOut(nil); withExtendedLifetime(surface) {} }
+        for size in [NSSize(width: 700, height: 545), NSSize(width: 860, height: 850)] {
+            window.setContentSize(size)
+            editor.selectTab(.character)
+            editor.view.layoutSubtreeIfNeeded()
+            let preview = try control(NSView.self, label: "Style preview", in: editor.view)
+            let close = try control(NSButton.self, label: "Close style editor", in: editor.view)
+            let originalPreview = editor.view.convert(preview.bounds, from: preview)
+            let originalClose = editor.view.convert(close.bounds, from: close)
+            let originalWindow = window.frame
+            for tab in [EVStyleEditorTab.paragraph, .block, .character] {
+                editor.selectTab(tab)
+                editor.view.layoutSubtreeIfNeeded()
+                XCTAssertEqual(editor.view.convert(preview.bounds, from: preview), originalPreview)
+                XCTAssertEqual(editor.view.convert(close.bounds, from: close), originalClose)
+                XCTAssertEqual(window.frame, originalWindow)
+            }
+            editor.selectTab(.block)
+            editor.view.layoutSubtreeIfNeeded()
+            let caption = try caption("Match sides", in: editor.view)
+            let background = try self.caption("Background Color", in: editor.view)
+            let lock = try control(NSButton.self, label: "Link block sides", in: editor.view)
+            XCTAssertEqual(caption.font, background.font)
+            XCTAssertEqual(caption.textColor, background.textColor)
+            XCTAssertEqual(caption.alignment, .right)
+            XCTAssertEqual(editor.view.convert(caption.bounds, from: caption).maxX,
+                           editor.view.convert(lock.bounds, from: lock).maxX, accuracy: 1)
+        }
+    }
+
     func testColorCaptionsEnableInheritedColorsWithoutOpeningTheColorPanel() throws {
         let (backend, surface, editor, window) = try makeEditor()
         defer { window.orderOut(nil); withExtendedLifetime(surface) {} }

@@ -53,6 +53,7 @@ final class EVVerticalSplitter: NSView {
   override init(frame: NSRect) {
     super.init(frame: frame)
     wantsLayer = true
+    layer?.masksToBounds = true
     setAccessibilityRole(.splitter)
     setAccessibilityLabel("Resize views horizontally")
     applyTheme()
@@ -61,9 +62,11 @@ final class EVVerticalSplitter: NSView {
   required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
   deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
   override func draw(_ dirtyRect: NSRect) {
-    NSColor.separatorColor.setFill()
-    NSRect(x:0,y:0,width:1,height:bounds.height).fill()
-    NSRect(x:bounds.width-1,y:0,width:1,height:bounds.height).fill()
+    let style = EVThemeStore.shared.chromeStyles.statusBar
+    for (border, x) in [(style.leftBorder, CGFloat(0)), (style.rightBorder, bounds.width - style.rightBorder.width)] where border.width > 0 {
+      (border.color ?? style.foreground).setFill()
+      NSRect(x:x,y:0,width:border.width,height:bounds.height).fill()
+    }
   }
   override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
   private func applyTheme() { layer?.backgroundColor = EVThemeStore.shared.chromeStyles.statusBar.background?.cgColor; needsDisplay = true }

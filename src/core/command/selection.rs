@@ -165,7 +165,7 @@ impl CommandInterpreter {
             .ok_or(DocumentError::AmbiguousProjection)
     }
 
-    pub(crate) fn select_pointer_word(&mut self, document: &Document, word: Range<usize>, extend: bool) {
+    pub(crate) fn select_pointer_range(&mut self, document: &Document, word: Range<usize>, extend: bool) {
         let origin = if extend { self.pointer_word_origin.clone() } else { None }
             .unwrap_or_else(|| word.clone());
         // Keep an existing Visual/Select policy, including when the gesture

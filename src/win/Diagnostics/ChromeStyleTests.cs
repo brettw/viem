@@ -123,6 +123,17 @@ internal static class ChromeStyleTests
 
     internal static async Task Run(EditorWindow owner, Preferences ownerPreferences)
     {
+        byte[] mask = [0b10100000, 0, 0, 0, 0b01000000, 0, 0, 0];
+        byte[] mirroredMask = new byte[mask.Length];
+        GutterCursor.MirrorRows(mask, mirroredMask, 3, 2, 4, monochrome: true);
+        Check(mirroredMask.SequenceEqual(mask), "symmetric cursor mask rows retain MSB-first bit order and row padding");
+        GutterCursor.MirrorRows([0b10000000, 0, 0, 0], mirroredMask.AsSpan(0, 4), 3, 1, 4, monochrome: true);
+        Check(mirroredMask[0] == 0b00100000, "cursor mask flips across the actual width, excluding bitmap padding");
+        byte[] color = [1, 2, 3, 4, 5, 6, 7, 8], mirroredColor = new byte[8];
+        GutterCursor.MirrorRows(color, mirroredColor, 2, 1, 8, monochrome: false);
+        Check(mirroredColor.SequenceEqual(new byte[] { 5, 6, 7, 8, 1, 2, 3, 4 }), "cursor mirroring preserves complete BGRA pixels including alpha");
+        using (var cursor = GutterCursor.Create())
+            Check(cursor is not Microsoft.UI.Input.InputSystemCursor, "gutter selection creates an owned custom mirrored cursor");
         var area = new WindowFrame(-1000, 30, 1000, 800);
         var original = new WindowFrame(-700, 80, 500, 500);
         Check(EditorWindow.GutterFrame(original, area, 40) == original with { X = -740, Width = 540 },
@@ -192,6 +203,24 @@ internal static class ChromeStyleTests
             Check(!numberItem.IsChecked, "reopening View refreshes the line-number check after an Ex option change");
             menuPeer.Collapse();
             view.Ex("set number"); await Task.Delay(150); pane.UpdateLayout();
+            var pointerRows = view.Layout().Rows;
+            float RowY(int index) => pointerRows[index].y + pointerRows[index].ascent * .5f - view.Viewport.top;
+            view.SelectPointerRow(RowY(1));
+            var pointerSelection = view.LogicalSelection();
+            ulong originStart = pointerRows[1].text_start, originEnd = pointerRows[1].text_end + 1;
+            Check(pointerSelection.text_start == originStart && pointerSelection.text_end == originEnd,
+                "gutter click selects the complete visible row and its break");
+            view.SelectPointerRow(RowY(2), true);
+            Check(view.LogicalSelection().text_start == originStart && view.LogicalSelection().text_end == pointerRows[2].text_end + 1,
+                "gutter downward drag includes its complete original row");
+            view.SelectPointerRow(RowY(0), true);
+            Check(view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == originEnd
+                && view.Presentation.cursor_utf8_offset == 0, "gutter reversal includes its original end and places the caret at the active beginning");
+            view.SelectPointerRow(RowY(1), true);
+            Check(view.LogicalSelection().text_start == originStart && view.LogicalSelection().text_end == originEnd,
+                "gutter returning to the initial row retains the complete row");
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
+
             Check(pane.GutterWidth > 0 && pane.LineNumbersForTesting?.Info.source_line_count == 9,
                 "set number displays physical source line numbers in a native gutter");
             var sheet = view.Styles();
@@ -285,6 +314,22 @@ internal static class ChromeStyleTests
                 using var target = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.StatusControl.ActualWidth, (float)pane.StatusBarHeight, pane.Canvas.Dpi);
                 using var drawing = target.CreateDrawingSession(); pane.DrawStatusTextForTesting(drawing);
             }
+            var originalStatusBlock = status["block"]!.DeepClone();
+            status["block"]!["padding_top"] = 3; status["block"]!["padding_bottom"] = 11;
+            status["block"]!["border_top_width"] = 7; status["block"]!["border_bottom_width"] = 30;
+            status["block"]!["border_left_width"] = 24; status["block"]!["border_right_width"] = 28;
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout(); DrawStatus();
+            double bottomHeight = pane.StatusBarHeight;
+            double center = (bottomHeight + 7 + 3 - 11) / 2;
+            var normalText = pane.DrawnStatusTexts.Single(text => text.Original == "NORMAL");
+            Check(Math.Abs(normalText.Bounds.Y + normalText.Bounds.Height / 2 - center) < 1,
+                "bottom status text centers inside padding with its thick bottom border outside the window");
+            pane.SetStatusBottomEdge(false);
+            Check(Math.Abs(pane.StatusBarHeight - bottomHeight - 30) < 1,
+                "internal status bars reserve the bottom border that separates viewports");
+            pane.SetStatusBottomEdge(true);
+            status["block"] = originalStatusBlock;
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout();
             DrawStatus();
             var mono = preferences.StatusStyles.Status;
             using (var untracked = (mono with { Tracking = 0 }).Layout(pane.Canvas.Device, "NORMAL"))

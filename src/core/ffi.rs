@@ -1389,6 +1389,7 @@ pub const VIEM_STYLE_EDIT_CLEAR_PARENT: u32 = 4;
 pub const VIEM_STYLE_EDIT_SET_NEXT_STYLE: u32 = 5;
 pub const VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE: u32 = 6;
 pub const VIEM_STYLE_EDIT_SET_DISPLAY_NAME: u32 = 7;
+pub const VIEM_STYLE_EDIT_SET_PARENT_VARIANT: u32 = 8;
 
 /// Exact identity of one immutable normalized style sheet.
 #[repr(C)]
@@ -1479,6 +1480,8 @@ pub struct ViemStyleDefinitionV1 {
     pub role: u32,
     pub origin: u32,
     pub capabilities: u32,
+    pub parent_variant: u32,
+    pub reserved: u32,
     pub stable_id: ViemStyleStringRefV1,
     pub display_name: ViemStyleStringRefV1,
     pub parent_id: ViemStyleStringRefV1,
@@ -5918,6 +5921,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         }
         definitions.push(ViemStyleDefinitionV1 {
             struct_size: VIEM_STYLE_DEFINITION_V1_SIZE,
+            parent_variant: sheet.parent_variant(StyleNamespace::Block, &style.id).map_or(0, |v| v.abi_value()),
+            reserved: 0,
             flags,
             namespace: VIEM_STYLE_NAMESPACE_BLOCK,
             role: style_role_to_ffi(style.role),
@@ -5987,6 +5992,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         };
         definitions.push(ViemStyleDefinitionV1 {
             struct_size: VIEM_STYLE_DEFINITION_V1_SIZE,
+            parent_variant: sheet.parent_variant(StyleNamespace::Character, &style.id).map_or(0, |v| v.abi_value()),
+            reserved: 0,
             flags,
             namespace: VIEM_STYLE_NAMESPACE_CHARACTER,
             role: VIEM_STYLE_ROLE_NONE,
@@ -7352,6 +7359,7 @@ unsafe fn parse_style_edit_request<O>(
             StyleDefinitionFieldEdit::ClearDeclaration(property)
         }
         VIEM_STYLE_EDIT_SET_PARENT
+        | VIEM_STYLE_EDIT_SET_PARENT_VARIANT
         | VIEM_STYLE_EDIT_SET_NEXT_STYLE
         | VIEM_STYLE_EDIT_SET_DISPLAY_NAME => {
             if request.property != 0
@@ -7367,6 +7375,8 @@ unsafe fn parse_style_edit_request<O>(
                 return Err(ViemStatus::InvalidStyleRelationship);
             }
             match request.operation {
+                VIEM_STYLE_EDIT_SET_PARENT_VARIANT => StyleDefinitionFieldEdit::SetParentVariant(
+                    crate::document::ThemeVariant::parse(&target).ok_or(ViemStatus::InvalidStyleRelationship)?),
                 VIEM_STYLE_EDIT_SET_PARENT => {
                     StyleDefinitionFieldEdit::SetParent(Some(StyleId(target)))
                 }
@@ -13647,8 +13657,8 @@ pub struct ViemViewLineLocationV1 {
 }
 pub const VIEM_VIEW_LINE_LOCATION_V1_SIZE: u32 =
     std::mem::size_of::<ViemViewLineLocationV1>() as u32;
-/// Report one-based line/column and the exact hard-line/fragment fallback.
-/// line is zero when the global visual row number is not yet materialized.
+/// Report exact one-based physical source line/column, independent of line mode.
+/// This query never materializes layout; mode is always physical source.
 /// # Safety
 /// out_location must identify one aligned writable V1 location record.
 #[no_mangle]
@@ -13664,7 +13674,7 @@ pub unsafe extern "C" fn viem_core_view_line_location(
             return Err(ViemStatus::InvalidArgument);
         }
         let location = with_core_mut(handle, |core| {
-            core.line_location(ViewId(view)).map_err(core_status)
+            core.physical_line_location(ViewId(view)).map_err(core_status)
         })?;
         let result = ViemViewLineLocationV1 {
             struct_size: VIEM_VIEW_LINE_LOCATION_V1_SIZE,
@@ -13818,6 +13828,25 @@ pub unsafe extern "C" fn viem_theme_default_json(preset: u32, output: *mut u8, c
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
         let bytes = crate::document::theme::default_json(preset).map_err(|_| ViemStatus::InvalidArgument)?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()); }
+        Ok(())
+    })
+}
+
+/// Build session-only stylesheet context from a JSON object keyed by text,
+/// markdown and code. Exports omit this context and retain sparse own values.
+/// # Safety
+/// Inputs are readable; outputs are writable, and all regions are disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_style_defaults_json(variant: u32, json: *const u8, length: u64,
+    output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        if length > crate::document::theme::MAX_THEME_BYTES as u64 { return Err(ViemStatus::InvalidArgument); }
+        validate_disjoint_regions(&[typed_pointer_region(json, length)?, typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let variant = crate::document::ThemeVariant::from_abi(variant).ok_or(ViemStatus::InvalidArgument)?;
+        let bytes = crate::document::theme::style_defaults_json(variant, unsafe { input_bytes(json, length)? }).map_err(|_| ViemStatus::InvalidArgument)?;
         unsafe { required.write(bytes.len() as u64); }
         if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
         unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len()); }

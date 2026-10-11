@@ -1157,7 +1157,8 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_EDIT_CLEAR_PARENT 4u
 #define VIEM_STYLE_EDIT_SET_NEXT_STYLE 5u
 #define VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE 6u
-#define VIEM_STYLE_EDIT_SET_DISPLAY_NAME 7u
+#define VIEM_STYLE_EDIT_SET_DISPLAY_NAME 7
+#define VIEM_STYLE_EDIT_SET_PARENT_VARIANT 8u
 
 typedef struct ViemStyleSheetIdentityV1 {
   uint32_t struct_size;
@@ -1231,6 +1232,8 @@ typedef struct ViemStyleDefinitionV1 {
   uint32_t role;
   uint32_t origin;
   uint32_t capabilities;
+  uint32_t parent_variant; /* zero for local inheritance, otherwise a source-format family */
+  uint32_t reserved;
   ViemStyleStringRefV1 stable_id;
   ViemStyleStringRefV1 display_name;
   ViemStyleStringRefV1 parent_id;
@@ -2605,7 +2608,7 @@ typedef struct ViemViewLineLocationV1 {
     uint64_t fragment;
 } ViemViewLineLocationV1;
 #define VIEM_VIEW_LINE_LOCATION_V1_SIZE ((uint32_t)sizeof(ViemViewLineLocationV1))
-/* One-based fields; line==0 means use exact hard_line/fragment fallback. */
+/* Exact physical source coordinates regardless of command line mode; no layout is forced. */
 ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, ViemViewLineLocationV1 *out_location);
 
 
@@ -2633,6 +2636,11 @@ typedef struct ViemLineNumberRegionV1 {
 /* View-local native preference. It changes no source, history or layout. */
 ViemStatus viem_core_view_number(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
+/* Select a complete displayed row at document-layout y. Table gutter gestures
+ * select the entire semantic table row. Extension retains the initial row. */
+ViemStatus viem_core_view_select_pointer_row(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, float y, uint32_t extend_selection,
+    ViemCoreOutcomeV1 *out_outcome);
 /* One-based physical source lines independent of command line mode. Regions
  * intersect the viewport but retain their full wrapped line bounds. Entirely
  * hidden syntax has no independent glyph band; visible folded source lines
@@ -2855,6 +2863,7 @@ ViemStatus viem_core_export_style_defaults(ViemCoreHandle core, uint64_t expecte
 #define VIEM_THEME_PRESET_MIDNIGHT 0u
 #define VIEM_THEME_PRESET_PAPER 1u
 ViemStatus viem_theme_default_json(uint32_t preset, uint8_t *output, uint64_t capacity, uint64_t *required);
+ViemStatus viem_theme_style_defaults_json(uint32_t variant, const uint8_t *json, uint64_t length, uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_theme_validate_json(const uint8_t *json, uint64_t length);
 ViemStatus viem_theme_validate_name(const uint8_t *name, uint64_t length);
 

@@ -118,6 +118,9 @@ fn location_and_width_changes_keep_large_document_layout_local() {
     let (mut core, view) = editor(Document::new(original), 80.0);
     keys(&mut core, view, "G");
     let before = core.layout(view).unwrap().regional_cache_statistics();
+    let physical = core.physical_line_location(view).unwrap();
+    assert_eq!((physical.line, physical.column), (Some(20_001), 1));
+    assert_eq!(physical.mode, LineMode::PhysicalSource);
     let location = core.line_location(view).unwrap();
     assert_eq!(location.line, None);
     assert_eq!(location.hard_line, 20_001);
@@ -148,6 +151,19 @@ fn location_and_width_changes_keep_large_document_layout_local() {
             .hard_line_count()
             < 500
     );
+}
+
+#[test]
+fn status_source_coordinates_ignore_wrapping_and_command_line_mode() {
+    let (mut core, view) = editor(Document::new("first\ne\u{301} abc def ghi jkl mno pqr"), 55.0);
+    keys(&mut core, view, "2ggll");
+    let expected = core.physical_line_location(view).unwrap();
+    assert_eq!((expected.line, expected.column), (Some(2), 3));
+    assert_eq!(core.command_state(view).unwrap().line_mode(), LineMode::Visual);
+    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
+    assert_eq!(core.physical_line_location(view).unwrap(), expected);
+    core.handle(view, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
+    assert_eq!(core.physical_line_location(view).unwrap(), expected);
 }
 
 #[test]

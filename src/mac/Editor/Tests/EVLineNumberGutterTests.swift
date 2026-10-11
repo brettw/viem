@@ -33,6 +33,76 @@ final class EVLineNumberGutterTests: XCTestCase {
         return (backend, surface, try XCTUnwrap(surface.session))
     }
 
+    func testGutterDragSelectsWholeRowsAndKeepsItsCursorAcrossText() throws {
+        let (backend, surface, session) = try makeSurface("first\nsecond\nthird\nlast\n")
+        defer { session.detach() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        surface.performInput { try session.setNumber(true) }
+        let view = surface.editorView
+        let rows = try XCTUnwrap(surface.layoutSnapshot).rows
+        func event(_ type: NSEvent.EventType, _ row: Int, overText: Bool = false) throws -> NSEvent {
+            let y = view.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(rows[row].y + rows[row].ascent * 0.5))).y
+            let local = NSPoint(x: overText ? view.textViewportRect.midX : view.lineNumberGutterWidth / 2, y: y)
+            return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(local, to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        let textPoint = NSPoint(x: view.textViewportRect.midX, y: view.textViewportRect.midY)
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.arrow)
+        view.mouseDown(with: try event(.leftMouseDown, 1))
+        XCTAssertEqual(surface.selectedUTF8Range(), 6..<13)
+        view.mouseDragged(with: try event(.leftMouseDragged, 2, overText: true))
+        XCTAssertEqual(surface.selectedUTF8Range(), 6..<19)
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === EVLineNumberGutter.selectionCursor)
+        view.mouseDragged(with: try event(.leftMouseDragged, 0))
+        XCTAssertEqual(surface.selectedUTF8Range(), 0..<13)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+        view.mouseDragged(with: try event(.leftMouseDragged, 1))
+        XCTAssertEqual(surface.selectedUTF8Range(), 6..<13)
+        view.mouseUp(with: try event(.leftMouseUp, 1, overText: true))
+        XCTAssertFalse(view.gutterSelectionDragging)
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.iBeam)
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.arrow)
+        surface.performInput { _ = try session.sendText("v") }
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.arrow)
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 103) }
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.iBeam)
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendText("i") }
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.iBeam)
+        XCTAssertEqual(try backend.formattedText(), "first\nsecond\nthird\nlast\n")
+        XCTAssertEqual(try session.lineNumberInfo().source_line_count, 5)
+        XCTAssertEqual(view.lineNumberGutter.bands.map(\.line), [1, 2, 3, 4, 5])
+    }
+
+    func testGutterDragAutoscrollIsVerticalAndRetainsInitialRow() throws {
+        let (_, surface, session) = try makeSurface(Array(repeating: "row of text", count: 300).joined(separator: "\n"))
+        defer { session.detach() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        surface.performInput { try session.setNumber(true) }
+        let view = surface.editorView
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        let first = try XCTUnwrap(surface.layoutSnapshot?.rows.first)
+        let start = view.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(first.y + first.ascent / 2)))
+        view.mouseDown(with: try event(.leftMouseDown, NSPoint(x: 1, y: start.y)))
+        let outside = NSPoint(x: -20, y: view.textViewportRect.maxY + 60)
+        view.mouseDragged(with: try event(.leftMouseDragged, outside))
+        XCTAssertTrue(view.performDragAutoscrollStep())
+        XCTAssertGreaterThan(surface.viewportState.top, 0)
+        XCTAssertEqual(surface.viewportState.left, 0)
+        XCTAssertEqual(surface.selectedUTF8Range()?.lowerBound, 0)
+        XCTAssertGreaterThan(surface.selectedUTF8Range()?.upperBound ?? 0, 12)
+        XCTAssertTrue(view.pointerCursor(at: outside) === EVLineNumberGutter.selectionCursor)
+        view.mouseUp(with: try event(.leftMouseUp, outside))
+    }
+
     func testExNumberReservesRealChromeAndPreservesSourceAndHistory() throws {
         let source = (1...120).map { "Line \($0)" }.joined(separator: "\n")
         let (backend, surface, session) = try makeSurface(source)

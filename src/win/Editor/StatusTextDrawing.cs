@@ -34,7 +34,7 @@ internal sealed partial class EditorPane
         drawing.Clear(Microsoft.UI.Colors.Transparent);
         var style = statusStyle ?? preferences.StatusStyles.Status;
         double top = style.Border.Top + style.Padding.Top;
-        double height = Math.Max(0, status.ActualHeight - top - style.Border.Bottom - style.Padding.Bottom);
+        double height = Math.Max(0, status.ActualHeight - top - StatusBottomBorder - style.Padding.Bottom);
         if (height <= 0) return;
 #if DEBUG
         DrawnStatusTexts.Clear();

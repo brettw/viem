@@ -612,6 +612,8 @@ internal unsafe struct ViemStyleDefinitionV1
     public uint @role;
     public uint @origin;
     public uint @capabilities;
+    public uint @parent_variant;
+    public uint @reserved;
     public ViemStyleStringRefV1 @stable_id;
     public ViemStyleStringRefV1 @display_name;
     public ViemStyleStringRefV1 @parent_id;
@@ -1787,7 +1789,8 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_EDIT_CLEAR_PARENT = 4u;
     public const uint VIEM_STYLE_EDIT_SET_NEXT_STYLE = 5u;
     public const uint VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE = 6u;
-    public const uint VIEM_STYLE_EDIT_SET_DISPLAY_NAME = 7u;
+    public const uint VIEM_STYLE_EDIT_SET_DISPLAY_NAME = 7;
+    public const uint VIEM_STYLE_EDIT_SET_PARENT_VARIANT = 8u;
     public static readonly uint VIEM_STYLE_SHEET_IDENTITY_V1_SIZE = ((uint)sizeof(ViemStyleSheetIdentityV1));
     public static readonly uint VIEM_STYLE_SHEET_INFO_V1_SIZE = ((uint)sizeof(ViemStyleSheetInfoV1));
     public static readonly uint VIEM_STYLE_VALUE_V1_SIZE = ((uint)sizeof(ViemStyleValueV1));
@@ -1944,7 +1947,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_VIEW_LINE_LOCATION_V1_SIZE = ((uint)sizeof(ViemViewLineLocationV1));
     public const uint VIEM_LINE_NUMBER_SNAPSHOT_ENABLED = 1u;
     public const uint VIEM_LINE_NUMBER_REGION_ESTIMATED = 1u;
-    public const uint VIEM_LINE_NUMBER_REGION_CURRENT = 2u;
+    public const uint VIEM_LINE_NUMBER_REGION_CURRENT = (1u << 1);
     public static readonly uint VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE = ((uint)sizeof(ViemLineNumberSnapshotInfoV1));
     public const uint VIEM_LINE_MODE_VISUAL = 0u;
     public const uint VIEM_LINE_MODE_PHYSICAL_SOURCE = 1u;
@@ -2173,6 +2176,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_number(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_select_pointer_row(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, float @y, uint @extend_selection, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_line_number_snapshot_info(ulong @core, ulong @view, ViemLineNumberSnapshotInfoV1* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_line_number_regions(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, ViemLineNumberRegionV1* @regions, ulong @capacity, ulong* @out_count);
@@ -2270,6 +2275,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_export_style_defaults(ulong @core, ulong @expected_revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_theme_default_json(uint @preset, byte* @output, ulong @capacity, ulong* @required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_theme_style_defaults_json(uint @variant, byte* @json, ulong @length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_theme_validate_json(byte* @json, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

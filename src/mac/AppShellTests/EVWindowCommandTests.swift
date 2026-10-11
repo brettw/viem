@@ -38,11 +38,51 @@ final class EVWindowCommandTests: XCTestCase {
     var statusBarState = EVStatusBarState()
     var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     var rowHeight: CGFloat = 20
+    var lineNumberGutterWidth: CGFloat = 0
+    var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)?
     var defaultLineHeight: CGFloat? { rowHeight }
     var statusClicks = 0
     func perform(statusOption _: EVStatusBarOption) { statusClicks += 1 }
     func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
     func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .enabled }
+  }
+
+  func testWindowRestorationAndSynchronousGutterResizingPreserveSavedContentWidth() throws {
+    let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 1000)
+    let original = NSRect(x: screen.minX + 100, y: screen.minY + 100,
+      width: min(700, screen.width - 200), height: min(500, screen.height - 200))
+    var saved: NSRect? = original
+    for gutter in [CGFloat(31), 50, 0] {
+      let backend = Backend()
+      let document = EVDocument(editorBackend: backend)
+      let surface = Surface()
+      surface.lineNumberGutterWidth = gutter
+      let placement = EVDocumentWindowPlacement(loadFrame: { saved },
+        saveFrame: { saved = $0 }, visibleScreens: { [screen] })
+      let controller = EVDocumentWindowController(document: document,
+        editorSurface: surface, placement: placement)
+      document.addWindowController(controller)
+      controller.showWindow(nil)
+      let window = try XCTUnwrap(controller.window)
+      XCTAssertEqual(window.frame.width - gutter, original.width, accuracy: 1)
+      XCTAssertEqual(window.frame.minX + gutter, original.minX, accuracy: 1)
+      let grown = gutter + 15
+      surface.lineNumberGutterWidthWillChange?(gutter, grown)
+      if window.screen == nil {
+        // SwiftPM can run without a Window Server screen. Deliver the same
+        // native resize against the injected desktop before publishing width.
+        window.setFrame(EVDocumentWindowPlacement.frameForGutterChange(window.frame,
+          delta: grown - gutter, screen: screen, minimumWidth: window.minSize.width), display: false)
+        controller.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+      }
+      // This callback resizes the native window before the surface publishes
+      // its new width, just like a real numeral-digit threshold change.
+      XCTAssertEqual(try XCTUnwrap(saved).width, original.width, accuracy: 1)
+      surface.lineNumberGutterWidth = grown
+      window.close()
+      XCTAssertEqual(try XCTUnwrap(saved).width, original.width, accuracy: 1)
+      XCTAssertEqual(try XCTUnwrap(saved).minX, original.minX, accuracy: 1)
+    }
   }
 
   private final class Backend: EVDocumentBackend {

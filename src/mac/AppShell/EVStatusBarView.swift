@@ -13,8 +13,14 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   /// Shared status text inset comes from the style box.
   public static var contentInset: CGFloat {
     let style = EVThemeStore.shared.chromeStyles.statusBar
-    return style.padding.left + style.leftBorder.width
+    return style.padding.left
   }
+  /// Outer window edges clip decoration; internal bars retain their bottom border.
+  var hidesBottomBorder = false {
+    didSet { if oldValue != hidesBottomBorder { applyTheme() } }
+  }
+  var visiblePreferredHeight: CGFloat { Self.preferredHeight - (hidesBottomBorder ? barStyle.bottomBorder.width : 0) }
+  private var visibleBottomBorder: CGFloat { hidesBottomBorder ? 0 : barStyle.bottomBorder.width }
   private var barStyle: EVChromeStyle { EVThemeStore.shared.chromeStyles.statusBar }
   private var promptStyle: EVChromeStyle { EVThemeStore.shared.chromeStyles.statusCommand }
   private var barTextAttributes: [NSAttributedString.Key: Any] {
@@ -30,9 +36,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     }
   }
   private var contentBox: NSRect {
-    NSRect(x: barStyle.leftBorder.width, y: barStyle.bottomBorder.width,
-      width: max(0, bounds.width - barStyle.leftBorder.width - barStyle.rightBorder.width),
-      height: max(0, bounds.height - barStyle.topBorder.width - barStyle.bottomBorder.width))
+    NSRect(x: 0, y: visibleBottomBorder, width: bounds.width,
+      height: max(0, bounds.height - barStyle.topBorder.width - visibleBottomBorder))
   }
   private var leftInsetConstraint: NSLayoutConstraint!
   private var rightInsetConstraint: NSLayoutConstraint!
@@ -277,10 +282,12 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     applyLabelAttributes()
     updateLocationTitle()
     applyOutputTheme()
-    heightConstraint.constant = Self.preferredHeight
-    leftInsetConstraint.constant = style.leftBorder.width + style.padding.left
-    rightInsetConstraint.constant = -(style.rightBorder.width + style.padding.right)
-    let center = (style.bottomBorder.width + style.padding.bottom - style.topBorder.width - style.padding.top) / 2
+    heightConstraint.constant = visiblePreferredHeight
+    leftInsetConstraint.constant = style.padding.left
+    rightInsetConstraint.constant = -style.padding.right
+    // AppKit's Auto Layout vertical constants increase toward the bottom,
+    // even though this view's drawing coordinates increase upward.
+    let center = (style.topBorder.width + style.padding.top - visibleBottomBorder - style.padding.bottom) / 2
     leftCenterConstraint.constant = center
     rightCenterConstraint.constant = center
     needsLayout = true
@@ -373,6 +380,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     return NSRect(x: box.minX, y: box.minY, width: limit - box.minX, height: box.height)
   }
 
+  private var commandTextCenterY: CGFloat {
+    contentBox.midY + (barStyle.padding.bottom - barStyle.padding.top) / 2
+  }
+
   private func shapeCommand(_ command: EVStatusCommandLine) -> CommandShape {
     let font = commandFont
     let spacing = promptStyle.letterSpacing
@@ -455,7 +466,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
 
   public override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    drawBorders(barStyle, in: bounds)
+    drawBorders(barStyle, in: NSRect(x: -barStyle.leftBorder.width,
+      y: hidesBottomBorder ? -barStyle.bottomBorder.width : 0,
+      width: bounds.width + barStyle.leftBorder.width + barStyle.rightBorder.width,
+      height: bounds.height + (hidesBottomBorder ? barStyle.bottomBorder.width : 0)))
     guard let command = currentState.commandLine else { return }
     let background = promptStyle.background ?? .clear
     let foreground = promptStyle.foreground
@@ -481,7 +495,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let lineHeight = ceil(font.ascender - font.descender + font.leading)
     let origin = NSPoint(
       x: Self.contentInset - commandScroll(command),
-      y: floor(commandAreaRect.midY - lineHeight / 2))
+      y: floor(commandTextCenterY - lineHeight / 2))
     NSGraphicsContext.saveGraphicsState()
     NSBezierPath(rect: NSRect(
       x: Self.contentInset, y: area.minY,
@@ -514,7 +528,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let x = Self.contentInset - commandScroll(command)
       + commandTextX(upTo: command.cursorUTF8Offset, in: command)
     let clipped = NSRect(
-      x: floor(x), y: floor(commandAreaRect.midY - lineHeight / 2), width: 2, height: lineHeight
+      x: floor(x), y: floor(commandTextCenterY - lineHeight / 2), width: 2, height: lineHeight
     ).intersection(commandAreaRect)
     return clipped.isNull ? .zero : clipped
   }
@@ -611,7 +625,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       let textStart = min(area.maxX, controls.close.frame.maxX + 6)
       let lineHeight = barStyle.fontHeight
       let outputFrame = NSRect(
-        x: textStart, y: floor(area.midY - lineHeight / 2),
+        x: textStart, y: floor(commandTextCenterY - lineHeight / 2),
         width: max(0, area.maxX - textStart), height: lineHeight).intersection(area)
       controls.scroll.frame = outputFrame.isNull ? .zero : outputFrame
       controls.text.minSize = controls.scroll.contentSize
@@ -647,14 +661,11 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     }
     locationLabel.toolTip =
       (state.lineMode == .visual
-        ? "Visual lines · click for physical source lines"
-        : "Physical source lines · click for visual lines")
-    if state.locationIsFragment {
-      locationLabel.toolTip = "Position shows hard line · visual row. Click to change line mode."
-    }
+        ? "Commands use visual lines · click for physical source lines. Position uses physical source coordinates."
+        : "Commands use physical source lines · click for visual lines. Position uses physical source coordinates.")
     modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
     locationLabel.setAccessibilityLabel(
-      "\(state.lineMode == .visual ? "Visual" : "Physical source") lines: \(state.location)")
+      "Physical source position: \(state.location)")
     if let command = state.commandLine {
       setAccessibilityLabel("Command line: \(command.displayText)")
     } else if let output = state.commandOutput {

@@ -55,6 +55,7 @@ mod search;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 mod line_numbers;
+mod pointer_rows;
 pub use line_numbers::LineNumberRegion;
 mod restoration;
 pub use restoration::ViewRestoration;
@@ -446,6 +447,14 @@ pub enum CoreEvent {
         document_revision: Revision,
         text_offset: usize,
         affinity: BoundaryAffinity,
+        extend_selection: bool,
+    },
+    /// Select a complete displayed row from exact layout geometry, retaining
+    /// its original extent while a gutter drag changes direction.
+    SelectPointerRow {
+        document_revision: Revision,
+        layout_revision: LayoutRevision,
+        y: f32,
         extend_selection: bool,
     },
     /// Select every logical content item in the exact document snapshot.
@@ -2048,6 +2057,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 view.commands.set_reflow_language(language.clone());
             }
         }
+    }
+
+    /// Status coordinates always refer to the physical source artifact.
+    pub fn physical_line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {
+        let state = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
+        state.commands.physical_line_location(&self.document)
     }
 
     pub fn line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {
@@ -4141,6 +4156,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         extend_selection: bool,
         word_selection: bool,
         begin_pointer_gesture: bool,
+        row_selection: Option<std::ops::Range<usize>>,
     ) -> Result<CoreOutcome, CoreError> {
         if document_revision != self.document.revision() {
             return Err(CoreError::Document(DocumentError::WrongSnapshot {
@@ -4150,7 +4166,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         self.document.text_point(text_offset)?;
 
-        let word = if word_selection {
+        let keep_pointer_viewport = row_selection.is_some();
+        let word = if keep_pointer_viewport { row_selection } else if word_selection {
             Some(CommandInterpreter::pointer_word_range(&self.document, text_offset)?)
         } else { None };
 
@@ -4171,11 +4188,20 @@ impl<P: TextMeasurementProvider> Core<P> {
 
         let commands = &mut self.views.get_mut(&view_id).expect("view existence checked above").commands;
         if let Some(word) = word {
-            commands.select_pointer_word(&self.document, word, extend_selection);
+            commands.select_pointer_range(&self.document, word, extend_selection);
         } else {
             let placed = commands.set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
             debug_assert!(placed, "the boundary was validated before placement");
             if begin_pointer_gesture { commands.begin_pointer_gesture(&self.document); }
+        }
+
+        // A gutter gesture already names an exact displayed row. Its complete
+        // logical end may lie far outside horizontal materialization; selecting
+        // it must neither scroll sideways nor shape its unseen text. Native
+        // drag autoscroll supplies subsequent explicit viewport requests.
+        if keep_pointer_viewport {
+            return Ok(CoreOutcome { command: None, document_changed: false,
+                position_map: None, layout_changed: true, composition_changes });
         }
 
         // An on-screen pointer move changes selection, not text geometry. Keep
@@ -5432,13 +5458,19 @@ impl<P: TextMeasurementProvider> Core<P> {
                     extend_selection,
                     false,
                     false,
+                    None,
                 );
             }
             CoreEvent::BeginPointerGesture { document_revision, text_offset, affinity } => {
-                return self.place_cursor(view_id, document_revision, text_offset, affinity, false, false, true);
+                return self.place_cursor(view_id, document_revision, text_offset, affinity, false, false, true, None);
             }
             CoreEvent::SelectPointerWord { document_revision, text_offset, affinity, extend_selection } => {
-                return self.place_cursor(view_id, document_revision, text_offset, affinity, extend_selection, true, false);
+                return self.place_cursor(view_id, document_revision, text_offset, affinity, extend_selection, true, false, None);
+            }
+            CoreEvent::SelectPointerRow { document_revision, layout_revision, y, extend_selection } => {
+                let range = self.pointer_row_range(view_id, document_revision, layout_revision, y)?;
+                return self.place_cursor(view_id, document_revision, range.start, BoundaryAffinity::Downstream,
+                    extend_selection, false, false, Some(range));
             }
             CoreEvent::SelectAll { document, revision } => {
                 return self.select_all(view_id, document, revision);
@@ -6650,7 +6682,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::Composition(_) => {
                 unreachable!("composition events return before ordinary dispatch")
             }
-            CoreEvent::PlaceCursor { .. } | CoreEvent::BeginPointerGesture { .. } | CoreEvent::SelectPointerWord { .. } => {
+            CoreEvent::PlaceCursor { .. } | CoreEvent::BeginPointerGesture { .. } | CoreEvent::SelectPointerWord { .. } | CoreEvent::SelectPointerRow { .. } => {
                 unreachable!("pointer placements return before ordinary dispatch")
             }
             CoreEvent::SelectAll { .. } => {

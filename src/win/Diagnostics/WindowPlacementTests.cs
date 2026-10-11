@@ -13,6 +13,14 @@ internal static class WindowPlacementTests
         var desktop = new WindowFrame(0, 30, 1600, 1000);
         var secondary = new WindowFrame(-1500, 50, 1400, 900);
         var saved = new WindowFrame(-1400, 250, 900, 600);
+        var content = saved;
+        foreach (double width in new[] { 31d, 50d, 18d, 0d, 31d }) {
+            var native = DocumentWindowPlacement.IncludingGutter(content, width);
+            Check(native.X + width == saved.X && native.Width - width == saved.Width,
+                "restored gutter preserves the text viewport's position and width");
+            content = DocumentWindowPlacement.ExcludingGutter(native, width);
+            Check(content == saved, "repeated gutter restoration does not expand saved content geometry");
+        }
         Check(DocumentWindowPlacement.Fitting(saved, (WindowFrame[])[desktop, secondary]) == saved,
             "window restoration preserves geometry on a monitor with negative coordinates");
         Check(DocumentWindowPlacement.Fitting(saved, (WindowFrame[])[desktop]) == new WindowFrame(0, 250, 900, 600),

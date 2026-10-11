@@ -44,6 +44,37 @@ internal sealed partial class EditorPane
             ClearNumberLayouts();
             if (View != null) Run(Refresh);
         };
+        lineNumberCanvas.PointerEntered += (_, _) => { pointerOverGutter = true; pointerOverText = false; UpdatePointerCursor(); };
+        lineNumberCanvas.PointerExited += (_, _) => { pointerOverGutter = false; UpdatePointerCursor(); };
+        lineNumberCanvas.PointerPressed += (_, args) => {
+            if (View == null || !args.GetCurrentPoint(lineNumberCanvas).Properties.IsLeftButtonPressed) return;
+            DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); DismissCommandOutput(false);
+            caretHoverLocation = null; SetCaretHover(null);
+            if (composing) { compositionRejected = true; ClearInput(); }
+            tableCellDrag = false; tableDragAnchor = null; tableDragIdentity = null;
+            FocusEditor();
+            dragPoint = args.GetCurrentPoint(Canvas).Position;
+            wordSelectionDragging = false;
+            gutterSelectionDragging = dragging = true;
+            pressedPointer = args.Pointer.PointerId;
+            Run(() => View.SelectPointerRow((float)dragPoint.Y));
+            if (!lineNumberCanvas.CapturePointer(args.Pointer)) { pressedPointer = null; gutterSelectionDragging = dragging = false; }
+            UpdatePointerCursor(); args.Handled = true; ResetBlink();
+        };
+        lineNumberCanvas.PointerMoved += (_, args) => {
+            if (!gutterSelectionDragging || pressedPointer != args.Pointer.PointerId || View == null) return;
+            dragPoint = args.GetCurrentPoint(Canvas).Position;
+            Run(() => View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true));
+            UpdatePointerCursor(); args.Handled = true;
+        };
+        lineNumberCanvas.PointerReleased += (_, args) => {
+            if (pressedPointer != args.Pointer.PointerId) return;
+            pressedPointer = null; gutterSelectionDragging = dragging = false;
+            lineNumberCanvas.ReleasePointerCapture(args.Pointer); UpdatePointerCursor(); args.Handled = true;
+        };
+        lineNumberCanvas.PointerCaptureLost += (_, args) => {
+            if (pressedPointer == args.Pointer.PointerId) { pressedPointer = null; gutterSelectionDragging = dragging = false; UpdatePointerCursor(); }
+        };
         lineNumberCanvas.PointerWheelChanged += (_, args) => {
             if (View == null) return;
             var point = args.GetCurrentPoint(lineNumberCanvas);

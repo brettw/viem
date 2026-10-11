@@ -138,7 +138,7 @@ pub use style::{
     StyleDefaultsError, StyleDefinitionEdit, StyleDefinitionFieldEdit, StyleDefinitionMetadata,
     StyleDefinitionOrigin, StyleDependency, StyleDependencyIndex, StyleError, StyleId,
     StyleInvalidationEffect, StyleNamespace, StyleProperty, StylePropertyValue, StyleSheet,
-    StyleSheetRevision, WritingDirection, DEFAULT_FONT_FAMILY,
+    StyleSheetRevision, ThemeVariant, WritingDirection, DEFAULT_FONT_FAMILY,
 };
 pub(crate) use style::{
     CANVAS_STYLE_PROPERTIES, CHARACTER_STYLE_PROPERTIES, PARAGRAPH_STYLE_PROPERTIES,

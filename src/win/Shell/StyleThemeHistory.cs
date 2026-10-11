@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Viem.Windows.Core;
 using Windows.System;
+using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
@@ -41,7 +42,7 @@ internal sealed partial class StyleWindow
         ToolTipService.SetToolTip(redoTheme, "Redo theme style change (Ctrl+Y)");
         undoTheme.Click += (_, _) => ReplayThemeHistory(redo: false);
         redoTheme.Click += (_, _) => ReplayThemeHistory(redo: true);
-        restoreCodeDefaults.Click += (_, _) => Try(() => view.ReplaceCodeStyles([]));
+        restoreCodeDefaults.Click += (_, _) => Try(() => view.ReplaceCodeStyles(preferences.ThemeStyleContext(VIEM_FORMAT_CODE, [])));
         foreach (var (key, modifiers, redo) in new[] {
             (VirtualKey.Z, VirtualKeyModifiers.Control, false),
             (VirtualKey.Y, VirtualKeyModifiers.Control, true),

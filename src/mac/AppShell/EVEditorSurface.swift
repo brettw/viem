@@ -49,7 +49,6 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var message: String
   public var location: String
   public var lineMode: EVLineMode
-  public var locationIsFragment: Bool
   /// While this is set, the command line replaces the status line's left
   /// group. The caret position widget stays.
   public var commandLine: EVStatusCommandLine?
@@ -66,7 +65,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     message: String = "",
     location: String = "Ln 1, Col 1",
     lineMode: EVLineMode = .visual,
-    locationIsFragment: Bool = false,
     commandLine: EVStatusCommandLine? = nil,
     commandOutput: String? = nil,
     requiresInteraction: Bool = false,
@@ -80,7 +78,6 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.commandOutput = commandOutput
     self.requiresInteraction = requiresInteraction
     self.isActive = isActive
-    self.locationIsFragment = locationIsFragment
   }
 }
 

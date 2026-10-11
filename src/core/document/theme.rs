@@ -405,3 +405,9 @@ mod tests {
         validate_json(&serde_json::to_vec(&value).unwrap()).unwrap();
     }
 }
+
+/// Build bounded immutable resolver context for one theme variant. This envelope
+/// is passed to stylesheet loading only and is never written to a theme file.
+pub fn style_defaults_json(variant: super::ThemeVariant, variants: &[u8]) -> Result<Vec<u8>, String> {
+    super::style::variants::envelope(variant, variants)
+}

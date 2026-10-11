@@ -132,10 +132,9 @@ final class EVDocumentScrollbars: NSView {
     override func layout() {
         super.layout()
         let width = NSScroller.scrollerWidth(for: .regular, scrollerStyle: scrollerStyle)
-        let horizontalInset = scrollerStyle == .legacy || horizontalAvailable || horizontalAlpha > 0 ? width : 0
         verticalScroller.frame = NSRect(
             x: max(0, bounds.width - width), y: 0,
-            width: width, height: max(0, bounds.height - horizontalInset)
+            width: width, height: max(0, bounds.height)
         )
         horizontalScroller.frame = NSRect(
             x: 0, y: max(0, bounds.height - width),

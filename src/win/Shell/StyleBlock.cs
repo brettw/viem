@@ -27,7 +27,8 @@ internal sealed partial class StyleWindow
         block.Children.Add(top);
         ColorControl(top, "Background color", VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND);
         var lockGroup = new StackPanel { Spacing = 3 };
-        lockGroup.Children.Add(new TextBlock { Height = 17 });
+        lockGroup.Children.Add(new TextBlock { Text = "Match sides", FontSize = 11, Opacity = .65, Height = 17,
+            HorizontalAlignment = HorizontalAlignment.Right, TextAlignment = TextAlignment.Right });
         lockGroup.Children.Add(blockLock); top.Children.Add(lockGroup); Grid.SetColumn(lockGroup, 1);
         AutomationProperties.SetName(blockLock, "Link block sides");
         void RefreshLock() {
@@ -78,7 +79,7 @@ internal sealed partial class StyleWindow
         // Read one snapshot before applying any changes. An entirely inherited
         // row stays inherited, including borders using the current text color.
         foreach (var (_, properties) in BlockRows) {
-            if (!IsBase && !properties.Any(selected.Declares)) continue;
+            if (!RequiresExplicitValues && !properties.Any(selected.Declares)) continue;
             if (StyleDefinition.IsBorderColor(properties[0])) {
                 var colors = properties.Where(p => !selected.UsesTextColor(p) && selected.Value(p).kind == VIEM_STYLE_VALUE_COLOR).ToArray();
                 if (colors.Length == 0) continue;

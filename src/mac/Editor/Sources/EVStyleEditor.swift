@@ -395,6 +395,7 @@ final class EVStyleEditorViewController: NSViewController {
     var onClose: (() -> Void)?
     var onExplicitStyleSelection: (() -> Void)?
     var onDocumentSelection: ((EVSourceFormat, EVConfigurationStore) throws -> Void)?
+    var onInheritanceCycle: ((String) -> Void)?
     var themeStore = EVThemeStore.shared
     private var themeObserver: NSObjectProtocol?
 
@@ -412,6 +413,9 @@ final class EVStyleEditorViewController: NSViewController {
     private var isCommitting = false
     private var refreshAfterCommit = false
     private var diagnosticMessage = ""
+    private var lastStyleFailureWasCycle = false
+    private var variantCatalogueData: [String: Data] = [:]
+    private var variantCatalogues: [String: EVStyleSheetSnapshot] = [:]
     private var activeStyleEditGroup: EVStyleEditGroup?
     private weak var activeStyleEditSession: EVCoreViewSession?
 
@@ -583,6 +587,7 @@ final class EVStyleEditorViewController: NSViewController {
         ])
 
         let previewBox = EVStyleEditorPreviewContainer()
+        previewBox.setAccessibilityLabel("Style preview")
         previewBox.addSubview(preview)
         preview.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -605,11 +610,14 @@ final class EVStyleEditorViewController: NSViewController {
         bottom.alignment = .centerY
 
         let tabsContainer = centeredContainer(tabs, maximumWidth: 320, horizontalInset: 0)
+        let tabSpacer = NSView()
+        tabSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .vertical)
+        tabSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .vertical)
 
         let stack = NSStackView(views: [
             selectorBox, propertiesContainer, availabilityLabel,
             separator(), tabsContainer, formattingBox,
-            previewBox, bottom,
+            tabSpacer, previewBox, bottom,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -624,7 +632,6 @@ final class EVStyleEditorViewController: NSViewController {
         let preferredFormattingHeight = formattingBox.heightAnchor.constraint(equalToConstant: 196)
         formattingHeightConstraint = preferredFormattingHeight
         let preferredPreviewHeight = previewBox.heightAnchor.constraint(equalToConstant: 140)
-        preferredPreviewHeight.priority = .defaultHigh
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
@@ -632,6 +639,7 @@ final class EVStyleEditorViewController: NSViewController {
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -14),
             preferredFormattingHeight,
             formattingBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 150),
+            tabSpacer.heightAnchor.constraint(greaterThanOrEqualToConstant: 0),
             preferredPreviewHeight,
             previewBox.heightAnchor.constraint(greaterThanOrEqualToConstant: 92),
         ])
@@ -666,12 +674,16 @@ final class EVStyleEditorViewController: NSViewController {
 
     func retarget(settingsSession: any EVStyleSettingsSession) {
         loadViewIfNeeded()
+        let previousStyle = selectedDefinition
         endContinuousStyleEdit(reportUnexpectedFailure: false)
         stopObservingDocument()
         document = nil
         self.settingsSession = settingsSession
         restoreDefaultsButton.isHidden = settingsSession.sourceFormat != .code
-        selectedStyleKey = .baseParagraph
+        let nextSnapshot = try? settingsSession.snapshot()
+        if let previousStyle, let nextSnapshot {
+            selectedStyleKey = variantDefinition(for: previousStyle, in: nextSnapshot)?.key ?? .baseParagraph
+        } else { selectedStyleKey = .baseParagraph }
         diagnosticMessage = settingsSession.lastError ?? ""
         let notification: Notification.Name = settingsSession.sourceFormat == .code ? .viemGlobalCodeStyleDidChange : .viemThemeStyleSessionDidChange
         documentObserver = NotificationCenter.default.addObserver(forName: notification,
@@ -872,6 +884,9 @@ final class EVStyleEditorViewController: NSViewController {
 
         let sizeBasisKey = definition.kind != .character ? definition.parentKey : .baseParagraph
         let sizeBasis: Float? = {
+            if definition.kind != .character, let variant = definition.parentVariant, let settingsSession,
+               let foreign = try? variantSnapshot(variant, configuration: settingsSession.configuration),
+               case let .float(value)? = variantDefinition(for: definition, in: foreign)?.properties[.characterSize]?.effective { return value }
             guard let sizeBasisKey,
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
             return value
@@ -943,13 +958,33 @@ final class EVStyleEditorViewController: NSViewController {
     }
 
     private func configureBasedOn(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
-        let editable = definition.capabilities.contains(.parent)
+        let localEditable = definition.capabilities.contains(.parent)
+        let editable = localEditable || (settingsSession != nil && definition.capabilities.contains(.declarations))
         var choices: [EVStyleChoiceIdentity] = []
         if editable {
-            if definition.kind == .character { choices.append(EVStyleChoiceIdentity(key: .defaultParagraph, name: "Default Paragraph", icon: .character)) }
-            choices += snapshot.legalParents(for: definition)
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name, icon: EVStyleIcons.type(for: $0)) }
+            if let settingsSession {
+                for format in documentFormats where format.defaultStyleName != settingsSession.sourceFormat.defaultStyleName {
+                    if let variant = try? variantSnapshot(format, configuration: settingsSession.configuration),
+                       variantDefinition(for: definition, in: variant) != nil {
+                        choices.append(EVStyleChoiceIdentity(key: nil,
+                            name: "\(format.styleVariantTitle): \(definition.name)", icon: .document, variant: format))
+                    }
+                }
+                if !choices.isEmpty { choices.append(EVStyleChoiceIdentity(key: nil, name: "", isSeparator: true)) }
+            }
+            if definition.flags.isBase {
+                choices.append(EVStyleChoiceIdentity(key: nil, name: "None"))
+            } else if !localEditable {
+                let parent = definition.parentKey.flatMap { snapshot.definition(for: $0) }
+                choices.append(EVStyleChoiceIdentity(key: nil,
+                    name: parent?.name ?? (definition.kind == .character ? "Default Paragraph" : "Default parent"),
+                    icon: parent.map { EVStyleIcons.type(for: $0) }, resetsParent: true))
+            } else {
+                if definition.kind == .character { choices.append(EVStyleChoiceIdentity(key: .defaultParagraph, name: "Default Paragraph", icon: .character)) }
+                choices += snapshot.legalParents(for: definition)
+                    .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                    .map { EVStyleChoiceIdentity(key: $0.key, name: $0.name, icon: EVStyleIcons.type(for: $0)) }
+            }
         } else {
             let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name }
                 ?? (definition.kind == .character ? "Default Paragraph" : "None")
@@ -960,19 +995,53 @@ final class EVStyleEditorViewController: NSViewController {
         if parentMenuChoices != choices {
             basedOnPopup.removeAllItems()
             for choice in choices {
+                if choice.isSeparator { basedOnPopup.menu?.addItem(.separator()); continue }
                 basedOnPopup.addItem(withTitle: choice.name)
                 basedOnPopup.lastItem?.image = choice.icon.map { EVStyleIcons.typeImage($0) }
-                if let key = choice.key { basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(key) }
+                if choice.resetsParent { basedOnPopup.lastItem?.representedObject = EVStyleDefaultParentBox() }
+                else if let variant = choice.variant { basedOnPopup.lastItem?.representedObject = EVStyleVariantBox(variant) }
+                else if let key = choice.key { basedOnPopup.lastItem?.representedObject = EVStyleKeyBox(key) }
             }
             parentMenuChoices = choices
         }
         let selected = definition.parentKey ?? (definition.kind == .character ? .defaultParagraph : nil)
-        if let item = basedOnPopup.itemArray.first(where: { ($0.representedObject as? EVStyleKeyBox)?.key == selected }) {
+        if let item = basedOnPopup.itemArray.first(where: {
+            if let variant = definition.parentVariant { return ($0.representedObject as? EVStyleVariantBox)?.format == variant }
+            if $0.representedObject is EVStyleDefaultParentBox { return true }
+            return !$0.isSeparatorItem && !($0.representedObject is EVStyleVariantBox)
+                && ($0.representedObject as? EVStyleKeyBox)?.key == selected
+        }) {
             basedOnPopup.select(item)
         } else { basedOnPopup.select(nil) }
         basedOnPopup.isEnabled = editable && !choices.isEmpty
-        basedOnPopup.toolTip = editable ? "Only compatible styles that cannot create an inheritance cycle are shown."
+        basedOnPopup.toolTip = editable ? "Choose a compatible style or the same named style in another document type."
             : (definition.flags.isBase ? "The parent of this distinguished base style is fixed." : "This style's parent is read-only.")
+    }
+
+    private func variantSnapshot(_ format: EVSourceFormat, configuration: EVConfigurationStore) throws -> EVStyleSheetSnapshot {
+        let key = format.defaultStyleName
+        var inputs: [String: Data] = [:]
+        for family in documentFormats {
+            inputs[family.defaultStyleName] = try configuration.styleDefaults(named: family.defaultStyleName)
+        }
+        if inputs != variantCatalogueData {
+            variantCatalogueData = inputs
+            variantCatalogues.removeAll()
+        }
+        if let cached = variantCatalogues[key] { return cached }
+        let fresh: EVStyleSheetSnapshot
+        if format == .code { fresh = try EVCodeStyleSession(configuration: configuration).snapshot() }
+        else { fresh = try EVCoreDocumentBackend(themeStyleFormat: format, configuration: configuration).styleSheetSnapshot() }
+        variantCatalogues[key] = fresh
+        return fresh
+    }
+
+    private func variantDefinition(for definition: EVStyleDefinition, in snapshot: EVStyleSheetSnapshot) -> EVStyleDefinition? {
+        let candidates = snapshot.definitions.filter {
+            $0.name == definition.name && $0.key.namespace == definition.key.namespace && $0.kind == definition.kind
+                && $0.flags.contains(.internalSyntax) == definition.flags.contains(.internalSyntax)
+        }
+        return candidates.first(where: { $0.key.id == definition.key.id }) ?? (candidates.count == 1 ? candidates.first : nil)
     }
 
     private func configureNavigationTargets(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
@@ -980,6 +1049,10 @@ final class EVStyleEditorViewController: NSViewController {
         editParentButton.isEnabled = parent != nil && parent?.key != definition.key
         editParentButton.toolTip = parent.map { "Edit \($0.name)" }
             ?? (definition.kind == .character ? "Inherits the current paragraph style." : "This style has no parent.")
+        if let variant = definition.parentVariant {
+            editParentButton.isEnabled = settingsSession != nil && onDocumentSelection != nil
+            editParentButton.toolTip = "Edit \(variant.styleVariantTitle): \(definition.name)"
+        }
 
         let next = definition.kind == .paragraph && !definition.flags.isBase
             ? definition.nextStyleID.flatMap { snapshot.definition(namespace: .block, id: $0) }
@@ -1042,6 +1115,7 @@ final class EVStyleEditorViewController: NSViewController {
 
     @discardableResult
     private func commit(_ mutation: EVStyleMutation, forcedIdentity: EVStyleSheetIdentity? = nil) -> Bool {
+        lastStyleFailureWasCycle = false
         guard hasTarget, settingsSession != nil || document?.session != nil else {
             diagnosticMessage = EVStyleBridgeError.noEditingView.localizedDescription
             renderUnavailableStyleSheet()
@@ -1092,6 +1166,7 @@ final class EVStyleEditorViewController: NSViewController {
             reloadCommittedStyle()
             return true
         } catch {
+            lastStyleFailureWasCycle = (error as? EVStyleBridgeError)?.isInheritanceCycle == true
             if let styleError = error as? EVStyleBridgeError,
                styleError.isEndedStyleEditGroup
             {
@@ -1306,11 +1381,48 @@ final class EVStyleEditorViewController: NSViewController {
     }
 
     @objc private func basedOnChanged(_ sender: NSPopUpButton) {
-        guard !isUpdatingUI, let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
-        _ = commit(key == .defaultParagraph ? .clearParent : .setParent(key.id))
+        guard !isUpdatingUI else { return }
+        if let variant = (sender.selectedItem?.representedObject as? EVStyleVariantBox)?.format,
+           let settingsSession, let definition = selectedDefinition {
+            if !commit(.setParentVariant(variant)), lastStyleFailureWasCycle {
+                presentInheritanceCycle(child: "\(settingsSession.sourceFormat.styleVariantTitle): \(definition.name)",
+                    parent: "\(variant.styleVariantTitle): \(definition.name)")
+            }
+            return
+        }
+        if sender.selectedItem?.representedObject is EVStyleDefaultParentBox
+            || selectedDefinition?.flags.isBase == true && sender.selectedItem?.title == "None" {
+            _ = commit(.clearParent)
+            return
+        }
+        guard let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
+        let parentName = sender.titleOfSelectedItem ?? key.id.rawValue
+        let childName = selectedDefinition?.name ?? selectedStyleKey.id.rawValue
+        let variant = (settingsSession?.sourceFormat ?? document?.backend.sourceFormat ?? .plainText).styleVariantTitle
+        if !commit(key == .defaultParagraph ? .clearParent : .setParent(key.id)), lastStyleFailureWasCycle {
+            presentInheritanceCycle(child: "\(variant): \(childName)", parent: "\(variant): \(parentName)")
+        }
+    }
+
+    private func presentInheritanceCycle(child: String, parent: String) {
+        diagnosticMessage = ""
+        renderCommittedStyle()
+        let message = "\"\(child)\" can't depend on \"\(parent)\" because that creates a dependency cycle."
+        if let onInheritanceCycle { onInheritanceCycle(message); return }
+        let alert = NSAlert()
+        alert.messageText = "Style inheritance cycle"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = view.window { alert.beginSheetModal(for: window) }
+        else { alert.runModal() }
     }
 
     @objc private func editParentStyle(_ sender: Any?) {
+        if editParentButton.isEnabled, let variant = selectedDefinition?.parentVariant, let settingsSession {
+            do { try onDocumentSelection?(variant, settingsSession.configuration) }
+            catch { diagnosticMessage = error.localizedDescription; reloadCommittedStyle() }
+            return
+        }
         guard editParentButton.isEnabled, let key = selectedDefinition?.parentKey else { return }
         selectStyle(key)
     }
@@ -1340,20 +1452,21 @@ final class EVStyleEditorViewController: NSViewController {
     private func updateFormattingHeight() {
         let controls = !paragraphControls.isHidden ? compactControls.paragraphView
             : !blockControls.isHidden ? compactControls.blockView : compactControls.characterView
-        // The old fixed height compressed axis captions before the sliders.
-        // Fit the selected tab's controls and keep the preview usable even at
-        // the smallest permitted window size.
+        // Only the spacer absorbs differences between tabs. Reserve enough
+        // window height for the tallest tab so switching never moves the footer.
         let height = max(196, ceil(controls.fittingSize.height) + 14)
         if formattingHeightConstraint?.constant != height {
             formattingHeightConstraint?.constant = height
         }
         guard let window = view.window else { return }
         let oldMinimum = window.contentMinSize.height
-        let minimum = 570 + height - 196
+        let maximumHeight = [compactControls.characterView, compactControls.paragraphView, compactControls.blockView]
+            .map { max(196, ceil($0.fittingSize.height) + 14) }.max() ?? 196
+        let minimum = 576 + maximumHeight - 196
         guard abs(oldMinimum - minimum) > 0.5 else { return }
         let current = window.contentLayoutRect.height
         window.contentMinSize = NSSize(width: max(700, window.contentMinSize.width), height: minimum)
-        if current < minimum || abs(current - oldMinimum) < 0.5 {
+        if current < minimum {
             var frame = window.frame
             frame.origin.y -= minimum - current
             frame.size.height += minimum - current
@@ -1475,12 +1588,21 @@ private final class EVStyleKeyBox: NSObject {
     init(_ key: EVStyleKey) { self.key = key }
 }
 
+private final class EVStyleVariantBox: NSObject {
+    let format: EVSourceFormat
+    init(_ format: EVSourceFormat) { self.format = format }
+}
+private final class EVStyleDefaultParentBox: NSObject {}
+
 private struct EVStyleChoiceIdentity: Equatable {
     let key: EVStyleKey?
     let name: String
     var kind: EVStyleKind? = nil
     var internalSyntax: Bool = false
     var icon: EVStyleIcons.StyleType? = nil
+    var variant: EVSourceFormat? = nil
+    var isSeparator = false
+    var resetsParent = false
 }
 
 @MainActor

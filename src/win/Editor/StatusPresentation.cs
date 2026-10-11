@@ -49,7 +49,6 @@ internal sealed partial class EditorPane
     private string? output;
     private bool outputHadFocus;
     private long outputDeadline;
-    private (ulong Document, ulong Revision, ulong Cursor, uint Affinity, uint Mode, ulong Configuration, ulong Environment, ulong Metrics)? locationIdentity;
     private string locationText = "Ln —, Col —";
 
     private bool IsOutputDescendant(DependencyObject source)
@@ -81,34 +80,18 @@ internal sealed partial class EditorPane
 
     private void UpdateLocation()
     {
-        if (View == null || snapshot == null) return;
+        if (View == null) return;
         uint lineMode = View.CurrentLineMode;
-        var id = snapshot.Info.identity;
-        var key = (presentation.document_id, presentation.document_revision, presentation.cursor_utf8_offset,
-            presentation.cursor_affinity, lineMode, id.configuration_generation, id.measurement_environment_id, id.metrics_generation);
-        bool covered = snapshot.Rows.Any(row => row.text_start <= presentation.cursor_utf8_offset && presentation.cursor_utf8_offset <= row.text_end);
-        if (lineMode == VIEM_LINE_MODE_PHYSICAL_SOURCE || covered)
-        {
-            var position = View.Location;
-            string line = (position.flags & VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) != 0
-                ? position.line.ToString() : $"{position.hard_line}·{position.fragment}";
-            locationText = $"Ln {line}, Col {position.column}";
-            locationIdentity = key;
-        }
-        else if (locationIdentity != key)
-        {
-            // Scrolling may deliberately leave the caret outside regional
-            // geometry. Never abort prompt/viewport refresh to measure it.
-            locationText = "Ln —, Col —";
-            locationIdentity = null;
-        }
+        // Source coordinates remain exact when the caret is outside cached layout.
+        var position = View.Location;
+        locationText = $"Ln {position.line}, Col {position.column}";
         location.Text = (Document.IsReadOnly ? "🔒  " : "") + locationText;
         location.Width = Math.Ceiling(MeasureStatusText(location.Text));
         statusTextCanvas.Invalidate();
         lineModeIcon.Glyph = lineMode == VIEM_LINE_MODE_VISUAL ? "\uE890" : "\uE8A5";
         ToolTipService.SetToolTip(locationToggle, lineMode == VIEM_LINE_MODE_VISUAL
-            ? "Visual lines · click for physical source lines" : "Physical source lines · click for visual lines");
-        AutomationProperties.SetName(locationToggle, (lineMode == VIEM_LINE_MODE_VISUAL ? "Visual" : "Physical source") + " lines: " + locationText);
+            ? "Commands use visual lines · click for physical source lines. Position uses physical source coordinates." : "Commands use physical source lines · click for visual lines. Position uses physical source coordinates.");
+        AutomationProperties.SetName(locationToggle, "Physical source position: " + locationText);
     }
 
     private void BuildStatus()
@@ -118,7 +101,10 @@ internal sealed partial class EditorPane
         status.Children.Add(statusBox); SetColumnSpan(statusBox, 2);
         statusBox.Draw += (_, args) => {
             args.DrawingSession.Clear(Microsoft.UI.Colors.Transparent);
-            (statusStyle ?? preferences.StatusStyles.Status).DrawBox(args.DrawingSession, new(0, 0, statusBox.ActualWidth, statusBox.ActualHeight));
+            var style = statusStyle ?? preferences.StatusStyles.Status;
+            style.DrawBox(args.DrawingSession, new(-style.Border.Left, 0,
+                statusBox.ActualWidth + style.Border.Horizontal,
+                statusBox.ActualHeight + (hidesStatusBottomBorder ? style.Border.Bottom : 0)));
         };
         status.SizeChanged += (_, _) => status.Clip = new RectangleGeometry { Rect = new(0, 0, status.ActualWidth, status.ActualHeight) };
         foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto })
@@ -232,10 +218,19 @@ internal sealed partial class EditorPane
         }
     }
 
-    private void ApplyStatusTheme()
+    private bool hidesStatusBottomBorder;
+    internal void SetStatusBottomEdge(bool bottom) {
+        if (hidesStatusBottomBorder == bottom) return;
+        hidesStatusBottomBorder = bottom;
+        ApplyStatusTheme(force: true);
+    }
+    private double StatusBottomBorder => hidesStatusBottomBorder ? 0 : (statusStyle ?? preferences.StatusStyles.Status).Border.Bottom;
+    internal float CommandVerticalInset => ((statusStyle ?? preferences.StatusStyles.Status).Padding.Top - (statusStyle ?? preferences.StatusStyles.Status).Padding.Bottom) / 2;
+
+    private void ApplyStatusTheme(bool force = false)
     {
         var styles = preferences.StatusStyles;
-        if (statusStyle == styles.Status && commandStyle == styles.Command) return;
+        if (!force && statusStyle == styles.Status && commandStyle == styles.Command) return;
         if (statusStyle?.FontIdentity != styles.Status.FontIdentity) {
             ClearStatusText(); resizeHoverTextIdentity = null;
         }
@@ -245,12 +240,11 @@ internal sealed partial class EditorPane
         status.BorderThickness = new(0);
         // The box owns padding and border. Chrome placement ignores margins
         // and alignment; command font changes cannot change container height.
-        var inset = new Thickness(style.Padding.Left + style.Border.Left, style.Padding.Top + style.Border.Top,
-            style.Padding.Right + style.Border.Right, style.Padding.Bottom + style.Border.Bottom);
+        var inset = new Thickness(style.Padding.Left, style.Padding.Top + style.Border.Top,
+            style.Padding.Right, style.Padding.Bottom + StatusBottomBorder);
         normalStatus.Margin = commandOutput.Margin = inset;
         locationToggle.Margin = inset;
-        prompt.Margin = new(style.Border.Left, style.Border.Top,
-            style.Border.Right, style.Border.Bottom);
+        prompt.Margin = new(0, style.Border.Top, 0, StatusBottomBorder);
         var font = FontCatalog.Resolve(style.Family, style.Face) ?? (Family: "Segoe UI", Stretch: global::Windows.UI.Text.FontStretch.Normal);
         foreach (var label in new[] { mode, message, location, filePath, outputText, statusMeasure }) {
             label.FontFamily = new(font.Family); label.FontStretch = font.Stretch; label.FontSize = style.Size;
@@ -259,7 +253,7 @@ internal sealed partial class EditorPane
             label.Foreground = new SolidColorBrush(label == outputText ? style.Foreground : Microsoft.UI.Colors.Transparent);
         }
         using var statusFontProbe = style.Layout(CanvasDevice.GetSharedDevice(), "Mg");
-        status.Height = Math.Max(1, Math.Ceiling(statusFontProbe.LayoutBounds.Height) + style.Padding.Vertical + style.Border.Vertical);
+        status.Height = Math.Max(1, Math.Ceiling(statusFontProbe.LayoutBounds.Height) + style.Padding.Vertical + style.Border.Top + StatusBottomBorder);
         outputText.Foreground = outputClose.Foreground = new SolidColorBrush(style.Foreground);
         outputClose.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         locationToggle.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);

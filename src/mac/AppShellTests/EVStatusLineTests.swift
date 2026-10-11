@@ -24,7 +24,7 @@ final class EVStatusLineTests: XCTestCase {
   private func locationWidget(_ bar: EVStatusBarView) throws -> NSView {
     try XCTUnwrap(
       descendants(bar).first {
-        ($0.accessibilityLabel() ?? "").contains("lines: Ln 12, Col 34")
+        ($0.accessibilityLabel() ?? "").contains("position: Ln 12, Col 34")
       })
   }
 
@@ -34,9 +34,42 @@ final class EVStatusLineTests: XCTestCase {
 
   func testStatusInsetsAndHeightUseTheStyleBox() {
     let style = EVThemeStore.shared.chromeStyles.statusBar
-    XCTAssertEqual(EVStatusBarView.contentInset, style.padding.left + style.leftBorder.width)
+    XCTAssertEqual(EVStatusBarView.contentInset, style.padding.left)
     XCTAssertEqual(EVStatusBarView.preferredHeight, ceil(style.fontHeight + style.padding.top + style.padding.bottom
       + style.topBorder.width + style.bottomBorder.width))
+  }
+
+  func testThickBordersCenterTextInsidePaddingAndClipOuterEdges() throws {
+    let previous = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
+    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previous, named: "text") }
+    try editStatusStyle(character: ["size": 13], block: [
+      "padding_top": 3, "padding_bottom": 11, "padding_left": 9, "padding_right": 12,
+      "border_top_width": 7, "border_bottom_width": 30,
+      "border_left_width": 24, "border_right_width": 28])
+    let bar = makeBar()
+    let total = EVStatusBarView.preferredHeight
+    for bottom in [false, true] {
+      bar.hidesBottomBorder = bottom
+      bar.frame.size.height = bar.visiblePreferredHeight
+      bar.layoutSubtreeIfNeeded()
+      XCTAssertEqual(bar.frame.height, total - (bottom ? 30 : 0))
+      let expected = (bar.bounds.height + (bottom ? 0 : 30) + 11 - 7 - 3) / 2
+      let mode = try XCTUnwrap(try modeLabel(bar) as? NSTextField)
+      let textRect = try XCTUnwrap(mode.cell).titleRect(forBounds: mode.bounds)
+      XCTAssertEqual(mode.convert(textRect, to: bar).midY, expected, accuracy: 1.5)
+      // NSTextField's alignment rect accounts for its horizontal optical inset.
+      let alignmentRect = mode.alignmentRect(forFrame: mode.convert(mode.bounds, to: bar))
+      XCTAssertEqual(alignmentRect.minX, 9, accuracy: 1)
+      let widget = try locationWidget(bar)
+      XCTAssertEqual(widget.frame.maxX, bar.bounds.maxX - 12, accuracy: 1)
+      bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandLine:
+        EVStatusCommandLine(prompt: ":", text: "write", cursorUTF8Offset: 5), isActive: true))
+      bar.layoutSubtreeIfNeeded()
+      XCTAssertEqual(try XCTUnwrap(bar.commandCaretRect()).midY, expected, accuracy: 1)
+      XCTAssertEqual(bar.commandAreaRect.minX, 0)
+      XCTAssertEqual(bar.commandAreaRect.minY, bottom ? 0 : 30)
+      bar.apply(EVStatusBarState(mode: "NORMAL", location: "Ln 12, Col 34"))
+    }
   }
 
   func testOversizedCommandFontClipsInsideBarWithoutChangingContainerHeight() throws {

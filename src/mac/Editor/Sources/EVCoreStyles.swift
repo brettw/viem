@@ -1,6 +1,7 @@
 import AppKit
 import CViemCore
 import Foundation
+import ViemAppShell
 
 enum EVStyleNamespace: UInt32, Hashable {
     case block = 1
@@ -327,11 +328,12 @@ struct EVStyleDefinition: Equatable {
     let flags: EVStyleDefinitionFlags
     let capabilities: EVStyleCapabilities
     let parentID: EVStyleID?
+    var parentVariant: EVSourceFormat? = nil
     let nextStyleID: EVStyleID?
     let properties: [EVStyleProperty: EVResolvedStyleProperty]
 
     var parentKey: EVStyleKey? {
-        parentID.map { EVStyleKey(namespace: key.namespace, id: $0) }
+        parentVariant == nil ? parentID.map { EVStyleKey(namespace: key.namespace, id: $0) } : nil
     }
 }
 
@@ -365,8 +367,7 @@ struct EVStyleSheetSnapshot: Equatable {
             guard candidate.key.namespace == selected.key.namespace,
                   candidate.key != selected.key,
                   (rolesCanInherit(child: selected.kind, parent: candidate.kind)
-                    || (selected.kind.isContainer && candidate.flags.contains(.baseParagraph))),
-                  !isDescendant(candidate.key, of: selected.key)
+                    || (selected.kind.isContainer && candidate.flags.contains(.baseParagraph)))
             else { return false }
             return true
         }
@@ -381,21 +382,14 @@ struct EVStyleSheetSnapshot: Equatable {
         child == parent
     }
 
-    private func isDescendant(_ possibleDescendant: EVStyleKey, of ancestor: EVStyleKey) -> Bool {
-        var current = definition(for: possibleDescendant)?.parentKey
-        var visited = Set<EVStyleKey>()
-        while let key = current, visited.insert(key).inserted {
-            if key == ancestor { return true }
-            current = definition(for: key)?.parentKey
-        }
-        return false
-    }
+
 }
 
 enum EVStyleMutation {
     case setDeclaration(EVStyleProperty, EVStyleValue)
     case clearDeclaration(EVStyleProperty)
     case setParent(EVStyleID)
+    case setParentVariant(EVSourceFormat)
     case clearParent
     case setNextStyle(EVStyleID)
     case clearNextStyle
@@ -413,6 +407,11 @@ enum EVStyleBridgeError: LocalizedError, Equatable {
         case let .malformedSnapshot(reason): "The core returned a malformed style sheet: \(reason)."
         case .noEditingView: "The target document no longer has an active editor view."
         }
+    }
+
+    var isInheritanceCycle: Bool {
+        if case let .core(status) = self { return status == UInt32(VIEM_STATUS_STYLE_INHERITANCE_CYCLE) }
+        return false
     }
 
     var isStale: Bool {
@@ -464,6 +463,30 @@ extension Notification.Name {
 
 @MainActor
 extension EVCoreDocumentBackend {
+    static func themeStyleDefaults(variant: EVSourceFormat, variants: [String: Data]) throws -> Data {
+        var values: [String: Any] = [:]
+        for (key, bytes) in variants where !bytes.isEmpty {
+            values[key] = try JSONSerialization.jsonObject(with: bytes)
+        }
+        let input = try JSONSerialization.data(withJSONObject: values, options: [.sortedKeys])
+        let family: UInt32 = variant == .plainText ? 1 : variant == .code ? 7 : 2
+        return try input.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self).baseAddress
+            var count: UInt64 = 0
+            let status = viem_theme_style_defaults_json(family, bytes, UInt64(input.count), nil, 0, &count)
+            guard status == VIEM_STATUS_BUFFER_TOO_SMALL || status == VIEM_STATUS_OK else {
+                throw EVStyleBridgeError.core(status: UInt32(status))
+            }
+            var output = Data(count: Int(count))
+            let capacity = count
+            let copied = output.withUnsafeMutableBytes { buffer in
+                viem_theme_style_defaults_json(family, bytes, UInt64(input.count), buffer.bindMemory(to: UInt8.self).baseAddress, capacity, &count)
+            }
+            guard copied == VIEM_STATUS_OK else { throw EVStyleBridgeError.core(status: UInt32(copied)) }
+            return output
+        }
+    }
+
     func styleSheetSnapshot() throws -> EVStyleSheetSnapshot {
         let identity = try EVCoreStyleBridge.styleIdentity(core: core)
         if let cachedStyleSheet, cachedStyleSheet.identity == identity { return cachedStyleSheet }
@@ -899,6 +922,7 @@ enum EVCoreStyleBridge {
                 flags: flags,
                 capabilities: EVStyleCapabilities(rawValue: raw.capabilities),
                 parentID: flags.contains(.hasParent) ? EVStyleID(rawValue: try text(raw.parent_id)) : nil,
+                parentVariant: raw.parent_variant == 1 ? .plainText : raw.parent_variant == 2 ? .markdown : raw.parent_variant == 7 ? .code : nil,
                 nextStyleID: flags.contains(.hasNextStyle) ? EVStyleID(rawValue: try text(raw.next_style_id)) : nil,
                 properties: decodedProperties
             ))
@@ -933,6 +957,11 @@ enum EVCoreStyleBridge {
                 property = 0
                 value = nil
                 relationship = id.rawValue
+            case let .setParentVariant(variant):
+                operation = UInt32(VIEM_STYLE_EDIT_SET_PARENT_VARIANT)
+                property = 0
+                value = nil
+                relationship = variant == .plainText ? "text" : variant == .code ? "code" : "markdown"
             case .clearParent:
                 operation = UInt32(VIEM_STYLE_EDIT_CLEAR_PARENT)
                 property = 0

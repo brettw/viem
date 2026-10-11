@@ -64,7 +64,7 @@ internal sealed partial class EditorWindow : Window
         titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
-        capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this);
+        capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this, () => paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0);
         WindowSizing.Appearance(this, preferences.Midnight);
         Diagnostics.StartupPerformance.Mark("window.placementReady");
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;

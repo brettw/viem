@@ -383,6 +383,7 @@ impl StyleSheet {
                 baseline.character_metadata.insert(id, metadata.clone());
             }
         }
+        baseline.variants = Default::default();
         baseline.default_blocks.clear();
         baseline.default_characters.clear();
         baseline.deleted_configuration_blocks.clear();
@@ -391,11 +392,23 @@ impl StyleSheet {
     }
 
     pub(crate) fn with_default_json(&self, bytes: &[u8]) -> Result<(Self, Vec<String>), StyleDefaultsError> {
+        let (raw, context) = variants::unpack(bytes).map_err(StyleDefaultsError::Json)?;
+        let bytes = raw.as_slice();
         if bytes.len() > 4 * 1024 * 1024 {
             return Err(StyleDefaultsError::Json("file exceeds 4 MiB".into()));
         }
-        let file: InputFile =
-            serde_json::from_slice(bytes).map_err(|e| StyleDefaultsError::Json(e.to_string()))?;
+        let mut parsed: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| StyleDefaultsError::Json(e.to_string()))?;
+        // Cross-variant edges are loaded after the local graph. Temporarily use
+        // its builtin parent so local compatibility repair cannot discard it.
+        for entry in parsed.get_mut("block_styles").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
+            if entry.get("based_on_variant").is_some_and(|v| !v.is_null()) {
+                let id = entry.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
+                let parent = self.block_style(&StyleId(id.into())).and_then(|s| s.based_on.clone())
+                    .or_else(|| (id != self.base_paragraph.0).then(|| self.base_paragraph.clone()));
+                entry["based_on"] = serde_json::to_value(parent).unwrap();
+            }
+        }
+        let file: InputFile = serde_json::from_value(parsed).map_err(|e| StyleDefaultsError::Json(e.to_string()))?;
         if file.version != 1 {
             return Err(StyleDefaultsError::UnsupportedVersion(file.version));
         }
@@ -439,6 +452,14 @@ impl StyleSheet {
                 &BlockProperties::default(),
                 &CharacterProperties::default(),
             )?;
+            candidate.variants = Default::default();
+            candidate.load_variant_parents(bytes).map_err(StyleDefaultsError::Json)?;
+            candidate.attach_variant_context(context);
+            // Each family's declarations may be valid alone while a foreign
+            // percentage chain overflows. Reject before publishing a resolver
+            // that could fail during layout. Cycles retain builtin fallback.
+            candidate.validate_block_cycles()?;
+            candidate.validate_character_cycles()?;
             return Ok((candidate, diagnostics));
         }
         Err(StyleDefaultsError::Json("style relationship validation did not converge".into()))
@@ -504,6 +525,7 @@ impl StyleSheet {
 
     pub(super) fn retain_defaults(&mut self, previous: &Self) {
         self.theme_generation = previous.theme_generation;
+        self.variants = previous.variants.clone();
         if !previous.default_blocks.is_empty() || !previous.default_characters.is_empty() {
             self.default_blocks = previous.default_blocks.clone();
             self.default_characters = previous.default_characters.clone();
@@ -563,12 +585,9 @@ impl StyleSheet {
                 }
             })
             .collect();
-        serde_json::to_vec_pretty(&File {
-            version: 1,
-            block_styles: blocks,
-            character_styles: characters,
-        })
-        .map_err(|e| StyleDefaultsError::Json(e.to_string()))
+        let value = serde_json::to_value(File { version: 1, block_styles: blocks, character_styles: characters })
+            .map_err(|e| StyleDefaultsError::Json(e.to_string()))?;
+        serde_json::to_vec_pretty(&self.export_variant_parents(value)).map_err(|e| StyleDefaultsError::Json(e.to_string()))
     }
 }
 

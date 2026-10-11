@@ -114,12 +114,22 @@ internal sealed partial class Preferences
         string family = StyleFamily(format);
         return ThemeBytes(activeTheme["styles"]?[family] ?? DefaultTheme()["styles"]![family]!);
     }
+    public byte[] ThemeStyleContext(uint format, byte[]? ownStyles = null)
+        => ThemeStyleContext(activeTheme, format, ownStyles);
+    private byte[] ThemeStyleContext(JsonObject theme, uint format, byte[]? ownStyles = null)
+    {
+        var variants = new Dictionary<string, byte[]>();
+        foreach (string family in new[] { "text", "markdown", "code" })
+            variants[family] = ThemeBytes(theme["styles"]?[family] ?? DefaultTheme()["styles"]![family]!);
+        if (ownStyles != null) variants[StyleFamily(format)] = ownStyles;
+        return CoreThemes.StyleDefaults(format, variants);
+    }
     public string[] AttachThemeDocument(CoreDocument document, bool initialize = true)
     {
         if (themeDocuments.ContainsKey(document)) return [];
         document.ConfigureForEditing("Code styles", () => ApplyCodeStyles(activeTheme));
         string family = StyleFamily(document.State.format);
-        byte[] styles = ThemeStyleDefaults(document.State.format);
+        byte[] styles = ThemeStyleContext(document.State.format);
         string[] diagnostics = [];
         bool applied = document.ConfigureForEditing("theme styles", () => {
             diagnostics = family == "code" ? [] : initialize ? document.InitializeStyleDefaults(styles) : document.ReplaceStyleDefaults(styles);
@@ -142,7 +152,7 @@ internal sealed partial class Preferences
     }
     private bool ApplyCodeStyles(JsonObject theme)
     {
-        byte[] bytes = ThemeBytes(theme["styles"]?["code"] ?? DefaultTheme()["styles"]!["code"]!);
+        byte[] bytes = ThemeStyleContext(theme, VIEM_FORMAT_CODE);
         string key = Convert.ToBase64String(bytes);
         if (key == appliedCodeStyles && appliedCodeRevision == CoreThemes.CodeStyleRevision) return false;
         CoreThemes.ReplaceCodeStyles(bytes); appliedCodeStyles = key; appliedCodeRevision = CoreThemes.CodeStyleRevision; return true;
@@ -150,7 +160,7 @@ internal sealed partial class Preferences
     private bool ApplyDocumentStyles(CoreDocument document, JsonObject theme)
     {
         string family = StyleFamily(document.State.format);
-        byte[] styles = ThemeBytes(theme["styles"]?[family] ?? DefaultTheme()["styles"]![family]!);
+        byte[] styles = ThemeStyleContext(theme, document.State.format);
         string key = family + Convert.ToBase64String(styles);
         bool changed = !appliedDocumentStyles.TryGetValue(document, out string? prior) || prior != key;
         if (family != "code" && changed)
@@ -261,14 +271,22 @@ internal sealed partial class Preferences
                 return result;
             }
             if (value is JsonArray array) return new JsonArray(array.Select(WithoutNulls).ToArray());
+            if (value is JsonValue scalar && scalar.TryGetValue<double>(out double number)
+                && double.IsFinite(number) && number != Math.Truncate(number)) return JsonValue.Create((float)number);
             return value?.DeepClone();
+        }
+        static JsonObject Declarations(JsonNode? definition) {
+            var result = new JsonObject();
+            foreach (string field in new[] { "character", "block" })
+                if (definition is JsonObject values && values.TryGetPropertyValue(field, out var value)) result[field] = value?.DeepClone();
+            return result;
         }
         static JsonNode? Definition(JsonNode? sheet, string id) => (sheet?["block_styles"] as JsonArray)
             ?.FirstOrDefault(entry => entry?["id"]?.GetValue<string>() == id);
         var generatedCode = family == "code" ? DefaultTheme()["styles"]!["code"] : null;
         var shared = new[] { "Status bar", "Status bar command" }.Select(id => (Id: id, Definition: Definition(replacement, id) ?? Definition(generatedCode, id)))
             .Where(entry => entry.Definition != null && !JsonNode.DeepEquals(
-                WithoutNulls(Definition(previous, entry.Id) ?? Definition(generatedCode, entry.Id)), WithoutNulls(entry.Definition))).ToArray();
+                WithoutNulls(Declarations(Definition(previous, entry.Id) ?? Definition(generatedCode, entry.Id))), WithoutNulls(Declarations(entry.Definition)))).ToArray();
         candidate["styles"]![family] = KeepStyleExtensions(candidate["styles"]![family], replacement);
         // Status chrome has one Text-family authority. An inspector in any
         // family edits that same pair atomically, without changing other styles.
@@ -278,7 +296,12 @@ internal sealed partial class Preferences
             var definitions = candidate["styles"]![other]!["block_styles"]!.AsArray();
             foreach (var entry in shared) {
                 int index = Enumerable.Range(0, definitions.Count).FirstOrDefault(i => definitions[i]?["id"]?.GetValue<string>() == entry.Id, -1);
-                var next = KeepStyleExtensions(index >= 0 ? definitions[index] : null, entry.Definition!, 1);
+                // Chrome declarations are shared; each variant retains its own
+                // ancestry so propagation cannot manufacture a foreign cycle.
+                var declarations = Declarations(entry.Definition);
+                declarations["id"] = entry.Id;
+                var previousDefinition = index >= 0 ? definitions[index] : Definition(DefaultTheme()["styles"]![other], entry.Id);
+                var next = KeepStyleExtensions(previousDefinition, declarations, 1);
                 if (index >= 0) definitions[index] = next; else definitions.Add(next);
             }
         }

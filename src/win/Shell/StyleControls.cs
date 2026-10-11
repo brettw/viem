@@ -13,7 +13,8 @@ namespace Viem.Windows.Shell;
 internal sealed partial class StyleWindow
 {
     private bool IsBase => (selected.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0;
-    private bool ShowsValue(uint property) => IsBase || selected.Declares(property)
+    private bool RequiresExplicitValues => IsBase && selected.ParentVariant == null;
+    private bool ShowsValue(uint property) => RequiresExplicitValues || selected.Declares(property)
         || property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES && (selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT) || selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES) || selected.Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE));
     private static StackPanel Row(StackPanel target)
     {
@@ -36,7 +37,7 @@ internal sealed partial class StyleWindow
         body.Children.Add(enabled); body.Children.Add(editor); group.Children.Add(body); row.Children.Add(group);
         refreshFields.Add(() => {
             bool editable = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS);
-            enabled.IsChecked = ShowsValue(property); enabled.IsEnabled = editable && !IsBase;
+            enabled.IsChecked = ShowsValue(property); enabled.IsEnabled = editable && !RequiresExplicitValues;
             SetEnabled(editor, editable && ShowsValue(property));
         });
         enabled.Click += (_, _) => {

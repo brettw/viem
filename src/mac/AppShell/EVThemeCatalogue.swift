@@ -295,13 +295,21 @@ extension EVConfigurationStore {
         return object.filter { !($0.value is NSNull) }.mapValues(comparable)
       }
       if let array = value as? [Any] { return array.map(comparable) }
+      if let number = value as? NSNumber, ["d", "f"].contains(String(cString: number.objCType)) {
+        // The portable style model uses f32 declarations. Comparing its export
+        // to a theme's decimal spelling must not publish a spurious edit.
+        return NSNumber(value: number.floatValue)
+      }
       return value
+    }
+    func declarations(_ definition: [String: Any]) -> [String: Any] {
+      definition.filter { ["character", "block"].contains($0.key) }
     }
     let changed = incoming.filter { entry in
       guard let id = entry["id"] as? String, sharedIDs.contains(id) else { return false }
       let old = previous.first { $0["id"] as? String == id }
-      guard let old, let previous = comparable(old) as? [String: Any],
-            let next = comparable(entry) as? [String: Any] else { return true }
+      guard let old, let previous = comparable(declarations(old)) as? [String: Any],
+            let next = comparable(declarations(entry)) as? [String: Any] else { return true }
       return !NSDictionary(dictionary: previous).isEqual(to: next)
     }
     let changedFamilies = changed.isEmpty ? [name] : Self.styleNames
@@ -324,11 +332,21 @@ extension EVConfigurationStore {
           var definitions = target["block_styles"] as? [[String: Any]] ?? []
           for entry in changed {
             let id = entry["id"] as? String
+            // Shared chrome declarations do not share inheritance edges. In
+            // particular a foreign parent copied to its own variant would
+            // manufacture a cycle from an otherwise valid settings edit.
+            var shared = declarations(entry)
+            shared["id"] = id
             if let index = definitions.firstIndex(where: { $0["id"] as? String == id }) {
-              let merged = Self.mergeThemeStyleSheet(["block_styles": [definitions[index]]], ["block_styles": [entry]])
+              let merged = Self.mergeThemeStyleSheet(["block_styles": [definitions[index]]], ["block_styles": [shared]])
               definitions[index] = (merged["block_styles"] as? [[String: Any]])?.first ?? entry
             }
-            else { definitions.append(entry) }
+            else {
+              let baseline = (builtins[family] as? [String: Any])?["block_styles"] as? [[String: Any]] ?? []
+              var definition = baseline.first { $0["id"] as? String == id } ?? ["id": id ?? ""]
+              definition.merge(shared) { _, new in new }
+              definitions.append(definition)
+            }
           }
           target["block_styles"] = definitions
           styles[family] = target

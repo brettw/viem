@@ -145,6 +145,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private let lineUnit = EVStyleControlLabel(labelWithString: "")
     private var fontFaces: [EVFontFace] = []
     private var isBaseParagraph: Bool { definition?.flags.contains(.baseParagraph) == true }
+    private var requiresExplicitValues: Bool { isBaseParagraph && definition?.parentVariant == nil }
     private let sectionSpacing = NSFont.systemFontSize
     private let blockLock = NSButton()
     // Physical order is also the precedence when linking existing values.
@@ -284,8 +285,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         blockLock.widthAnchor.constraint(equalToConstant: 31).isActive = true
         blockLock.heightAnchor.constraint(equalToConstant: 27).isActive = true
         refreshBlockLock()
-        let background = row([color(.blockBackground, title: "Background Color"), NSView(),
-            labeled("", control: blockLock)])
+        let matchSides = labeled("Match sides", control: blockLock)
+        matchSides.alignment = .trailing
+        (matchSides.arrangedSubviews.first as? NSTextField)?.alignment = .right
+        let background = row([color(.blockBackground, title: "Background Color"), NSView(), matchSides])
         func caption(_ text: String, width: CGFloat) -> NSTextField {
             let label = NSTextField(labelWithString: text)
             label.font = .systemFont(ofSize: 10, weight: .medium)
@@ -360,8 +363,8 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         refreshThemeColors(theme)
         for (property, popup) in directions { popup.selectItem(at: isOverridden(property) ? min(2, Int(unsigned(property))) : -1); popup.isEnabled = isOverridden(property); setHelp(popup, property) }
         for (property, button) in overrideButtons {
-            button.isEnabled = canEdit(property) && !isBaseParagraph
-            button.state = isBaseParagraph || definition?.properties[property]?.isDeclared == true
+            button.isEnabled = canEdit(property) && !requiresExplicitValues
+            button.state = requiresExplicitValues || definition?.properties[property]?.isDeclared == true
             || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true || definition?.properties[.characterFontFace]?.isDeclared == true) ? .on : .off
         }
         let tableCell = ["Table cell", "Table header"].contains(definition?.key.id.rawValue ?? "")
@@ -776,7 +779,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
 
     private func isOverridden(_ property: EVStyleProperty) -> Bool {
-        canEdit(property) && (isBaseParagraph || definition?.properties[property]?.isDeclared == true
+        canEdit(property) && (requiresExplicitValues || definition?.properties[property]?.isDeclared == true
             || property == .characterFontFamilies && (definition?.properties[.characterWeight]?.isDeclared == true || definition?.properties[.characterFontAxes]?.isDeclared == true || definition?.properties[.characterFontFace]?.isDeclared == true))
     }
 
@@ -860,7 +863,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
 
     @objc private func overrideChanged(_ sender: NSButton) {
-        guard !isBaseParagraph, let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
+        guard !requiresExplicitValues, let property = EVStyleProperty(rawValue: UInt32(sender.tag)) else { return }
         if sender.state == .on { enableOverride(property) }
         else { send([.clearDeclaration(property)]) }
     }
@@ -889,14 +892,14 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     }
     private func separator() -> NSView { let view = NSBox(); view.boxType = .separator; return view }
     private func setHelp(_ control: NSView, _ property: EVStyleProperty) {
-        control.toolTip = isBaseParagraph ? "Defined by Base Paragraph." : definition?.properties[property]?.isDeclared == true ? "Declared in this style. Uncheck the override to inherit." : "Inherited from the parent style."
+        control.toolTip = requiresExplicitValues ? "Defined by Base Paragraph." : definition?.properties[property]?.isDeclared == true ? "Declared in this style. Uncheck the override to inherit." : "Inherited from the parent style."
     }
     private func number(_ property: EVStyleProperty, fallback: Float = 0) -> Float {
         switch definition?.properties[property]?.effective { case let .float(value)?: value; case let .unsigned(value)?: Float(value); default: fallback }
     }
     private var canUsePercentageSize: Bool {
         allowsPercentageSize && !isBaseParagraph
-            && (definition?.kind == .character || definition?.parentKey != nil)
+            && (definition?.kind == .character || definition?.parentKey != nil || definition?.parentVariant != nil)
     }
     private var declaredSizePercentage: UInt32? {
         if case let .percentage(value)? = definition?.properties[.characterSize]?.declared { return value }

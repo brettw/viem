@@ -54,6 +54,18 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
     private bool refreshPending;
+    private bool gutterSelectionDragging, pointerOverText, pointerOverGutter;
+    private readonly InputCursor textArrowCursor = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
+    private readonly InputCursor textInsertionCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
+    private InputCursor? gutterCursor;
+
+    private void UpdatePointerCursor()
+    {
+        ProtectedCursor = gutterSelectionDragging || pointerOverGutter
+            ? gutterCursor ??= GutterCursor.Create()
+            : pointerOverText && (presentation.mode == VIEM_MODE_INSERT || CoreView.IsTextSelectionMode(presentation.mode)) ? textInsertionCursor : textArrowCursor;
+    }
+
     private bool active;
     public bool IsActive { get => active; set { active = value; if (!value) { DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); } Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
@@ -97,7 +109,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Children.Add(Canvas); SetColumn(Canvas, 1); Children.Add(inputLayer); SetColumn(inputLayer, 1); inputLayer.Children.Add(input);
         completionBorder.Child = completionList; inputLayer.Children.Add(completionBorder);
         completionList.ItemClick += (_, e) => { if (View != null && completion != null) { int index = Array.IndexOf(completion.Items, (string)e.ClickedItem); Run(() => View.AcceptCompletion(completion, index)); FocusEditor(); } };
-        Children.Add(vertical); SetColumn(vertical, 2);
+        Children.Add(vertical); SetColumn(vertical, 2); SetRowSpan(vertical, 2);
         Children.Add(horizontal); SetRow(horizontal, 1); SetColumn(horizontal, 1);
         Children.Add(status); SetRow(status, 2); SetColumnSpan(status, 3);
         BuildStatus();
@@ -120,8 +132,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.SizeChanged += (_, _) => { if (View != null) Run(() => { using var timing = Diagnostics.StartupPerformance.Measure("editor.resize"); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }); };
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += OnPointerMoved;
-        Canvas.PointerEntered += (_, e) => MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position);
-        Canvas.PointerExited += (_, _) => { MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
+        Canvas.PointerEntered += (_, e) => { pointerOverText = true; pointerOverGutter = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position); };
+        Canvas.PointerExited += (_, _) => { pointerOverText = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
             pressedPointer = null; dragging = false; wordSelectionDragging = false; Canvas.ReleasePointerCapture(e.Pointer);
@@ -446,6 +458,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        UpdatePointerCursor();
         MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position);
         if (pressedPointer != e.Pointer.PointerId || View == null) {
             var location = e.GetCurrentPoint(Canvas).Position;
@@ -500,7 +513,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // The command/status surface must update even when document
             // geometry is temporarily unavailable (for example after scrolling).
             if (!StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath)) ResetImagePreviews();
-            presentation = View.Presentation;
+            presentation = View.Presentation; UpdatePointerCursor();
             viewport = View.Viewport;
             try { message.Text = View.SubstitutePrompt(); }
             catch (CoreException error) { message.Text = ""; PresentationWarning("substitute prompt", error); }
@@ -514,7 +527,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             catch (CoreException error) { PresentationWarning("syntax highlighting", error); }
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
-            presentation = View.Presentation; viewport = View.Viewport;
+            presentation = View.Presentation; UpdatePointerCursor(); viewport = View.Viewport;
             try { RefreshLineNumbers(); }
             catch (CoreException error) { lineNumbers = null; lineNumberCanvas.Invalidate(); PresentationWarning("line numbers", error); }
             try { RefreshImagePreviews(); }
@@ -563,7 +576,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // Retain geometry only when core still attests to every identity.
             // Keep the current viewport and input mode independently of paint.
             try {
-                presentation = View.Presentation; viewport = View.Viewport;
+                presentation = View.Presentation; UpdatePointerCursor(); viewport = View.Viewport;
                 if (snapshot == null || !CoreView.SameLayout(snapshot.Info.identity, View.LayoutInfo().identity)) snapshot = null;
             } catch { snapshot = null; }
             lineNumbers = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
@@ -721,11 +734,12 @@ internal sealed partial class EditorPane : Grid, IDisposable
             View.Poll();
             if (!dragging) return;
             double dy = dragPoint.Y < 0 ? Math.Max(-60, dragPoint.Y) : dragPoint.Y > Canvas.ActualHeight ? Math.Min(60, dragPoint.Y - Canvas.ActualHeight) : 0;
-            double dx = dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
+            double dx = gutterSelectionDragging ? 0 : dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
             if (dx == 0 && dy == 0) return;
             RefreshScrollGeometry();
             View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
-            if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
+            if (gutterSelectionDragging) View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true);
+            else if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
         });
     }
     public void Dispose()
@@ -736,6 +750,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ResetImagePreviews(); imageCancellation.Dispose();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; Clipboard.ContentChanged -= ClipboardChanged;
         InvalidateDrawingCache();
+        ProtectedCursor = null; gutterCursor?.Dispose(); textArrowCursor.Dispose(); textInsertionCursor.Dispose();
         ClearNumberLayouts(); ClearStatusText(); View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); statusBox.RemoveFromVisualTree(); statusTextCanvas.RemoveFromVisualTree(); lineNumberCanvas.RemoveFromVisualTree(); Canvas.RemoveFromVisualTree();
     }
 }

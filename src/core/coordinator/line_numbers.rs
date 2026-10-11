@@ -586,9 +586,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 overlay.replacement_range().start..overlay.replacement_range().start,
             )?[0]
         } else {
-            view.commands.physical_source_line_index(&self.document)?
+            view.commands.physical_display_source_line_index(&self.document)?
         };
-        Ok((index + 1).min(self.document.physical_source_line_number_count()))
+        Ok((index + 1).min(self.document.physical_line_count()?))
     }
     /// No text decoding or layout is performed. Only installed regional rows
     /// and logarithmic provenance/source-line indexes are consulted.
@@ -639,9 +639,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .ok()
             .map(|geometry| geometry.row_index);
         let mut bands = BTreeMap::<usize, LineNumberRegion>::new();
-        let source_line_count = self.document.physical_source_line_number_count();
+        let source_line_count = self.document.physical_line_count()?;
         let has_horizontal_materialization = snapshot.has_horizontal_materialization();
-        let mut current_final_boundary = None;
         let mut hard_lines = BTreeMap::<usize, PartialHardLineNumbers>::new();
         for (row_index, row) in snapshot.rows.iter().enumerate() {
             if row.table_cell.is_none() {
@@ -699,18 +698,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .copied()
                 .find(|index| *index < source_line_count)
             else {
-                if current_row == Some(row_index)
-                    && row.text_range.is_empty()
-                    && row.text_range.start == overlay.as_ref().map_or_else(
-                        || self.document.hard_line_snapshot().text_length(),
-                        CompositionOverlay::utf8_len,
-                    )
-                    && indexes.contains(&source_line_count)
-                {
-                    // A final file terminator creates a real caret boundary,
-                    // but no additional file-line ordinal or gutter band.
-                    current_final_boundary = Some(source_line_count - 1);
-                }
                 continue;
             };
             if let Some(line) = hard_lines
@@ -738,11 +725,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             entry.top = entry.top.min(bounds.start);
             entry.bottom = entry.bottom.max(bounds.end);
             entry.current |= current_row == Some(row_index);
-        }
-        if let Some(index) = current_final_boundary {
-            if let Some(band) = bands.get_mut(&index) {
-                band.current = true;
-            }
         }
         // A regional paragraph can contain several physical source lines and
         // only a slice of their wraps. Recover each contributing line's full
