@@ -245,3 +245,106 @@ fn emptied_source_line_retains_its_typing_destination() {
     for action in [Key::Char('A'),Key::Backspace,Key::Backspace] {key(&mut core,view,action);}
     assert_eq!(core.document().source_bytes(),b"a\n\n\nc");
 }
+
+
+#[test]
+fn selected_source_character_choices_clear_only_selected_semantic_bodies() {
+    for (source, start, end) in [("**a *b* c**", 5, 6), ("~~strike~~", 3, 5), ("__bold__", 3, 5)] {
+        for style in ["", "Code"] {
+            let (mut core, view) = open(source);
+            key(&mut core, view, Key::Char('i'));
+            place(&mut core, view, start, false);
+            place(&mut core, view, end, true);
+            core.handle_with_layout(view, CoreEvent::AssignNamedStyle {
+                expected: core.list_selection_identity(view).unwrap(),
+                style_sheet_revision: core.document().projection().style_sheet().revision,
+                namespace: viem_core::document::StyleNamespace::Character,
+                style: style.into(),
+            }).unwrap_or_else(|error| panic!("{source:?} {style}: {error:?}"));
+            exact(&core);
+            let rich = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+            let original = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(rich.text(), original.text());
+            let selected = &source[start..end];
+            let at = rich.text().find(selected).unwrap();
+            let properties = viem_core::layout::DocumentLayoutStyles::semantic_character_at(rich.projection(), at, false).unwrap();
+            assert!(!properties.bold && properties.slant == viem_core::document::FontSlant::Upright && !properties.strikethrough);
+            assert_eq!(rich.projection().style_spans().iter().any(|span|
+                span.range.start <= at && at + selected.len() <= span.range.end
+                    && span.application == viem_core::document::StyleApplication::Semantic(viem_core::document::SemanticInlineStyle::Code)),
+                style == "Code");
+            key(&mut core, view, Key::Escape);
+            key(&mut core, view, Key::Char('u'));
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn source_code_choice_on_only_delimiters_keeps_ordered_selection() {
+    let source = "***both***";
+    let (mut core, view) = open(source);
+    key(&mut core, view, Key::Char('i'));
+    place(&mut core, view, 1, false);
+    place(&mut core, view, 3, true);
+    core.handle_with_layout(view, CoreEvent::AssignNamedStyle {
+        expected: core.list_selection_identity(view).unwrap(),
+        style_sheet_revision: core.document().projection().style_sheet().revision,
+        namespace: viem_core::document::StyleNamespace::Character,
+        style: "Code".into(),
+    }).unwrap();
+    exact(&core);
+    assert!(String::from_utf8(core.document().source_bytes()).unwrap().contains("`**`"));
+    key(&mut core, view, Key::Escape);
+    key(&mut core, view, Key::Char('u'));
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+
+#[test]
+fn source_pending_code_inside_bold_link_preserves_destination() {
+    for at in [3, 7, 11] {
+        let source = "**[bold link](u)**";
+        let (mut core, view) = open(source);
+        key(&mut core, view, Key::Char('i'));
+        place(&mut core, view, at, false);
+        core.handle_with_layout(view, CoreEvent::AssignNamedStyle {
+            expected: core.list_selection_identity(view).unwrap(),
+            style_sheet_revision: core.document().projection().style_sheet().revision,
+            namespace: viem_core::document::StyleNamespace::Character,
+            style: "Code".into(),
+        }).unwrap();
+        key(&mut core, view, Key::Char('x'));
+        let rich = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        let inserted = at - 3;
+        assert_eq!(rich.text().as_bytes()[inserted], b'x');
+        assert_eq!(rich.link_at(rich.text_point(inserted).unwrap()).unwrap().as_deref(), Some("u"));
+        let properties = viem_core::layout::DocumentLayoutStyles::semantic_character_at(rich.projection(), inserted, false).unwrap();
+        assert!(!properties.bold);
+        key(&mut core, view, Key::Escape);
+        key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+
+#[test]
+fn late_source_named_choice_decodes_only_the_selected_prose_owner() {
+    let source = format!("{}**a *b* c**", "An unrelated paragraph remains unchanged.\n\n".repeat(5000));
+    let (mut core, view) = open(&source);
+    key(&mut core, view, Key::Char('i'));
+    let start = core.document().text().rfind("*b*").unwrap() + 1;
+    place(&mut core, view, start, false);
+    place(&mut core, view, start + 1, true);
+    let (result, work) = viem_core::document::measure_document_work(|| core.handle(view, CoreEvent::AssignNamedStyle {
+        expected: core.list_selection_identity(view).unwrap(),
+        style_sheet_revision: core.document().projection().style_sheet().revision,
+        namespace: viem_core::document::StyleNamespace::Character,
+        style: "Code".into(),
+    }));
+    result.unwrap();
+    assert!(work.source_decoded_bytes < 20_000, "{work:?}");
+    assert!(work.source_full_materialized_bytes < 20_000, "{work:?}");
+    assert!(String::from_utf8(core.document().source_bytes()).unwrap().starts_with(&source[..source.len()-11]));
+    exact(&core);
+}

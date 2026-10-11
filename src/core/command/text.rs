@@ -365,26 +365,37 @@ pub(crate) fn move_word_forward(text: &str, offset: usize, big_word: bool, count
 }
 
 pub(crate) fn move_word_end(text: &str, offset: usize, big_word: bool, count: usize) -> usize {
+    word_end(text, offset, big_word, count, false)
+}
+
+/// `cw` counts the current word end as its first destination; `e` advances
+/// before searching, even when the cursor already occupies a word end.
+pub(crate) fn change_word_end(text: &str, offset: usize, big_word: bool, count: usize) -> usize {
+    word_end(text, offset, big_word, count, true)
+}
+
+fn word_end(text: &str, offset: usize, big_word: bool, count: usize, stop: bool) -> usize {
     let items = graphemes(text);
-    if items.is_empty() {
-        return 0;
-    }
-    let mut index = items
-        .iter()
-        .position(|(start, end, _)| *start <= offset && offset < *end)
-        .unwrap_or(items.len().saturating_sub(1));
-    for _ in 0..count.max(1).min(items.len().saturating_add(1)) {
-        index = (index + 1).min(items.len() - 1);
-        while index < items.len() && items[index].2 == WordClass::White {
-            index += 1;
-        }
+    if items.is_empty() { return 0; }
+    let mut index = items.iter().position(|(start, end, _)| *start <= offset && offset < *end)
+        .unwrap_or(items.len() - 1);
+    let mut last_nonwhite = index;
+    for iteration in 0..count.max(1).min(items.len().saturating_add(1)) {
+        if iteration > 0 || !stop { index += 1; }
+        while index < items.len() && items[index].2 == WordClass::White { index += 1; }
+        // A final file terminator is not a word. Exhausting a motion still
+        // consumes trailing spaces and real empty rows, but keeps a lone
+        // final line ending outside its inclusive endpoint.
         if index >= items.len() {
-            return items.last().map_or(0, |item| item.0);
+            let mut last = items.len() - 1;
+            if &text[items[last].0..items[last].1] == "\n" && last > 0
+                && &text[items[last - 1].0..items[last - 1].1] != "\n"
+            { last -= 1; }
+            return items[last.max(last_nonwhite)].0;
         }
         let class = class_for(big_word, items[index].2);
-        while index + 1 < items.len() && class_for(big_word, items[index + 1].2) == class {
-            index += 1;
-        }
+        while index + 1 < items.len() && class_for(big_word, items[index + 1].2) == class { index += 1; }
+        last_nonwhite = index;
     }
     items[index].0
 }
@@ -554,6 +565,31 @@ fn find_character_impl(
         found
     };
     items.get(target).map(|item| item.0)
+}
+
+/// Markdown projections already identify paragraphs; source separator trivia
+/// is intentionally absent from their logical text. Reuse that ownership
+/// instead of interpreting the entire projection as one blank-line paragraph.
+pub(crate) fn move_document_paragraph(
+    document: &crate::document::Document, offset: usize, forward: bool, count: usize,
+) -> usize {
+    let lines = document.hard_line_snapshot();
+    if !document.format().is_markdown() { return move_paragraph(&lines, offset, forward, count); }
+    let mut at = offset;
+    for _ in 0..count.max(1) {
+        let Ok(paragraph) = document.paragraph_range_at(at) else { break; };
+        let next = if forward {
+            lines.next_grapheme_boundary(paragraph.end).unwrap_or(lines.text_length())
+        } else if at > paragraph.start { paragraph.start }
+        else {
+            lines.previous_grapheme_boundary(paragraph.start)
+                .and_then(|previous| document.paragraph_range_at(previous).ok())
+                .map_or(0, |previous| previous.start)
+        };
+        if next == at { break; }
+        at = next;
+    }
+    at
 }
 
 pub(crate) fn move_paragraph(

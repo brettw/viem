@@ -270,7 +270,7 @@ impl CommandInterpreter {
             .unwrap_or_else(|| self.continuation_indent(document, self.cursor, false, false));
         self.cleanup_generated_indent(document)?;
         let start = self.cursor;
-        if self.mode == Mode::Replace && document.format().is_markdown() {
+        if self.mode == Mode::Replace {
             let snapshot = document.hard_line_snapshot();
             let line_end = line_end(&snapshot, start);
             let suffix = snapshot.slice_utf8(start..line_end).map_err(DocumentError::FormattedTextStorage)?;
@@ -279,7 +279,7 @@ impl CommandInterpreter {
             } else { 0 };
             let inserted = format!("\n{prefix}");
             let payload = FormattedTextPayload::new(&snapshot, inserted.clone(), vec![0])
-                .expect("Replace Enter contains one semantic break");
+                .expect("Enter contains one semantic break");
             let edit = FormattedPayloadEdit::new(start..start + removed_len, payload)
                 .with_boundary_affinity(self.markdown_typing_affinity(document));
             let use_markdown_typing = document.format().is_wysiwyg() && !self.typing_style.link_disabled
@@ -793,9 +793,8 @@ mod tests {
         key(&mut c, &mut d, Key::Enter);
         assert_eq!(d.text(), "  \n  abc");
         key(&mut c, &mut d, Key::Backspace);
-        assert_eq!(d.text(), "  \nabc");
-        key(&mut c, &mut d, Key::Backspace);
         assert_eq!(d.text(), "  abc");
+        assert_eq!(c.cursor(), 2);
         key(&mut c, &mut d, Key::Escape);
         let mut d = Document::new("  one  two");
         let mut c = CommandInterpreter::new();
@@ -804,15 +803,14 @@ mod tests {
         key(&mut c, &mut d, Key::Enter);
         assert_eq!(d.text(), "  one\n  two");
         key(&mut c, &mut d, Key::Backspace);
-        key(&mut c, &mut d, Key::Backspace);
         assert_eq!(d.text(), "  one  two");
+        assert_eq!(c.cursor(), 5);
         let mut d = Document::new("\tabc"); let mut c = CommandInterpreter::new();
         c.set_indentation_defaults(IndentationOptions { tabstop: 8, expandtab: false, ..Default::default() }).unwrap();
         c.set_cursor(&d, 1); keys(&mut c, &mut d, "R");
         key(&mut c, &mut d, Key::Enter); key(&mut c, &mut d, Key::Backspace);
-        assert_eq!(d.text(), "\t\n      abc");
-        for _ in 0..4 { key(&mut c, &mut d, Key::Backspace); }
         assert_eq!(d.text(), "\tabc");
+        assert_eq!(c.cursor(), 1);
     }
 
     #[test]

@@ -61,6 +61,51 @@ fn verify_history(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, so
     assert_eq!(core.document().source_bytes(), bytes);
 }
 
+fn verification_rich_case(source: &str, keys: &str, expected: &str) {
+    let (mut core, view) = open(source, Format::Markdown);
+    for key in keys.chars() { input(&mut core, view, InputEvent::key(key)); }
+    assert_eq!(core.document().text(), expected, "{source:?}: {keys}");
+    let bytes = core.document().source_bytes();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(!text.contains("[]()"), "{text:?}");
+    if source.starts_with("| abc") { assert!(!text.contains("**"), "{text:?}"); }
+    if source.starts_with("p\n") { assert_eq!(text, "```\nc2\n```\n\nz"); }
+    let fresh = Document::from_bytes(bytes, Encoding::Utf8, Format::Markdown).unwrap();
+    assert_eq!(core.document().text(), fresh.text());
+    if keys != "xp" { verify_history(&mut core, view, source); }
+}
+
+#[test]
+fn verification_setext_put() { verification_rich_case("Setext\n===", "yyp", "Setext\nSetext"); }
+#[test]
+fn verification_code_adjacent_put() { verification_rich_case("a `b` c `d` e", "xp", " ab c d e"); }
+#[test]
+fn verification_bold_link_row_delete() { verification_rich_case("**[bold link](u)**\n\nx", "dd", "x"); }
+#[test]
+fn verification_delete_into_code() { verification_rich_case("p\n\n```\nc1\nc2\n```\n\nz", "2dd", "c2\nz"); }
+#[test]
+fn verification_autolink_change() { verification_rich_case("<https://auto.link>", "ccx", "x"); }
+#[test]
+fn verification_final_autolink_delete() { verification_rich_case("x\n\n<https://auto.link>", "Gdd", "x"); }
+#[test]
+fn verification_empty_link_change() { verification_rich_case("[text]()", "Cx", "x"); }
+#[test]
+fn verification_header_cell_change() { verification_rich_case("| abc |\n| --- |", "ciwz", "z"); }
+
+#[test]
+fn verification_reference_and_indented_code_transfers() {
+    for (source, prefix, expected) in [
+        ("[ref]\n\n[ref]: /url", "G", "[ref]\n[ref]: /url\n[ref]: /url"),
+        ("    a\n\n    b", "", "a\na\n\nb"),
+    ] {
+        let (mut core, view) = open(source, Format::Markdown);
+        for key in format!("{prefix}:t.").chars() { input(&mut core, view, InputEvent::key(key)); }
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_eq!(core.document().text(), expected);
+        verify_history(&mut core, view, source);
+    }
+}
+
 #[test]
 fn lazy_source_list_continuation_accepts_unicode_then_more_typing() {
     for source in ["- y\na", "- y\n👩‍💻", "- y\n  a", "- y\né", "- y\nالعربية"] {
@@ -1182,14 +1227,16 @@ fn deleting_code_rows_before_an_indented_block_preserves_remaining_text() {
 }
 
 #[test]
-fn repository_paragraph_deletion_can_end_inside_indented_code() {
+fn repository_paragraph_deletion_preserves_later_code_paragraphs() {
     let source = include_str!("../../docs/markdown_demo.md");
     for keys in ["dip", "dap", "vipd"] {
         let (mut core, view) = open(source, Format::Markdown);
         for key in keys.chars() {
             input(&mut core, view, InputEvent::key(key));
         }
-        assert!(core.document().text().len() < 4000);
+        assert!(core.document().text().contains("This fence is indented by two spaces."));
+        assert!(core.document().text().contains("Four spaces"));
+        assert!(!core.document().text().contains("Viem Markdown demo"));
         verify_history(&mut core, view, source);
     }
 }

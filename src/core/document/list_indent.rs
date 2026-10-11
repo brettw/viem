@@ -239,7 +239,16 @@ impl Document {
         let decoded = self.encoding().decode(&self.source_bytes())?;
         let input = normalize(&decoded, self.file_format());
         let patches = markdown_patches(self, &input, blocks, &target, unindent)?;
-        let prepared = self.prepare_source_only_patches(patches)?;
+        let separator = patches.iter().find_map(|patch| {
+            let decoded = self.encoding().decode_region(&patch.replacement, patch.range.start).ok()?;
+            decoded.text.starts_with(self.file_format().spelling()).then(|| {
+                patch.range.start..patch.range.start + self.encoding().encode_fragment(self.file_format().spelling()).unwrap().len()
+            })
+        });
+        let mut prepared = self.prepare_source_only_patches(patches)?;
+        if let PreparedPublication::State(candidate) = &mut prepared.publication {
+            if separator.is_some() { candidate.transient_list_separator = separator; }
+        }
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
@@ -479,6 +488,7 @@ fn markdown_patches(
         let mut indentation = " ".repeat(next);
         if !unindent && line_index == start && blocks[target.first].range.is_empty()
             && line_index > 0 && !input.text[lines[line_index - 1].clone()].trim().is_empty()
+            && !blocks[reference].range.is_empty()
         {
             // An empty nested bullet cannot interrupt its parent's paragraph
             // in GFM (and '-' may instead become a setext underline). A blank

@@ -120,3 +120,39 @@ fn list_continuation_body_whitespace_matches_reopened_projection() {
         Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
     assert_eq!(reopened.text(), document.text());
 }
+
+#[test]
+fn october11_empty_parent_indentation_and_tight_list_cleanup() {
+    use viem_core::command::Key;
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for source in ["- \n- ", "1. \n2. "] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let mut commands = CommandInterpreter::new();
+            for event in [InputEvent::key('G'), InputEvent::key('A'), InputEvent::Key(Key::Tab)] {
+                commands.handle(&mut document, event).unwrap();
+            }
+            let reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, format).unwrap();
+            assert_eq!(document.text(), reopened.text());
+            let source = String::from_utf8(document.source_bytes()).unwrap();
+            assert!(!source.contains("\n\n"), "{source:?}");
+        }
+    }
+    for (source, expected) in [("- a\n- b", "- a\n- b\n  - x"), ("1. a\n2. b", "1. a\n2. b\n   1. x")] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut commands = CommandInterpreter::new();
+        for event in [InputEvent::key('G'), InputEvent::key('A'), InputEvent::Key(Key::Enter), InputEvent::Key(Key::Tab), InputEvent::text("x")] {
+            commands.handle(&mut document, event).unwrap();
+        }
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert!(document.projection().blocks().iter().all(|block| !block.list_loose));
+        commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+        commands.handle(&mut document, InputEvent::key('u')).unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    // The same bytes authored in a file are not a temporary supporting edit.
+    let source = "- a\n- b\n\n  - ";
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = document.text().len();
+    document.insert(at, "x").unwrap();
+    assert_eq!(document.source_bytes(), format!("{source}x").as_bytes());
+}

@@ -51,7 +51,8 @@ impl Document {
             // A captured following paragraph boundary has no corresponding
             // final boundary in an independently parsed Markdown fragment.
             if snapshot
-                .line_at_offset(body.end - 1)
+                .line_at_offset(snapshot.previous_grapheme_boundary(body.end)
+                    .ok_or(DocumentError::AmbiguousProjection)?)
                 .map_err(|_| DocumentError::AmbiguousProjection)?
                 .separator_range()
                 .is_some_and(|separator| separator.end == body.end)

@@ -3,6 +3,82 @@
 use super::*;
 
 impl Document {
+    /// Complete displayed rows own their block syntax. A prefix of a code
+    /// paragraph owns only those body rows, so surviving code keeps its fence.
+    pub(super) fn markdown_complete_row_deletion_patches(
+        &self,
+        range: &Range<usize>,
+    ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
+        if range.is_empty() { return Ok(None); }
+        let blocks = self.projection().blocks_for_region(range);
+        let selected = blocks.iter().filter(|block|
+            block.range.start < range.end && range.start < block.range.end).collect::<Vec<_>>();
+        if selected.is_empty() || selected.iter().any(|block|
+            matches!(block.kind, super::super::BlockKind::ListItem { .. })
+                || self.projection().table_at(block.range.start).is_some()) {
+            return Ok(None);
+        }
+        let snapshot = self.hard_line_snapshot();
+        let mut patches = Vec::new();
+        for block in selected {
+            let body = range.start.max(block.range.start)..range.end.min(block.range.end);
+            let complete = body == block.range;
+            if !complete && block.style.0 != "Code Block" { return Ok(None); }
+            let first = snapshot.line_at_offset(body.start).map_err(|_| DocumentError::AmbiguousProjection)?;
+            let last_at = snapshot.previous_grapheme_boundary(body.end).unwrap_or(body.start).max(body.start);
+            let last = snapshot.line_at_offset(last_at).map_err(|_| DocumentError::AmbiguousProjection)?;
+            if first.content_range().start != body.start
+                || last.content_range().end != body.end && last.linewise_range().end != body.end {
+                return Ok(None);
+            }
+            let source = self.projection().source_range(body.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let first_source = self.physical_line_at_source(source.start)?;
+            let last_source = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?;
+            let mut start = first_source.content_range.start;
+            let mut end = last_source.content_range.end;
+            if complete && block.style.0 == "Code Block" {
+                if let Some(fence) = super::super::markdown_code::fenced_source(self, block)? {
+                    start = fence.opening.start;
+                    end = fence.closing_content_end.unwrap_or(end);
+                }
+            }
+            if body.end < block.range.end {
+                let next_at = if last.linewise_range().end == body.end { body.end } else { body.end + 1 };
+                let next = self.projection().source_insertion_point(next_at, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                end = self.physical_line_at_source(next)?.content_range.start;
+            } else if !complete && block.style.0 == "Code Block" {
+                // The last selected body row does not own the enclosing
+                // closing fence or the following paragraph's separator.
+                end = last_source.source_range.end;
+            } else if range.end > block.range.end {
+                let next_at = block.range.end + 1;
+                if let Some(next) = self.projection().blocks_for_region(&(next_at..next_at)).into_iter()
+                    .find(|next| next.range.start == next_at) {
+                    let at = self.projection().source_insertion_point(next.range.start, true)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    end = self.physical_line_at_source(at)?.content_range.start;
+                    if let Some(fence) = super::super::markdown_code::fenced_source(self, &next)? {
+                        end = fence.opening.start;
+                    }
+                }
+            }
+            if range.start < block.range.start && range.start + 1 == block.range.start {
+                if let Some(previous) = self.projection().blocks_for_region(&(range.start..range.start)).into_iter()
+                    .find(|previous| previous.range.end == range.start) {
+                    let source = self.projection().source_range(previous.range.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    start = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?.content_range.end;
+                    if let Some(fence) = super::super::markdown_code::fenced_source(self, &previous)? {
+                        start = fence.closing_content_end.unwrap_or(start);
+                    }
+                }
+            }
+            patches.push(SourcePatch::primary(start..end, Vec::new()));
+        }
+        Ok(Some(patches))
+    }
+
     /// Text and payload edits share adapter dispatch, mapping, escaping and
     /// encoding. A payload supplies explicit hard-break identity and affinity;
     /// ordinary text treats every inserted LF as a requested logical break.
@@ -37,6 +113,43 @@ impl Document {
         payload: Option<&FormattedPayloadEdit>,
     ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
         let affinity = payload.and_then(|edit| edit.boundary_affinity);
+        if self.format() == Format::Markdown && edit.range.is_empty()
+            && edit.replacement.ends_with('\n')
+            && payload.is_none_or(|payload| payload.payload.break_offsets().iter().copied()
+                .eq(edit.replacement.match_indices('\n').map(|(at, _)| at)))
+        {
+            if let Some(block) = self.projection().blocks_for_region(&edit.range).into_iter()
+                .find(|block| block.range.start == edit.range.start && block.quote_depth == 0
+                    && block.containers.is_empty() && matches!(block.kind, super::super::BlockKind::Heading(_)))
+            {
+                if self.projection().style_spans_for_region(&edit.range).is_empty() {
+                    let super::super::BlockKind::Heading(level) = block.kind else { unreachable!() };
+                    let body = self.projection().source_insertion_point(block.range.start, true)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let at = self.physical_line_at_source(body)?.content_range.start;
+                    let mut syntax = String::new();
+                    for paragraph in edit.replacement[..edit.replacement.len() - 1].split('\n') {
+                        syntax.push_str(&"#".repeat(level as usize));
+                        syntax.push(' ');
+                        let leading = paragraph.len() - paragraph.trim_start_matches([' ', '\t']).len();
+                        let trailing = paragraph.trim_end_matches([' ', '\t']).len();
+                        for character in paragraph[..leading].chars() {
+                            syntax.push_str(if character == ' ' { "&#32;" } else { "&#9;" });
+                        }
+                        if leading < trailing {
+                            syntax.push_str(&escape_markdown_insert_in_encoding(&paragraph[leading..trailing], self.encoding()));
+                        }
+                        for character in paragraph[trailing.max(leading)..].chars() {
+                            syntax.push_str(if character == ' ' { "&#32;" } else { "&#9;" });
+                        }
+                        syntax.push_str(&self.file_format().spelling().repeat(2));
+                    }
+                    // Opening before the heading keeps its complete authored
+                    // syntax and gives each inserted paragraph the same role.
+                    return Ok(Some(vec![SourcePatch::primary(at..at, self.encoding().encode_fragment(&syntax)?)]));
+                }
+            }
+        }
         if edit.range.is_empty() && affinity == Some(BoundaryAffinity::Downstream)
             && !edit.replacement.contains('\n')
         {
@@ -47,6 +160,12 @@ impl Document {
             }
         }
         if let Some(patches) = self.table_text_patches(edit, affinity)? {return Ok(Some(patches));}
+        if self.format() == Format::Markdown && !edit.range.is_empty() && edit.replacement.is_empty() {
+            if let Some(link) = self.link_snapshot_at(self.text_point(edit.range.start)?)?
+                .filter(|link| link.editable && link.range == edit.range) {
+                return Ok(Some(vec![SourcePatch::primary(link.source, Vec::new())]));
+            }
+        }
         if self.format() == Format::Markdown
             && !edit.replacement.contains('\n')
             && super::super::source_edit::complete_contributors(self.projection(), edit)?.range
@@ -89,7 +208,10 @@ impl Document {
                 let outside_comment = edit.range.is_empty()
                     && self.projection().style_spans_for_region(&nearby).iter().any(|span|
                         span.application == StyleApplication::Automatic("Comment".into())
-                            && (span.range.start == edit.range.start || span.range.end == edit.range.start));
+                            && (span.range.start == edit.range.start
+                                || span.range.end == edit.range.start
+                                    && self.projection().text_tree().slice(span.range.clone())
+                                        .is_ok_and(|text| text.ends_with("-->"))));
                 let replacement = if outside_comment {
                     self.escape_markdown_source_text(range.start, &edit.replacement)?
                 } else if html && !literal {

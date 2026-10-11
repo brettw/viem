@@ -899,3 +899,196 @@ fn rich_linewise_put_inside_multiline_code_retains_the_code_owner() {
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }
+
+
+#[test]
+fn fix_verification_word_changes_keep_the_current_word_and_line_ending() {
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        for (source, command, expected) in [
+            ("I saw a cat.\n", "wwcwx", "I saw x cat.\n"),
+            ("ab\ncd\nef\n", "lcwx", "ax\ncd\nef\n"),
+            ("ab\ncd\nef\n", "lc2wx", "ax\nef\n"),
+            ("a\n", "cwx", "x\n"),
+        ] {
+            let (mut core, view) = editor(source, format);
+            keys(&mut core, view, command);
+            key(&mut core, view, Key::Escape);
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{format:?} {command}");
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn fix_verification_literal_operators_preserve_paragraph_and_eof_boundaries() {
+    for format in [Format::PlainText, Format::Code] {
+        for (source, command, expected) in [
+            ("First paragraph.\nSecond line.\n\nLast line.", "Gdap", "First paragraph.\nSecond line."),
+            ("a\nb\n\nc\n", "Gkdap", "a\nb\n"),
+            ("ab\n", "$de", "a\n"),
+            ("ab\n", "$dE", "a\n"),
+            ("word   \n", "4lde", "word\n"),
+            ("one\n\n", "2de", ""),
+            ("ab\n", "$yeP", "abb\n"),
+            ("ab\ncd\n", "jv$d", "ab\n\n"),
+            ("s = '''\nmulti\nline\n'''\n", "jd2w", "s = '''\n'''\n"),
+            ("s = '''\nmulti\nline\n'''\n", "jjdb", "s = '''\nline\n'''\n"),
+            ("plain\n\ttext\n", "jdd.", ""),
+            ("P.\nS.\n\nL.\n", "2jdw", "P.\nS.\nL.\n"),
+        ] {
+            let (mut core, view) = editor(source, format);
+            keys(&mut core, view, command);
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{format:?} {command}");
+        }
+    }
+}
+
+#[test]
+fn fix_verification_ex_unicode_global_and_jump_targets() {
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        for command in [":d", ":.,$d", ":t0", ":m0"] {
+            let (mut core, view) = editor("a\n\nbé", format);
+            keys(&mut core, view, "G");
+            keys(&mut core, view, command);
+            key(&mut core, view, Key::Enter);
+        }
+        let (mut core, view) = editor("xyz", format);
+        keys(&mut core, view, ":v/a/d");
+        key(&mut core, view, Key::Enter);
+        keys(&mut core, view, "Aéé");
+        key(&mut core, view, Key::Escape);
+        keys(&mut core, view, ":s/^/#/");
+        key(&mut core, view, Key::Enter);
+        assert!(core.document().text_point(core.command_state(view).unwrap().cursor()).is_ok());
+    }
+    for format in [Format::PlainText, Format::Code] {
+        let (mut core, view) = editor("a\nb\na", format);
+        keys(&mut core, view, ":g/a/d");
+        key(&mut core, view, Key::Enter);
+        assert_eq!(core.document().source_bytes(), b"b");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), b"a\nb\na");
+    }
+}
+
+#[test]
+fn fix_verification_replace_enter_keeps_indentation_and_source_cursor() {
+    for (source, format, command, expected) in [
+        (" * star\n", Format::PlainText, "lr", " \n star\n"),
+        ("a\né👩‍💻", Format::MarkdownSource, "G0r", "a\n\n👩‍💻"),
+    ] {
+        let (mut core, view) = editor(source, format);
+        keys(&mut core, view, command);
+        key(&mut core, view, Key::Enter);
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        assert!(core.document().text_point(core.command_state(view).unwrap().cursor()).is_ok());
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn fix_verification_markdown_paragraph_objects_use_semantic_owners() {
+    let source = "# Title\n\nFirst para line one\nline two.\n\n- item a\n- item b\n\nLast para.";
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for command in ["dap", "dip", "cipX", "d}", ">ap", "yap", "}"] {
+            let (mut core, view) = editor(source, format);
+            let at = core.document().text().find("First").unwrap();
+            core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                text_offset: at, affinity: viem_core::document::BoundaryAffinity::Downstream,
+                extend_selection: false }).unwrap();
+            keys(&mut core, view, command);
+            let after = String::from_utf8(core.document().source_bytes()).unwrap();
+            assert!(after.contains("item a") && after.contains("Last para."), "{format:?} {command}: {after:?}");
+            assert!(core.command_state(view).unwrap().cursor() < core.document().text().len() - 10);
+        }
+    }
+}
+
+
+#[test]
+fn fix_verification_global_reveals_its_last_affected_line() {
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        let source = if format == Format::Markdown { "alpha\n\nbeta\n\n".repeat(100) }
+            else { "alpha\nbeta\n".repeat(100) };
+        let (mut core, view) = editor(&source, format);
+        keys(&mut core, view, ":g/al/d");
+        key(&mut core, view, Key::Enter);
+        let state = core.command_state(view).unwrap();
+        let layout = core.layout(view).unwrap();
+        let geometry = layout.snapshot().unwrap()
+            .logical_endpoint_geometry(state.cursor(), state.boundary_affinity()).unwrap();
+        assert!(geometry.rect.y >= layout.viewport_top() && geometry.rect.y < layout.viewport_top() + layout.height());
+    }
+}
+
+#[test]
+fn fix_verification_page_keys_move_when_document_fits_the_viewport() {
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        for insert in [false, true] {
+            let (mut core, view) = editor("a\n\nb\n\nc", format);
+            if insert { keys(&mut core, view, "i"); }
+            key(&mut core, view, Key::PageDown);
+            assert!(core.command_state(view).unwrap().cursor() > 0);
+            key(&mut core, view, Key::PageUp);
+            assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+        }
+    }
+}
+
+
+#[test]
+fn fix_verification_wrapped_heading_transfer_accepts_before_document_destination() {
+    let source = "# A heading containing enough words to wrap across multiple rows\n\nend";
+    for command in [":m0", ":t0"] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 140., 400.);
+        keys(&mut core, view, command);
+        key(&mut core, view, Key::Enter);
+        assert!(core.document().text_point(core.command_state(view).unwrap().cursor()).is_ok());
+        let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(core.document().text(), reopened.text());
+        if command == ":t0" {
+            assert_eq!(core.document().projection().blocks().iter()
+                .filter(|block| block.style.0 == "Heading1").count(), 2);
+            let changed = core.document().source_bytes();
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), changed);
+        } else {
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn fix_verification_wide_table_ex_endpoints_finish_layout_resolution() {
+    let source = "| one | two | three | four | five | six |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |\n| alpha | beta | gamma | delta | epsilon | zeta |";
+    for command in [":$d", ":.,$d", ":m$", ":t$"] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 140., 400.);
+        keys(&mut core, view, command);
+        let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        assert!(!matches!(result.command.unwrap().status, CommandStatus::NeedsMoreLayout(_)));
+        assert!(core.document().text_point(core.command_state(view).unwrap().cursor()).is_ok());
+    }
+}
+
+
+#[test]
+fn markdown_counted_paragraph_objects_keep_exact_undo_units() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for command in ["2dap", "d2ap"] {
+            let source = "one\n\ntwo\n\nthree";
+            let (mut core, view) = editor(source, format);
+            keys(&mut core, view, command);
+            assert_eq!(core.document().text(), "three", "{format:?} {command}");
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}

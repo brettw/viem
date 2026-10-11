@@ -786,3 +786,31 @@ fn paragraph_insertion_patches(
         document.encoding().encode_fragment(&syntax)?,
     )]))
 }
+
+/// Retire only a separator created by empty-item indentation. Its source identity
+/// is recorded by the structural transaction, so authored loose lists stay loose.
+pub(super) fn retire_supporting_separator(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let Some(separator) = &document.state().transient_list_separator else { return Ok(()); };
+    if document.format() != Format::Markdown { return Ok(()); }
+    for edit in edits {
+        if !edit.range.is_empty() || edit.replacement.is_empty()
+            || edit.replacement.chars().all(char::is_whitespace) { continue; }
+        let Some(block) = document.projection().blocks_for_region(&edit.range).into_iter()
+            .find(|block| block.range == edit.range
+                && matches!(block.kind, BlockKind::ListItem { level: 1.., .. })) else { continue; };
+        let at = document.projection().source_insertion_point(block.range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let Some(row) = document.state().source_hard_lines.line_at_offset(at)
+            .and_then(|index| document.state().source_hard_lines.get(index)) else { continue; };
+        if row.start == separator.end && !patches.iter().any(|patch|
+            patch.range.start < separator.end && separator.start < patch.range.end) {
+            patches.push(SourcePatch::primary(separator.clone(), Vec::new()));
+            break;
+        }
+    }
+    Ok(())
+}

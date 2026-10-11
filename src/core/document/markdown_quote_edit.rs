@@ -318,6 +318,7 @@ impl Document {
         self.validate_range(&range)?;
         let blocks = self.projection().blocks_for_region(&range);
         let mut lines = BTreeSet::new();
+        let mut quote_depths = BTreeMap::new();
         let mut code_list_prefixes = BTreeMap::new();
         let mut patches = Vec::new();
         for block in blocks.iter().filter(|block| {
@@ -438,22 +439,25 @@ impl Document {
                     }
                 }
             }
+            if quote && matches!(block.kind, BlockKind::ListItem { level: 1.., .. })
+                && !code_list_prefixes.contains_key(&first) {
+                let row = index.get(first).ok_or(DocumentError::AmbiguousProjection)?;
+                let bytes = self.state().source.bytes_in(row.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = self.encoding().decode_region(&bytes, row.start)?;
+                let prefix = crate::document::markdown_quotes::container_prefix(&decoded.text);
+                let columns = decoded.text[..prefix].chars().fold(0usize, |column, ch|
+                    if ch == '\t' { column + 4 - column % 4 } else { column + 1 });
+                for line in first..=last { code_list_prefixes.insert(line, (first, prefix, columns)); }
+            }
+            if !quote {
+                for line in first..=last { quote_depths.insert(line, block.quote_depth.max(1)); }
+            }
             lines.extend(first..=last);
         }
         let Some(first) = lines.first().copied() else {
             return Ok(self.no_op_prepared());
         };
         let last = *lines.last().unwrap();
-        let band = self.state().source_hard_lines.get(first).unwrap().start
-            ..self.state().source_hard_lines.get(last).unwrap().end;
-        let bytes = self
-            .state()
-            .source
-            .bytes_in(band.clone())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let decoded = self.encoding().decode_region(&bytes, band.start)?;
-        let normalized = super::normalize(&decoded, self.file_format());
-        let contexts = crate::document::markdown_quotes::source_context(&normalized);
         for index in first..=last {
             let line = self
                 .state()
@@ -466,8 +470,6 @@ impl Document {
                 .bytes_in(line.clone())
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let decoded = self.encoding().decode_region(&bytes, line.start)?;
-            let context = &contexts[index - first];
-            let prefix = context.content_start.saturating_sub(line.start);
             let separator = decoded.text[crate::document::markdown_quotes::prefix(&decoded.text)..]
                 .trim()
                 .is_empty();
@@ -489,21 +491,21 @@ impl Document {
                     source_offset..source_offset,
                     self.encoding().encode_fragment(&format!("{}> ", " ".repeat(padding)))?,
                 ));
-            } else if !quote && prefix > 0 && (lines.contains(&index) || separator) {
-                // Remove one quote level; outer containers remain intact.
-                let quote_text =
-                    &decoded.text[..crate::document::markdown_quotes::prefix(&decoded.text)];
-                let marker = quote_text
-                    .rfind('>')
-                    .ok_or(DocumentError::VerificationFailed)?;
-                let remove_start = self
-                    .encoding()
-                    .encode_fragment(&quote_text[..marker])?
-                    .len();
-                patches.push(SourcePatch::primary(
-                    line.start + remove_start..line.start + prefix,
-                    Vec::new(),
-                ));
+            } else if !quote && (lines.contains(&index) || separator) {
+                // The quote may be inside a list, after its marker. Its
+                // current paragraph owner supplies the structural depth:
+                // code body text can contain further literal `>` markers.
+                let prefix = crate::document::markdown_quotes::container_prefix(&decoded.text);
+                let quote_text = &decoded.text[..prefix];
+                let depth = quote_depths.range(..=index).next_back()
+                    .map(|(_, depth)| *depth).unwrap_or(1);
+                if let Some((marker, _)) = quote_text.match_indices('>').nth(depth - 1) {
+                    let end = marker + 1 + usize::from(quote_text.as_bytes().get(marker + 1)
+                        .is_some_and(|byte| matches!(byte, b' ' | b'\t')));
+                    let start = decoded.source_boundary(marker).ok_or(DocumentError::AmbiguousProjection)?;
+                    let end = decoded.source_boundary(end).ok_or(DocumentError::AmbiguousProjection)?;
+                    patches.push(SourcePatch::primary(start..end, Vec::new()));
+                }
             }
         }
         if patches.is_empty() {

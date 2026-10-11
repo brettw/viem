@@ -2484,8 +2484,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
             let before = self.layout_provider_requirements(view_id)?;
-            let result = self.materialize_immediate_viewport_once(view_id, intent, allow_automatic_horizontal_focus)
-                .and_then(|()| self.materialize_revealed_horizontal_viewport(view_id));
+            let result = self.materialize_immediate_viewport_once(view_id, intent, allow_automatic_horizontal_focus);
+            // A compound edit can place the caret far beyond the preserved
+            // editing row. Its exact new location takes priority over that
+            // old viewport anchor; acquire one bounded band around the caret.
+            let result = if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
+                && matches!(result, Err(CoreError::Layout(LayoutError::OutsideMaterializedCoverage)))
+            {
+                self.materialize_immediate_viewport_once(view_id, ImmediateLayoutIntent::RevealCaret,
+                    allow_automatic_horizontal_focus)
+            } else { result };
+            let result = result.and_then(|()| self.materialize_revealed_horizontal_viewport(view_id));
             if result.is_ok() || attempt == 2 {
                 return result;
             }
@@ -4188,7 +4197,11 @@ impl<P: TextMeasurementProvider> Core<P> {
 
         let commands = &mut self.views.get_mut(&view_id).expect("view existence checked above").commands;
         if let Some(word) = word {
-            commands.select_pointer_range(&self.document, word, extend_selection);
+            if keep_pointer_viewport {
+                commands.select_pointer_row_range(&self.document, word, extend_selection);
+            } else {
+                commands.select_pointer_range(&self.document, word, extend_selection);
+            }
         } else {
             let placed = commands.set_cursor_from_pointer(&self.document, text_offset, affinity, extend_selection);
             debug_assert!(placed, "the boundary was validated before placement");

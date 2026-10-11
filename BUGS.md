@@ -8,6 +8,39 @@ since (line numbers, gutter row selection, absolute line addresses, Go to
 Line, `#L` link navigation, the code-block language selector and split
 panes). Severities use the scale defined in the next section.
 
+### Repair status
+
+The October 11 repair pass addresses the actionable findings in this audit:
+
+- R1–R18: command semantics, Ex ranges, list and table editing, source
+  reprojection, clipboard puts, Replace-mode restoration and page movement.
+- Remaining reproducible portions of C0, C7, C10, C19, C23, C30, C32, C34,
+  C38, C42–C44, C59, C65, C68 and C76, including the three reachable panic paths.
+- N1–N14: paragraph scoping, autolinks, structural edits, quoted tables,
+  gutter selections, physical line numbers and code-language cleanup.
+
+Regression coverage checks the command/native entry paths, reopened source,
+exact undo/redo, retained formatting, and bounded regional work. The tests live
+in the existing audit, command, Markdown, clipboard and line-number modules in
+[`tests/all`](tests/all). Policy-dependent portions remain deferred to the
+existing open questions, including N11's table insertion/indentation choices,
+N12's delete-versus-clear choice and N15's line-range navigation. N16 reported
+no defect. The original observations below remain as reproduction evidence.
+
+Repair validation replays all 829 scripted cases: 828 pass, with only
+`C79/yyp-interior` remaining under open question 26. The full Rust all-targets
+suite passes 3,373 tests (one ignored), including the large-document and
+source-reopening checks.
+
+Native validation is not fully green. `scripts/test-mac.sh` completes 1,068
+XCTest cases with six failing cases (92 assertions/errors), plus 48 passing
+Swift Testing cases. The failures are the three launcher timeout cases in
+`EVBlockingEditorTests`, the plain-click comparison in `EVCaretHoverTests`,
+the demo None-to-C selection in `EVCodeBlockLanguageTests`, and code-style
+rename/deletion persistence in `EVCodeStylesTests`. These remain outside this
+audit's repaired reproductions; the launcher failures also repeat in isolation.
+The focused rich-clipboard and smart-quote native suites pass all 15 cases.
+
 ### How it was checked
 
 - **Replaying every reported reproduction.** Each repro from the previous
@@ -67,6 +100,9 @@ that the first audit missed. Fix these first:
 | N12 | S2 | Gutter row selection: deleting a selected heading row turns the next paragraph into a heading; selected table rows can't be deleted, typed over or pasted over. |
 
 ### Status of the October 9–10 findings
+
+This table records the audit at `3016333`; the repair status above supersedes
+its actionable "Partly" findings.
 
 "Fixed" means the original repro and its listed variants now behave
 correctly. "Partly" items are described under
@@ -889,11 +925,11 @@ spec or the code. Each needs a decision.
    gives source `a\n\n&#32;b`. The folded line ending becomes a leading
    space in the new paragraph, protected with a numeric reference. Should
    splitting at a folded break drop that space, as most word processors do
-   with line wraps?
+   with line wraps? RESOLUTION: Yes
 2. **Deleting the last character of a continuation line.** `ab\nc` with
    Backspace after `c` leaves `ab ` with a visible trailing space, and
    `ab\nc\nd` gives `ab&#32;\nd`. Should the folded break be removed with
-   the line's last character?
+   the line's last character? RESOLUTION: I don't understand, please expand on the options, I don't know what a "continuation" line is.
 3. **Source Enter inside a table row.** Source view, Enter in the middle of
    `| 1 | 2 |` inserts `\n\n`, which ends the table and turns the following
    rows into a paragraph (the resulting split-table identity panic has been fixed). The table spec says Source has

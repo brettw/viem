@@ -302,6 +302,9 @@ pub(super) fn insertion(
                     .filter(|unit| unit.source.end == source_at)
                     .map(|unit| unit.normalized.end)
             })
+            // A final empty physical row has no scalar units, but its body
+            // start is still an exact caret location with no inline scopes.
+            .or_else(|| (normalized.units.is_empty() && source_at == source_line.start).then_some(0))
             .ok_or(DocumentError::AmbiguousProjection)?;
         local = project(
             &normalized,

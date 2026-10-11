@@ -693,6 +693,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                     )?);
                 }
             }
+            if let Some(cell) = &row.table_cell {
+                // A cell's empty final visual line may map to the hidden
+                // delimiter row at the table boundary. Every visual fragment
+                // belongs to its semantic row's physical source line.
+                if let Some(source_row) = self.document.projection().table_at(cell.text_range.start)
+                    .filter(|table| table.id == cell.table_id)
+                    .and_then(|table| table.rows.get(cell.row))
+                {
+                    indexes.clear();
+                    indexes.insert(self.document.physical_line_at_source(source_row.source_range.start)?.index);
+                }
+            }
             let Some(index) = indexes
                 .iter()
                 .copied()

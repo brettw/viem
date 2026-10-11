@@ -889,3 +889,27 @@ fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selecti
         assert_eq!(after, selected);
     }
 }
+
+#[test]
+fn audit_header_cell_break_keeps_one_physical_number_after_relayout() {
+    for suffix in [String::new(), format!("\n{}", "\nparagraph".repeat(10_000))] {
+        let source = format!("| a |\n| --- |\n{suffix}");
+        let (mut core, view) = opened(&source, Format::Markdown, 600., 160.);
+        core.set_number(view, true).unwrap();
+        for key in [Key::Char('A'), Key::Enter] {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        let bands = core.line_number_regions(view).unwrap();
+        assert_eq!(bands[0].source_line, 1);
+        assert!(bands[0].current);
+        assert!(bands.iter().all(|band| band.source_line != 2));
+        assert!(bands.windows(2).all(|pair| pair[0].bottom <= pair[1].top));
+        for _ in 0..10 {
+            assert_eq!(core.line_number_regions(view).unwrap(), bands);
+        }
+        core.handle(view, CoreEvent::NavigateHistory(viem_core::document::HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        let restored = core.line_number_regions(view).unwrap();
+        assert!(restored.iter().all(|band| band.source_line != 2));
+    }
+}

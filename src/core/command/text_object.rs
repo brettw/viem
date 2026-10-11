@@ -74,6 +74,27 @@ impl TextObjectKind {
     }
 }
 
+pub(super) fn resolve_document_text_object(
+    document: &crate::document::Document, cursor: usize, object: TextObject, count: usize,
+) -> Result<Range<usize>, TextObjectError> {
+    if object.kind != TextObjectKind::Paragraph || !document.format().is_markdown() {
+        return resolve_text_object(document.text(), &document.hard_line_snapshot(), cursor, object, count);
+    }
+    if count == 0 { return Err(TextObjectError::ZeroCount); }
+    validate_cursor(document.text(), cursor)?;
+    let lines = document.hard_line_snapshot();
+    let mut range = document.paragraph_range_at(cursor).map_err(|_| TextObjectError::NotFound)?;
+    for _ in 1..count {
+        let at = lines.next_grapheme_boundary(range.end).ok_or(TextObjectError::NotFound)?;
+        range.end = document.paragraph_range_at(at).map_err(|_| TextObjectError::NotFound)?.end;
+    }
+    if object.scope == TextObjectScope::Around {
+        if let Some(after) = lines.next_grapheme_boundary(range.end) { range.end = after; }
+        else if let Some(before) = lines.previous_grapheme_boundary(range.start) { range.start = before; }
+    }
+    Ok(range)
+}
+
 /// Resolve an object in one immutable projection. Both the cursor and returned
 /// range use formatted UTF-8 byte offsets and legal grapheme boundaries.
 pub fn resolve_text_object(
@@ -366,7 +387,8 @@ fn paragraph_spans(text: &str, hard_lines: &HardLineSnapshot) -> Vec<ParagraphSp
         .map(|(index, content)| {
             let before_start = index
                 .checked_sub(1)
-                .map(|previous| raw[previous].end)
+                .map(|previous| hard_lines.next_grapheme_boundary(raw[previous].end)
+                    .unwrap_or(raw[previous].end))
                 .unwrap_or(content.start);
             let after_end = raw
                 .get(index + 1)

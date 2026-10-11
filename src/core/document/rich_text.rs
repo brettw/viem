@@ -283,6 +283,9 @@ impl<'a> Builder<'a> {
         self.paragraph_start = self.text.len();
     }
     pub fn finish(mut self, start: usize, end: usize) -> FormattedDocument {
+        if self.text.is_empty() && self.provenance.is_empty() {
+            self.provenance.push(ProvenanceSpan { formatted: 0..0, source: start..start });
+        }
         self.finish_paragraph();
         self.finish_line();
         let mut result = FormattedDocument::from_parts(

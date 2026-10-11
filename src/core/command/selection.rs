@@ -166,6 +166,7 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn select_pointer_range(&mut self, document: &Document, word: Range<usize>, extend: bool) {
+        self.pointer_rows = false;
         let origin = if extend { self.pointer_word_origin.clone() } else { None }
             .unwrap_or_else(|| word.clone());
         // Keep an existing Visual/Select policy, including when the gesture
@@ -185,6 +186,35 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.pointer_word_origin = Some(origin);
         self.pointer_character_origin = None;
+    }
+
+    pub(crate) fn is_pointer_row_selection(&self) -> bool {
+        self.pointer_rows && self.visual_anchor.is_some()
+    }
+
+    pub(crate) fn select_pointer_row_range(&mut self, document: &Document, row: Range<usize>, extend: bool) {
+        self.select_pointer_range(document, row, extend);
+        self.pointer_rows = true;
+        let range = self.visual_extent(document).range;
+        if document.format() != Format::Markdown { return; }
+        let Some(table) = document.projection().table_at(range.start) else { return; };
+        let end = range.end.saturating_sub(usize::from(range.end > range.start));
+        if end > table.range.end { return; }
+        let first = table.rows.partition_point(|row| row.range.start <= range.start).saturating_sub(1);
+        let last = table.rows.partition_point(|row| row.range.start <= end).saturating_sub(1);
+        if range.start != table.rows[first].range.start || range.end < table.rows[last].range.end { return; }
+        let origin = self.pointer_word_origin.clone();
+        let backwards = self.cursor < self.visual_anchor.unwrap_or(self.cursor);
+        let last_column = table.columns.len() - 1;
+        let extent = TableSelectionExtent { table: table.id,
+            anchor_row: if backwards { last } else { first },
+            anchor_column: if backwards { last_column } else { 0 },
+            active_row: if backwards { first } else { last },
+            active_column: if backwards { 0 } else { last_column } };
+        if self.select_table_cells(document, &extent).is_ok() {
+            self.pointer_word_origin = origin;
+            self.pointer_rows = true;
+        }
     }
 
     pub(super) fn move_paragraph_boundary(&mut self, document: &Document, key: Key) -> Result<CommandOutput, DocumentError> {
@@ -400,6 +430,7 @@ impl CommandInterpreter {
             InputEvent::Key(key) if NavigationKey::from_key(*key).is_some() => Some((*key, false)),
             _ => None,
         };
+        if navigation.is_some() { self.pointer_rows = false; }
         if let Some((key, shifted)) = navigation {
             // Without startsel, Vim's shifted horizontal arrows are word
             // motions. Native Selection keeps platform selection navigation.
@@ -638,6 +669,23 @@ impl CommandInterpreter {
         };
         let delete = matches!(event, InputEvent::Key(Key::Backspace | Key::Delete));
         if replacement.is_some() || delete {
+            if delete && self.is_pointer_row_selection() && self.table_cells.is_none() {
+                let range = self.visual_extent(document).range;
+                let lines = document.hard_line_snapshot();
+                let last = lines.previous_grapheme_boundary(range.end).unwrap_or(range.start).max(range.start);
+                let complete = lines.line_at_offset(range.start).is_ok_and(|line| line.content_range().start == range.start)
+                    && lines.line_at_offset(last).is_ok_and(|line| range.end >= line.content_range().end);
+                // Whole-row deletion retires the selected owners; a surviving
+                // following paragraph must retain its own structural style.
+                if complete {
+                    self.mode = Mode::VisualLine;
+                    self.visual_anchor = Some(range.start);
+                    self.cursor = last;
+                    self.selection_exclusive = false;
+                    self.selection_behavior = SelectionBehavior::Visual;
+                    return self.apply_visual_operator(document, Operator::Delete, 1).map(Some);
+                }
+            }
             // Native line selection uses an exclusive character extent for
             // replacement, but its remembered selection still belongs to the
             // original line anchors. Retain that identity so publication can

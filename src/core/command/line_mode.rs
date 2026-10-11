@@ -1141,9 +1141,14 @@ impl CommandInterpreter {
             // The change itself already opened the shared undo group.
             document.end_edit_group();
         } else {
+            let lines = document.hard_line_snapshot();
+            if operator == Operator::Delete && extent.whole && self.literal_indentation(document) {
+                self.cursor = cursor_after_linewise_deletion(document, self.cursor);
+                self.physical_cursor = None;
+            }
             self.cursor = normalize_normal_cursor(
                 document.text(),
-                &document.hard_line_snapshot(),
+                &lines,
                 self.cursor,
             );
             if let Some(at) = physical_change_at {

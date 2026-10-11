@@ -113,7 +113,7 @@ impl CommandInterpreter {
             ),
             Motion::Paragraph(forward) => normalize_normal_cursor_snapshot(
                 &lines,
-                move_paragraph(&lines, self.cursor, forward, count),
+                text::move_document_paragraph(document, self.cursor, forward, count),
             ),
         };
         if !matches!(motion, Motion::Vertical(_)) {

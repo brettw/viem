@@ -1405,7 +1405,8 @@ pub(super) fn preserve_split_boundaries<'a>(
         // behind it. A preceding fence may contribute only one physical ending.
         if range.is_empty() && range.start == line.start && index > 0 {
             let previous = crate::document::edit_boundary::paragraph_at(document, line.start - 1)?;
-            if previous.as_ref().is_some_and(|block| block.range.is_empty()) {
+            if previous.as_ref().is_some_and(|block| block.range.is_empty()
+                && !matches!(block.kind, BlockKind::ListItem { .. })) {
                 if let Some(boundary) = hard_boundary_contributor(document, line.start - 1..line.start) {
                     let bytes = document.state().source.bytes_in(boundary.clone())
                         .ok_or(DocumentError::AmbiguousProjection)?;

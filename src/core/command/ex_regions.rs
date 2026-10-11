@@ -307,7 +307,8 @@ fn exact_hard_lines(
         .line_at_offset(range.text.start)
         .map_err(|_| ExExecuteError::AddressOverflow)?;
     let end = if range.text.end > range.text.start {
-        range.text.end - 1
+        snapshot.previous_grapheme_boundary(range.text.end)
+            .ok_or(ExExecuteError::AddressOverflow)?
     } else {
         range.text.end
     };
@@ -813,7 +814,7 @@ fn prepare_transfer(
                     )
                 })?;
             let point = document.text_point(visible)?;
-            if document
+            if !addresses.destination_before_first && document
                 .source_point_for_insertion(point, BoundaryAffinity::Downstream)?
                 .offset()
                 != source
