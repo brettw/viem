@@ -2831,6 +2831,8 @@ impl FormattedDocument {
             self.blocks.reuse_equal_chunks(&previous.blocks);
             self.hard_lines = OrderedRangeStore::new(lines);
             self.hard_lines.reuse_equal_chunks(&previous.hard_lines);
+            let next_id = self.install_table_ids(next_id, Some(previous))?;
+            self.rebuild_table_presentation_lines();
             self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
             return self.reconcile_flow_block_ids(None, &[], next_id);
@@ -2873,6 +2875,8 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.rebuild_hard_lines_from_blocks(Some(previous))?;
+        let next_id = self.install_table_ids(next_id, Some(previous))?;
+        self.rebuild_table_presentation_lines();
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         self.reconcile_flow_block_ids(None, &[], next_id)
@@ -5415,7 +5419,8 @@ pub(crate) fn splice_line_local_projection(
         // Only records touching the changed interval are copied. Coordinates
         // on the persistent suffix shift together, including physical bytes.
         let changed_text=text_spans.first().map_or(old_formatted.start,|span|span.0.start)..text_spans.last().map_or(old_formatted.end,|span|span.0.end);
-        let changed_source=source_spans.first().unwrap().0.start..source_spans.last().unwrap().0.end;
+        let changed_source=source_spans.first().map_or(old_source.start, |span| span.0.start)
+            ..source_spans.last().map_or(old_source.end, |span| span.0.end);
         let rows=table.rows.partition_point(|row|row.range.end<changed_text.start && row.source_range.end<changed_source.start)
             ..table.rows.partition_point(|row|row.range.start<=changed_text.end || row.source_range.start<=changed_source.end);
         let mut replacement=Vec::with_capacity(rows.len());

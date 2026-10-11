@@ -74,7 +74,9 @@ impl Document {
         let line = normalized.text.trim_end_matches('\n');
         let prefix = super::super::markdown_quotes::container_prefix(line);
         let info = prefix + fence.width;
-        let start = info + line[info..].len() - line[info..].trim_start_matches([' ', '\t']).len();
+        let start = if language.is_none() { info } else {
+            info + line[info..].len() - line[info..].trim_start_matches([' ', '\t']).len()
+        };
         let end = if language.is_none() {
             line.len()
         } else {
@@ -284,7 +286,11 @@ impl Document {
                     changes.push((content, replacement));
                     break; // HTML uses the first duplicate attribute.
                 } else {
-                    changes.push((key_start..value.end, String::new()));
+                    let mut start = key_start;
+                    while start > 4 && matches!(bytes[start - 1], b' ' | b'\t') {
+                        start -= 1;
+                    }
+                    changes.push((start..value.end, String::new()));
                 }
             }
         }

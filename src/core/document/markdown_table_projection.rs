@@ -19,6 +19,15 @@ impl Document {
         }) else {
             return Ok(None);
         };
+        // A physical ending belongs to the table, but the caret after it
+        // belongs to the following row. Parsing inserted text as a table
+        // suffix would invent a break before that retained row and miss any
+        // newly admitted table cells there.
+        if first.range.start == table.source_range.end
+            && table.source_rows.last().is_some_and(|row| row.source_body.end < table.source_range.end)
+        {
+            return Ok(None);
+        }
         // A table nested in a list or quote inherits owner grammar that a
         // table-only restart cannot reproduce or safely splice away.
         if self.projection().blocks_for_region(&table.range).iter()
@@ -212,6 +221,7 @@ impl Document {
             source_work,
         );
         let state = DocumentState {
+            transient_list_separator: None,
             revision,
             source,
             projection,
@@ -444,6 +454,7 @@ impl Document {
             .ok_or(DocumentError::VerificationFailed)?;
         Ok(Some(TextEditCandidate {
             state: DocumentState {
+                transient_list_separator: None,
                 revision,
                 source: source.clone(),
                 projection,

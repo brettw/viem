@@ -879,6 +879,20 @@ impl Document {
         let column = row
             .cells
             .partition_point(|value| value.range.start < cell.range.start);
+        if cell.range.is_empty() && !cell.missing {
+            // Empty-cell provenance can share a visible boundary with hidden
+            // container syntax. The table's physical cell is authoritative.
+            // Keep its authored padding on both sides when typing resumes.
+            let source_row = &table.source_rows[if row_index == 0 { 0 } else { row_index + 1 }];
+            let raw = &source_row.source_cells[column];
+            let spelling = self.table_source_text(raw.clone())?;
+            if spelling.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                let left = spelling.chars().next().map_or(0, char::len_utf8);
+                let at = raw.start + self.encoding().encode_fragment(&spelling[..left])?.len();
+                return Ok(Some(vec![SourcePatch::primary(at..at,
+                    self.encoding().encode_fragment(&self.table_literal_text(&edit.replacement))?)]));
+            }
+        }
         if cell.missing
             || edit.range == cell.range && !edit.range.is_empty() && edit.replacement.is_empty()
         {

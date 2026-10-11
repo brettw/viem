@@ -24,6 +24,136 @@ fn plain(source: &str) -> Document {
     .unwrap()
 }
 
+#[test]
+fn verification_audit_private_inline_paste_in_headings_links_and_passive_html() {
+    for (source, selection, at) in [
+        ("# A\n## B", 0..1, 2),
+        ("https://bare.link.example", 0..1, 2),
+        ("<ins>under</ins> <sup>sup</sup>", 0..1, 5),
+        ("- | a | b |\n  |---|---|\n  | c | d |", 0..3, 0),
+        ("[a](x)[b](y)\n\nz", 0..2, 3),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let initial = document.text().to_owned();
+        let fragment = document.clipboard_fragment(selection.clone()).unwrap();
+        let context = clipboard(ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap()));
+        let mut commands = CommandInterpreter::new();
+        key(&mut commands, &mut document, Key::Char('i'));
+        assert!(commands.set_cursor(&document, at));
+        paste(&mut commands, &mut document, &context);
+        assert_eq!(document.text(), format!("{}{}{}", &initial[..at], &initial[selection], &initial[at..]));
+        let edited = document.source_bytes();
+        if source.starts_with("[a]") {
+            assert!(!String::from_utf8_lossy(&edited).contains("<ins>"));
+        }
+        let reopened = Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(document.text(), reopened.text());
+        exact_history(&mut commands, &mut document, source.as_bytes(), &edited);
+    }
+}
+
+#[test]
+fn verification_audit_private_link_paste_splits_destination_link_locally() {
+    for (donor_source, source) in [
+        ("[a](x)", "[yz](y 'title')"),
+        ("[**a**](x)", "[y*z*](y 'title')"),
+        ("[a](x)[b](z)", "[yz](y 'title')"),
+    ] {
+        let donor = Document::from_bytes(donor_source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let fragment = donor.clipboard_fragment(0..donor.text().len()).unwrap();
+        let context = clipboard(ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap()));
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut commands = CommandInterpreter::new();
+        key(&mut commands, &mut document, Key::Char('i'));
+        assert!(commands.set_cursor(&document, 1));
+        paste(&mut commands, &mut document, &context);
+        assert_eq!(document.text(), format!("y{}z", donor.text()));
+        let edited = document.source_bytes();
+        let reopened = Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        for candidate in [&document, &reopened] {
+            assert_eq!(candidate.link_at(candidate.text_point(0).unwrap()).unwrap().as_deref(), Some("y"));
+            assert_eq!(candidate.link_at(candidate.text_point(candidate.text().len() - 1).unwrap()).unwrap().as_deref(), Some("y"));
+            assert_eq!(candidate.link_at(candidate.text_point(1).unwrap()).unwrap().as_deref(), Some("x"));
+            if donor.text().len() == 2 {
+                assert_eq!(candidate.link_at(candidate.text_point(2).unwrap()).unwrap().as_deref(), Some("z"));
+            }
+            if donor_source.contains("**") {
+                assert!(candidate.projection().style_spans().iter()
+                    .any(|span| span.range.contains(&1)
+                        && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
+                assert!(candidate.projection().style_spans().iter()
+                    .any(|span| span.range.contains(&2)
+                        && span.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)));
+            }
+        }
+        assert_eq!(document.projection().style_spans(), reopened.projection().style_spans());
+        assert_eq!(String::from_utf8_lossy(&edited).matches("title").count(), 2);
+        exact_history(&mut commands, &mut document, source.as_bytes(), &edited);
+    }
+}
+
+#[test]
+fn verification_audit_private_link_paste_retains_donor_titles() {
+    for (donor_source, destination, title) in [
+        ("[a](x 'donor title')", "x", "donor title"),
+        ("[**a**](y 'donor title')", "y", "donor title"),
+        ("[a](x 'say \"hello\" &amp; goodbye')", "x", "say \"hello\" & goodbye"),
+        ("[a](y)", "y", ""),
+    ] {
+        let donor = Document::from_bytes(donor_source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let fragment = donor.clipboard_fragment(0..donor.text().len()).unwrap();
+        let context = clipboard(ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap()));
+        let source = "[yz](y 'retained title')";
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut commands = CommandInterpreter::new();
+        key(&mut commands, &mut document, Key::Char('i'));
+        assert!(commands.set_cursor(&document, 1));
+        paste(&mut commands, &mut document, &context);
+        assert_eq!(document.text(), "yaz");
+        let edited = document.source_bytes();
+        let syntax = String::from_utf8(edited.clone()).unwrap();
+        let links = pulldown_cmark::Parser::new(&syntax).filter_map(|event| match event {
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, title, .. }) =>
+                Some((dest_url.into_string(), title.into_string())),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(links, vec![("y".into(), "retained title".into()),
+            (destination.into(), title.into()), ("y".into(), "retained title".into())], "{syntax}");
+        let reopened = Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), document.text());
+        assert_eq!(reopened.projection().style_spans(), document.projection().style_spans());
+        exact_history(&mut commands, &mut document, source.as_bytes(), &edited);
+    }
+}
+
+#[test]
+fn verification_audit_quoted_link_paste_rebases_metadata_and_retains_titles() {
+    let donor = Document::from_bytes(b"\"before\" [\"label\"](x 'donor title')".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let (text, fragment) = donor.clipboard_fragment(0..donor.text().len()).unwrap()
+        .transform_quotes(None, |character, _| if character == '"' { '“' } else { character }).unwrap();
+    assert_eq!(text, "“before“ “label“");
+    let context = clipboard(ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap()));
+    let source = "[yz](y 'retained title')";
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut commands = CommandInterpreter::new();
+    key(&mut commands, &mut document, Key::Char('i'));
+    assert!(commands.set_cursor(&document, 1));
+    paste(&mut commands, &mut document, &context);
+    assert_eq!(document.text(), format!("y{text}z"));
+    let edited = document.source_bytes();
+    let reopened = Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+    let label = 1 + text.find("“label“").unwrap();
+    for candidate in [&document, &reopened] {
+        assert_eq!(candidate.link_at(candidate.text_point(label).unwrap()).unwrap().as_deref(), Some("x"));
+        assert_eq!(candidate.link_at(candidate.text_point(label + "“label".len()).unwrap()).unwrap().as_deref(), Some("x"));
+    }
+    let syntax = String::from_utf8(edited.clone()).unwrap();
+    assert!(pulldown_cmark::Parser::new(&syntax).any(|event| matches!(event,
+        pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { dest_url, title, .. })
+            if dest_url.as_ref() == "x" && title.as_ref() == "donor title")), "{syntax}");
+    exact_history(&mut commands, &mut document, source.as_bytes(), &edited);
+}
+
 fn clipboard(content: ClipboardContent) -> ClipboardCommandContext {
     ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
         ClipboardTarget::Clipboard,
@@ -852,14 +982,14 @@ fn native_table_matrix_paste_resumes_replace_and_accepts_an_empty_single_cell() 
         (
             "XY",
             "XY\nB\nx\ny",
-            b"|XY  | B |\n| - | - |\n| x | y |\n".as_slice(),
-            b"|ZY  | B |\n| - | - |\n| x | y |\n".as_slice(),
+            b"| XY | B |\n| - | - |\n| x | y |\n".as_slice(),
+            b"| ZY | B |\n| - | - |\n| x | y |\n".as_slice(),
         ),
         (
             "",
             "\nB\nx\ny",
             b"|  | B |\n| - | - |\n| x | y |\n".as_slice(),
-            b"|Z  | B |\n| - | - |\n| x | y |\n".as_slice(),
+            b"| Z | B |\n| - | - |\n| x | y |\n".as_slice(),
         ),
     ] {
         let donor = Document::from_bytes(

@@ -404,7 +404,7 @@ pub struct LinkSnapshot {
     pub text: String,
     pub destination: String,
     pub editable: bool,
-    source: Range<usize>,
+    pub(super) source: Range<usize>,
     label_source: Range<usize>,
     pub(super) destination_source: Option<Range<usize>>,
 }
@@ -652,6 +652,61 @@ impl Document {
 
     pub fn link_at(&self, point: TextPoint) -> Result<Option<String>, DocumentError> {
         Ok(self.link_snapshot_at(point)?.map(|link| link.destination))
+    }
+
+    /// Read only the bounded source owner selected by the link query. Titles
+    /// are hidden metadata, so clipboard verification must check them apart
+    /// from the label's visible text and character styles.
+    pub(crate) fn link_title(&self, link: &LinkSnapshot) -> Result<String, DocumentError> {
+        if link.destination_source.is_none() {
+            return Ok(String::new());
+        }
+        let bytes = self.state().source.bytes_in(link.source.clone())
+            .ok_or(DocumentError::VerificationFailed)?;
+        let decoded = self.encoding().decode_region(&bytes, link.source.start)?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        pulldown_cmark::Parser::new(&input.text).find_map(|event| match event {
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Link { title, .. }) => Some(title.into_string()),
+            _ => None,
+        }).ok_or(DocumentError::VerificationFailed)
+    }
+
+    /// Author copied link metadata without rewriting its label or destination.
+    /// The normalized clipboard adapter uses this after ordinary link insertion.
+    pub(crate) fn prepare_link_title(
+        &self,
+        range: Range<usize>,
+        title: &str,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.format() != Format::Markdown || self.is_read_only() || title.len() > MAX_LINK_QUERY_BYTES / 2 {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let link = self.link_snapshot_at(self.text_point(range.start)?)?
+            .filter(|link| link.editable && link.range == range)
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        if self.link_title(&link)? == title {
+            return self.prepare_reprojected_source_patches(Vec::new());
+        }
+        let destination = link.destination_source.clone().ok_or(DocumentError::UnsupportedFormatting)?;
+        let escaped = escape_destination(title).replace('"', "&quot;")
+            .replace('\n', "&#10;").replace('\r', "&#13;");
+        let escaped = super::projection::markdown_character_references(&escaped, self.encoding());
+        let suffix = if title.is_empty() { ")".to_owned() } else { format!(" \"{escaped}\")") };
+        let prepared = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.clone(), &link.text)],
+            Some(vec![SourcePatch::primary(destination.end..link.source.end,
+                self.encoding().encode_fragment(&suffix)?)]),
+            true,
+        )?;
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        let actual = candidate.link_snapshot_at(candidate.text_point(range.start)?)?
+            .filter(|actual| actual.range == range && actual.text == link.text
+                && actual.destination == link.destination)
+            .ok_or(DocumentError::VerificationFailed)?;
+        if candidate.link_title(&actual)? != title {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok(prepared)
     }
 }
 

@@ -453,17 +453,14 @@ impl CommandInterpreter {
                 }
                 values.push(RegisterValue::try_new(text, RegisterKind::Linewise, breaks)
                     .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?);
-                let mut deletion = range.clone();
-                if range.end == document.source_byte_len() && !range.is_empty() {
-                    let physical = document.physical_line_at_source(range.start)?;
-                    if physical.index > 0 && physical.content_range.end == physical.source_range.end {
-                        deletion.start = document.physical_line(physical.index - 1)?.content_range.end;
-                    }
-                }
+                let deletion = range;
                 if let Some(previous) = deletions.last_mut().filter(|previous| previous.end >= deletion.start) {
                     previous.end = previous.end.max(deletion.end);
                 } else { deletions.push(deletion); }
             }
+            // Widen only the final merged run. Widening each last-line
+            // target first can absorb the preceding blank line, then widen
+            // again across an unrelated target when the run is finalized.
             if let Some(last) = deletions.last_mut() {
                 if last.end == document.source_byte_len() && last.start > 0 {
                     let terminal = document.physical_line_at_source(last.end)?;

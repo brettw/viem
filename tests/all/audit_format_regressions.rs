@@ -353,3 +353,29 @@ fn passive_html_emphasis_toggles_independently_across_existing_tags() {
         }
     }
 }
+
+#[test]
+fn october11_block_actions_preserve_special_source_owners() {
+    for (source, at, action, expected) in [
+        ("# Heading #", 0, 0, "Heading"),
+        ("- > quote in list", 0, 1, "- quote in list"),
+        ("- a\n  - b\n    - c\n      - d", 6, 2, "- a\n  - b\n    - c\n      - > d"),
+        ("para\n| a | b |\n| - | - |\n| 1 | 2 |", 0, 3, "- para\n\n| a | b |\n| - | - |\n| 1 | 2 |"),
+    ] {
+        let (mut core, view) = open(source);
+        let original = core.document().text().to_owned();
+        core.handle_with_layout(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        let expected_identity = core.list_selection_identity(view).unwrap();
+        let event = match action {
+            0 => CoreEvent::SetParagraphStyle { expected: expected_identity, style: "Paragraph".into() },
+            1 | 2 => CoreEvent::SetBlockQuote { expected: expected_identity, enabled: action == 2 },
+            _ => CoreEvent::SetListStyle { expected: expected_identity, style: Some(ListStyle::Bullet) },
+        };
+        core.handle_with_layout(view, event).unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        verify(&mut core, view, source, &original);
+    }
+}

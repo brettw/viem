@@ -116,7 +116,10 @@ impl Document {
         let link = if separators_only {
             None
         } else {
-            self.link_at(self.text_point(sample)?)?
+            self.link_snapshot_at(self.text_point(sample)?)?
+                .filter(|link| link.destination_source.is_some()
+                    || range.start > link.range.start || range.end < link.range.end)
+                .map(|link| link.destination)
         };
         Ok(Some(ReplacementTypingContext {
             character,

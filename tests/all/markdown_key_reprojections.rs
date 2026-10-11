@@ -317,3 +317,186 @@ fn source_typing_a_setext_marker_after_a_quoted_fence_matches_reopening() {
     assert_eq!(document.source_bytes(), saved);
     assert_reopened(&document);
 }
+
+#[test]
+fn october11_typing_boundaries_reopen_and_undo_exactly() {
+    for (source, at, value, expected) in [
+        ("# \\\\a", 0, "q", "q\\a"),
+        ("- </ins>", 0, "q", "q"),
+        ("<!-- unclosed comment", 21, "\\", "<!-- unclosed comment\\"),
+        ("<https://auto.link>", 17, " ", "https://auto.link "),
+        ("<mailto:a@b.c>", 12, " ", "mailto:a@b.c "),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let at = at.min(document.text().len());
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        input(&mut core, view, InputEvent::key('i'));
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Upstream, extend_selection: false }).unwrap();
+        input(&mut core, view, InputEvent::text(value));
+        assert_eq!(core.document().text(), expected, "{source:?}");
+        assert_reopened(core.document());
+        input(&mut core, view, InputEvent::Key(Key::Escape));
+        input(&mut core, view, InputEvent::key('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn october11_list_prefixes_and_authored_rules_reopen() {
+    for source in ["0. zero", "1) a\n2) b", "- a\n1. b", "-\ta\n-\tb"] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        input(&mut core, view, InputEvent::key('i'));
+        input(&mut core, view, InputEvent::text("1"));
+        input(&mut core, view, InputEvent::text(". "));
+        assert!(core.document().text().starts_with("1. "));
+        assert_reopened(core.document());
+    }
+    for source in ["- a\n- b", "- "] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        if source == "- " {
+            input(&mut core, view, InputEvent::key('A'));
+            input(&mut core, view, InputEvent::text("---"));
+        } else {
+            input(&mut core, view, InputEvent::key('r'));
+            input(&mut core, view, InputEvent::key('-'));
+        }
+        assert_reopened(core.document());
+    }
+}
+
+#[test]
+fn october11_source_partial_table_rows_do_not_gain_phantom_breaks() {
+    for (source, at) in [("| a |\n| - |\n| 1 |", 10), ("| a | b |\n| - | - |\n| 1 | 2 |", 28)] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        input(&mut core, view, InputEvent::key('i'));
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        input(&mut core, view, InputEvent::Key(Key::ShiftEnter));
+        assert_reopened(core.document());
+        input(&mut core, view, InputEvent::text("x"));
+        assert_reopened(core.document());
+    }
+}
+
+#[test]
+fn october11_typing_after_emptied_setext_successor() {
+    let mut document = Document::from_bytes(b"a\n=\n\n".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = document.text().len();
+    document.insert(at, "x").unwrap();
+    assert_eq!(document.source_bytes(), b"a\n=\n\nx");
+    assert_reopened(&document);
+}
+
+#[test]
+fn october11_setext_successor_change_types_and_restores_exact_source() {
+    let source = "a\n=\n\nb";
+    let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+    for key in "Gccx".chars() { input(&mut core, view, InputEvent::key(key)); }
+    assert_eq!(core.document().source_bytes(), b"a\n=\n\nx");
+    assert_reopened(core.document());
+    input(&mut core, view, InputEvent::Key(Key::Escape));
+    input(&mut core, view, InputEvent::key('u'));
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn october11_list_substitution_and_empty_item_break_keep_projection() {
+    for (source, at) in [
+        ("- a\n- b\n- c", 2),
+        ("1. a\n2. b\n3. c", 2),
+        ("- a\n\n- b", 2),
+        ("1) a\n2) b", 2),
+        ("- a\n\n  continued\n- b", 2),
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        for key in ":s/^/#/".chars() { input(&mut core, view, InputEvent::key(key)); }
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_reopened(core.document());
+        input(&mut core, view, InputEvent::key('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+    let mut core = Core::new(Document::from_bytes(b"- \n- \n- ".to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+    input(&mut core, view, InputEvent::key('i'));
+    core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+        text_offset: 1, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+    input(&mut core, view, InputEvent::Key(Key::ShiftEnter));
+    input(&mut core, view, InputEvent::text("x"));
+    assert_eq!(core.document().source_bytes(), b"- \n- <br>x\n- ");
+    assert_reopened(core.document());
+}
+
+#[test]
+fn october11_enter_before_image_has_ordinary_empty_paragraph() {
+    let source = "![](local.png)";
+    let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+    input(&mut core, view, InputEvent::key('i'));
+    input(&mut core, view, InputEvent::Key(Key::Enter));
+    let blocks = core.document().projection().blocks();
+    assert_eq!(blocks[0].style.0, "Paragraph");
+    assert_eq!(blocks[1].style.0, "Image");
+    assert_reopened(core.document());
+    input(&mut core, view, InputEvent::Key(Key::Escape));
+    input(&mut core, view, InputEvent::key('u'));
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn october11_nested_list_style_final_projection_stays_local() {
+    use viem_core::document::{FormattedPayloadEdit, FormattedTextPayload, StyleProperty, StylePropertyValue};
+    let source = format!("{}- a\n  - b\n    - c\n      - d\n{}", "- before\n".repeat(1_000), "- after\n".repeat(1_000));
+    for code in [false, true] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let at = document.text().find("a\nb\nc\nd").unwrap() + 6;
+        let untouched = document.projection().blocks()[1_500].id;
+        let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), "x", vec![]).unwrap();
+        let code_style = "Code".into();
+        let values = [(StyleProperty::CharacterBold, StylePropertyValue::Boolean(true))];
+        let (prepared, _) = document.prepare_insertion_with_typing_style(
+            FormattedPayloadEdit::new(at..at, payload), code.then_some(&code_style),
+            if code { &[] } else { &values },
+        ).unwrap();
+        let work = prepared.summary().projection_work();
+        assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+        assert!(work.decoded_source_bytes() < 128, "Code={code}: {work:?}");
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.projection().blocks()[1_500].id, untouched);
+        assert_reopened(&document);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn october11_removing_quote_preserves_literal_code_prefixes() {
+    for (source, expected) in [
+        (">     > literal", "    > literal"),
+        ("> ```\n> - > literal\n> ```", "```\n- > literal\n```"),
+        ("> >     > literal", ">     > literal"),
+        ("- > ```\n  > - > literal\n  > ```", "- ```\n  - > literal\n  ```"),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let before_text = document.text().to_owned();
+        let prepared = document.prepare_model_request(ModelRequest::SetBlockQuote {
+            document: document.id(), revision: document.revision(), range: 0..0, enabled: false,
+        }).unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.source_bytes(), expected.as_bytes(), "{source:?}");
+        assert_eq!(document.text(), before_text);
+        assert_reopened(&document);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+    }
+}

@@ -792,3 +792,60 @@ fn markdown_alternate_structures_move_complete_visible_lines() {
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
+
+#[test]
+fn audit_list_transfers_keep_leaf_treatment_when_owner_context_changes() {
+    use viem_core::document::BlockKind;
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+        for (source, operation, rows, destination, expected, marker) in [
+            ("1. a\n   - **b**\n2. c", HardLineTransfer::Move, 0..1, 2, "b\na\nc", "   - **b**"),
+            ("- a\n\n  **continued**\n- b", HardLineTransfer::Move, 1..2, 0, "continued\na\nb", "- **continued**"),
+            ("+ a\n\n  **continued**\n+ b", HardLineTransfer::Copy, 1..2, 0, "continued\na\ncontinued\nb", "+ **continued**"),
+            ("1) a\n\n   **continued**\n2) b", HardLineTransfer::Move, 1..2, 0, "continued\na\nb", "1) **continued**"),
+        ] {
+            let original = encoded(source, encoding);
+            let mut document = Document::from_bytes(original.clone(), encoding, Format::Markdown).unwrap();
+            document.transfer_hard_lines(operation, rows, destination)
+                .unwrap_or_else(|error| panic!("{source:?} {encoding:?}: {error:?}"));
+            assert_eq!(document.text(), expected);
+            let edited = document.source_bytes();
+            let reopened = Document::from_bytes(edited.clone(), encoding, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), expected);
+            assert_eq!(reopened.projection().style_spans(), document.projection().style_spans());
+            assert!(matches!(reopened.projection().blocks()[0].kind,
+                BlockKind::ListItem { level: 0, item_start: true, .. }));
+            assert!(edited.starts_with(&encoded(marker, encoding)));
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), original);
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), edited);
+        }
+    }
+}
+
+#[test]
+fn audit_ex_list_moves_preserve_editability_and_exact_undo() {
+    use viem_core::command::{CommandStatus, InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for (source, at, ex, expected) in [
+        ("1. a\n   - b\n2. c", 0, ":m+1", "b\na\nc"),
+        ("- a\n\n  continued\n- b", 2, ":m0", "continued\na\nb"),
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 400.);
+        core.handle_with_layout(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        for event in ex.chars().map(InputEvent::key).chain([InputEvent::Key(Key::Enter)]) {
+            let result = core.handle_with_layout(view, CoreEvent::Input(event)).unwrap();
+            let status = result.command.unwrap().status;
+            assert!(matches!(status, CommandStatus::Complete | CommandStatus::Pending), "{ex}: {status:?}");
+        }
+        assert_eq!(core.document().text(), expected);
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}

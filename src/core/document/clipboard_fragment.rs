@@ -34,6 +34,12 @@ struct Export {
     #[serde(default)]
     embedded_source_bytes: Vec<u8>,
     character_runs: Vec<Value>,
+    /// Source-authored inline appearance, independent of the paragraph theme.
+    /// Characterwise Markdown paste inherits the destination paragraph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inline_character_runs: Option<Vec<Value>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    inline_links: Vec<(usize, usize, String, String)>,
     paragraph_runs: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     source_segments: Vec<SourceSegment>,
@@ -109,6 +115,8 @@ impl ClipboardFragment {
             inline_source_bytes: Vec::new(),
             embedded_source_bytes: Vec::new(),
             character_runs,
+            inline_character_runs: None,
+            inline_links: Vec::new(),
             paragraph_runs,
             source_segments: Vec::new(),
             table_cells: Vec::new(),
@@ -171,7 +179,8 @@ impl ClipboardFragment {
         if value.register_kind == 3 && !value.hard_breaks.is_empty() {
             return Err(DocumentError::UnsupportedFormatting);
         }
-        for run in value.character_runs.iter().chain(&value.paragraph_runs) {
+        for run in value.character_runs.iter().chain(&value.paragraph_runs)
+            .chain(value.inline_character_runs.iter().flatten()) {
             let start = run["start"]
                 .as_u64()
                 .and_then(|v| usize::try_from(v).ok())
@@ -185,6 +194,13 @@ impl ClipboardFragment {
                 || !plain_text.is_char_boundary(start)
                 || !plain_text.is_char_boundary(end)
             {
+                return Err(DocumentError::UnsupportedFormatting);
+            }
+        }
+        for (start, end, _, _) in &value.inline_links {
+            if start >= end || *end > value.source_plain_text.len()
+                || !value.source_plain_text.is_char_boundary(*start)
+                || !value.source_plain_text.is_char_boundary(*end) {
                 return Err(DocumentError::UnsupportedFormatting);
             }
         }
@@ -282,6 +298,7 @@ impl ClipboardFragment {
                 .collect()
         };
         transformed.character_runs = remap_runs(original.character_runs)?;
+        transformed.inline_character_runs = original.inline_character_runs.map(remap_runs).transpose()?;
         transformed.paragraph_runs = remap_runs(original.paragraph_runs)?;
         transformed.hard_breaks = original
             .hard_breaks
@@ -331,6 +348,11 @@ impl ClipboardFragment {
             if let Some(fallback)=&mut value.image_plain_text {fallback.pop();}
         }
         value.plain_text = value.source_plain_text.clone();
+        if value.register_kind == 2 {
+            // A linewise put carries paragraph appearance even after its
+            // transport-only final newline has been removed.
+            value.inline_character_runs = None;
+        }
         if value.register_kind != 3 {
             value.register_kind = 1;
         }
@@ -436,6 +458,17 @@ impl Document {
         let code_ranges = source_spans.iter().filter(|span|
             span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
             .map(|span| (span.range.start, span.range.end)).collect::<BTreeSet<_>>();
+        let mut inline_links = Vec::new();
+        for span in source_spans.iter().filter(|span| span.application == StyleApplication::Automatic("Link".into())) {
+            let start = span.range.start.max(range.start);
+            let end = span.range.end.min(range.end);
+            if start < end {
+                if let Some(link) = self.link_snapshot_at(self.text_point(start)?)? {
+                    let title = self.link_title(&link)?;
+                    inline_links.push((start - range.start, end - range.start, link.destination, title));
+                }
+            }
+        }
         let export = Export {
             schema_version: 1,
             plain_text: if is_rich {
@@ -447,6 +480,13 @@ impl Document {
             source_plain_text: captured.text().to_owned(),
             requires_source_semantics: source_spans.iter().any(|span|
                 !matches!(span.application, StyleApplication::Semantic(_))
+                    && span.application != StyleApplication::Automatic("Link".into())
+                    && !matches!(&span.application, StyleApplication::Direct(properties) if *properties == CharacterProperties {
+                        bold: properties.bold, slant: properties.slant,
+                        underline: properties.underline, strikethrough: properties.strikethrough,
+                        superscript: properties.superscript, subscript: properties.subscript,
+                        ..CharacterProperties::default()
+                    })
                     && !(span.application == StyleApplication::Named("Code".into())
                         && code_ranges.contains(&(span.range.start, span.range.end))))
                 || !self.projection().inline_images_for_region(&range).is_empty()
@@ -480,6 +520,8 @@ impl Document {
                 Vec::new()
             },
             character_runs,
+            inline_character_runs: is_rich.then(|| style_runs_in_context(self.projection(), &range, false).map(|runs| runs.0)).transpose()?,
+            inline_links,
             paragraph_runs,
             source_segments: Vec::new(),
             table_cells: Vec::new(),
@@ -508,6 +550,8 @@ impl Document {
         export.inline_source_bytes.clear();
         export.embedded_source_bytes.clear();
         export.character_runs.clear();
+        export.inline_character_runs = None;
+        export.inline_links.clear();
         export.paragraph_runs.clear();
         for (row_index, row) in rows.iter().enumerate() {
             if row_index != 0 {
@@ -608,17 +652,21 @@ impl Document {
         if simple_inline {
             let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), text, export.hard_breaks.clone())
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
-            if let Ok(prepared) = self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(range.clone(), payload)])
-                .and_then(|prepared| verify_styles(prepared, &export, range.clone(), whole, self.projection()))
-            {
-                return Ok(Some(prepared));
+            for affinity in [None, Some(BoundaryAffinity::Upstream), Some(BoundaryAffinity::Downstream)] {
+                let mut edit = FormattedPayloadEdit::new(range.clone(), payload.clone());
+                edit.boundary_affinity = affinity;
+                if let Ok(prepared) = self.prepare_formatted_payload_edits(vec![edit])
+                    .and_then(|prepared| verify_styles(prepared, &export, range.clone(), whole, self))
+                {
+                    return Ok(Some(prepared));
+                }
             }
             if export.source_bytes.is_empty() && !export.source_plain_text.is_empty() {
                 // Nonrectangular text copied across table cells has no single
                 // source interval. Its portable text/style runs are complete;
                 // paste them into the one destination cell as ordinary text.
                 let prepared = self.prepare_normalized_clipboard_fragment(range.clone(), &export)?;
-                return verify_styles(prepared, &export, range, whole, self.projection()).map(Some);
+                return verify_styles(prepared, &export, range, whole, self).map(Some);
             }
         }
         if range != (0..self.text().len()) {
@@ -711,7 +759,7 @@ impl Document {
                     Some(patches),
                 )
                 .and_then(|prepared| {
-                    verify_styles(prepared, &export, range.clone(), whole, self.projection())
+                    verify_styles(prepared, &export, range.clone(), whole, self)
                 });
             match prepared {
                 Ok(prepared) => return Ok(Some(prepared)),
@@ -721,9 +769,11 @@ impl Document {
         // A copied terminal soft ending no longer folds to a space on its
         // own. Reconstruct only the copied inline fragment if its authored
         // syntax cannot compose here, retaining the same verification.
-        if simple_inline {
+        if simple_inline || self.format() == Format::Markdown
+            && !export.requires_source_semantics && !export.inline_links.is_empty()
+        {
             if let Ok(prepared) = self.prepare_normalized_clipboard_fragment(range.clone(), &export)
-                .and_then(|prepared| verify_styles(prepared, &export, range, whole, self.projection()))
+                .and_then(|prepared| verify_styles(prepared, &export, range, whole, self))
             {
                 return Ok(Some(prepared));
             }
@@ -788,7 +838,7 @@ impl Document {
             let Some(inserted) = scratch.prepare_clipboard_fragment(at..at, &body, &export.source_plain_text)? else {
                 return Ok(None);
             };
-            let inserted = verify_styles(inserted, &export, at..at, true, scratch.projection())?;
+            let inserted = verify_styles(inserted, &export, at..at, true, &scratch)?;
             last = at.checked_add(export.source_plain_text.len()).ok_or(DocumentError::UnsupportedFormatting)?;
             publish(&mut scratch, inserted, &mut sources, &mut formatted)?;
             first.get_or_insert(at);
@@ -815,6 +865,9 @@ impl Document {
         keep_empty_line: bool,
     ) -> Result<Option<(PreparedModelTransaction, usize)>, ModelTransactionError> {
         self.validate_range(&range)?;
+        if !range.is_empty() && self.clipboard_fragment(range.clone())?.as_seen() == fragment.as_seen() {
+            return Ok(Some((self.no_op_prepared(), range.end)));
+        }
         let export: Export = serde_json::from_str(fragment.json())
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
         if !matches!(export.register_kind, 1 | 2)
@@ -964,6 +1017,11 @@ impl Document {
             Ok(())
         };
 
+        if replaced.is_empty() && scratch.link_at_boundary(replaced.start, BoundaryAffinity::Downstream)?
+            .is_some_and(|link| link.editable && link.destination_source.is_none()) {
+            let (canonical, _) = scratch.prepare_canonical_autolink(replaced.clone(), BoundaryAffinity::Downstream)?;
+            publish(&mut scratch, canonical, &mut sources)?;
+        }
         let payload = super::super::FormattedTextPayload::new(
             &scratch.hard_line_snapshot(),
             export.source_plain_text.clone(),
@@ -977,7 +1035,7 @@ impl Document {
         publish(&mut scratch, inserted, &mut sources)?;
 
         let mut markdown_runs: Vec<(Range<usize>, CharacterProperties)> = Vec::new();
-        for run in &export.character_runs {
+        for run in export.inline_character_runs.as_ref().unwrap_or(&export.character_runs) {
             let start = replaced.start
                 + run["start"]
                     .as_u64()
@@ -1076,6 +1134,29 @@ impl Document {
                 }
             }
         }
+        for (start, end, destination, title) in &export.inline_links {
+            let range = replaced.start + start..replaced.start + end;
+            if let Some(link) = scratch.link_snapshot_at(scratch.text_point(range.start)?)?
+                .filter(|link| range.end <= link.range.end) {
+                if link.destination == *destination && scratch.link_title(&link)? == *title { continue; }
+                // The inserted label may have inherited its destination's
+                // link. Split only that selected label out before applying
+                // the donor link; the surrounding labels retain their own
+                // destinations, titles and inline treatment.
+                let (unlinked, _) = scratch.prepare_link_edit(scratch.id(), scratch.revision(),
+                    super::super::LinkEditIntent::RemoveSelection { range: range.clone() })?;
+                publish(&mut scratch, unlinked, &mut sources)?;
+            }
+            let text = scratch.projection().text_tree().slice(range.clone()).map_err(DocumentError::FormattedTextStorage)?;
+            let (linked, _) = scratch.prepare_link_edit(scratch.id(), scratch.revision(), super::super::LinkEditIntent::Insert {
+                range: range.clone(), text, destination: destination.clone(),
+            })?;
+            publish(&mut scratch, linked, &mut sources)?;
+            if !title.is_empty() {
+                let titled = scratch.prepare_link_title(range, title)?;
+                publish(&mut scratch, titled, &mut sources)?;
+            }
+        }
         self.prepare_text_edits_with_patches(
             vec![TextEdit::new(replaced, &export.source_plain_text)],
             Some(sources.source_patches()),
@@ -1127,6 +1208,20 @@ fn selected_source(
     let decoded = document.encoding().decode(&source)?;
     let input = super::super::line_endings::normalize(&decoded, document.file_format());
     let builder = super::super::rich_text::Builder::new(&input, Revision(0));
+    if blocks {
+        let syntax = super::super::markdown_syntax::Blocks::parse(
+            &super::super::markdown_syntax::grammar_text(&input)).to_source(&input);
+        if let Some(owner) = document.projection().blocks_for_region(range).iter()
+            .find(|block| block.range == *range && matches!(block.kind, super::super::BlockKind::Heading(_))) {
+            if let Some(heading) = syntax.blocks.iter().find(|heading|
+                matches!(heading.role, super::super::markdown_syntax::BlockRole::Heading(_))
+                    && heading.content.start <= hull.start && hull.end <= heading.content.end) {
+                let _ = owner;
+                let end = document.physical_line_at_source(heading.range.end.saturating_sub(1))?.content_range.end;
+                return Ok(source[heading.range.start..end].to_vec());
+            }
+        }
+    }
     let normalized = |at: usize| -> Option<usize> {
         if at == source.len() {
             return Some(input.text.len());
@@ -1213,6 +1308,14 @@ fn style_runs(
     projection: &FormattedDocument,
     range: &Range<usize>,
 ) -> Result<(Vec<Value>, Vec<Value>), DocumentError> {
+    style_runs_in_context(projection, range, true)
+}
+
+fn style_runs_in_context(
+    projection: &FormattedDocument,
+    range: &Range<usize>,
+    paragraph_context: bool,
+) -> Result<(Vec<Value>, Vec<Value>), DocumentError> {
     let mut characters = Vec::new();
     let mut paragraphs = Vec::new();
     for block in projection.blocks_for_region(range) {
@@ -1268,8 +1371,8 @@ fn style_runs(
             let mut automatic = CharacterProperties::default();
             let mut link_defaults = CharacterProperties::default();
             let mut named = None;
-            let paragraph_style = &block.style;
-            let defaults = &block.direct_default_character;
+            let paragraph_style = if paragraph_context { &block.style } else { &projection.style_sheet().base_paragraph };
+            let defaults = if paragraph_context { block.direct_default_character.clone() } else { CharacterProperties::default() };
             for span in spans.iter().filter(|span| span.range.contains(&pair[0])) {
                 match &span.application {
                     StyleApplication::Named(id) => {
@@ -1280,6 +1383,7 @@ fn style_runs(
                     }
                     StyleApplication::Automatic(id) => {
                         if id.0 == "Link" {
+                            if !paragraph_context { continue; }
                             let properties = projection
                                 .style_sheet()
                                 .automatic_character_properties(id)
@@ -1315,7 +1419,7 @@ fn style_runs(
             }
             super::super::rich_text::overlay(&mut semantic, &direct);
             super::super::rich_text::overlay(&mut semantic, &automatic);
-            let mut defaults = defaults.clone();
+            let mut defaults = defaults;
             super::super::rich_text::overlay(&mut defaults, &link_defaults);
             let style = projection
                 .style_sheet()
@@ -1368,14 +1472,17 @@ fn verify_styles(
     export: &Export,
     replaced: Range<usize>,
     paragraphs: bool,
-    before: &FormattedDocument,
+    before: &Document,
 ) -> Result<PreparedModelTransaction, ModelTransactionError> {
     let PreparedPublication::State(state) = &prepared.publication else {
         return Ok(prepared);
     };
-    let (actual, paragraph_runs) = style_runs(
+    let inline = (!paragraphs).then_some(export.inline_character_runs.as_ref()).flatten();
+    let expected_characters = inline.unwrap_or(&export.character_runs);
+    let (actual, paragraph_runs) = style_runs_in_context(
         &state.projection,
         &(replaced.start..replaced.start + export.source_plain_text.len()),
+        inline.is_none(),
     )?;
     let actual_breaks = state
         .projection
@@ -1390,15 +1497,28 @@ fn verify_styles(
         .filter(|offset| *offset < export.source_plain_text.len())
         .collect::<Vec<_>>();
     if actual_breaks != expected_breaks
-        || !styles_match(&export.character_runs, &actual)
+        || !styles_match(expected_characters, &actual)
         || paragraphs && !styles_match(&export.paragraph_runs, &paragraph_runs)
     {
         return Err(DocumentError::UnsupportedFormatting.into());
     }
+    if !export.inline_links.is_empty() {
+        let candidate = before.prepared_candidate_document(&prepared)?;
+        for (start, end, destination, title) in &export.inline_links {
+            let range = replaced.start + start..replaced.start + end;
+            let Some(link) = candidate.link_snapshot_at(candidate.text_point(range.start)?)? else {
+                return Err(DocumentError::UnsupportedFormatting.into());
+            };
+            if link.destination != *destination || range.end > link.range.end
+                || candidate.link_title(&link)? != *title {
+                return Err(DocumentError::UnsupportedFormatting.into());
+            }
+        }
+    }
     for (old_range, new_range) in [
         (0..replaced.start, 0..replaced.start),
         (
-            replaced.end..before.text_tree().byte_len(),
+            replaced.end..before.projection().text_tree().byte_len(),
             replaced.start + export.source_plain_text.len()
                 ..state.projection.text_tree().byte_len(),
         ),
@@ -1406,7 +1526,7 @@ fn verify_styles(
         if old_range.is_empty() {
             continue;
         }
-        let (old_character, old_paragraph) = style_runs(before, &old_range)?;
+        let (old_character, old_paragraph) = style_runs(before.projection(), &old_range)?;
         let (new_character, new_paragraph) = style_runs(&state.projection, &new_range)?;
         if !styles_match(&old_character, &new_character)
             || !styles_match(&old_paragraph, &new_paragraph)
@@ -1820,7 +1940,7 @@ impl Document {
             strings.push(value.plain_text.clone());fragments.push(value);
         }texts.push(strings);cells.push(fragments);}
         let plain_text=tabular_text(&texts);
-        let export=Export {schema_version:1,plain_text:plain_text.clone(),image_plain_text:None,source_plain_text:plain_text.clone(),requires_source_semantics:true,hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
+        let export=Export {schema_version:1,plain_text:plain_text.clone(),image_plain_text:None,source_plain_text:plain_text.clone(),requires_source_semantics:true,hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),inline_character_runs:None,inline_links:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
         let json=serde_json::to_string(&export).map_err(|_|DocumentError::UnsupportedFormatting)?;
         Ok((ClipboardFragment(Arc::from(json)),plain_text))
     }

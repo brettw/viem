@@ -574,6 +574,9 @@ impl CommandInterpreter {
             }));
         }
         if matches!(event, InputEvent::Key(Key::Enter | Key::ShiftEnter)) {
+            if self.mode == Mode::Replace {
+                return self.insert_indented_break(document).map(Some);
+            }
             return self.insert_text(document, "\n").map(Some);
         }
         if (matches!(event, InputEvent::Key(Key::Backspace)) && self.cursor == range.start)

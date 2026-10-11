@@ -114,17 +114,29 @@ pub(crate) fn plan(
         physical_hard_lines(document, line_count)?.into_iter().enumerate().collect()
     };
     let source_bytes = document.source_bytes();
+    let origin = infos[source_lines.start].content_range().start;
+    let destination_at = if destination < line_count { infos[destination].content_range().start }
+        else { snapshot.text_length() };
+    let literal_boundary = document.format().is_wysiwyg()
+        && document.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
+            block.style.0 == "Code Block" && block.range.start <= origin && origin <= block.range.end
+                && block.range.start <= destination_at && destination_at <= block.range.end);
     let mut boundary = document
         .encoding()
         .encode_fragment(document.file_format().spelling())?;
-    if document.format() == super::Format::Markdown {
+    if document.format() == super::Format::Markdown && !literal_boundary {
         boundary.extend_from_within(..);
     }
 
     let first_physical = &physical[&source_lines.start];
     let last_physical = &physical[&(source_lines.end - 1)];
     let source_body = first_physical.content.start..last_physical.content.end;
-    let source_body_bytes = source_bytes[source_body.clone()].to_vec();
+    let mut source_body_bytes = source_bytes[source_body.clone()].to_vec();
+    let promoted_continuation = document.format() == super::Format::Markdown
+        && promote_detached_list_continuation(
+            document, &infos, source_lines.start, destination, source_body.start,
+            &mut source_body_bytes,
+        )?;
     let trailing_separator = last_physical.separator.clone();
 
     let first_formatted = &infos[source_lines.start];
@@ -146,6 +158,7 @@ pub(crate) fn plan(
         trailing_separator,
         &boundary,
         document,
+        literal_boundary,
     )?;
     let mut text_edits = formatted_edits(
         operation,
@@ -157,6 +170,7 @@ pub(crate) fn plan(
     )?;
     text_edits.sort_by_key(|edit| (edit.range.start, edit.range.end));
 
+    let promoted_line = promoted_continuation.then_some(source_lines.start);
     let origins = transferred_origins(operation, line_count, source_lines, destination);
     let contents = infos
         .iter()
@@ -175,10 +189,18 @@ pub(crate) fn plan(
     let expected_signatures = signatures.map(|signatures| {
         origins
             .iter()
-            .map(|origin| match origin {
-                TransferredLineOrigin::Existing(index) | TransferredLineOrigin::Copied(index) => {
-                    signatures[*index].clone()
+            .map(|origin| {
+                let (index, transferred) = match origin {
+                    TransferredLineOrigin::Existing(index) => (*index, operation == HardLineTransfer::Move),
+                    TransferredLineOrigin::Copied(index) => (*index, true),
+                };
+                let mut signature = signatures[index].clone();
+                if transferred && promoted_line == Some(index) {
+                    if let super::BlockKind::ListItem { item_start, .. } = &mut signature.kind {
+                        *item_start = true;
+                    }
                 }
+                signature
             })
             .collect()
     });
@@ -390,6 +412,54 @@ fn projected_markdown_hard_lines(document: &Document) -> Result<Vec<PhysicalHard
     Ok(projected_markdown_rows(document, &required)?.into_values().collect())
 }
 
+/// A continuation has no marker of its own. When its new predecessor is
+/// outside its item, carry the leaf list treatment with the smallest explicit
+/// marker instead of letting its indentation turn into an ordinary paragraph.
+fn promote_detached_list_continuation(
+    document: &Document,
+    infos: &[super::HardLineInfo],
+    first: usize,
+    destination: usize,
+    source_start: usize,
+    body: &mut Vec<u8>,
+) -> Result<bool, DocumentError> {
+    let projection = document.projection();
+    let range = infos[first].content_range();
+    let block = projection.blocks_for_region(&range).into_iter()
+        .find(|block| block.range.start <= range.start && range.end <= block.range.end)
+        .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+    if !matches!(block.kind, super::BlockKind::ListItem { item_start: false, .. }) {
+        return Ok(false);
+    }
+    let item = block.containers.iter().rev()
+        .find(|member| member.container.kind == super::ContainerKind::ListItem)
+        .ok_or(DocumentError::HardLineTransferProjectionMismatch)?.container.id;
+    if let Some(previous) = destination.checked_sub(1) {
+        let previous = infos[previous].content_range();
+        if projection.blocks_for_region(&previous).iter().any(|block|
+            block.range.start <= previous.start && previous.end <= block.range.end
+                && block.containers.iter().any(|member| member.container.id == item)) {
+            return Ok(false);
+        }
+    }
+    let owner = projection.blocks().iter().find(|block|
+        block.containers.iter().any(|member| member.container.id == item && member.starts_here))
+        .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+    let marker_line = document.physical_line_at_text(owner.range.start)?;
+    let quote = super::markdown_quotes::prefix(&marker_line.text);
+    let width = super::markdown_blocks::marker_prefix_length(&marker_line.text[quote..])
+        .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+    let marker = marker_line.text[quote..quote + width].trim_start_matches([' ', '\t']);
+    let decoded = document.encoding().decode_region(body, source_start)?;
+    let quote = super::markdown_quotes::prefix(&decoded.text);
+    let indent_end = quote + decoded.text[quote..].len()
+        - decoded.text[quote..].trim_start_matches([' ', '\t']).len();
+    let start = document.encoding().encode_fragment(&decoded.text[..quote])?.len();
+    let end = document.encoding().encode_fragment(&decoded.text[..indent_end])?.len();
+    body.splice(start..end, document.encoding().encode_fragment(marker)?);
+    Ok(true)
+}
+
 fn projected_markdown_rows(document: &Document, required: &std::collections::BTreeSet<usize>)
     -> Result<std::collections::BTreeMap<usize, PhysicalHardLine>, DocumentError> {
     let projection = document.projection();
@@ -472,10 +542,11 @@ fn source_patches(
     trailing_separator: Option<Range<usize>>,
     new_boundary: &[u8],
     document: &Document,
+    literal_boundary: bool,
 ) -> Result<Vec<PlannedSourcePatch>, DocumentError> {
     let boundary = |range: &Range<usize>| -> Result<Vec<u8>, DocumentError> {
         let bytes = &source[range.clone()];
-        if document.format() == super::Format::Markdown {
+        if document.format() == super::Format::Markdown && !literal_boundary {
             let decoded = document.encoding().decode_region(bytes, range.start)?;
             let normalized = normalize(&decoded, document.file_format());
             if normalized.text == "\\\n"
@@ -702,23 +773,35 @@ pub(super) fn projection_signatures(
                     span.application.clone(),
                 ));
             }
+            let style = match block.kind {
+                super::BlockKind::ListItem { ordered, level, .. }
+                    if block.style.0 == format!("{}{}", if ordered { "NumberedList" } else { "BulletedList" }, u16::from(level).min(3) + 1) =>
+                    StyleId::from(if ordered { "NumberedList1" } else { "BulletedList1" }),
+                _ => block.style.clone(),
+            };
             Ok(LineSignature {
-                // List numbering and container starts are recomputed from
-                // the destination's neighboring items. They are not source
-                // appearance that can travel with a copied or moved row.
+                // List numbering, nesting and generated ancestor containers
+                // follow the destination. The explicit leaf marker, custom
+                // declarations, paragraph treatment and inline styles travel
+                // with the row and remain part of exact verification.
                 kind: match block.kind.clone() {
-                    super::BlockKind::ListItem { ordered, level, item_start, marker_is_decoration, .. } =>
-                        super::BlockKind::ListItem { ordered, level, item_start, marker_is_decoration,
+                    super::BlockKind::ListItem { ordered, item_start, marker_is_decoration, .. } =>
+                        super::BlockKind::ListItem { ordered, level: 0, item_start, marker_is_decoration,
                             ordinal: 0, container_start: false },
                     kind => kind,
                 },
                 quote_depth: block.quote_depth,
                 code_language: block.code_language.clone(),
                 thematic_break: block.thematic_break,
-                containers: block.containers.iter().map(|member| (
+                containers: block.containers.iter().filter(|member| {
+                    let container = &member.container;
+                    !matches!(container.kind, super::ContainerKind::List { .. } | super::ContainerKind::ListItem)
+                        || container.style != container.kind.default_style()
+                        || container.direct_formatting.is_some()
+                }).map(|member| (
                     member.container.kind, member.container.style.clone(), member.container.direct_formatting.clone(),
                 )).collect(),
-                style: block.style.clone(),
+                style,
                 paragraph: block.direct_paragraph.clone(),
                 character: block.direct_default_character.clone(),
                 inline_styles,

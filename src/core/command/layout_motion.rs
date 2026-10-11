@@ -589,7 +589,12 @@ fn full_page_motion(
         else if !baselines.is_empty() { &baselines } else { &visible };
     let y = located.filter(|(index, _)| old_visible.contains(index))
         .map_or_else(|| if down { next.top } else { next.top + next.height },
-            |(index, _)| next.top + snapshot.rows[index].baseline - viewport.top);
+            |(index, _)| {
+                let baseline = next.top + snapshot.rows[index].baseline - viewport.top;
+                if next.top == viewport.top {
+                    baseline + advance * count.max(1) as f32 * if down { 1. } else { -1. }
+                } else { baseline }
+            });
     // A table's side-by-side cells share a vertical band. Choose the cell at
     // desired x before choosing its nearest text baseline, including padding
     // and explicit multiline cells. Array order is not vertical distance.

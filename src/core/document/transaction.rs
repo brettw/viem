@@ -1702,8 +1702,17 @@ impl Document {
         text_position_map: PositionMap,
         planned_history_navigation: Option<HistoryNavigation>,
         next_projected_block_id_after: u64,
-        publication: PreparedPublication,
+        mut publication: PreparedPublication,
     ) -> PreparedModelTransaction {
+        if let PreparedPublication::State(state) = &mut publication {
+            state.transient_list_separator = self.state().transient_list_separator.as_ref()
+                .filter(|range| !summary.source_patches.iter().any(|patch|
+                    patch.range.start < range.end && range.start < patch.range.end))
+                .and_then(|range| Some(
+                    rebase_source_boundary(range.start, &summary.source_patches, Association::AfterInsertion).ok()?
+                    ..rebase_source_boundary(range.end, &summary.source_patches, Association::BeforeInsertion).ok()?
+                ));
+        }
         PreparedModelTransaction {
             document: self.id,
             before_revision: self.revision(),
@@ -2019,7 +2028,10 @@ impl Document {
         }
         let range = { range };
         let patches = if self.format() == Format::Markdown {
-            markdown_list_structure::deletion_patches(self, &range, true)?
+            match markdown_list_structure::deletion_patches(self, &range, true)? {
+                Some(patches) => Some(patches),
+                None => self.markdown_complete_row_deletion_patches(&range)?,
+            }
         } else {
             None
         };
@@ -2170,6 +2182,7 @@ impl Document {
                 self, &edits, &mut source_patches,
             )?;
         }
+        markdown_list_structure::retire_supporting_separator(self, &edits, &mut source_patches)?;
         if !authored_syntax {
             self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
@@ -2196,7 +2209,7 @@ impl Document {
             self.build_table_row_candidate(&source, after_revision, &target_text,
                 text_splice_work, &edits, &source_patches)?
         } else { None };
-        if table_candidate.is_none() && self.source_edit_requires_reprojection(&edits, &source_patches)? {
+        if table_candidate.is_none() && self.source_edit_requires_reprojection(&edits, &source_patches, authored_syntax)? {
             // Source-mode delimiters are editable syntax. Changing a fence
             // can make formerly literal blank lines become paired paragraph
             // separators, so the new projection need not be a flat splice of
@@ -2560,7 +2573,7 @@ impl Document {
                 escaped.push_str(&spaces);
             }
         }
-        let prefix = prefix.trim_start_matches([' ', '\t']);
+        let prefix = body_prefix.trim_start_matches([' ', '\t']);
         if prefix.is_empty() {
             let whitespace = escaped.len() - escaped.trim_start_matches([' ', '\t']).len();
             let body = &escaped[whitespace..];
@@ -2593,11 +2606,12 @@ impl Document {
         &self,
         edits: &[TextEdit],
         patches: &[SourcePatch],
+        authored_syntax: bool,
     ) -> Result<bool, ModelTransactionError> {
         if self.format() != Format::MarkdownSource {
             return Ok(false);
         }
-        let Some(region) = self.line_local_projection_region(edits, patches)? else {
+        let Some(region) = self.line_local_projection_region_with_context(edits, patches, authored_syntax)? else {
             return Ok(true);
         };
         // A region that cannot be proven independent of the rest of the
@@ -2839,7 +2853,7 @@ impl Document {
         // Source grammar may reshape paragraphs, but must not silently consume
         // an explicitly requested character through line-ending normalization.
         if edits.iter().all(|edit| !edit.payload.text().contains('\r'))
-            && self.source_edit_requires_reprojection(&text_edits, &source_patches)?
+            && self.source_edit_requires_reprojection(&text_edits, &source_patches, false)?
         {
             let mut prepared = self.prepare_reprojected_source_patches(source_patches)?;
             if repaired_utf16 {
@@ -3093,6 +3107,14 @@ impl Document {
         &self,
         patches: Vec<SourcePatch>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.prepare_visible_source_patches_with_policy(patches, false)
+    }
+
+    pub(super) fn prepare_visible_source_patches_with_policy(
+        &self,
+        patches: Vec<SourcePatch>,
+        authored_syntax: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let mut edits = Vec::new();
         for patch in &patches {
             let start = self
@@ -3117,7 +3139,7 @@ impl Document {
                 normalize(&decoded, self.file_format()).text,
             ));
         }
-        self.prepare_text_edits_with_patches(edits, Some(patches))
+        self.prepare_text_edits_with_patch_policy(edits, Some(patches), authored_syntax)
     }
 
     fn prepare_markdown_paragraph_style(
@@ -3316,6 +3338,23 @@ impl Document {
                 container_prefix = super::markdown_quotes::container_prefix(&decoded.text);
             }
             let body = &decoded.text[container_prefix..];
+            if level == 0 && self.format() == Format::Markdown {
+                let tail = body.trim_end_matches(['\r', '\n', ' ', '\t']);
+                let hashes = tail.bytes().rev().take_while(|byte| *byte == b'#').count();
+                if hashes > 0 {
+                    let before = &tail[..tail.len() - hashes];
+                    if before.ends_with([' ', '\t']) {
+                        let start = decoded.source_boundary(container_prefix + before.trim_end_matches([' ', '\t']).len())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let end = decoded.source_boundary(container_prefix + body.trim_end_matches(['\r', '\n']).len())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        if !self.projection().provenance_contained_in_source(&(start..end)).iter()
+                            .any(|span| !span.formatted.is_empty()) {
+                            patches.push(SourcePatch::primary(start..end, Vec::new()));
+                        }
+                    }
+                }
+            }
             let (old_prefix, _) = super::projection::markdown_block_prefix(body, 0, body.len());
             let old_prefix =
                 super::markdown_blocks::marker_prefix_length(body).unwrap_or(old_prefix);
@@ -3439,6 +3478,24 @@ impl Document {
         } else {
             Vec::new()
         };
+        if self.format() == Format::Markdown && style.is_some() {
+            for block in structural_style::selected_blocks(self, &range) {
+                if !matches!(block.kind, super::BlockKind::Paragraph) { continue; }
+                let following = block.range.end + 1;
+                if let Some(table) = self.projection().table_at(following)
+                    .filter(|table| table.range.start == following) {
+                    let body = self.projection().source_range(block.range.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let row = self.state().source_hard_lines.line_at_offset(body.end)
+                        .and_then(|index| self.state().source_hard_lines.get(index))
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    if row.end == table.source_range.start {
+                        patches.push(SourcePatch::primary(row.end..row.end,
+                            self.encoding().encode_fragment(self.file_format().spelling())?));
+                    }
+                }
+            }
+        }
         let mut ordinal = 1usize;
         let mut wrapped_code = BTreeSet::new();
         if self.format() == Format::Markdown && style.is_some() {
@@ -4512,7 +4569,9 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
         validate_source_patches(&mut patches)?;
-        if let Ok(Some(prepared)) = self.prepare_table_local_reprojection(&patches) { return Ok(prepared); }
+        if let Ok(Some(prepared)) = self.prepare_table_local_reprojection(&patches) {
+            return Ok(prepared);
+        }
         let source = apply_source_patches(&self.state().source, &patches)?;
         let decoded = self.encoding().decode(&source.bytes())?;
         let revision = Revision(self.next_revision);
@@ -5132,7 +5191,9 @@ impl Document {
         // Filling an empty item can activate an ordered marker beside prose
         // or change a following indented code block into continuation text.
         // Its previous classifier context cannot prove that new ownership.
-        let changes_empty_item_grammar = self.markdown_edits_fill_empty_list_item(edits);
+        let changes_empty_item_grammar = self.markdown_edits_fill_empty_list_item(edits)
+            || self.state().transient_list_separator.as_ref().is_some_and(|range|
+                source_patches.iter().any(|patch| patch.range == *range));
         let region = if changes_empty_item_grammar { None } else {
             self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)?
         };
@@ -5451,6 +5512,7 @@ impl Document {
 
                 return Ok(Some(TextEditCandidate {
                     state: DocumentState {
+                        transient_list_separator: None,
                         revision,
                         source: source.clone(),
                         projection,
@@ -5602,7 +5664,8 @@ impl Document {
                 .any(|block| block.style.0 == "Code Block")
                 && !markdown_list && !markdown_table && !markdown_inline_code
                 || edit.replacement.contains(['`', '~'])
-                || markdown_list && edit.replacement.contains(['*', '_', '#', '\\']))
+                || markdown_list && (edit.replacement.contains(['*', '_', '#', '\\'])
+                    || !self.can_inherit_markdown_list_context(edits, patches)))
         {
             return Ok(None);
         }
@@ -5988,6 +6051,7 @@ impl Document {
             )
             .ok_or(DocumentError::VerificationFailed)?;
         let state = DocumentState {
+            transient_list_separator: None,
             revision,
             source: source.clone(),
             projection,
@@ -6106,9 +6170,12 @@ impl Document {
                                     || prefix.ends_with([' ', '\t'])
                                     || patch.range.end == body.end
                             });
-                        if begins_item
+                        let rule = prefix.len() >= 3
+                            && ['-', '*', '_'].iter().any(|marker| prefix.chars().all(|ch| ch == *marker));
+                        if begins_item || rule
                             || prefix.starts_with('>')
-                            || prefix.starts_with('#')
+                            || prefix.trim_start_matches('#').starts_with([' ', '\t'])
+                                && prefix.starts_with('#')
                             || prefix.starts_with("```")
                             || prefix.starts_with("~~~")
                         {
@@ -6186,6 +6253,23 @@ impl Document {
             prefixes.insert(row.start, span.source.start);
         }
         let mut removed = Vec::new();
+        // A captured item marker can retain indentation from ancestors outside
+        // this regional restart. Remove the common ancestor indentation only
+        // from parser input; its source bytes and restored list owners remain.
+        let lines = super::paragraph_flow::source_lines(input);
+        if let Some(first) = lines.iter().find(|line| !input.text[(*line).clone()].trim().is_empty()) {
+            let row = &input.text[first.clone()];
+            let indentation = row.bytes().take_while(|byte| *byte == b' ').count();
+            if indentation > 0 && super::markdown_blocks::marker_prefix_length(&row[indentation..]).is_some() {
+                let common = lines.iter().filter(|line| !input.text[(*line).clone()].trim().is_empty())
+                    .map(|line| input.text[line.clone()].bytes().take_while(|byte| *byte == b' ').count())
+                    .min().unwrap_or(0);
+                if common > 0 {
+                    removed.extend(lines.iter().filter(|line| !input.text[(*line).clone()].trim().is_empty())
+                        .map(|line| line.start..line.start + common));
+                }
+            }
+        }
         for (start, visible) in prefixes {
             let start = rebase_source_boundary(start, patches, Association::BeforeInsertion)?;
             let visible = rebase_source_boundary(visible, patches, Association::BeforeInsertion)?;
@@ -6200,6 +6284,14 @@ impl Document {
                 removed.push(at..at + white);
             }
         }
+        removed.sort_by_key(|range| range.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for range in removed {
+            if let Some(last) = merged.last_mut().filter(|last| range.start <= last.end) {
+                last.end = last.end.max(range.end);
+            } else { merged.push(range); }
+        }
+        let removed = merged;
         let mut result = super::line_endings::NormalizedText {
             text: String::new(), units: Vec::with_capacity(input.units.len()),
             endings: Vec::with_capacity(input.endings.len()), encoding: input.encoding,

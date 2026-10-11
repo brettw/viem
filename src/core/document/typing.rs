@@ -13,6 +13,16 @@ impl Document {
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        self.prepare_typing_with_canonical_link(edit, named, values, false)
+    }
+
+    fn prepare_typing_with_canonical_link(
+        &self,
+        edit: FormattedPayloadEdit,
+        named: Option<&StyleId>,
+        values: &[(StyleProperty, StylePropertyValue)],
+        continue_link: bool,
+    ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
         let (canonical, range) = scratch.prepare_canonical_autolink(
@@ -34,8 +44,11 @@ impl Document {
             edit.boundary_affinity
                 .unwrap_or(BoundaryAffinity::Downstream),
         );
-        let (inserted, caret, start) =
-            scratch.prepare_insertion_without_link(staged, named, values, None)?;
+        let (inserted, caret, start) = if continue_link {
+            scratch.prepare_insertion_with_typing_context(staged, named, values, None)?
+        } else {
+            scratch.prepare_insertion_without_link(staged, named, values, None)?
+        };
         for patch in inserted.summary.source_patches.iter().rev() {
             sources.splice(patch.range(), patch.replacement());
         }
@@ -934,9 +947,29 @@ impl Document {
                         if code.range.end == span.range.end { content.end = content.end.max(closing.end); }
                     }
                 }
+                // A complete link label can be enclosed by emphasis whose
+                // delimiters sit outside the link notation. Text provenance
+                // stops at the label; use the current semantic link owner to
+                // locate that enclosing treatment without rewriting the link.
+                let removal = match removal(&content) {
+                    Ok(patches) => patches,
+                    Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting)) => {
+                        for at in [span.range.start, self.previous_grapheme_boundary(span.range.end)
+                            .unwrap_or(span.range.start)]
+                        {
+                            if let Some(link) = self.link_snapshot_at(self.text_point(at)?)? {
+                                if span.range.start <= link.range.start && link.range.end <= span.range.end {
+                                    if link.range.start == span.range.start { content.start = content.start.min(link.source.start); }
+                                    if link.range.end == span.range.end { content.end = content.end.max(link.source.end); }
+                                }
+                            }
+                        }
+                        removal(&content)?
+                    }
+                    Err(error) => return Err(error),
+                };
                 if range.start == span.range.start { source.start = content.start; }
                 if range.end == span.range.end { source.end = content.end; }
-                let removal = removal(&content)?;
                 let opening = removal[0].range();
                 let closing = removal[1].range();
                 let marker = self
@@ -1090,6 +1123,7 @@ impl Document {
         // The captured first character supplies inheritance, while deliberate
         // pending menu choices still win. Only differing properties are later
         // written, so paragraph defaults remain sparse whenever they survive.
+        let explicit_values = values;
         let explicit_named = named.is_some();
         let inherited_named =
             inherited.map(|context| context.named.clone().unwrap_or_else(|| StyleId::from("")));
@@ -1164,6 +1198,16 @@ impl Document {
                     self.encoding().encode_fragment(&syntax)?)])?;
                 let start = at + marker.len() + pad.len();
                 return Ok((prepared, start + body.len(), start));
+            }
+        }
+        if self.format() == Format::Markdown && edit.range.is_empty()
+            && edit.payload.text().chars().any(char::is_whitespace)
+            && !edit.payload.text().contains(['\r', '\n'])
+        {
+            let affinity = edit.boundary_affinity.unwrap_or(BoundaryAffinity::Downstream);
+            if self.link_at_boundary(at, affinity)?.is_some_and(|link|
+                link.editable && link.destination_source.is_none()) {
+                return self.prepare_typing_with_canonical_link(edit, named, values, true);
             }
         }
         if named.is_none() && inherited.is_none() && edit.payload.text().trim().is_empty() {
@@ -1462,6 +1506,20 @@ impl Document {
             (None, properties.strikethrough),
         ] {
             if let Some(enabled) = enabled {
+                let property = match style {
+                    Some(SemanticInlineStyle::Strong) => StyleProperty::CharacterBold,
+                    Some(SemanticInlineStyle::Emphasis) => StyleProperty::CharacterSlant,
+                    _ => StyleProperty::CharacterStrikethrough,
+                };
+                if inherited.is_some() && !explicit_values.iter().any(|(key, _)| *key == property)
+                    && super::super::rich_text::resolved_character_at(scratch.projection(), selection.start)
+                        .is_some_and(|actual| match style {
+                            Some(SemanticInlineStyle::Strong) => actual.bold == enabled,
+                            Some(SemanticInlineStyle::Emphasis) => (actual.slant != FontSlant::Upright) == enabled,
+                            _ => actual.strikethrough == enabled,
+                        }) {
+                    continue;
+                }
                 let prepared = scratch.prepare_typing_markdown_application(
                     selection.clone(),
                     style,

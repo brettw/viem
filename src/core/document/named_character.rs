@@ -236,6 +236,67 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
 
+        if self.format().is_source_view() {
+            // Source syntax participates in source-view style spans, while
+            // clearing a named choice operates on its semantic body. Resolve
+            // those bodies through the shared source artifact, then publish
+            // the verified local patches in the original Source projection.
+            let source = self.projection().source_range(range.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let blocks = self.projection().blocks_for_region(&range);
+            let isolated = blocks.as_slice().first().filter(|block| {
+                blocks.len() == 1 && block.range.start <= range.start && range.end <= block.range.end
+                    && block.quote_depth == 0 && block.containers.is_empty() && !block.markdown_html
+                    && block.style.0 != "Code Block"
+                    && self.projection().table_cell_at(range.start).is_none()
+            }).and_then(|block| self.projection().source_range(block.range.clone()));
+            let (semantic, base) = if let Some(owner) = isolated {
+                // Ordinary prose and headings are independent inline owners.
+                // Most typing choices need only this small source region,
+                // even when they occur near the end of a large document.
+                let mut local = Document::from_bytes_with_file_format(
+                    self.source_bytes_in(owner.clone())?, self.encoding(), Format::Markdown, self.file_format())?;
+                let mut state = local.state().clone();
+                state.projection.install_configuration_styles(state.revision,
+                    self.projection().style_sheet().clone(), self.projection().document_style().clone());
+                local.history.initialize_projection(state);
+                local.configuration = self.configuration.clone();
+                local.next_revision = local.next_revision.max(self.next_revision);
+                (local, owner.start)
+            } else {
+                // Structural owners can depend on enclosing table/list/HTML
+                // context. Preserve that context when selections cross it.
+                let mut semantic = self.scratch_document();
+                let view = semantic.prepare_view_format_change(Format::Markdown)?;
+                semantic.commit_model_transaction(view)?;
+                (semantic, 0)
+            };
+            let first = semantic.visible_point_for_source(source.start - base, true)?;
+            let last = semantic.visible_point_for_source(source.end - base, false)?;
+            if first < last {
+                let prepared = semantic.prepare_character_style_choice(first..last, style)?;
+                let patches = prepared.summary.source_patches.into_iter().map(|patch|
+                    SourcePatch::primary(base + patch.range.start..base + patch.range.end, patch.replacement)).collect();
+                return self.prepare_visible_source_patches_with_policy(patches, true);
+            }
+            // A selection containing only exposed delimiters has no semantic
+            // character assignment. Code still accepts that literal source
+            // text, exactly as authoring its surrounding backticks would.
+            if style.0 == "Code" {
+                let selected = self.projection().text_tree().slice(range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                let marker = "`".repeat(selected.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+                let padding = if selected.starts_with('`') || selected.ends_with('`') { " " } else { "" };
+                return self.prepare_visible_source_patches_with_policy(vec![
+                    SourcePatch::primary(source.start..source.start,
+                        self.encoding().encode_fragment(&format!("{marker}{padding}"))?),
+                    SourcePatch::primary(source.end..source.end,
+                        self.encoding().encode_fragment(&format!("{padding}{marker}"))?),
+                ], true);
+            }
+            return Ok(self.no_op_prepared());
+        }
+
         let original_range = range.clone();
         let mut scratch = self.scratch_document();
         let mut sources = super::replacement::PatchComposition::new(self.source_byte_len());

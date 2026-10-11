@@ -604,6 +604,9 @@ impl std::error::Error for HardLineSourceRangeError {}
 
 #[derive(Clone)]
 struct DocumentState {
+    /// Temporary supporting separator for the most recently indented empty item.
+    /// Retained with undo; ordinary authored blank lines never enter this slot.
+    transient_list_separator: Option<Range<usize>>,
     revision: Revision,
     source: SourceSnapshot,
     projection: FormattedDocument,
@@ -809,6 +812,7 @@ impl Document {
         let source = SourceSnapshot::new(text.as_bytes().to_vec());
         let projection = projection::layout_test_plain_projection(text);
         let state = DocumentState {
+            transient_list_separator: None,
             revision: Revision(0),
             source,
             projection,
@@ -2453,6 +2457,7 @@ fn build_state_from_decoded(
     source_hard_lines.push(source_line_start..source_content_end);
     let projection = project(&normalized, format, revision, source_content_start, source_content_end);
     Ok(DocumentState {
+        transient_list_separator: None,
         revision,
         source,
         projection,

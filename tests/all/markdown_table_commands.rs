@@ -833,3 +833,105 @@ fn downstream_code_exit_keeps_table_pipes_literal_and_following_input_outside_co
     .unwrap();
     assert_eq!(core.document().source_bytes(), source.as_bytes());
 }
+
+#[test]
+fn audit_table_duplicate_then_type_keeps_ordered_metadata() {
+    for command in ["t.", "t0"] {
+        let (mut core, view) = editor("| a |\n| --- |\n\nx");
+        for ch in format!(":{command}").chars() {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(ch))).unwrap();
+        }
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        let tables = core.document().projection().tables();
+        assert_ne!(tables[0].id, tables[1].id);
+        assert!(tables.iter().all(|table| table.id != 0));
+        for ch in ['i','q'] {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(ch))).unwrap();
+        }
+        let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), core.document().text());
+    }
+}
+
+#[test]
+fn audit_replace_enter_backspace_restores_table_quote_and_code_bytes() {
+    for (source, format, at) in [
+        ("| a | b |\n| - | - |\n| 1 | 2 |", Format::Markdown, 0),
+        ("- | a | b |\n  | - | - |\n  | 1 | 2 |", Format::Markdown, 0),
+        (">", Format::Markdown, 0),
+        ("fn main() {\n    println!(\"hi\");\n}\n", Format::Code, 13),
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        for key in [Key::Char('R'), Key::Enter, Key::Backspace, Key::Escape] {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source}");
+    }
+}
+
+#[test]
+fn audit_gutter_rows_clear_or_replace_cells_and_delete_paragraph_owners() {
+    for (source, expected) in [("# T\n\nend", "end"), ("> q\n\nz", "z")] {
+        let (mut core, view) = editor(source);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let row = &snapshot.rows[0];
+        core.handle(view, CoreEvent::SelectPointerRow { document_revision: core.document().revision(),
+            layout_revision: snapshot.revision, y: row.y + row.height()/2., extend_selection: false }).unwrap();
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Backspace))).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+    let source = "| a | b |\n| - | - |\n| 1 | 2 |\n\nend";
+    for key in [Key::Backspace, Key::Delete, Key::Char('x')] {
+        let (mut core, view) = editor(source);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let row = snapshot.rows.iter().find(|row| row.table_cell.as_ref().is_some_and(|cell| cell.row == 1)).unwrap();
+        core.handle(view, CoreEvent::SelectPointerRow { document_revision: core.document().revision(),
+            layout_revision: snapshot.revision, y: row.y + row.height()/2., extend_selection: false }).unwrap();
+        assert!(core.table_selection(view).unwrap().is_some());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        let table = &core.document().projection().tables()[0];
+        assert_eq!(table.rows.len(), 2);
+        assert!(table.rows[1].cells[1].range.is_empty());
+        assert_eq!(table.rows[1].cells[0].range.len(), usize::from(key == Key::Char('x')));
+        assert!(core.document().text().ends_with("end"));
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn audit_insert_enter_backspace_restores_original_emphasis_spelling() {
+    for source in ["*it*", "_it_", "*a\nb*"] {
+        let (mut core, view) = editor(source);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: 1, affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        for key in [Key::Enter, Key::Backspace] {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source}");
+    }
+}
+
+#[test]
+fn audit_native_typing_into_quoted_empty_cells() {
+    for prefix in ["> ", "> > "] {
+        let source = format!("{prefix}|  |  |\n{prefix}| - | - |\n{prefix}|  |  |");
+        for row in 0..2 {
+            for column in 0..2 {
+                let (mut core, view) = editor(&source);
+                core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+                let at = core.document().projection().tables()[0].rows[row].cells[column].range.start;
+                core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                    text_offset: at, affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::text("x"))).unwrap();
+                assert!(String::from_utf8(core.document().source_bytes()).unwrap().contains("| x |"));
+            }
+        }
+    }
+}

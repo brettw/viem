@@ -97,13 +97,13 @@ pub use registers::{
 use text::{
     advance_graphemes, find_character, first_non_blank, grapheme_column, grapheme_range_at,
     is_grapheme_boundary, last_grapheme_on_line, last_non_blank, line_count, line_end, line_range,
-    line_start, linewise_range, move_horizontal, move_paragraph, move_vertical,
+    line_start, linewise_range, move_horizontal, move_vertical,
     move_word_backward, move_word_end, move_word_end_backward, move_word_forward,
     next_grapheme_boundary, next_line_start, normalize_normal_cursor,
     normalize_normal_cursor_snapshot, nth_line_start, position_at_column,
     previous_grapheme_boundary, repeat_find_character,
 };
-use text_object::{resolve_text_object, TextObject, TextObjectKind, TextObjectScope};
+use text_object::{resolve_document_text_object, TextObject, TextObjectKind, TextObjectScope};
 use visual_block::{
     apply_block_edits, delete_text_edits, resolve_block_selection,
     resolve_block_selection_to_line_end, BlockSelection, ResolvedBlockSelection, VisualBlockError,
@@ -1368,6 +1368,8 @@ pub struct CommandInterpreter {
     /// Initial whole word of the current pointer gesture; rebased with the
     /// selection anchors so dragging back across it can reverse direction.
     pointer_word_origin: Option<Range<usize>>,
+    /// Semantic row ownership outlives the pointer gesture, including Copy.
+    pointer_rows: bool,
     /// Complete clicked grapheme, retained through native drag reversal and
     /// rebased through document edits using inward-associated stable anchors.
     pointer_character_origin: Option<Range<usize>>,
@@ -1544,6 +1546,7 @@ impl CommandInterpreter {
             preferred_column: None,
             visual_anchor: None,
             pointer_word_origin: None,
+            pointer_rows: false,
             pointer_character_origin: None,
             visual_to_line_end: false,
             visual_block: None,
@@ -2617,6 +2620,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -2805,6 +2809,7 @@ impl CommandInterpreter {
         self.mode = Mode::Normal;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -2942,6 +2947,7 @@ impl CommandInterpreter {
         }
         let character_origin = extend_selection.then(|| self.pointer_character_origin.clone()).flatten();
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.table_cells = None;
         self.table_tab_selection = false;
@@ -3022,6 +3028,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         self.visual_block = None;
@@ -3069,6 +3076,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -3878,9 +3886,19 @@ impl CommandInterpreter {
             prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
         };
         let changed = !prepared.is_no_op();
+        let record = if self.mode == Mode::Replace && key == Key::Enter && changed {
+            Some(document.recorded_source_replacement(&prepared, self.cursor, cursor,
+                "\n".to_owned(), None).map_err(command_document_error)?)
+        } else { None };
         document.commit_model_transaction(prepared).map_err(command_document_error)?;
         self.cursor = cursor;
         self.note_paragraph_key(key);
+        if let (Some(session), Some(record)) = (self.insert_session.as_mut(), record) {
+            session.replace_journal.push(ReplaceJournalEntry {
+                autoindent: false, start: record.before_cursor, inserted: record.inserted.clone(),
+                original: record.original.clone(), source_record: Some(record),
+            });
+        }
         Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() })
     }
 
@@ -5933,6 +5951,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -6943,6 +6962,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = shape.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -7042,6 +7062,7 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_position = None;
         self.desired_x = None;
@@ -7923,6 +7944,7 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -8099,6 +8121,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = memory.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -9235,19 +9258,21 @@ impl CommandInterpreter {
         motion: OperatorMotion,
         count: usize,
     ) -> Option<MotionExtent> {
-        let motion = if operator == Operator::Change
-            && matches!(motion, OperatorMotion::WordForward(_))
-            && document.hard_line_snapshot().grapheme_range_at(self.cursor)
-                .and_then(|range| document.projection().text_tree().slice(range).ok())
-                .is_some_and(|text| !text.chars().all(char::is_whitespace))
-        {
-            match motion {
-                OperatorMotion::WordForward(big) => OperatorMotion::WordEnd(big),
-                _ => unreachable!("change-word special case checked above"),
+        if operator == Operator::Change {
+            if let OperatorMotion::WordForward(big) = motion {
+                let lines = document.hard_line_snapshot();
+                if lines.grapheme_range_at(self.cursor)
+                    .and_then(|range| document.projection().text_tree().slice(range).ok())
+                    .is_some_and(|text| !text.chars().all(char::is_whitespace))
+                {
+                    let end = text::change_word_end(document.text(), self.cursor, big, count);
+                    return Some(MotionExtent {
+                        range: self.cursor..lines.next_grapheme_boundary(end).unwrap_or(end),
+                        kind: MotionKind::Characterwise,
+                    });
+                }
             }
-        } else {
-            motion
-        };
+        }
         self.resolve_operator_motion(document, motion, count)
     }
 
@@ -9344,24 +9369,20 @@ impl CommandInterpreter {
                 false,
             )),
             OperatorMotion::WordForward(big) => {
-                let mut destination = move_word_forward(text, origin, big, count);
-                let destination_start = line_start(&lines, destination);
-                if destination_start > line_start(&lines, origin)
-                    && text[destination_start..destination].chars().all(char::is_whitespace) {
-                    destination = lines.previous_grapheme_boundary(destination_start).unwrap_or(destination_start);
-                }
-                Some(characterwise(destination, false))
+                let destination = move_word_forward(text, origin, big, count);
+                Some(exclusive_motion_extent(text, &lines, origin, destination))
             },
             OperatorMotion::WordEnd(big) => {
-                Some(characterwise(move_word_end(text, origin, big, count), true))
+                let end = if let Some((_, _, cell)) = document.projection().table_cell_at(origin)
+                    .filter(|(table, _, _)| !table.source_view)
+                {
+                    cell.range.start + move_word_end(&text[cell.range.clone()], origin - cell.range.start, big, count)
+                } else { move_word_end(text, origin, big, count) };
+                Some(characterwise(end, true))
             }
             OperatorMotion::WordBackward(big) => {
                 let destination = move_word_backward(text, origin, big, count);
-                let mut extent = characterwise(destination, false);
-                if origin == line_start(&lines, origin) && destination < origin {
-                    extent.range.end = lines.previous_grapheme_boundary(origin).unwrap_or(origin);
-                }
-                Some(extent)
+                Some(exclusive_motion_extent(text, &lines, origin, destination))
             },
             OperatorMotion::WordEndBackward(big) => Some(characterwise(
                 move_word_end_backward(text, origin, big, count),
@@ -9383,7 +9404,7 @@ impl CommandInterpreter {
                 text,
                 &lines,
                 origin,
-                move_paragraph(&lines, origin, forward, count),
+                text::move_document_paragraph(document, origin, forward, count),
             )),
             OperatorMotion::Percentage => {
                 let target = nth_line_start(&lines, percentage_line(&lines, count)?);
@@ -9572,6 +9593,9 @@ impl CommandInterpreter {
                     self.capture_generated_indent(document, retained_indent);
                     output.mode_changed = true;
                 } else {
+                    if extent.kind == MotionKind::Linewise && self.literal_indentation(document) {
+                        self.cursor = cursor_after_linewise_deletion(document, self.cursor);
+                    }
                     self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                         self.cursor,
                     );
@@ -9787,7 +9811,7 @@ impl CommandInterpreter {
                 Some(move_sentence(&lines, origin, forward, count))
             }
             OperatorMotion::Paragraph(forward) => {
-                Some(move_paragraph(&lines, origin, forward, count))
+                Some(text::move_document_paragraph(document, origin, forward, count))
             }
             OperatorMotion::MatchPair => matching_pair(&lines, origin),
             OperatorMotion::Percentage => {
@@ -9917,7 +9941,7 @@ impl CommandInterpreter {
             let mut end = if self.selection_exclusive { high } else { lines.next_grapheme_boundary(high).unwrap_or(high) };
             if self.visual_to_line_end && !self.selection_exclusive && self.cursor >= anchor {
                 if let Ok(line) = lines.line_at_offset(high) {
-                    if end == line.content_range().end { end = line.linewise_range().end; }
+                    if end == line.content_range().end && line.linewise_range().end < lines.text_length() { end = line.linewise_range().end; }
                 }
             }
             MotionExtent {
@@ -10103,9 +10127,8 @@ impl CommandInterpreter {
         let Some(kind) = TextObjectKind::from_vim_key(key) else {
             return CommandOutput::unsupported(format!("unknown text object {key}"));
         };
-        let range = match resolve_text_object(
-            document.text(),
-            &document.hard_line_snapshot(),
+        let range = match resolve_document_text_object(
+            document,
             self.cursor,
             TextObject { scope, kind },
             count,
@@ -10206,6 +10229,7 @@ impl CommandInterpreter {
         self.update_visual_marks();
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         if operator != Operator::Change {
@@ -10245,6 +10269,7 @@ impl CommandInterpreter {
         }
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         output.mode_changed = true;
@@ -10459,6 +10484,7 @@ impl CommandInterpreter {
         self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         let changed = document.revision() != before_revision;
@@ -10500,6 +10526,7 @@ impl CommandInterpreter {
         self.cursor = extent.range.start;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         let before = document.revision();
@@ -10655,10 +10682,20 @@ impl CommandInterpreter {
                     if let Some(edit) = if document.format().is_code() { None } else { document.list_enter_edit(self.cursor)? } {
                         if document.format().has_structural_lists() {
                             let floor = self.insert_session.as_ref().map(|session| session.unit_floor);
-                            let (cursor, floor) = continue_list_with_cursor(document, self.cursor, floor)?;
+                            let restore_split = document.format() == Format::Markdown
+                                && document.projection().blocks_for_region(&(self.cursor..self.cursor)).iter()
+                                    .any(|block| block.quote_depth == 0
+                                        && !matches!(block.kind, crate::document::BlockKind::ListItem { .. }));
+                            let (cursor, floor, record) = continue_list_with_cursor(document, self.cursor, floor, restore_split)?;
                             self.cursor = cursor;
                             if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), floor) {
                                 session.unit_floor = floor;
+                                if let Some(record) = record {
+                                    session.replace_journal.push(ReplaceJournalEntry {
+                                        autoindent: false, start: record.before_cursor, inserted: record.inserted.clone(),
+                                        original: record.original.clone(), source_record: Some(record),
+                                    });
+                                }
                             }
                         } else if edit.range.is_empty() {
                             let value = RegisterValue::characterwise(&edit.replacement);
@@ -11228,6 +11265,11 @@ impl CommandInterpreter {
         document: &mut Document,
         value: &RegisterValue,
     ) -> Result<CommandOutput, DocumentError> {
+        // The exact Insert Enter frontier is valid only until another input
+        // commits. Replace frontiers retain their existing per-character stack.
+        if self.mode == Mode::Insert && !value.text.is_empty() {
+            self.invalidate_replace_restoration();
+        }
         if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
             return self.insert_hidden_source_payload(document, value);
         }
@@ -11545,7 +11587,10 @@ impl CommandInterpreter {
             if start >= at.offset() { return Ok(CommandOutput::complete()); }
             return self.commit_hidden_source_edit(document, start..at.offset(), "", EditSessionStep::Backspace);
         }
-        if self.mode == Mode::Replace {
+        if self.mode == Mode::Replace || self.mode == Mode::Insert
+            && self.insert_session.as_ref().and_then(|session| session.replace_journal.last())
+                .is_some_and(|entry| entry.source_record.is_some() && entry.frontier() == Some(self.cursor))
+        {
             let journal_entry = self
                 .insert_session
                 .as_ref()
@@ -12145,17 +12190,24 @@ impl CommandInterpreter {
         // Normal [count]r<Enter> deletes `count` graphemes but inserts exactly
         // one hard-line item. Other replacement operands are repeated once per
         // replaced grapheme.
-        let replacement_count = if is_single_semantic_hard_break(replacement) {
-            if self.literal_indentation(document) {
+        let replacing_with_break = is_single_semantic_hard_break(replacement);
+        let repeat_value = replacement.clone();
+        let mut replacement = replacement.clone();
+        let replacement_count = if is_single_semantic_hard_break(&replacement) {
+            if self.literal_indentation(document) && self.indentation_options().autoindent {
                 let suffix = lines.slice_utf8(end..content_end)
                     .map_err(DocumentError::FormattedTextStorage)?;
                 end += crate::document::leading_whitespace_len(&suffix);
+                let content = lines.slice_utf8(line_start(&lines, start)..content_end)
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                let indent = crate::document::leading_whitespace_len(&content);
+                replacement = RegisterValue::characterwise(format!("\n{}", &content[..indent]));
             }
             1
         } else {
             count
         };
-        let repeated = match checked_register_repetition(replacement, replacement_count) {
+        let repeated = match checked_register_repetition(&replacement, replacement_count) {
             Ok(repeated) => repeated,
             Err(error) => return Ok(error.into_command_output()),
         };
@@ -12169,24 +12221,20 @@ impl CommandInterpreter {
                 .expect("repeated replacement carries valid semantic-break offsets");
         let edit = FormattedPayloadEdit::new(start..end, payload);
         document.validate_typing_payload(&edit)?;
-        let insertion_end = if is_single_semantic_hard_break(replacement) {
-            let inserted_bytes = edit.payload().text().len();
+        let insertion_end = if replacing_with_break {
             let prepared = document
                 .prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
-                    document.id(), document.revision(), vec![edit],
+                    document.id(), document.revision(), vec![edit.clone()],
                 ))
                 .map_err(command_document_error)?;
-            // Map the replacement start and cross only the inserted break.
-            let cursor = prepared_cursor(document, &prepared, start, Association::BeforeInsertion)?
-                .checked_add(inserted_bytes)
-                .ok_or(DocumentError::AmbiguousProjection)?;
+            let cursor = prepared_payload_caret(document, &prepared, &edit)?;
             document.commit_model_transaction(prepared).map_err(command_document_error)?;
             cursor
         } else {
             commit_typing_payload(document, edit)?
         };
         let new_lines = document.hard_line_snapshot();
-        self.cursor = if is_single_semantic_hard_break(replacement) {
+        self.cursor = if replacing_with_break {
             // This may be EOF when the replacement created a trailing empty
             // hard line. EOF is that line's sole legal Normal-mode cursor.
             insertion_end
@@ -12198,7 +12246,7 @@ impl CommandInterpreter {
         if !self.replaying {
             self.last_repeat = Some(RepeatAction::ReplaceCharacter {
                 count,
-                value: replacement.clone(),
+                value: repeat_value,
             });
             self.registers.set_last_insert(inserted_input_unit(&repeated, &replacement.text));
         }
@@ -12767,9 +12815,8 @@ impl CommandInterpreter {
                 kind: MotionKind::Linewise,
             }),
             RepeatTarget::TextObject(object) => {
-                match resolve_text_object(
-                    document.text(),
-                    &document.hard_line_snapshot(),
+                match resolve_document_text_object(
+                    document,
                     self.cursor,
                     *object,
                     count,
@@ -13092,6 +13139,7 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.clear_pending();
     }
@@ -13427,6 +13475,20 @@ impl CommandInterpreter {
                 };
             }
         };
+        // Substitution can record a jump before the coordinator gets its
+        // transaction result. Rebase retained jumps first so deduplication
+        // never interprets old byte offsets in the newly edited text.
+        let jump_anchors = if records_jump {
+            match self.jumps.iter().map(|offset| {
+                document.text_anchor(document.text_point(*offset)?, Association::AfterInsertion,
+                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)
+                    .map_err(command_position_document_error)
+            }).collect::<Result<Vec<_>, DocumentError>>() {
+                Ok(anchors) => anchors,
+                Err(error) => return CommandOutput { status: CommandStatus::Error(error.to_string()),
+                    ..CommandOutput::complete() },
+            }
+        } else { Vec::new() };
         let mut outcome = match commit_ex(document, &mut self.ex_state, plan) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -13437,6 +13499,16 @@ impl CommandInterpreter {
                 };
             }
         };
+        if records_jump {
+            if let Some(transaction) = outcome.model_transaction() {
+                let map = transaction.text_position_map();
+                self.jumps = jump_anchors.into_iter().map(|anchor|
+                    mapped_anchor(map, anchor).expect("published transaction maps retained jumps")
+                        .expect("retained jump has deletion recovery"))
+                    .collect();
+                self.jumps_revision = Some(document.revision());
+            }
+        }
         if let Some(search) = address_search { self.last_search = Some(search); self.search_highlight_suppressed = false; }
         if outcome.suppress_search_highlight { self.search_highlight_suppressed = true; }
         if matches!(
@@ -13693,6 +13765,7 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
+        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -14170,9 +14243,8 @@ impl CommandInterpreter {
             Ok(count) => count,
             Err(error) => return Ok(CommandOutput::count_error(error)),
         };
-        let range = match resolve_text_object(
-            document.text(),
-            &document.hard_line_snapshot(),
+        let range = match resolve_document_text_object(
+            document,
             self.cursor,
             TextObject { scope, kind },
             count,
@@ -15483,6 +15555,13 @@ fn exclusive_motion_extent(
     origin: usize,
     destination: usize,
 ) -> MotionExtent {
+    if destination < origin && origin == line_start(lines, origin) {
+        if destination <= first_non_blank(text, lines, destination) {
+            return MotionExtent { range: line_start(lines, destination)..origin, kind: MotionKind::Linewise };
+        }
+        return MotionExtent { range: destination..previous_grapheme_boundary(text, origin).unwrap_or(origin),
+            kind: MotionKind::Characterwise };
+    }
     if destination > origin && destination == line_start(lines, destination) {
         if origin <= first_non_blank(text, lines, origin) {
             return MotionExtent {
@@ -15617,6 +15696,15 @@ fn covered_line_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<us
     start..line_range(lines, end_line).end
 }
 
+fn cursor_after_linewise_deletion(document: &Document, at: usize) -> usize {
+    let lines = document.hard_line_snapshot();
+    if at == lines.text_length() && at > 0
+        && lines.line_at_offset(at).is_ok_and(|line| line.content_range().is_empty())
+    {
+        first_nonblank_document(document, &lines, lines.previous_grapheme_boundary(at).unwrap_or(0))
+    } else { at }
+}
+
 fn linewise_edit_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<usize> {
     if range.end != lines.text_length() || range.start == 0 {
         return range;
@@ -15749,7 +15837,8 @@ fn commit_model_with_cursor(
     Ok(caret)
 }
 
-fn continue_list_with_cursor(document: &mut Document, at: usize, floor: Option<usize>) -> Result<(usize, Option<usize>), DocumentError> {
+fn continue_list_with_cursor(document: &mut Document, at: usize, floor: Option<usize>, restore_split: bool)
+    -> Result<(usize, Option<usize>, Option<crate::document::RecordedReplacement>), DocumentError> {
     let prepared = document
         .prepare_model_request(ModelRequest::ContinueList {
             document: document.id(),
@@ -15759,10 +15848,14 @@ fn continue_list_with_cursor(document: &mut Document, at: usize, floor: Option<u
         .map_err(command_document_error)?;
     let cursor = prepared_list_enter_cursor(document, &prepared, at)?;
     let floor = floor.map(|floor| prepared_cursor(document, &prepared, floor, Association::BeforeInsertion)).transpose()?;
+    let record = if restore_split {
+        Some(document.recorded_source_replacement(&prepared, at, cursor, "\n".to_owned(), None)
+            .map_err(command_document_error)?)
+    } else { None };
     document
         .commit_model_transaction(prepared)
         .map_err(command_document_error)?;
-    Ok((cursor, floor))
+    Ok((cursor, floor, record))
 }
 
 fn prepared_list_enter_cursor(document: &Document, prepared: &PreparedModelTransaction, at: usize) -> Result<usize, DocumentError> {

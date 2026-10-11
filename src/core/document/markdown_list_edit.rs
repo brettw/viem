@@ -835,6 +835,12 @@ impl Document {
                 .into_iter()
                 .find(|block| block.range.start <= point && point <= block.range.end)
                 .ok_or(DocumentError::VerificationFailed)?;
+            // Image is derived from the retained object, not an authored
+            // paragraph assignment for the empty side of a split.
+            let style = if style.0 == "Image" {
+                if actual.style.0 == "Image" { actual.style.clone() }
+                else { scratch.projection().style_sheet().base_paragraph.clone() }
+            } else { style };
             if actual.style != style {
                 let styled = scratch.prepare_markdown_paragraph_style(actual.range, style)?;
                 if let PreparedPublication::State(candidate) = &styled.publication {

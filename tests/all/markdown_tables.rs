@@ -924,3 +924,42 @@ fn literal_carriage_returns_are_line_content_rather_than_grammar_breaks() {
         assert!(!wysiwyg.projection().blocks().iter().any(|block| block.style.0.starts_with("Heading")), "{source:?}");
     }
 }
+
+#[test]
+fn audit_empty_table_cells_keep_padding_and_quote_ownership() {
+    for prefix in ["", "> ", "> > "] {
+        let source = format!("{prefix}|  |  |\n{prefix}| - | - |\n{prefix}|  |  |");
+        for row in 0..2 {
+            for column in 0..2 {
+                let mut document = doc(&source, Format::Markdown);
+                let at = document.projection().tables()[0].rows[row].cells[column].range.start;
+                document.insert(at, "x").unwrap();
+                let updated = String::from_utf8(document.source_bytes()).unwrap();
+                assert!(updated.contains("| x |"), "{updated}");
+                let reopened = doc(&updated, Format::Markdown);
+                assert_eq!(reopened.text(), document.text());
+                assert_eq!(reopened.projection().tables()[0].rows[row].cells[column].range.len(), 1);
+                assert!(document.undo());
+                assert_eq!(document.source_bytes(), source.as_bytes());
+                assert!(document.redo());
+                assert_eq!(document.source_bytes(), updated.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn audit_no_op_inline_formatting_through_cell_boundary() {
+    use viem_core::document::SemanticInlineStyle;
+    for (source, end, style) in [
+        ("| *a* | b |\n| - | - |", 2, SemanticInlineStyle::Emphasis),
+        ("| **bold** | _it_ |\n| - | - |", 5, SemanticInlineStyle::Strong),
+    ] {
+        let mut document = doc(source, Format::Markdown);
+        document.apply_model_request(ModelRequest::SetSemanticStyle {
+            document: document.id(), revision: document.revision(), range: 0..end,
+            style, enabled: true,
+        }).unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}

@@ -72,12 +72,56 @@ pub(super) fn definitions(text: &str) -> (String, Vec<Range<usize>>) {
     let parser = Parser::new(text);
     let mut ranges: Vec<_> = parser.reference_definitions().iter().map(|(_, value)| value.span.clone()).collect();
     ranges.sort_by_key(|range| range.start);
+    let known = ranges.clone();
+    let mut occupied = Vec::<Range<usize>>::new();
+    for (event, range) in parser.into_offset_iter() {
+        if matches!(event, Event::Start(Tag::Paragraph | Tag::Heading { .. }
+            | Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::Table(_))) {
+            if let Some(previous) = occupied.last_mut().filter(|previous| range.start <= previous.end) {
+                previous.end = previous.end.max(range.end);
+            } else {
+                occupied.push(range);
+            }
+        }
+    }
+    // The parser's lookup keeps only the first definition of a label. Later
+    // definitions are still authored definition syntax and retain the same
+    // visible reference treatment, including after a line copy.
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start_matches(' ').starts_with('[') && line.contains("]:")
+            && !known.get(known.partition_point(|range| range.end <= offset))
+                .is_some_and(|range| range.start <= offset && offset < range.end)
+            && !occupied.get(occupied.partition_point(|range| range.end <= offset))
+                .is_some_and(|range| range.start <= offset && offset < range.end) {
+            for (_, definition) in Parser::new(line).reference_definitions().iter() {
+                ranges.push(offset + definition.span.start..offset + definition.span.end);
+            }
+        }
+        offset += line.len();
+    }
+    ranges.sort_by_key(|range| range.start);
+    ranges.dedup();
     let mut definitions = String::new();
     for range in &ranges {
         definitions.push_str("\n\n");
         definitions.push_str(&text[range.clone()]);
     }
     (definitions, ranges)
+}
+
+#[cfg(test)]
+mod definition_tests {
+    #[test]
+    fn duplicate_definitions_keep_their_source_context() {
+        let source = "[ref]: /first\n\n[ref]: /second\n\n```\n[code]: /hidden\n```\n\nprose\n[inline]: /literal";
+        let (context, ranges) = super::definitions(source);
+        assert_eq!(ranges.len(), 2);
+        assert!(context.contains("[ref]: /first"));
+        assert!(context.contains("[ref]: /second"));
+        assert!(!context.contains("/hidden"));
+        assert!(!context.contains("/literal"));
+    }
 }
 
 /// Inline destinations are self-contained. Other bracket syntax can depend on
@@ -186,7 +230,7 @@ impl Blocks {
         let parser = Parser::new_ext(text, Options::ENABLE_TABLES);
         let mut result = Self::default();
         result.tables = super::markdown_tables::parse(text);
-        result.definitions = parser.reference_definitions().iter().map(|(_, definition)| definition.span.clone()).collect();
+        result.definitions = definitions(text).1;
         let mut quotes = 0;
         let mut lists: Vec<(Range<usize>, Option<u64>, bool, usize)> = Vec::new();
         let mut items: Vec<usize> = Vec::new();
@@ -276,6 +320,15 @@ impl Blocks {
             }
         }
         for block in &mut result.blocks {
+            // Text-event offsets may omit the escape before the first visible
+            // character. That backslash belongs to the heading body relation.
+            if matches!(block.role, BlockRole::Heading(_))
+                && block.content.start < block.content.end {
+                while block.content.start > block.range.start
+                    && text.as_bytes().get(block.content.start - 1) == Some(&b'\\') {
+                    block.content.start -= 1;
+                }
+            }
             if block.content.start > block.content.end {
                 let raw = text[block.range.clone()].trim_end_matches(['\n', '\r']);
                 // Empty ATX headings still have a body boundary. Keep it

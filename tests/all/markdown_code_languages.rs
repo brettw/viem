@@ -941,26 +941,26 @@ fn passive_html_language_edits_preserve_attribute_spelling_body_and_history() {
     let body = "literal &amp; café\r\n    next";
     for (opening, initial, c, rust, none, body) in [
         ("<pre data-keep='x>y'>", None,
-            "<pre lang=\"c\" data-keep='x>y'>", "<pre lang=\"rust\" data-keep='x>y'>", "<pre  data-keep='x>y'>", body),
+            "<pre lang=\"c\" data-keep='x>y'>", "<pre lang=\"rust\" data-keep='x>y'>", "<pre data-keep='x>y'>", body),
         ("<PRE data-k='keep' LANG = 'r&#117;st'>", Some("rust"),
-            "<PRE data-k='keep' LANG = 'c'>", "<PRE data-k='keep' LANG = 'rust'>", "<PRE data-k='keep' >", body),
+            "<PRE data-k='keep' LANG = 'c'>", "<PRE data-k='keep' LANG = 'rust'>", "<PRE data-k='keep'>", body),
         ("<pre lang=js data-k=\"keep\">", Some("javascript"),
-            "<pre lang=c data-k=\"keep\">", "<pre lang=rust data-k=\"keep\">", "<pre  data-k=\"keep\">", body),
+            "<pre lang=c data-k=\"keep\">", "<pre lang=rust data-k=\"keep\">", "<pre data-k=\"keep\">", body),
         ("<pre lang='py' data-k=keep LANG=js>", Some("python"),
-            "<pre lang='c' data-k=keep LANG=js>", "<pre lang='rust' data-k=keep LANG=js>", "<pre  data-k=keep >", body),
+            "<pre lang='c' data-k=keep LANG=js>", "<pre lang='rust' data-k=keep LANG=js>", "<pre data-k=keep>", body),
         ("<pre lang=\"custom-lang\" title='keep'>", Some("custom-lang"),
-            "<pre lang=\"c\" title='keep'>", "<pre lang=\"rust\" title='keep'>", "<pre  title='keep'>", body),
+            "<pre lang=\"c\" title='keep'>", "<pre lang=\"rust\" title='keep'>", "<pre title='keep'>", body),
         ("<pre lang=\"\">", None,
-            "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre >", body),
+            "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre>", body),
         ("<pre lang=>", None,
-            "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre >", body),
+            "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre>", body),
         ("<pre lang=\"\" data-k=keep LANG=rust>", None,
-            "<pre lang=\"c\" data-k=keep LANG=rust>", "<pre lang=\"rust\" data-k=keep LANG=rust>", "<pre  data-k=keep >", body),
+            "<pre lang=\"c\" data-k=keep LANG=rust>", "<pre lang=\"rust\" data-k=keep LANG=rust>", "<pre data-k=keep>", body),
         ("<pre lang data-k='keep'>", None,
-            "<pre lang=\"c\" data-k='keep'>", "<pre lang=\"rust\" data-k='keep'>", "<pre  data-k='keep'>", body),
+            "<pre lang=\"c\" data-k='keep'>", "<pre lang=\"rust\" data-k='keep'>", "<pre data-k='keep'>", body),
         ("<pre\r\n  lang = \"py\"\r\n  data-k='keep'\r\n>", Some("python"),
-            "<pre\r\n  lang = \"c\"\r\n  data-k='keep'\r\n>", "<pre\r\n  lang = \"rust\"\r\n  data-k='keep'\r\n>", "<pre\r\n  \r\n  data-k='keep'\r\n>", body),
-        ("<pre>", None, "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre >", ""),
+            "<pre\r\n  lang = \"c\"\r\n  data-k='keep'\r\n>", "<pre\r\n  lang = \"rust\"\r\n  data-k='keep'\r\n>", "<pre\r\n\r\n  data-k='keep'\r\n>", body),
+        ("<pre>", None, "<pre lang=\"c\">", "<pre lang=\"rust\">", "<pre>", ""),
     ] {
         for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
             let source = |opening: &str| format!("before\r\n\r\n{opening}{body}</pre>\r\n\r\nafter");
@@ -1023,8 +1023,8 @@ fn passive_html_language_edits_preserve_attribute_spelling_body_and_history() {
         }
     }
     for (source, cleared, may_reject_none) in [
-        ("> <pre lang=\"rust\">a\r\n> b</pre>", "> <pre >a\r\n> b</pre>", false),
-        ("- <pre lang=\"rust\">a\r\n  b</pre>", "- <pre >a\r\n  b</pre>", false),
+        ("> <pre lang=\"rust\">a\r\n> b</pre>", "> <pre>a\r\n> b</pre>", false),
+        ("- <pre lang=\"rust\">a\r\n  b</pre>", "- <pre>a\r\n  b</pre>", false),
         ("> <pre lang =\r\n> 'rust'>a\r\n> b</pre>", "> <pre \r\n> >a\r\n> b</pre>", true),
     ] {
         let mut document = Document::from_bytes_with_file_format(
@@ -1316,5 +1316,23 @@ fn highlighted_code_line_transfers_and_sort_verify_source_without_syntax_decorat
         assert_eq!(core.document().source_bytes(), b"c\na\nb");
         core.handle_with_layout(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
         assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn audit_clearing_language_removes_its_separator_whitespace() {
+    for (source, expected) in [
+        ("``` {.rust}\nx\n```", "```\nx\n```"),
+        ("<pre lang=\"py\">x</pre>", "<pre>x</pre>"),
+        ("<pre id=\"keep\"  lang=\"py\">x</pre>", "<pre id=\"keep\">x</pre>"),
+    ] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let prepared = document.prepare_code_block_language(document.id(), document.revision(), 0, None).unwrap();
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
     }
 }
