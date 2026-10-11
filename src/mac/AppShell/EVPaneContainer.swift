@@ -12,6 +12,11 @@ final class EVPaneContainer: NSViewController {
   private var splitters: [UInt64: EVVerticalSplitter] = [:]
   private var applyingLayout = false
   private var adjustingGutterWindow = false
+  private var placementGutters: [ObjectIdentifier: CGFloat] = [:]
+  var placementGutterWidth: CGFloat {
+    guard let first = panes.first else { return 0 }
+    return placementGutters[ObjectIdentifier(first)] ?? first.editorSurface.lineNumberGutterWidth
+  }
   private weak var lastAccessedPane: EVDocumentContentViewController?
 
   init(first: EVDocumentContentViewController) {
@@ -115,10 +120,14 @@ final class EVPaneContainer: NSViewController {
     pane.statusBarHeightDidChange = { [weak self] in self?.layoutStack() }
     pane.editorSurface.lineNumberGutterWidthWillChange = { [weak self, weak pane] old, new in
       guard let self, let pane else { return }
+      // Native resize notifications can arrive before the editor publishes
+      // its new gutter. Save using the incoming width.
+      self.placementGutters[ObjectIdentifier(pane)] = new
       self.reserveGutterSpace(in: pane, delta: new - old)
     }
   }
   private func unbind(_ pane: EVDocumentContentViewController) {
+    placementGutters.removeValue(forKey: ObjectIdentifier(pane))
     pane.statusBar.dragDidMove = nil; pane.statusBar.clicked = nil; pane.statusBarHeightDidChange = nil
     pane.editorSurface.lineNumberGutterWidthWillChange = nil
   }
@@ -163,6 +172,9 @@ final class EVPaneContainer: NSViewController {
     guard isViewLoaded, !applyingLayout else { return }
     applyingLayout = true; defer { applyingLayout = false }
     let focused = panes[min(preferredIndex,panes.count-1)]
+    for frame in geometry.snapshot().frames where frame.kind == 0 {
+      panes.first(where: { id($0) == frame.id })?.statusBar.hidesBottomBorder = frame.flags & 1 == 0
+    }
     geometry.update(size:stack.bounds.size,chrome:panes.map { ViemPaneChrome(id:id($0),status_height:$0.statusBarHeight) })
     let snapshot = geometry.snapshot()
     if let window = view.window { window.contentMinSize = NSSize(width:max(480,snapshot.minimum.width),height:max(280,snapshot.minimum.height)) }

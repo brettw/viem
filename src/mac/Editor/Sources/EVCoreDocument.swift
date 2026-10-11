@@ -148,7 +148,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         typeName = Self.openingType(for: themeStyleFormat)
         source = Data()
         try createCore(publishDiagnostics: false)
-        if let json = try configuration.styleDefaults(named: themeStyleFormat.defaultStyleName) {
+        do {
+            let json = try configuration.themeStyleDefaults(for: themeStyleFormat)
             let result = EVCoreStyleDefaults.initialize(core: core,
                 revision: currentDocumentState.document_revision, json: json,
                 path: configuration.selectedThemeURL?.path ?? "Default")
@@ -161,9 +162,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         isApplyingThemeStyles = true
         defer { isApplyingThemeStyles = false }
         do {
-            if changedNames.contains("code") { try EVCodeStyleSession.initialize(configuration: configuration) }
-            guard sourceFormat != .code, changedNames.contains(sourceFormat.defaultStyleName),
-                  let json = try configuration.styleDefaults(named: sourceFormat.defaultStyleName) else { return }
+            guard changedNames.contains(where: ["text", "markdown", "code"].contains) else { return }
+            try EVCodeStyleSession.initialize(configuration: configuration)
+            guard sourceFormat != .code else { return }
+            let json = try configuration.themeStyleDefaults(for: sourceFormat)
             let result = EVCoreStyleDefaults.initialize(core: core, revision: currentDocumentState.document_revision, json: json,
                 path: configuration.selectedThemeURL?.path ?? "Default", replacing: true)
             try checked(result.status, operation: "Apply theme styles")
@@ -592,10 +594,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             }, operation: "Detect code language")
         }
         _ = try documentState()
-        let defaultStyleName = sourceFormat.defaultStyleName
         let defaultStyleFile = configuration.selectedThemeURL ?? configuration.themesDirectory.appendingPathComponent("Default")
         do {
-            if sourceFormat != .code, let defaults = try configuration.styleDefaults(named: defaultStyleName) {
+            if sourceFormat != .code {
+                let defaults = try configuration.themeStyleDefaults(for: sourceFormat)
                 let result = EVCoreStyleDefaults.initialize(core: core,
                     revision: currentDocumentState.document_revision, json: defaults, path: defaultStyleFile.path)
                 var warnings = result.messages
@@ -1807,6 +1809,14 @@ final class EVCoreViewSession {
             operation: "Hit-test editor"
         )
         return result
+    }
+
+    @discardableResult
+    func selectPointerRow(y: CGFloat, in snapshot: ViemLayoutSnapshotInfoV1, extending: Bool) throws -> ViemCoreOutcomeV1 {
+        var identity = snapshot.identity
+        return try performCoreOperation("Select displayed row") { outcome in
+            viem_core_view_select_pointer_row(document.core, viewID, &identity, Float(y), extending ? 1 : 0, outcome)
+        }
     }
 
     @discardableResult

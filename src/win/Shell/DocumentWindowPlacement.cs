@@ -40,9 +40,10 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
     private bool hasPlacedWindow, timerAttached;
     internal Exception? LastError { get; private set; }
 
-    internal Action Track(Window window)
+    internal Action Track(Window window, Func<double>? gutterWidth = null)
     {
         var appWindow = window.AppWindow;
+        double GutterPixels() => Math.Max(0, gutterWidth?.Invoke() ?? 0) * Math.Max(96, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))) / 96d;
         nint hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
         var displays = DisplayArea.FindAll();
         var screens = new List<WindowFrame>(displays.Count);
@@ -53,7 +54,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         if (screens.Count == 0) screens.Add(primary);
         var frame = lastFrame ?? preferences.DocumentWindowFrame
             ?? new WindowFrame(primary.X + (primary.Width - 1100) / 2, primary.Y + (primary.Height - 780) / 2, 1100, 780);
-        frame = Fitting(frame, screens);
+        frame = Fitting(IncludingGutter(frame, GutterPixels()), screens);
         appWindow.MoveAndResize(frame.Native);
         if (hasPlacedWindow) {
             // Moving first gives the caption metric the destination monitor's DPI.
@@ -62,8 +63,8 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             frame = Fitting(frame with { X = frame.X + offset, Y = frame.Y + offset }, screens);
             appWindow.MoveAndResize(frame.Native);
         }
-        lastFrame = frame; hasPlacedWindow = true;
-        WindowFrame normalFrame = WindowFrame.From(appWindow);
+        lastFrame = ExcludingGutter(frame, GutterPixels()); hasPlacedWindow = true;
+        WindowFrame normalFrame = ExcludingGutter(WindowFrame.From(appWindow), GutterPixels());
         bool shown = false, closed = false, captureQueued = false;
         void RecordNormal(bool requireVisible = true)
         {
@@ -72,8 +73,8 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             // Use desktop bounds only while the native window still exists.
             var current = new WindowFrame(bounds.Left, bounds.Top, (double)bounds.Right - bounds.Left, (double)bounds.Bottom - bounds.Top);
             if (!current.IsValid) return;
-            normalFrame = current;
-            Record(current);
+            normalFrame = ExcludingGutter(current, GutterPixels());
+            Record(normalFrame);
         }
         window.Activated += (_, args) => {
             if (args.WindowActivationState == WindowActivationState.Deactivated) return;
@@ -101,6 +102,17 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         };
         if (!timerAttached) { saveTimer.Tick += (_, _) => Flush(); timerAttached = true; }
         return () => { RecordNormal(requireVisible: false); Flush(); };
+    }
+
+    internal static WindowFrame ExcludingGutter(WindowFrame frame, double width)
+    {
+        width = double.IsFinite(width) ? Math.Clamp(width, 0, Math.Max(0, frame.Width - 1)) : 0;
+        return frame with { X = frame.X + width, Width = frame.Width - width };
+    }
+    internal static WindowFrame IncludingGutter(WindowFrame frame, double width)
+    {
+        width = double.IsFinite(width) ? Math.Max(0, width) : 0;
+        return frame with { X = frame.X - width, Width = frame.Width + width };
     }
 
     internal static WindowFrame WorkArea(DisplayArea screen) => DesktopWorkArea(screen.OuterBounds, screen.WorkArea);

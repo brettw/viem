@@ -34,7 +34,7 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
             var style = pane.CommandStyle;
             e.DrawingSession.Clear(style.Background);
             if (layout == null || state == null) return;
-            float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2;
+            float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2 + pane.CommandVerticalInset;
             float left = pane.CommandInset - scroll;
             var map = new Utf8IndexMap(state.Text);
             int prefixLength = Prefix(state).Length;
@@ -62,7 +62,7 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
     private ulong Hit(global::Windows.Foundation.Point point)
     {
         if (layout == null || state == null) return 0;
-        float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2;
+        float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2 + pane.CommandVerticalInset;
         layout.HitTest(new Vector2((float)(point.X - pane.CommandInset) + scroll, (float)point.Y - top), out var region, out bool trailing);
         int position = Math.Clamp(region.CharacterIndex + (trailing ? region.CharacterCount : 0) - Prefix(state).Length, 0, state.Text.Length);
         return (ulong)Encoding.UTF8.GetByteCount(state.Text.AsSpan(0, position));

@@ -11,6 +11,7 @@ internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, 
 {
     public override string ToString() => Name;
     public uint Namespace => Native.namespace_id;
+    public uint? ParentVariant => Native.parent_variant == 0 ? null : Native.parent_variant;
     public StyleKey Key => new(Namespace, Id);
     public bool Has(uint capability) => (Native.capabilities & capability) != 0;
     public bool Declares(uint property) => Properties.TryGetValue(property, out var p) && (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0;
@@ -190,6 +191,8 @@ internal sealed unsafe partial class CoreView
         }
         finally { if (group is { } token) Check(viem_core_view_end_style_edit_group(Document.Handle, Id, &token), "End font change"); }
     }
+    public void EditParentVariant(StyleDefinition style, uint variant) => EditStyleString(style,
+        VIEM_STYLE_EDIT_SET_PARENT_VARIANT, 0, variant == VIEM_FORMAT_PLAIN_TEXT ? "text" : variant == VIEM_FORMAT_CODE ? "code" : "markdown");
     public void EditStyleString(StyleDefinition style, uint operation, uint property, string text, bool list = false)
     {
         using var arena = new NativeArena(); var value = New<ViemStyleEditValueV1>(); value.kind = list ? VIEM_STYLE_VALUE_STRING_LIST : VIEM_STYLE_VALUE_STRING; value.text = arena.Utf8(text);

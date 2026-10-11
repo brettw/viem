@@ -64,6 +64,39 @@ pub extern "C" fn viem_core_view_set_number(
     })
 }
 
+/// Begin or extend a gutter gesture using exact current layout geometry.
+/// The core retains the original whole row as stable selection anchors.
+///
+/// # Safety
+/// `expected` and `out_outcome` identify distinct, aligned readable/writable
+/// values. `y` is a document-layout coordinate; `extend_selection` is 0 or 1.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_select_pointer_row(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    expected: *const ViemLayoutSnapshotIdentityV1,
+    y: f32,
+    extend_selection: u32,
+    out_outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(expected, 1)?, typed_pointer_region(out_outcome, 1)?])?;
+        let expected = unsafe { read_layout_identity(expected)? };
+        if !y.is_finite() || extend_selection > 1 { return Err(ViemStatus::InvalidArgument); }
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            validate_snapshot_identity(expected, current_ffi_layout_snapshot(core, ViewId(view))?, ViewId(view))?;
+            dispatch_event(core, view, CoreEvent::SelectPointerRow {
+                document_revision: Revision(expected.document_revision),
+                layout_revision: crate::layout::LayoutRevision(expected.layout_revision),
+                y, extend_selection: extend_selection != 0,
+            })
+        })?;
+        unsafe { out_outcome.write(outcome) };
+        Ok(())
+    })
+}
+
 fn viewport(
     core: &Core<CTextMeasurementProvider>,
     id: ViewId,
@@ -101,7 +134,7 @@ pub unsafe extern "C" fn viem_core_view_line_number_snapshot_info(
                 identity: snapshot_identity(snapshot, id),
                 viewport: viewport(core, id)?,
                 source_line_count: checked_export_count(
-                    core.document().physical_source_line_number_count(),
+                    core.document().physical_line_count().map_err(|error| core_status(error.into()))?,
                 )?,
                 current_source_line: checked_export_count(
                     core.current_physical_source_line(id).map_err(core_status)?,

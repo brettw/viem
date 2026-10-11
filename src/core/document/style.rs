@@ -1,4 +1,6 @@
 mod defaults;
+pub(super) mod variants;
+pub use variants::ThemeVariant;
 #[cfg(test)]
 mod percentage_tests;
 pub use defaults::StyleDefaultsError;
@@ -422,6 +424,12 @@ pub enum StyleDefinitionEdit {
     },
     UpdateCharacter(CharacterStyle),
     DeleteCharacter(StyleId),
+    SetParent {
+        namespace: StyleNamespace,
+        id: StyleId,
+        parent: Option<StyleId>,
+        variant: Option<ThemeVariant>,
+    },
     UpdateMetadata {
         namespace: StyleNamespace,
         id: StyleId,
@@ -436,7 +444,7 @@ impl StyleDefinitionEdit {
             Self::DeleteBlock(id) => id,
             Self::InsertCharacter { style, .. } | Self::UpdateCharacter(style) => &style.id,
             Self::DeleteCharacter(id) => id,
-            Self::UpdateMetadata { id, .. } => id,
+            Self::UpdateMetadata { id, .. } | Self::SetParent { id, .. } => id,
         }
     }
 
@@ -446,6 +454,7 @@ impl StyleDefinitionEdit {
             Self::InsertBlock { .. }
                 | Self::UpdateBlock(_)
                 | Self::DeleteBlock(_)
+                | Self::SetParent { namespace: StyleNamespace::Block, .. }
                 | Self::UpdateMetadata {
                     namespace: StyleNamespace::Block,
                     ..
@@ -492,6 +501,7 @@ pub struct StyleSheet {
     /// Code syntax definitions generated for emitted names and not yet edited.
     /// They are never persisted.
     implicit_characters: BTreeSet<StyleId>,
+    variants: variants::VariantInheritance,
 }
 
 // Maps do not expose node capacities. Charge a conservative estimate for their
@@ -510,7 +520,7 @@ impl StyleSheet {
             id(&value.id) + value.based_on.as_ref().map_or(0, id)
                 + value.next_paragraph_style.as_ref().map_or(0, id) + value.character.owned_heap_bytes()
         }
-        let mut bytes = id(&self.base_paragraph);
+        let mut bytes = id(&self.base_paragraph) + self.variants.owned_heap_bytes();
         for map in [&self.block_styles, &self.default_blocks] {
             bytes += style_map_heap_bytes(map.len(), std::mem::size_of::<(StyleId, BlockStyle)>())
                 + map.iter().map(|(key, value)| id(key) + block(value)).sum::<usize>();
@@ -546,6 +556,7 @@ impl PartialEq for StyleSheet {
             && self.default_blocks == other.default_blocks
             && self.default_characters == other.default_characters
             && self.implicit_characters == other.implicit_characters
+            && self.variants == other.variants
     }
 }
 
@@ -608,6 +619,7 @@ impl StyleSheet {
             default_blocks: BTreeMap::new(),
             default_characters: BTreeMap::new(),
             implicit_characters: BTreeSet::new(),
+            variants: Default::default(),
             theme_generation: 0,
         };
         sheet.install_incremental_match_style();
@@ -1042,7 +1054,7 @@ pub enum StyleProperty {
 
 /// Namespace of one normalized style definition. IDs are unique only within
 /// their namespace.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum StyleNamespace {
     Block,
     Character,
@@ -1076,6 +1088,7 @@ pub enum StyleDefinitionFieldEdit {
     },
     ClearDeclaration(StyleProperty),
     SetParent(Option<StyleId>),
+    SetParentVariant(ThemeVariant),
     SetNextParagraphStyle(Option<StyleId>),
     SetDisplayName(String),
 }
@@ -1678,6 +1691,14 @@ impl StyleSheet {
                 origin: metadata.origin,
             });
         }
+        if matches!(edit, StyleDefinitionFieldEdit::SetParent(_) | StyleDefinitionFieldEdit::SetParentVariant(_)) {
+            let (parent, variant) = match edit {
+                StyleDefinitionFieldEdit::SetParent(parent) => (parent.clone(), None),
+                StyleDefinitionFieldEdit::SetParentVariant(variant) => (None, Some(*variant)),
+                _ => unreachable!(),
+            };
+            return Ok(StyleDefinitionEdit::SetParent { namespace, id: id.clone(), parent, variant });
+        }
         if let StyleDefinitionFieldEdit::SetDisplayName(display_name) = edit {
             let metadata = StyleDefinitionMetadata {
                 display_name: display_name.clone(),
@@ -1760,6 +1781,7 @@ impl StyleSheet {
     ) -> Result<bool, StyleError> {
         if edit.style_id().is_internal_in(if edit.is_block() { StyleNamespace::Block } else { StyleNamespace::Character }) {
             let allowed = match edit {
+                StyleDefinitionEdit::SetParent { .. } => true,
                 StyleDefinitionEdit::UpdateBlock(style) => self.block_style(&style.id)
                     .is_some_and(|old| old.based_on == style.based_on && old.role == style.role && old.next_paragraph_style == style.next_paragraph_style),
                 StyleDefinitionEdit::UpdateCharacter(style) => self
@@ -1802,7 +1824,7 @@ impl StyleSheet {
                     .origin,
                 id,
             ),
-            StyleDefinitionEdit::UpdateMetadata { namespace, id, .. } => (
+            StyleDefinitionEdit::UpdateMetadata { namespace, id, .. } | StyleDefinitionEdit::SetParent { namespace, id, .. } => (
                 match namespace {
                     StyleNamespace::Block => self.block_style_metadata(id),
                     StyleNamespace::Character => self.character_style_metadata(id),
@@ -1820,6 +1842,9 @@ impl StyleSheet {
         }
         let mut candidate = self.clone();
         let changed = match edit {
+            StyleDefinitionEdit::SetParent { namespace, id, parent, variant } => {
+                candidate.set_variant_parent(*namespace, id, parent.clone(), *variant)?
+            }
             StyleDefinitionEdit::InsertBlock { style, metadata } => {
                 if candidate.block_styles.contains_key(&style.id) {
                     return Err(StyleError::StyleAlreadyExists(style.id.clone()));
@@ -1881,6 +1906,12 @@ impl StyleSheet {
                     return Err(StyleError::InvalidDefinitionMetadata(id.clone()));
                 }
                 validate_definition_metadata(*namespace, id, metadata)?;
+                if candidate.has_variant_dependents(*namespace, id) && candidate.metadata(*namespace, id).is_some_and(|old| old.display_name != metadata.display_name) {
+                    return Err(StyleError::StyleInUse(id.clone()));
+                }
+                if candidate.parent_variant(*namespace, id).is_some() && candidate.metadata(*namespace, id).is_some_and(|old| old.display_name != metadata.display_name) {
+                    return Err(StyleError::InapplicableStyleRelationship(id.clone()));
+                }
                 let current = match namespace {
                     StyleNamespace::Block => candidate.block_metadata.get_mut(id),
                     StyleNamespace::Character => candidate.character_metadata.get_mut(id),
@@ -1896,6 +1927,22 @@ impl StyleSheet {
         };
         if !changed {
             return Ok(false);
+        }
+        // Definition-level callers also mutate relationships. Validate only
+        // those attempts, keeping ordinary declaration edits usable even when
+        // a loaded theme contains a cycle and resolves through builtin defaults.
+        let relationship = match edit {
+            StyleDefinitionEdit::InsertBlock { style, .. } => Some((StyleNamespace::Block, &style.id)),
+            StyleDefinitionEdit::InsertCharacter { style, .. } => Some((StyleNamespace::Character, &style.id)),
+            StyleDefinitionEdit::UpdateBlock(style) if self.block_styles[&style.id].based_on != style.based_on => Some((StyleNamespace::Block, &style.id)),
+            StyleDefinitionEdit::UpdateCharacter(style) if self.character_styles[&style.id].based_on != style.based_on => Some((StyleNamespace::Character, &style.id)),
+            _ => None,
+        };
+        if let Some((namespace, id)) = relationship {
+            if candidate.variants.parents.remove(&(namespace, id.clone())).is_some() {
+                candidate.variants.authored.insert((namespace, id.clone()));
+            }
+            if candidate.variants.context.is_some() { candidate.variant_chain(namespace, id)?; }
         }
         candidate.revision = revision;
         *self = candidate;
@@ -2018,6 +2065,21 @@ impl StyleSheet {
             }
         }
 
+        if self.variants.context.is_some() {
+            for (namespace, dependents) in [(StyleNamespace::Block, &mut block_dependents), (StyleNamespace::Character, &mut character_dependents)] {
+                let descendants = dependents.keys().cloned().collect::<Vec<_>>();
+                for descendant in descendants {
+                    if let Ok(chain) = self.variant_chain(namespace, &descendant) {
+                        for (sheet, id) in chain {
+                            if std::ptr::eq(sheet, self) {
+                                let list = dependents.get_mut(&id).expect("current contributor exists");
+                                if !list.contains(&descendant) { list.push(descendant.clone()); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         StyleDependencyIndex {
             revision: self.revision,
             block_dependents,
@@ -2091,7 +2153,7 @@ impl StyleSheet {
         if id == &self.base_paragraph {
             return Err(StyleError::CannotRemoveBaseStyle(id.clone()));
         }
-        if has_content_assignment
+        if has_content_assignment || self.has_variant_dependents(StyleNamespace::Block, id)
             || self.block_styles.values().any(|style| {
                 &style.id != id
                     && (style.based_on.as_ref() == Some(id)
@@ -2114,7 +2176,7 @@ impl StyleSheet {
         id: &StyleId,
         has_content_assignment: bool,
     ) -> Result<(), StyleError> {
-        if has_content_assignment
+        if has_content_assignment || self.has_variant_dependents(StyleNamespace::Character, id)
             || self
                 .character_styles
                 .values()
@@ -2307,6 +2369,11 @@ impl StyleSheet {
             &CharacterProperties::default(), paragraph_default_character, character_style, direct_character)
     }
 
+    fn inherits_document_base(&self, style: &BlockStyle) -> bool {
+        style.id == self.base_paragraph && self.document_chain(&self.base_paragraph).is_ok_and(|chain|
+            chain.into_iter().any(|base| std::ptr::eq(base, style)))
+    }
+
     pub fn resolve_assigned_paragraph_style_in_container(
         &self,
         document: &DocumentStyleAssignment,
@@ -2347,11 +2414,13 @@ impl StyleSheet {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
             }
-            if style.role == BlockRole::Document || (role.is_container() && style.id == self.base_paragraph) {
+            if style.role == BlockRole::Document { continue; }
+            if role.is_container() && style.id == self.base_paragraph {
+                if !self.inherits_document_base(style) { apply_character_properties(&mut resolved.character, &style.character); }
                 continue;
             }
             apply_paragraph_properties(&mut resolved, &style.block);
-            if style.id != self.base_paragraph {
+            if !self.inherits_document_base(style) {
                 apply_character_properties(&mut resolved.character, &style.character);
                 if matches!(style.character.size, Some(FontSize::Percentage(_))) {
                     resolved.character.size = parent_font_size;
@@ -2450,7 +2519,12 @@ impl StyleSheet {
             if let Some(size) = style.character.size {
                 parent_font_size = size.resolve(parent_font_size);
             }
-            if style.role == BlockRole::Document || (role.is_container() && style.id == self.base_paragraph) {
+            if style.role == BlockRole::Document { continue; }
+            if role.is_container() && style.id == self.base_paragraph {
+                if !self.inherits_document_base(style) {
+                    apply_character_properties(&mut value.character, &style.character);
+                    record_character_winners(&mut contributions, &style.character, StyleContributionOrigin::BlockStyle(style.id.clone()));
+                }
                 continue;
             }
             add_dependency(
@@ -2466,7 +2540,7 @@ impl StyleSheet {
                 &style.block,
                 StyleContributionOrigin::BlockStyle(style.id.clone()),
             );
-            if style.id != self.base_paragraph {
+            if !self.inherits_document_base(style) {
                 apply_character_properties(&mut value.character, &style.character);
                 if matches!(style.character.size, Some(FontSize::Percentage(_))) {
                     value.character.size = parent_font_size;
@@ -2540,7 +2614,7 @@ impl StyleSheet {
         if !role.is_container() { return Err(StyleError::IncompatibleBlockRole { style: id.clone(), role, parent_role: BlockRole::Quote }); }
         let mut result = CharacterProperties::default();
         for style in self.block_chain(id, role)? {
-            if style.id != self.base_paragraph { result.overlay(&style.character); }
+            if !self.inherits_document_base(style) { result.overlay(&style.character); }
         }
         result.overlay(direct);
         Ok(result)
@@ -2554,7 +2628,7 @@ impl StyleSheet {
         if !role.is_container() { return Err(StyleError::IncompatibleBlockRole { style: id.clone(), role, parent_role: BlockRole::Quote }); }
         let mut result = BlockProperties::default();
         for style in self.block_chain(id, role)? {
-            if style.id != self.base_paragraph { result.merge_declarations(&style.block); }
+            if !self.inherits_document_base(style) { result.merge_declarations(&style.block); }
         }
         result.merge_declarations(direct);
         result.clear_box();
@@ -2569,7 +2643,7 @@ impl StyleSheet {
         let role = self.block_style(paragraph_style).ok_or_else(|| StyleError::UnknownStyle(paragraph_style.clone()))?.role;
         let chain = self.block_chain(paragraph_style, role)?;
         macro_rules! inherit { ($($field:ident),*) => {$(
-            if direct.$field.is_none() && !chain.iter().any(|style| style.id != self.base_paragraph && style.block.$field.is_some()) {
+            if direct.$field.is_none() && !chain.iter().any(|style| !self.inherits_document_base(style) && style.block.$field.is_some()) {
                 if let Some(value) = inherited.$field { resolved.$field = value; }
             }
         )*}; }
@@ -2578,6 +2652,7 @@ impl StyleSheet {
     }
 
     fn validate_block_parent(&self, style: &BlockStyle) -> Result<(), StyleError> {
+        if self.parent_variant(StyleNamespace::Block, &style.id).is_some() { return Ok(()); }
         let parent_id = style
             .based_on
             .as_ref()
@@ -2681,6 +2756,9 @@ impl StyleSheet {
         id: &StyleId,
         expected_role: BlockRole,
     ) -> Result<Vec<&BlockStyle>, StyleError> {
+        if self.variants.context.is_some() {
+            return self.variant_block_chain(id, expected_role);
+        }
         if !self.block_styles.contains_key(id) {
             return Err(StyleError::UnknownStyle(id.clone()));
         }
@@ -2727,6 +2805,7 @@ impl StyleSheet {
 
     fn character_chain(&self, id: &StyleId) -> Result<Vec<&CharacterStyle>, StyleError> {
         if id.0.is_empty() { return Ok(Vec::new()); }
+        if self.variants.context.is_some() { return self.variant_character_chain(id); }
         if !self.character_styles.contains_key(id) {
             return Err(StyleError::UnknownStyle(id.clone()));
         }
@@ -2824,7 +2903,7 @@ fn apply_block_field_edit(
             style.next_paragraph_style.clone_from(next);
             Ok(())
         }
-        StyleDefinitionFieldEdit::SetDisplayName(_) => {
+        StyleDefinitionFieldEdit::SetDisplayName(_) | StyleDefinitionFieldEdit::SetParentVariant(_) => {
             Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
         }
     }
@@ -2848,7 +2927,7 @@ fn apply_character_field_edit(
         StyleDefinitionFieldEdit::SetNextParagraphStyle(_) => {
             Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
         }
-        StyleDefinitionFieldEdit::SetDisplayName(_) => {
+        StyleDefinitionFieldEdit::SetDisplayName(_) | StyleDefinitionFieldEdit::SetParentVariant(_) => {
             Err(StyleError::InapplicableStyleRelationship(style.id.clone()))
         }
     }

@@ -48,6 +48,22 @@ final class EVDocumentWindowPlacementTests: XCTestCase {
     XCTAssertEqual(EVDocumentWindowPlacement.frameForGutterChange(grown, delta: -31, screen: desktop, minimumWidth: 480), frame)
   }
 
+  func testRepeatedRestorationWithDifferentGuttersDoesNotGrowSavedContent() {
+    let content = NSRect(x: 200, y: 100, width: 700, height: 500)
+    var saved = content
+    for width in [CGFloat(31), 50, 18, 0, 31] {
+      let frame = EVDocumentWindowPlacement.includingGutter(saved, width: width)
+      XCTAssertEqual(frame.minX + width, content.minX)
+      XCTAssertEqual(frame.width - width, content.width)
+      let native = window()
+      native.setFrame(frame, display: false)
+      let placement = EVDocumentWindowPlacement(loadFrame: { saved }, saveFrame: { saved = $0 })
+      placement.record(window: native, gutterWidth: width)
+      native.close()
+      XCTAssertEqual(saved, content)
+    }
+  }
+
   func testGutterUsesRightSpaceOnlyWhenLeftSpaceRunsOutAndClampsToMonitor() {
     let frame = NSRect(x: 10, y: 100, width: 700, height: 500)
     let grown = EVDocumentWindowPlacement.frameForGutterChange(frame, delta: 31, screen: desktop, minimumWidth: 480)

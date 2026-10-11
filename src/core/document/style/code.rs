@@ -464,7 +464,7 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
     let builtins = StyleSheet::plain_text();
     for expected in builtins.block_styles().filter(|style| style.id.is_internal_in(StyleNamespace::Block)) {
         if !sheet.block_style(&expected.id).is_some_and(|style| style.role == expected.role
-            && style.based_on == expected.based_on && style.next_paragraph_style.is_none())
+            && (style.based_on == expected.based_on || sheet.parent_variant(StyleNamespace::Block, &style.id).is_some()) && style.next_paragraph_style.is_none())
             || sheet.block_style_metadata(&expected.id) != builtins.block_style_metadata(&expected.id) {
             return Err("Internal chrome styles cannot be removed or reparented".into());
         }
@@ -515,7 +515,8 @@ pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
     let persisted = |s: &&CharacterStyle| {
         !sheet.implicit_characters.contains(&s.id)
             && (defaults.character_styles.get(&s.id) != Some(*s)
-                || defaults.character_metadata.get(&s.id) != sheet.character_metadata.get(&s.id))
+                || defaults.character_metadata.get(&s.id) != sheet.character_metadata.get(&s.id)
+                || sheet.variants.authored.contains(&(StyleNamespace::Character, s.id.clone())))
     };
     // An edited definition may be based on an implicit one. Persist that
     // ancestry too, so the saved sheet never names a missing parent.
@@ -543,6 +544,7 @@ pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
             .filter(|s| {
                 defaults.block_styles.get(&s.id) != Some(s)
                     || defaults.block_metadata.get(&s.id) != sheet.block_metadata.get(&s.id)
+                    || sheet.variants.authored.contains(&(StyleNamespace::Block, s.id.clone()))
             })
             .map(|s| BlockEntry {
                 name: sheet.block_metadata[&s.id].display_name.clone(),
@@ -560,10 +562,12 @@ pub fn export_snapshot(sheet: &StyleSheet) -> Result<Vec<u8>, String> {
             .collect(),
         suppressed_character_ids,
     };
-    serde_json::to_vec_pretty(&file).map_err(|e| e.to_string())
+    serde_json::to_vec_pretty(&sheet.export_variant_parents(serde_json::to_value(file).map_err(|e| e.to_string())?)).map_err(|e| e.to_string())
 }
 
 pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
+    let (raw, context) = if bytes.is_empty() { (Vec::new(), None) } else { variants::unpack(bytes)? };
+    let bytes = raw.as_slice();
     if bytes.len() > 4 * 1024 * 1024 {
         return Err("Code stylesheet exceeds 4 MiB".into());
     }
@@ -638,6 +642,8 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
                 .insert(entry.style.id.clone(), entry.style);
         }
     }
+    if !bytes.is_empty() { sheet.load_variant_parents(bytes)?; }
+    sheet.attach_variant_context(context);
     validate(&sheet)?;
     Ok(sheet)
 }

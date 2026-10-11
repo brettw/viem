@@ -78,7 +78,9 @@ internal sealed partial class StyleWindow
                     return;
                 }
                 var reference = selected.Namespace == 1
-                    ? sheet.Styles.FirstOrDefault(style => style.Namespace == 1 && style.Id == selected.Parent)
+                    ? selected.ParentVariant is uint variant
+                        ? VariantDefinition(VariantSheet(variant))
+                        : sheet.Styles.FirstOrDefault(style => style.Namespace == 1 && style.Id == selected.Parent)
                     : sheet.Styles.FirstOrDefault(style => (style.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
                 float basis = reference?.Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number ?? 0;
                 if (!float.IsFinite(basis) || basis <= 0) throw new InvalidOperationException("The inherited font size is unavailable.");

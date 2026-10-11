@@ -67,10 +67,88 @@ internal static class StyleInspectorBehaviorTests
         await LinkedBlockControls(pane, preferences);
         await CodeBlockBackground(pane, preferences);
         DocumentPicker(pane, preferences);
+        VariantParents(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
     }
+    private static void VariantParents(EditorPane pane, Preferences preferences)
+    {
+        uint[] formats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
+        byte[][] original = formats.Select(preferences.ThemeStyleDefaults).ToArray();
+        using var document = new CoreDocument("Body"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        preferences.AttachThemeDocument(document);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var inspector = new StyleWindow(view, preferences);
+        try {
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Builtin line number");
+            string name = Selected(inspector).Name;
+            Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 17), "parent variant has an explicit test size");
+            inspector.DocumentPicker.SelectedIndex = 2;
+            Check(inspector.ClearPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE), "child has no size override");
+            var choices = inspector.ParentPicker.Items.OfType<StyleVariantParent>().ToArray();
+            Check(choices.Select(choice => choice.Name).SequenceEqual(new[] { "Plain Text: " + name, "Markdown: " + name })
+                && inspector.ParentPicker.Items[2] is ComboBoxItem { IsEnabled: false },
+                "foreign same-name parents appear first with a separator before local choices");
+            inspector.ParentPicker.SelectedItem = choices.Single(choice => choice.Format == VIEM_FORMAT_MARKDOWN);
+            Check(Selected(inspector).ParentVariant == VIEM_FORMAT_MARKDOWN
+                && Selected(inspector).Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number == 17,
+                "selecting another variant resolves its same-named style");
+            inspector.DocumentPicker.SelectedIndex = 1;
+            object previous = inspector.ParentPicker.SelectedItem;
+            byte[][] before = formats.Select(preferences.ThemeStyleDefaults).ToArray();
+            string? cycle = null;
+            inspector.InheritanceCyclePresenter = message => cycle = message;
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items.OfType<StyleVariantParent>().Single(choice => choice.Format == VIEM_FORMAT_CODE);
+            Check(cycle == $"\"Markdown: {name}\" can't depend on \"Code: {name}\" because that creates a dependency cycle."
+                && Equals(inspector.ParentPicker.SelectedItem, previous),
+                "cycle rejection identifies both variants and restores the previous Based on choice");
+            Check(formats.Select((format, index) => before[index].AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(format))).All(same => same),
+                "a rejected cross-variant cycle does not save any stylesheet");
+            Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 19), "parent size edit succeeds");
+            inspector.DocumentPicker.SelectedIndex = 2;
+            Check(Selected(inspector).Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number == 19,
+                "dependent variants refresh after their parent's declarations change");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+            Check(!inspector.ParentPicker.Items.OfType<StyleDefinition>().Any() && inspector.ParentPicker.Items.OfType<StyleVariantParent>().Count() == 2,
+                "Base Paragraph offers cross-variant inheritance without ordinary local parents");
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items.OfType<StyleVariantParent>().Single(choice => choice.Format == VIEM_FORMAT_PLAIN_TEXT);
+            Check(Children<CheckBox>(inspector.RootControl).Where(control => AutomationProperties.GetName(control).StartsWith("Declare ")).All(control => control.IsEnabled),
+                "Base Paragraph can inherit sparse declarations while it has a foreign parent");
+            Check(inspector.ClearPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE)
+                && !Selected(inspector).Declares(VIEM_STYLE_PROPERTY_CHARACTER_SIZE),
+                "clearing a Base Paragraph override inherits its foreign parent's size");
+            inspector.DocumentPicker.SelectedIndex = 1;
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(style => style.Id == "Status bar");
+            byte[] beforeText = preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT), beforeCode = preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE);
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items.OfType<StyleVariantParent>().Single(choice => choice.Format == VIEM_FORMAT_PLAIN_TEXT);
+            Check(beforeText.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT))
+                && beforeCode.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE)),
+                "shared status ancestry remains local to the edited variant");
+            inspector.DocumentPicker.SelectedIndex = 2;
+            inspector.ParentPicker.SelectedItem = inspector.ParentPicker.Items.OfType<StyleVariantParent>().Single(choice => choice.Format == VIEM_FORMAT_MARKDOWN);
+            inspector.DocumentPicker.SelectedIndex = 1;
+            Check(inspector.EditPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE, 27), "shared status declaration edit succeeds");
+            foreach (int index in new[] { 0, 1, 2 }) {
+                inspector.DocumentPicker.SelectedIndex = index;
+                uint? expectedParent = index == 0 ? null : index == 1 ? VIEM_FORMAT_PLAIN_TEXT : VIEM_FORMAT_MARKDOWN;
+                Check(Selected(inspector).ParentVariant == expectedParent
+                    && Selected(inspector).Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number == 27,
+                    "shared chrome declarations preserve every variant's independent parent");
+            }
+            inspector.DocumentPicker.SelectedIndex = 1;
+            Check(inspector.ClearPropertyForTesting(VIEM_STYLE_PROPERTY_CHARACTER_SIZE), "shared status size can inherit again");
+            float inheritedStatusSize = Selected(inspector).Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number;
+            inspector.DocumentPicker.SelectedIndex = 0;
+            Check(inheritedStatusSize == Selected(inspector).Value(VIEM_STYLE_PROPERTY_CHARACTER_SIZE).number,
+                "clearing a shared declaration refreshes the edited specimen's own foreign parent immediately");
+        }
+        finally {
+            inspector.Close();
+            for (int index = 0; index < formats.Length; index++) preferences.SaveThemeStyles(formats[index], original[index]);
+        }
+    }
+
     private static void DocumentPicker(EditorPane pane, Preferences preferences)
     {
         uint[] formats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
@@ -129,6 +207,14 @@ internal static class StyleInspectorBehaviorTests
             Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && !document.IsDirty
                 && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "Document stylesheet selection and editing preserve the open source and format");
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(style => style.Id == "Builtin line number");
+            foreach (int index in new[] { 2, 0, 1 }) {
+                inspector.DocumentPicker.SelectedIndex = index;
+                Check(Selected(inspector).Id == "Builtin line number", "Document picker preserves a same-named style across variants");
+            }
+            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(style => style.Id == "Heading1");
+            inspector.DocumentPicker.SelectedIndex = 0;
+            Check(Selected(inspector).Id == "Paragraph", "Document picker falls back only when the selected style is unavailable");
             inspector.Retarget(view);
             Check(inspector.DocumentPicker.SelectedIndex == 1, "reopening Edit Styles resumes the active document family");
         }
@@ -160,6 +246,11 @@ internal static class StyleInspectorBehaviorTests
             var tab = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => Equals(b.Content, "Block"));
             tab.IsChecked = true; inspector.RootControl.UpdateLayout();
             var toggle = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Link block sides");
+            var matchSides = Children<TextBlock>(inspector.RootControl).Single(label => label.Text == "Match sides");
+            var backgroundCaption = Children<TextBlock>(inspector.RootControl).First(label => label.Text == "Background color");
+            Check(matchSides.HorizontalAlignment == HorizontalAlignment.Right && matchSides.TextAlignment == TextAlignment.Right
+                && matchSides.FontSize == backgroundCaption.FontSize && matchSides.Opacity == backgroundCaption.Opacity,
+                "Match sides caption matches Background color and aligns above the right edge of the lock");
             toggle.IsChecked = true;
             Check(margins.All(p => Selected(inspector).Value(p).number == -3), "Block lock copies the first nonzero value in left, right, top, bottom order");
             Check(colors.All(p => !Selected(inspector).Declares(p)), "Block lock preserves unspecified border colors");

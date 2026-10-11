@@ -103,6 +103,32 @@ final class EVStyleEditorTests: XCTestCase {
     }
 
     @MainActor
+    func testDocumentPickerKeepsSameNamedStyleAndFallsBackOnlyWhenMissing() throws {
+        let configuration = try styleConfiguration()
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: Data("# Heading\n\nBody".utf8), typeName: EVDocument.markdownSourceType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let coordinator = EVStyleEditorCoordinator()
+        coordinator.show(document: surface, sender: nil)
+        defer { coordinator.close() }
+        let editor = try XCTUnwrap(coordinator.styleWindow?.contentViewController as? EVStyleEditorViewController)
+        let picker = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
+            .first { $0.accessibilityLabel() == "Document type" })
+        let lineNumber = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Builtin line number"))
+        editor.selectStyle(lineNumber)
+        for index in [2, 0, 1] {
+            picker.selectItem(at: index)
+            XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
+            XCTAssertEqual(editor.inspection.selectedStyleKey, lineNumber)
+        }
+        editor.selectStyle(EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1")))
+        picker.selectItem(at: 0)
+        XCTAssertTrue(picker.sendAction(picker.action, to: picker.target))
+        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
+    }
+
+    @MainActor
     func testDocumentPickerEditsEachThemeFamilyWithIndependentUndoAndPreservesSource() throws {
         let configuration = try styleConfiguration()
         let backend = EVCoreDocumentBackend(configuration: configuration)
@@ -137,7 +163,8 @@ final class EVStyleEditorTests: XCTestCase {
             XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(Float(32 + index))))
             XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(32 + index)))
             for other in families.indices where other != index {
-                XCTAssertEqual(try configuration.styleDefaults(named: families[other].defaultStyleName), before[other])
+                let after = try configuration.styleDefaults(named: families[other].defaultStyleName)
+                XCTAssertEqual(after, before[other])
             }
             XCTAssertNotEqual(try configuration.styleDefaults(named: format.defaultStyleName), before[index])
             NotificationCenter.default.post(name: .viemEditorSelectionDidChange, object: surface)

@@ -55,6 +55,18 @@ extension EVCoreViewSession {
 /// Cursor changes never measure digits or resize the gutter.
 @MainActor
 final class EVLineNumberGutter: NSView {
+    static let selectionCursor: NSCursor = {
+        let arrow = NSCursor.arrow
+        let size = arrow.image.size
+        let image = NSImage(size: size, flipped: false) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.translateBy(x: size.width, y: 0)
+            context.scaleBy(x: -1, y: 1)
+            arrow.image.draw(in: rect)
+            return true
+        }
+        return NSCursor(image: image, hotSpot: NSPoint(x: size.width - arrow.hotSpot.x, y: arrow.hotSpot.y))
+    }()
     private struct WidthKey: Equatable {
         let digits: Int
         let styleRevision: UInt64

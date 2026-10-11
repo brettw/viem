@@ -73,6 +73,34 @@ impl CommandInterpreter {
         document.physical_line_index_at_source(self.physical_source_cursor(document)?)
     }
 
+    /// Source index for display queries, including a caret inside a shared
+    /// contributor that has no independently editable source boundary.
+    pub(crate) fn physical_display_source_line_index(
+        &self,
+        document: &Document,
+    ) -> Result<usize, DocumentError> {
+        document.physical_line_index_at_source(self.physical_display_source_cursor(document)?)
+    }
+
+    fn physical_display_source_cursor(&self, document: &Document) -> Result<usize, DocumentError> {
+        if let Some(source) = self.retained_physical_cursor_source(document) {
+            return Ok(source.offset());
+        }
+        document.text_point(self.cursor)?;
+        document.projection().source_insertion_point(self.cursor, true)
+            .or_else(|| {
+                // A shared source contributor can yield several logical
+                // graphemes (for example &fjlig;). Its interior has no
+                // editable source boundary. Display queries identify that
+                // construct without creating an insertion point or anchor.
+                document.projection().provenance_touching(&(self.cursor..self.cursor))
+                    .into_iter().find(|span| !span.source.is_empty()
+                        && span.formatted.start < self.cursor && self.cursor < span.formatted.end)
+                    .map(|span| span.source.start)
+            })
+            .ok_or(DocumentError::AmbiguousProjection)
+    }
+
     fn physical_line(
         &self,
         document: &Document,
@@ -215,6 +243,70 @@ mod status_tests {
     use crate::document::BoundaryAffinity;
     use crate::layout::MockTextMeasurementProvider;
     use crate::{Core, CoreEvent, Document};
+
+    #[test]
+    fn physical_status_does_not_decode_the_long_suffix_after_the_caret() {
+        let document = Document::new("x".repeat(400_000));
+        let commands = super::CommandInterpreter::new();
+        let (location, work) = crate::document::measure_document_work(|| {
+            commands.physical_line_location(&document).unwrap()
+        });
+        assert_eq!((location.line, location.column), (Some(1), 1));
+        assert!(work.source_range_materialized_bytes <= 4, "{work:?}");
+        assert_eq!(work.source_decoded_bytes, 0);
+    }
+
+    #[test]
+    fn physical_status_locates_shared_entity_contributors_without_edit_anchors() {
+        use crate::document::{Encoding, FileFormat, Format};
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+            for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+                let source = format!("first{0}{0}e\u{301} &fjlig;z", file_format.spelling());
+                let bytes = encoding.encode_fragment(&source).unwrap();
+                let document = Document::from_bytes_with_file_format(bytes.clone(), encoding, Format::Markdown, file_format).unwrap();
+                let mut commands = super::CommandInterpreter::new();
+                let at = document.text().find('j').unwrap();
+                assert!(commands.set_cursor(&document, at));
+                let before_revision = document.revision();
+                let location = commands.physical_line_location(&document).unwrap();
+                assert_eq!((location.line, location.column), (Some(3), 3), "{encoding:?} {file_format:?}");
+                assert!(commands.physical_cursor.is_none(), "display recovery must not authorize an ambiguous edit");
+                assert_eq!(commands.cursor(), at);
+                assert_eq!(document.source_bytes(), bytes);
+                assert_eq!(document.revision(), before_revision);
+                assert!(commands.set_cursor(&document, document.text().find('z').unwrap()));
+                let after = commands.physical_line_location(&document).unwrap();
+                assert_eq!((after.line, after.column), (Some(3), 10));
+            }
+        }
+    }
+
+    #[test]
+    fn entity_interior_gutter_source_line_matches_status_without_decoding() {
+        use crate::document::{Encoding, Format};
+        let source = b"first\n\n&fjlig;z".to_vec();
+        let document = Document::from_bytes(source.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        let at = document.text().find('j').unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 500.0, 200.0);
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(),
+            text_offset: at,
+            affinity: BoundaryAffinity::Downstream,
+            extend_selection: false,
+        }).unwrap();
+        let before_revision = core.document().revision();
+        let (line, work) = crate::document::measure_document_work(|| {
+            core.current_physical_source_line(view).unwrap()
+        });
+        assert_eq!(line, 3);
+        assert_eq!(Some(line), core.physical_line_location(view).unwrap().line);
+        assert_eq!(work.source_decoded_bytes, 0);
+        assert_eq!(work.source_range_materialized_bytes, 0);
+        assert_eq!(core.document().source_bytes(), source);
+        assert_eq!(core.document().revision(), before_revision);
+        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+    }
 
     #[test]
     fn unicode_status_column_does_not_flatten_unrelated_document_text() {
@@ -1100,19 +1192,37 @@ impl CommandInterpreter {
         snapshot: Option<&LayoutSnapshot>,
     ) -> Result<LineLocation, crate::coordinator::CoreError> {
         if self.line_mode == LineMode::PhysicalSource {
-            let line = self.physical_line(document)?;
-            let at = self
-                .physical_source_cursor(document)?
-                .clamp(line.content_range.start, line.content_range.end);
-            let prefix = document.physical_source_text(line.content_range.start..at)?;
-            return Ok(LineLocation {
-                mode: self.line_mode,
-                line: Some(line.index + 1),
-                column: prefix.graphemes(true).count() + 1,
-                hard_line: line.index + 1,
-                fragment: 1,
-            });
+            return self.physical_line_location(document);
         }
+        self.visual_line_location(document, snapshot)
+    }
+
+    /// Exact source coordinates, independent of command line mode or layout coverage.
+    pub fn physical_line_location(
+        &self,
+        document: &Document,
+    ) -> Result<LineLocation, crate::coordinator::CoreError> {
+        let source = self.physical_display_source_cursor(document)?;
+        let index = document.physical_line_index_at_source(source)?;
+        // Location queries need only the prefix before the caret. Reading a
+        // PhysicalSourceLine would also decode an arbitrarily long suffix.
+        let (_, content) = document.physical_line_ranges(index)?;
+        let at = source.clamp(content.start, content.end);
+        let prefix = document.physical_source_text(content.start..at)?;
+        Ok(LineLocation {
+            mode: LineMode::PhysicalSource,
+            line: Some(index + 1),
+            column: prefix.graphemes(true).count() + 1,
+            hard_line: index + 1,
+            fragment: 1,
+        })
+    }
+
+    fn visual_line_location(
+        &self,
+        document: &Document,
+        snapshot: Option<&LayoutSnapshot>,
+    ) -> Result<LineLocation, crate::coordinator::CoreError> {
         let snapshot = snapshot
             .filter(|snapshot| snapshot.document_revision == document.revision())
             .ok_or(crate::coordinator::CoreError::LayoutMotion(

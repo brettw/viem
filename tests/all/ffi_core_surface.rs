@@ -4458,6 +4458,8 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
         location.flags,
         VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT | VIEM_LINE_LOCATION_FRAGMENT_EXACT
     );
+    assert_eq!(location.mode, viem_core::command::LineMode::PhysicalSource as u32,
+        "status coordinates use physical source lines even while commands use visual rows");
     assert_eq!(
         unsafe { viem_core_view_set_line_mode(core.handle, view, 1, &mut outcome) },
         ViemStatus::Ok

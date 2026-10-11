@@ -1,6 +1,26 @@
 import AppKit
 import ViemAppShell
 
+extension EVSourceFormat {
+    var styleVariantTitle: String {
+        self == .code ? "Code" : self == .plainText ? "Plain Text" : "Markdown"
+    }
+}
+
+@MainActor
+extension EVConfigurationStore {
+    /// The immutable family context is runtime-only. Core exports retain just
+    /// this variant's own sparse declarations and its named parent reference.
+    func themeStyleDefaults(for format: EVSourceFormat, overriding ownStyles: Data? = nil) throws -> Data {
+        var variants: [String: Data] = [:]
+        for name in ["text", "markdown", "code"] {
+            if let data = try styleDefaults(named: name) { variants[name] = data }
+        }
+        if let ownStyles { variants[format.defaultStyleName] = ownStyles }
+        return try EVCoreDocumentBackend.themeStyleDefaults(variant: format, variants: variants)
+    }
+}
+
 @MainActor
 protocol EVStyleSettingsSession: AnyObject {
     var configuration: EVConfigurationStore { get }
@@ -49,9 +69,12 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
         observer = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: configuration, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, !self.isMutating,
-                      (notification.userInfo?["styleNames"] as? [String])?.contains(self.sourceFormat.defaultStyleName) == true else { return }
-                self.groupStart = nil
-                self.undoManager.removeAllActions()
+                      let names = notification.userInfo?["styleNames"] as? [String],
+                      names.contains(where: ["text", "markdown", "code"].contains) else { return }
+                if names.contains(self.sourceFormat.defaultStyleName) {
+                    self.groupStart = nil
+                    self.undoManager.removeAllActions()
+                }
                 do { try self.rebuild(); self.lastError = nil }
                 catch { self.lastError = error.localizedDescription }
                 NotificationCenter.default.post(name: .viemThemeStyleSessionDidChange, object: self)
@@ -81,13 +104,20 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
             try action()
             let after = try backend.exportStyleDefaults()
             guard before != after else { return }
+            let context = try configuration.themeStyleDefaults(for: sourceFormat, overriding: after)
             try configuration.saveStyleDefaults(after, named: sourceFormat.defaultStyleName)
+            // Shared chrome declarations may also change this style's foreign
+            // parent. Own notifications are suppressed while saving, so refresh
+            // those dependencies before exposing the committed preview.
+            if context != (try configuration.themeStyleDefaults(for: sourceFormat)) { try rebuild() }
             if groupStart == nil { registerUndo(before) }
             lastError = nil
             NotificationCenter.default.post(name: .viemThemeStyleSessionDidChange, object: self)
         } catch {
             try? rebuild()
-            lastError = error.localizedDescription
+            // The inspector presents relationship cycles in its named modal.
+            // Retargeting later should not revive a generic inline error.
+            lastError = (error as? EVStyleBridgeError)?.isInheritanceCycle == true ? nil : error.localizedDescription
             throw error
         }
     }

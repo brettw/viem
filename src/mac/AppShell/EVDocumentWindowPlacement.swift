@@ -77,9 +77,9 @@ public final class EVDocumentWindowPlacement {
     return frame
   }
 
-  func record(window: NSWindow) {
+  func record(window: NSWindow, gutterWidth: CGFloat = 0) {
     guard !window.isMiniaturized, !window.styleMask.contains(.fullScreen) else { return }
-    record(frame: window.frame)
+    record(frame: Self.excludingGutter(window.frame, width: gutterWidth))
   }
 
   /// Recheck after first ordering if AppKit only then acquired its screens.
@@ -95,6 +95,18 @@ public final class EVDocumentWindowPlacement {
     // Configuration retains the diagnostic and refuses to overwrite invalid
     // user data. Failure to save placement must not interrupt moving a window.
     try? saveFrame(frame)
+  }
+
+  /// Persist the left edge of the text viewport and its width, so adding the
+  /// next window's gutter does not count the previous gutter a second time.
+  static func excludingGutter(_ frame: NSRect, width: CGFloat) -> NSRect {
+    let width = width.isFinite ? min(max(0, width), max(0, frame.width - 1)) : 0
+    return NSRect(x: frame.minX + width, y: frame.minY, width: frame.width - width, height: frame.height)
+  }
+
+  static func includingGutter(_ frame: NSRect, width: CGFloat) -> NSRect {
+    let width = width.isFinite ? max(0, width) : 0
+    return NSRect(x: frame.minX - width, y: frame.minY, width: frame.width + width, height: frame.height)
   }
 
   static func isValid(_ frame: NSRect) -> Bool {

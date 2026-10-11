@@ -276,7 +276,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   public func windowWillClose(_ notification: Notification) {
     guard !isClosed else { return }
-    if hasPresentedInitialWindow, let window { placement.record(window: window) }
+    if hasPresentedInitialWindow, let window { placement.record(window: window, gutterWidth: placementGutterWidth) }
     isClosed = true
     let documents = paneContainer.panes.compactMap(\.document)
     (document as? EVDocument)?.removeWindowController(self)
@@ -318,18 +318,22 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       // fighting subsequent user resizing.
       prepareInitialFrame(of: window)
       hasPresentedInitialWindow = true
-      placement.record(window: window)
+      placement.record(window: window, gutterWidth: placementGutterWidth)
     }
     _ = synchronizeContentFrame(of: window)
     window.makeFirstResponder(editorSurface.viewController.view)
     window.makeKeyAndOrderFront(sender)
   }
 
+  private var placementGutterWidth: CGFloat {
+    paneContainer.placementGutterWidth
+  }
+
   private func prepareInitialFrame(of window: NSWindow) {
     if initialWindowFrame == nil {
       initialWindowFrame = placement.initialFrame(for: window, defaultContentSize: Self.initialContentSize)
     }
-    if let initialWindowFrame { window.setFrame(placement.fittedFrame(initialWindowFrame), display: false) }
+    if let initialWindowFrame { window.setFrame(placement.fittedFrame(EVDocumentWindowPlacement.includingGutter(initialWindowFrame, width: placementGutterWidth)), display: false) }
     _ = synchronizeContentFrame(of: window)
   }
 
@@ -338,7 +342,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   private func recordWindowPlacement() {
     guard hasPresentedInitialWindow, !isClosed, let window else { return }
-    placement.record(window: window)
+    placement.record(window: window, gutterWidth: placementGutterWidth)
   }
 
   @discardableResult
@@ -1725,7 +1729,7 @@ final class EVDocumentContentViewController: NSViewController,
     statusBar.fileURL = document?.fileURL
   }
 
-  var statusBarHeight: CGFloat { statusBar.isHidden ? 0 : EVStatusBarView.preferredHeight }
+  var statusBarHeight: CGFloat { statusBar.isHidden ? 0 : statusBar.visiblePreferredHeight }
 
   func layoutContent() {
     loadViewIfNeeded()

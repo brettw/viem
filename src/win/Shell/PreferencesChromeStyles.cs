@@ -11,7 +11,7 @@ internal sealed partial class Preferences
     {
         get {
             if (ReferenceEquals(chromeStyleTheme, activeTheme) && chromeStyles is { } retained) return retained;
-            byte[] defaults = ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT);
+            byte[] defaults = ThemeStyleContext(VIEM_FORMAT_PLAIN_TEXT);
             // The emergency appearance stays usable if optional styles fail.
             var baseTheme = ReadTheme(activeTheme);
             var status = ChromeStyle.Fallback(baseTheme.Foreground, baseTheme.Background, status: true);

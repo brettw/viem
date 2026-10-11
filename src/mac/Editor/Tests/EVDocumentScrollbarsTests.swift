@@ -27,7 +27,8 @@ final class EVDocumentScrollbarsTests: XCTestCase {
         XCTAssertEqual(bars.contentInsets.bottom, 0, "Horizontal controls must not reserve an unpainted strip")
         XCTAssertEqual(bars.horizontalScroller.frame.height,
             NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy))
-        XCTAssertEqual(bars.verticalScroller.frame.maxY, bars.horizontalScroller.frame.minY)
+        XCTAssertEqual(bars.verticalScroller.frame.minY, bars.bounds.minY)
+        XCTAssertEqual(bars.verticalScroller.frame.maxY, bars.bounds.maxY)
         let insets = bars.contentInsets
         let verticalFrame = bars.verticalScroller.frame
         bars.update(vertical: .empty, horizontal: .empty, horizontalAvailable: false)

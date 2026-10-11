@@ -13,6 +13,7 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     private static var initializedDirectory: URL?
     private static var initializedThemeFile: URL?
     private static var initializedData: Data?
+    private static var initializedOwnData: Data?
     private static var configurationObserver: NSObjectProtocol?
     private static var currentConfiguration: EVConfigurationStore?
     private static var publishingConfiguration: EVConfigurationStore?
@@ -47,11 +48,13 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     static func initialize(configuration: EVConfigurationStore) throws {
         let directory = configuration.directory.standardizedFileURL
         let file = configuration.selectedThemeURL?.standardizedFileURL
-        let data = try configuration.codeStyleSheet() ?? Data()
+        let data = try configuration.themeStyleDefaults(for: .code)
+        let ownData = try configuration.codeStyleSheet() ?? Data()
         if publishingConfiguration === configuration {
             // The core already owns this edit. Saved themes can retain unknown
             // JSON members that the core exporter intentionally does not emit.
             initializedData = data
+            initializedOwnData = ownData
             initializationError = nil
             return
         }
@@ -78,17 +81,19 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
             }
         }
         do {
-            let before = try exportGlobalJSON()
-            // Theme files serialize JSON canonically; compare the objects so a
-            // local editor write does not get reapplied merely for whitespace.
-            let same = (try? JSONSerialization.jsonObject(with: before) as? NSDictionary)
-                == (try? JSONSerialization.jsonObject(with: data) as? NSDictionary)
-            if !same { try replaceGlobalJSON(data) }
+            // Compare the configuration authority with its previous value.
+            // Exported core floats and sparse defaults can have different JSON
+            // spellings even though no Code declaration changed.
+            let same = initializedOwnData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? NSDictionary }
+                == (try? JSONSerialization.jsonObject(with: ownData) as? NSDictionary)
+            let dependenciesChanged = initializedData != data
+            if !same || dependenciesChanged { try replaceGlobalJSON(data, contextualized: true) }
             initializedData = data
+            initializedOwnData = ownData
             initializationError = nil
-            if changedTarget || !same {
+            if changedTarget || !same || dependenciesChanged {
                 NotificationCenter.default.post(name: .viemGlobalCodeStyleDidChange, object: configuration,
-                    userInfo: ["external": true])
+                    userInfo: ["external": changedTarget || !same])
             }
         } catch {
             let file = configuration.selectedThemeURL?.path ?? "Default"
@@ -145,10 +150,15 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
         do {
             let after = try Self.exportGlobalJSON()
             guard after != before || replacingInvalidFile else { return }
+            let context = try configuration.themeStyleDefaults(for: .code, overriding: after)
             Self.publishingConfiguration = configuration
             defer { Self.publishingConfiguration = nil }
             try configuration.saveCodeStyleSheet(after, replacingInvalidFile: replacingInvalidFile)
-            Self.initializedData = try configuration.codeStyleSheet()
+            Self.initializedData = try configuration.themeStyleDefaults(for: .code)
+            if let savedContext = Self.initializedData, savedContext != context {
+                try Self.replaceGlobalJSON(savedContext, contextualized: true)
+            }
+            Self.initializedOwnData = try configuration.codeStyleSheet() ?? Data()
             Self.fileMonitor?.didWriteFile()
             if groupStart == nil, before != after { registerUndo(before) }
             lastError = nil
@@ -212,8 +222,11 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
         fileMonitor.checkForChanges { _ in completion() }
     }
 
-    private static func replaceGlobalJSON(_ data: Data) throws {
-        let result = data.withUnsafeBytes { raw in
+    private static func replaceGlobalJSON(_ data: Data, contextualized: Bool = false) throws {
+        let contextual: Data
+        if contextualized { contextual = data }
+        else { contextual = try currentConfiguration?.themeStyleDefaults(for: .code, overriding: data) ?? data }
+        let result = contextual.withUnsafeBytes { raw in
             viem_code_replace_style_json(raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
         }
         try check(result)

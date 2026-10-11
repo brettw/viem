@@ -3,7 +3,7 @@ import AppKit
 /// Original 24-point SVG drawings share one optical grid and stroke weight.
 @MainActor
 enum EVStyleIcons {
-    enum StyleType: Hashable, Sendable { case paragraph, character, block, builtin }
+    enum StyleType: Hashable, Sendable { case paragraph, character, block, builtin, document }
     private static var typeImages: [StyleType: NSImage] = [:]
     private static var scriptImages: [Bool: NSImage] = [:]
 
@@ -43,7 +43,22 @@ enum EVStyleIcons {
                 ?? NSImage(size: NSSize(width: 16, height: 16))
         } else {
             image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { _ in
-                if type == .block {
+                if type == .document {
+                    NSColor.black.setStroke()
+                    let path = NSBezierPath()
+                    path.move(to: NSPoint(x: 3, y: 1.5))
+                    path.line(to: NSPoint(x: 13, y: 1.5))
+                    path.line(to: NSPoint(x: 13, y: 10.5))
+                    path.line(to: NSPoint(x: 9, y: 14.5))
+                    path.line(to: NSPoint(x: 3, y: 14.5))
+                    path.close()
+                    path.move(to: NSPoint(x: 9, y: 14.5))
+                    path.line(to: NSPoint(x: 9, y: 10.5))
+                    path.line(to: NSPoint(x: 13, y: 10.5))
+                    path.lineWidth = 1.3
+                    path.lineJoinStyle = .round
+                    path.stroke()
+                } else if type == .block {
                     NSColor.black.setStroke()
                     let path = NSBezierPath()
                     for (x, y, dx, dy) in [(2.0, 2.0, 1.0, 1.0), (14.0, 2.0, -1.0, 1.0),
@@ -70,7 +85,7 @@ enum EVStyleIcons {
         }
         image.size = NSSize(width: 16, height: 16)
         image.isTemplate = true
-        image.accessibilityDescription = type == .paragraph ? "Paragraph style" : type == .character ? "Character style" : type == .block ? "Block style" : "Built-in style"
+        image.accessibilityDescription = type == .paragraph ? "Paragraph style" : type == .character ? "Character style" : type == .block ? "Block style" : type == .document ? "Document stylesheet" : "Built-in style"
         typeImages[type] = image
         return image
     }

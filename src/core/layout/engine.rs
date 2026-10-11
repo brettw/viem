@@ -1559,6 +1559,24 @@ impl LayoutSnapshot {
         Ok(row)
     }
 
+    /// Gutter selection has no horizontal coordinate. The row's complete
+    /// logical extent remains valid when only its visible glyphs are shaped.
+    pub(crate) fn gutter_row(&self, y: f32) -> Result<&VisualRow, LayoutError> {
+        if !y.is_finite() { return Err(LayoutError::InvalidGeometry); }
+        if !self.coverage.contains_y(y) {
+            let before = self.rows.first().is_some_and(|row| row.text_range.start == 0 && y < row.y);
+            let after = self.rows.last().is_some_and(|row| row.text_range.end == self.text_len && y >= row.y + row.height());
+            if !before && !after { return Err(LayoutError::OutsideMaterializedCoverage); }
+        }
+        if let Some(cell) = self.table_cells.iter().find(|cell| cell.rect.y <= y && y < cell.rect.y + cell.rect.height) {
+            if let Some(row) = self.rows.iter().find(|row| row.table_cell.as_ref()
+                .is_some_and(|candidate| candidate.table_id == cell.table_id && candidate.row == cell.row)) {
+                return Ok(row);
+            }
+        }
+        self.row_intervals.closest(y).and_then(|index| self.rows.get(index)).ok_or(LayoutError::NoRows)
+    }
+
     pub fn caret_geometry(&self, point: CaretPoint) -> Result<CaretGeometry, LayoutError> {
         self.validate_caret_point(point)?;
         for row in self.rows.iter() {

@@ -746,7 +746,9 @@ large documents.
 
 Each view independently selects Visual or Physical Source line meaning,
 initially Physical Source in Code and Visual elsewhere. The status location
-toggles the choice with eye/file icons. Visual counts displayed rows; Physical
+always reports physical source lines and grapheme columns without forcing layout;
+its eye/file button toggles command line meaning independently of those coordinates.
+Visual counts displayed rows; Physical
 Source counts actual source-line tokens, including hidden syntax. This policy
 applies to ordinary line motions/operators, line-oriented insertion and Visual
 Line, including counts/replay. Explicit `g` visual motions retain their visual
@@ -778,7 +780,8 @@ physical source ordinals; hidden syntax has no separate rendered band. If severa
 source lines contribute to one visual row, display only its first ordinal.
 Current-line appearance follows that displayed representative. Table cells on
 one source line share one number, and wrapped lines retain their full vertical
-region while scrolling.
+region while scrolling. Number the editable empty row after a final terminator
+as well; this extra caret row does not extend absolute Ex/motion address ranges.
 Center numbers vertically and shrink typography to fit short regions. The
 builtin line-number paragraph styles are editable presentation only; the current
 line style inherits the ordinary style without default overrides. Their display
@@ -794,13 +797,16 @@ Gutter changes use content width in multi-document windows, maximized/fullscreen
 windows, and vertical splits. A single-document window without vertical splits
 instead preserves content width where monitor space allows, then preserves the
 content's left screen position by changing the frame from its left edge first.
+Saved window placement excludes the first pane's gutter from horizontal position
+and width; restore adds the current gutter once. Synchronous gutter resizing must
+record the incoming width so later windows cannot accumulate gutter expansion.
 
 Visual motion retains desired x; physical motion retains checked source column,
 including invisible destinations. Visual-row deletion invents no newline;
 complete paragraph/list deletion is structural, and a label-only row clears its
 list. Physical deletion/registers use authoritative source spelling. Partial
-visual rows remain characterwise. Location reporting must not lay out preceding
-text: show exact `hard line · visual row` if a global visual ordinal is unknown.
+visual rows remain characterwise. Status coordinates stay physical even when
+command motions use visual rows or the caret lies outside cached layout.
 
 ### Carets and display-space selections
 
@@ -817,6 +823,15 @@ across its full width; Insert retains nearest-boundary placement. A native drag
 started from a character includes the complete initially clicked grapheme in
 either direction, including reversals. Keep its origin anchored through edits;
 this must not broaden an Insert-origin drag or change logical Unicode boundaries.
+
+The gutter uses a horizontally mirrored system arrow, with a black/white-outline
+fallback on macOS and white/black-outline fallback on Windows. Clicking selects
+the whole visible row; dragging extends by whole rows in either direction while
+retaining the complete origin row and the mirrored cursor. Within tables, this
+selects the complete semantic table row. Selection uses exact current geometry
+and keeps the origin anchored through edits without scrolling to its far endpoint.
+Over text, Insert, Select and native Selection use an I-beam; Normal, Visual and
+Replace use the ordinary arrow. Gutter dragging takes precedence over mode cursors.
 
 Use exact associated-item geometry, including indivisible shaping clusters,
 without expanding logical ranges or assuming fixed monospace cells. Empty
@@ -1419,13 +1434,17 @@ Width counts use the zoomed Base Paragraph advance of `0`.
 Status bars are the stacked-pane drag handles, including their controls; a plain
 click focuses the buffer above and retains the control's action. Drags do not
 focus or activate controls; show an up/down cursor during status-bar drags.
-All visible status bars share the theme's height and vertically centered text.
+Status text centers inside the container's padding. Horizontal bars clip their
+left/right borders outside the view; bottommost bars also clip the bottom border
+outside the window and reserve only the remaining box height. Internal bars keep
+the bottom border as a viewport separator.
 The internal Status bar container style owns status typography, foreground,
 background, borders and padding; ignore its margins and alignment. These two
-status styles are shared across stylesheet families in one theme. Status bar
+status styles share declarations across stylesheet families in one theme;
+their inheritance relationships remain variant-local. Status bar
 command inherits that container with only inverse colors and no borders by
 default. Its font cannot affect bar layout: clip the existing command region
-inside the bar border and center its text vertically without vertical padding.
+inside the bar border and center its text inside the container's padding.
 Show the up/down hover cursor only over empty background in a movable bar;
 text, controls and command selection retain their usual hover cursors.
 The bottom bar in each column is fixed. Bars may touch but
@@ -1434,7 +1453,8 @@ the current direction; reversing releases previously pushed bars immediately,
 including after reaching an edge. Splitting requires room for one additional
 status bar in the current pane; otherwise report that there is no room to split.
 Vertical splitters are 5 DIPs wide, use the status background and matching
-separator borders, and show a left/right cursor on hover and drag. Every pane
+left/right borders; their top/bottom borders stay outside the view. They show a
+left/right cursor on hover and drag. Every pane
 retains at least 100 DIPs of width; splits require 205 DIPs in the current pane.
 Dragging pushes adjacent splits with their minimum widths, and reversing releases
 them immediately. Vim tab-page-dependent commands remain unsupported.
@@ -1500,6 +1520,16 @@ with the bundled original while keeping selection. Other saved themes offer Dele
 Restoring missing themes must leave existing customizations and user themes alone.
 The Theme settings font-size control includes native up/down arrows, following
 the style inspector's numeric controls.
+
+Theme variants may inherit from the exact same named style in another variant,
+within the same namespace and role. The Based on menu lists those variants first
+with document icons, then a separator and local choices. Base Paragraph may have
+a foreign parent, with sparse overrides, but no local parent. Selecting a parent
+preserves explicit declarations. Validate cycles when applying a relationship,
+not while constructing menus; reject a cyclic change atomically, restore the
+previous choice, and show a modal naming both variant/style pairs. A cycle found
+while loading or resolving uses direct built-in defaults without recursing through
+Base Paragraph. Imported cyclic edges remain preserved for correction.
 
 Defaults remain sparse and source assignments/direct declarations take precedence.
 Source/WYSIWYG share defaults. Loading or changing themes never writes inherited
@@ -1595,10 +1625,13 @@ editable stylesheet.
 The Document picker selects Plain Text, Markdown, or Code theme definitions
 independently of open documents. An explicit family choice stops caret/document
 following until Edit Styles is invoked again; it never changes a document's format.
+Changing the family retains the selected named style when that style exists in
+the destination, falling back only when it is absent.
 The inspector customizes the available styles without creating, renaming, or
 deleting styles. Its title supplies family/theme context; omit routine save-status
-and availability guidance, retain actionable errors, and fit the window height
-to the remaining controls.
+and availability guidance and retain actionable errors. On macOS, the preview
+and Close button stay fixed at the bottom across tabs; shorter tab content leaves
+space above the preview.
 Style pickers omit empty sections and omit section headings when only one
 nonempty section remains.
 Style names and type labels carry consistent role icons: ¶ for paragraphs,
@@ -1639,6 +1672,7 @@ manufacturing another edit.
 Block controls follow box order: margin, border weight, border color, padding,
 with sides ordered left, right, top, bottom. An optional inspector-local padlock
 links each parameter across all four sides, including its declaration checkbox.
+A right-aligned “Match sides” caption sits above it in the standard label style.
 Enabling the lock copies each row's first nonzero value in side order (or zero
 if all are zero), using the first specified nontransparent border color, then an
 explicit transparent color if that is all the row specifies. Entirely inherited
@@ -1648,8 +1682,9 @@ border colors follow the style's resolved text color, including theme defaults.
 Overrides distinguish inheritance from explicit normal/zero/transparent values.
 Activation starts from resolved values; clicking a disabled supported control
 also performs its original action as one undo gesture, while captions only
-enable. Base Paragraph stays complete, parentless, and undeletable; types and
-acyclic inheritance remain valid. Deleting an in-use configuration style falls
+enable. Base Paragraph stays undeletable and has complete declarations when it
+has no foreign parent; it may inherit sparse declarations from another variant's
+Base Paragraph. Types and acyclic inheritance remain valid. Deleting an in-use configuration style falls
 back to Base Paragraph/Default Paragraph, not its parent, atomically; Code keeps
 its name-reference/suppression policy.
 
@@ -1783,7 +1818,9 @@ the Rust wrappers.
   as a second source of truth.
 - Follow the system scrollbar preference live. Legacy vertical bars reserve a
   stable gutter; horizontal controls overlay the full-height canvas. Painting,
-  layout, hit testing and IME geometry must agree on that canvas.
+  layout, hit testing and IME geometry must agree on that canvas. Vertical
+  scrollbars span the full viewport from its top edge to the status-bar margin;
+  a horizontal scrollbar must not shorten their track.
 
 ### Windows
 

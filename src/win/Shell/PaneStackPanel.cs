@@ -63,6 +63,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     private void Fit(Size size)
     {
         if (ids.Count == 0) return;
+        foreach (var pane in ids.Keys) pane.SetStatusBottomEdge(!CanDragBar(pane));
         var chrome = ids.Select(p => new ViemPaneChrome { id = p.Value, status_height = p.Key.StatusBarHeight }).ToArray();
         fixed (ViemPaneChrome* input = chrome) Check(viem_pane_layout_update(handle, Math.Max(0, size.Width), Math.Max(0, size.Height), input, (ulong)chrome.Length));
         RefreshFrames();
@@ -132,9 +133,18 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
     private uint? pointer;
     private Point press, last;
     private bool dragging;
+    private readonly Microsoft.Graphics.Canvas.UI.Xaml.CanvasControl decoration = new() { IsHitTestVisible = false };
+    private Viem.Windows.Core.ChromeStyle? style;
     internal VerticalSplitter(UIElement root, Action<double> move)
     {
-        ProtectedCursor = cursor; BorderThickness = new(1, 0, 1, 0);
+        ProtectedCursor = cursor; BorderThickness = new(0);
+        Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        Children.Add(decoration);
+        decoration.Draw += (_, args) => {
+            args.DrawingSession.Clear(Microsoft.UI.Colors.Transparent);
+            if (style != null) style.DrawBox(args.DrawingSession,
+                new(0, -style.Border.Top, decoration.ActualWidth, decoration.ActualHeight + style.Border.Vertical));
+        };
         AutomationProperties.SetName(this, "Resize views horizontally");
         PointerPressed += (_, e) => { var p = e.GetCurrentPoint(root); if (p.Properties.IsLeftButtonPressed) { pointer = e.Pointer.PointerId; press = last = p.Position; } };
         PointerMoved += (_, e) => {
@@ -147,6 +157,6 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
         PointerReleased += (_, e) => { if (pointer != e.Pointer.PointerId) return; pointer = null; if (dragging) { dragging = false; ReleasePointerCapture(e.Pointer); e.Handled = true; } };
         PointerCaptureLost += (_, _) => { pointer = null; dragging = false; };
     }
-    internal void ApplyTheme(Preferences preferences) { Background = new SolidColorBrush(preferences.Theme.StatusBackground); BorderBrush = PaneStackPanel.SeparatorBrush(preferences); }
-    public void Dispose() { ProtectedCursor = null; cursor.Dispose(); }
+    internal void ApplyTheme(Preferences preferences) { style = preferences.StatusStyles.Status; decoration.Invalidate(); }
+    public void Dispose() { ProtectedCursor = null; cursor.Dispose(); decoration.RemoveFromVisualTree(); }
 }

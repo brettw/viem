@@ -8,7 +8,11 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
-internal enum StyleIconKind { Paragraph, Character, Block, Builtin }
+internal enum StyleIconKind { Paragraph, Character, Block, Builtin, Document }
+internal sealed record StyleVariantParent(uint Format, string Name)
+{
+    public override string ToString() => Name;
+}
 
 /// <summary>One style-type vocabulary for inspector pickers and toolbar selectors.</summary>
 internal static class StyleIcons
@@ -37,7 +41,7 @@ internal static class StyleIcons
         return style.Namespace == 2 ? StyleIconKind.Character : style.Native.role == VIEM_STYLE_ROLE_PARAGRAPH ? StyleIconKind.Paragraph : StyleIconKind.Block;
     }
 
-    internal static string TypeName(StyleIconKind kind) => kind switch { StyleIconKind.Paragraph => "Paragraph style", StyleIconKind.Character => "Character style", StyleIconKind.Block => "Block style", _ => "Built-in style" };
+    internal static string TypeName(StyleIconKind kind) => kind switch { StyleIconKind.Paragraph => "Paragraph style", StyleIconKind.Character => "Character style", StyleIconKind.Block => "Block style", StyleIconKind.Document => "Document stylesheet", _ => "Built-in style" };
 
     internal static IconElement Icon(StyleIconKind kind)
     {
@@ -45,6 +49,7 @@ internal static class StyleIcons
             StyleIconKind.Paragraph => new FontIcon { Glyph = "¶", FontFamily = new FontFamily("Times New Roman"), FontSize = 16 },
             StyleIconKind.Character => new FontIcon { Glyph = "a", FontFamily = new FontFamily("Times New Roman"), FontWeight = Microsoft.UI.Text.FontWeights.Bold, FontSize = 16 },
             StyleIconKind.Block => (PathIcon)XamlReader.Load("<PathIcon xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Width='16' Height='16' Data='" + Corners + "'/>"),
+            StyleIconKind.Document => new SymbolIcon(Symbol.Document) { Width = 16, Height = 16 },
             _ => new FontIcon { Glyph = "\uE713", FontSize = 16 },
         };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(icon, TypeName(kind));
@@ -69,11 +74,13 @@ internal static class StyleIcons
                 StyleIconKind.Paragraph => "<FontIcon Glyph='¶' FontFamily='Times New Roman' FontSize='16'/>",
                 StyleIconKind.Character => "<FontIcon Glyph='a' FontFamily='Times New Roman' FontWeight='Bold' FontSize='16'/>",
                 StyleIconKind.Block => "<PathIcon Width='16' Height='16' Data='" + Corners + "'/>",
+                StyleIconKind.Document => "<SymbolIcon Symbol='Document' Width='16' Height='16'/>",
                 _ => "<FontIcon Glyph='&#xE713;' FontSize='16'/>"
             };
             return (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><StackPanel Orientation='Horizontal' Spacing='6'>" + icon + "<TextBlock Text='{Binding}' VerticalAlignment='Center'/></StackPanel></DataTemplate>");
         }
         protected override DataTemplate SelectTemplateCore(object item) => item switch {
+            StyleVariantParent => templates[StyleIconKind.Document],
             StyleDefinition style => templates[Kind(style)],
             "Default Paragraph" => templates[StyleIconKind.Character],
             "Same Style" => templates[StyleIconKind.Paragraph],

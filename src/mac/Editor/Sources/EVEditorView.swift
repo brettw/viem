@@ -165,6 +165,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var lastNativeTextInputAvailability = false
     private var suppressInputContextDiscard = false
     private var wordSelectionDragging = false
+    private(set) var gutterSelectionDragging = false
     private var dragAutoscrollTimer: Timer?
     private var dragAutoscrollLocation: NSPoint?
     private var lastCustomCaretState: EVCustomCaretState?
@@ -513,6 +514,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func applyPresentation() {
+        window?.invalidateCursorRects(for: self)
         tables.invalidate()
         synchronizeEditingPreferences()
         reconcileMarkedTextWithCore()
@@ -2077,12 +2079,37 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let tableTrackingArea { removeTrackingArea(tableTrackingArea) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        let area = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect], owner: self)
         tableTrackingArea = area; addTrackingArea(area)
+    }
+
+    func pointerCursor(at point: NSPoint) -> NSCursor {
+        if gutterSelectionDragging || (point.x >= 0 && point.x < lineNumberGutterWidth) {
+            return EVLineNumberGutter.selectionCursor
+        }
+        if textViewportRect.contains(point),
+           EVSelectionModes.hasInsertionCaret(surface?.viewPresentation.mode ?? UInt32(VIEM_MODE_NORMAL)) {
+            return .iBeam
+        }
+        return .arrow
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: gutterSelectionDragging ? EVLineNumberGutter.selectionCursor : .arrow)
+        guard !gutterSelectionDragging else { return }
+        addCursorRect(textViewportRect, cursor: pointerCursor(at: NSPoint(x: textViewportRect.midX, y: textViewportRect.midY)))
+        if lineNumberGutterWidth > 0 {
+            addCursorRect(NSRect(x: 0, y: 0, width: lineNumberGutterWidth, height: bounds.height), cursor: EVLineNumberGutter.selectionCursor)
+        }
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        pointerCursor(at: convert(event.locationInWindow, from: nil)).set()
     }
 
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        pointerCursor(at: point).set()
         tables.moved(to: point)
         codeBlockLanguageHoverLocation = point
         updateCodeBlockLanguageHover()
@@ -2094,6 +2121,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         updateCaretHover()
     }
     override func mouseExited(with event: NSEvent) {
+        if gutterSelectionDragging { EVLineNumberGutter.selectionCursor.set() }
         tables.hide()
         codeBlockLanguageHoverLocation = nil
         updateCodeBlockLanguageHover()
@@ -2102,6 +2130,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        pointerCursor(at: convert(event.locationInWindow, from: nil)).set()
         codeBlockLanguageHoverLocation = convert(event.locationInWindow, from: nil)
         updateCodeBlockLanguageHover()
     }
@@ -2261,6 +2290,16 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         stopDragAutoscroll()
         window?.makeFirstResponder(self)
         customCaretBlinkController.restartAfterActivity()
+        let local = convert(event.locationInWindow, from: nil)
+        gutterSelectionDragging = local.x >= 0 && local.x < lineNumberGutterWidth
+        if gutterSelectionDragging {
+            wordSelectionDragging = false
+            tables.endDrag()
+            selectGutterRow(at: local, extending: false)
+            EVLineNumberGutter.selectionCursor.set()
+            window?.invalidateCursorRects(for: self)
+            return
+        }
         let returnMode = surface?.viewPresentation.mode ?? UInt32(VIEM_MODE_NORMAL)
         if event.clickCount >= 3, let surface, let session = surface.session,
            [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(surface.viewPresentation.mode) {
@@ -2284,6 +2323,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     override func mouseDragged(with event: NSEvent) {
         _ = autoscroll(with: event)
         customCaretBlinkController.restartAfterActivity()
+        if gutterSelectionDragging {
+            let local = convert(event.locationInWindow, from: nil)
+            selectGutterRow(at: local, extending: true)
+            updateDragAutoscroll(for: local)
+            EVLineNumberGutter.selectionCursor.set()
+            return
+        }
         if !wordSelectionDragging && tables.drag(to: convert(event.locationInWindow, from: nil)) { updateDragAutoscroll(for: convert(event.locationInWindow, from: nil)); return }
         placeCursor(for: event, extending: true)
         updateDragAutoscroll(for: convert(event.locationInWindow, from: nil))
@@ -2293,9 +2339,22 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         caretHoverPointerPressed = false
         caretHoverLocation = nil
         wordSelectionDragging = false
+        gutterSelectionDragging = false
+        pointerCursor(at: convert(event.locationInWindow, from: nil)).set()
+        window?.invalidateCursorRects(for: self)
         tables.endDrag()
         stopDragAutoscroll()
         super.mouseUp(with: event)
+    }
+
+    private func selectGutterRow(at local: NSPoint, extending: Bool) {
+        guard let surface, surface.acceptCompletionForNativeInput(), let session = surface.session else { return }
+        if compositionActive { cancelActiveMarkedText(using: session, discardInputContext: true) }
+        guard surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return }
+        let viewport = textViewportRect
+        let y = min(max(local.y, viewport.minY), max(viewport.minY, viewport.maxY - 0.5))
+        let point = layoutPoint(fromViewPoint: NSPoint(x: local.x, y: y))
+        surface.performInput { _ = try session.selectPointerRow(y: point.y, in: snapshot.info, extending: extending) }
     }
 
     private func placeCursor(for event: NSEvent, extending: Bool) {
@@ -3260,7 +3319,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func updateDragAutoscroll(for location: NSPoint) {
-        guard !textViewportRect.contains(location) else {
+        let outside = gutterSelectionDragging
+            ? location.y < textViewportRect.minY || location.y > textViewportRect.maxY
+            : !textViewportRect.contains(location)
+        guard outside else {
             stopDragAutoscroll()
             return
         }
@@ -3309,9 +3371,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
 
         let maximumLeft = max(0, CGFloat(current.maximum_left))
-        if location.x < viewport.minX {
+        if !gutterSelectionDragging && location.x < viewport.minX {
             left = max(0, left - dragAutoscrollDistance(viewport.minX - location.x))
-        } else if location.x > viewport.maxX {
+        } else if !gutterSelectionDragging && location.x > viewport.maxX {
             left = min(
                 maximumLeft,
                 left + dragAutoscrollDistance(location.x - viewport.maxX)
@@ -3333,7 +3395,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             x: min(max(location.x, viewport.minX), max(viewport.minX, viewport.maxX - 0.5)),
             y: min(max(location.y, viewport.minY), max(viewport.minY, viewport.maxY - 0.5))
         )
-        if wordSelectionDragging || !tables.drag(to: edgePoint) { placeCursor(at: edgePoint, extending: true) }
+        if gutterSelectionDragging { selectGutterRow(at: edgePoint, extending: true) }
+        else if wordSelectionDragging || !tables.drag(to: edgePoint) { placeCursor(at: edgePoint, extending: true) }
         return true
     }
 

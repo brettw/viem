@@ -1553,17 +1553,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func updateStatusBar() {
         let point = try? session?.lineLocation()
-        let line = point.map { location in
-            location.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) != 0
-                ? String(location.line) : "\(location.hard_line)·\(location.fragment)"
-        } ?? "1"
+        let line = String(point?.line ?? 1)
         let column = point?.column ?? 1
         statusBarState = EVStatusBarState(
             mode: modeLabel(viewPresentation.mode),
             message: substituteConfirmationPrompt ?? lastErrorMessage,
             location: "Ln \(line), Col \(column)",
             lineMode: (try? session?.lineMode()) ?? .visual,
-            locationIsFragment: point.map { $0.flags & UInt32(VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT) == 0 } ?? false,
             commandLine: editorView.commandLineRenderState().map {
                 EVStatusCommandLine(
                     prompt: $0.prompt,

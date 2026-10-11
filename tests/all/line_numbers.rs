@@ -138,7 +138,7 @@ fn wrapped_and_empty_physical_lines_have_one_full_allocated_band() {
     );
     assert_eq!(
         bands.len(),
-        core.document().physical_source_line_number_count()
+        core.document().physical_line_count().unwrap()
     );
     for band in bands {
         let rows: Vec<_> = snapshot
@@ -642,7 +642,7 @@ fn a_fitting_document_keeps_its_top_when_resize_or_gutter_causes_overflow() {
 }
 
 #[test]
-fn final_terminators_do_not_add_a_phantom_number_or_extra_digit() {
+fn terminal_caret_rows_have_numbers_without_becoming_ex_addresses() {
     use viem_core::document::FileFormat;
     for (ending, format) in [
         ("\n", FileFormat::Unix),
@@ -670,13 +670,13 @@ fn final_terminators_do_not_add_a_phantom_number_or_extra_digit() {
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 250., 180.);
             core.set_number(view, true).unwrap();
-            ex(&mut core, view, ":$");
+            ex(&mut core, view, ":99");
             assert_eq!(core.current_physical_source_line(view).unwrap(), 99);
             assert!(core
                 .line_number_regions(view)
                 .unwrap()
                 .iter()
-                .all(|band| band.source_line <= 99));
+                .all(|band| band.source_line <= if terminate { 100 } else { 99 }));
             assert_eq!(core.document().source_bytes(), source.as_bytes());
         }
     }
@@ -684,7 +684,7 @@ fn final_terminators_do_not_add_a_phantom_number_or_extra_digit() {
         let (mut core, view) = opened(source, Format::PlainText, 250., 180.);
         core.set_number(view, true).unwrap();
         assert_eq!(core.document().physical_source_line_number_count(), count);
-        assert_eq!(core.line_number_regions(view).unwrap().len(), count);
+        assert_eq!(core.line_number_regions(view).unwrap().len(), count + usize::from(source.ends_with("\n")));
     }
     let (mut core, view) = opened("first\nlast\n", Format::PlainText, 250., 180.);
     core.set_number(view, true).unwrap();
@@ -704,13 +704,14 @@ fn final_terminators_do_not_add_a_phantom_number_or_extra_digit() {
     )
     .unwrap();
     let after = core.line_number_regions(view).unwrap();
-    assert_eq!(before.len(), 2);
-    assert_eq!(after.len(), 2);
+    assert_eq!(before.len(), 3);
+    assert_eq!(after.len(), 3);
     assert_eq!(before[1].top, after[1].top);
     assert_eq!(before[1].bottom, after[1].bottom);
-    assert_eq!(core.current_physical_source_line(view).unwrap(), 2);
+    assert_eq!(core.current_physical_source_line(view).unwrap(), 3);
     assert!(!after[0].current);
-    assert!(after[1].current);
+    assert!(!after[1].current);
+    assert!(after[2].current);
 }
 
 #[test]
@@ -840,4 +841,34 @@ fn gutter_abi_validates_revision_viewport_capacity_and_pointer_aliasing() {
     );
     assert_eq!(info.region_count, 0);
     assert_eq!(info.source_line_count, 3);
+}
+
+#[test]
+fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selection() {
+    use viem_core::ffi::*;
+    let fixture = super::ffi_core_surface::table_ffi_fixture(b"one\ntwo\nthree", VIEM_FORMAT_PLAIN_TEXT);
+    viem_core_view_set_number(fixture.handle, fixture.view, 1);
+    let mut info = ViemLineNumberSnapshotInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_line_number_snapshot_info(fixture.handle, fixture.view, &mut info) }, ViemStatus::Ok);
+    let mut regions = vec![ViemLineNumberRegionV1::default(); info.region_count as usize];
+    let mut copied = 0;
+    assert_eq!(unsafe { viem_core_view_copy_line_number_regions(fixture.handle, fixture.view, &info.identity, &info.viewport,
+        regions.as_mut_ptr(), regions.len() as u64, &mut copied) }, ViemStatus::Ok);
+    let mut outcome = ViemCoreOutcomeV1::default();
+    let y = (regions[1].top + regions[1].bottom) / 2.;
+    assert_eq!(unsafe { viem_core_view_select_pointer_row(fixture.handle, fixture.view, &info.identity, y, 0, &mut outcome) }, ViemStatus::Ok);
+    let mut selected = ViemLogicalSelectionIdentityV1::default();
+    assert_eq!(unsafe { viem_core_view_list_selection(fixture.handle, fixture.view, &mut selected) }, ViemStatus::Ok);
+    assert_eq!((selected.text_start, selected.text_end), (4, 8));
+    let mut stale = info.identity; stale.layout_revision += 1;
+    for (expected, y, extend, status) in [
+        (stale, y, 1, ViemStatus::StaleRevision),
+        (info.identity, f32::NAN, 1, ViemStatus::InvalidArgument),
+        (info.identity, y, 2, ViemStatus::InvalidArgument),
+    ] {
+        assert_eq!(unsafe { viem_core_view_select_pointer_row(fixture.handle, fixture.view, &expected, y, extend, &mut outcome) }, status);
+        let mut after = ViemLogicalSelectionIdentityV1::default();
+        assert_eq!(unsafe { viem_core_view_list_selection(fixture.handle, fixture.view, &mut after) }, ViemStatus::Ok);
+        assert_eq!(after, selected);
+    }
 }
