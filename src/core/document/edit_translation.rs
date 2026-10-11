@@ -86,7 +86,13 @@ impl Document {
                         .source_range(edit.range.clone())
                         .ok_or(DocumentError::AmbiguousProjection)?
                 };
-                let replacement = if html && !literal {
+                let outside_comment = edit.range.is_empty()
+                    && self.projection().style_spans_for_region(&nearby).iter().any(|span|
+                        span.application == StyleApplication::Automatic("Comment".into())
+                            && (span.range.start == edit.range.start || span.range.end == edit.range.start));
+                let replacement = if outside_comment {
+                    self.escape_markdown_source_text(range.start, &edit.replacement)?
+                } else if html && !literal {
                     super::markdown_html_edit::literal_html(&edit.replacement, self.encoding())
                 } else {
                     edit.replacement.clone()
@@ -160,11 +166,11 @@ impl Document {
                 // A formatted caret belongs to its visible line even when
                 // its upstream side precedes hidden list or fence syntax.
                 // Structural breaks retain the adapter's split-boundary rule.
-                super::super::source_edit::insertion_point(
-                    self.projection(),
+                super::super::source_edit::document_insertion_point(
+                    self,
                     edit.range.start,
                     affinity,
-                )
+                )?
             } else {
                 self.projection().source_insertion_point(
                     edit.range.start,
@@ -239,6 +245,9 @@ impl Document {
         if self.format() == Format::Markdown {
             if self.preserve_edited_reference_content(edits, patches)? {
                 markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
+                markdown_block_styles::preserve_edited_paragraph_boundaries(self, edits, patches)?;
+                markdown_block_styles::preserve_split_literals(self, edits, patches)?;
+                markdown_block_styles::preserve_split_boundaries(self, paragraph_break_ranges, patches)?;
                 markdown_block_styles::preserve_retained_literals(self, edits, patches)?;
                 self.repair_markdown_reference_spaces(edits, patches)?;
                 return Ok(());

@@ -859,6 +859,40 @@ impl Document {
         Ok((prepared, projected))
     }
 
+    /// Once an edit would cease to be automatic-link syntax, retain its
+    /// visible label and destination in the smallest explicit link construct.
+    /// Ordinary edits that still parse with the requested text keep their
+    /// original spelling. Each probe is bounded by the link-query budget.
+    pub(crate) fn markdown_autolink_support(
+        &self,
+        edits: &[TextEdit],
+    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+        let mut patches = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for edit in edits {
+            let Some(link) = self.link_at_boundary(edit.range.start, BoundaryAffinity::Downstream)?
+                .filter(|link| link.editable && link.destination_source.is_none()
+                    && link.range.start <= edit.range.start && edit.range.end <= link.range.end
+                    && edit.range != link.range)
+            else { continue; };
+            if !seen.insert(link.source.start) { continue; }
+            let Some(selected) = self.projection().source_range(edit.range.clone())
+                .filter(|source| link.source.start <= source.start && source.end <= link.source.end)
+            else { continue; };
+            let mut candidate = self.state().source.bytes_in(link.source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let syntax = self.escape_markdown_source_text(selected.start, &edit.replacement)?;
+            candidate.splice(selected.start - link.source.start..selected.end - link.source.start,
+                self.encoding().encode_fragment(&syntax)?);
+            let mut expected = link.text.clone();
+            expected.replace_range(edit.range.start - link.range.start..edit.range.end - link.range.start, &edit.replacement);
+            let candidate = Document::from_bytes_with_file_format(candidate, self.encoding(), Format::Markdown, self.file_format())?;
+            if candidate.text() == expected { continue; }
+            let (canonical, _) = self.prepare_canonical_autolink(edit.range.clone(), BoundaryAffinity::Downstream)?;
+            patches.extend_from_slice(canonical.summary().source_patches());
+        }
+        Ok(patches)
+    }
+
     fn link_label_document(&self, link: &LinkSnapshot) -> Result<Document, DocumentError> {
         let mut bytes = self.encoding().encode_fragment("[")?;
         bytes.extend(
@@ -1271,6 +1305,30 @@ impl Document {
         if text.contains(['\n', '\r']) {
             return false;
         }
+        if self.format().is_source_view() {
+            // A toolbar wrapper cannot start in an escape or delimiter run:
+            // its opening bracket would become literal source instead of a
+            // link. Keep ordinary Source typing available at these positions.
+            let mut at = range.start;
+            let mut slashes = 0;
+            while let Some(previous) = self.previous_grapheme_boundary(at) {
+                let Ok(value) = self.projection().text_tree().slice(previous..at) else { return false; };
+                if value != "\\" { break; }
+                slashes += 1;
+                if slashes > 128 { return false; }
+                at = previous;
+            }
+            if slashes % 2 != 0 { return false; }
+            if range.is_empty() {
+                if let (Some(previous), Some(next)) = (self.previous_grapheme_boundary(range.start), self.next_grapheme_boundary(range.end)) {
+                    if self.projection().text_tree().slice(previous..next).as_deref() == Ok("``") { return false; }
+                }
+            }
+            if self.projection().style_spans_for_region(&range).iter().any(|span|
+                span.application == StyleApplication::Automatic("Markdown reference".into())
+                    && span.range.start <= range.start && range.start < span.range.end)
+            { return false; }
+        }
         if self
             .projection()
             .blocks_for_region(&range)
@@ -1374,7 +1432,7 @@ impl Document {
             .text_tree()
             .slice(range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        let source_range = existing
+        let mut source_range = existing
             .as_ref()
             .map(|link| link.source.clone())
             .or_else(|| self.projection().source_range(range.clone()))
@@ -1487,6 +1545,16 @@ impl Document {
                     .encode_fragment(&format!("](<{}>)", escape_destination(&destination)))?,
             );
         }
+        let mut link_source_start = source_range.start;
+        if existing.is_none() && text == old_text {
+            if let Some((source, balanced, start)) = self.wrapped_inline_source(
+                &range, "[", &format!("](<{}>)", escape_destination(&destination)),
+            )? {
+                source_range = source;
+                replacement = balanced;
+                link_source_start = start;
+            }
+        }
         let replacement_text = super::line_endings::normalize(
             &self
                 .encoding()
@@ -1526,7 +1594,7 @@ impl Document {
                 .ok_or(DocumentError::VerificationFailed)?;
             if link.destination != destination
                 || link.text != text
-                || link.source.start != source_range.start
+                || link.source.start != link_source_start
             {
                 return Err(DocumentError::VerificationFailed.into());
             }

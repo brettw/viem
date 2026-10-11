@@ -4,7 +4,7 @@ use super::{
     Document, DocumentError, ModelTransactionError, PreparedModelTransaction, SourcePatch, TextEdit,
 };
 use crate::document::{BlockKind, BoundaryAffinity, Format};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 impl Document {
@@ -229,10 +229,15 @@ impl Document {
                 }
             }
         }
-        let continuation_prefix = split_quote_prefix.as_deref().unwrap_or(prefix);
+        let code_prefix = if code && self.format() == Format::Markdown {
+            crate::document::markdown_code::fenced_source(self, &block)?
+                .map(|fence| fence.body_prefix)
+        } else { None };
+        let continuation_prefix = split_quote_prefix.as_deref()
+            .or(code_prefix.as_deref()).unwrap_or(prefix);
         // A list continuation can start with a quote rather than a list label.
         // Splitting just after that quote marker must continue the quote itself.
-        let list_kind = split_quote_prefix.is_none().then_some(&block.kind);
+        let list_kind = (!code && split_quote_prefix.is_none()).then_some(&block.kind);
         let logical = if let Some(BlockKind::ListItem {
             ordered, ordinal, ..
         }) = list_kind
@@ -313,6 +318,8 @@ impl Document {
         self.validate_range(&range)?;
         let blocks = self.projection().blocks_for_region(&range);
         let mut lines = BTreeSet::new();
+        let mut code_list_prefixes = BTreeMap::new();
+        let mut patches = Vec::new();
         for block in blocks.iter().filter(|block| {
             (quote || (block.style.0 == "Block quote" || block.quote_depth > 0))
                 && if range.is_empty() {
@@ -365,10 +372,15 @@ impl Document {
                     .bytes_in(before.clone())
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 let decoded = self.encoding().decode_region(&bytes, before.start)?;
-                let body = &decoded.text[crate::document::markdown_quotes::prefix(&decoded.text)..];
+                let opening_prefix = crate::document::markdown_quotes::container_prefix(&decoded.text);
+                let body = &decoded.text[opening_prefix..];
                 if let Some((delimiter, length)) = crate::document::projection::markdown_fence(body)
                 {
                     first -= 1;
+                    let list_columns = matches!(block.kind, BlockKind::ListItem { .. }).then(|| {
+                        decoded.text[..opening_prefix].chars().fold(0usize, |columns, ch|
+                            if ch == '\t' { columns + 4 - columns % 4 } else { columns + 1 })
+                    });
                     if let Some(after) = index.get(last + 1) {
                         let bytes = self
                             .state()
@@ -383,11 +395,51 @@ impl Document {
                             last += 1;
                         }
                     }
+                    if let Some(columns) = list_columns {
+                        for line in first..=last { code_list_prefixes.insert(line, (first, opening_prefix, columns)); }
+                    }
+                }
+            }
+            // A Setext underline belongs to the heading even though its
+            // bytes have no visible provenance. Move its container prefix
+            // with the heading body so it cannot become a separate rule.
+            if block.style.0.starts_with("Heading") {
+                let opening = index.get(first).ok_or(DocumentError::AmbiguousProjection)?;
+                let bytes = self.state().source.bytes_in(opening.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = self.encoding().decode_region(&bytes, opening.start)?;
+                let body = &decoded.text[crate::document::markdown_quotes::container_prefix(&decoded.text)..];
+                if !body.starts_with('#') {
+                    if let Some(underline) = index.get(last + 1) {
+                        let bytes = self.state().source.bytes_in(underline.clone())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let decoded = self.encoding().decode_region(&bytes, underline.start)?;
+                        let body = decoded.text[crate::document::markdown_quotes::prefix(&decoded.text)..].trim();
+                        if !body.is_empty() && (body.bytes().all(|byte| byte == b'=')
+                            || body.bytes().all(|byte| byte == b'-')) {
+                            last += 1;
+                        }
+                    }
+                }
+            }
+            if quote && self.format() == Format::Markdown && block.style.0 == "Paragraph"
+                && range.end <= block.range.end {
+                if let Some(following) = block.range.end.checked_add(1) {
+                    if let Some(table) = self.projection().table_at(following)
+                        .filter(|table| table.range.start == following) {
+                        if let Some(next) = index.get(last + 1)
+                            .filter(|next| next.start == table.source_range.start) {
+                            // An unquoted table header can lazily continue the
+                            // new quote paragraph. Keep the already separate
+                            // table outside it with one supporting separator.
+                            patches.push(SourcePatch::primary(next.start..next.start,
+                                self.encoding().encode_fragment(self.file_format().spelling())?));
+                        }
+                    }
                 }
             }
             lines.extend(first..=last);
         }
-        let mut patches = Vec::new();
         let Some(first) = lines.first().copied() else {
             return Ok(self.no_op_prepared());
         };
@@ -420,9 +472,22 @@ impl Document {
                 .trim()
                 .is_empty();
             if quote && lines.contains(&index) {
+                let (offset, padding) = if let Some(&(opening, opening_prefix, columns)) = code_list_prefixes.get(&index) {
+                    if index == opening { (opening_prefix, 0) } else {
+                        let mut width = 0;
+                        let mut bytes = 0;
+                        for ch in decoded.text.chars() {
+                            if width >= columns || !matches!(ch, ' ' | '\t') { break; }
+                            width += if ch == '\t' { 4 - width % 4 } else { 1 };
+                            bytes += ch.len_utf8();
+                        }
+                        (bytes, columns.saturating_sub(width))
+                    }
+                } else { (0, 0) };
+                let source_offset = line.start + self.encoding().encode_fragment(&decoded.text[..offset])?.len();
                 patches.push(SourcePatch::primary(
-                    line.start..line.start,
-                    self.encoding().encode_fragment("> ")?,
+                    source_offset..source_offset,
+                    self.encoding().encode_fragment(&format!("{}> ", " ".repeat(padding)))?,
                 ));
             } else if !quote && prefix > 0 && (lines.contains(&index) || separator) {
                 // Remove one quote level; outer containers remain intact.

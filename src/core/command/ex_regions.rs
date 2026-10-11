@@ -708,7 +708,7 @@ fn prepare_transfer(
             .destination
             .as_ref()
             .is_some_and(|line| line.domain == ExLineDomain::PhysicalSource);
-    if source.is_none() && !physical_destination {
+    if source.is_none() && (!physical_destination || addresses.destination_before_first) {
         if let Some(lines) = exact_hard_lines(document, range)? {
             let insertion_line = if addresses.destination_before_first {
                 Some(0)

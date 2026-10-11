@@ -29,7 +29,7 @@ final class EVDocumentScrollbarsIntegrationTests: XCTestCase {
         XCTAssertFalse(bars.horizontalAvailable)
         XCTAssertEqual(bars.horizontalState.maximum, 0, accuracy: 0.01)
 
-        surface.performInput { _ = try session.sendText("31Gzt") }
+        surface.performInput { _ = try session.sendTestKeys("31Gzt") }
         XCTAssertTrue(bars.horizontalAvailable)
         let mediumMaximum = bars.horizontalState.maximum
         XCTAssertGreaterThan(mediumMaximum, 0)
@@ -38,11 +38,11 @@ final class EVDocumentScrollbarsIntegrationTests: XCTestCase {
         XCTAssertEqual(CGFloat(surface.viewportState.left), mediumMaximum / 2, accuracy: 0.1)
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
 
-        surface.performInput { _ = try session.sendText("71Gzt") }
+        surface.performInput { _ = try session.sendTestKeys("71Gzt") }
         XCTAssertFalse(bars.horizontalAvailable)
         XCTAssertEqual(surface.viewportState.left, 0, accuracy: 0.01)
         XCTAssertEqual(bars.horizontalState.maximum, 0, accuracy: 0.01)
-        surface.performInput { _ = try session.sendText("131Gzt") }
+        surface.performInput { _ = try session.sendTestKeys("131Gzt") }
         XCTAssertGreaterThan(bars.horizontalState.maximum, mediumMaximum * 3)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
         XCTAssertNil(surface.commandOutput)

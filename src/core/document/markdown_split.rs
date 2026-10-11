@@ -15,6 +15,61 @@ enum ScopeStyle {
     Strike,
 }
 
+/// Balance the inline scopes cut by a newly authored wrapper. The source hull
+/// of visible text can begin after an opening marker or end before its closing
+/// marker; placing link brackets around that hull alone changes delimiter
+/// nesting. Only crossed scopes are split, with complete selected delimiters
+/// carried into the wrapper and enclosing scopes left in place.
+impl Document {
+pub(crate) fn wrapped_inline_source(
+    &self,
+    range: &Range<usize>,
+    opening: &str,
+    closing: &str,
+) -> Result<Option<(Range<usize>, Vec<u8>, usize)>, ModelTransactionError> {
+    let document = self;
+    if document.format() != Format::Markdown || range.is_empty() {
+        return Ok(None);
+    }
+    let projection = document.projection();
+    let Some(line) = projection.hard_line_at_offset(range.start)
+        .and_then(|index| projection.hard_line_range(index)) else { return Ok(None); };
+    if range.end > line.end { return Ok(None); }
+    let Some(mut scopes) = inline_scopes(document, range, &line)? else { return Ok(None); };
+    scopes.retain(|scope| scope.formatted.start < range.end && range.start < scope.formatted.end);
+    if !scopes.iter().any(|scope|
+        (scope.formatted.start < range.start && range.start < scope.formatted.end && scope.formatted.end < range.end)
+        || (range.start < scope.formatted.start && scope.formatted.start < range.end && range.end < scope.formatted.end)
+        || range.start <= scope.formatted.start && scope.formatted.end <= range.end)
+    { return Ok(None); }
+    scopes.sort_by_key(|scope| (scope.opening.start, std::cmp::Reverse(scope.closing.end)));
+    let mut source = projection.source_range(range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+    for scope in &scopes {
+        if range.start <= scope.formatted.start { source.start = source.start.min(scope.opening.start); }
+        if scope.formatted.end <= range.end { source.end = source.end.max(scope.closing.end); }
+    }
+    let left: Vec<_> = scopes.iter().filter(|scope|
+        scope.opening.end <= source.start && source.start <= scope.closing.start
+        && scope.formatted.end < range.end).collect();
+    let right: Vec<_> = scopes.iter().filter(|scope|
+        scope.opening.end <= source.end && source.end <= scope.closing.start
+        && range.start < scope.formatted.start).collect();
+    let mut syntax = String::new();
+    for scope in left.iter().rev() { syntax.push_str(&scope.closing_marker); }
+    let wrapper_source = source.start + document.encoding().encode_fragment(&syntax)?.len();
+    syntax.push_str(opening);
+    for scope in &left { syntax.push_str(&scope.marker); }
+    let mut replacement = document.encoding().encode_fragment(&syntax)?;
+    replacement.extend(document.state().source.bytes_in(source.clone()).ok_or(DocumentError::AmbiguousProjection)?);
+    syntax.clear();
+    for scope in right.iter().rev() { syntax.push_str(&scope.closing_marker); }
+    syntax.push_str(closing);
+    for scope in &right { syntax.push_str(&scope.marker); }
+    replacement.extend(document.encoding().encode_fragment(&syntax)?);
+    Ok(Some((source, replacement, wrapper_source)))
+}
+}
+
 fn scope_style(application: &StyleApplication) -> Option<ScopeStyle> {
     match application {
         StyleApplication::Semantic(style) => Some(ScopeStyle::Semantic(*style)),
@@ -689,16 +744,33 @@ fn repair_flanking_pass(
         // Recognize this exact scope in its edited physical context. Entities
         // and nested closing markers count as punctuation in GFM flanking;
         // whitespace escaping alone cannot keep every such scope representable.
-        let first = document
+        let mut first = document
             .state()
             .source_hard_lines
             .line_at_offset(scope.opening.start)
             .unwrap();
-        let last = document
+        let mut last = document
             .state()
             .source_hard_lines
             .line_at_offset(scope.closing.end)
             .unwrap();
+        for edit in edits.iter().filter(|edit| !edit.replacement.contains('\n')) {
+            if !document.projection().text_tree().slice(edit.range.clone())
+                .is_ok_and(|text| text.contains('\n')) {
+                continue;
+            }
+            if let Some(source) = document.projection().source_range(edit.range.clone()) {
+                // Removing a paragraph boundary changes delimiter pairing
+                // across both old physical lines. Parsing either former line
+                // alone would certify a pair that the joined run consumes.
+                if let Some(index) = document.state().source_hard_lines.line_at_offset(source.start) {
+                    first = first.min(index);
+                }
+                if let Some(index) = document.state().source_hard_lines.line_at_offset(source.end) {
+                    last = last.max(index);
+                }
+            }
+        }
         let context_boundary = |at, after| {
             let boundary = ordered
                 .iter()

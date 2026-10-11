@@ -98,7 +98,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         let surface = try surface(configuration: configuration)
         let session = try XCTUnwrap(surface.session)
         let stale = try surface.backend.documentState()
-        _ = try session.sendText("iChange")
+        _ = try session.sendTestKeys("iChange")
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         XCTAssertThrowsError(try session.setMarkdownSource(false, expected: stale))
         XCTAssertEqual(surface.backend.sourceFormat, .markdownSource)

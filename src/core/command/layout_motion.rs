@@ -163,6 +163,8 @@ pub enum LayoutMotionError {
     OutsideMaterializedCoverage(LayoutDemand),
     InvalidViewport,
     TextDoesNotMatchLayout,
+    /// A contiguous line command would cross independently owned table cells.
+    TableCellBoundary,
 }
 
 /// `gj`: move down by visual rows, clamping only at the true document end.
@@ -336,6 +338,9 @@ pub fn move_visual_rows(
         let mut target = current_row;
         for _ in 0..row_delta.unsigned_abs() {
             if let Some(next) = snapshot.adjacent_visual_row(target, down, x) { target = next; }
+            else if snapshot.adjacent_table_column_is_missing(target, down) {
+                return Err(horizontal_demand(snapshot, current.text_offset, Some(x)));
+            }
             else if if down { snapshot.contains_document_end() } else { snapshot.contains_document_start() } { break; }
             else { return Err(outside_materialized_coverage(snapshot,
                 if down { LayoutDemandEdge::After } else { LayoutDemandEdge::Before }, 1)); }
@@ -643,6 +648,20 @@ fn locate(
                 && caret.point.affinity == position.affinity
         }) {
             return Ok((row_index, caret));
+        }
+    }
+    // Logical motions can leave the caret inside an indivisible shaping
+    // cluster, or on the only surviving affinity at a line boundary. Resolve
+    // its visual row without changing the logical editing position.
+    let opposite = match position.affinity {
+        BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+        BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+    };
+    if let Ok(geometry) = snapshot.logical_endpoint_geometry(position.text_offset, position.affinity)
+        .or_else(|_| snapshot.logical_endpoint_geometry(position.text_offset, opposite))
+    {
+        if let Some(caret) = nearest_caret(&snapshot.rows[geometry.row_index], geometry.rect.x) {
+            return Ok((geometry.row_index, caret));
         }
     }
     if !snapshot.horizontal_text_is_materialized(position.text_offset) {
@@ -1236,16 +1255,15 @@ mod tests {
     }
 
     #[test]
-    fn invalid_or_visually_indivisible_position_is_not_guessed() {
-        let (_document, snapshot) = snapshot_for("office", 500.0);
+    fn visually_indivisible_position_uses_its_cluster_row() {
+        let (_document, snapshot) = snapshot_for("office\nnext line", 500.0);
         let inside_ligature = VisualPosition {
             text_offset: 2,
             affinity: BoundaryAffinity::Downstream,
         };
-        assert_eq!(
-            gj(&snapshot, inside_ligature, 1, None),
-            Err(LayoutMotionError::PositionNotInLayout(inside_ligature))
-        );
+        let moved = gj(&snapshot, inside_ligature, 1, None).unwrap();
+        assert!(moved.position.text_offset >= "office\n".len());
+        assert_eq!(g0(&snapshot, inside_ligature).unwrap().text_offset, 0);
     }
 
     #[test]
@@ -1313,7 +1331,7 @@ pub(crate) fn command_row_span(
             // A contiguous visual-row interval would include unrelated cells
             // on the same baseline. Structural row deletion has its own
             // semantic command route; never manufacture that source hull.
-            return Err(LayoutMotionError::TextDoesNotMatchLayout);
+            return Err(LayoutMotionError::TableCellBoundary);
         }
     }
     Ok(range)

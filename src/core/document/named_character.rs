@@ -176,6 +176,22 @@ fn code_run_patches(
                 patches.push(SourcePatch::primary(range, replacement));
             }
         }
+        // A retained literal backtick beside a newly authored delimiter would
+        // merge with its run and make the new Code syntax visible. Protect
+        // only that adjacent literal contributor; existing Code runs above
+        // have already been joined with their own delimiter widths.
+        for edge in [group[0].text.start, group.last().unwrap().text.end] {
+            let adjacent = if edge == group[0].text.start {
+                document.previous_grapheme_boundary(edge).map(|start| start..edge)
+            } else { document.next_grapheme_boundary(edge).map(|end| edge..end) };
+            if let Some(adjacent) = adjacent.filter(|range| &document.text()[range.clone()] == "`") {
+                if let Some(source) = document.projection().source_range(adjacent) {
+                    if document.state().source.bytes_in(source.clone()) == Some(document.encoding().encode_fragment("`")?) {
+                        patches.push(SourcePatch::primary(source, document.encoding().encode_fragment("\\`")?));
+                    }
+                }
+            }
+        }
         for pair in group.windows(2) {
             for range in [&pair[0].closing, &pair[1].opening] {
                 if !range.is_empty() {
@@ -256,6 +272,9 @@ impl Document {
         if self.format().is_markdown() {
             let mut retained_traits = Vec::new();
             for trait_style in [SemanticInlineStyle::Strong, SemanticInlineStyle::Emphasis] {
+                let mut remaining = scratch.projection().style_spans_for_region(&range)
+                    .iter().filter(|span| span.application == StyleApplication::Semantic(trait_style))
+                    .count();
                 loop {
                     let Some(span) = scratch
                         .projection()
@@ -269,6 +288,10 @@ impl Document {
                     else {
                         break;
                     };
+                    if remaining == 0 {
+                        return Err(DocumentError::UnsupportedFormatting.into());
+                    }
+                    remaining -= 1;
                     let selected = range.start.max(span.range.start)..range.end.min(span.range.end);
                     let clear = if self.format() == Format::Markdown {
                         span.range.clone()
@@ -312,6 +335,16 @@ impl Document {
                     &mut sources,
                     &mut formatted,
                 )?;
+            }
+        }
+        if self.format().is_markdown() {
+            let cleared = scratch.prepare_typing_markdown_application(range.clone(), None, false)?;
+            publish(&mut scratch, cleared, &mut range, &mut sources, &mut formatted)?;
+            for property in [StyleProperty::CharacterUnderline, StyleProperty::CharacterSuperscript,
+                StyleProperty::CharacterSubscript]
+            {
+                let cleared = scratch.prepare_inline_property(range.clone(), property, false)?;
+                publish(&mut scratch, cleared, &mut range, &mut sources, &mut formatted)?;
             }
         }
         let target = TextRange::new(
@@ -438,6 +471,14 @@ impl Document {
                 }
                 continue;
             }
+            if self.projection().blocks_for_region(&fragment).iter().any(|block| block.markdown_html) {
+                let source = self.projection().source_range(fragment.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                patches.push(SourcePatch::primary(source.start..source.start,
+                    self.encoding().encode_fragment("<code>")?));
+                patches.push(SourcePatch::primary(source.end..source.end,
+                    self.encoding().encode_fragment("</code>")?));
+                continue;
+            }
             // Split at hidden inline syntax as well as structural boundaries.
             // This retains existing emphasis delimiters around each code span.
             let mut runs: Vec<(Range<usize>, Range<usize>)> = Vec::new();
@@ -469,6 +510,8 @@ impl Document {
         if patches.is_empty() {
             return Ok(self.no_op_prepared());
         }
+        super::markdown_block_styles::preserve_retained_literals(self,
+            &[TextEdit::new(range.clone(), self.text()[range.clone()].to_owned())], &mut patches)?;
         let prepared = self.prepare_source_only_patches(patches)?;
         if let PreparedPublication::State(candidate) = &prepared.publication {
             if !candidate

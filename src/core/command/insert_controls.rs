@@ -410,7 +410,8 @@ impl CommandInterpreter {
                 let frontier = self.insert_session.as_ref().and_then(|session| session.replace_journal.last())
                     .is_some_and(|entry| entry.frontier() == Some(self.cursor) && entry.start >= range.start);
                 if !frontier {
-                    output.merge(self.delete_insert_mode_range(document, range.start..self.cursor, step.clone())?);
+                    self.cursor = range.start;
+                    output.cursor_moved = true;
                     break;
                 }
                 let before = self.cursor;

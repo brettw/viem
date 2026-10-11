@@ -447,6 +447,10 @@ impl CommandInterpreter {
                 let origin = self.cursor;
                 self.selection_return_mode = self.mode;
                 if matches!(self.mode, Mode::Insert | Mode::Replace) {
+                    // Selecting accepts the visible indentation. Removing it
+                    // here would invalidate both the selection origin and the
+                    // layout used to resolve the shifted navigation key.
+                    self.generated_indent = None;
                     output = self.finish_insert(document)?;
                     self.cursor = origin;
                 }
@@ -599,6 +603,30 @@ impl CommandInterpreter {
         if matches!(event, InputEvent::Key(Key::Escape | Key::Ctrl('c' | 'C'))) {
             self.selection_behavior = SelectionBehavior::Visual;
             return Ok(None);
+        }
+        if self.is_native_selection() && self.mode != Mode::VisualBlock
+            && matches!(event, InputEvent::Key(Key::Tab | Key::BackTab))
+            && document.format().has_structural_lists()
+        {
+            let range = self.visual_extent(document).range;
+            let unindent = matches!(event, InputEvent::Key(Key::BackTab));
+            if document.list_item_indent_key_request(range.start, unindent)?.is_some() {
+                let Some(prepared) = Self::prepare_paragraph_key(document,
+                    if unindent { Key::BackTab } else { Key::Tab }, ModelRequest::IndentList {
+                        document: document.id(), revision: document.revision(), range, unindent,
+                    })? else { return Ok(Some(CommandOutput::complete())); };
+                let anchors = self.capture_position_anchors(document)?;
+                let mut next = self.clone();
+                if !next.apply_position_map(&anchors, prepared.text_position_map())
+                    .map_err(command_position_document_error)? {
+                    return Err(DocumentError::AmbiguousProjection);
+                }
+                let changed = !prepared.is_no_op();
+                document.commit_model_transaction(prepared).map_err(command_document_error)?;
+                *self = next;
+                return Ok(Some(CommandOutput { document_changed: changed, cursor_moved: true,
+                    ..CommandOutput::complete() }));
+            }
         }
         let replacement = match event {
             InputEvent::Text(text) if !text.is_empty() => Some(InputEvent::Text(text.clone())),

@@ -25,6 +25,10 @@ pub(crate) struct PlannedSourcePatch {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LineSignature {
     kind: super::BlockKind,
+    quote_depth: usize,
+    code_language: Option<String>,
+    thematic_break: bool,
+    containers: Vec<(super::ContainerKind, StyleId, Option<std::sync::Arc<super::BlockDirectFormatting>>)>,
     style: StyleId,
     paragraph: super::BlockProperties,
     character: super::CharacterProperties,
@@ -91,12 +95,24 @@ pub(crate) fn plan(
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
     // Source commands move literal syntax. A copied fence body can acquire a
     // different semantic style at its destination, just as a source edit can.
-    let signatures = if document.format() == super::Format::MarkdownSource {
+    // Code has no source-backed styling: asynchronous syntax must not enter
+    // transaction verification. Its exact text and hard breaks are verified.
+    let signatures = if document.format().is_source_view() || document.format().is_code() {
         None
     } else {
         Some(projection_signatures(document.projection(), &infos)?)
     };
-    let physical = physical_hard_lines(document, line_count)?;
+    let physical: std::collections::BTreeMap<usize, PhysicalHardLine> = if document.format() == super::Format::Markdown {
+        // Only transferred rows and their separator/destination boundaries
+        // need reverse source mappings. An unrelated table or image cannot
+        // make an otherwise local paragraph transfer unavailable.
+        let mut required = (source_lines.start.saturating_sub(1)..source_lines.end.saturating_add(1).min(line_count))
+            .collect::<std::collections::BTreeSet<_>>();
+        if destination < line_count { required.insert(destination); }
+        projected_markdown_rows(document, &required)?
+    } else {
+        physical_hard_lines(document, line_count)?.into_iter().enumerate().collect()
+    };
     let source_bytes = document.source_bytes();
     let mut boundary = document
         .encoding()
@@ -105,8 +121,8 @@ pub(crate) fn plan(
         boundary.extend_from_within(..);
     }
 
-    let first_physical = &physical[source_lines.start];
-    let last_physical = &physical[source_lines.end - 1];
+    let first_physical = &physical[&source_lines.start];
+    let last_physical = &physical[&(source_lines.end - 1)];
     let source_body = first_physical.content.start..last_physical.content.end;
     let source_body_bytes = source_bytes[source_body.clone()].to_vec();
     let trailing_separator = last_physical.separator.clone();
@@ -119,7 +135,9 @@ pub(crate) fn plan(
 
     let mut source_patches = source_patches(
         operation,
-        &physical,
+        line_count,
+        if destination == line_count { document.source_byte_len() } else { physical[&destination].content.start },
+        source_lines.start.checked_sub(1).and_then(|index| physical.get(&index)).and_then(|line| line.separator.clone()),
         source_lines.clone(),
         destination,
         &source_bytes,
@@ -189,7 +207,10 @@ pub(super) fn preserve_source_blank_rows(
     patches: &mut Vec<PlannedSourcePatch>,
     expected: &str,
 ) -> Result<(), DocumentError> {
-    if document.format() != super::Format::MarkdownSource {
+    if !document.format().is_markdown()
+        || document.format() == super::Format::Markdown
+            && !expected.starts_with('\n') && !expected.ends_with('\n') && !expected.contains("\n\n")
+    {
         return Ok(());
     }
     patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
@@ -200,13 +221,17 @@ pub(super) fn preserve_source_blank_rows(
     let decoded = document.encoding().decode(&bytes)?;
     let physical = normalize(&decoded, document.file_format());
     let cooked = super::paragraph_flow::markdown_source(&physical).0;
-    if cooked.text == expected {
+    let visible = (document.format() == super::Format::Markdown).then(||
+        Document::from_bytes_with_file_format(bytes.clone(), document.encoding(), document.format(), document.file_format())
+    ).transpose()?;
+    let actual = visible.as_ref().map_or(cooked.text.as_str(), |document| document.text());
+    if actual == expected {
         return Ok(());
     }
     let mut actual_at = 0;
     let mut missing = Vec::<(usize, usize)>::new();
     for ch in expected.chars() {
-        if cooked.text[actual_at..].starts_with(ch) {
+        if actual[actual_at..].starts_with(ch) {
             actual_at += ch.len_utf8();
         } else if ch == '\n' {
             if let Some((_, count)) = missing.last_mut().filter(|(at, _)| *at == actual_at) {
@@ -220,14 +245,17 @@ pub(super) fn preserve_source_blank_rows(
             return Ok(());
         }
     }
-    if actual_at != cooked.text.len() {
+    if actual_at != actual.len() {
         return Ok(());
     }
     let ending = document
         .encoding()
         .encode_fragment(document.file_format().spelling())?;
     for (at, count) in missing.into_iter().rev() {
-        let source_at = cooked
+        let source_at = if let Some(visible) = &visible {
+            visible.projection().source_insertion_point(at, true)
+                .ok_or(DocumentError::AmbiguousProjection)?
+        } else { cooked
             .units
             .get(
                 cooked
@@ -235,7 +263,7 @@ pub(super) fn preserve_source_blank_rows(
                     .partition_point(|unit| unit.normalized.end <= at),
             )
             .filter(|unit| unit.normalized.start == at)
-            .map_or(bytes.len(), |unit| unit.source.start);
+            .map_or(bytes.len(), |unit| unit.source.start) };
         let mut end = source_at;
         let mut index = physical
             .endings
@@ -313,6 +341,9 @@ pub(super) fn physical_hard_lines(
     document: &Document,
     expected_count: usize,
 ) -> Result<Vec<PhysicalHardLine>, DocumentError> {
+    if document.format() == super::Format::Markdown {
+        return projected_markdown_hard_lines(document);
+    }
     let source = document.source_bytes();
     let decoded = document.encoding().decode(&source)?;
     let normalized = normalize(&decoded, document.file_format());
@@ -349,10 +380,90 @@ pub(super) fn physical_hard_lines(
     Ok(result)
 }
 
+/// Hidden fence lines are not formatted hard lines. Use each visible row's
+/// source owner when the pre-Markdown newline partition cannot describe it.
+/// Full code owners include their fences; unrelated code never prevents a
+/// prose transfer. The ordinary candidate verifier still checks the complete
+/// text, break partition, and source-backed paragraph/inline appearance.
+fn projected_markdown_hard_lines(document: &Document) -> Result<Vec<PhysicalHardLine>, DocumentError> {
+    let required = (0..document.hard_line_snapshot().line_count()).collect();
+    Ok(projected_markdown_rows(document, &required)?.into_values().collect())
+}
+
+fn projected_markdown_rows(document: &Document, required: &std::collections::BTreeSet<usize>)
+    -> Result<std::collections::BTreeMap<usize, PhysicalHardLine>, DocumentError> {
+    let projection = document.projection();
+    let snapshot = document.hard_line_snapshot();
+    let decoded = document.encoding().decode(&document.source_bytes())?;
+    let normalized = normalize(&decoded, document.file_format());
+    let syntax = super::markdown_syntax::Blocks::parse(
+        &super::markdown_syntax::grammar_text(&normalized)).to_source(&normalized);
+    let mut result = std::collections::BTreeMap::<usize, PhysicalHardLine>::new();
+    for &index in required {
+        let info = snapshot.line(index).ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
+        let range = info.content_range();
+        let mut body = projection.source_range(range.clone())
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        if let Ok(Some((source, bytes, _))) = document.wrapped_inline_source(&range, "", "") {
+            if document.state().source.bytes_in(source.clone()).as_deref() == Some(bytes.as_slice()) {
+                body = source;
+            }
+        }
+        let first = document.physical_line_at_source(body.start)?;
+        let last = document.physical_line_at_source(body.end.saturating_sub(1).max(body.start))?;
+        let owner = projection.blocks_for_region(&range).into_iter()
+            .find(|block| block.range.start <= range.start && range.end <= block.range.end)
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        let mut content = if range.start == owner.range.start { first.content_range.start } else { body.start }
+            ..if range.end == owner.range.end { last.content_range.end } else { body.end };
+        if owner.quote_depth > 0 && first.content_range.start < content.start
+            && content.start - first.content_range.start <= 4096 {
+            let prefix = document.state().source.bytes_in(first.content_range.start..content.start)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let prefix = document.encoding().decode_region(&prefix, first.content_range.start)?.text;
+            if prefix.contains('>') && super::markdown_quotes::prefix(&prefix) == prefix.len() {
+                // Each physical continuation row owns its quote prefix. It
+                // must travel with the row, not with its preceding separator.
+                content.start = first.content_range.start;
+            }
+        }
+        if matches!(owner.kind, super::BlockKind::Heading(_)) && range.end == owner.range.end {
+            if let Some(heading) = syntax.blocks.iter().find(|heading|
+                matches!(heading.role, super::markdown_syntax::BlockRole::Heading(_))
+                    && heading.content.start <= body.start && body.end <= heading.content.end) {
+                let final_row = document.physical_line_at_source(heading.range.end.saturating_sub(1))?;
+                content.end = content.end.max(final_row.content_range.end);
+            }
+        }
+        if let Some(block) = projection.blocks_for_region(&range).into_iter()
+            .find(|block| block.range.start <= range.start && range.end <= block.range.end
+                && block.style.0 == "Code Block") {
+            if let Some(fence) = super::markdown_code::fenced_source(document, &block)? {
+                if range.start == block.range.start { content.start = fence.opening.start; }
+                if range.end == block.range.end {
+                    content.end = fence.closing_content_end.unwrap_or(content.end);
+                }
+            }
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|index| result.get_mut(&index)) {
+            if previous.content.end > content.start {
+                // Two logical rows in one physical row (for example <br>)
+                // need semantic splitting, never overlapping source patches.
+                return Err(DocumentError::UnsupportedFormatting);
+            }
+            previous.separator = Some(previous.content.end..content.start);
+        }
+        result.insert(index, PhysicalHardLine { content, separator: None });
+    }
+    Ok(result)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn source_patches(
     operation: HardLineTransfer,
-    physical: &[PhysicalHardLine],
+    line_count: usize,
+    insertion: usize,
+    previous_separator: Option<Range<usize>>,
     source_lines: Range<usize>,
     destination: usize,
     source: &[u8],
@@ -362,16 +473,20 @@ fn source_patches(
     new_boundary: &[u8],
     document: &Document,
 ) -> Result<Vec<PlannedSourcePatch>, DocumentError> {
-    let line_count = physical.len();
-    let insertion = if destination == line_count {
-        source.len()
-    } else {
-        physical[destination].content.start
-    };
     let boundary = |range: &Range<usize>| -> Result<Vec<u8>, DocumentError> {
         let bytes = &source[range.clone()];
         if document.format() == super::Format::Markdown {
             let decoded = document.encoding().decode_region(bytes, range.start)?;
+            let normalized = normalize(&decoded, document.file_format());
+            if normalized.text == "\\\n"
+                || normalized.text.ends_with('\n')
+                    && normalized.text[..normalized.text.len() - 1].len() >= 2
+                    && normalized.text[..normalized.text.len() - 1].bytes().all(|byte| byte == b' ') {
+                // An inline hard break belongs to its old paragraph. At a
+                // transfer boundary it would make the destination absorb the
+                // copied row into a different quote/list owner.
+                return Ok(new_boundary.to_vec());
+            }
             if matches!(decoded.text.as_str(), "\n" | "\r" | "\r\n") {
                 return Ok(concat(bytes, bytes));
             }
@@ -412,10 +527,7 @@ fn source_patches(
                     },
                 ])
             } else {
-                let previous = source_lines
-                    .start
-                    .checked_sub(1)
-                    .and_then(|index| physical[index].separator.clone())
+                let previous = previous_separator
                     .ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
                 let transfer = concat(&body_bytes, &boundary(&previous)?);
                 Ok(vec![
@@ -591,7 +703,21 @@ pub(super) fn projection_signatures(
                 ));
             }
             Ok(LineSignature {
-                kind: block.kind.clone(),
+                // List numbering and container starts are recomputed from
+                // the destination's neighboring items. They are not source
+                // appearance that can travel with a copied or moved row.
+                kind: match block.kind.clone() {
+                    super::BlockKind::ListItem { ordered, level, item_start, marker_is_decoration, .. } =>
+                        super::BlockKind::ListItem { ordered, level, item_start, marker_is_decoration,
+                            ordinal: 0, container_start: false },
+                    kind => kind,
+                },
+                quote_depth: block.quote_depth,
+                code_language: block.code_language.clone(),
+                thematic_break: block.thematic_break,
+                containers: block.containers.iter().map(|member| (
+                    member.container.kind, member.container.style.clone(), member.container.direct_formatting.clone(),
+                )).collect(),
                 style: block.style.clone(),
                 paragraph: block.direct_paragraph.clone(),
                 character: block.direct_default_character.clone(),

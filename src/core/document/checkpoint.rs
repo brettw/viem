@@ -96,6 +96,29 @@ impl Document {
         self.read_only = checkpoint.read_only;
         self.recovered_dirty = checkpoint.recovered_dirty;
     }
+
+    /// Unwinding can abandon nested preparation checkpoints. They have not
+    /// been accepted by their caller, so retire them before restoring the
+    /// enclosing input boundary. Ordinary rollback retains strict stack order.
+    pub(crate) fn rollback_interrupted_command_checkpoint(&mut self, checkpoint: DocumentCommandCheckpoint) {
+        assert_eq!(checkpoint.document, self.id, "checkpoint belongs to this document");
+        assert!(checkpoint.depth <= self.history.command_checkpoint_depth(), "input checkpoint remains active");
+        // Tentative layout/provider work may have observed these identities
+        // before unwinding. Restore the accepted state without issuing them
+        // again to a different candidate on the next input.
+        let next_revision = self.next_revision;
+        let next_projected_block_id = self.next_projected_block_id;
+        let next_artifact_write_token = self.next_artifact_write_token;
+        let next_save_sequence = self.next_save_sequence;
+        while checkpoint.depth < self.history.command_checkpoint_depth() {
+            self.history.rollback_command_checkpoint();
+        }
+        self.rollback_command_checkpoint(checkpoint);
+        self.next_revision = self.next_revision.max(next_revision);
+        self.next_projected_block_id = self.next_projected_block_id.max(next_projected_block_id);
+        self.next_artifact_write_token = self.next_artifact_write_token.max(next_artifact_write_token);
+        self.next_save_sequence = self.next_save_sequence.max(next_save_sequence);
+    }
 }
 
 #[cfg(test)]

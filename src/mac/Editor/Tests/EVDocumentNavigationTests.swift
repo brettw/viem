@@ -29,7 +29,7 @@ import XCTest
     func testControlHomeAndEndNavigateDocumentWhileLineSelectorsStayOnLine() throws {
         let source = "first line\nmiddle line\nlast line"
         let (backend, surface, session, window) = try makeSurface(source)
-        surface.performInput { _ = try session.sendText("jll") }
+        surface.performInput { _ = try session.sendTestKeys("jll") }
         surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfLine(_:)))
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64("first line\nmiddle lin".utf8.count))
         surface.editorView.keyDown(with: try key(119, control: true))
@@ -47,7 +47,7 @@ import XCTest
     func testDocumentSelectorsPreserveInsertModeAndNavigatePromptWhenItIsActive() throws {
         let source = "first\nlast"
         let (backend, surface, session, window) = try makeSurface(source)
-        surface.performInput { _ = try session.sendText("li") }
+        surface.performInput { _ = try session.sendTestKeys("li") }
         surface.editorView.doCommand(by: #selector(NSResponder.moveToEndOfDocument(_:)))
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(source.utf8.count))
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
@@ -75,7 +75,7 @@ import XCTest
                 surface.performInput {
                     _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
                     _ = try session.sendKey(kind: UInt32(VIEM_KEY_DOCUMENT_START))
-                    _ = try session.sendText("jll")
+                    _ = try session.sendTestKeys("jll")
                     if insertMode { _ = try session.sendText("i") }
                 }
                 view.binding = binding

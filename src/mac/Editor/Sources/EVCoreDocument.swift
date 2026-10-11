@@ -1758,15 +1758,22 @@ final class EVCoreViewSession {
             }
         }
         try checked(copied, operation: "Copy layout snapshot")
-        let furniture = try layoutDecorationsExport(identity: copiedInfo.identity)
+        let furniture = optionalPresentation("paragraph decorations", fallback: nil as ([ViemLayoutDecorationV1], [UInt8])?) {
+            try layoutDecorationsExport(identity: copiedInfo.identity)
+        }
+        let cells = optionalPresentation("table controls", fallback: nil as [ViemTableCellV1]?) {
+            try tableCells(identity: copiedInfo.identity)
+        }
         let exported = EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
-                                      decorations: furniture.0, decorationLabels: furniture.1,
-                                      tableCells: try tableCells(identity: copiedInfo.identity),
+                                      decorations: furniture?.0 ?? [], decorationLabels: furniture?.1 ?? [],
+                                      tableCells: cells ?? [],
                                       whitespace: optionalPresentation("whitespace markers", fallback: EVWhitespaceMarkerExport(enabled: false)) {
                                           try whitespaceMarkersExport(identity: copiedInfo.identity)
                                       })
         presentationExportCounters.geometryCopies &+= 1
-        cachedLayoutExport = exported
+        // Missing optional data is retried on the next refresh, rather than
+        // caching a degraded frame for the lifetime of this layout identity.
+        if furniture != nil && cells != nil { cachedLayoutExport = exported }
         return exported
     }
 

@@ -62,7 +62,7 @@ final class EVLinksTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(surface.canUndo)
-        surface.performInput { _ = try session.sendText("iX") }
+        surface.performInput { _ = try session.sendTestKeys("iX") }
         let afterEdit = surface.viewPresentation.cursor_utf8_offset
         surface.openLink(at: target)
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, afterEdit)
@@ -118,7 +118,7 @@ final class EVLinksTests: XCTestCase {
         window.contentView = surface.view
         surface.viewDidLayout()
         let session = try XCTUnwrap(surface.session)
-        surface.performInput { _ = try session.sendText("7l") }
+        surface.performInput { _ = try session.sendTestKeys("7l") }
         let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.shift], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 109))
         let cursor = surface.viewPresentation.cursor_utf8_offset
         let menu = try XCTUnwrap(surface.editorView.menu(for: event))
@@ -132,7 +132,7 @@ final class EVLinksTests: XCTestCase {
         surface.editorView.openLinkURL = { url, completion in opened.append(url); completion(nil) }
         surface.editorView.openLink(item)
         XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a?x=1&y=2"])
-        surface.performInput { _ = try session.sendText("iX") }
+        surface.performInput { _ = try session.sendTestKeys("iX") }
         XCTAssertFalse(surface.editorView.validateMenuItem(item))
         surface.editorView.openLink(item)
         XCTAssertEqual(opened.count, 1)

@@ -282,7 +282,7 @@ impl Document {
             .projection
             .source_insertion_point(block.range.start, true)
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let line = state
+        let mut line = state
             .source_hard_lines
             .line_at_offset(at)
             .and_then(|index| state.source_hard_lines.get(index))
@@ -291,11 +291,30 @@ impl Document {
             .source
             .bytes_in(line.start..line.end)
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let text = state.encoding.decode_region(&bytes, line.start)?.text;
-        let quote = super::super::markdown_quotes::prefix(&text);
+        let mut text = state.encoding.decode_region(&bytes, line.start)?.text;
         let BlockKind::ListItem { level, .. } = block.kind else {
             return Err(DocumentError::AmbiguousProjection);
         };
+        if block.style.0 == "Code Block" && ordered_marker_prefix(&text, level).is_none() {
+            // The first visible code character follows its fenced opener.
+            // That hidden opening line, rather than the literal body, carries
+            // the list item's marker and indentation width.
+            if let Some(previous) = state.source_hard_lines.line_at_offset(line.start)
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| state.source_hard_lines.get(index))
+            {
+                let bytes = state.source.bytes_in(previous.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let opening = state.encoding.decode_region(&bytes, previous.start)?.text;
+                if ordered_marker_prefix(&opening, level).is_some_and(|(_, content)|
+                    super::super::projection::markdown_fence(&opening[content..]).is_some())
+                {
+                    line = previous;
+                    text = opening;
+                }
+            }
+        }
+        let quote = super::super::markdown_quotes::prefix(&text);
         let (start, content) = ordered_marker_prefix(&text, level)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let digits = text[start..].bytes().take_while(u8::is_ascii_digit).count();

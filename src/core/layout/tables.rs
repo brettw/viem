@@ -645,6 +645,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let Some((table, row_index)) = context.row(range) else {
             return Ok(None);
         };
+        let complete_columns = complete_columns || view.complete_horizontal_geometry;
         if self.table_cache.current_layout != Some(layout_revision) {
             self.table_cache.current_layout = Some(layout_revision);
             self.table_cache.remaining_bytes = 64 * 1024;
@@ -852,6 +853,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     .map(|cell| cell.range.clone())
             }
         };
+        let focused_column = view.horizontal_focus_offset.and_then(|at| {
+            if context.source { return None; }
+            let (owner, row, cell) = context.projection.table_cell_at(at)?;
+            (owner.id == table.id).then(|| row.cells.partition_point(|candidate| candidate.range.start < cell.range.start))
+        });
         // Exact active-row geometry is always measured first. Additional cold
         // work is limited independently of the number of rows in the table.
         let mut measured_cells = Vec::new();
@@ -868,7 +874,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 widths.widths[column]
             };
             let column_right = column_left + estimate + if context.source { em * 0.45 } else { 0. };
-            let owns_focus = view.horizontal_focus_offset.is_some_and(|at| {
+            let owns_anchor = view.horizontal_anchor_offset.is_some_and(|at| {
+                ranges(row_index, column).is_some_and(|range| range.start <= at && at <= range.end)
+            });
+            let owns_focus = owns_anchor || focused_column == Some(column) || view.horizontal_focus_offset.is_some_and(|at| {
                 ranges(row_index, column).is_some_and(|range| {
                     range.start <= at && at <= range.end
                         || context.source
@@ -880,8 +889,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                                     && at <= table.source_rows[row_index].range.end)
                 })
             });
-            let visible = column_right >= view.viewport_left
-                && column_left <= view.viewport_left + view.width;
+            // Insets may consume a very narrow pane. Keep the nearest edge
+            // cell editable even when its border is outside the viewport.
+            let visible = (column_right >= view.viewport_left || column + 1 == column_count)
+                && (column_left <= view.viewport_left + view.width || column == 0);
             column_left = column_right;
             if !complete_columns && !visible && !owns_focus {
                 measured_cells.push(Vec::new());
@@ -1630,6 +1641,17 @@ impl TableNavigationIndex {
     }
 }
 impl LayoutSnapshot {
+    /// A neighboring table band can be present while this column is outside
+    /// the horizontal materialization. It is not a document boundary.
+    pub(crate) fn adjacent_table_column_is_missing(&self, index: usize, down: bool) -> bool {
+        let Some(cell) = self.rows.get(index).and_then(|row| row.table_cell.as_ref()) else { return false; };
+        let adjacent = if down { cell.row.checked_add(1).filter(|row| *row < cell.rows) }
+            else { cell.row.checked_sub(1) };
+        let Some(adjacent) = adjacent else { return false; };
+        self.table_cells.iter().any(|candidate| candidate.table_id == cell.table_id && candidate.row == adjacent)
+            && !self.table_navigation.cells.contains_key(&(cell.table_id, adjacent, cell.column))
+    }
+
     /// Geometric vertical movement visits explicit lines inside a cell, then
     /// the same column in the adjacent table row. Ordinary prose enters the
     /// cell beneath its desired x. Missing adjacent geometry returns None.

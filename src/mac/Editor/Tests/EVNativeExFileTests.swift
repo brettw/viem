@@ -52,7 +52,7 @@ import XCTest
         let (directory, backend, document, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
-        _ = try session.sendText("iChanged ")
+        _ = try session.sendTestKeys("iChanged ")
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let bytes = try backend.serializedSource(typeName: EVDocument.markdownType)
         let original = document.fileURL
@@ -231,7 +231,7 @@ import XCTest
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         let originalSurface = window.editorSurface
         let session = try XCTUnwrap((originalSurface as? EVEditorSurfaceController)?.session)
-        _ = try session.sendText("iChanged")
+        _ = try session.sendTestKeys("iChanged")
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         _ = try await perform(window, backend: backend, kind: .newPane).get()
         let active = try XCTUnwrap(window.activeDocument)

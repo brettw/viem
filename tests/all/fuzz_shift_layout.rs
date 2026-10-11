@@ -98,7 +98,7 @@ fn counted_outdent_changes_only_the_requested_source_lines() {
         "line\n".repeat(30)
     );
     let source = format!("  alpha\n\n   \n{tail}");
-    let expected = format!("alpha\n\n\n{tail}");
+    let expected = format!("alpha\n\n \n{tail}");
     let mut core = Core::new(document(&source, Format::MarkdownSource));
     let view = core.add_view(MockTextMeasurementProvider::new(), 180., 16.);
     scroll(&mut core, view, 1000.);

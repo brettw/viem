@@ -53,7 +53,7 @@ pub(super) fn plan(
     let infos = snapshot
         .lines(0..count)
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
-    let source_mode = document.format().is_source_view();
+    let source_mode = document.format().is_source_view() || document.format().is_code();
     let signatures = if source_mode {
         None
     } else {

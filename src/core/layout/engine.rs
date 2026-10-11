@@ -1016,7 +1016,8 @@ impl RegionalLayoutSnapshot {
         if self.lines[0].rows.is_empty() {
             self.lines[0].rows.extend(last);
         }
-        let start = self.lines[0].rows.first().unwrap().text_range.start;
+        let start = self.lines[0].rows.first()
+            .map_or(self.lines[0].text_coverage.start, |row| row.text_range.start);
         self.lines[0].text_coverage.start = start;
         self.lines.extend(following.lines.iter().cloned());
         if let Some(following_sparse) = &following.horizontal_materialization {
@@ -1455,8 +1456,8 @@ impl LayoutSnapshot {
         self.horizontal_materialization.is_some()
             || self.rows.iter().any(|row| row.table_widths_are_exact.is_some()
                 && row.table_cell.as_ref().map_or(row.text_range.len(), |cell| cell.text_range.len()) > 4096)
-            || self.tables.iter().any(|table| self.table_cells.iter().find(|cell| cell.table_id == table.table_id)
-                .is_some_and(|cell| table.column_widths.len() < cell.columns))
+            || self.table_cells.chunk_by(|left, right| left.table_id == right.table_id && left.row == right.row)
+                .any(|cells| cells.len() < cells[0].columns)
     }
 
     pub(crate) fn horizontal_text_is_materialized(&self, offset: usize) -> bool {
@@ -1464,6 +1465,14 @@ impl LayoutSnapshot {
             row.carets.iter().any(|caret| caret.point.text_offset == offset)
                 || row.clusters.iter().any(|cluster| cluster.text_range.start <= offset && offset <= cluster.text_range.end)
         })
+    }
+
+    pub(crate) fn horizontal_row_is_complete(&self, index: usize) -> bool {
+        let Some(row) = self.rows.get(index) else { return false; };
+        if !self.has_horizontal_materialization() { return true; }
+        row.clusters.iter().map(|cluster| cluster.text_range.len()).sum::<usize>() == row.text_range.len()
+            && row.clusters.iter().map(|cluster| cluster.text_range.start).min().unwrap_or(row.text_range.start) == row.text_range.start
+            && row.clusters.iter().map(|cluster| cluster.text_range.end).max().unwrap_or(row.text_range.end) == row.text_range.end
     }
 
     pub fn hit_test(&self, point: LayoutPoint) -> Result<CaretPoint, LayoutError> {
@@ -1880,7 +1889,9 @@ pub(crate) struct LayoutJobViewConfiguration {
     height: f32,
     viewport_left: f32,
     pub(super) horizontal_focus_offset: Option<usize>,
+    pub(super) horizontal_anchor_offset: Option<usize>,
     pub(super) horizontal_desired_x: Option<f32>,
+    pub(super) complete_horizontal_geometry: bool,
     pub(super) regional_viewport_top: f32,
     insets: EdgeInsets,
     wrap: bool,
@@ -2107,6 +2118,15 @@ impl ViewLayout {
         self.invalidate_all_heights();
         self.regional_cache = RegionalLayoutCache::default();
         self.rebased_document_revision = None;
+    }
+
+    /// A rolled-back input may have installed tentative geometry. Retire it
+    /// without consulting the provider; the next layout request rebuilds the
+    /// required region from the restored document and view settings.
+    pub(crate) fn discard_tentative_publication(&mut self) {
+        self.snapshot = None;
+        self.active_layout_job = None;
+        self.discard_for_document_change();
     }
 
     pub fn resize(&mut self, width: f32, height: f32) {
@@ -2703,6 +2723,8 @@ impl ViewLayout {
             height: self.height,
             viewport_left: self.viewport_left,
             horizontal_focus_offset: None,
+            horizontal_anchor_offset: None,
+            complete_horizontal_geometry: false,
             horizontal_desired_x: None,
             regional_viewport_top: 0.0,
             insets: self.insets,
@@ -7688,10 +7710,10 @@ mod tests {
             .set_list_style(0..0, Some(crate::document::ListStyle::Bullet))
             .unwrap();
         engine.relayout(&document, &mut view).unwrap();
-        assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
+        assert!((view.snapshot().unwrap().rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert_eq!(
             document.projection().blocks()[0].style,
-            crate::document::StyleId::from("BulletedList1")
+            crate::document::StyleId::from("Heading1")
         );
     }
 

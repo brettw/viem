@@ -368,6 +368,11 @@ pub(super) fn resolved_character_at_with_style_context(
             StyleApplication::Semantic(super::SemanticInlineStyle::Emphasis) => {
                 semantic.slant = Some(super::FontSlant::Italic)
             }
+            StyleApplication::Automatic(id) if id.0 == "Strikethrough" => {
+                // Strike is authored inline treatment despite sharing the
+                // automatic-style representation with syntax decorations.
+                semantic.strikethrough = Some(true)
+            }
             StyleApplication::Direct(properties) => overlay(&mut direct, properties),
             StyleApplication::Named(id) => named = Some(id),
             _ => {}

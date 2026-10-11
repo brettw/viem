@@ -30,6 +30,9 @@ internal sealed partial class EditorPane
         string? whitespaceStyle = whitespace?.Style.GetRawText();
         if (cachedText != null && drawnLayout != null
             && CoreView.SameLayout(drawnLayout.Info.identity, snapshot.Info.identity)
+            && drawnLayout.Paint.Equals(snapshot.Paint)
+            && ReferenceEquals(drawnLayout.PaintRuns, snapshot.PaintRuns)
+            && ReferenceEquals(drawnLayout.Decorations, snapshot.Decorations)
             && drawnViewport.left == viewport.left
             && (drawnViewport.top == viewport.top || (!WhitespaceEnabled
                 && viewport.top >= drawnTop && viewport.top + Canvas.ActualHeight <= drawnBottom))

@@ -540,7 +540,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
             // Native Copy keeps the Visual selection; leave it before putting.
             XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-            _ = try session.sendText("0P")
+            _ = try session.sendTestKeys("0P")
             surface.refreshPresentation()
             XCTAssertEqual(surface.formattedText, "ababc")
         }

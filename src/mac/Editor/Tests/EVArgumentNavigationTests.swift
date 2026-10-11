@@ -64,7 +64,7 @@ import XCTest
 
     func modify(_ text: String = "changed ") throws {
       let session = try XCTUnwrap(surface.session)
-      _ = try session.sendText("i" + text)
+      _ = try session.sendTestKeys("i" + text)
       _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
     }
 

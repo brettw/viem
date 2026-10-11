@@ -162,6 +162,7 @@ final class EVCodeStylesTests: XCTestCase {
             (.baseParagraph, .blockMarginBottom, .float(0)),
         ])
         let source = (0..<2_000).map { "Line \($0): a short code statement" }.joined(separator: "\n")
+        let viewMargins = EVViewPreferences.shared.margins
         let backends = [EVCoreDocumentBackend(configuration: configuration), EVCoreDocumentBackend(configuration: configuration)]
         let surfaces = try backends.enumerated().map { index, backend in
             try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType)
@@ -170,7 +171,7 @@ final class EVCodeStylesTests: XCTestCase {
             surface.view.frame = NSRect(x: 0, y: 0, width: 560, height: 180)
             surface.viewDidLayout()
             let session = try XCTUnwrap(surface.session)
-            surface.performInput { _ = try session.sendText("\(301 + index * 500)Gzt") }
+            surface.performInput { _ = try session.sendTestKeys("\(301 + index * 500)Gzt") }
             if index == 1 {
                 // An offscreen caret must not pull a view back during global
                 // style changes. This view retains its first visible text.
@@ -211,8 +212,9 @@ final class EVCodeStylesTests: XCTestCase {
                     let top = min(caret.y, ink.map(\.y).min() ?? caret.y)
                     let naturalBottom = caret.y + caret.ascent + caret.descent + caret.leading
                     let bottom = max(naturalBottom, ink.map { $0.y + $0.height }.max() ?? naturalBottom)
-                    expectedCaretBaseline = min(max(expectedCaretBaseline, caret.baseline - top),
-                        layout.info.viewport_height - (bottom - caret.baseline))
+                    expectedCaretBaseline = min(max(expectedCaretBaseline,
+                        caret.baseline - top + Float(viewMargins.top)),
+                        layout.info.viewport_height - Float(viewMargins.bottom) - (bottom - caret.baseline))
                     XCTAssertEqual(caret.baseline - surfaces[index].viewportState.top,
                                    expectedCaretBaseline, accuracy: 0.5)
                     XCTAssertGreaterThanOrEqual(top - surfaces[index].viewportState.top, -0.5)

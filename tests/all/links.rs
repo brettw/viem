@@ -559,8 +559,7 @@ fn deleted_link_appearance_survives_core_viewport_capture_install_and_edit() {
                     },
                 )
                 .unwrap();
-                core.handle(view, CoreEvent::Input(InputEvent::text("rT")))
-                    .unwrap();
+                for ch in "rT".chars() { core.handle(view, CoreEvent::Input(InputEvent::key(ch))).unwrap(); }
                 assert!(core.document().text().contains("Tail"));
             }
             let lines = core.document().projection().hard_line_count();

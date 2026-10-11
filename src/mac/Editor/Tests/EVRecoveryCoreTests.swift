@@ -43,7 +43,7 @@ final class EVRecoveryCoreTests: XCTestCase {
     let sessions = try [XCTUnwrap(first.session), XCTUnwrap(second.session)]
     for (index, session) in sessions.enumerated() {
       _ = try session.resize(width: 350, height: 120)
-      _ = try session.sendText(index == 0 ? "jlll" : "jjlllll")
+      _ = try session.sendTestKeys(index == 0 ? "jlll" : "jjlllll")
       _ = try session.setViewportOrigin(left: 0, top: CGFloat(310 + index * 220))
     }
     func captured(_ surface: EVEditorSurfaceController) throws -> ViemViewRestorationV1 {

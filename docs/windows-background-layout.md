@@ -34,6 +34,22 @@ can retain useful work; installation still validates its complete identity and
 current eligibility. Rapid input may outrun preparation and synchronously shape
 visible content. It never waits for an offscreen worker.
 
+## Presentation recovery
+
+Both native frontends export current layout geometry independently of optional
+paint, selection, paragraph decoration, and table-control exports. A failed
+optional export uses default colors or omits that overlay for the frame, records
+a bounded diagnostic, and retries on the next refresh. macOS also isolates text
+and command-line exports. Recovery invalidates drawing caches when the available
+presentation changes, even if the layout identity is unchanged.
+
+Retained geometry is usable only when the core confirms its complete current
+identity. Failed geometry export cannot make an older layout current. Viewport
+requests read the current core viewport directly, so scrolling can recover while
+an export is unavailable. Optional export failures preserve current hit-testing;
+pointer placement waits for exact geometry if geometry itself is unavailable.
+No recovery path replays an input or changes source.
+
 ## Validation
 
 [Native Mac tests](../src/mac/Editor/Tests/EVBackgroundLayoutTests.swift) cover
@@ -53,6 +69,12 @@ The wrapper also rebuilds the app. The [performance guide](performance.md)
 describes broader measurements and their limits. Glyph registry estimates and
 fixture checks are not complete native memory accounting or physical display
 latency measurements.
+
+[macOS presentation tests](../src/mac/Editor/Tests/EVPresentationCacheIntegrationTests.swift)
+inject optional export failures and check scrolling, pointer placement, source
+preservation, identity validation, and recovery. The corresponding Windows
+[presentation tests](../src/win/Diagnostics/PresentationTests.cs) check optional
+export fallback, pointer placement, and recovered drawing-cache equivalence.
 
 Windows references remain the [scheduler](../src/win/Core/BackgroundLayout.cs),
 [regression tests](../src/win/Diagnostics/BackgroundLayoutTests.cs), and

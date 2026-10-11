@@ -398,11 +398,6 @@ impl H {
                 }
                 self.send(CoreEvent::SetSelectionSemanticStyle { expected, style, enabled: *enabled })
             }
-            Act::CharStyle { .. } if self.core.document().format() == Format::MarkdownSource
-                && std::env::var_os("FUZZ_ALLOW_KNOWN_HANG").is_none() => {
-                // Known hang (BUGS.md C30): skip so the run can finish.
-                Res::Ok
-            }
             Act::CharStyle { style } => {
                 let expected = match self.selection_identity() {
                     Ok(e) => e,
@@ -740,9 +735,11 @@ impl H {
         if snapshot_missing && problems.is_empty() {
             problems.push(("layout_snapshot_missing".into(), "no layout snapshot".into()));
         }
+        let composition = self.core.composition_overlay(self.view).ok().flatten();
         if after_input && problems.is_empty() && self.mode() != Mode::CommandLine {
             let layout = self.core.presentation_layout(self.view).unwrap();
             let snapshot = layout.snapshot().unwrap();
+            let cursor = composition.as_ref().map_or(cursor, |overlay| overlay.selected_range_in_overlay().end);
             let affinity = self.core.command_state(self.view).unwrap().boundary_affinity();
             let alternate = match affinity {
                 BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
@@ -758,13 +755,12 @@ impl H {
         }
         // Mirror the FFI Visual-selection export that refreshPresentation
         // requires; errors other than outside-coverage break every refresh.
-        if problems.is_empty() && !snapshot_missing && matches!(self.mode(), Mode::VisualCharacter | Mode::VisualLine) {
+        if problems.is_empty() && !snapshot_missing && composition.is_none() && matches!(self.mode(), Mode::VisualCharacter | Mode::VisualLine) {
             let state = self.core.command_state(self.view).unwrap();
-            if let Some(anchor) = state.visual_anchor() {
-                let text = self.core.document().text();
-                let (lo, hi) = (anchor.min(cursor), anchor.max(cursor));
-                let hi = text[hi..].graphemes(true).next().map_or(hi, |g| hi + g.len());
-                let layout = self.core.presentation_layout(self.view).unwrap();
+            let layout = self.core.presentation_layout(self.view).unwrap();
+            if let Ok(selection) = self.core.list_selection_identity(self.view) {
+                let range = selection.range();
+                let (lo, hi) = (range.start, range.end);
                 if let (Some(snapshot), Ok(a), Ok(b)) = (layout.snapshot(), self.core.document().text_point(lo), self.core.document().text_point(hi)) {
                     if let Ok(range) = viem_core::document::TextRange::new(a, b) {
                         match snapshot.materialized_selection_rectangles(range, state.boundary_affinity()) {

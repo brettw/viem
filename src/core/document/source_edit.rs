@@ -253,7 +253,14 @@ pub(super) fn insertion_point(
     }
     // Paragraph/line ownership wins at its edges. Affinity still chooses the
     // adjacent inline context at an interior split caret.
-    let downstream = if at == line.start {
+    let downstream = if line.is_empty() && projection.blocks_for_region(&(at..at)).iter()
+        .any(|block| block.range.start < at && block.range.end == at)
+    {
+        // The final empty hard line still belongs to its paragraph or table
+        // cell. Its following contributor is the *outside* paragraph break;
+        // the preceding inline break supplies its interior insertion point.
+        false
+    } else if at == line.start {
         true
     } else if at == line.end {
         false
@@ -266,6 +273,39 @@ pub(super) fn insertion_point(
         preceding.or(following)
     };
     point.or_else(|| projection.source_insertion_point(at, downstream))
+}
+
+/// Folded endings contribute a visible space, but their following physical
+/// line can begin with hidden container prefixes. Upstream affinity remains
+/// before inline openers while staying after those structural prefixes.
+pub(super) fn document_insertion_point(
+    document: &super::Document,
+    at: usize,
+    affinity: Option<BoundaryAffinity>,
+) -> Result<Option<usize>, DocumentError> {
+    let point = insertion_point(document.projection(), at, affinity);
+    if document.format() != super::Format::Markdown || affinity != Some(BoundaryAffinity::Upstream) {
+        return Ok(point);
+    }
+    let Some(point) = point else { return Ok(None); };
+    let spans = document.projection().provenance_touching(&(at..at));
+    let Some(preceding) = spans.iter().find(|span| span.formatted.end == at
+        && !span.formatted.is_empty() && span.source.end == point
+        && document.projection().text_tree().slice(span.formatted.clone()).as_deref() == Ok(" "))
+    else { return Ok(Some(point)); };
+    let bytes = document.state().source.bytes_in(preceding.source.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document.encoding().decode_region(&bytes, preceding.source.start)?;
+    let normalized = super::line_endings::normalize(&decoded, document.file_format());
+    if normalized.endings.is_empty() { return Ok(Some(point)); }
+    let Some(following) = spans.iter().find(|span| span.formatted.start == at && !span.formatted.is_empty()
+        && point < span.source.start) else { return Ok(Some(point)); };
+    let bytes = document.state().source.bytes_in(point..following.source.start)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let gap = document.encoding().decode_region(&bytes, point)?.text;
+    let quote = super::markdown_quotes::prefix(&gap);
+    let prefix = quote + gap[quote..].bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
+    Ok(Some(point + document.encoding().encode_fragment(&gap[..prefix])?.len()))
 }
 
 pub(super) fn visible_runs(

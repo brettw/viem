@@ -26,7 +26,7 @@ final class EVHTMLExportIntegrationTests: XCTestCase {
         let surface = try surface(source, type: EVDocument.markdownSourceType)
         let backend = surface.backend
         let session = try XCTUnwrap(surface.session)
-        _ = try session.sendText("A tail")
+        _ = try session.sendTestKeys("A tail")
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         let before = try backend.recoverySnapshot()
         let canUndo = surface.canUndo

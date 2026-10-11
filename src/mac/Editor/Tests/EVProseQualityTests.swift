@@ -26,7 +26,7 @@ final class EVProseQualityTests: XCTestCase {
           surface.loadViewIfNeeded()
           let session = try XCTUnwrap(surface.session)
           try session.resize(width: 170, height: 100)
-          try session.sendText(command)
+          try session.sendTestKeys(command)
           if ["gg0ciw", "G0o"].contains(command) {
             try session.sendText("Changed é👩🏽‍💻")
             try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
@@ -71,7 +71,7 @@ final class EVProseQualityTests: XCTestCase {
         let originalText = try backend.formattedText()
         for iteration in 0..<12 {
           phase = "iteration \(iteration), search"
-          try session.sendText("gg/word")
+          try session.sendTestKeys("gg/word")
           try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
           try session.sendText("i")
           surface.refreshPresentation()
@@ -121,7 +121,8 @@ final class EVProseQualityTests: XCTestCase {
         try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let session = try EVCoreViewSession(document: backend, width: 200, height: 120)
         let original = try backend.formattedText()
-        try session.sendText("GA")
+        try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)
+        try session.sendKey(kind: UInt32(VIEM_KEY_DOCUMENT_END))
         for count in 1...4 {
           try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
           XCTAssertEqual(

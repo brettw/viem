@@ -3235,7 +3235,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             document.source_bytes(),
-            b"- **bold**\n\n  - child\n\n- Heading"
+            b"- **bold**\n\n  - child\n\n- # Heading"
         );
         assert_eq!(document.text(), "bold\nchild\nHeading");
         assert_eq!(
@@ -3257,7 +3257,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             document.source_bytes(),
-            b"- **bold**\n\n  1. child\n\n- Heading"
+            b"- **bold**\n\n  1. child\n\n- # Heading"
         );
     }
 

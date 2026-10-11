@@ -88,8 +88,21 @@ pub fn resolve_text_object(
     }
     validate_cursor(text, cursor)?;
     let range = match object.kind {
-        TextObjectKind::Word => resolve_word(text, cursor, object.scope, count, false),
-        TextObjectKind::BigWord => resolve_word(text, cursor, object.scope, count, true),
+        TextObjectKind::Word | TextObjectKind::BigWord => {
+            let line = lines.line_at_offset(cursor).ok().map(|line| line.content_range());
+            let on_space = text[cursor..].graphemes(true).next().is_none_or(|g| g.chars().all(char::is_whitespace));
+            if count == 1 && on_space {
+                line.and_then(|line| {
+                    if line.is_empty() { Some(line) } else {
+                        resolve_word(&text[line.clone()], cursor.min(line.end) - line.start,
+                            object.scope, count, object.kind == TextObjectKind::BigWord)
+                            .map(|range| range.start + line.start..range.end + line.start)
+                    }
+                })
+            } else {
+                resolve_word(text, cursor, object.scope, count, object.kind == TextObjectKind::BigWord)
+            }
+        },
         TextObjectKind::Sentence => resolve_sentence(text, lines, cursor, object.scope, count),
         TextObjectKind::Paragraph => resolve_paragraph(text, lines, cursor, object.scope, count),
         TextObjectKind::Quote(kind) => {

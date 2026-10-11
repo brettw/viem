@@ -170,6 +170,58 @@ impl PatchComposition {
 }
 
 impl Document {
+    pub(crate) fn recorded_source_replacement(
+        &self, prepared: &PreparedModelTransaction, before_cursor: usize,
+        after_cursor: usize, inserted: String, original: Option<String>,
+    ) -> Result<RecordedReplacement, ModelTransactionError> {
+        let mut source_delta = 0isize;
+        let mut source_patches = Vec::new();
+        for patch in prepared.summary.source_patches.iter() {
+            let range = patch.range();
+            let start = range.start.checked_add_signed(source_delta).ok_or(DocumentError::AmbiguousProjection)?;
+            source_delta += patch.replacement().len() as isize - range.len() as isize;
+            let original = self.state().source.bytes_in(range).ok_or(DocumentError::AmbiguousProjection)?;
+            source_patches.push(SourcePatch::primary(start..start + patch.replacement().len(), original));
+        }
+        let mut delta = 0isize;
+        let mut text_edits = Vec::new();
+        for splice in prepared.summary.formatted_splices.iter() {
+            let range = splice.old_range();
+            let start = range.start.checked_add_signed(delta).ok_or(DocumentError::AmbiguousProjection)?;
+            delta += splice.inserted_len() as isize - range.len() as isize;
+            let original = self.projection().text_tree().slice(range).map_err(DocumentError::FormattedTextStorage)?;
+            text_edits.push(TextEdit::new(start..start + splice.inserted_len(), original));
+        }
+        Ok(RecordedReplacement {
+            before_cursor, after_cursor, next_target: after_cursor, inserted, original, exit_source: None,
+            restoration: SourceEditRestoration {
+                document: self.id(), expected_revision: prepared.after_revision(), source_patches, text_edits,
+            },
+        })
+    }
+
+    pub(crate) fn combine_recorded_replacements(
+        &self, records: &[RecordedReplacement],
+    ) -> Result<RecordedReplacement, DocumentError> {
+        let mut combined = records.first().cloned().ok_or(DocumentError::AmbiguousProjection)?;
+        let last = records.last().expect("nonempty restoration group");
+        let mut source = PatchComposition::new(self.source_byte_len());
+        let mut text = PatchComposition::new(self.projection().text_tree().byte_len());
+        for record in records.iter().rev() {
+            if record.restoration.document != self.id() { return Err(DocumentError::AmbiguousProjection); }
+            for patch in record.restoration.source_patches.iter().rev() { source.splice(patch.range(), patch.replacement()); }
+            for edit in record.restoration.text_edits.iter().rev() { text.splice(edit.range.clone(), edit.replacement.as_bytes()); }
+        }
+        combined.after_cursor = last.after_cursor;
+        combined.next_target = last.next_target;
+        combined.inserted = records.iter().map(|record| record.inserted.as_str()).collect();
+        combined.original = Some(records.iter().filter_map(|record| record.original.as_deref()).collect());
+        combined.restoration = SourceEditRestoration {
+            document: self.id(), expected_revision: self.revision(),
+            source_patches: source.source_patches(), text_edits: text.formatted_edits(),
+        };
+        Ok(combined)
+    }
 
     pub(crate) fn prepare_recorded_replacement_with_typing_style(
         &self,
@@ -312,7 +364,7 @@ impl Document {
         }
         let source_patches = source.source_patches();
         let text_edits = formatted.formatted_edits();
-        let prepared = self.prepare_text_edits_with_patches(text_edits, Some(source_patches))?;
+        let prepared = self.prepare_text_edits_with_patch_policy(text_edits, Some(source_patches), true)?;
         if let Some(last) = records.last_mut() {
             last.restoration.expected_revision = prepared.after_revision();
         }
@@ -335,9 +387,13 @@ impl Document {
                 actual: self.revision(),
             });
         }
-        let prepared = self.prepare_text_edits_with_patches(
+        // These are the exact inverse source patches from a verified input
+        // frontier. Preserve their authored spelling and structural changes,
+        // including a continuation restored where Enter created a paragraph.
+        let prepared = self.prepare_text_edits_with_patch_policy(
             restoration.text_edits.clone(),
             Some(restoration.source_patches.clone()),
+            true,
         )?;
         self.commit_model_transaction(prepared)?;
         Ok(())

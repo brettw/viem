@@ -44,6 +44,37 @@ pub(super) fn preserve_retained_literals_in_regions(
         let is_boundary = |ch: char| ch.is_ascii_punctuation() || matches!(ch, ' ' | '\t');
         let mut start = edit.range.start;
         let mut end = edit.range.end;
+        if !edit.replacement.is_empty() {
+            // A whitespace-only body can contain an inline HTML hard break.
+            // Typing after that break may make Markdown trim the original
+            // indentation before it, even though it is another logical row.
+            for block in document.projection().blocks_for_region(&edit.range) {
+                if block.range.start >= start { continue; }
+                let mut inspected = block.range.start;
+                while inspected < block.range.end {
+                    let chunk = text.byte_chunk_at(inspected);
+                    let length = chunk.len().min(block.range.end - inspected);
+                    if length == 0 || !chunk[..length].iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\n')) { break; }
+                    inspected += length;
+                }
+                if inspected == block.range.end { start = block.range.start; }
+            }
+        }
+        if !edit.replacement.contains('\n')
+            && text.slice(edit.range.clone()).is_ok_and(|value| value.contains('\n'))
+        {
+            // Paragraph boundaries prevent inline delimiters from pairing.
+            // A join can activate punctuation anywhere in the two adjacent
+            // lines, even when letters separate it from the edited boundary.
+            if let Some(line) = document.projection().hard_line_at_offset(start)
+                .and_then(|index| document.projection().hard_line_range(index)) {
+                start = line.start;
+            }
+            if let Some(line) = document.projection().hard_line_at_offset(end)
+                .and_then(|index| document.projection().hard_line_range(index)) {
+                end = line.end;
+            }
+        }
         for region in regions.iter().filter(|region| {
             region.start <= edit.range.end && edit.range.start <= region.end
         }) {
@@ -79,6 +110,10 @@ pub(super) fn preserve_retained_literals_in_regions(
             .filter(|span| {
                 !span.formatted.is_empty()
                     && !span.source.is_empty()
+                    // A boundary join can start outside a code owner even
+                    // while this retained contributor remains literal code.
+                    // Prose escapes would themselves become visible there.
+                    && !document.projection().markdown_replacement_begins_in_code(&span.formatted)
                     && !edits.iter().any(|selected| {
                         selected.range.start < span.formatted.end
                             && span.formatted.start < selected.range.end
@@ -88,7 +123,7 @@ pub(super) fn preserve_retained_literals_in_regions(
                     })
                     && text
                         .slice(span.formatted.clone())
-                        .is_ok_and(|text| text.chars().all(|ch| ch.is_ascii_punctuation()))
+                        .is_ok_and(|text| text.chars().all(|ch| ch.is_ascii_punctuation() || matches!(ch, ' ' | '\t')))
             })
             .collect::<Vec<_>>();
         let Some(last) = spans.last() else {
@@ -125,6 +160,36 @@ pub(super) fn preserve_retained_literals_in_regions(
                 .checked_add_signed(delta)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let after = at..at + span.source.len();
+            if visible.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                if let Some(previous) = document.projection()
+                        .provenance_touching(&(span.formatted.start..span.formatted.start))
+                        .into_iter().find(|previous| !previous.formatted.is_empty()
+                            && previous.formatted.end == span.formatted.start
+                            && previous.source.end < span.source.start)
+                    {
+                        // A trailing whitespace row has no visible folded
+                        // break. Once it gains text, retain that old absence
+                        // rather than introduce an extra space before it.
+                        let gap = previous.source.end..span.source.start;
+                        let bytes = document.state().source.bytes_in(gap.clone())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let decoded = document.encoding().decode_region(&bytes, gap.start)?;
+                        if line_endings::normalize(&decoded, document.file_format()).text == "\n"
+                            && !patches.iter().any(|patch| patch.range.start < gap.end
+                                && gap.start < patch.range.end)
+                        {
+                            if let Some(row) = document.state().source_hard_lines
+                                .line_at_offset(span.source.start)
+                                .and_then(|index| document.state().source_hard_lines.get(index)) {
+                                let bytes = document.state().source.bytes_in(row.clone())
+                                    .ok_or(DocumentError::AmbiguousProjection)?;
+                                if document.encoding().decode_region(&bytes, row.start)?.text.trim().is_empty() {
+                                    support.push(SourcePatch::primary(gap, Vec::new()));
+                                }
+                            }
+                        }
+                    }
+            }
             if !projected
                 .provenance_contained_in_source(&after)
                 .iter()
@@ -138,7 +203,17 @@ pub(super) fn preserve_retained_literals_in_regions(
                             == Ok(visible.as_str())
                 })
             {
-                escape_retained_punctuation(document, span.formatted.start, &mut support)?;
+                if visible.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                    // Materializing a whitespace-only line can turn its
+                    // retained spaces into hidden Markdown indentation.
+                    // Protect only contributors the candidate would consume.
+                    let syntax = visible.chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+                    support.push(SourcePatch::primary(span.source.clone(),
+                        document.encoding().encode_fragment(&syntax)?));
+
+                } else {
+                    escape_retained_punctuation(document, span.formatted.start, &mut support)?;
+                }
             }
         }
     }
@@ -282,6 +357,9 @@ pub(super) fn preserve_deleted_boundary_spaces(
                 || projection.markdown_replacement_begins_in_code(&span.formatted)
                 || patches.iter().any(|patch| {
                     patch.range.start < span.source.end && span.source.start < patch.range.end
+                        && !(span.source.start <= patch.range.start
+                            && patch.range.end <= span.source.end
+                            && patch.replacement.is_empty())
                 })
             {
                 continue;
@@ -338,6 +416,12 @@ pub(super) fn preserve_deleted_boundary_spaces(
                         == Ok(visible.as_str())
             });
             if !survives {
+                // The folded contributor can already contain a supporting
+                // removal of its old list indentation. Rewrite that shared
+                // contributor once, including the consumed indentation.
+                patches.retain(|patch| !(span.source.start <= patch.range.start
+                    && patch.range.end <= span.source.end && patch.replacement.is_empty()
+                    && !patch.range.is_empty()));
                 patches.push(SourcePatch::primary(
                     span.source,
                     document.encoding().encode_fragment(&replacement)?,
@@ -471,7 +555,6 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                 )
                 || block.range.start != edit.range.start
                 || block.range.start == 0
-                || block.range.end >= projection.text_tree().byte_len()
                 || !seen.insert(block.id)
             {
                 continue;
@@ -485,10 +568,12 @@ pub(super) fn preserve_empty_continuation_paragraphs(
             if deleted_end != block.range.end {
                 continue;
             }
-            let boundaries = [
-                block.range.start - 1..block.range.start,
-                block.range.end..block.range.end + 1,
-            ];
+            let terminal = block.range.end == projection.text_tree().byte_len();
+            let required_endings = if terminal { 2 } else { 4 };
+            let mut boundaries = vec![block.range.start - 1..block.range.start];
+            if !terminal {
+                boundaries.push(block.range.end..block.range.end + 1);
+            }
             if edits.iter().any(|other| {
                 boundaries.iter().any(|boundary| {
                     other.range.start < boundary.end && boundary.start < other.range.end
@@ -501,7 +586,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
             for boundary in boundaries {
                 let Some(source) = hard_boundary_contributor(document, boundary) else {
                     implicit_boundary = true;
-                    count = 4;
+                    count = required_endings;
                     break;
                 };
                 let bytes = document
@@ -517,7 +602,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                         .all(char::is_whitespace)
                 }) {
                     implicit_boundary = true;
-                    count = 4;
+                    count = required_endings;
                     break;
                 }
                 count += normalized.endings.len();
@@ -535,7 +620,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                     continue;
                 }
             }
-            if count >= 4 {
+            if count >= required_endings {
                 continue;
             }
             let at = projection
@@ -559,7 +644,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
             let separator = format!("{}{prefix}", document.file_format().spelling());
             let added = document
                 .encoding()
-                .encode_fragment(&separator.repeat(4 - count))?;
+                .encode_fragment(&separator.repeat(required_endings - count))?;
             if let Some(patch) = patches.iter_mut().find(|patch| patch.range.end == at) {
                 patch.replacement.extend(added);
             } else {
@@ -578,6 +663,7 @@ pub(super) fn preserve_split_literals(
     edits: &[TextEdit],
     patches: &mut Vec<SourcePatch>,
 ) -> Result<(), DocumentError> {
+    preserve_split_heading_closings(document, edits, patches)?;
     let projection = document.projection();
     let mut support = Vec::new();
     for edit in edits {
@@ -742,6 +828,58 @@ pub(super) fn preserve_split_literals(
         }
         patches.push(patch);
     }
+    Ok(())
+}
+
+/// A pasted paragraph break can leave an ATX heading's optional closing hashes
+/// on an ordinary paragraph. Remove only closing syntax that becomes visible;
+/// inline delimiters and a closing sequence that still belongs to a heading
+/// remain byte-identical.
+fn preserve_split_heading_closings(
+    document: &Document,
+    edits: &[TextEdit],
+    patches: &mut Vec<SourcePatch>,
+) -> Result<(), DocumentError> {
+    let projection = document.projection();
+    let mut seen = BTreeSet::new();
+    let mut support = Vec::new();
+    for edit in edits.iter().filter(|edit| edit.replacement.contains('\n')) {
+        for block in projection.blocks_for_region(&edit.range).into_iter().filter(|block|
+            block.style.0.starts_with("Heading") && edit.range.end <= block.range.end)
+        {
+            let Some(body) = projection.source_range(block.range.clone()) else { continue; };
+            let line = document.state().source_hard_lines.line_at_offset(body.end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let (_, content) = document.physical_line_ranges(line)?;
+            if body.end >= content.end || !seen.insert(body.end) { continue; }
+            let bytes = document.state().source.bytes_in(body.end..content.end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, body.end)?;
+            let tail = decoded.text.trim_end_matches([' ', '\t']);
+            let hashes = tail.bytes().rev().take_while(|byte| *byte == b'#').count();
+            if hashes == 0 { continue; }
+            let before = &tail[..tail.len() - hashes];
+            if !before.ends_with([' ', '\t']) { continue; }
+            let start = decoded.source_boundary(before.trim_end_matches([' ', '\t']).len())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let closing = start..content.end;
+            if patches.iter().any(|patch| patch.range.start < closing.end && closing.start < patch.range.end)
+                || projection.provenance_contained_in_source(&closing).iter().any(|span| !span.formatted.is_empty())
+            { continue; }
+            let Some(candidate) = project_local_candidate(document, &block.range, &closing, patches, false)? else { continue; };
+            let delta = candidate.patches.iter().filter(|patch| patch.range.end <= closing.start)
+                .map(|patch| patch.replacement.len() as isize - patch.range.len() as isize).sum::<isize>();
+            let mapped_start = (closing.start - candidate.source_start).checked_add_signed(delta)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let mapped = mapped_start..mapped_start + closing.len();
+            let projected = crate::document::projection::project(&candidate.normalized,
+                super::Format::Markdown, document.revision(), 0, candidate.source_len);
+            if projected.provenance_contained_in_source(&mapped).iter().any(|span| !span.formatted.is_empty()) {
+                support.push(SourcePatch::primary(closing, Vec::new()));
+            }
+        }
+    }
+    patches.extend(support);
     Ok(())
 }
 
@@ -1025,10 +1163,15 @@ fn project_local_candidate_with_limit<'a>(
         return Ok(None);
     };
     let mut band = first.start..following.end;
+    if band.start > band.end || patches.iter().any(|patch| patch.range.start > patch.range.end) {
+        // A discontiguous owner (for example another table cell) cannot be
+        // simulated as one contiguous local source band.
+        return Ok(None);
+    }
     // If all merged content disappears, the source delimiters on both
     // sides become one blank run. Include the preceding delimiter when
     // checking whether that run still represents two logical boundaries.
-    if include_preceding {
+    if include_preceding && range.start > 0 {
         if let Some(before) = projection.source_range(range.start - 1..range.start) {
             band.start = before.start;
         }
@@ -1074,6 +1217,9 @@ fn project_local_candidate_with_limit<'a>(
         .bytes_in(band.clone())
         .ok_or(DocumentError::AmbiguousProjection)?;
     for patch in local.iter().rev() {
+        if patch.range.start < band.start || patch.range.end > band.end {
+            return Ok(None);
+        }
         bytes.splice(
             patch.range.start - band.start..patch.range.end - band.start,
             patch.replacement.iter().copied(),
@@ -1104,7 +1250,8 @@ pub(super) fn preserve_edited_paragraph_boundaries(
     let mut boundaries = BTreeMap::new();
     for edit in edits
         .iter()
-        .filter(|edit| !edit.replacement.is_empty() && !edit.replacement.contains('\n'))
+        .filter(|edit| (!edit.replacement.is_empty() || !edit.range.is_empty())
+            && !edit.replacement.contains('\n'))
     {
         let Some(paragraph) = document
             .projection()
@@ -1130,6 +1277,14 @@ pub(super) fn preserve_edited_paragraph_boundaries(
         if edit.range.end > line.end {
             continue;
         }
+        if line.end < paragraph.range.end
+            && document.projection().hard_breaks_for_region(&(line.end..line.end + 1)).contains(&line.end)
+        {
+            // An empty hard line inside a literal owner (for example a
+            // visible comment) is not an implicit paragraph separator.
+            // Doubling it would add an unrequested visible blank line.
+            continue;
+        }
         let next_is_rule = document
             .projection()
             .hard_line_range(index + 1)
@@ -1140,7 +1295,11 @@ pub(super) fn preserve_edited_paragraph_boundaries(
                     .iter()
                     .any(|block| block.thematic_break)
             });
-        if !line.is_empty() && !next_is_rule {
+        let reference_definition = document.projection().style_spans_for_region(&line).iter()
+            .any(|span| span.application == crate::document::StyleApplication::Automatic("Markdown reference".into())
+                && document.text()[span.range.clone()].trim_start().starts_with('[')
+                && document.text()[span.range.clone()].contains("]:"));
+        if !line.is_empty() && !next_is_rule && !reference_definition {
             continue;
         }
         let Some(boundary) = hard_boundary_contributor(document, line.end..line.end + 1) else {
@@ -1246,6 +1405,36 @@ pub(super) fn preserve_split_boundaries<'a>(
         // behind it. A preceding fence may contribute only one physical ending.
         if range.is_empty() && range.start == line.start && index > 0 {
             let previous = crate::document::edit_boundary::paragraph_at(document, line.start - 1)?;
+            if previous.as_ref().is_some_and(|block| block.range.is_empty()) {
+                if let Some(boundary) = hard_boundary_contributor(document, line.start - 1..line.start) {
+                    let bytes = document.state().source.bytes_in(boundary.clone())
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let decoded = document.encoding().decode_region(&bytes, boundary.start)?;
+                    if line_endings::normalize(&decoded, document.file_format()).text == "\n" {
+                        // A leading empty paragraph can use one source ending.
+                        // After a split its old ending shares the new blank run,
+                        // where each paragraph needs a pair of endings.
+                        boundaries.insert(boundary.end);
+                    }
+                }
+            }
+            if previous.as_ref().is_some_and(|block| block.style.0 != "Code Block") {
+                if let Some(boundary) = hard_boundary_contributor(document, line.start - 1..line.start) {
+                    let at = projection.source_insertion_point(range.start, true)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    if let Some(patch) = patches.iter().find(|patch| patch.range == (at..at)) {
+                        let existing = document.state().source.bytes_in(boundary.clone())
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let existing = document.encoding().decode_region(&existing, boundary.start)?;
+                        let added = document.encoding().decode_region(&patch.replacement, at)?;
+                        if line_endings::normalize(&existing, document.file_format()).text == "\n"
+                            && added.text.chars().all(char::is_whitespace)
+                            && !line_endings::normalize(&added, document.file_format()).endings.is_empty() {
+                            boundaries.insert(boundary.end);
+                        }
+                    }
+                }
+            }
             if let Some(previous) = previous.filter(|block| block.style.0 == "Code Block") {
                 let fence = crate::document::markdown_code::fenced_source(document, &previous)?;
                 let end = if let Some(fence) = fence {
@@ -1337,6 +1526,51 @@ pub(super) fn support_patches(
     support_patches_impl(document, range, make_structural, remove_structure, false)
 }
 
+/// Block prefixes trim body-edge whitespace and make physical hard-break
+/// punctuation literal. Protect the selected body's visible contributors.
+pub(super) fn protect_structured_body(
+    document: &Document,
+    range: &Range<usize>,
+    headings: bool,
+) -> Result<Vec<SourcePatch>, DocumentError> {
+    let projection = document.projection();
+    let mut patches = Vec::new();
+    for block in projection.blocks_for_region(range).into_iter().filter(|block|
+        if range.is_empty() { block.range.start <= range.start && range.start <= block.range.end }
+        else { block.range.start < range.end && range.start < block.range.end }) {
+        if block.style.0 == "Code Block" {
+            continue;
+        }
+        let body = projection.text_tree().slice(block.range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let leading = body.len() - body.trim_start_matches([' ', '\t']).len();
+        let trailing = body.trim_end_matches([' ', '\t']).len();
+        for span in projection.provenance_for_region(&block.range) {
+            let visible = projection.text_tree().slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let edge_space = span.formatted.end <= block.range.start + leading
+                || block.range.start + trailing <= span.formatted.start;
+            if span.source.is_empty() || projection.markdown_replacement_begins_in_code(&span.formatted) {
+                continue;
+            }
+            let bytes = document.state().source.bytes_in(span.source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, span.source.start)?;
+            let syntax = if edge_space && !visible.is_empty()
+                && visible.chars().all(|ch| matches!(ch, ' ' | '\t')) && decoded.text == visible {
+                visible.chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>()
+            } else if headings && visible == "\n"
+                && matches!(line_endings::normalize(&decoded, document.file_format()).text.as_str(), "\\\n" | "  \n") {
+                document.file_format().spelling().to_owned()
+            } else { continue; };
+            patches.push(SourcePatch::primary(span.source, document.encoding().encode_fragment(&syntax)?));
+        }
+    }
+    patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    patches.dedup_by(|left, right| left.range == right.range);
+    Ok(patches)
+}
+
 pub(super) fn code_removal_patches(
     document: &Document,
     range: &Range<usize>,
@@ -1394,25 +1628,21 @@ fn support_patches_impl(
             if first_source == last_source {
                 continue;
             }
-            let source = source_lines.get(first_source).unwrap().start
-                ..source_lines.get(last_source).unwrap().end;
-            let bytes = document
-                .state()
-                .source
-                .bytes_in(source.clone())
-                .ok_or(DocumentError::VerificationFailed)?;
-            let decoded = document.encoding().decode_region(&bytes, source.start)?;
-            let normalized = line_endings::normalize(&decoded, document.file_format());
-            let soft = paragraph_flow::markdown_soft_breaks(&normalized);
-            for ending in normalized
-                .endings
-                .iter()
-                .filter(|ending| soft.contains(&ending.normalized.start))
-            {
-                patches.push(SourcePatch::primary(
-                    ending.source.clone(),
-                    document.encoding().encode_fragment(" ")?,
-                ));
+            for span in spans {
+                if projection.text_tree().slice(span.formatted.clone()).as_deref() != Ok(" ") {
+                    continue;
+                }
+                let bytes = document.state().source.bytes_in(span.source.clone())
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let decoded = document.encoding().decode_region(&bytes, span.source.start)?;
+                if line_endings::normalize(&decoded, document.file_format()).endings.is_empty() {
+                    continue;
+                }
+                let end = crate::document::source_edit::document_insertion_point(
+                    document, span.formatted.end, Some(crate::document::BoundaryAffinity::Upstream),
+                )?.unwrap_or(span.source.end).max(span.source.end);
+                patches.push(SourcePatch::primary(span.source.start..end,
+                    document.encoding().encode_fragment(" ")?));
             }
         }
     }
@@ -1490,6 +1720,8 @@ fn support_patches_impl(
                     })
             };
             if !(resulting_prose(index) && resulting_prose(index + 1)
+                || left.is_empty() && resulting_prose(index)
+                || right.is_empty() && resulting_prose(index + 1)
                 || (first..=last).contains(&index) && untouched_list(index + 1)
                 || untouched_list(index) && (first..=last).contains(&(index + 1)))
             {

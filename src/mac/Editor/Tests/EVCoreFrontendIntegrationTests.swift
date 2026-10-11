@@ -301,3 +301,13 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         XCTAssertEqual(composing.formattedText, "Xbase")
     }
 }
+
+// Test command sequences model individual keyboard events. Native text input
+// is one atomic payload and must not mix Normal commands with inserted text.
+extension EVCoreViewSession {
+    func sendTestKeys(_ keys: String) throws {
+        for scalar in keys.unicodeScalars {
+            _ = try sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
+        }
+    }
+}

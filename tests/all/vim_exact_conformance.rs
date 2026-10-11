@@ -320,7 +320,7 @@ fn case_indent_and_join_commands_pin_text_and_cursor_images() {
 
     let (mut core, view) = new_core("a\nb\nc");
     keys(&mut core, view, "2>>");
-    assert_eq!(core.document().text(), "    a\n    b\nc");
+    assert_eq!(core.document().text(), "  a\n  b\nc");
     assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "a\nb\nc");

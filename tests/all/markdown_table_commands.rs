@@ -8,6 +8,25 @@ use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, ViewId};
 type Editor = Core<MockTextMeasurementProvider>;
 const SOURCE: &str = "| A | B | C |\n| - | - | - |\n| x | **y** | z |\n";
+#[test]
+fn line_commands_crossing_cells_report_the_supported_table_actions() {
+    for prefix in ["", "> ", "- "] {
+        let source = format!("{prefix}| A | B |\n{}| - | - |\n{}| x | y |",
+            if prefix == "- " { "  " } else { prefix },
+            if prefix == "- " { "  " } else { prefix });
+        for keys in ["J", "gJ", "2dd"] {
+            let (mut core,view) = editor(&source);
+            let mut status = None;
+            for ch in keys.chars() {
+                status = core.handle_with_layout(view,CoreEvent::Input(InputEvent::Key(Key::Char(ch))))
+                    .unwrap().command.map(|output|output.status);
+            }
+            assert!(matches!(status,Some(viem_core::command::CommandStatus::Unsupported(ref message))
+                if message.contains("cell selection or a row action")),"{keys}: {status:?}");
+            assert_eq!(core.document().source_bytes(),source.as_bytes());
+        }
+    }
+}
 fn editor(source: &str) -> (Editor, ViewId) {
     let mut core = Core::new(
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),
@@ -212,6 +231,37 @@ fn dd_clears_only_active_cell_line_and_undo_restores_exact_bytes() {
     )
     .unwrap();
     assert_eq!(core.document().source_bytes(), original);
+}
+
+#[test]
+fn editing_only_header_cell_retains_table_structure() {
+    for source in ["| a |\n| --- |", "|a|\n|-|\n\ntext"] {
+        for (keys, expected) in [
+            (vec![Key::Char('x')], ""),
+            (vec![Key::Char('A'), Key::Backspace, Key::Escape], ""),
+            (vec![Key::Char('c'), Key::Char('i'), Key::Char('w'), Key::Char('z'), Key::Escape], "z"),
+            (vec![Key::Char('~')], "A"),
+            (vec![Key::Char('r'), Key::Char('z')], "z"),
+        ] {
+            let (mut core, view) = editor(source);
+            for key in keys {
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+            }
+            let tables = core.document().projection().tables();
+            assert_eq!(tables.len(), 1, "{source:?}, expected {expected:?}");
+            assert_eq!(tables[0].rows.len(), 1);
+            assert_eq!(tables[0].columns.len(), 1);
+            assert_eq!(&core.document().text()[tables[0].rows[0].cells[0].range.clone()], expected);
+            let bytes = core.document().source_bytes();
+            let fresh = Document::from_bytes(bytes.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(fresh.text(), core.document().text());
+            assert_eq!(fresh.projection().tables().len(), 1);
+            core.handle_with_layout(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            core.handle_with_layout(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+            assert_eq!(core.document().source_bytes(), bytes);
+        }
+    }
 }
 #[test]
 fn whole_table_visual_selection_delete_removes_hidden_delimiter() {

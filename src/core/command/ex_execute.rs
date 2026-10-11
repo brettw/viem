@@ -759,6 +759,7 @@ pub enum ExExecuteError {
     InvalidRegex(String),
     UnsupportedRegexAtom(String),
     UnsupportedReplacementAtom(String),
+    UnrepresentableReplacementLineFeed,
     Regex(RegexError),
     PatternNotFound(String),
     DestinationInsideRange,
@@ -859,6 +860,9 @@ impl fmt::Display for ExExecuteError {
                     "unsupported Vim regular-expression atom {atom:?}"
                 )
             }
+            Self::UnrepresentableReplacementLineFeed => formatter.write_str(
+                "A literal line-feed character cannot be inserted with this format and line-ending setting; use \\r in the replacement for a line break.",
+            ),
             Self::UnsupportedReplacementAtom(atom) => {
                 write!(
                     formatter,
@@ -1349,9 +1353,16 @@ pub fn commit_ex(
                 ModelRequest::NavigateHistory { navigation, .. } => Some(*navigation),
                 _ => None,
             };
+            let literal_line_feed = matches!(&request, ModelRequest::ApplyFragmentEdits { edits, .. }
+                if edits.iter().any(|edit| edit.fragments.iter().any(|fragment|
+                    matches!(fragment, crate::document::ReplacementFragment::Literal(payload)
+                        if payload.text().match_indices('\n').any(|(at, _)| payload.break_offsets().binary_search(&at).is_err())))));
             let mut prepared = document
                 .prepare_model_request(request)
-                .map_err(|error| ex_model_error(error, navigation))?;
+                .map_err(|error| if literal_line_feed && matches!(error,
+                    ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject)) {
+                        ExExecuteError::UnrepresentableReplacementLineFeed
+                    } else { ex_model_error(error, navigation) })?;
             document.attach_prepared_source_map(&mut prepared).map_err(|error| ex_model_error(error, navigation))?;
             rebase_print_requests(document, &prepared, &mut plan.outcome)?;
             if let Some(at) = substitution_cursor {
@@ -2072,6 +2083,58 @@ fn plan_substitution(
     Ok(())
 }
 
+/// Independent one-line substitutions can share a single verified transaction.
+/// Keep each target's matching scope and ordered Ex state, but do not publish
+/// intermediate revisions whose contents cannot affect the other targets.
+pub(super) fn prepare_global_substitutions<R: ExRegisterReader + ?Sized>(
+    document: &Document, state: &ExExecutionState, context: &ExExecutionContext,
+    command: &ExCommand, registers: &R, lines: &[ResolvedExLine],
+) -> Result<Option<ExPlan>, ExExecuteError> {
+    let ExAction::Substitute(substitute) = &command.action else { return Ok(None); };
+    if command.range.is_some() || substitute.count.is_some() || substitute.flags.confirm
+        || substitute.flags.print || substitute.flags.number || substitute.flags.list {
+        return Ok(None);
+    }
+    let mut combined = ExPlan::empty(document);
+    let mut all_edits = Vec::new();
+    for line in lines {
+        let mut context = context.clone();
+        context.current_line = document.hard_line_at_offset(line.content.start)
+            .ok_or(ExExecuteError::AddressOverflow)?;
+        context.resolved_addresses = Some(ResolvedExAddresses {
+            document: document.id(), revision: document.revision(),
+            range: Some(ResolvedExRange { document: document.id(), revision: document.revision(),
+                start: line.clone(), end: line.clone(), text: line.text.clone(),
+                source: line.source.clone(), lines: vec![line.clone()] }),
+            destination: None, destination_before_first: false, navigation: None, search: None,
+        });
+        let plan = prepare_ex(document, state, &context, command, registers)?;
+        if !plan.outcome.frontend_requests.is_empty() { return Ok(None); }
+        let ExMutation::Model(ModelRequest::ApplyFragmentEdits { edits, .. }) = plan.mutation else {
+            return Ok(None);
+        };
+        for edit in &edits {
+            if edit.range.start < line.content.start || edit.range.end > line.content.end
+                || edit.fragments.iter().any(|fragment| match fragment {
+                    crate::document::ReplacementFragment::Literal(payload) => !payload.break_offsets().is_empty(),
+                    crate::document::ReplacementFragment::Capture(range) => range.start < line.content.start || range.end > line.content.end,
+                }) {
+                return Ok(None);
+            }
+        }
+        if let Some(ExNavigation::TextOffset(at)) = plan.outcome.navigation {
+            combined.outcome.navigation = Some(ExNavigation::TextOffset(at));
+        }
+        combined.outcome.substitutions += plan.outcome.substitutions;
+        combined.next_substitute = plan.next_substitute;
+        all_edits.extend(edits);
+    }
+    combined.mutation = ExMutation::Model(ModelRequest::ApplyFragmentEdits {
+        document: document.id(), revision: document.revision(), edits: all_edits,
+    });
+    Ok(Some(combined))
+}
+
 /// A physical endpoint contributes its exact byte boundary; a contextual edge
 /// contributes its verified visible boundary. No enclosing paragraph is added.
 pub(super) fn addressed_source_bounds(document: &Document, range: &ResolvedExRange)
@@ -2243,6 +2306,11 @@ fn substitution_edits(
                     text: part,
                     break_offsets,
                 } => {
+                    if document.file_format() != crate::document::FileFormat::Mac
+                        && part.match_indices('\n').any(|(at, _)| break_offsets.binary_search(&at).is_err())
+                    {
+                        return Err(ExExecuteError::UnrepresentableReplacementLineFeed);
+                    }
                     breaks.extend(break_offsets.iter().map(|at| text.len() + at));
                     text.push_str(&part);
                     fragments.push(ReplacementFragment::Literal(FormattedTextPayload::new(

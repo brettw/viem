@@ -627,7 +627,8 @@ mod tests {
         core.handle_with_layout(view, key(Key::Ctrl('v'))).unwrap();
         for character in "6000ljd".chars() {
             let output = core.handle_with_layout(view, key(Key::Char(character))).unwrap();
-            assert!(matches!(output.command.unwrap().status, CommandStatus::Complete | CommandStatus::Pending));
+            let status = output.command.unwrap().status;
+            assert!(matches!(status, CommandStatus::Complete | CommandStatus::Pending), "{character}: {status:?}");
         }
         let suffix = &line[6001..];
         assert_source(&core, &format!("{suffix}\n{suffix}"));

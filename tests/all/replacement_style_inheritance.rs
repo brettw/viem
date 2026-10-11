@@ -45,7 +45,8 @@ fn replacing_all_inline_styled_text_retains_its_style() {
 #[test]
 fn vim_change_and_dot_resolve_the_style_at_each_new_replacement() {
     let (mut core, view) = fixture("**bold** regular");
-    text(&mut core, view, "cw");
+    key(&mut core, view, Key::Char('c'));
+    key(&mut core, view, Key::Char('w'));
     text(&mut core, view, "X");
     key(&mut core, view, Key::Escape);
     key(&mut core, view, Key::Char('w'));

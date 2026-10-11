@@ -207,7 +207,7 @@ import XCTest
         let (_, surface, session, window) = try makeSurface()
         surface.performInput { _ = try session.sendText(":s bar.txt"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
         XCTAssertTrue(surface.commandOutput?.contains(":saveas <file>") == true)
-        surface.performInput { _ = try session.sendText("i🙂"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
+        surface.performInput { _ = try session.sendTestKeys("i🙂"); _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         let state = try surface.backend.documentState()
         surface.performInput { _ = try session.setEncoding(UInt32(VIEM_ENCODING_LATIN1), expected: state) }
         XCTAssertNotNil(surface.commandOutput)

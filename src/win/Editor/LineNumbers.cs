@@ -47,7 +47,7 @@ internal sealed partial class EditorPane
         lineNumberCanvas.PointerWheelChanged += (_, args) => {
             if (View == null) return;
             var point = args.GetCurrentPoint(lineNumberCanvas);
-            Run(() => View.Scroll(View.Viewport.left, View.Viewport.top - point.Properties.MouseWheelDelta / 120f * 60));
+            Run(() => { RefreshScrollGeometry(); View.Scroll(View.Viewport.left, View.Viewport.top - point.Properties.MouseWheelDelta / 120f * 60); });
             args.Handled = true;
         };
     }

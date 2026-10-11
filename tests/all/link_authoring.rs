@@ -63,6 +63,66 @@ fn insert_selected_label_edit_destination_and_unlink_are_exactly_undoable() {
         assert_eq!(doc.source_bytes(), inserted);
     }
 }
+
+#[test]
+fn inserting_links_across_emphasis_preserves_selected_and_unselected_styles() {
+    use viem_core::layout::DocumentLayoutStyles;
+    for (source, range) in [("one **two** three", 2..6), ("one *two* three", 0..6),
+        ("a*b*c", 0..2), ("one **two** three", 5..10), ("one ***two*** three", 2..6)] {
+        let mut doc = document(source, Format::Markdown);
+        let before = doc.text().to_owned();
+        let styles: Vec<_> = before.char_indices().map(|(at, _)|
+            DocumentLayoutStyles::semantic_character_at(doc.projection(), at, false).unwrap()).collect();
+        apply(&mut doc, LinkEditIntent::Insert { range: range.clone(), text: before[range.clone()].into(), destination: "target.md".into() });
+        assert_eq!(doc.text(), before, "{source:?} {range:?}");
+        for ((at, _), original) in before.char_indices().zip(styles) {
+            let now = DocumentLayoutStyles::semantic_character_at(doc.projection(), at, false).unwrap();
+            assert_eq!((now.bold, now.slant), (original.bold, original.slant), "{source:?}, offset {at}");
+            assert_eq!(doc.link_at(doc.text_point(at).unwrap()).unwrap().as_deref(), range.contains(&at).then_some("target.md"));
+        }
+        let bytes = doc.source_bytes();
+        let fresh = document(std::str::from_utf8(&bytes).unwrap(), Format::Markdown);
+        assert_eq!(doc.text(), fresh.text());
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), bytes);
+    }
+}
+
+#[test]
+fn typing_and_deleting_autolink_syntax_keeps_the_requested_visible_label() {
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    for (source, at, keys, expected) in [
+        ("<https://auto.link>", 6, vec![Key::Backspace], "https//auto.link"),
+        ("<https://auto.link>", 5, vec![Key::Delete], "https//auto.link"),
+        ("<mailto:a@b.c>", 2, vec![Key::Char('-'), Key::Char(' ')], "a@- b.c"),
+    ] {
+        let mut core = Core::new(document(source, Format::Markdown));
+        let expected = if source.contains("mailto:") {
+            let mut expected = core.document().text().to_owned();
+            expected.insert_str(at, "- ");
+            expected
+        } else { expected.to_owned() };
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+        core.handle_with_layout(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        for key in keys { core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap(); }
+        assert_eq!(core.document().text(), expected, "{source:?}");
+        let bytes = core.document().source_bytes();
+        assert_eq!(document(std::str::from_utf8(&bytes).unwrap(), Format::Markdown).text(), expected);
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+        assert_eq!(core.document().source_bytes(), bytes);
+    }
+}
 #[test]
 fn source_popup_recognizes_opening_label_destination_and_closing_syntax() {
     let mut doc = document("[label](<docs/local file.md>)", Format::MarkdownSource);
@@ -142,6 +202,23 @@ fn failed_link_edits_leave_bytes_revision_and_history_untouched() {
     doc.insert(0, "new ").unwrap();
     assert!(doc.commit_model_transaction(prepared).is_err());
     assert_eq!(doc.source_bytes(), b"new before selection after");
+}
+
+#[test]
+fn link_and_image_authoring_availability_excludes_unrepresentable_contexts() {
+    for (source, format, range) in [
+        ("one\n\ntwo", Format::Markdown, 1..5),
+        ("`code`", Format::Markdown, 1..1),
+        ("```\ncode\n```", Format::Markdown, 1..1),
+        ("plain [link](u) end", Format::Markdown, 3..9),
+        ("a\\\nb", Format::MarkdownSource, 2..2),
+        ("``", Format::MarkdownSource, 1..1),
+        ("[ref]: /url", Format::MarkdownSource, 2..2),
+    ] {
+        let doc = document(source, format);
+        assert!(!doc.can_insert_link(range.clone()), "{source:?} {format:?} {range:?}");
+        assert!(!doc.can_insert_image(range.clone()), "{source:?} {format:?} {range:?}");
+    }
 }
 #[test]
 fn links_preserve_encoding_and_reject_unrepresentable_labels_without_changes() {
@@ -355,8 +432,8 @@ fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport(
         Format::MarkdownSource,
     ));
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
-    core.handle(view, CoreEvent::Input(InputEvent::text("iunsaved ")))
-        .unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::text("unsaved "))).unwrap();
     let id = core.document().id();
     let revision = core.document().revision();
     let (_, work) = measure_document_work(|| {
@@ -707,8 +784,10 @@ fn native_link_publication_resumes_native_and_select_typing_in_a_separate_undo_u
             let mut core = Core::new(document("label tail", format));
             let view = core.add_view(MockTextMeasurementProvider::new(), 600.0, 200.0);
             if select_mode {
-                core.handle(view, CoreEvent::Input(InputEvent::text("gh$")))
-                    .unwrap();
+                for key in "v$".chars() {
+                    core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+                }
+                core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('g')))).unwrap();
                 assert!(core.command_state(view).unwrap().is_select_mode());
             } else {
                 core.handle(
@@ -764,8 +843,9 @@ fn native_link_publication_keeps_visual_normal_and_restarts_insert_replace_sessi
     for entry in ["v$", "i", "R"] {
         let mut core = Core::new(document("label tail", Format::Markdown));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600.0, 200.0);
-        core.handle(view, CoreEvent::Input(InputEvent::text(entry)))
-            .unwrap();
+        for key in entry.chars() {
+            core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+        }
         let expected = core.list_selection_identity(view).unwrap();
         core.edit_link(
             view,

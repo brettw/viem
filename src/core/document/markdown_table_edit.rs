@@ -847,7 +847,10 @@ impl Document {
         let Some((table, row, cell)) = self.projection().table_cell_at(edit.range.start) else {
             return self.table_following_literal_pipe_patches(edit, affinity);
         };
-        if edit.range == table.range && !edit.range.is_empty() {
+        if edit.range == table.range && edit.range != cell.range && !edit.range.is_empty() {
+            // A one-cell table's text range is also its only cell's range.
+            // Ordinary text replacement still edits that cell; removing the
+            // table is an explicit line/row or whole-document intention.
             // The physical ending after the last row also supports the
             // unselected following paragraph boundary. Keep its original
             // spelling when the table has a following formatted owner.
@@ -1075,8 +1078,16 @@ impl Document {
             scratch.commit_model_transaction(prepared)?;
             Ok(())
         };
-        while scratch.projection().tables()[table_index].columns.len() < column + width {
-            let table = &scratch.projection().tables()[table_index];
+        let missing_columns = column.checked_add(width)
+            .ok_or_else(|| unsupported("The clipboard cell matrix is too large."))?
+            .saturating_sub(table.columns.len());
+        let missing_rows = row.checked_add(cells.len())
+            .ok_or_else(|| unsupported("The clipboard cell matrix is too large."))?
+            .saturating_sub(table.rows.len());
+        for _ in 0..missing_columns {
+            let table = scratch.projection().tables().get(table_index)
+                .ok_or(DocumentError::VerificationFailed)?;
+            let previous = table.columns.len();
             let (prepared, _) = scratch.prepare_table_edit(
                 scratch.id(),
                 scratch.revision(),
@@ -1087,9 +1098,15 @@ impl Document {
                 },
             )?;
             apply(&mut scratch, prepared)?;
+            if scratch.projection().tables().get(table_index)
+                .is_none_or(|table| table.columns.len() != previous + 1) {
+                return Err(DocumentError::VerificationFailed.into());
+            }
         }
-        while scratch.projection().tables()[table_index].rows.len() < row + cells.len() {
-            let table = &scratch.projection().tables()[table_index];
+        for _ in 0..missing_rows {
+            let table = scratch.projection().tables().get(table_index)
+                .ok_or(DocumentError::VerificationFailed)?;
+            let previous = table.rows.len();
             let (prepared, _) = scratch.prepare_table_edit(
                 scratch.id(),
                 scratch.revision(),
@@ -1100,6 +1117,10 @@ impl Document {
                 },
             )?;
             apply(&mut scratch, prepared)?;
+            if scratch.projection().tables().get(table_index)
+                .is_none_or(|table| table.rows.len() != previous + 1) {
+                return Err(DocumentError::VerificationFailed.into());
+            }
         }
         for (row_offset, values) in cells.iter().enumerate() {
             for (column_offset, value) in values.iter().enumerate() {

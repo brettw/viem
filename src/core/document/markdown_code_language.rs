@@ -72,11 +72,7 @@ impl Document {
         let decoded = self.encoding().decode_region(&bytes, fence.opening.start)?;
         let normalized = normalize(&decoded, self.file_format());
         let line = normalized.text.trim_end_matches('\n');
-        let prefix = super::super::markdown_quotes::prefix(line);
-        let prefix = prefix
-            + super::super::markdown_blocks::marker_prefix_length(&line[prefix..]).unwrap_or(0);
-        let prefix =
-            prefix + line[prefix..].len() - line[prefix..].trim_start_matches([' ', '\t']).len();
+        let prefix = super::super::markdown_quotes::container_prefix(line);
         let info = prefix + fence.width;
         let start = info + line[info..].len() - line[info..].trim_start_matches([' ', '\t']).len();
         let end = if language.is_none() {

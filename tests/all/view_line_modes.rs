@@ -256,16 +256,16 @@ fn indentation_of_visual_rows_is_batched_counted_and_repeatable() {
     keys(&mut core, view, "2>>");
     assert_eq!(
         core.document().text(),
-        format!("    {}    {}", &original[..second], &original[second..])
+        format!("  {}  {}", &original[..second], &original[second..])
     );
     keys(&mut core, view, "uV2>");
-    assert!(core.document().text().starts_with("        abcdefgh"));
+    assert!(core.document().text().starts_with("    abcdefgh"));
     let after = core.document().text().to_owned();
     keys(&mut core, view, ".");
     assert!(core
         .document()
         .text()
-        .starts_with("                abcdefgh"));
+        .starts_with("        abcdefgh"));
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), after);
 }
@@ -741,7 +741,7 @@ fn counted_absolute_operators_edit_physical_lines_in_both_modes() {
             keys(&mut core, view, "u");
             assert_eq!(core.document().source_bytes(), original.as_bytes());
         }
-        for (command, expected) in [("gU2G", "FIRST\nSECOND\nthird"), (">2G", "    first\n    second\nthird")] {
+        for (command, expected) in [("gU2G", "FIRST\nSECOND\nthird"), (">2G", "  first\n  second\nthird")] {
             let document = Document::from_bytes(b"first\nsecond\nthird".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
             let (mut core, view) = editor(document, 45.);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();

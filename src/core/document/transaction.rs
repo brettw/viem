@@ -2006,9 +2006,17 @@ impl Document {
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if range == (0..self.projection().text_tree().byte_len()) {
+            return self.prepare_clear_document_content();
+        }
         if let Some(prepared) = self.prepare_table_line_deletion(&range)? { return Ok(prepared); }
-
-
+        if self.format() == Format::Markdown {
+            let support = self.markdown_structural_support(&[TextEdit::new(range.clone(), "")])?;
+            if !support.is_empty() {
+                return self.prepare_markdown_supporting_patches(support, |scratch|
+                    scratch.prepare_line_deletion(range.clone()));
+            }
+        }
         let range = { range };
         let patches = if self.format() == Format::Markdown {
             markdown_list_structure::deletion_patches(self, &range, true)?
@@ -2188,7 +2196,7 @@ impl Document {
             self.build_table_row_candidate(&source, after_revision, &target_text,
                 text_splice_work, &edits, &source_patches)?
         } else { None };
-        if table_candidate.is_none() && translate_source && self.source_edit_requires_reprojection(&edits, &source_patches)? {
+        if table_candidate.is_none() && self.source_edit_requires_reprojection(&edits, &source_patches)? {
             // Source-mode delimiters are editable syntax. Changing a fence
             // can make formerly literal blank lines become paired paragraph
             // separators, so the new projection need not be a flat splice of
@@ -2540,7 +2548,8 @@ impl Document {
                 || line + 1 < self.state().source_hard_lines.len()
                     && self.file_format() != FileFormat::Mac
                     && tail.trim().is_empty()
-                || prefix.trim_start().starts_with('#') && tail.trim().is_empty()
+                || body_prefix.trim_start().starts_with('#')
+                    && tail.trim().bytes().all(|byte| byte == b'#')
             {
                 let end = escaped.trim_end_matches([' ', '\t']).len();
                 let spaces = escaped[end..]
@@ -2587,12 +2596,6 @@ impl Document {
     ) -> Result<bool, ModelTransactionError> {
         if self.format() != Format::MarkdownSource {
             return Ok(false);
-        }
-        if edits.len()==1 && patches.len()==1 {
-            let edit=&edits[0];
-            if !edit.replacement.is_empty() && edit.replacement.chars().all(char::is_alphanumeric)
-                && self.projection().table_cell_at(edit.range.start).is_some_and(|(_,_,cell)|edit.range.end<=cell.range.end && self.table_source_text(cell.source_range.clone()).is_ok_and(|text|text.chars().all(|ch|ch.is_alphanumeric()||matches!(ch,' '|'\t'))))
-                && self.encoding().encode_fragment(&edit.replacement)?==patches[0].replacement {return Ok(false);}
         }
         let Some(region) = self.line_local_projection_region(edits, patches)? else {
             return Ok(true);
@@ -2765,7 +2768,8 @@ impl Document {
                     .match_indices('\n')
                     .map(|(at, _)| at))
         });
-        if self.format() == Format::MarkdownSource && (without_breaks || breaks_are_newlines) {
+        if self.format() == Format::MarkdownSource && (without_breaks || breaks_are_newlines)
+            && edits.iter().all(|edit| !edit.payload.text().contains('\r')) {
             let patches = self.translate_source_edits(
                 logical_edits
                     .iter()
@@ -3185,6 +3189,33 @@ impl Document {
         if style.0 == "Code Block" {
             return self.prepare_markdown_code_style(&range, true);
         }
+        if self.format().is_source_view() {
+            let selected = structural_style::selected_blocks(self, &range);
+            if !selected.is_empty() && selected.iter().all(|block|
+                block.style == style && !block.thematic_break
+                    && (style != self.projection().style_sheet().base_paragraph
+                        || matches!(block.kind, super::BlockKind::Paragraph) && block.quote_depth == 0))
+            {
+                return Ok(self.no_op_prepared());
+            }
+        }
+        if self.format() == Format::Markdown {
+            let selected = structural_style::selected_blocks(self, &range);
+            if !selected.is_empty() && selected.iter().all(|block| block.style == style
+                && (style != self.projection().style_sheet().base_paragraph
+                    || block.quote_depth == 0 && matches!(block.kind, super::BlockKind::Paragraph)
+                        && !block.thematic_break)) {
+                return Ok(self.no_op_prepared());
+            }
+            let identity = selected.iter().filter(|block| matches!(block.kind, super::BlockKind::Heading(_)))
+                .map(|block| TextEdit::new(block.range.clone(), self.text()[block.range.clone()].to_owned()))
+                .collect::<Vec<_>>();
+            let support = self.markdown_structural_support(&identity)?;
+            if !support.is_empty() {
+                return self.prepare_markdown_supporting_patches(support, |scratch|
+                    scratch.prepare_markdown_paragraph_style_raw(range.clone(), style.clone()));
+            }
+        }
         if self.format() == Format::Markdown {
             let selected = self
                 .projection()
@@ -3261,6 +3292,10 @@ impl Document {
         } else {
             Vec::new()
         };
+        if self.format() == Format::Markdown && level > 0 {
+            patches.extend(markdown_block_styles::protect_structured_body(self, &range, true)?);
+        }
+        let mut styled_source_lines = BTreeSet::new();
         for index in first..self.projection().hard_line_count() {
             let line = self
                 .projection()
@@ -3270,6 +3305,7 @@ impl Document {
                 break;
             }
             let (source_line, decoded) = self.decoded_source_hard_line(&line, index)?;
+            if !styled_source_lines.insert(source_line.start) { continue; }
             let mut container_prefix = super::markdown_quotes::prefix(&decoded.text);
             let in_list = self
                 .projection()
@@ -3277,9 +3313,7 @@ impl Document {
                 .iter()
                 .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }));
             if in_list {
-                container_prefix +=
-                    super::markdown_blocks::marker_prefix_length(&decoded.text[container_prefix..])
-                        .unwrap_or(0);
+                container_prefix = super::markdown_quotes::container_prefix(&decoded.text);
             }
             let body = &decoded.text[container_prefix..];
             let (old_prefix, _) = super::projection::markdown_block_prefix(body, 0, body.len());
@@ -3294,9 +3328,13 @@ impl Document {
                     .encode_fragment(&decoded.text[..container_prefix])?
                     .len();
             let removed_bytes = self.encoding().encode_fragment(&body[..old_prefix])?.len();
+            let inserted_prefix = if in_list && container_prefix > 0
+                && !decoded.text[..container_prefix].ends_with([' ', '\t']) && !prefix.is_empty() {
+                format!(" {prefix}")
+            } else { prefix.clone() };
             patches.push(SourcePatch::primary(
                 source_start..source_start + removed_bytes,
-                self.state().encoding.encode_fragment(&prefix)?,
+                self.state().encoding.encode_fragment(&inserted_prefix)?,
             ));
             let visible = self
                 .projection()
@@ -3309,9 +3347,7 @@ impl Document {
                 0
             };
             if self.format() == Format::MarkdownSource && in_list {
-                visible_container +=
-                    super::markdown_blocks::marker_prefix_length(&visible[visible_container..])
-                        .unwrap_or(0);
+                visible_container = super::markdown_quotes::container_prefix(&visible);
             }
             let visible_body = &visible[visible_container..];
             let (visible_prefix, _) =
@@ -3322,7 +3358,7 @@ impl Document {
                 0
             };
             let replacement = if self.format() == Format::MarkdownSource {
-                prefix.clone()
+                inserted_prefix
             } else {
                 String::new()
             };
@@ -3343,6 +3379,13 @@ impl Document {
         range: Range<usize>,
         style: Option<super::ListStyle>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.validate_range(&range)?;
+        if style.is_none() && self.format().is_markdown()
+            && structural_style::selected_blocks(self, &range).iter()
+                .all(|block| !matches!(block.kind, super::BlockKind::ListItem { .. }))
+        {
+            return Ok(self.no_op_prepared());
+        }
         if let Some(prepared) = self.prepare_exclusive_structural_style(
             range.clone(),
             structural_style::Assignment::List(style),
@@ -3358,6 +3401,17 @@ impl Document {
         style: Option<super::ListStyle>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if self.format() == Format::Markdown && style.is_some() {
+            let identity = structural_style::selected_blocks(self, &range).into_iter()
+                .filter(|block| matches!(block.kind, super::BlockKind::Heading(_)))
+                .map(|block| TextEdit::new(block.range.clone(), self.text()[block.range.clone()].to_owned()))
+                .collect::<Vec<_>>();
+            let support = self.markdown_structural_support(&identity)?;
+            if !support.is_empty() {
+                return self.prepare_markdown_supporting_patches(support, |scratch|
+                    scratch.prepare_list_style_raw(range.clone(), style));
+            }
+        }
         if style.is_none() {
             if let Some(prepared) = self.prepare_markdown_list_as_prose(&range)? {
                 return Ok(prepared);
@@ -3386,6 +3440,10 @@ impl Document {
             Vec::new()
         };
         let mut ordinal = 1usize;
+        let mut wrapped_code = BTreeSet::new();
+        if self.format() == Format::Markdown && style.is_some() {
+            patches.extend(markdown_block_styles::protect_structured_body(self, &range, false)?);
+        }
         for index in first..self.projection().hard_line_count() {
             let line = self
                 .projection()
@@ -3393,6 +3451,28 @@ impl Document {
                 .ok_or(DocumentError::VerificationFailed)?;
             if index != first && line.start >= range.end {
                 break;
+            }
+            if self.format() == Format::Markdown {
+                if let Some(style) = style {
+                    if let Some(block) = self.projection().blocks_for_region(&line).into_iter()
+                        .find(|block| block.range.start <= line.start && line.end <= block.range.end
+                            && block.style.0 == "Code Block"
+                            && !matches!(block.kind, super::BlockKind::ListItem { .. }))
+                    {
+                        if wrapped_code.insert(block.id) {
+                            let prefix = match style {
+                                super::ListStyle::Bullet => "- ".to_owned(),
+                                super::ListStyle::Numbered => format!("{ordinal}. "),
+                            };
+                            for (range, text) in super::markdown_code::list_wrapper_patches(self, &block, &prefix)? {
+                                patches.push(SourcePatch::primary(range,
+                                    self.encoding().encode_fragment(&text)?));
+                            }
+                            ordinal += 1;
+                        }
+                        continue;
+                    }
+                }
             }
             let visible = self
                 .projection()
@@ -3421,15 +3501,8 @@ impl Document {
                         && matches!(block.kind, super::BlockKind::ListItem { .. })
                 });
             let remove_visible = if self.format() == Format::Markdown {
-                if style.is_some() && !already_list {
-                    indent
-                } else {
-                    0
-                }
+                0
             } else if matches!(visible_kind, super::BlockKind::ListItem { .. })
-                || (style.is_some()
-                    && self.format() == Format::MarkdownSource
-                    && matches!(visible_kind, super::BlockKind::Heading(_)))
             {
                 visible_prefix
             } else if style.is_some() {
@@ -3463,15 +3536,13 @@ impl Document {
             let (source_prefix, source_kind) =
                 super::projection::markdown_block_prefix(source_body, 0, source_body.len());
             let complete_marker = super::markdown_blocks::marker_prefix_length(source_body);
+            let visible_indentation = self.format() == Format::Markdown && !already_list && indent > 0;
             let remove_source = if let Some(prefix) = complete_marker {
                 prefix
             } else if matches!(source_kind, super::BlockKind::ListItem { .. })
-                || (style.is_some()
-                    && self.format() != Format::PlainText
-                    && matches!(source_kind, super::BlockKind::Heading(_)))
             {
                 source_prefix
-            } else if style.is_some() {
+            } else if style.is_some() && !visible_indentation {
                 source_body.bytes().take_while(|byte| *byte == b' ').count()
             } else {
                 0
@@ -3482,7 +3553,9 @@ impl Document {
                 .encode_fragment(&source_body[..remove_source])?
                 .len();
             let source_prefix = if self.format() == Format::Markdown {
-                let indent = source_body.bytes().take_while(|byte| *byte == b' ').count();
+                let indent = if visible_indentation { 0 } else {
+                    source_body.bytes().take_while(|byte| *byte == b' ').count()
+                };
                 match style {
                     Some(super::ListStyle::Bullet) => format!("{}- ", " ".repeat(indent)),
                     Some(super::ListStyle::Numbered) => {
@@ -3551,6 +3624,33 @@ impl Document {
             && self.projection().table_cell_at(range.start).is_some_and(|(_,_,cell)| range.end <= cell.range.end)
             && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis) {
             return self.prepare_table_semantic_style(range, style, enabled);
+        }
+
+        if self.format() == Format::Markdown && !range.is_empty()
+            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+        {
+            let fragments = self.projection().blocks_for_region(&range).into_iter()
+                .map(|block| range.start.max(block.range.start)..range.end.min(block.range.end))
+                .filter(|fragment| !fragment.is_empty()).collect::<Vec<_>>();
+            if fragments.len() > 1 || fragments.first().is_some_and(|fragment| fragment != &range) {
+                let mut scratch = self.scratch_document();
+                let mut composition = replacement::PatchComposition::new(self.source_byte_len());
+                for fragment in fragments.into_iter().rev() {
+                    let prepared = scratch.prepare_semantic_style(fragment, style, enabled)?;
+                    for patch in prepared.summary.source_patches.iter().rev() {
+                        composition.splice(patch.range(), patch.replacement());
+                    }
+                    scratch.commit_model_transaction(prepared)?;
+                }
+                // Paragraph separators have no character treatment. Each
+                // selected body is verified separately, then published as one
+                // source transaction with the same logical selection.
+                let unchanged = self.projection().text_tree().slice(range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                return self.prepare_text_edits_with_patch_policy(
+                    vec![TextEdit::new(range, unchanged)], Some(composition.source_patches()), true,
+                );
+            }
         }
 
 
@@ -3750,6 +3850,8 @@ impl Document {
             if spans
                 .iter()
                 .any(|span| span.range.start < range.end && range.start < span.range.end
+                    && !(style == SemanticInlineStyle::Code
+                        && matches!(&span.application, StyleApplication::Automatic(id) if id.0 == "Link"))
                     && (!matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
                         || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)))
             {
@@ -3811,10 +3913,22 @@ impl Document {
         }
 
         let spans = self.projection().style_spans_for_region(range);
+        let html_body = self.projection().blocks_for_region(range).iter()
+            .any(|block| block.markdown_html && block.range.start <= range.start && range.end <= block.range.end);
+        if !enabled && html_body
+            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+            && subtract_style_coverage(range, &semantic_style_coverage(&spans, style)).is_empty()
+        {
+            let mut patches = Vec::new();
+            for run in self.markdown_html_style_source_runs(range)? {
+                patches.extend(self.markdown_style_removal_patches(&run, style)?);
+            }
+            return Ok(Some(patches));
+        }
         let matching = spans
             .iter()
             .filter(|span| {
-                span.application == StyleApplication::Semantic(style)
+                application_has_semantic_style(&span.application, style)
                     && span.range.start <= range.start
                     && range.end <= span.range.end
             })
@@ -3847,6 +3961,26 @@ impl Document {
             .source_range(range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
         let source_patches = if enabled {
+            let selected = self.projection().text_tree().slice(range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+                && (selected.trim() != selected || html_body)
+            {
+                // HTML scopes must be nested inside existing tags. Wrapping
+                // each contiguous contributing source run keeps hidden owner
+                // boundaries intact, including a selection crossing </ins>.
+                let runs = if html_body { self.markdown_html_style_source_runs(range)? }
+                    else { vec![source_range] };
+                let (opening, closing) = if style == SemanticInlineStyle::Strong {
+                    ("<strong>", "</strong>")
+                } else { ("<em>", "</em>") };
+                let mut patches = Vec::with_capacity(runs.len() * 2);
+                for run in runs {
+                    patches.push(SourcePatch::primary(run.start..run.start, self.encoding().encode_fragment(opening)?));
+                    patches.push(SourcePatch::primary(run.end..run.end, self.encoding().encode_fragment(closing)?));
+                }
+                return Ok(Some(patches));
+            }
             let marker_bytes = self
                 .state()
                 .encoding
@@ -3859,6 +3993,21 @@ impl Document {
             self.markdown_style_removal_patches(&source_range, style)?
         };
         Ok(Some(source_patches))
+    }
+
+    fn markdown_html_style_source_runs(&self, range: &Range<usize>) -> Result<Vec<Range<usize>>, DocumentError> {
+        let mut runs: Vec<Range<usize>> = Vec::new();
+        for span in self.projection().provenance_for_region(range) {
+            let visible = span.formatted.start.max(range.start)..span.formatted.end.min(range.end);
+            if visible.is_empty() { continue; }
+            let source = self.projection().source_range(visible)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            if let Some(previous) = runs.last_mut().filter(|previous| previous.end == source.start) {
+                previous.end = source.end;
+            } else if runs.last() != Some(&source) { runs.push(source); }
+        }
+        if runs.is_empty() { return Err(DocumentError::AmbiguousProjection); }
+        Ok(runs)
     }
 
     /// Locate the exact delimiter spelling which produced one projected
@@ -3925,6 +4074,35 @@ impl Document {
                 {
                     matches.push((opening, closing));
                 }
+            }
+        }
+        if matches.is_empty() {
+            let mut inner = source_range.clone();
+            for _ in 0..64 {
+                let mut enclosing = None;
+                for name in ["strong", "b", "em", "i", "ins", "sup", "sub", "del", "s"] {
+                    let opening_bytes = self.encoding().encode_fragment(&format!("<{name}>"))?;
+                    let closing_bytes = self.encoding().encode_fragment(&format!("</{name}>"))?;
+                    let Some(start) = inner.start.checked_sub(opening_bytes.len()) else { continue; };
+                    let opening = start..inner.start;
+                    let closing = inner.end..inner.end + closing_bytes.len();
+                    if self.state().source.bytes_in(opening.clone()).as_ref() == Some(&opening_bytes)
+                        && self.state().source.bytes_in(closing.clone()).as_ref() == Some(&closing_bytes) {
+                        enclosing = Some((name, opening, closing));
+                        break;
+                    }
+                }
+                let Some((name, opening, closing)) = enclosing else { break; };
+                let target = match style {
+                    SemanticInlineStyle::Strong => matches!(name, "strong" | "b"),
+                    SemanticInlineStyle::Emphasis => matches!(name, "em" | "i"),
+                    SemanticInlineStyle::Code => false,
+                };
+                if target {
+                    matches.push((opening, closing));
+                    break;
+                }
+                inner = opening.start..closing.end;
             }
         }
         match matches.as_slice() {
@@ -4954,10 +5132,7 @@ impl Document {
         // Filling an empty item can activate an ordered marker beside prose
         // or change a following indented code block into continuation text.
         // Its previous classifier context cannot prove that new ownership.
-        let changes_empty_item_grammar = edits.iter().any(|edit| {
-            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
-                .is_ok_and(|patches| patches.is_some())
-        });
+        let changes_empty_item_grammar = self.markdown_edits_fill_empty_list_item(edits);
         let region = if changes_empty_item_grammar { None } else {
             self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)?
         };
@@ -5338,6 +5513,9 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> Result<Option<TextEditCandidate>, ModelTransactionError> {
+        if self.markdown_edits_fill_empty_list_item(edits) {
+            return Ok(None);
+        }
         if markdown_html_edit::edit_changes_literal_html_grammar(self, edits)? {
             return Ok(None);
         }
@@ -5659,6 +5837,15 @@ impl Document {
                     ..span.formatted.end + edit.range.start - old_line.start;
                 provenance.push(span);
             }
+            if new_text.is_empty() && provenance.is_empty() {
+                // A fully deleted code-body line still has a real insertion
+                // point inside its owner. Keep the same empty caret seed that
+                // a fresh parse of the resulting fence supplies.
+                provenance.push(super::ProvenanceSpan {
+                    formatted: 0..0,
+                    source: new_source.start..new_source.start,
+                });
+            }
             provenance.sort_by_key(|span| span.formatted.start);
             decoded_bytes = parsed_bytes + old_patch_bytes.len();
         }
@@ -5830,6 +6017,28 @@ impl Document {
         }))
     }
 
+    fn markdown_edits_fill_empty_list_item(&self, edits: &[TextEdit]) -> bool {
+        self.format() == Format::Markdown && edits.iter().any(|edit| {
+            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
+                .is_ok_and(|patches| patches.is_some())
+                || edit.range.is_empty() && !edit.replacement.is_empty()
+                    && self.projection().blocks_for_region(&edit.range).iter().any(|block| {
+                        block.range == edit.range
+                            && matches!(block.kind, super::BlockKind::ListItem { .. })
+                    })
+                    // An empty item may leave a following indented paragraph
+                    // outside its list. Filling it can absorb that paragraph
+                    // and change looseness across the enclosing list.
+                    && self.projection().blocks_for_region(&(
+                        edit.range.start..edit.range.start.saturating_add(1)
+                            .min(self.projection().text_tree().byte_len())
+                    )).iter().any(|block| {
+                        block.range.start == edit.range.start + 1
+                            && !matches!(block.kind, super::BlockKind::ListItem { .. })
+                    })
+        })
+    }
+
     fn can_inherit_markdown_list_context(
         &self,
         edits: &[TextEdit],
@@ -5869,7 +6078,45 @@ impl Document {
         patches.iter().all(|patch| {
             source_bodies
                 .iter()
-                .any(|body| body.start <= patch.range.start && patch.range.end <= body.end)
+                .any(|body| {
+                    if body.start > patch.range.start || patch.range.end > body.end {
+                        return false;
+                    }
+                    // An authored prefix can create another list/quote/heading
+                    // inside the retained item. Its old container partition is
+                    // no longer proof of the candidate's structure, even though
+                    // the patch lies entirely inside the old visible body.
+                    let Ok(replacement) = self.encoding().decode_region(&patch.replacement, patch.range.start) else {
+                        return false;
+                    };
+                    if replacement.text.contains(['\r', '\n']) {
+                        return false;
+                    }
+                    if patch.range.start == body.start {
+                        if replacement.text.starts_with([' ', '\t']) {
+                            // Raw clipboard source is not necessarily escaped
+                            // like typed prose. Leading whitespace may become
+                            // list padding, so require the parsed candidate.
+                            return false;
+                        }
+                        let prefix = replacement.text.trim_start_matches([' ', '\t']);
+                        let begins_item = super::markdown_blocks::marker_prefix_geometry(prefix)
+                            .is_some_and(|(content, _)| {
+                                content < prefix.len()
+                                    || prefix.ends_with([' ', '\t'])
+                                    || patch.range.end == body.end
+                            });
+                        if begins_item
+                            || prefix.starts_with('>')
+                            || prefix.starts_with('#')
+                            || prefix.starts_with("```")
+                            || prefix.starts_with("~~~")
+                        {
+                            return false;
+                        }
+                    }
+                    true
+                })
         })
     }
 
@@ -6004,6 +6251,14 @@ impl Document {
             signature
         };
         let failed = || ModelTransactionError::from(DocumentError::VerificationFailed);
+        if region.old_source.end < self.source_byte_len()
+            && regional.blocks().iter().any(|block| block.style.0 == "Code Block" || block.markdown_html)
+        {
+            // Joining ordinary source rows can create a fence or HTML opener
+            // without inserting a delimiter character. A newly active opener
+            // can capture the untouched suffix beyond this regional restart.
+            return Err(failed());
+        }
         let old_bytes = self
             .state()
             .source
@@ -6357,9 +6612,13 @@ impl Document {
                 let prefix = self
                     .projection()
                     .list_marker_range_for_block(&block)
+                    // A list paragraph can contain lazy continuation lines.
+                    // Its marker belongs only to the physical line that owns
+                    // it, never to a same-length prefix of the continuation.
+                    .filter(|marker| line.start <= marker.start && marker.end <= line.end)
                     .map_or_else(
                         || old.len() - old.trim_start_matches([' ', '\t']).len(),
-                        |marker| marker.len(),
+                        |marker| marker.end - line.start,
                     );
                 if edit.range.start < line.start + prefix {
                     return false;
@@ -6425,10 +6684,12 @@ impl Document {
             {
                 return true;
             }
-            if self.format() != Format::MarkdownSource {
-                return false;
-            }
             if edit.replacement.contains('[') {
+                return true;
+            }
+            if self.projection().blocks_for_region(&edit.range).iter().any(|block|
+                self.projection().style_spans_for_region(&block.range).iter().any(|span|
+                    span.application == StyleApplication::Automatic("Markdown reference".into()))) {
                 return true;
             }
             self.projection()
@@ -6464,6 +6725,19 @@ impl Document {
             return Ok(None);
         }
         if edits.iter().any(|edit| self.projection().table_at(edit.range.start).is_some() || self.projection().table_at(edit.range.end).is_some()) { return Ok(None); }
+        if self.format() == Format::Markdown && edits.iter().any(|edit| {
+            // An empty paragraph can still be separator trivia inside an
+            // adjacent list or unclosed HTML block. Giving it a body changes
+            // that neighbor's ownership/looseness even with two source breaks.
+            self.projection().blocks_for_region(&edit.range).iter().any(|block| {
+                block.range.is_empty() && block.kind == super::BlockKind::Paragraph
+                    && self.projection().blocks_for_region(&(
+                        block.range.start.saturating_sub(1)
+                            ..block.range.end.saturating_add(1).min(self.projection().text_tree().byte_len())
+                    )).iter().any(|neighbor| neighbor.markdown_html
+                        || matches!(neighbor.kind, super::BlockKind::ListItem { .. }))
+            })
+        }) { return Ok(None); }
         // An explicit prose separator proves independence from the following
         // paragraph. Capture its small source contributor, never that body's
         // potentially unbounded physical line.
@@ -7335,10 +7609,22 @@ fn preferred_markdown_style_marker(style: SemanticInlineStyle) -> &'static str {
     markdown_style_markers(style)[0]
 }
 
+fn application_has_semantic_style(application: &StyleApplication, style: SemanticInlineStyle) -> bool {
+    match application {
+        StyleApplication::Semantic(candidate) => *candidate == style,
+        StyleApplication::Direct(properties) => match style {
+            SemanticInlineStyle::Strong => properties.bold == Some(true),
+            SemanticInlineStyle::Emphasis => properties.slant == Some(super::FontSlant::Italic),
+            SemanticInlineStyle::Code => false,
+        },
+        _ => false,
+    }
+}
+
 fn semantic_style_coverage(spans: &[StyleSpan], style: SemanticInlineStyle) -> Vec<Range<usize>> {
     let mut ranges = spans
         .iter()
-        .filter(|span| span.application == StyleApplication::Semantic(style))
+        .filter(|span| application_has_semantic_style(&span.application, style))
         .map(|span| span.range.clone())
         .collect::<Vec<_>>();
     ranges.sort_by_key(|range| (range.start, range.end));
@@ -7388,10 +7674,6 @@ fn semantic_style_edit_was_exactly_projected(
     let mut expected = before.to_vec();
     if enabled {
         expected.push(target);
-    } else if let Some(index) = expected.iter().position(|span| span == &target) {
-        expected.remove(index);
-    } else {
-        return false;
     }
 
     // Semantic emphasis is a boolean treatment. Extending an existing scope
@@ -7408,12 +7690,32 @@ fn semantic_style_edit_was_exactly_projected(
     if expected_coverage != semantic_style_coverage(after, style) {
         return false;
     }
-    expected.retain(|span| span.application != StyleApplication::Semantic(style));
-    let mut unmatched = after
-        .iter()
-        .filter(|span| span.application != StyleApplication::Semantic(style))
-        .cloned()
-        .collect::<Vec<_>>();
+    // Passive HTML projects <strong>/<em> as direct properties. Compare
+    // their exact coverage with Markdown semantic markers, then retain every
+    // other declaration. Adding a nested scope can split an existing direct
+    // span, so coalesce equivalent retained spans before comparing them.
+    let without_target = |spans: &[StyleSpan]| {
+        let mut retained: Vec<StyleSpan> = Vec::new();
+        for span in spans {
+            let mut span = span.clone();
+            if span.application == StyleApplication::Semantic(style) { continue; }
+            if let StyleApplication::Direct(properties) = &mut span.application {
+                match style {
+                    SemanticInlineStyle::Strong if properties.bold == Some(true) => properties.bold = None,
+                    SemanticInlineStyle::Emphasis if properties.slant == Some(super::FontSlant::Italic) => properties.slant = None,
+                    _ => {}
+                }
+                if *properties == CharacterProperties::default() { continue; }
+            }
+            if let Some(previous) = retained.iter_mut().find(|previous|
+                previous.application == span.application && previous.range.end == span.range.start) {
+                previous.range.end = span.range.end;
+            } else { retained.push(span); }
+        }
+        retained
+    };
+    expected = without_target(&expected);
+    let mut unmatched = without_target(after);
 
     // Named Code is the editable appearance of the semantic code marker.
     // Its assignment is created/removed by the same source delimiters.

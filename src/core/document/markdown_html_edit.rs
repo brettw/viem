@@ -86,6 +86,7 @@ pub(super) fn literal_html(text: &str, encoding: super::super::Encoding) -> Stri
             '&' => output.push_str("&amp;"),
             '<' => output.push_str("&lt;"),
             '>' => output.push_str("&gt;"),
+            '\\' => output.push_str("&#92;"),
             ' ' => output.push_str("&#32;"),
             '\t' => output.push_str("&#9;"),
             '\n' => output.push_str("<br>"),
@@ -100,6 +101,52 @@ pub(super) fn literal_html(text: &str, encoding: super::super::Encoding) -> Stri
 }
 
 impl Document {
+    /// A trailing blank paragraph can sit after an unclosed visible comment.
+    /// Materializing that paragraph must not extend the comment's literal
+    /// grammar across its already exposed separator. Retire only that opener
+    /// and protect its retained literal punctuation and internal hard breaks.
+    pub(super) fn unclosed_comment_boundary_support(
+        &self,
+        edits: &[TextEdit],
+    ) -> Result<Vec<SourcePatch>, DocumentError> {
+        let projection = self.projection();
+        let mut patches = Vec::new();
+        let mut seen = BTreeSet::new();
+        for edit in edits.iter().filter(|edit| !edit.replacement.is_empty()) {
+            let nearby = edit.range.start.saturating_sub(2)..edit.range.start;
+            for span in projection.style_spans_for_region(&nearby) {
+                if span.application != StyleApplication::Automatic("Comment".into())
+                    || span.range.end >= edit.range.start || !seen.insert(span.range.start)
+                { continue; }
+                let text = projection.text_tree().slice(span.range.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                if !text.starts_with("<!--") || text.ends_with("-->") { continue; }
+                patches.extend(self.literal_comment_support(span.range.clone())?);
+            }
+        }
+        Ok(patches)
+    }
+
+    pub(super) fn literal_comment_support(&self, range: Range<usize>) -> Result<Vec<SourcePatch>, DocumentError> {
+        let text = self.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let mut patches = Vec::new();
+        for (offset, ch) in text.char_indices() {
+            if !matches!(ch, '<' | '&' | '*' | '_' | '~' | '`' | '[' | ']' | '\\' | '\n') { continue; }
+            let at = range.start + offset;
+            let source = self.projection().source_range(at..at + ch.len_utf8())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = self.state().source.bytes_in(source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let old = self.encoding().decode_region(&bytes, source.start)?.text;
+            if old != ch.to_string() && !(ch == '\n' && old == self.file_format().spelling()) { continue; }
+            let (range, syntax) = if ch == '\n' {
+                (source.start..source.start, "\\".to_owned())
+            } else { (source, format!("\\{ch}")) };
+            patches.push(SourcePatch::primary(range, self.encoding().encode_fragment(&syntax)?));
+        }
+        Ok(patches)
+    }
+
     /// A visible comment or unsupported tag is editable text. If editing its
     /// spelling activates a different grammar, protect that smallest literal
     /// construct, retaining its enclosing passive HTML and neighboring markup.
@@ -210,9 +257,30 @@ impl Document {
         // adjacent visible whitespace before the ordinary translation path
         // is bypassed. A newly opened paragraph must retain its old spaces.
         markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, &mut base)?;
-        if let Ok(prepared) =
-            self.prepare_text_edits_with_patches(edits.to_vec(), Some(base.clone()))
-        {
+        match self.prepare_text_edits_with_patches(edits.to_vec(), Some(base.clone())) {
+            Ok(prepared) => return Ok(Some(prepared)),
+            Err(_) => {},
+        }
+        // Raw-text HTML owners expose their contents literally, including
+        // entity spellings. Try the exact contributor edit before protecting
+        // punctuation; an entity would itself become visible inside script.
+        // Verification still rejects spelling changes that activate HTML.
+        let literal_patches = edits.iter().map(|edit| {
+            let range = if edit.range.is_empty() {
+                let at = super::super::source_edit::insertion_point(
+                    projection, edit.range.start, None,
+                ).ok_or(DocumentError::AmbiguousProjection)?;
+                at..at
+            } else {
+                projection.source_range(edit.range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?
+            };
+            Ok(SourcePatch::primary(range,
+                self.encoding().encode_fragment(&edit.replacement)?))
+        }).collect::<Result<Vec<_>, DocumentError>>()?;
+        if let Ok(prepared) = self.prepare_text_edits_with_patches(
+            edits.to_vec(), Some(literal_patches),
+        ) {
             return Ok(Some(prepared));
         }
         let mut patches = base;
@@ -271,7 +339,11 @@ impl Document {
                     .map(|edit| edit.replacement.len() as isize - edit.range.len() as isize)
                     .sum();
                 let new_offset = (offset as isize + shift) as usize;
-                let in_comment = !html
+                // A multi-line block comment may cease to be valid inline
+                // HTML once text is inserted before it. If the literal
+                // candidate failed, retire that smallest scope and protect its
+                // retained punctuation together with its literal hard lines.
+                let in_comment = !html && !original.text.contains('\n')
                     && comments
                         .iter()
                         .any(|comment| comment.start <= new_offset && new_offset < comment.end);

@@ -199,19 +199,31 @@ fn indented_code_typing_breaks_deletion_and_toolbar_reopen_exactly() {
 
 #[test]
 fn clearing_indented_code_in_containers_removes_the_code_treatment() {
-    for source in [">     code\n>     next", "-     code"] {
+    for source in [">     code\n>     next", "-     code", "> -     code"] {
         for format in [Format::Markdown, Format::MarkdownSource] {
             let mut doc = open(source, format);
+            let kind = doc.projection().blocks()[0].kind.clone();
+            let quote_depth = doc.projection().blocks()[0].quote_depth;
             doc.set_paragraph_style(0..0, StyleId::from("Paragraph"))
                 .unwrap_or_else(|error| panic!("{source:?}, {format:?}: {error:?}"));
-            assert_eq!(doc.projection().blocks()[0].style.0, "Paragraph");
+            let block = &doc.projection().blocks()[0];
+            assert_ne!(block.style.0, "Code Block");
+            assert_eq!(block.kind, kind);
+            assert_eq!(block.quote_depth, quote_depth);
             assert!(doc.projection().style_spans().iter().all(|span| {
                 span.application != viem_core::document::StyleApplication::Semantic(
                     viem_core::document::SemanticInlineStyle::Code,
                 )
             }));
+            let edited = doc.source_bytes();
+            let reopened = Document::from_bytes(edited.clone(), Encoding::Utf8, format).unwrap();
+            assert_eq!(reopened.text(), doc.text());
+            assert_eq!(reopened.projection().blocks()[0].kind, block.kind);
+            assert_eq!(reopened.projection().blocks()[0].quote_depth, block.quote_depth);
             assert!(doc.undo());
             assert_eq!(doc.source_bytes(), source.as_bytes());
+            assert!(doc.redo());
+            assert_eq!(doc.source_bytes(), edited);
         }
     }
 }

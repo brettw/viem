@@ -14,6 +14,9 @@ fn key(c: &mut CommandInterpreter, d: &mut Document, k: Key) {
         out.status
     );
 }
+fn keys(c: &mut CommandInterpreter, d: &mut Document, keys: &str) {
+    for ch in keys.chars() { key(c, d, Key::Char(ch)); }
+}
 fn text(c: &mut CommandInterpreter, d: &mut Document, text: &str) {
     let out = c.handle(d, InputEvent::Text(text.into())).unwrap();
     assert!(
@@ -107,13 +110,13 @@ fn select_replacement_dot_preserves_selection_size_and_count() {
 fn explicit_select_count_line_and_temporary_visual_command() {
     let mut d = doc("abcd\nefgh\nijkl");
     let mut c = CommandInterpreter::new();
-    text(&mut c, &mut d, "3gh");
+    keys(&mut c, &mut d, "3gh");
     assert!(c.is_text_selection());
     text(&mut c, &mut d, "Q");
     assert_eq!(d.text(), "Qd\nefgh\nijkl");
     key(&mut c, &mut d, Key::Escape);
     key(&mut c, &mut d, Key::Char('u'));
-    text(&mut c, &mut d, "gH");
+    keys(&mut c, &mut d, "gH");
     assert!(c.is_text_selection());
     key(&mut c, &mut d, Key::Ctrl('o'));
     key(&mut c, &mut d, Key::Char('$'));
@@ -271,7 +274,7 @@ fn mappings_distinguish_visual_and_select_and_shift_notation() {
     let mut c = CommandInterpreter::new();
     ex(&mut c, &mut d, "xnoremap <F1> U");
     ex(&mut c, &mut d, "snoremap <F1> Q");
-    text(&mut c, &mut d, "gh");
+    keys(&mut c, &mut d, "gh");
     key(
         &mut c,
         &mut d,
@@ -350,7 +353,7 @@ fn visual_mapping_in_select_runs_as_visual_and_first_replacement_uses_insert_map
     let mut c = CommandInterpreter::new();
     ex(&mut c, &mut d, "vnoremap <F2> U");
     ex(&mut c, &mut d, "inoremap x XYZ");
-    text(&mut c, &mut d, "gh");
+    keys(&mut c, &mut d, "gh");
     key(
         &mut c,
         &mut d,
@@ -371,14 +374,14 @@ fn visual_mapping_in_select_runs_as_visual_and_first_replacement_uses_insert_map
 fn select_line_replacement_is_characterwise_and_native_selection_gv_preserves_extent() {
     let mut d = doc("abc\ndef");
     let mut c = CommandInterpreter::new();
-    text(&mut c, &mut d, "gH");
+    keys(&mut c, &mut d, "gH");
     text(&mut c, &mut d, "X");
     assert_eq!(d.text(), "Xdef");
     key(&mut c, &mut d, Key::Escape);
     key(&mut c, &mut d, Key::Char('u'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Escape);
-    text(&mut c, &mut d, "gv");
+    keys(&mut c, &mut d, "gv");
     key(&mut c, &mut d, Key::Char('y'));
     assert_eq!(c.register('"').unwrap().text, "a");
 }
@@ -685,7 +688,7 @@ fn temporary_visual_copy_retains_forward_and_reversed_select_block_geometry() {
 fn oversized_shift_motion_stops_at_the_document_boundary() {
     let mut document = doc("abc");
     let mut commands = CommandInterpreter::new();
-    text(&mut commands, &mut document, "999999999999");
+    keys(&mut commands, &mut document, "999999999999");
     key(&mut commands, &mut document, shifted(NavigationKey::Right));
     assert_eq!(commands.cursor(), 3);
     text(&mut commands, &mut document, "X");

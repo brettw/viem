@@ -91,13 +91,15 @@ impl Document {
         }
         let wants_code =
             matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
+        let wants_list = matches!(&assignment, Assignment::List(_));
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
                 structural_body(block)
             } else {
                 wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
-                    || self.format().is_markdown() && !wants_code && block.style.0 == "Code Block"
+                    || self.format().is_markdown() && !wants_code && !wants_list
+                        && block.style.0 == "Code Block"
                     || (wants_plain || wants_code && block.style.0 != "Code Block")
                         && structural_body(block)
             }
@@ -111,7 +113,9 @@ impl Document {
         let mut selected_range = range;
         // Removing an outer quote may expose an imported heading or list.
         // Normalize those exposed styles before assigning the requested one.
-        let mut seen_sources = std::collections::BTreeSet::new();
+        let mut remaining_layers = selected.iter().map(|block|
+            block.containers.len().saturating_add(block.quote_depth).saturating_add(2))
+            .sum::<usize>();
         loop {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
@@ -132,12 +136,13 @@ impl Document {
                 .last()
                 .unwrap();
             let normalize = blocks[first].range.start..last.range.end;
-            // Each plain-style adapter removes a structural layer. Reject a
-            // repeated source state instead of assuming an imported document
-            // has a small, fixed nesting depth.
-            if !seen_sources.insert(scratch.source_bytes()) {
+            // Each plain-style adapter must remove a structural layer. Bound
+            // normalization by the selected owners, without copying the full
+            // source on every pass to detect a cycle.
+            if remaining_layers == 0 {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
+            remaining_layers -= 1;
             let plain = scratch.projection().style_sheet().base_paragraph.clone();
             let prepared = scratch
                 .prepare_structural_assignment_raw(normalize, Assignment::Paragraph(plain))?;

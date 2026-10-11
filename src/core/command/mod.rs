@@ -16,7 +16,7 @@ pub use selection::{NavigationKey, SelectionOptions, SelectionOrigin};
 pub mod completion;
 pub mod ex;
 mod ex_addresses;
-mod ex_global;
+pub(crate) mod ex_global;
 mod ex_history;
 pub mod ex_files;
 pub mod ex_execute;
@@ -1300,6 +1300,17 @@ struct MotionExtent {
     kind: MotionKind,
 }
 
+fn text_object_extent(document: &Document, object: TextObject, mut range: Range<usize>) -> MotionExtent {
+    if object.kind == TextObjectKind::Paragraph && document.format().is_literal() {
+        if let Ok(last) = document.hard_line_snapshot().line_at_offset(range.end) {
+            if range.end == last.content_range().end { range.end = last.linewise_range().end; }
+        }
+        MotionExtent { range, kind: MotionKind::Linewise }
+    } else {
+        MotionExtent { range, kind: MotionKind::Characterwise }
+    }
+}
+
 /// Buffer/session-owned Vim state temporarily installed into the active view
 /// interpreter for one serial command dispatch.
 ///
@@ -1408,6 +1419,7 @@ pub struct CommandInterpreter {
     last_find: Option<FindState>,
     marks: BTreeMap<char, usize>,
     jumps: Vec<usize>,
+    jumps_revision: Option<Revision>,
     jump_index: usize,
     last_visual: Option<VisualMemory>,
     recording: Option<(char, Vec<InputEvent>)>,
@@ -1574,6 +1586,7 @@ impl CommandInterpreter {
             last_find: None,
             marks: BTreeMap::new(),
             jumps: Vec::new(),
+            jumps_revision: None,
             jump_index: 0,
             last_visual: None,
             recording: None,
@@ -1913,6 +1926,7 @@ impl CommandInterpreter {
             jumps.push(offset);
         }
         next.jumps = jumps;
+        next.jumps_revision = Some(map.target_revision());
         next.last_visual = match anchors.last_visual {
             Some((anchor, active)) => {
                 let (Some(anchor), Some(active)) =
@@ -2110,12 +2124,13 @@ impl CommandInterpreter {
             .zip(&self.jumps)
             .take_while(|(old, current)| old == current)
             .count();
-        for (index, anchor) in anchors.jumps.iter().take(unchanged_jump_prefix).enumerate() {
+        for (index, anchor) in anchors.jumps.iter().take(if self.jumps_revision == Some(map.target_revision()) { 0 } else { unchanged_jump_prefix }).enumerate() {
             let Some(mapped) = mapped_anchor(map, *anchor)? else {
                 return Ok(false);
             };
             next.jumps[index] = mapped;
         }
+        next.jumps_revision = Some(map.target_revision());
 
         if self.last_visual == before.last_visual {
             next.last_visual = match anchors.last_visual {
@@ -2196,10 +2211,10 @@ impl CommandInterpreter {
         }
 
         if matches!(before.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock)
-            && self.last_visual != before.last_visual {
-            // A newly remembered selection belongs to the old snapshot until
-            // the mapping above completes. Publish its marks from that mapped
-            // memory, never stale numeric offsets from the consumed selection.
+            && next.last_visual.is_some() {
+            // Recreated memory can have the same numeric extent as an older
+            // selection while its freshly assigned marks still name the old
+            // snapshot. Always derive those marks from the mapped memory.
             next.update_visual_marks();
         }
 
@@ -3354,6 +3369,8 @@ impl CommandInterpreter {
             || (context.document().format() == Format::Markdown && self.markdown_autodetect()
                 && matches!(self.mode, Mode::Insert | Mode::Replace)
                 && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
+            || (context.document().format().is_markdown() && self.mode == Mode::Replace
+                && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
             || matches!(&event, InputEvent::Key(Key::SelectAll | Key::PasteClipboard)) {
@@ -3570,7 +3587,10 @@ impl CommandInterpreter {
 
         let lines = document.hard_line_snapshot();
         let range = normal_delete_range(&lines, self.cursor, count, backward);
-        if range.is_empty() {
+        if range.is_empty() || document.format().is_source_view()
+            && self.retained_physical_cursor_source(document)
+                .is_some_and(|at| document.source_insertion_requires_materialization(at).unwrap_or(false))
+        {
             next.clipboard_context = previous_clipboard;
             let output = CommandOutput::complete();
             next.finish_explicit_register_prefix(&output);
@@ -3911,6 +3931,17 @@ impl CommandInterpreter {
                 ));
             }
             next.invalidate_replace_restoration();
+            if let Some(start) = document.hard_line_snapshot().previous_grapheme_boundary(self.cursor) {
+                next.cursor = start;
+            }
+            let moved = next.cursor != self.cursor;
+            if moved {
+                if let Some(session) = next.insert_session.as_mut() { session.record_step(EditSessionStep::Backspace); }
+            }
+            return Ok(next.non_mutating_plan(document, CommandOutput {
+                cursor_moved: moved,
+                ..CommandOutput::complete()
+            }));
         }
         let Some(start) = document
             .hard_line_snapshot()
@@ -5942,6 +5973,15 @@ impl CommandInterpreter {
                 mode_changed: true,
                 ..CommandOutput::complete()
             });
+        }
+        if let Some((anchor, active)) = self.active_visual_block_endpoint_offsets() {
+            if context.snapshot.rows.iter().enumerate().any(|(index, row)|
+                (row.text_range.start <= anchor && anchor <= row.text_range.end
+                    || row.text_range.start <= active && active <= row.text_range.end)
+                    && !context.snapshot.horizontal_row_is_complete(index))
+            {
+                return Ok(layout_error(layout_motion::complete_horizontal_demand(context.snapshot, active)));
+            }
         }
         if self.register_pending {
             self.register_pending = false;
@@ -8428,12 +8468,17 @@ impl CommandInterpreter {
             }
         }
         candidates
-            .into_iter()
+            .iter().copied()
             .find(|position| {
                 snapshot
                     .caret_point(position.text_offset, position.affinity)
                     .is_ok()
             })
+            .or_else(|| candidates.iter().find_map(|position| {
+                let geometry = snapshot.logical_endpoint_geometry(position.text_offset, position.affinity).ok()?;
+                let caret = crate::layout::nearest_caret(&snapshot.rows[geometry.row_index], geometry.rect.x)?;
+                Some(VisualPosition { text_offset: caret.point.text_offset, affinity: caret.point.affinity })
+            }))
             .ok_or(LayoutMotionError::PositionNotInLayout(VisualPosition {
                 text_offset: self.cursor,
                 affinity: self.boundary_affinity,
@@ -8579,6 +8624,19 @@ impl CommandInterpreter {
                 }
             }
             _ => {
+                if input.chars().nth(1).is_some() {
+                    if self.pending == Pending::None && input.starts_with([':', '/', '?']) {
+                        let first = input.chars().next().expect("nonempty prompt input");
+                        let mut output = self.handle_key(document, Key::Char(first))?;
+                        if self.mode == Mode::CommandLine {
+                            output.merge(self.handle_text(document, input[first.len_utf8()..].to_owned())?);
+                        }
+                        return Ok(output);
+                    }
+                    return Ok(CommandOutput::unsupported(
+                        "command-mode text must be delivered as individual key events",
+                    ));
+                }
                 let mut result = CommandOutput::complete();
                 for character in input.chars() {
                     let next = self.handle_key(document, Key::Char(character))?;
@@ -9203,7 +9261,15 @@ impl CommandInterpreter {
         let origin = self.cursor.min(lines.text_length());
         let local_destination = match motion {
             OperatorMotion::Left => Some(move_horizontal(&lines, origin, directional_count(count, false))),
-            OperatorMotion::Right => Some(move_horizontal(&lines, origin, directional_count(count, true))),
+            OperatorMotion::Right => {
+                let mut end = origin;
+                let limit = line_end(&lines, origin);
+                for _ in 0..count {
+                    if end >= limit { break; }
+                    end = lines.next_grapheme_boundary(end)?.min(limit);
+                }
+                Some(end)
+            },
             OperatorMotion::LineStart => Some(line_start(&lines, origin)),
             _ => None,
         };
@@ -9277,17 +9343,26 @@ impl CommandInterpreter {
                 ),
                 false,
             )),
-            OperatorMotion::WordForward(big) => Some(characterwise(
-                move_word_forward(text, origin, big, count),
-                false,
-            )),
+            OperatorMotion::WordForward(big) => {
+                let mut destination = move_word_forward(text, origin, big, count);
+                let destination_start = line_start(&lines, destination);
+                if destination_start > line_start(&lines, origin)
+                    && text[destination_start..destination].chars().all(char::is_whitespace) {
+                    destination = lines.previous_grapheme_boundary(destination_start).unwrap_or(destination_start);
+                }
+                Some(characterwise(destination, false))
+            },
             OperatorMotion::WordEnd(big) => {
                 Some(characterwise(move_word_end(text, origin, big, count), true))
             }
-            OperatorMotion::WordBackward(big) => Some(characterwise(
-                move_word_backward(text, origin, big, count),
-                false,
-            )),
+            OperatorMotion::WordBackward(big) => {
+                let destination = move_word_backward(text, origin, big, count);
+                let mut extent = characterwise(destination, false);
+                if origin == line_start(&lines, origin) && destination < origin {
+                    extent.range.end = lines.previous_grapheme_boundary(origin).unwrap_or(origin);
+                }
+                Some(extent)
+            },
             OperatorMotion::WordEndBackward(big) => Some(characterwise(
                 move_word_end_backward(text, origin, big, count),
                 true,
@@ -9427,12 +9502,22 @@ impl CommandInterpreter {
                 } else { None };
                 let mut edit_range = extent.range.clone();
                 let mut replacement = "";
+                let retained_indent = if operator == Operator::Change && extent.kind == MotionKind::Linewise
+                    && self.literal_indentation(document) && self.indentation_options().autoindent {
+                    let line = lines.line_at_offset(edit_range.start).map_err(|_| DocumentError::AmbiguousProjection)?;
+                    let content = lines.slice_utf8(line.content_range()).map_err(DocumentError::FormattedTextStorage)?;
+                    let prefix = crate::document::leading_whitespace_len(&content);
+                    edit_range.start += prefix;
+                    content[..prefix].to_owned()
+                } else { String::new() };
                 if extent.kind == MotionKind::Linewise && operator == Operator::Delete {
                     edit_range = linewise_edit_range(&lines, edit_range);
                 }
                 if extent.kind == MotionKind::Linewise
                     && operator == Operator::Change
-                    && edit_range.end < document.projection().text_tree().byte_len()
+                    && (edit_range.end < document.projection().text_tree().byte_len()
+                        || lines.previous_grapheme_boundary(edit_range.end).is_some_and(|start|
+                            is_hard_line_separator(&lines, &(start..edit_range.end))))
                 {
                     replacement = "\n";
                 }
@@ -9484,6 +9569,7 @@ impl CommandInterpreter {
                         repeat_visual_operator: None,
                         replace_journal: Vec::new(),
                     });
+                    self.capture_generated_indent(document, retained_indent);
                     output.mode_changed = true;
                 } else {
                     self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
@@ -9527,7 +9613,7 @@ impl CommandInterpreter {
                 if old == replacement {
                     return Ok(CommandOutput::complete());
                 }
-                document.replace(extent.range.clone(), &replacement)?;
+                document.apply_edits(case_edits(&old, extent.range.start, operator))?;
                 self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     extent.range.start,
                 );
@@ -9646,6 +9732,13 @@ impl CommandInterpreter {
             })
         });
         let origin_anchor = origin_anchor.flatten();
+        let jump_anchors = if should_record {
+            self.jumps.iter().map(|offset| {
+                document.text_anchor(document.text_point(*offset)?, Association::AfterInsertion,
+                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)
+                    .map_err(|_| DocumentError::AmbiguousProjection)
+            }).collect::<Result<Vec<_>, DocumentError>>()?
+        } else { Vec::new() };
         let (result, map) = document.capture_position_maps(|document| {
             self.apply_operator_with_repeat(
                 document,
@@ -9669,6 +9762,12 @@ impl CommandInterpreter {
                 mapped_anchor(&map, origin_anchor).ok().flatten()
             };
             if let Some(mapped_origin) = mapped_origin {
+                if before_revision != document.revision() {
+                    self.jumps = jump_anchors.into_iter().map(|anchor| {
+                        mapped_anchor(&map, anchor).ok().flatten().ok_or(DocumentError::AmbiguousProjection)
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    self.jumps_revision = Some(document.revision());
+                }
                 self.record_jump(document, mapped_origin, self.cursor);
             }
         }
@@ -9815,8 +9914,14 @@ impl CommandInterpreter {
         } else {
             let start = anchor.min(self.cursor);
             let high = anchor.max(self.cursor);
+            let mut end = if self.selection_exclusive { high } else { lines.next_grapheme_boundary(high).unwrap_or(high) };
+            if self.visual_to_line_end && !self.selection_exclusive && self.cursor >= anchor {
+                if let Ok(line) = lines.line_at_offset(high) {
+                    if end == line.content_range().end { end = line.linewise_range().end; }
+                }
+            }
             MotionExtent {
-                range: start..if self.selection_exclusive { high } else { lines.next_grapheme_boundary(high).unwrap_or(high) },
+                range: start..end,
                 kind: MotionKind::Characterwise,
             }
         }
@@ -10005,7 +10110,7 @@ impl CommandInterpreter {
             TextObject { scope, kind },
             count,
         ) {
-            Ok(range) if !range.is_empty() => range,
+            Ok(range) if !range.is_empty() || matches!(kind, TextObjectKind::Word | TextObjectKind::BigWord) => range,
             Ok(_) => {
                 return CommandOutput {
                     status: CommandStatus::Error("text object is empty".into()),
@@ -10026,7 +10131,9 @@ impl CommandInterpreter {
         self.mode = Mode::VisualCharacter;
         self.visual_to_line_end = false;
         self.visual_anchor = Some(range.start);
-        self.cursor = document.hard_line_snapshot().previous_grapheme_boundary(range.end).unwrap_or(range.start);
+        self.cursor = if range.is_empty() { range.start } else {
+            document.hard_line_snapshot().previous_grapheme_boundary(range.end).unwrap_or(range.start)
+        };
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
         CommandOutput {
@@ -10547,7 +10654,12 @@ impl CommandInterpreter {
                 if self.mode == Mode::Insert {
                     if let Some(edit) = if document.format().is_code() { None } else { document.list_enter_edit(self.cursor)? } {
                         if document.format().has_structural_lists() {
-                            self.cursor = continue_list_with_cursor(document, self.cursor)?;
+                            let floor = self.insert_session.as_ref().map(|session| session.unit_floor);
+                            let (cursor, floor) = continue_list_with_cursor(document, self.cursor, floor)?;
+                            self.cursor = cursor;
+                            if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), floor) {
+                                session.unit_floor = floor;
+                            }
                         } else if edit.range.is_empty() {
                             let value = RegisterValue::characterwise(&edit.replacement);
                             let payload = FormattedTextPayload::new(
@@ -10955,7 +11067,14 @@ impl CommandInterpreter {
             }
             _ => unreachable!("only Insert-mode delete motions use this resolver"),
         };
-        range.map_err(|error| CommandOutput {
+        range.map(|mut range| {
+            if let Some(session) = &self.insert_session {
+                if range.start < session.unit_floor && session.unit_floor < self.cursor {
+                    range.start = session.unit_floor;
+                }
+            }
+            range
+        }).map_err(|error| CommandOutput {
             status: CommandStatus::Error(format!("Insert {name} motion failed: {error:?}")),
             ..CommandOutput::complete()
         })
@@ -10988,7 +11107,9 @@ impl CommandInterpreter {
         }
         let removed = document.projection().text_tree().slice(range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        self.cursor = delete_with_cursor(document, range)?;
+        let (cursor, source) = delete_with_source_cursor(document, range)?;
+        self.cursor = cursor;
+        self.retain_hidden_source_cursor(document, source);
         if let Some(session) = self.insert_session.as_mut() {
             session.unit_floor = session.unit_floor.min(self.cursor);
             session.record_deleted(&removed, step);
@@ -11021,6 +11142,16 @@ impl CommandInterpreter {
         }); }
         document.source_point(at.offset()).map_err(|_| DocumentError::AmbiguousProjection)?;
         Ok(Some(at))
+    }
+
+    fn retain_hidden_source_cursor(&mut self, document: &Document, at: Option<crate::document::SourcePoint>) {
+        if let Some(at) = at {
+            self.remember_physical_cursor(document, at.offset());
+            if let Some(session) = self.insert_session.as_mut() {
+                session.source_destination = Some(at);
+                session.source_floor = Some(at);
+            }
+        }
     }
 
     fn insert_hidden_source_payload(&mut self, document: &mut Document, value: &RegisterValue) -> Result<CommandOutput, DocumentError> {
@@ -11271,7 +11402,7 @@ impl CommandInterpreter {
         }
         let journalable = self.replace_payload_is_journalable(input);
         if journalable
-            && ((document.format() == Format::Markdown && self.markdown_autodetect())
+            && (document.format().is_markdown()
                 || !self.typing_style.is_empty()
                 || self
                     .insert_session
@@ -11469,6 +11600,15 @@ impl CommandInterpreter {
                 });
             }
             self.invalidate_replace_restoration();
+            let before = self.cursor;
+            self.cursor = document.hard_line_snapshot().previous_grapheme_boundary(before).unwrap_or(before);
+            if self.cursor != before {
+                if let Some(session) = self.insert_session.as_mut() { session.record_step(EditSessionStep::Backspace); }
+            }
+            return Ok(CommandOutput {
+                cursor_moved: self.cursor != before,
+                ..CommandOutput::complete()
+            });
         }
         if let Some(request) = self.paragraph_key_request(document, Key::Backspace)? {
             return self.apply_paragraph_key(document, Key::Backspace, request);
@@ -11481,7 +11621,9 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         };
         let removed = document.hard_line_snapshot().slice_utf8(start..self.cursor).expect("validated backspace range");
-        self.cursor = delete_with_cursor(document, start..self.cursor)?;
+        let (cursor, source) = delete_with_source_cursor(document, start..self.cursor)?;
+        self.cursor = cursor;
+        self.retain_hidden_source_cursor(document, source);
         if let Some(session) = self.insert_session.as_mut() {
             session.record_deleted(&removed, EditSessionStep::Backspace);
         }
@@ -11513,7 +11655,9 @@ impl CommandInterpreter {
             }
             return Ok(CommandOutput::complete());
         };
-        self.cursor = delete_with_cursor(document, self.cursor..end)?;
+        let (cursor, source) = delete_with_source_cursor(document, self.cursor..end)?;
+        self.cursor = cursor;
+        self.retain_hidden_source_cursor(document, source);
         if let Some(session) = self.insert_session.as_mut() {
             session.record_step(EditSessionStep::Delete);
         }
@@ -11532,7 +11676,7 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
-        let source_destination = if matches!(placement, InsertPlacement::Before | InsertPlacement::After) {
+        let source_destination = if matches!(placement, InsertPlacement::Before | InsertPlacement::After | InsertPlacement::LineStart | InsertPlacement::LineEnd | InsertPlacement::Replace) {
             self.retained_physical_cursor_source(document)
                 .filter(|at| document.source_insertion_requires_materialization(*at).unwrap_or(false))
         } else { None };
@@ -11550,7 +11694,13 @@ impl CommandInterpreter {
                 .map_or(self.cursor, |range| range.end),
             InsertPlacement::LineStart => self
                 .mode_line_insertion(document, false, true)
-                .unwrap_or_else(|| first_nonblank_document(document, &lines, self.cursor)),
+                .unwrap_or_else(|| {
+                    if self.literal_indentation(document) {
+                        let line = lines.line_at_offset(self.cursor).expect("valid insertion line").content_range();
+                        let text = lines.slice_utf8(line.clone()).expect("valid insertion line");
+                        line.start + crate::document::leading_whitespace_len(&text)
+                    } else { first_nonblank_document(document, &lines, self.cursor) }
+                }),
             InsertPlacement::LineEnd => self
                 .mode_line_insertion(document, true, false)
                 .unwrap_or_else(|| line_end(&lines, self.cursor)),
@@ -11847,6 +11997,7 @@ impl CommandInterpreter {
             });
         let origin_end = line_end(&document.hard_line_snapshot(), self.cursor);
         let mut prefix = self.continuation_indent(document, origin_end, true, above);
+        let mut source_destination = None;
         document.begin_edit_group();
         if self.line_mode == LineMode::PhysicalSource
             && document.markdown_source_list_edit(position, self.cursor, Some(!above))?.is_none()
@@ -11854,10 +12005,23 @@ impl CommandInterpreter {
             self.open_physical_line(document, above)?;
         } else {
             let (prepared, cursor) = prepare_open_line_with_cursor(document, position, self.cursor, !above)?;
+            let terminal_source = (document.format().is_source_view() && !above && prefix.is_empty()
+                && position == document.projection().text_tree().byte_len()
+                && document.projection().source_insertion_point(position, true) == Some(document.source_byte_len()))
+                .then(|| document.source_point(document.source_byte_len()))
+                .transpose().map_err(command_position_document_error)?;
+            let opened_source = terminal_source.map(|point| prepared.text_position_map().source_position_map()
+                .ok_or(DocumentError::AmbiguousProjection)?
+                .map_source_point(point, Association::AfterInsertion, DeletionRecovery::PreferFollowingThenPreceding)
+                .map_err(command_position_document_error)?.value().copied().ok_or(DocumentError::AmbiguousProjection))
+                .transpose()?;
             document
                 .commit_model_transaction(prepared)
                 .map_err(command_document_error)?;
             self.cursor = cursor;
+            source_destination = opened_source.filter(|point|
+                document.projection().source_insertion_point(cursor, true) != Some(point.offset()));
+            if let Some(point) = source_destination { self.remember_physical_cursor(document, point.offset()); }
         }
         // Visual O may split an interior wrapped row while its caret stays
         // at the preceding fragment's end. That is not a leading-whitespace
@@ -11887,8 +12051,8 @@ impl CommandInterpreter {
             replaying_program: false,
             preserve_normal_repeat: false,
             unit_floor: self.cursor,
-            source_destination: None,
-            source_floor: None,
+            source_destination,
+            source_floor: source_destination,
             repeat_operator: None,
             repeat_visual_operator: None,
             replace_journal: Vec::new(),
@@ -11911,6 +12075,14 @@ impl CommandInterpreter {
         if let Err(output) = self.require_register_write(register) {
             return Ok(output);
         }
+        if document.format().is_source_view()
+            && self.retained_physical_cursor_source(document)
+                .is_some_and(|at| document.source_insertion_requires_materialization(at).unwrap_or(false))
+        {
+            // An emptied physical Source line remains the command's owner
+            // even while its visible boundary is shared with the next row.
+            return Ok(CommandOutput::complete());
+        }
         let lines = document.hard_line_snapshot();
         let range = normal_delete_range(&lines, self.cursor, count, backward);
         if range.is_empty() {
@@ -11925,10 +12097,11 @@ impl CommandInterpreter {
             },
             register,
         );
-        let cursor = delete_with_cursor(document, range)?;
+        let (cursor, source) = delete_with_source_cursor(document, range)?;
         self.delete_register(register, value, DeletionClass::Small);
         self.cursor =
             normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
+        self.retain_hidden_source_cursor(document, source);
         if !self.replaying {
             self.last_repeat = Some(if backward {
                 RepeatAction::DeleteBackward { count }
@@ -11973,6 +12146,11 @@ impl CommandInterpreter {
         // one hard-line item. Other replacement operands are repeated once per
         // replaced grapheme.
         let replacement_count = if is_single_semantic_hard_break(replacement) {
+            if self.literal_indentation(document) {
+                let suffix = lines.slice_utf8(end..content_end)
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                end += crate::document::leading_whitespace_len(&suffix);
+            }
             1
         } else {
             count
@@ -12064,15 +12242,28 @@ impl CommandInterpreter {
             Ok(repeated) => repeated,
             Err(error) => return Ok(error.into_command_output()),
         };
+        if value.kind == RegisterKind::Linewise && self.mode == Mode::Normal {
+            if let Some((prepared, start, end)) = value.clipboard_fragment().map(|fragment|
+                document.prepare_rich_linewise_put(self.cursor, before, fragment, count)
+            ).transpose().map_err(command_document_error)?.flatten() {
+                document.commit_model_transaction(prepared).map_err(command_document_error)?;
+                self.cursor = if follow { normalize_normal_cursor_document(document, &document.hard_line_snapshot(), end) }
+                    else { first_nonblank_document(document, &document.hard_line_snapshot(), start) };
+                if !self.replaying { self.last_repeat = Some(RepeatAction::Paste { before, follow, count, register: name }); }
+                return Ok(CommandOutput { document_changed: true, cursor_moved: true, ..CommandOutput::complete() });
+            }
+        }
         let mut content_start_offset = 0;
         let position = match value.kind {
             RegisterKind::Characterwise if before => self.cursor,
             RegisterKind::Characterwise => grapheme_range_at(document.text(), self.cursor)
+                .filter(|range| !is_hard_line_separator(&lines, range))
                 .map_or(self.cursor, |range| range.end),
             RegisterKind::Linewise if before => line_start(&lines, self.cursor),
             RegisterKind::Linewise => {
                 let at = line_range(&lines, self.cursor).end;
-                if at == document.projection().text_tree().byte_len() {
+                if at == document.projection().text_tree().byte_len()
+                    && line_end(&lines, self.cursor) == at {
                     repeated = match linewise_register_at_eof(repeated, count) {
                         Ok(repeated) => repeated,
                         Err(error) => return Ok(error.into_command_output()),
@@ -12128,9 +12319,17 @@ impl CommandInterpreter {
                 RegisterKind::Characterwise => {
                     document.hard_line_snapshot().previous_grapheme_boundary(insertion_end).unwrap_or(position)
                 }
-                RegisterKind::Linewise => first_nonblank_document(document, &document.hard_line_snapshot(),
-                    position + content_start_offset,
-                ),
+                RegisterKind::Linewise => {
+                    let lines = document.hard_line_snapshot();
+                    let line = lines.line_at_offset(position).map_err(|_| DocumentError::AmbiguousProjection)?;
+                    // Source projection can absorb the prefixed separator into
+                    // an existing blank boundary. Advance only over a retained
+                    // break, never one byte into the first inserted grapheme.
+                    let start = if content_start_offset != 0 && line.content_range().end == position {
+                        line.linewise_range().end
+                    } else { position };
+                    first_nonblank_document(document, &lines, start)
+                },
                 RegisterKind::Blockwise => unreachable!("blockwise paste returned above"),
             }
         };
@@ -12256,7 +12455,10 @@ impl CommandInterpreter {
         };
         Ok(CommandOutput {
             document_changed: changed,
-            cursor_moved: self.cursor != start,
+            // The replacement chooses this post-edit Normal caret even when
+            // its byte offset equals the old one. Do not rebase it through
+            // the replaced character a second time during publication.
+            cursor_moved: true,
             ..CommandOutput::complete()
         })
     }
@@ -12572,10 +12774,7 @@ impl CommandInterpreter {
                     *object,
                     count,
                 ) {
-                    Ok(range) => Some(MotionExtent {
-                        range,
-                        kind: MotionKind::Characterwise,
-                    }),
+                    Ok(range) => Some(text_object_extent(document, *object, range)),
                     Err(error) => {
                         return Ok(CommandOutput {
                             status: CommandStatus::Error(format!(
@@ -13799,10 +13998,7 @@ impl CommandInterpreter {
         self.apply_operator_with_repeat(
             document,
             pending.operator,
-            MotionExtent {
-                range,
-                kind: MotionKind::Characterwise,
-            },
+            MotionExtent { range, kind: MotionKind::Characterwise },
             pending.register,
             RepeatTarget::Find(find),
             count,
@@ -13994,10 +14190,7 @@ impl CommandInterpreter {
         self.apply_operator_with_repeat(
             document,
             pending.operator,
-            MotionExtent {
-                range,
-                kind: MotionKind::Characterwise,
-            },
+            text_object_extent(document, TextObject { scope, kind }, range),
             pending.register,
             RepeatTarget::TextObject(TextObject { scope, kind }),
             count,
@@ -14097,6 +14290,7 @@ impl CommandInterpreter {
 
     fn record_jump(&mut self, document: &Document, from: usize, to: usize) {
         if self.global_replay_depth > 0 { return; }
+        self.jumps_revision = Some(document.revision());
         let lines = document.hard_line_snapshot();
         // `jumps[jump_index]` is the live location. A new jump after CTRL-O
         // discards the newer branch, and an ordinary motion since the last
@@ -14470,13 +14664,31 @@ impl CommandPlan {
         prepared: &PreparedModelTransaction,
     ) -> Result<(), DocumentError> {
         if document.format() == crate::document::Format::MarkdownSource {
+            if let Some(CommandModelRequest::Model(ModelRequest::ApplyTextEdits { edits, .. })) = self.model.as_ref() {
+                if let [edit] = edits.as_slice() {
+                    if edit.replacement.is_empty() && !edit.range.is_empty() {
+                        let at = document.source_point_for_insertion(document.text_point(edit.range.start)?, BoundaryAffinity::Downstream)?;
+                        let source = prepared.text_position_map().source_position_map()
+                            .ok_or(DocumentError::AmbiguousProjection)?
+                            .map_source_point(at, Association::BeforeInsertion, DeletionRecovery::PreferFollowingThenPreceding)
+                            .map_err(command_position_document_error)?.value().copied()
+                            .ok_or(DocumentError::AmbiguousProjection)?;
+                        let candidate = document.prepared_candidate_document(prepared)?;
+                        let cursor = prepared_cursor(document, prepared, edit.range.start, Association::BeforeInsertion)?;
+                        self.success_controller.cursor = if self.success_controller.mode == Mode::Normal {
+                            normalize_normal_cursor_document(&candidate, &candidate.hard_line_snapshot(), cursor)
+                        } else { cursor };
+                        if candidate.source_insertion_requires_materialization(source)? {
+                            self.success_controller.retain_hidden_source_cursor(&candidate, Some(source));
+                        }
+                    }
+                }
+            }
             if let Some(CommandModelRequest::Model(ModelRequest::ContinueList { at, .. })) = self.model.as_ref() {
-                let edit = document.list_enter_edit(*at)?.ok_or(DocumentError::VerificationFailed)?;
-                self.success_controller.cursor = if edit.range.is_empty() {
-                    prepared_cursor(document, prepared, edit.range.end, Association::AfterInsertion)?
-                } else {
-                    document.prepared_text_point(prepared, edit.range.start + edit.replacement.len())?.offset()
-                };
+                self.success_controller.cursor = prepared_list_enter_cursor(document, prepared, *at)?;
+                if let Some(session) = self.success_controller.insert_session.as_mut() {
+                    session.unit_floor = prepared_cursor(document, prepared, session.unit_floor, Association::BeforeInsertion)?;
+                }
             }
             if let Some(CommandModelRequest::FormattedPayload(request)) = self.model.as_ref() {
                 if let [edit] = request.edits() {
@@ -14605,6 +14817,9 @@ fn layout_required(command: &str) -> CommandOutput {
 }
 
 fn layout_error(error: LayoutMotionError) -> CommandOutput {
+    if error == LayoutMotionError::TableCellBoundary {
+        return CommandOutput::unsupported("Editing across table cell boundaries requires a cell selection or a row action.");
+    }
     let needs_more_layout = matches!(&error, LayoutMotionError::OutsideMaterializedCoverage(_));
     CommandOutput {
         status: if needs_more_layout {
@@ -15100,6 +15315,11 @@ fn layout_position_for_offset(
         text_offset,
         affinity: preferred_affinity,
     };
+    if let Ok(geometry) = snapshot.logical_endpoint_geometry(text_offset, preferred_affinity) {
+        if let Some(caret) = crate::layout::nearest_caret(&snapshot.rows[geometry.row_index], geometry.rect.x) {
+            return Ok(VisualPosition { text_offset: caret.point.text_offset, affinity: caret.point.affinity });
+        }
+    }
     match g0(snapshot, candidate) {
         Err(error) => Err(error),
         Ok(_) => Err(LayoutMotionError::PositionNotInLayout(candidate)),
@@ -15401,6 +15621,12 @@ fn linewise_edit_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<u
     if range.end != lines.text_length() || range.start == 0 {
         return range;
     }
+    if !range.is_empty() && lines.previous_grapheme_boundary(range.end)
+        .and_then(|at| lines.line_at_offset(at).ok())
+        .and_then(|line| line.separator_range())
+        .is_some_and(|separator| separator.end == range.end) {
+        return range;
+    }
     let first = lines
         .line_at_offset(range.start)
         .expect("a linewise edit starts at a valid hard-line boundary");
@@ -15523,7 +15749,7 @@ fn commit_model_with_cursor(
     Ok(caret)
 }
 
-fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize, DocumentError> {
+fn continue_list_with_cursor(document: &mut Document, at: usize, floor: Option<usize>) -> Result<(usize, Option<usize>), DocumentError> {
     let prepared = document
         .prepare_model_request(ModelRequest::ContinueList {
             document: document.id(),
@@ -15531,18 +15757,25 @@ fn continue_list_with_cursor(document: &mut Document, at: usize) -> Result<usize
             at,
         })
         .map_err(command_document_error)?;
-    let cursor = if document.format() == crate::document::Format::MarkdownSource
-        && document.list_enter_edit(at)?.is_some_and(|edit| !edit.range.is_empty())
-    {
-        let edit = document.list_enter_edit(at)?.unwrap();
-        document.prepared_text_point(&prepared, edit.range.start + edit.replacement.len())?.offset()
-    } else {
-        prepared_cursor(document, &prepared, at, Association::AfterInsertion)?
-    };
+    let cursor = prepared_list_enter_cursor(document, &prepared, at)?;
+    let floor = floor.map(|floor| prepared_cursor(document, &prepared, floor, Association::BeforeInsertion)).transpose()?;
     document
         .commit_model_transaction(prepared)
         .map_err(command_document_error)?;
-    Ok(cursor)
+    Ok((cursor, floor))
+}
+
+fn prepared_list_enter_cursor(document: &Document, prepared: &PreparedModelTransaction, at: usize) -> Result<usize, DocumentError> {
+    if document.format().is_source_view() {
+        let edit = document.list_enter_edit(at)?.ok_or(DocumentError::VerificationFailed)?;
+        if !edit.range.is_empty() {
+            // Exiting an empty marker creates an ordinary empty paragraph.
+            // Its semantic destination precedes the following source row,
+            // independently of the extra separator endings authored for it.
+            return Ok(document.prepared_text_point(prepared, edit.range.start + edit.replacement.len())?.offset());
+        }
+    }
+    prepared_cursor(document, prepared, at, Association::AfterInsertion)
 }
 
 fn prepare_open_line_with_cursor(
@@ -15563,7 +15796,11 @@ fn prepare_open_line_with_cursor(
     let cursor = if let Some(cursor) = document.prepared_markdown_source_open_cursor(&prepared, at, origin, after)? {
         cursor
     } else {
-        at + usize::from(after)
+        prepared_cursor(document, &prepared, at, if after {
+            Association::AfterInsertion
+        } else {
+            Association::BeforeInsertion
+        })?
     };
     document.prepared_text_point(&prepared, cursor)?;
     Ok((prepared, cursor))
@@ -15603,6 +15840,32 @@ fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<us
         at,
         Association::BeforeInsertion,
     )
+}
+
+fn delete_with_source_cursor(
+    document: &mut Document, range: Range<usize>,
+) -> Result<(usize, Option<crate::document::SourcePoint>), DocumentError> {
+    let source = if document.format().is_source_view() {
+        Some(document.source_point_for_insertion(document.text_point(range.start)?, BoundaryAffinity::Downstream)?)
+    } else { None };
+    let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+        document: document.id(), revision: document.revision(),
+        edits: vec![TextEdit::new(range.clone(), "")],
+    }).map_err(command_document_error)?;
+    let cursor = prepared_cursor(document, &prepared, range.start, Association::BeforeInsertion)?;
+    let source = source.map(|at| {
+        prepared.text_position_map().source_position_map()
+            .ok_or(DocumentError::AmbiguousProjection)?
+            .map_source_point(at, Association::BeforeInsertion, DeletionRecovery::PreferFollowingThenPreceding)
+            .map_err(command_position_document_error)?.value().copied()
+            .ok_or(DocumentError::AmbiguousProjection)
+    }).transpose()?;
+    let source = if let Some(at) = source {
+        let candidate = document.prepared_candidate_document(&prepared)?;
+        candidate.source_insertion_requires_materialization(at)?.then_some(at)
+    } else { None };
+    document.commit_model_transaction(prepared).map_err(command_document_error)?;
+    Ok((cursor, source))
 }
 
 fn prepared_payload_caret(
@@ -15673,8 +15936,14 @@ fn register_value(document: &Document, lines: &HardLineSnapshot, extent: &Motion
         RegisterValue::try_new(contents, RegisterKind::Characterwise, hard_break_offsets)
             .expect("captured characterwise register breaks are valid")
     };
-    if matches!(requested, Some('+' | '*')) && document.format() != crate::document::Format::PlainText {
-        result.clipboard_fragment = document.clipboard_fragment(extent.range.clone()).ok().map(|fragment| {
+    if document.format().is_wysiwyg()
+        || matches!(requested, Some('+' | '*')) && document.format() != crate::document::Format::PlainText {
+        let mut rich_range = extent.range.clone();
+        if extent.kind == MotionKind::Linewise && rich_range.start < rich_range.end
+            && captured.break_offsets().last().is_some_and(|offset| offset + 1 == captured.text().len()) {
+            rich_range.end -= 1;
+        }
+        result.clipboard_fragment = document.clipboard_fragment(rich_range).ok().map(|fragment| {
             fragment.with_register(&result.text, match result.kind { RegisterKind::Characterwise => 1, RegisterKind::Linewise => 2, RegisterKind::Blockwise => 3 }, result.hard_break_offsets())
         });
     }
@@ -15847,6 +16116,13 @@ fn change_case(text: &str, operator: Operator) -> String {
             .collect(),
         _ => unreachable!(),
     }
+}
+
+fn case_edits(text: &str, start: usize, operator: Operator) -> Vec<TextEdit> {
+    text.grapheme_indices(true).filter_map(|(offset, grapheme)| {
+        let replacement = change_case(grapheme, operator);
+        (replacement != grapheme).then(|| TextEdit::new(start + offset..start + offset + grapheme.len(), replacement))
+    }).collect()
 }
 
 fn choose_repeat_count(requested: Option<usize>, recorded: usize) -> usize {
@@ -17126,8 +17402,8 @@ mod tests {
         key(&mut commands, &mut document, Key::Backspace);
         assert_eq!(
             document.text(),
-            "bc",
-            "fallback deletes; it cannot restore a"
+            "Xbc",
+            "outside the restoration frontier Backspace moves without deleting"
         );
 
         let mut document = Document::new("abc");
@@ -17140,8 +17416,8 @@ mod tests {
         key(&mut commands, &mut document, Key::Backspace);
         assert_eq!(
             document.text(),
-            "c",
-            "Delete also ends the restore frontier"
+            "Xc",
+            "Delete ends the restore frontier; Backspace cannot undo or delete its prefix"
         );
     }
 
@@ -17159,7 +17435,7 @@ mod tests {
         key(&mut commands, &mut document, Key::Backspace);
         assert_eq!(document.text(), "Xbc");
         key(&mut commands, &mut document, Key::Backspace);
-        assert_eq!(document.text(), "bc", "the pre-newline a is not restored");
+        assert_eq!(document.text(), "Xbc", "the pre-newline a is not restored or deleted");
     }
 
     #[test]
@@ -23264,7 +23540,7 @@ mod tests {
 
         assert!(commands.set_cursor(&document, 2));
         keys(&mut commands, &mut document, "2.");
-        assert_eq!(document.text(), "a\n\n ghijkl");
+        assert_eq!(document.text(), "a\n\nghijkl");
         assert_eq!(document.line_count(), 3);
         assert!(document.undo(), "counted dot is one undo unit");
         assert_eq!(document.text(), "a\nef ghijkl");

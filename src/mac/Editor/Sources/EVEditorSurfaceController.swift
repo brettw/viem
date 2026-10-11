@@ -67,6 +67,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private var appliedMargins: EVViewMargins?
     private var lastErrorMessage = ""
     private var lastLayoutWarning = ""
+    // An export boundary also lets native tests exercise persistent failures
+    // without corrupting source or retaining invalid core identities.
+    var beforePresentationExport: ((String) throws -> Void)?
     var pasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.shared
     var findPasteboard: any EVPasteboardAccess = EVAppKitPasteboardAccess.find
     private var pasteMatchesStyle = false
@@ -321,11 +324,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 }
             }
 
-            let nextLayoutSnapshot: EVLayoutExport?
-            do {
-                nextLayoutSnapshot = try session.layoutExport()
-            } catch EVCoreFrontendError.unavailableLayout {
-                nextLayoutSnapshot = nil
+            let reusableLayout = layoutSnapshot.flatMap { previous in
+                (try? session.layoutSnapshotInfo().identity.isSameLayout(as: previous.info.identity)) == true ? previous : nil
+            }
+            let nextLayoutSnapshot = session.optionalPresentation("layout geometry", fallback: reusableLayout) {
+                try beforePresentationExport?("layout")
+                return try session.layoutExport()
             }
             let nextLayoutPaint: EVLayoutPaintExport?
             let nextLayoutTextSlices: [EVFormattedTextSlice]
@@ -341,19 +345,20 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                         status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
-                let paint = try session.layoutPaintExport()
-                guard paint.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) else {
-                    throw EVCoreFrontendError.core(
-                        operation: "Match layout paint",
-                        status: UInt32(VIEM_STATUS_STALE_REVISION)
-                    )
+                nextLayoutPaint = session.optionalPresentation("text colors", fallback: nil as EVLayoutPaintExport?) {
+                    try beforePresentationExport?("paint")
+                    let paint = try session.layoutPaintExport()
+                    guard paint.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) else {
+                        throw EVCoreFrontendError.core(operation: "Match layout paint", status: UInt32(VIEM_STATUS_STALE_REVISION))
+                    }
+                    return paint
                 }
-                nextLayoutPaint = paint
                 let sameLayout = layoutSnapshot?.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) == true
                 let sameFormatted = formattedSnapshot?.info.identity.isSameSnapshot(as: nextFormattedSnapshot.info.identity) == true
                 let sameComposition = compositionOverlay?.info.identity.isSameOverlay(
                     as: nextCompositionOverlay?.info.identity ?? ViemCompositionOverlayIdentityV1()) == true
-                let reuseText = sameLayout && (nextCompositionOverlay != nil
+                let hasRetainedText = nextCompositionOverlay != nil ? !compositionTextSlices.isEmpty : !layoutTextSlices.isEmpty
+                let reuseText = sameLayout && hasRetainedText && (nextCompositionOverlay != nil
                     ? sameComposition : sameFormatted && compositionOverlay == nil)
                 let ranges = reuseText ? [] : layoutUTF8Ranges(
                     for: nextLayoutSnapshot,
@@ -365,16 +370,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                     if reuseText {
                         nextCompositionTextSlices = compositionTextSlices
                     } else {
-                        nextCompositionTextSlices = try ranges.map {
-                            try session.compositionTextSlice(in: $0, overlay: nextCompositionOverlay)
+                        nextCompositionTextSlices = session.optionalPresentation("composition text", fallback: []) {
+                            try beforePresentationExport?("composition text")
+                            return try ranges.map { try session.compositionTextSlice(in: $0, overlay: nextCompositionOverlay) }
                         }
                     }
                 } else {
                     if reuseText {
                         nextLayoutTextSlices = layoutTextSlices
                     } else {
-                        nextLayoutTextSlices = try ranges.map {
-                            try backend.formattedSlice(in: $0, snapshot: nextFormattedSnapshot)
+                        nextLayoutTextSlices = session.optionalPresentation("visible text", fallback: []) {
+                            try beforePresentationExport?("text")
+                            return try ranges.map { try backend.formattedSlice(in: $0, snapshot: nextFormattedSnapshot) }
                         }
                     }
                     nextCompositionTextSlices = []
@@ -385,38 +392,48 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 nextCompositionTextSlices = []
             }
 
-            let nextCommandLine = try session.commandLineExport()
-            let nextSubstituteConfirmation = try session.substituteConfirmationPrompt()
-            guard nextCommandLine.info.identity.document_id
+            let nextCommandLine = session.optionalPresentation("command line", fallback: nil as EVCommandLineExport?) {
+                try beforePresentationExport?("command line")
+                let nextCommandLine = try session.commandLineExport()
+                guard nextCommandLine.info.identity.document_id
                     == nextFormattedSnapshot.info.identity.document_id,
-                  nextCommandLine.info.identity.document_revision
-                    == nextFormattedSnapshot.info.identity.document_revision
-            else {
-                throw EVCoreFrontendError.core(
-                    operation: "Match command line",
-                    status: UInt32(VIEM_STATUS_STALE_REVISION)
-                )
-            }
-            let nextVisualSelection: EVVisualSelectionExport?
-            do {
-                nextVisualSelection = try session.visualSelectionExport()
-            } catch EVCoreFrontendError.core(_, let status)
-                where status == UInt32(VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
-                    || status == UInt32(VIEM_STATUS_LAYOUT_UNAVAILABLE)
-            {
-                // Exact selection geometry cannot be approximated safely. It
-                // will become available when core materializes its coverage.
-                nextVisualSelection = nil
-            }
-            if let nextVisualSelection, let nextLayoutSnapshot {
-                guard nextVisualSelection.info.identity.layout.isSameLayout(
-                    as: nextLayoutSnapshot.info.identity
-                ) else {
+                      nextCommandLine.info.identity.document_revision
+                        == nextFormattedSnapshot.info.identity.document_revision
+                else {
                     throw EVCoreFrontendError.core(
-                        operation: "Match Visual selection",
+                        operation: "Match command line",
                         status: UInt32(VIEM_STATUS_STALE_REVISION)
                     )
                 }
+                return nextCommandLine
+            }
+            let nextSubstituteConfirmation = session.optionalPresentation("substitute prompt", fallback: nil as String?) {
+                try session.substituteConfirmationPrompt()
+            }
+            let nextVisualSelection = session.optionalPresentation("selection", fallback: nil as EVVisualSelectionExport?) {
+                let nextVisualSelection: EVVisualSelectionExport?
+                do {
+                    try beforePresentationExport?("selection")
+                    nextVisualSelection = try session.visualSelectionExport()
+                } catch EVCoreFrontendError.core(_, let status)
+                where status == UInt32(VIEM_STATUS_OUTSIDE_LAYOUT_COVERAGE)
+                    || status == UInt32(VIEM_STATUS_LAYOUT_UNAVAILABLE)
+                {
+                    // Exact selection geometry cannot be approximated safely. It
+                    // will become available when core materializes its coverage.
+                    nextVisualSelection = nil
+                }
+                if let nextVisualSelection, let nextLayoutSnapshot {
+                    guard nextVisualSelection.info.identity.layout.isSameLayout(
+                        as: nextLayoutSnapshot.info.identity
+                    ) else {
+                        throw EVCoreFrontendError.core(
+                            operation: "Match Visual selection",
+                            status: UInt32(VIEM_STATUS_STALE_REVISION)
+                        )
+                    }
+                }
+                return nextVisualSelection
             }
 
             let selectionChanged = selectionPresentationChanged(nextPresentation, viewID: session.viewID,
@@ -435,6 +452,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
                 || presentedWhitespaceCopyCount != session.presentationExportCounters.whitespaceCopies
                 || compositionOverlay?.info.identity.generation != nextCompositionOverlay?.info.identity.generation
+                || (layoutPaint == nil) != (nextLayoutPaint == nil)
+                || layoutTextSlices.isEmpty != nextLayoutTextSlices.isEmpty
+                || compositionTextSlices.isEmpty != nextCompositionTextSlices.isEmpty
+                || layoutSnapshot?.decorations.count != nextLayoutSnapshot?.decorations.count
+                || layoutSnapshot?.tableCells.count != nextLayoutSnapshot?.tableCells.count
             if immutableInputsChanged { immutablePresentationGeneration &+= 1 }
             presentedWhitespaceCopyCount = session.presentationExportCounters.whitespaceCopies
             documentState = nextDocumentState
@@ -451,7 +473,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             compositionTextSlices = nextCompositionTextSlices
             commandLine = nextCommandLine
             substituteConfirmationPrompt = nextSubstituteConfirmation
-            if nextCommandLine.prompt != nil { clearCommandOutput() }
+            if nextCommandLine?.prompt != nil { clearCommandOutput() }
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
             if immutableInputsChanged, let nextLayoutSnapshot {
@@ -499,6 +521,21 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
         } catch {
             stopSearchPolling()
+            // Input mode and scroll capabilities remain current independently
+            // of optional drawing exports. In particular, never send a stale
+            // expected viewport back to core after a failed refresh.
+            if let state = try? backend.documentState(),
+               let presentation = try? session.presentation(),
+               let viewport = try? session.viewportState(),
+               state.document_id == presentation.document_id,
+               state.document_revision == presentation.document_revision,
+               state.document_id == viewport.document_id,
+               state.document_revision == viewport.document_revision {
+                documentState = state
+                viewPresentation = presentation
+                viewportState = viewport
+                updateStatusBar()
+            }
             // Retain a frame only while core can still attest to its complete
             // source/configuration/metrics identity. Never draw a stale frame.
             if let current = try? session.layoutSnapshotInfo(),
@@ -697,12 +734,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     func requestVerticalViewport(top: CGFloat) {
         dismissCommandOutput()
         guard let session else { return }
-        guard refreshGeometryBeforeInteraction() else { return }
         do {
+            try session.refreshLayoutIfNeeded()
+            let currentViewport = try session.viewportState()
             _ = try session.setViewportOrigin(
-                left: CGFloat(viewportState.left),
+                left: CGFloat(currentViewport.left),
                 top: top,
-                expected: viewportState
+                expected: currentViewport
             )
             refreshPresentation()
         } catch {
