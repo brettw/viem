@@ -150,6 +150,16 @@ enum Act {
     /// Select (creating if needed) another view of the same document.
     SwitchView { index: usize },
     Scale { scale: f32 },
+    /// `:set number` view preference.
+    Number { enabled: bool },
+    /// Gutter row selection at a document-layout y (fraction of the caret row's y is used when absent).
+    RowSelect { y: f32, extend: bool },
+    /// Native Go to Line.
+    GoToLine { line: u64 },
+    /// Open-link navigation inside the current document (`#heading` or `#L12`).
+    LinkFragment { fragment: String },
+    /// Markdown code-block language selector at the caret.
+    CodeLanguage { language: Option<String> },
 }
 
 fn parse_key(name: &str) -> Key {
@@ -277,6 +287,9 @@ impl H {
         let view = core
             .try_add_view(MockTextMeasurementProvider::new(), width, height)
             .map_err(|e| format!("add view: {e:?}"))?;
+        if std::env::var_os("FUZZ_NUMBER").is_some() {
+            core.set_number(view, true).map_err(|e| format!("set number: {e:?}"))?;
+        }
         Ok(H { core, view, views: vec![(view, width, height)], width, height, seed: seed.clone(), trace: vec![Act::Resize { width, height }], slow: Vec::new(), clipboard: None })
     }
 
@@ -649,6 +662,33 @@ impl H {
                 self.height = hh;
                 Res::Ok
             }
+            Act::Number { enabled } => match self.core.set_number(self.view, *enabled) {
+                Ok(()) => Res::Ok,
+                Err(e) => Res::Err(format!("{e:?}")),
+            },
+            Act::RowSelect { y, extend } => {
+                let Some(snapshot) = self.core.presentation_layout(self.view).and_then(|l| l.snapshot()) else { return Res::Ok };
+                let layout_revision = snapshot.revision;
+                self.send(CoreEvent::SelectPointerRow { document_revision: revision, layout_revision, y: *y, extend_selection: *extend })
+            }
+            Act::GoToLine { line } => self.send(CoreEvent::GoToLine { document: doc_id, revision, line: *line }),
+            Act::LinkFragment { fragment } => {
+                let (core, view) = (&mut self.core, self.view);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.navigate_to_link_fragment(view, doc_id, revision, fragment))) {
+                    Err(panic) => Res::Err(format!("PANIC {}", panic_message(panic))),
+                    Ok(Err(e)) => Res::Err(format!("{e:?}")),
+                    Ok(Ok(_)) => Res::Ok,
+                }
+            }
+            Act::CodeLanguage { language } => {
+                let at = self.cursor();
+                let (core, view) = (&mut self.core, self.view);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.set_markdown_code_language(view, doc_id, revision, at, language.as_deref()))) {
+                    Err(panic) => Res::Err(format!("PANIC {}", panic_message(panic))),
+                    Ok(Err(e)) => Res::Err(format!("{e:?}")),
+                    Ok(Ok(_)) => Res::Ok,
+                }
+            }
             Act::ComposeEnd { commit } => {
                 if self.core.composition_overlay(self.view).ok().flatten().is_none() {
                     return Res::Ok;
@@ -695,6 +735,62 @@ impl H {
                 problems.push(("layout_unavailable".into(), "no current layout after same-size resize".into()));
             }
         }
+        problems
+    }
+
+    /// Mirror `viem_core_view_line_number_snapshot_info` and the region copy,
+    /// which the macOS refresh runs with `try` whenever line numbers are on.
+    fn line_number_problems(&self) -> Vec<(String, String)> {
+        let mut problems = Vec::new();
+        let core = &self.core;
+        let view = self.view;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.physical_line_location(view))) {
+            Err(panic) => problems.push(("status_location_panic".into(), panic_message(panic))),
+            Ok(Err(e)) => problems.push(("status_location_error".into(), format!("{e:?}"))),
+            Ok(Ok(_)) => {}
+        }
+        if !problems.is_empty() || !core.number(view).unwrap_or(false) {
+            return problems;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let count = core.document().physical_line_count().map_err(|e| format!("physical_line_count {e:?}"))?;
+            let current = core.current_physical_source_line(view).map_err(|e| format!("current_physical_source_line {e:?}"))?;
+            let regions = core.line_number_regions(view).map_err(|e| format!("line_number_regions {e:?}"))?;
+            Ok::<_, String>((count, current, regions))
+        }));
+        match result {
+            Err(panic) => problems.push(("line_numbers_panic".into(), panic_message(panic))),
+            Ok(Err(e)) => problems.push(("line_numbers_error".into(), e)),
+            Ok(Ok((count, current, regions))) => {
+                if current == 0 || current > count.max(1) {
+                    problems.push(("line_numbers_current_out_of_range".into(), format!("current {current} count {count}")));
+                }
+                let mut previous: Option<&viem_core::LineNumberRegion> = None;
+                let mut currents = 0;
+                for region in &regions {
+                    if region.current { currents += 1; }
+                    if !(region.top.is_finite() && region.bottom.is_finite()) || region.bottom < region.top {
+                        problems.push(("line_numbers_bad_region".into(), format!("{region:?}")));
+                    }
+                    if region.source_line == 0 || region.source_line > count + 1 {
+                        problems.push(("line_numbers_line_out_of_range".into(), format!("{} of {count}", region.source_line)));
+                    }
+                    if let Some(p) = previous {
+                        if region.top + 0.01 < p.bottom {
+                            problems.push(("line_numbers_overlap".into(), format!("{p:?} / {region:?}")));
+                        }
+                        if region.source_line < p.source_line {
+                            problems.push(("line_numbers_not_monotone".into(), format!("{} after {}", region.source_line, p.source_line)));
+                        }
+                    }
+                    previous = Some(region);
+                }
+                if currents > 1 {
+                    problems.push(("line_numbers_multiple_current".into(), format!("{currents}")));
+                }
+            }
+        }
+        problems.truncate(1);
         problems
     }
 
@@ -775,6 +871,9 @@ impl H {
                     }
                 }
             }
+        }
+        if problems.is_empty() && !snapshot_missing {
+            problems.extend(self.line_number_problems());
         }
         if reproject {
             let document = self.core.document();
@@ -1086,6 +1185,9 @@ fn normal_op_specs() -> Vec<&'static str> {
         // Characterwise Visual operations.
         "vlld", "vllr-", "vllU", "vll~", "vllJ", "vll>", "vllcx<Esc>", "vllyP", "vllohd", "veed", "vbd", "veey$p",
         "vllx", "vllX", "vllD", "vllY", "vllC!<Esc>", "vllS!<Esc>", "vllgJ",
+        // Word motions observed through a following edit, and counted word changes.
+        "ex", "Ex", "2ex", "gex", "wx", "Wx", "bx", "Bx", "cWx<Esc>", "c2wx<Esc>", "cex<Esc>", "dE", "yeP", "d2w",
+        "}x", "{x", "fax", "t x", ")x", "(x",
     ]
 }
 
@@ -1304,14 +1406,19 @@ fn probe_insert(seed: &Seed, sink: &Sink, max_positions: usize) {
                 }
                 let after = h.bytes();
                 if after != before_bytes {
-                    let r = h.act(&Act::Key { key: "u".into() });
+                    let units = undo_units(op);
+                    let r = undo_until(&mut h, &before_bytes, units);
                     if !r.is_ok() || h.bytes() != before_bytes {
                         sink.add(finding(&h, "undo_mismatch", &op_label(op), ctx.clone(), format!(
                             "{}: before={:?} after_undo={:?}", r.describe(), String::from_utf8_lossy(&before_bytes),
                             String::from_utf8_lossy(&h.bytes()))));
                         continue;
                     }
-                    let r = h.act(&Act::Key { key: "C-r".into() });
+                    let mut r = Res::Ok;
+                    for _ in 0..units {
+                        r = h.act(&Act::Key { key: "C-r".into() });
+                        if !r.is_ok() || h.bytes() == after { break; }
+                    }
                     if !r.is_ok() || h.bytes() != after {
                         sink.add(finding(&h, "redo_mismatch", &op_label(op), ctx.clone(), format!(
                             "{}: expected={:?} got={:?}", r.describe(), String::from_utf8_lossy(&after),
@@ -1556,7 +1663,7 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
                 let _ = h.act(&Act::Key { key: "Esc".into() });
                 let after = h.bytes();
                 if after != before_bytes {
-                    let r = h.act(&Act::Key { key: "u".into() });
+                    let r = undo_until(&mut h, &before_bytes, undo_units(op));
                     if !r.is_ok() || h.bytes() != before_bytes {
                         sink.add(finding(&h, "undo_mismatch", &op_label(op), ctx.clone(), format!(
                             "{} before={:?} after_undo={:?}", r.describe(), String::from_utf8_lossy(&before_bytes),
@@ -1566,6 +1673,24 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
             }
         }
     }
+}
+
+/// Native popups, pastes and committed compositions are separate undo units
+/// (AGENTS.md), so an op may need several undos to return to its origin.
+fn undo_units(op: &[Act]) -> usize {
+    1 + op.iter().filter(|a| matches!(a, Act::LinkInsert { .. } | Act::ImageInsert { .. } | Act::Paste { .. }
+        | Act::PasteStored | Act::Compose { commit: true, .. } | Act::ComposeReplacePrev { .. })).count()
+}
+
+fn undo_until(h: &mut H, target: &[u8], max: usize) -> Res {
+    let mut r = Res::Ok;
+    for _ in 0..max {
+        r = h.act(&Act::Key { key: "u".into() });
+        if !r.is_ok() || h.bytes() == target {
+            break;
+        }
+    }
+    r
 }
 
 fn caret_xy(h: &H, offset: usize) -> Option<(f32, f32)> {
@@ -1875,7 +2000,18 @@ fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
     let b = boundaries(text);
     let markdown = matches!(h.seed.fmt, Fmt::Wysiwyg | Fmt::Source);
     let pick_offset = |rng: &mut Rng| b[rng.below(b.len())];
-    match rng.below(110) {
+    match rng.below(118) {
+        110 | 111 => vec![Act::Number { enabled: rng.chance(3, 4) }],
+        112 | 113 => {
+            let offset = pick_offset(rng);
+            let y = caret_xy(h, offset).map_or(*rng.pick(&[0., 10., 300., 5000.]), |(_, y)| y + 2.);
+            vec![Act::RowSelect { y, extend: false }, Act::RowSelect { y: y + *rng.pick(&[0., 20., 60., -40.]), extend: true }]
+        }
+        114 => vec![Act::GoToLine { line: *rng.pick(&[0, 1, 2, 3, 5, 9, 1000]) }],
+        115 if markdown => vec![Act::LinkFragment { fragment: rng.pick(&["L1", "L2", "L3", "L7", "L1000", "L0", "title", "intro", "a"]).to_string() }],
+        116 | 117 if markdown => vec![Act::CodeLanguage {
+            language: rng.pick(&[None, Some("rust".to_string()), Some("python".to_string()), Some("markdown".to_string()), Some("nonsense-lang".to_string())]).clone(),
+        }],
         0..=24 => {
             // Insert-mode typing burst with native navigation.
             let mut acts = Vec::new();
@@ -2036,6 +2172,11 @@ fn walk(seed_index: u64, steps: usize, seeds: &[Seed], sink: &Sink) {
 
 fn act_kind(act: &Act) -> &'static str {
     match act {
+        Act::Number { .. } => "number",
+        Act::RowSelect { .. } => "row_select",
+        Act::GoToLine { .. } => "go_to_line",
+        Act::LinkFragment { .. } => "link_fragment",
+        Act::CodeLanguage { .. } => "code_language",
         Act::Key { .. } => "key",
         Act::Text { .. } => "text",
         Act::Place { .. } => "place",
@@ -2121,6 +2262,45 @@ fn run_trace(seed: &Seed, trace: &[Act], verbose: bool) -> Vec<String> {
         log.push(line);
     }
     log
+}
+
+/// Run one JSON case `{fmt, width, height?, source, acts, filename?, line_numbers?}`
+/// and print one JSON object per action with the result, state and problems.
+fn run_json_case(case: &serde_json::Value) -> serde_json::Value {
+    let fmt: Fmt = serde_json::from_value(case["fmt"].clone()).unwrap();
+    let width = case["width"].as_f64().unwrap_or(W_DEFAULT as f64) as f32;
+    let height = case["height"].as_f64().unwrap_or(H_ as f64) as f32;
+    let source = case["source"].as_str().unwrap().to_string();
+    let acts: Vec<Act> = serde_json::from_value(case["acts"].clone()).unwrap();
+    let seed = Seed { fmt, source, filename: case["filename"].as_str().map(Into::into) };
+    let mut h = match H::open(&seed, width, height) {
+        Ok(h) => h,
+        Err(e) => return json!({"open_error": e}),
+    };
+    let mut steps = Vec::new();
+    for act in &acts {
+        let before = h.bytes();
+        let started = std::time::Instant::now();
+        let r = h.act(act);
+        let elapsed = started.elapsed().as_secs_f64();
+        let after_input = matches!(act, Act::Key { .. } | Act::Text { .. } | Act::Paste { .. });
+        let problems = h.check(after_input, true);
+        let other = h.check_other_views();
+        steps.push(json!({
+            "act": act,
+            "result": r.describe(),
+            "ok": r.is_ok() || benign_status(&r),
+            "changed": before != h.bytes(),
+            "mode": format!("{:?}", h.mode()),
+            "cursor": h.cursor(),
+            "xy": caret_xy(&h, h.cursor()),
+            "text": h.text(),
+            "source": String::from_utf8_lossy(&h.bytes()),
+            "problems": problems.iter().chain(other.iter()).map(|(k, d)| format!("{k}: {d}")).collect::<Vec<_>>(),
+            "secs": elapsed,
+        }));
+    }
+    json!({"steps": steps})
 }
 
 /// Re-run a trace and collect walk-style finding signatures.
@@ -2306,6 +2486,11 @@ fn main() {
             vim_cases(&sources, &args[2], positions);
         }
         "minimize" => minimize(&args[2], arg("--want")),
+        "case" => {
+            // case JSON_FILE: one case object; prints one JSON result.
+            let case: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&args[2]).unwrap()).unwrap();
+            println!("{}", run_json_case(&case));
+        }
         "script" => {
             // script FMT WIDTH SOURCE ACTS_JSON
             let fmt: Fmt = serde_json::from_value(json!(args[2])).unwrap();

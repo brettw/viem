@@ -1,5 +1,557 @@
 # Bugs
 
+## Fix-verification audit, October 11, 2026 (commit `3016333`)
+
+This pass checked whether the October 9–10 findings below were fixed, and
+then repeated the full search for similar bugs, including the features added
+since (line numbers, gutter row selection, absolute line addresses, Go to
+Line, `#L` link navigation, the code-block language selector and split
+panes). Severities use the scale defined in the next section.
+
+### How it was checked
+
+- **Replaying every reported reproduction.** Each repro from the previous
+  report (C0–C82, L1–L7) is now a scripted case in
+  [`tools/regress_cases.py`](examples/fuzz_consistency/tools/regress_cases.py),
+  726 cases in all, plus 103 cases for the findings below. The new cases use
+  the IDs in this section (`R…`, `N…`, and the earlier ID for partly fixed
+  items). `tools/regress.py` runs them against any `fuzz_consistency` build.
+- **Old core versus new core.** The same harness was built against the audit
+  commit (`2e5c626`) and against `3016333`, and both ran the same probes,
+  replay cases and Vim differential. A case that passes on the old core and
+  fails on the new one is a regression; one that fails on both is unfixed.
+  Of the 726 original cases, 139 pass on the old core and 704 on the new
+  one. None of the 103 new cases pass on the new core. Counting distinct
+  finding signatures per seed across the insert, normal, selection,
+  copy/paste and navigation probes, 1,585 occur only on the old core, 766 on
+  both, and 430 only on the new core. Policy refusals (Indent outside a list,
+  open question 9, table line commands) account for much of the overlap; the
+  new-only signatures are R1–R18 and the refusals that replaced C30's hangs.
+- **Full probe and walk campaigns** at 600 and 140 points, with line numbers
+  on (`FUZZ_NUMBER=1`) and off, and 20,000 new random walks of 300 steps that
+  now also toggle line numbers, select gutter rows, use Go to Line, follow
+  `#L`/heading fragments and change code-block languages.
+- **Vim differential**: about 119,000 Normal-mode, Insert-mode, dot-repeat and
+  Ex cases in Plain and Code, compared with `/usr/bin/vim -u NONE`, with new
+  word-motion cases (`ex`, `2ex`, `cWx`, `c2wx`, `d2w`, `dE`, `yeP` and
+  others). 12,794 cases that disagreed with Vim on the old core now agree;
+  1,718 that agreed now disagree, mostly R1 and R3–R5. A few of those, such
+  as `vllJ` at the end of a line, are artifacts where Vim's `:normal` stops
+  after a failed motion.
+- **A new geometry fuzzer**, [`examples/fuzz_panes.rs`](examples/fuzz_panes.rs),
+  for the split-pane model (9 million operations, see N16).
+- **Code reading** of the new Ex address and region code, the gutter, link
+  and code-language paths, and the macOS refresh path.
+
+### Summary
+
+Most of the October 9–10 findings are fixed. The reported lock-ups (C0, C1,
+C30, C45, C48, C60, C78) no longer reproduce as reported, unexpected panics
+are now contained by the input checkpoint (H2), and the macOS refresh now
+degrades optional exports instead of failing (H4). The replay suite, the
+probes and the walks all show large improvements.
+
+The fixes also introduced regressions, and the new pass found serious bugs
+that the first audit missed. Fix these first:
+
+| ID | Sev | Summary |
+|---|---|---|
+| N1 | S1 | In Markdown Source and WYSIWYG, `}`/`{` jump to the document ends and `dap`, `dip`, `cip`, `d}` and `>ap` act on **the whole document**. `dap` in any paragraph deletes everything. |
+| R1 | S2 | `cw` on a one-letter word, or on the last letter of any word, also deletes the next word, even across a line break. `I saw a cat.` with `cw` on `a` gives `I saw x.`. Regression from the C75 fix. |
+| R2, R3 | S2 | Regressions in Ex line commands: `:d`, `:m`, `:t` and ranges ending at an unterminated last line with non-ASCII text fail with `AddressOverflow`; `:g/a/d` on `a\nb\na` fails with "text edits overlap". |
+| R4 | S2 | `dap` on the last paragraph of a Plain or Code file deletes the previous paragraph's last line. Regression. |
+| R8, R9, C0 | S1 | Three reachable panics: typing into a table duplicated with `:t.`, Italic over a selection that ends at a table-cell boundary, and the C0 jump-list panic through `:v`/`:g`. |
+| N2, N3 | S1 | Can't type a space after an `<https://…>` autolink at the end of a paragraph; can't type into an empty cell of a table inside a block quote, including any table just inserted there. |
+| R6, R7 | S1/S2 | The C19 fix broke Tab on an empty item after another empty item, and Enter, Tab, type now turns a tight list loose by inserting a blank line. |
+| C65 | S1 | Native Copy then Paste still fails in many ordinary places: from one heading into another, into a bare URL, next to passive HTML. |
+| N12 | S2 | Gutter row selection: deleting a selected heading row turns the next paragraph into a heading; selected table rows can't be deleted, typed over or pasted over. |
+
+### Status of the October 9–10 findings
+
+"Fixed" means the original repro and its listed variants now behave
+correctly. "Partly" items are described under
+[Earlier findings that are only partly fixed](#earlier-findings-that-are-only-partly-fixed).
+"Deferred" items depend on the open question named.
+
+| ID | Status | Notes |
+|---|---|---|
+| C0 | Partly | `=G`, `:g/…/d` and `G` cases are fixed. The same panic is still reachable through `:v`/`:g` followed by typing; it is now contained. |
+| C1, C45, C48, C60, C61 | Fixed | No panic. C1's panic site is reachable again by another path (R8). C48's table now gets created, but it can't be typed into (N3). |
+| C2, C3, C21, C21b, C22 | Fixed | |
+| C3b, C3c | Deferred | Open question 11. |
+| C4, C5, C6, C8, C9, C11–C18, C20 | Fixed | |
+| C7, C10 | Partly | See below. |
+| C19 | Partly | Fixed for the reported case; see R6 and R7. |
+| C23 | Partly | `- `, `#` and `>` are fixed; typing `1. ` still leaves a stale projection. |
+| C24–C27, C29, C31, C33, C35–C37 | Fixed | |
+| C28 | Deferred | Open question 21. |
+| C30 | Partly | No hangs anywhere. Selections that used to hang are now refused instead: in Source, Code or Default Paragraph on `b` in `**a *b* c**`, on `~~strike~~`, or on `__bold__` fails with `UnsupportedFormatting`, and Code on 1..3 in `***both***` reports an internal reversed range, `InvalidRange { start: 4, end: 0 }`. |
+| C32 | Partly | All `d`/`c` forms are fixed. Setext `yyp`, `yyP`, `ddp` and `ddP` now fail (R10). |
+| C34 | Partly | Fenced code blocks, setext headings and `<br>` work. `:t`/`:m` still fail on reference definitions, nested and continued list items and indented code. |
+| C38 | Partly | Fence, ATX and code-span cases are fixed; `**[bold link](u)**` is not. |
+| C39, C40, C41, C46–C58 | Fixed | Policy-dependent parts remain under Modified items. |
+| C42, C43, C44 | Partly | Policy-dependent parts remain under Modified items; the rest is below. |
+| C59 | Partly | Bounded and fast in Text, Code and Source; still about 10 ms per target in WYSIWYG. The batching also introduced R3. |
+| C62, C66, C67, C69–C73, C75, C77, C80–C82 | Fixed | C75's fix caused R1 and part of R5. C81 no longer blocks the macOS refresh because the selection export is optional. |
+| C63 | Fixed | Except the WYSIWYG `:g` cost under C59, and the demo's setext headings under R10. |
+| C64 | Fixed | |
+| C65 | Partly | The reported cases pass; many similar ones still fail. |
+| C68 | Partly | Source cases are fixed; Code still loses indentation. |
+| C74 | Disputed | Shifts now use the options. `>>` on a wrapped row still inserts spaces mid-sentence; see open question 25. |
+| C76 | Partly | The table survives, but retyping a header cell authors `**…**`. |
+| C78, C51 | Fixed | C51 now rejects multi-command text in Normal mode with a clear status. |
+| C79 | Disputed | The line-ending cases are fixed. `yyp` on an interior row still splits a word (open question 26). |
+| L1–L7 | Fixed | |
+| H1 | Partly | See C0. |
+| H2 | Fixed | Panics restore the pre-input checkpoint, but R8, R9 and C0 still panic. |
+| H3 | Deferred | Open question 12. It still turns failed changes such as N5 and N6 into deletions. |
+| H4 | Fixed | Gutter, selection, completion and search exports are optional on macOS. Layout, viewport and composition exports remain required. |
+| H5 | Fixed | |
+| H6 | Fixed | C30's loop is bounded. No probe or walk hung on the new core; the other loops weren't re-read. |
+
+### Regressions introduced by the fixes
+
+Each of these is worse on `3016333` than on the audit commit's core. R7,
+R10 and R11 were already wrong there in a different way; the rest worked.
+R12–R18 came from comparing each probe's findings between the two cores.
+
+#### R1 (S2). `cw` deletes the following word
+
+All formats. Vim's `cw` on a non-blank character changes to the end of the
+*current* word. Viem now changes to the end of the *next* word whenever the
+cursor is on the last character of a word, which includes every one-letter
+word:
+
+| Text, cursor | Keys | Vim | Viem |
+|---|---|---|---|
+| `I saw a cat.`, on `a` | `cwx<Esc>` | `I saw x cat.` | `I saw x.` |
+| `I saw a cat.`, on `I` | `cwx<Esc>` | `x saw a cat.` | `x a cat.` |
+| `ab\ncd\nef\n`, on `b` | `cwx<Esc>`, `cWx<Esc>` | `ax\ncd\nef\n` | `ax\nef\n` |
+| same | `c2wx<Esc>` | `ax\nef\n` | `ax\n` |
+| `a\n` | `cwx<Esc>` | `x\n` | `x` |
+
+The next word is deleted silently, together with the line break when that
+word is on the next line. In WYSIWYG tables, `cw`, `cW`, `ce` and `de` on a
+one-letter cell now reach into the next cell and fail with "Editing across
+table cell boundaries…"; because a failed change stays in Normal mode (H3),
+the `x` typed next deletes the cell's text. `| a | b |…` with `cwx<Esc>`
+leaves the cell empty. The Vim differential found about 1,100 such cases
+in Plain and Code. `resolve_operator_extent` (`src/core/command/mod.rs:9237`)
+maps `cw` to `OperatorMotion::WordEnd`, which uses `move_word_end`. The C75
+fix in `498c9ca` made `move_word_end` always step past the current word end,
+which is correct for `e` but not for `cw`. Vim's `cw` calls `end_word` with
+`stop` set, which counts a cursor already on a word end as being at the end
+of the first word.
+
+#### R2 (S2). Ex line commands fail on a non-ASCII last line
+
+All formats. When a range ends at the last line, the file has no final line
+ending, and that line ends with a multibyte character, `:d`, `:.d`, `:$d`,
+`:.,$d`, `:m0`, `:m-2`, `:t0`, `:.g/./d` and (in WYSIWYG) `:v/a/d` fail with
+`ExError(Execute(AddressOverflow))`. Examples: `aé` with `:d`;
+`a\nb\n中文` with `G:d`. `:s`, `:normal`, `:%d` and `:1,.d` work.
+`exact_hard_lines` (`src/core/command/ex_regions.rs:310`)
+looks up `range.text.end - 1`, a byte offset inside the last character, and
+`line_at_offset` rejects it. `src/core/document/addressed_lines.rs:54` has the same pattern
+behind an `AmbiguousProjection` error.
+
+#### R3 (S2). `:g`/`:v` deletion fails with "text edits overlap"
+
+Plain and Code, `a\nb\na` (no final line ending): `:g/a/d` fails with
+`Error("text edits overlap")` and changes nothing. So do `:g/a/d` on
+`**not markdown**\n# nope\n| a | b |` and `:v/a/d` on the JSON seed. The old
+core gave `b`. The new batched deletion (C59) apparently builds the last
+line's range so that it reaches back over the preceding line ending, which
+overlaps the previous target's range.
+
+#### R4 (S2). `dap` on the last paragraph deletes part of the previous one
+
+Plain and Code. `First paragraph.\nSecond line.\n\nLast line.`, `G`, `dap`
+gives `First paragraph.`: `Second line.` is deleted too. Vim gives
+`First paragraph.\nSecond line.`. `a\nb\n\nc\n` with `dap` on `c` gives `a\nb`,
+losing the final line ending (old core and Vim: `a\nb\n`).
+
+#### R5 (S2). Other Vim-motion side effects
+
+Found by the Vim differential, all in Plain or Code, all matching Vim on the
+old core:
+
+| Text, cursor | Keys | Vim | Viem |
+|---|---|---|---|
+| `ab\n`, on `b` | `de`, `dE` | `a\n` | `a` (final line ending deleted) |
+| same | `yeP` | `abb\n` | `ab\nb\n` |
+| `ab\ncd\n`, line 2 | `v$d` | `ab\n\n` | `ab\n` |
+| `s = '''\nmulti\nline\n'''\n`, on `multi` | `d2w` | `s = '''\n'''\n` | `s = '''\n\n'''\n` |
+| same, on `line` | `db` | `s = '''\nline\n'''\n` | `s = '''\n\nline\n'''\n` |
+| `plain\n\ttext\n`, line 2 | `dd.` | (empty) | `plain` |
+| `P.\nS.\n\nL.\n`, on the empty line | `dw` | `P.\nS.\nL.\n` | no change |
+| ` * star\n`, on `*` | `r<CR>` | ` \n star\n` | ` \nstar\n` (autoindent lost) |
+
+The `de`, `ye` and `v$d` rows and `dd.` lose or misplace the final line
+ending (compare C70). `d2w`/`db` no longer apply Vim's exclusive-linewise
+rule. `dw` on an empty line now does nothing because an empty line counts as
+a word (the C77 fix) but the deletion is then empty.
+
+#### R6 (S1). Tab fails on an empty list item after another empty item
+
+WYSIWYG and Source, `- \n- ` or `1. \n2. `, Insert at the end of the second
+item, Tab: `VerificationFailed`. The old core gave `- \n  - `. The C19 fix
+handles an empty item after a nonempty one only.
+
+#### R7 (S2). Enter, Tab, type makes the list loose
+
+WYSIWYG `- a\n- b`, `GA`, Enter, Tab, `x` gives `- a\n- b\n\n  - x`, and
+`1. a\n2. b` gives `1. a\n2. b\n\n   1. x`. The blank line is needed while the
+new item is empty (an empty item can't interrupt a paragraph), but it is
+kept after typing. It makes the whole list loose, so every item's spacing
+changes, and Source view shows the inserted blank line. The supporting blank
+line should be removed in the same transaction as the first typed character.
+
+#### R8 (S1). Panic typing into a table duplicated with `:t.`
+
+WYSIWYG, `| a |\n| --- |\n\nx` (any header-only one-column table followed by
+a paragraph): `:t.`, `i`, type `q`. The core panics at
+`src/core/document/range_index.rs:818` ("range-index input is ordered by start boundary",
+through `replace_table_row_metadata`, C1's site). Every later character typed
+in that cell panics again, so the cell can't be edited. `:t0` reaches it
+too. On the old core `:t.` failed, so the state wasn't reachable.
+
+#### R9 (S1). Panic: Italic or Bold over a selection ending at a cell boundary
+
+WYSIWYG `| *a* | b |\n| - | - |`, select 0..2 (the cell text plus the cell
+boundary), Italic. The core panics with `Option::unwrap()` on `None` at
+`src/core/document/projection.rs:5418` (`source_spans.first().unwrap()` in
+`splice_line_local_projection`, from `build_table_row_candidate`). The edit
+is a no-op for that cell, so there are no source patches. Bold on
+`| **bold** | _it_ |…` 0..5 does the same. The old core returned
+`VerificationFailed`.
+
+#### R10 (S2). Setext headings can't be duplicated or swapped
+
+WYSIWYG `Setext\n===`: `yyp` and `yyP` fail with `UnsupportedFormatting`.
+`Setext\n===\n\nx`: `dd` works, then `p` fails, so `ddp` loses the heading
+until Undo. The old core succeeded but wrote the copy as a plain paragraph
+and converted the original to `# Setext`.
+
+#### R11 (S3). `xp` next to code spans fails
+
+WYSIWYG ``a `b` c `d` e``, `xp` at the start fails with
+`UnsupportedFormatting` after deleting `a`. The old core put the `a` inside
+the code span instead. The expected source is ``&#32;a`b` c `d` e``.
+
+#### R12 (S2). Source view shows a line break that isn't in a table row
+
+Markdown Source, `| a |\n| - |\n| 1 |`. Shift-Enter after `| - ` in the
+delimiter row, then `x`, writes `| a |\n| - \nx|\n| 1 |`, but the view shows
+`x\n|`, with a line break that isn't in the file. `| a | b |\n| - | - |\n| 1 | 2 |`
+with Shift-Enter before the last `|` does the same, and so does `cwx<Esc>` on
+the leading pipe of a body row (which also hits R1). Whenever an edit leaves a
+row without its leading pipe, the incremental Source text differs from a
+fresh parse. The old core displayed these rows correctly.
+
+#### R13 (S2). Shift-Enter in an empty middle list item
+
+WYSIWYG `- \n- \n- `, Insert in the middle item, Shift-Enter, `x` writes
+`- \n\n- <br>x\n- `: a blank line is inserted before the item, the list turns
+loose, and the incremental blocks differ from a fresh parse. The old core
+wrote `- \n- <br>x\n- `. This looks like the same supporting-blank-line rule
+as R7.
+
+#### R14 (S3). Typing a backslash at the end of an unclosed comment
+
+WYSIWYG `<!-- unclosed comment`, `A`, type `\`: `FormattedPayloadCannotReproject`.
+The old core accepted it.
+
+#### R15 (S2). Replace-mode Enter and Backspace in a table cell leave `<br>`
+
+WYSIWYG `| a | b |\n| - | - |\n| 1 | 2 |` (also inside a list item),
+`R<CR><BS><Esc>` on `a` gives `| <br>a | b |…`. Backspace no longer
+restores the cell. The old core restored the exact source.
+
+#### R16 (S2). Source `:v`/`:g` deletion refuses fence lines
+
+Markdown Source, ```` ```rust\nfn main() {}\n``` ````, `:v/a/d` fails with
+"this edit is not supported for the selected content structure". Source view
+exposes the fence lines as ordinary text, and the old core deleted them,
+leaving `fn main() {}`.
+
+#### R17 (S2). `:s/^/#/` in a list item leaves a stale projection
+
+WYSIWYG `- a\n- b\n- c`, `j:s/^/#/` writes `- a\n- #b\n- c` (the same source
+as the old core), but the incremental list blocks no longer match a fresh
+parse. `1. a\n2. b\n3. c` behaves the same way.
+
+#### R18 (S3). Page Down doesn't move in a document that fits the window
+
+All formats, `a\nb\nc`: Page Down or Ctrl-F (Normal or Insert) leaves the
+caret on `a`, and Page Up from `c` leaves it on `c`. The old core moved the
+caret (to `b` in both cases), and Vim's Ctrl-F and most editors' Page Down
+move toward the end. The new paging rule keeps the caret's screen position
+when the page can't scroll, which looks like a dead key whenever the whole
+document is visible.
+
+### Earlier findings that are only partly fixed
+
+**C0.** `xyz` (any format), `:v/a/d`, `A`, type `éé`, Escape, `:s/^/#/`
+panics in `record_jump` (`src/core/command/mod.rs:14311`, "a retained jump resolves to one
+hard line"). The panic is now contained and the next commands work, but that
+`:s` keeps failing. The batched `:g`/`:v` deletion leaves a raw jump offset
+that later typing doesn't rebase, so H1's claim that retained positions are
+rebased anchors doesn't hold on this path. The shortest examples of both
+walk panic signatures (75 hits) minimize to this sequence.
+
+**C7.** Enter then Backspace no longer fails, but it rewrites the source:
+`*it*` becomes `<em>i</em>*t*`, `_it_` becomes `<em>i</em>_t_`, and `*a\nb*`
+becomes `*a*_&#32;b_`. Rejoining two halves of one emphasis should merge
+them back into one span.
+
+**C10.** WYSIWYG `<https://auto.link>` or `<mailto:a@b.c>` at the end of a
+paragraph: `A`, then a space fails with `FormattedPayloadCannotReproject`
+(N2).
+
+**C23.** Typing `1. ` at the start of `0. zero`, `1) a\n2) b`, `- a\n1. b` or
+`-\ta\n-\tb` gives sources such as `0. 1. zero`, a nested list on reopen,
+while the incremental text is still `1. zero`.
+
+**C32.** See R10.
+
+**C34.** WYSIWYG, both cores: `:t.` on the definition line of
+`[ref]\n\n[ref]: /url`, `:m+1` in `1. a\n   - b\n2. c`, `:m0` on the
+continuation paragraph of `- a\n\n  continued\n- b`, and `:t.` in
+`    a\n\n    b` all fail with `HardLineTransferProjectionMismatch`.
+
+**C38.** WYSIWYG `**[bold link](u)**\n\nx`, `dd` gives
+`<strong>[](u)</strong>x`: an invisible empty link inside `<strong>`, now
+joined to the next paragraph.
+
+**C43.** Bulleted List on `para` in `para\n| a | b |\n| - | - |\n| 1 | 2 |`, and
+Block Quote on the last item of `- a\n  - b\n    - c\n      - d`, still fail
+with `VerificationFailed`.
+
+**C44 and C42.** WYSIWYG `- a\n  - b\n    - c\n      - d`: Code or Bold typing
+style, then `x`, fails with `VerificationFailed` at any caret on the third or
+fourth level (offsets 4–7). Plain typing works there.
+
+**C59.** `:g/al/d` on 4,000 lines now takes 40–180 ms in Text, Code and
+Source. WYSIWYG still costs about 10 ms per target. On the 344-line
+`docs/markdown_demo.md`, `:g/a/d` stops at the 250 ms budget after 20–34
+targets, so it takes nine invocations and then hits the table refusal.
+After `:g` on a long file, the caret is left on the last affected line but
+the view isn't scrolled to it. The batching also introduced R3.
+
+**C65.** Copy then Paste through the portable payload still fails in about
+one seed in three. Examples: copy `A` from `# A\n## B` and paste into `B`
+(`VerificationFailed`); copy `h` from `https://bare.link.example` and paste
+at 2, or copy `u` from `<ins>under</ins> <sup>sup</sup>` and paste at 5
+(`UnsupportedFormatting`); copy across cells of a table in a list and paste
+at the start (`AmbiguousProjection`). The reported cases pass.
+
+**C68.** Code, `fn main() {\n    println!("hi");\n}\n`, cursor on the second
+space of line 2, `R<CR><BS><Esc>` gives `fn main() {\n \nprintln!("hi");\n}\n`.
+Three spaces and the line join are lost (both cores). WYSIWYG `>` with
+`R<CR><BS><Esc>` deletes the `>`.
+
+**C76.** `| abc |\n| --- |` with `ciwz<Esc>` gives `|**z**  |\n| --- |`. The
+header's bold appearance becomes explicit `**` source (compare open
+question 23), and the cell's leading space is lost.
+
+### New findings
+
+These reproduce on both cores unless noted, and weren't in the previous
+report.
+
+#### N1 (S1). Paragraph motions and objects span the whole Markdown document
+
+Markdown Source and WYSIWYG, `# Title\n\nFirst para line one\nline two.\n\n- item a\n- item b\n\nLast para.`,
+cursor in `First para`:
+
+- `}` goes to the end of the document and `{` from the end goes to the start;
+- `dap` leaves `# ` in WYSIWYG and an empty file in Source;
+- `cipX<Esc>` replaces the whole document with `X`;
+- `d}` deletes everything after the cursor;
+- `>ap` indents every block, giving `# &#32; Title` and `- &#32; item a` in
+  WYSIWYG;
+- `yap` yanks the whole document.
+
+The paragraph motions use Vim's blank-line rule on the projected text, but
+neither view has blank lines there: WYSIWYG separates paragraphs with one
+hard break, and Source collapses separator lines (open question 7). So the
+whole document is one paragraph. Plain and Code are unaffected. Deleting a
+paragraph with `dap` is one of the most common Vim edits, and here it
+silently deletes the document. Paragraph motions in these views need
+structural paragraph boundaries; open question 28 asks which ones.
+
+#### N2 (S1). Can't type a space after an autolink at the end of a paragraph
+
+WYSIWYG `<https://auto.link>`, `see <https://auto.link>` or
+`<mailto:a@b.c>`: `A`, then space fails with `FormattedPayloadCannotReproject`.
+A following `x` succeeds but goes inside the link (`<https://auto.linkx>`).
+Typing at the end of a link continues it, as AGENTS.md specifies, but a
+space can't be part of an autolink, so the user can't continue the sentence.
+Bare URLs work.
+
+#### N3 (S1). Empty cells of a table inside a block quote reject typing
+
+WYSIWYG `> |  |  |\n> | - | - |\n> |  |  |`: typing in any empty cell fails
+with `AmbiguousProjection`. Cells with text accept typing, but emptying one
+with Backspace makes it fail. Insert Table inside any quote creates such a
+table, so the cells of a newly inserted quoted table can't be filled. Tables
+in nested quotes fail too. Tables in lists, in a quote inside a list item, and
+in a list inside a quote work.
+
+#### N4 (S2). Deleting rows into a code block strips the block
+
+WYSIWYG ``p\n\n```\nc1\nc2\n```\n\nz``, `2dd` (or `Vjd`) on `p` deletes `p`
+and `c1` but leaves `c2\n\n\nz`: the fences are gone and `c2` becomes an
+ordinary paragraph. From a heading (``# T\n\n```…``) the result is `# c2`. The
+deletion is joined into the first paragraph as a character deletion would
+be. A complete-row deletion should keep the surviving code lines in their
+block.
+
+#### N5 (S1). Change commands on an autolink-only paragraph
+
+WYSIWYG `<https://auto.link>`: `cc` and `S` fail with `VerificationFailed`.
+Because a failed change leaves Normal mode (H3), the next typed `x` deletes
+the `h`. `x\n\n<https://auto.link>` with `Gdd` fails too. (`dd` on a
+one-paragraph autolink document now works.)
+
+#### N6 (S2). Changing the paragraph after a setext heading
+
+WYSIWYG `a\n=\n\nb`: `cc`, `S`, `C`, `ciw`, `cw` and `s` on `b` fail with
+`AmbiguousProjection`. With H3, `ccx` deletes `b`.
+
+#### N7 (S2). Formatting actions on common shapes
+
+- Enter before an image-only paragraph (`![](local.png)`, Insert at 0) fails
+  with `UnsupportedFormatting`, so a paragraph can't be added above an image.
+- Block Quote off on `- > quote in list` fails with `VerificationFailed`.
+- Paragraph style on `# Heading #` (ATX with a closing sequence) fails with
+  `VerificationFailed`.
+
+#### N8 (S1). Typing at the start of some headings and items
+
+WYSIWYG `# \\a` (a heading whose text starts with an escaped backslash) and
+`- </ins>`: typing at the start fails with `FormattedPayloadCannotReproject`.
+The walks reached this repeatedly through `# \\…` headings created by typing.
+
+#### N9 (S2). Display differs from the file after `r` and some typing
+
+- WYSIWYG `- a\n- b`, `r-` on `a` (or `vr-`) writes `- -\n- b`: the item text
+  shows `-`, but the file reopens as a nested empty list. Insert-mode typing
+  escapes the same character (`- \-`). Every list shape in the corpus does
+  this.
+- WYSIWYG `- `, `A`, type `---` gives `- ---` (a thematic break in the item)
+  while the incremental projection still has a list paragraph.
+- WYSIWYG `:s/^/#/` on `- a\n\n- b`, `1) a\n2) b` or the continuation of
+  `- a\n\n  continued\n- b` leaves stale list blocks.
+- Source tables: see R12.
+
+#### N10 (S2). Smaller Vim command failures
+
+- Source `a\né👩‍💻`, `G0r<CR>`: `NotGraphemeBoundary(3)`, a raw coordinate
+  error.
+- WYSIWYG `[text]()`, `C x Esc` gives `[x](<>)[]()`: the emptied link stays in
+  the file next to a new one.
+- WYSIWYG `:m0`/`:t0` at narrow widths fail with "This physical destination
+  is inside hidden formatting" when the current row is part of a wrapped
+  heading.
+- WYSIWYG wide tables at 140 points: `:$d`, `:.,$d`, `:m$` and `:t$` fail with
+  `Layout(OutsideMaterializedCoverage)`, and so does a composition in a cell
+  of a table inside a list item.
+
+#### N11 (S3). Small typing and insertion inconsistencies
+
+- Insert Table at the start of a quoted paragraph adds an empty quoted
+  paragraph before the table (`> nested` becomes `> \n> \n> |  |  |…`). At
+  top level it doesn't (open question 32).
+- Typing into an empty cell of a table inserted at top level writes `|j  |`,
+  without the leading space.
+- `==` after a `/* … */` comment gives the next line the star column's
+  indentation (` fn f() {}`), and `==` on a closing `}` copies the body's
+  indentation. Both follow AGENTS.md's "copies preceding nonblank
+  indentation" literally (open question 30).
+
+#### N12 (S1/S2). Gutter row selection
+
+These are new with the row-selection gutter:
+
+- WYSIWYG `# T\n\nend`: select the heading row in the gutter, Backspace. The
+  result is `# end`: the heading text is deleted, but the following
+  paragraph takes the heading style. `> q\n\nz` gives `> z`. A whole-row
+  selection is treated like a character selection crossing the paragraph
+  boundary, which joins into the first paragraph.
+- Copy a selected row, then Paste over the same selection: fails with
+  `VerificationFailed` for headings, list items and a paragraph above a
+  table. In `> q\n\nz`, it gives `> q\n>\n> z`, pulling `z` into the quote.
+- In a table, the gutter selects the whole semantic row as specified, but
+  Backspace, Delete, typing and Paste then fail with "Editing across table
+  cell boundaries requires a cell selection or a row action." The message
+  is wrong for a row selection. The table spec says Delete clears the
+  selected cells; deleting the row would also be reasonable (open
+  question 29).
+
+#### N13 (S3). Line numbers overlap in header-only tables
+
+`:set number`, WYSIWYG `| a |\n| --- |\n`, Enter in the header cell (giving
+`| a<br> |`): source lines 1 and 2 get the same band (0–45 points), so the
+numbers draw on top of each other and the hidden delimiter line is marked
+current. Deleting body rows (`dG`, `Vjd`, Delete Row) and some compositions
+over a selection in a table do the same. Apart from this, the line-number export and
+the status location never failed in the line-number probes or the walks.
+
+#### N14 (S3). Code-block language selector
+
+The selector works for backtick and tilde fences, indented code (converted
+to a fence), code in lists and quotes, unclosed fences and `<pre>`, with
+exact undo. Two cosmetic leftovers: clearing the language of
+`<pre lang="py">` leaves `<pre >`, and clearing ```` ``` {.rust} ```` leaves a
+trailing space after the fence.
+
+#### N15 (S3). `#L` links
+
+`#L3` and similar fragments navigate correctly, including to hidden lines,
+`#L03`, and numbers past the end. GitHub's range form `#L5-L7` is treated as
+a missing heading and doesn't navigate. It could go to line 5 (open
+question 31).
+
+#### N16. Split panes: no defects found
+
+[`examples/fuzz_panes.rs`](examples/fuzz_panes.rs) ran 30,000 sequences of
+300 operations: split, close, status-bar and splitter drags, window and
+status-height changes, equalize, resize, focus, rotate, exchange and move to
+edge. After every operation it checked that the operations the macOS wrapper
+guards with `precondition` (`update`, `drag`, `remove`, `copy`) succeed, that
+frames tile the window without overlap, that panes keep 100 DIPs of width
+and their status height, and that `can_split` agrees with `split`. Nothing
+failed.
+
+### Harness and tooling changes
+
+- `fuzz_consistency case FILE` runs one JSON case and prints per-action
+  results, state and invariant problems as JSON. `tools/regress.py` and
+  `tools/regress_cases.py` replay every repro in this file with it; set `FC`
+  to compare another build.
+- New actions: `number`, `row_select`, `go_to_line`, `link_fragment` and
+  `code_language`, used by the walks. `FUZZ_NUMBER=1` opens every probe with
+  line numbers on. After every action the harness now also checks
+  `physical_line_location` (the status bar) and, with line numbers on, the
+  gutter export and its region invariants.
+- Undo checks allow one undo per separate undo unit (link and image
+  insertion, paste, and each committed composition), as AGENTS.md specifies.
+  The previous single-undo check reported thousands of false undo
+  mismatches.
+- More word-motion cases in the Vim differential (`ex`, `Ex`, `2ex`, `gex`,
+  `wx`, `bx`, `cWx`, `c2wx`, `cex`, `dE`, `yeP`, `d2w`, `}x`, `{x`, `fax`).
+- [`examples/fuzz_panes.rs`](examples/fuzz_panes.rs): see N16.
+
+Remaining harness noise worth knowing about when triaging: the
+`code_language` action off a code block, zero-row Insert Table, a second
+composition while one is open (`AlreadyActive`), row selection during an
+open composition (`StaleLayout`), and Vim statuses such as "already at
+newest jump" are reported but aren't bugs.
+
+---
+
 ## Consistency audit, October 9–10, 2026 (commit `f6c15de`)
 
 This audit looked for editor states where the Rust core rejects ordinary
@@ -109,10 +661,11 @@ file on reopen. **S3** means an inconsistency or a confusing refusal.
 
 ## Audit status
 
-Confirmed editing, projection, command, layout and recovery defects have been
-fixed and removed from the active inventory. Modified interpretations and
-policy-dependent errors are documented below. Open questions remain
-undecided; no policy changes for them were implemented.
+The implementation pass after this audit removed the findings it fixed and
+recorded changed interpretations under Modified items. The October 11
+fix-verification audit at the top of this file checks those fixes; it lists
+regressions, findings that are only partly fixed, and new findings. Open
+questions remain undecided; no policy changes for them were implemented.
 
 The fuzzer ran about 4 million probes across nearly 650 seeds,
 140,000 random walks of 300 steps each, and about 180,000 cases against
@@ -476,3 +1029,41 @@ spec or the code. Each needs a decision.
     existing backslash means it consumes a newly inserted formatting delimiter.
     Should typing preserve the raw spelling or change that syntax to make the
     new text carry the requested style? These caret cases are also unchanged.
+
+The following were added by the October 11 audit.
+
+25. **Shifting a wrapped row (C74).** Under Visual line meaning, `>>`, `<<`
+    and `V>` on the second or later display row of a soft-wrapped line insert
+    indentation in the middle of the sentence (`jumps   over the lazy dog`),
+    in Plain and WYSIWYG. Modified items keep this as the displayed-row
+    policy. No user means to indent mid-sentence; should row-based shifts
+    apply to the row's hard line, or be refused on continuation rows?
+26. **`yyp` on a partial row (C79).** `yyp` on an interior display row puts
+    the row's text characterwise after the cursor, splitting a word. Should a
+    row yank remember that it was a whole row and put it after the row's end?
+27. **`:N` past the end of the file.** `99G` clamps to the last line, but
+    `:99` fails with `AddressOutOfBounds`. AGENTS.md asks for both behaviors,
+    but Vim moves the cursor to the last line for `:99` (it also reports
+    E16), and `:9999` is a common way to reach the end. Should a bare `:N`
+    (go to line) move to the last line, while ranges given to other commands
+    keep rejecting?
+28. **Paragraphs in Markdown views (N1).** Once `}`, `{`, `ap` and `ip` stop
+    spanning the whole document, what counts as a paragraph in WYSIWYG and
+    Source: each block (heading, list item, table, code block), or runs of
+    ordinary paragraphs as separated in the source? Vim users will expect
+    `dap` on a list item to delete that item, or the whole list.
+29. **Deleting a gutter row selection (N12).** Should Backspace on a
+    gutter-selected heading row remove the row's paragraph (so `# T\n\nend`
+    becomes `end`), as a linewise delete does, rather than joining the next
+    paragraph into the heading? On a gutter-selected table row, should
+    Delete clear the cells (the table spec's selection rule) or delete the
+    row?
+30. **Reindent around braces and block comments (N11).** `==` copies the
+    preceding nonblank line's indentation, so a closing `}` keeps the body's
+    indentation and a line after ` */` gets one space. Keep the literal rule,
+    or skip comment-continuation lines and dedent closing brackets?
+31. **GitHub line ranges (N15).** Should `#L5-L7` navigate to line 5 (and
+    perhaps select through line 7), as GitHub does?
+32. **Table inserted at the start of a quoted paragraph (N11).** Inside a
+    quote, Insert Table at offset 0 adds an empty quoted paragraph before the
+    table; at top level it doesn't. Which is intended?
