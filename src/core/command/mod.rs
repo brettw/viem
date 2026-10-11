@@ -22,6 +22,7 @@ pub mod ex_files;
 pub mod ex_execute;
 mod substitute_confirmation;
 pub mod insert_motion;
+mod number_change;
 pub mod layout_motion;
 mod reflow;
 mod indentation;
@@ -912,7 +913,7 @@ enum EditSessionStep {
     Tab,
     ShiftIndent { outdent: bool },
     ResetIndent { restore: bool },
-    CloseComment,
+    CloseComment(char),
     HardBreak,
     ListIndent { unindent: bool },
     Backspace,
@@ -1231,6 +1232,7 @@ pub(crate) struct CommandStep {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RepeatTarget {
     ViewLine(line_mode::LineShape, usize),
+    VisualViewLine(line_mode::LineShape, usize),
     PhysicalLineAddress(OperatorMotion),
     Motion(OperatorMotion),
     Lines,
@@ -1244,6 +1246,7 @@ enum RepeatTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum RepeatAction {
     Noop,
+    NumberChange { count: usize, subtract: bool },
     DeleteForward {
         count: usize,
     },
@@ -1337,6 +1340,7 @@ pub(crate) struct BufferCommandState {
     last_macro: Option<char>,
     /// Buffer-owned `textwidth`: inherited default plus optional override.
     pub(crate) text_width: crate::document::TextWidthSetting,
+    pub(crate) reflow_options: crate::document::ReflowOptions,
     pub(crate) indentation: crate::document::IndentationSetting,
 }
 
@@ -1447,6 +1451,7 @@ pub struct CommandInterpreter {
     pending_clipboard_writes: Vec<ClipboardWriteRequest>,
     /// Buffer-owned `textwidth`, bridged through the buffer command state.
     text_width: crate::document::TextWidthSetting,
+    reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     generated_indent: Option<indentation::GeneratedIndent>,
     restored_indent: Option<usize>,
@@ -1606,6 +1611,7 @@ impl CommandInterpreter {
             clipboard_context: ClipboardCommandContext::default(),
             pending_clipboard_writes: Vec::new(),
             text_width: crate::document::TextWidthSetting::default(),
+            reflow_options: crate::document::ReflowOptions::default(),
             indentation: Default::default(),
             generated_indent: None,
             restored_indent: None,
@@ -1637,6 +1643,7 @@ impl CommandInterpreter {
             recording: self.recording.clone(),
             last_macro: self.last_macro,
             text_width: self.text_width,
+            reflow_options: self.reflow_options.clone(),
             indentation: self.indentation,
         }
     }
@@ -1658,6 +1665,10 @@ impl CommandInterpreter {
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
         self.text_width = state.text_width;
+        self.reflow_options = state.reflow_options.clone();
+        self.reflow_options.set_language(self.reflow_language.as_deref());
+        let defaults = state.indentation.defaults();
+        self.reflow_options.set_continuation_defaults(defaults.continue_comments_on_enter, defaults.continue_comments_on_open_line);
         self.indentation = state.indentation;
     }
 
@@ -2156,7 +2167,8 @@ impl CommandInterpreter {
             && self.last_visual
                 == before.visual_anchor.map(|anchor| VisualMemory {
                     exclusive: before.selection_exclusive,
-                    mode: before.mode,
+                    mode: self.last_visual.filter(|memory| memory.mode == Mode::VisualLine)
+                        .map_or(before.mode, |memory| memory.mode),
                     anchor,
                     active: before.cursor,
                     to_line_end: before.visual_to_line_end,
@@ -2172,7 +2184,7 @@ impl CommandInterpreter {
             // otherwise successful Core turn fail while capturing history.
             if let (Some(mut memory), Some(anchor)) = (self.last_visual, anchors.visual_anchor) {
                 if anchors.active_visual_was_single_hard_line
-                    && before.mode == Mode::VisualCharacter
+                    && memory.mode == Mode::VisualCharacter
                 {
                     // Vim's same-line delete/change marks retain their old
                     // columns, so `gv` reselects as much of that directed
@@ -2198,7 +2210,11 @@ impl CommandInterpreter {
                 }
                 next.last_visual = Some(memory);
             }
-        } else if self.last_visual == before.visual_block_memory() {
+        } else if self.last_visual == before.visual_block_memory()
+            || before.mode == Mode::VisualBlock && self.last_visual.is_some_and(|memory| {
+                before.visual_block_memory().is_some_and(|old| memory.anchor == old.anchor && memory.active == old.active
+                    && (memory.mode == Mode::VisualLine || memory.mode == Mode::VisualBlock && memory.block == old.block))
+            }) {
             if let (Some(mut memory), Some((anchor, active))) =
                 (self.last_visual, anchors.visual_block_memory)
             {
@@ -2365,6 +2381,7 @@ impl CommandInterpreter {
         }
         if self.line_mode == LineMode::Visual
             && (self.mode == Mode::VisualLine
+                || self.mode == Mode::VisualCharacter && matches!(event, InputEvent::Key(Key::Char('X' | 'D' | 'C' | 'S' | 'R')))
                 || matches!(event,InputEvent::Key(key) if self.mode_line_key(*key)))
         {
             return true;
@@ -3386,6 +3403,8 @@ impl CommandInterpreter {
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
             && (matches!(&event, InputEvent::Key(Key::Enter | Key::Tab | Key::BackTab | Key::Backspace | Key::Ctrl('t' | 'T' | 'd' | 'D')))
+                || matches!(&event, InputEvent::Key(Key::ShiftEnter))
+                    && context.document().literal_terminal_break_cursor(self.cursor, 0).is_some()
                 || self.generated_indent.is_some()))
             || !self.typing_style.is_empty()
             || self
@@ -3881,12 +3900,14 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         };
         let cursor = if key == Key::ShiftEnter {
-            prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?
+            document.literal_terminal_break_cursor(self.cursor, 0)
+                .unwrap_or(prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?)
         } else {
             prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
         };
         let changed = !prepared.is_no_op();
-        let record = if self.mode == Mode::Replace && key == Key::Enter && changed {
+        let record = if changed && (self.mode == Mode::Replace && key == Key::Enter
+            || key == Key::ShiftEnter && document.literal_terminal_break_cursor(self.cursor, 0).is_some()) {
             Some(document.recorded_source_replacement(&prepared, self.cursor, cursor,
                 "\n".to_owned(), None).map_err(command_document_error)?)
         } else { None };
@@ -3983,9 +4004,7 @@ impl CommandInterpreter {
         let mut next = self.clone();
         next.record_event(event);
         next.invalidate_replace_restoration();
-        let Some(end) = document
-            .hard_line_snapshot()
-            .next_grapheme_boundary(self.cursor)
+        let Some(end) = edit_mode_forward_delete_end(document, self.cursor)
         else {
             if let Some(session) = next.insert_session.as_mut() {
                 session.record_step(EditSessionStep::Delete);
@@ -5741,7 +5760,18 @@ impl CommandInterpreter {
             gk(context.snapshot, current, count, self.desired_x)
         };
         match result {
-            Ok(result) => {
+            Ok(mut result) => {
+                if !matches!(self.mode, Mode::Insert | Mode::Replace)
+                    && result.position.text_offset == document.projection().text_tree().byte_len()
+                    && document.addressable_hard_line_count() < document.line_count()
+                {
+                    // A literal file's final delimiter does not add a Normal
+                    // cursor row. Keep the desired column on its last real row.
+                    result = match gk(context.snapshot, result.position, 1, Some(result.desired_x)) {
+                        Ok(result) => result,
+                        Err(error) => return layout_error(error),
+                    };
+                }
                 let retain_line_end = matches!(
                     self.mode,
                     Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
@@ -6498,6 +6528,7 @@ impl CommandInterpreter {
             Key::Char('d' | 'x') | Key::Backspace | Key::Delete => {
                 self.apply_visual_block_operator(document, context, Operator::Delete)
             }
+            Key::Char('X' | 'D' | 'C' | 'S' | 'R') => self.apply_visual_uppercase_operator(document, key, count, Some(context)),
             Key::Char('~') => {
                 self.apply_visual_block_operator(document, context, Operator::ToggleCase)
             }
@@ -8514,6 +8545,16 @@ impl CommandInterpreter {
         snapshot: &LayoutSnapshot,
         position: VisualPosition,
     ) -> CommandOutput {
+        let position = if !matches!(self.mode, Mode::Insert | Mode::Replace)
+            && position.text_offset == document.projection().text_tree().byte_len()
+            && document.addressable_hard_line_count() < document.line_count()
+        {
+            let offset = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), position.text_offset);
+            match layout_position_for_offset(snapshot, offset, BoundaryAffinity::Downstream) {
+                Ok(position) => position,
+                Err(error) => return layout_error(error),
+            }
+        } else { position };
         let old_cursor = self.cursor;
         let old_position = self.current_visual_position(snapshot).ok();
         let next_cursor = if matches!(self.mode, Mode::Insert | Mode::Replace) {
@@ -8957,6 +8998,8 @@ impl CommandInterpreter {
             Key::Char('.') => self.repeat_last_change(document, explicit_count),
             Key::Char('u') => Ok(self.history(document, false, count)),
             Key::Ctrl('r' | 'R') => Ok(self.history(document, true, count)),
+            Key::Ctrl('a' | 'A') => self.change_number(document, count, false),
+            Key::Ctrl('x' | 'X') => self.change_number(document, count, true),
             Key::Char('i') => Ok(self.enter_insert(document, InsertPlacement::Before, count)),
             Key::Char('I') => Ok(self.enter_insert(document, InsertPlacement::LineStart, count)),
             Key::Char('a') => Ok(self.enter_insert(document, InsertPlacement::After, count)),
@@ -9908,6 +9951,7 @@ impl CommandInterpreter {
                 self.apply_visual_operator(document, Operator::Delete, count)
             }
             Key::Char('c' | 's') => self.apply_visual_operator(document, Operator::Change, count),
+            Key::Char('X' | 'D' | 'C' | 'S' | 'R') => self.apply_visual_uppercase_operator(document, key, count, None),
             Key::Char('>') => self.apply_visual_operator(document, Operator::Indent, count),
             Key::Char('<') => self.apply_visual_operator(document, Operator::Outdent, count),
             Key::Char('=') => self.apply_visual_operator(document, Operator::Reindent, count),
@@ -9923,6 +9967,50 @@ impl CommandInterpreter {
             | Key::PageDown => Ok(layout_required("viewport command")),
             _ => Ok(CommandOutput::unsupported(format!("visual key {key:?}"))),
         }
+    }
+
+    fn apply_visual_uppercase_operator(
+        &mut self, document: &mut Document, key: Key, count: usize, context: Option<&LayoutCommandContext<'_>>,
+    ) -> Result<CommandOutput, DocumentError> {
+        let checkpoint = self.clone();
+        let result = if let Some(context) = context {
+            match key {
+                Key::Char('X') => self.apply_visual_block_operator(document, context, Operator::Delete),
+                Key::Char('D') => {
+                    self.visual_to_line_end = true;
+                    self.apply_visual_block_operator(document, context, Operator::Delete)
+                }
+                Key::Char('C') => {
+                    self.visual_to_line_end = true;
+                    self.begin_visual_block_insert(document, context, VisualBlockInsertKind::Change, count)
+                }
+                _ => {
+                    let register = self.requested_register;
+                    self.transition_visual_block_to_linear(document, context.snapshot, Mode::VisualLine);
+                    self.requested_register = register;
+                    self.apply_visual_operator(document, Operator::Change, count)
+                }
+            }
+        } else {
+            self.mode = Mode::VisualLine;
+            self.apply_visual_operator(document,
+                if matches!(key, Key::Char('X' | 'D')) { Operator::Delete } else { Operator::Change }, count)
+        };
+        if result.as_ref().is_ok_and(|output| output.status != CommandStatus::Complete) {
+            self.restore_failed_command(checkpoint);
+        } else if result.as_ref().is_ok_and(|output| output.status == CommandStatus::Complete) {
+            let command = if self.mode == Mode::Insert {
+                self.insert_session.as_mut().and_then(|session| session.repeat_operator.as_mut())
+            } else if let Some(RepeatAction::Operator { command, .. }) = self.last_repeat.as_mut() {
+                Some(command)
+            } else { None };
+            if let Some(command) = command {
+                if let RepeatTarget::ViewLine(shape, applications) = command.target {
+                    command.target = RepeatTarget::VisualViewLine(shape, applications);
+                }
+            }
+        }
+        result
     }
 
     fn visual_extent(&self, document: &Document) -> MotionExtent {
@@ -10653,6 +10741,9 @@ impl CommandInterpreter {
             }
             return Ok(output);
         }
+        if matches!(key, Key::Backspace | Key::BackTab | Key::Ctrl('w' | 'W' | 'u' | 'U' | 'd' | 'D')) {
+            self.retire_source_destination_at_floor(document)?;
+        }
         if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
             if matches!(key, Key::Enter | Key::ShiftEnter) {
                 return self.insert_hidden_source_break(document);
@@ -10777,8 +10868,8 @@ impl CommandInterpreter {
                 })
             }
             Key::Char(character) => {
-                if character == '/' && self.mode == Mode::Insert {
-                    if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+                if self.mode == Mode::Insert {
+                    if let Some(output) = self.close_generated_comment(document, character)? { return Ok(output); }
                 }
                 if self.mode == Mode::Insert {
                     self.insert_text(document, &character.to_string())
@@ -11092,6 +11183,9 @@ impl CommandInterpreter {
             .line_at_offset(self.cursor)
             .expect("an edit caret resolves to one hard line")
             .content_range();
+        if self.cursor == line.start {
+            return Ok(snapshot.previous_grapheme_boundary(self.cursor).unwrap_or(self.cursor)..self.cursor);
+        }
         let (name, range) = match step {
             EditSessionStep::DeleteWord => (
                 "Ctrl-W",
@@ -11163,8 +11257,8 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
-        if input == "/" {
-            if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+        if let Some(character) = input.chars().next().filter(|_| input.chars().count() == 1) {
+            if let Some(output) = self.close_generated_comment(document, character)? { return Ok(output); }
         }
         self.generated_indent = None;
         let value = RegisterValue::characterwise(input);
@@ -11189,6 +11283,24 @@ impl CommandInterpreter {
                 session.source_floor = Some(at);
             }
         }
+    }
+
+    fn retire_source_destination_at_floor(&mut self, document: &Document) -> Result<(), DocumentError> {
+        let Some(at) = self.pending_source_destination(document)? else { return Ok(()); };
+        let floor = self.insert_session.as_ref().and_then(|session| session.source_floor)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        if floor.document() != document.id() { return Err(DocumentError::WrongDocument); }
+        if floor.revision() != document.revision() { return Err(DocumentError::WrongSnapshot {
+            expected: floor.revision(), actual: document.revision(),
+        }); }
+        document.source_point(floor.offset()).map_err(|_| DocumentError::AmbiguousProjection)?;
+        if at.offset() <= floor.offset() && self.cursor > 0 {
+            // Retaining an emptied source line protects the next insertion's
+            // location. Once its temporary physical breaks are consumed,
+            // backward keys resume their ordinary logical editing behavior.
+            self.retire_source_destination();
+        }
+        Ok(())
     }
 
     fn insert_hidden_source_payload(&mut self, document: &mut Document, value: &RegisterValue) -> Result<CommandOutput, DocumentError> {
@@ -11252,8 +11364,8 @@ impl CommandInterpreter {
         document: &mut Document,
         input: &str,
     ) -> Result<CommandOutput, DocumentError> {
-        if input == "/" {
-            if let Some(output) = self.close_generated_comment(document)? { return Ok(output); }
+        if let Some(character) = input.chars().next().filter(|_| input.chars().count() == 1) {
+            if let Some(output) = self.close_generated_comment(document, character)? { return Ok(output); }
         }
         self.generated_indent = None;
         let value = external_text_register_value(document, input);
@@ -11573,6 +11685,7 @@ impl CommandInterpreter {
         &mut self,
         document: &mut Document,
     ) -> Result<CommandOutput, DocumentError> {
+        self.retire_source_destination_at_floor(document)?;
         if let Some(at) = self.pending_source_destination(document)? {
             let floor = self.insert_session.as_ref().and_then(|session| session.source_floor)
                 .ok_or(DocumentError::AmbiguousProjection)?;
@@ -11580,8 +11693,7 @@ impl CommandInterpreter {
                 expected: floor.revision(), actual: document.revision(),
             }); }
             if at.offset() <= floor.offset() { return Ok(CommandOutput::complete()); }
-            let line = document.physical_line_at_source(at.offset())?;
-            let index = line.index.saturating_sub(1);
+            let index = document.physical_line_index_at_source(at.offset())?.saturating_sub(1);
             let (_, previous_content) = document.physical_line_ranges(index)?;
             let start = previous_content.end.max(floor.offset());
             if start >= at.offset() { return Ok(CommandOutput::complete()); }
@@ -11684,16 +11796,13 @@ impl CommandInterpreter {
         document: &mut Document,
     ) -> Result<CommandOutput, DocumentError> {
         if let Some(at) = self.pending_source_destination(document)? {
-            let line = document.physical_line_at_source(at.offset())?;
-            if line.content_range.end == at.offset() && line.source_range.end > at.offset() {
-                return self.commit_hidden_source_edit(document, at.offset()..line.source_range.end, "", EditSessionStep::Delete);
+            if let Some(range) = document.hidden_source_forward_deletion_range(at)? {
+                return self.commit_hidden_source_edit(document, range, "", EditSessionStep::Delete);
             }
             return Ok(CommandOutput::complete());
         }
         self.invalidate_replace_restoration();
-        let Some(end) = document
-            .hard_line_snapshot()
-            .next_grapheme_boundary(self.cursor)
+        let Some(end) = edit_mode_forward_delete_end(document, self.cursor)
         else {
             if let Some(session) = self.insert_session.as_mut() {
                 session.record_step(EditSessionStep::Delete);
@@ -11867,7 +11976,7 @@ impl CommandInterpreter {
                 if opens_lines && (open_line_before_first || iteration > 0) {
                     let mut prefix = self.continuation_indent(document, self.cursor, true, false);
                     self.cleanup_generated_indent(document)?;
-                    if self.line_mode == LineMode::PhysicalSource
+                    if self.line_mode == LineMode::PhysicalSource && !document.format().is_literal()
                         && document.markdown_source_list_edit(self.cursor, self.cursor, Some(true))?.is_none()
                     {
                         let lines = document.hard_line_snapshot();
@@ -11935,7 +12044,7 @@ impl CommandInterpreter {
                         EditSessionStep::Tab => self.insert_tab(document)?,
                         EditSessionStep::ShiftIndent { outdent } => self.insert_shift(document, *outdent)?,
                         EditSessionStep::ResetIndent { restore } => self.reset_insert_indent(document, *restore)?,
-                        EditSessionStep::CloseComment => self.close_generated_comment(document)?.unwrap_or(CommandOutput::complete()),
+                        EditSessionStep::CloseComment(character) => self.close_generated_comment(document, *character)?.unwrap_or(CommandOutput::complete()),
                         EditSessionStep::HardBreak => {
                             self.handle_edit_mode_key(document, Key::ShiftEnter)?
                         }
@@ -12044,7 +12153,7 @@ impl CommandInterpreter {
         let mut prefix = self.continuation_indent(document, origin_end, true, above);
         let mut source_destination = None;
         document.begin_edit_group();
-        if self.line_mode == LineMode::PhysicalSource
+        if self.line_mode == LineMode::PhysicalSource && !document.format().is_literal()
             && document.markdown_source_list_edit(position, self.cursor, Some(!above))?.is_none()
         {
             self.open_physical_line(document, above)?;
@@ -12551,6 +12660,7 @@ impl CommandInterpreter {
         let mut joined_last = (joined_len>0).then(||document_char_before(document,current.content_range().end)).flatten();
         let mut last_join_offset = joined_len;
         let mut edits = Vec::with_capacity(joins);
+        let profile = (document.format().is_code() && self.reflow_options.has('j')).then(|| self.reflow_options.profile());
         let mut actual = 0;
         for index in current.index() + 1..current.index() + 1 + joins {
             let Some(next_line) = lines.line(index) else {
@@ -12565,7 +12675,12 @@ impl CommandInterpreter {
             if insert_space {
                 // Vim removes line indentation, not arbitrary Unicode white
                 // space. In particular, NBSP remains document content.
-                let trimmed_start = document_prefix_end(document,next_range.clone(),|c|matches!(c,' '| '\t'));
+                let trimmed_start = if let Some(profile) = &profile {
+                    let previous = lines.line(index - 1).unwrap().content_range();
+                    let previous = lines.slice_utf8(previous).map_err(DocumentError::FormattedTextStorage)?;
+                    let next = lines.slice_utf8(next_range.clone()).map_err(DocumentError::FormattedTextStorage)?;
+                    next_range.start + crate::document::comment_join_prefix(&lines, index - 1, &previous, &next, profile)
+                } else { document_prefix_end(document,next_range.clone(),|c|matches!(c,' '| '\t')) };
                 let trimmed_len=next_range.end-trimmed_start;
                 let insert_separator = joined_len>0
                     && !joined_last.is_some_and(|character| matches!(character, ' ' | '\t'))
@@ -12635,6 +12750,9 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         match action {
             RepeatAction::Noop => Ok(CommandOutput::complete()),
+            RepeatAction::NumberChange { count, subtract } => {
+                self.change_number(document, choose_repeat_count(override_count, count), subtract)
+            }
             RepeatAction::DeleteForward { count } => {
                 self.delete_characters(document, choose_repeat_count(override_count, count), None, false)
             }
@@ -12765,7 +12883,8 @@ impl CommandInterpreter {
         edits: Option<EditSessionProgram>,
         override_count: Option<usize>,
     ) -> Result<CommandOutput, DocumentError> {
-        let count = choose_repeat_count(override_count, command.count);
+        let count = if matches!(command.target, RepeatTarget::VisualViewLine(..)) { command.count }
+            else { choose_repeat_count(override_count, command.count) };
         if let Some(program) = edits.as_ref() {
             Self::validate_edit_session_encoding(document, program)?;
             if let Err(error) = Self::validate_edit_session_repetition(program, 1, false) {
@@ -12788,7 +12907,7 @@ impl CommandInterpreter {
             }
             return Ok(output);
         }
-        if let RepeatTarget::ViewLine(shape, applications) = command.target {
+        if let RepeatTarget::ViewLine(shape, applications) | RepeatTarget::VisualViewLine(shape, applications) = command.target {
             let mut output = self.apply_mode_line_operator_repeated(
                 document,
                 command.operator,
@@ -12806,7 +12925,7 @@ impl CommandInterpreter {
             return Ok(output);
         }
         let extent = match &command.target {
-            RepeatTarget::ViewLine(..) | RepeatTarget::PhysicalLineAddress(..) => unreachable!("handled above"),
+            RepeatTarget::ViewLine(..) | RepeatTarget::VisualViewLine(..) | RepeatTarget::PhysicalLineAddress(..) => unreachable!("handled above"),
             RepeatTarget::Motion(motion) => {
                 self.resolve_operator_extent(document, command.operator, *motion, count)
             }
@@ -13451,6 +13570,7 @@ impl CommandInterpreter {
             search_options: self.search_options,
             selection_options: self.selection_options.clone(),
             text_width: self.text_width,
+            reflow_options: self.reflow_options.clone(),
             indentation: self.indentation,
             last_search_pattern: address_search.as_ref().or(self.last_search.as_ref())
                 .map(|(_, pattern)| pattern.clone()),
@@ -13898,6 +14018,7 @@ impl CommandInterpreter {
                 (ExOptionName::AutoSelect, ExOptionValue::Boolean(value)) => self.selection_options.autoselect = *value,
                 (ExOptionName::KeyModel, ExOptionValue::String(value)) => self.selection_options.keymodel = value.clone(),
                 (ExOptionName::SelectMode, ExOptionValue::String(value)) => self.selection_options.selectmode = value.clone(),
+                (_, ExOptionValue::Reflow(value)) => self.reflow_options = value.clone(),
                 (_, ExOptionValue::Indentation(value)) => self.indentation = *value,
                 (_, ExOptionValue::VisibleWhitespace(value)) => self.visible_whitespace = value.clone(),
                 (ExOptionName::HlSearch, ExOptionValue::Boolean(value)) => {
@@ -15325,6 +15446,10 @@ fn normalize_normal_cursor_document(
     offset: usize,
 ) -> usize {
     let mut offset = offset.min(lines.text_length());
+    if offset == lines.text_length() && document.addressable_hard_line_count() < lines.line_count() {
+        offset = lines.line(document.addressable_hard_line_count() - 1)
+            .expect("a literal file has a content line").content_range().end;
+    }
     if !lines.is_grapheme_boundary(offset) {
         while offset > 0
             && document.projection().text_tree().byte_chunk_at(offset)
@@ -15886,7 +16011,9 @@ fn prepare_open_line_with_cursor(
             after,
         })
         .map_err(command_document_error)?;
-    let cursor = if let Some(cursor) = document.prepared_markdown_source_open_cursor(&prepared, at, origin, after)? {
+    let cursor = if let Some(cursor) = document.literal_terminal_break_cursor(at, 0) {
+        if after { cursor } else { at }
+    } else if let Some(cursor) = document.prepared_markdown_source_open_cursor(&prepared, at, origin, after)? {
         cursor
     } else {
         prepared_cursor(document, &prepared, at, if after {
@@ -15919,6 +16046,19 @@ fn normal_delete_range(
         let end = line_end(lines, cursor);
         cursor..lines.advance_graphemes(cursor, count).unwrap_or(end).min(end)
     }
+}
+
+fn edit_mode_forward_delete_end(document: &Document, cursor: usize) -> Option<usize> {
+    let lines = document.hard_line_snapshot();
+    let end = lines.next_grapheme_boundary(cursor)?;
+    // A final file delimiter terminates its last line; it does not expose
+    // another line for forward Delete to join at EOF. Explicit Markdown
+    // paragraph boundaries remain addressable and keep their structural rule.
+    if end == document.projection().text_tree().byte_len()
+        && document.addressable_hard_line_count() < lines.line_count()
+    {
+        None
+    } else { Some(end) }
 }
 
 fn delete_with_cursor(document: &mut Document, range: Range<usize>) -> Result<usize, DocumentError> {
@@ -18013,7 +18153,7 @@ mod tests {
 
         keys(&mut commands, &mut document, "obottom");
         key(&mut commands, &mut document, Key::Escape);
-        assert_eq!(document.text(), "middle\nbottom");
+        assert_eq!(document.text(), "middle\nbottom\n");
         keys(&mut commands, &mut document, "u");
         assert_eq!(document.text(), "middle");
     }
@@ -18264,7 +18404,7 @@ mod tests {
         key(&mut commands, &mut semantic, Key::Escape);
         assert_eq!(
             semantic.source_bytes(),
-            format!("a\r{graphemes}").as_bytes()
+            format!("a\r{graphemes}\r").as_bytes()
         );
         assert_eq!(
             commands.register('.').unwrap().text,
@@ -18275,13 +18415,13 @@ mod tests {
         keys(&mut commands, &mut semantic, "2.");
         assert_eq!(
             semantic.source_bytes(),
-            format!("a\r{graphemes}\r{graphemes}\r{graphemes}").as_bytes()
+            format!("a\r{graphemes}\r{graphemes}\r{graphemes}\r").as_bytes()
         );
-        assert_eq!(semantic.line_count(), 4);
+        assert_eq!(semantic.addressable_hard_line_count(), 4);
         assert!(semantic.undo(), "counted dot is one undo unit");
         assert_eq!(
             semantic.source_bytes(),
-            format!("a\r{graphemes}").as_bytes()
+            format!("a\r{graphemes}\r").as_bytes()
         );
 
         let mut literal = new_document();
@@ -18319,8 +18459,8 @@ mod tests {
             .handle(&mut document, InputEvent::Text("x\ny".to_owned()))
             .unwrap();
         key(&mut commands, &mut document, Key::Escape);
-        assert_eq!(document.source_bytes(), b"ab\rx\ny\rx\ny");
-        assert_eq!(document.line_count(), 3);
+        assert_eq!(document.source_bytes(), b"ab\rx\ny\rx\ny\r");
+        assert_eq!(document.addressable_hard_line_count(), 3);
         assert!(commands
             .register('.')
             .unwrap()
@@ -18328,8 +18468,8 @@ mod tests {
             .is_empty());
 
         keys(&mut commands, &mut document, "2.");
-        assert_eq!(document.source_bytes(), b"ab\rx\ny\rx\ny\rx\ny\rx\ny");
-        assert_eq!(document.line_count(), 5);
+        assert_eq!(document.source_bytes(), b"ab\rx\ny\rx\ny\rx\ny\rx\ny\r");
+        assert_eq!(document.addressable_hard_line_count(), 5);
     }
 
     #[test]
@@ -18356,8 +18496,8 @@ mod tests {
         assert_eq!(semantic.source_bytes(), b"\rX bb");
         assert!(commands.set_cursor(&semantic, semantic.text().rfind("bb").unwrap()));
         keys(&mut commands, &mut semantic, ".");
-        assert_eq!(semantic.source_bytes(), b"\rX \rX");
-        assert_eq!(semantic.line_count(), 3);
+        assert_eq!(semantic.source_bytes(), b"\rX \rX\r");
+        assert_eq!(semantic.addressable_hard_line_count(), 3);
 
         let mut literal = new_document();
         let mut commands = CommandInterpreter::new();
@@ -20986,10 +21126,16 @@ mod tests {
             output.status,
             CommandStatus::CountError(CountError::Overflow)
         );
-        let output = layout_key(&mut commands, &mut document, &mut context, Key::Char('X'));
-        assert!(!output.document_changed);
         assert_eq!(document.text(), "ab");
-        assert!(!document.undo());
+        assert_eq!(commands.mode(), Mode::VisualBlock);
+        // The failed replacement retired its pending key. X now performs its
+        // ordinary Visual Block deletion instead of becoming replacement text.
+        let output = layout_key(&mut commands, &mut document, &mut context, Key::Char('X'));
+        assert!(output.document_changed);
+        assert_eq!(document.text(), "b");
+        assert_eq!(commands.mode(), Mode::Normal);
+        assert!(document.undo());
+        assert_eq!(document.text(), "ab");
     }
 
     #[test]
@@ -21647,9 +21793,9 @@ mod tests {
         keys(&mut commands, &mut document, "ox");
         key(&mut commands, &mut document, Key::Escape);
         keys(&mut commands, &mut document, ".");
-        assert_eq!(document.text(), "a\nx\nx");
+        assert_eq!(document.text(), "a\nx\nx\n");
         keys(&mut commands, &mut document, "u");
-        assert_eq!(document.text(), "a\nx");
+        assert_eq!(document.text(), "a\nx\n");
     }
 
     #[test]
@@ -22781,6 +22927,97 @@ mod tests {
     }
 
     #[test]
+    fn source_hidden_cursor_delete_consumes_retained_whitespace_before_following_content() {
+        let mut document = Document::from_bytes(b"- x\n- ab\n- c".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "i");
+        assert!(commands.set_cursor(&document, 6));
+        key(&mut commands, &mut document, Key::Enter);
+        key(&mut commands, &mut document, Key::Up);
+        key(&mut commands, &mut document, Key::Home);
+        key(&mut commands, &mut document, Key::Delete);
+        assert_eq!(document.source_bytes(), b"- x\n \n- ab\n- c");
+        assert!(commands.pending_source_destination(&document).unwrap().is_some());
+        key(&mut commands, &mut document, Key::Delete);
+        assert_eq!(document.source_bytes(), b"- x\n\n- ab\n- c", "delete hidden whitespace, not the following item");
+        key(&mut commands, &mut document, Key::Delete);
+        assert_eq!(document.source_bytes(), b"- x\n- ab\n- c");
+        assert!(commands.pending_source_destination(&document).unwrap().is_none());
+    }
+
+    #[test]
+    fn source_hidden_cursor_floor_resumes_logical_backspace_after_physical_breaks() {
+        let mut document = Document::from_bytes(b"ab\n\nc".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "GA");
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.source_bytes(), b"ab\n\n");
+        assert!(commands.pending_source_destination(&document).unwrap().is_some());
+        key(&mut commands, &mut document, Key::Enter);
+        assert_eq!(document.source_bytes(), b"ab\n\n\n");
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.source_bytes(), b"ab\n\n", "remove only the new physical break above the floor");
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.source_bytes(), b"ab", "the floor cannot trap ordinary paragraph joining");
+        assert_eq!(commands.cursor(), 2);
+        assert!(commands.pending_source_destination(&document).unwrap().is_none());
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.source_bytes(), b"a");
+    }
+
+    #[test]
+    fn source_hidden_cursor_floor_preserves_backward_key_meanings() {
+        for input in [Key::Ctrl('w'), Key::Ctrl('u'), Key::Ctrl('d')] {
+            let mut document = Document::from_bytes(b"ab\n\nc".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+            let mut commands = CommandInterpreter::new();
+            keys(&mut commands, &mut document, "GA");
+            key(&mut commands, &mut document, Key::Backspace);
+            key(&mut commands, &mut document, input);
+            let joins = input != Key::Ctrl('d');
+            assert_eq!(document.source_bytes(), if joins { b"ab".as_slice() } else { b"ab\n\n".as_slice() },
+                "{input:?} keeps its ordinary action after retiring the hidden source floor");
+            assert_eq!(commands.cursor(), if joins { 2 } else { 3 });
+            assert!(commands.pending_source_destination(&document).unwrap().is_none(), "{input:?}");
+            key(&mut commands, &mut document, Key::Backspace);
+            assert_eq!(document.source_bytes(), if joins { b"a".as_slice() } else { b"ab".as_slice() },
+                "{input:?} must leave Backspace usable");
+        }
+        let mut document = Document::from_bytes(b"ab\n\nc".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "GA");
+        key(&mut commands, &mut document, Key::Backspace);
+        key(&mut commands, &mut document, Key::BackTab);
+        assert_eq!(document.source_bytes(), b"ab\n\n  ", "outside lists BackTab follows the existing tab policy");
+        assert!(commands.pending_source_destination(&document).unwrap().is_none());
+    }
+
+    #[test]
+    fn source_hidden_cursor_floor_keeps_bof_and_replace_backspace_non_destructive() {
+        let mut document = Document::from_bytes(b"c".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "i");
+        key(&mut commands, &mut document, Key::Delete);
+        assert!(commands.pending_source_destination(&document).unwrap().is_some());
+        let before = document.revision();
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.revision(), before);
+        assert_eq!(commands.cursor(), 0);
+        assert!(commands.pending_source_destination(&document).unwrap().is_some(),
+            "a BOF no-op retains the exact physical insertion destination");
+
+        let mut document = Document::from_bytes(b"ab\n\nc".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut commands = CommandInterpreter::new();
+        keys(&mut commands, &mut document, "GA");
+        key(&mut commands, &mut document, Key::Backspace);
+        key(&mut commands, &mut document, Key::Escape);
+        keys(&mut commands, &mut document, "R");
+        let before = document.source_bytes();
+        key(&mut commands, &mut document, Key::Backspace);
+        assert_eq!(document.source_bytes(), before, "Replace without a restoration entry moves instead of deleting");
+        assert!(commands.pending_source_destination(&document).unwrap().is_none());
+    }
+
+    #[test]
     fn empty_insert_and_failed_backward_deletions_replace_stale_dot_with_noop() {
         for deletion in [
             None,
@@ -22882,8 +23119,8 @@ mod tests {
         key(&mut commands, &mut document, Key::Escape);
         keys(&mut commands, &mut document, "j.");
 
-        assert_eq!(document.source_bytes(), b"onefoo\rZ\rtwofoo\rZ");
-        assert_eq!(document.line_count(), 4);
+        assert_eq!(document.source_bytes(), b"onefoo\rZ\rtwofoo\rZ\r");
+        assert_eq!(document.addressable_hard_line_count(), 4);
         assert!(document.undo(), "the compound dot is one undo unit");
         assert_eq!(document.source_bytes(), b"onefoo\rZ\rtwo");
     }

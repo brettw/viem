@@ -34,6 +34,46 @@ impl Document {
         Ok(self.physical_line_index_at_source(insertion.offset())? != index)
     }
 
+    /// Forward deletion at a retained, source-only blank row cannot use the
+    /// following visible caret: that caret may belong to another paragraph.
+    /// Inspect only a standalone whitespace grapheme or this row's ending.
+    pub(crate) fn hidden_source_forward_deletion_range(&self, at: SourcePoint) -> Result<Option<Range<usize>>, DocumentError> {
+        let hidden = self.source_insertion_requires_materialization(at)?;
+        let index = self.physical_line_index_at_source(at.offset())?;
+        let (source, content) = self.physical_line_ranges(index)?;
+        if at.offset() == content.end {
+            return Ok((at.offset() < source.end).then_some(at.offset()..source.end));
+        }
+        if !self.format().is_source_view() || !hidden || !content.contains(&at.offset()) { return Ok(None); }
+        let width = self.encoding().scalar_source_width(' ');
+        let space = self.encoding().encode_fragment(" ")?;
+        let tab = self.encoding().encode_fragment("\t")?;
+        let whitespace = |range: Range<usize>| self.state().source.bytes_in(range)
+            .is_some_and(|bytes| bytes == space || bytes == tab);
+        let end = at.offset().saturating_add(width);
+        if end > content.end || !whitespace(at.offset()..end) { return Ok(None); }
+        // A previous whitespace unit or physical line start proves the left
+        // boundary. Do not split a whitespace scalar from a preceding prepend.
+        if at.offset() > content.start
+            && (at.offset() - content.start < width || !whitespace(at.offset() - width..at.offset())) {
+            return Ok(None);
+        }
+        let scalar_bytes = if self.encoding() == Encoding::Latin1 { 1 } else { 4 };
+        let lookahead_end = end.saturating_add(scalar_bytes).min(content.end);
+        let bytes = self.state().source.bytes_in(at.offset()..lookahead_end)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, at.offset())?;
+        use unicode_segmentation::UnicodeSegmentation;
+        let Some(grapheme) = decoded.text.graphemes(true).next().filter(|grapheme| matches!(*grapheme, " " | "\t")) else {
+            return Ok(None);
+        };
+        let unit = decoded.scalar_spans().next().ok_or(DocumentError::AmbiguousProjection)?;
+        if unit.diagnostic.is_some() || unit.decoded != (0..grapheme.len()) || unit.source != (at.offset()..end) {
+            return Ok(None);
+        }
+        Ok(Some(unit.source.clone()))
+    }
+
     /// Exact source destination used by ordinary semantic typing at a visible
     /// caret. Paragraph ownership and inline affinity both participate.
     pub fn source_point_for_insertion(
@@ -157,13 +197,22 @@ impl Document {
         Ok(self.state().source_hard_lines.len())
     }
     /// File-line numbering excludes the zero-byte caret boundary after a final
-    /// terminator. Physical commands retain that editable terminal destination.
+    /// terminator. Insert mode retains that editable terminal destination.
     pub fn physical_source_line_number_count(&self) -> usize {
         let lines = &self.state().source_hard_lines;
         let count = lines.len();
         if count > 1 && lines.get(count - 1).is_some_and(|range| range.is_empty()) {
             count - 1
         } else { count }
+    }
+    /// Gutter sizing and bands use the same ordinals. Explicit empty Markdown
+    /// paragraphs remain numbered; a literal final terminator does not add one.
+    pub(crate) fn presented_source_line_number_count(&self) -> usize {
+        if self.format().is_literal() || self.addressable_hard_line_count() < self.line_count() {
+            self.physical_source_line_number_count()
+        } else {
+            self.state().source_hard_lines.len()
+        }
     }
     /// Indexed physical ordinals are independent of decoding and view projection.
     pub fn physical_line_index_at_source(&self, at: usize) -> Result<usize, DocumentError> {
@@ -429,6 +478,45 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_source_forward_deletion_preserves_whitespace_graphemes_and_ending_units() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            for format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+                let source = format!("- a{0}  \t{0}- b", format.spelling());
+                let document = Document::from_bytes_with_file_format(encoding.encode_fragment(&source).unwrap(),
+                    encoding, Format::MarkdownSource, format).unwrap();
+                let (line, content) = document.physical_line_ranges(1).unwrap();
+                let width = encoding.scalar_source_width(' ');
+                for at in [content.start, content.start + width, content.start + width * 2] {
+                    assert_eq!(document.hidden_source_forward_deletion_range(document.source_point(at).unwrap()).unwrap(),
+                        Some(at..at + width), "{encoding:?} {format:?}");
+                }
+                assert_eq!(document.hidden_source_forward_deletion_range(document.source_point(content.end).unwrap()).unwrap(),
+                    Some(content.end..line.end), "{encoding:?} {format:?}");
+            }
+        }
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let source = "a\n \u{301}\nb";
+            let document = Document::from_bytes(encoding.encode_fragment(source).unwrap(), encoding, Format::MarkdownSource).unwrap();
+            let at = document.physical_line_ranges(1).unwrap().1.start;
+            assert_eq!(document.hidden_source_forward_deletion_range(document.source_point(at).unwrap()).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn hidden_source_forward_deletion_is_bounded_on_large_blank_rows() {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let source = format!("- a\n{}\n- b", " ".repeat(200_000));
+            let document = Document::from_bytes(encoding.encode_fragment(&source).unwrap(), encoding, Format::MarkdownSource).unwrap();
+            let at = document.physical_line_ranges(1).unwrap().1.start + 100_000 * encoding.scalar_source_width(' ');
+            let (range, work) = measure_document_work(|| document.hidden_source_forward_deletion_range(document.source_point(at).unwrap()).unwrap());
+            assert_eq!(range, Some(at..at + encoding.scalar_source_width(' ')));
+            assert_eq!(work.source_full_materializations, 0, "{work:?}");
+            assert!(work.source_range_materialized_bytes <= 32, "{work:?}");
+            assert!(work.source_decoded_bytes <= 6, "{work:?}");
+        }
+    }
 
     #[test]
     fn physical_ranges_read_only_the_delimiter_tail_for_all_encodings() {

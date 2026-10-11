@@ -132,6 +132,81 @@ fn reopen_and_history(core: &mut Editor, view: ViewId, original: &[u8]) {
 }
 
 #[test]
+fn enter_replaces_a_folded_source_break_but_preserves_literal_spaces() {
+    for (source, at, expected, saved) in [
+        ("a\nb", 1, "a\nb", "a\n\nb"),
+        ("a\nb\nc", 1, "a\nb c", "a\n\nb\nc"),
+        ("**a\nb**", 1, "a\nb", "**a**\n\n**b**"),
+        ("a b", 1, "a\n b", "a\n\n&#32;b"),
+    ] {
+        let (mut core, view) = open(source, Format::Markdown);
+        insert_at(&mut core, view, at);
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_eq!(core.document().text(), expected, "{source:?}");
+        assert_eq!(core.document().source_bytes(), saved.as_bytes(), "{source:?}");
+        assert_eq!(core.command_state(view).unwrap().cursor(), at + 1);
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+    for source in ["a\nb", "**a\nb**"] {
+        let (mut core, view) = open(source, Format::Markdown);
+        insert_at(&mut core, view, 1);
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_eq!(core.document().text(), "a\nb", "{source:?}");
+        input(&mut core, view, InputEvent::Key(Key::Backspace));
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source:?}");
+    }
+    for source in ["> a\n> b", "- a\n  b"] {
+        let (mut core, view) = open(source, Format::Markdown);
+        insert_at(&mut core, view, 1);
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_eq!(core.document().text(), "a\nb", "{source:?}");
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+}
+
+#[test]
+fn deleting_a_continuation_lines_last_character_keeps_its_folded_space() {
+    for (source, expected, saved) in [
+        ("ab\nc", "ab ", "ab "),
+        ("ab\nc\nd", "ab  d", "ab&#32;\nd"),
+    ] {
+        let (mut core, view) = open(source, Format::Markdown);
+        insert_at(&mut core, view, 4);
+        input(&mut core, view, InputEvent::Key(Key::Backspace));
+        assert_eq!(core.document().text(), expected);
+        assert_eq!(core.document().source_bytes(), saved.as_bytes());
+        assert_eq!(core.command_state(view).unwrap().cursor(), 3);
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+}
+
+#[test]
+fn overflowing_ordered_continuations_follow_commonmark_literal_text() {
+    let source = "999999999. big";
+    for format in [Format::MarkdownSource, Format::Markdown] {
+        for above in [false, true] {
+            let (mut core, view) = open(source, format);
+            input(&mut core, view, InputEvent::key(if above { 'O' } else { 'o' }));
+            let saved = if above { "999999999. \n1000000000. big" }
+                else { "999999999. big\n1000000000. " };
+            assert_eq!(core.document().source_bytes(), saved.as_bytes(), "{format:?} above={above}");
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+            let cursor = core.command_state(view).unwrap().cursor();
+            let expected = if format == Format::MarkdownSource {
+                if above { 11 } else { saved.len() }
+            } else if above { 0 } else { core.document().text().len() };
+            assert_eq!(cursor, expected, "{format:?} above={above}");
+            reopen_and_history(&mut core, view, source.as_bytes());
+        }
+        let (mut core, view) = open(source, format);
+        input(&mut core, view, InputEvent::key('A'));
+        input(&mut core, view, InputEvent::Key(Key::Enter));
+        assert_eq!(core.document().source_bytes(), b"999999999. big\n1000000000. ");
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+}
+
+#[test]
 fn shift_enter_keeps_rich_paragraph_style_and_text_through_reopen_and_history() {
     for (format, source) in [
         (Format::Markdown, "αβ👩‍💻xy\n\ntail"),
@@ -416,8 +491,8 @@ fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
         let (mut core, view) = open(source, format);
         input(&mut core, view, InputEvent::key('A'));
         input(&mut core, view, InputEvent::Key(Key::Enter));
-        let at = core.document().text().len();
-        assert_eq!(core.command_state(view).unwrap().cursor(), at);
+        let at = core.command_state(view).unwrap().cursor();
+        assert_eq!(at, core.document().text().len() - usize::from(format.is_literal()));
         let before = core.document().source_bytes();
         input(&mut core, view, InputEvent::Key(Key::Escape));
         assert_eq!(core.document().source_bytes(), before);
@@ -432,7 +507,7 @@ fn escape_keeps_the_cursor_in_a_new_terminal_empty_paragraph() {
         assert!(geometry.rect.height > 0.0);
         input(&mut core, view, InputEvent::key('i'));
         input(&mut core, view, InputEvent::text("next"));
-        assert_eq!(core.document().text(), "body\nnext", "{format:?}");
+        assert_eq!(core.document().text(), if format.is_literal() { "body\nnext\n" } else { "body\nnext" }, "{format:?}");
     }
 }
 

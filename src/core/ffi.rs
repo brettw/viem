@@ -544,6 +544,9 @@ pub const VIEM_EX_OPTION_FILE_FORMATS: u32 = 4;
 pub const VIEM_EX_OPTION_IGNORECASE: u32 = 5;
 pub const VIEM_EX_OPTION_SMARTCASE: u32 = 6;
 pub const VIEM_EX_OPTION_WRAPSCAN: u32 = 7;
+pub const VIEM_EX_OPTION_FORMATOPTIONS: u32 = 25;
+pub const VIEM_EX_OPTION_COMMENTS: u32 = 26;
+pub const VIEM_EX_OPTION_FORMATLISTPAT: u32 = 27;
 pub const VIEM_EX_OPTION_TEXTWIDTH: u32 = 8;
 pub const VIEM_EX_OPTION_AUTOINDENT: u32 = 9;
 pub const VIEM_EX_OPTION_TABSTOP: u32 = 10;
@@ -3600,6 +3603,9 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::WrapScan => VIEM_EX_OPTION_WRAPSCAN,
         ExOptionName::HlSearch => VIEM_EX_OPTION_HLSEARCH,
         ExOptionName::IncSearch => VIEM_EX_OPTION_INCSEARCH,
+        ExOptionName::FormatOptions => VIEM_EX_OPTION_FORMATOPTIONS,
+        ExOptionName::Comments => VIEM_EX_OPTION_COMMENTS,
+        ExOptionName::FormatListPat => VIEM_EX_OPTION_FORMATLISTPAT,
         ExOptionName::TextWidth => VIEM_EX_OPTION_TEXTWIDTH,
         ExOptionName::AutoIndent => VIEM_EX_OPTION_AUTOINDENT,
         ExOptionName::TabStop => VIEM_EX_OPTION_TABSTOP,
@@ -3637,7 +3643,7 @@ fn export_ex_option(
         }
         ExOptionValue::Number(value) => (VIEM_EX_OPTION_VALUE_NUMBER, *value),
         ExOptionValue::Integer(value) => (VIEM_EX_OPTION_VALUE_NUMBER, *value as u32),
-        ExOptionValue::Indentation(_) | ExOptionValue::VisibleWhitespace(_) => return Err(ViemStatus::InvalidArgument),
+        ExOptionValue::Indentation(_) | ExOptionValue::VisibleWhitespace(_) | ExOptionValue::Reflow(_) => return Err(ViemStatus::InvalidArgument),
         ExOptionValue::OptionalNumber(value) => {
             (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
         }

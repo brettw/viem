@@ -82,18 +82,11 @@ operators, and dot-repeat all work.
 
 **Implemented.** `d c y > < = i I a A o O R x X s S D C Y p P J r ~ . u C-r`,
 `h j k l w W e E b B 0 ^ $ | + - G % ( ) { } f F t T ; , H M L C-o C-i`,
-`C-f C-b C-d C-u C-e C-y C-v C-q`, `` " m ' ` q @ v V / ? : n N * # ``,
+`C-f C-b C-d C-u C-e C-y C-v C-q C-a C-x`, `` " m ' ` q @ v V / ? : n N * # ``,
 `gg ge gE g_ gj gk g0 g^ g$ gv gJ gp gP g* g# gq gw gu gU g~`, `zt zz zb`,
 `ZZ`, and the full `C-w` window family.
 
 **Missing, in rough order of value:**
-
-### `C-a` / `C-x`
-
-Increment and decrement the number under the cursor. No trace anywhere in the
-core. Self-contained, needs no frontend involvement at all, and among the
-handful of commands a Vim user reaches for without thinking. Highest
-value-per-line in this document.
 
 ### The `[` and `]` families
 
@@ -131,19 +124,16 @@ command people type by reflex.
 
 ### Visual Block is the strong one
 
-Blockwise gets `I A c s r y d x ~ u U p P J > < =`, endpoint swap, and genuine
+Blockwise gets `I A c s r y d x X D C S R ~ u U p P J > < =`, endpoint swap, and genuine
 ragged-right `$` via `resolve_block_selection_to_line_end`
 (`src/core/command/visual_block.rs:261`). More careful than most Vim emulations
 manage.
 
-### Charwise and linewise Visual are missing every uppercase operator
+### Visual uppercase yank
 
-The dispatch at `src/core/command/mod.rs:9196` handles
-`y d x c s > < = ~ u U p P J` and nothing else. Missing: **`D C S X Y R`**.
-
-All six are pure muscle memory (`V` then `D`, or `Vj` then `Y`) and today
-produce an error. Each is a linewise alias for an operator that already exists,
-so this is a small, high-return patch.
+Characterwise and linewise Visual support `D C S X R` with linewise semantics.
+Visual `Y` remains unsupported. Blockwise `X` deletes the rectangle, `D`/`C`
+extend through row ends, and `S`/`R` change complete selected lines.
 
 ### Text objects: one notable hole
 
@@ -188,7 +178,11 @@ Supported options have full Vim `set` grammar (`no`, `!`, `?`, `&`, `<`, `+=`,
 `^=`, `-=`) and a real global/local split. Implemented: `wrap`, `ignorecase`,
 `smartcase`, `wrapscan`, `hlsearch`, `incsearch`, `textwidth`, `fileformat`, `fileformats`, `autoindent`,
 `tabstop`, `shiftwidth`, `softtabstop`, `expandtab`, `smarttab`, `list`,
-`listchars`, plus two comment-continuation options.
+`listchars`, `formatoptions`, `comments`, `formatlistpat`, plus two
+comment-continuation options. Code formatting supports `qjro/n2w1`, defaulting
+to `qj`; see [Code formatting and comments](docs/code-formatting.md) for its
+scope and limits. Other `formatoptions` flags and configurable `nrformats`
+remain unsupported.
 
 The interesting finding is not which options are missing, but that three are
 already fully implemented and simply not reachable from `:set`.
@@ -205,7 +199,7 @@ menu or the colon prompt.
 
 **Not implemented:** `number`, `relativenumber`,
 `scrolloff`, `joinspaces`, `gdefault`, `iskeyword`, `whichwrap`, `startofline`,
-`report`, `formatoptions`, `comments`, `undolevels`, `selection`, `clipboard`,
+`report`, `undolevels`, `selection`, `clipboard`,
 `wrapmargin`, `modifiable`.
 
 Of these, `scrolloff` and `joinspaces` are the cheapest wins and both are felt

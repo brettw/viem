@@ -279,7 +279,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                     Float(surface.editorView.bounds.height - CGFloat(preferences.margins.bottom)) + 0.1)
                 XCTAssertGreaterThanOrEqual(snapshot.info.total_height - bottom, Float(preferences.margins.bottom) - 0.1)
             }
-            XCTAssertTrue(try backend.formattedText().hasSuffix("more text\nmore text\nmore text"))
+            XCTAssertTrue(try backend.formattedText().hasSuffix("more text\nmore text\nmore text\n"))
         }
     }
 

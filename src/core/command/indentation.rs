@@ -1,7 +1,7 @@
 //! Logical whitespace editing. Font-dependent indentation is layout policy.
 use super::*;
 use crate::document::{
-    comment_continuation_prefix, comment_profile_for_language, leading_whitespace_len,
+    comment_continuation_prefix, leading_whitespace_len,
     IndentationOptions, MappingOutcome,
 };
 
@@ -51,10 +51,14 @@ impl CommandInterpreter {
     ) -> Result<(), &'static str> {
         options.validate()?;
         self.indentation.set_default(options);
+        self.reflow_options.set_continuation_defaults(options.continue_comments_on_enter, options.continue_comments_on_open_line);
         Ok(())
     }
     pub fn indentation_options(&self) -> IndentationOptions {
-        self.indentation.effective()
+        let mut value = self.indentation.effective();
+        value.continue_comments_on_enter = self.reflow_options.has('r');
+        value.continue_comments_on_open_line = self.reflow_options.has('o');
+        value
     }
 
     pub(super) fn literal_indentation(&self, document: &Document) -> bool {
@@ -124,12 +128,15 @@ impl CommandInterpreter {
             options.continue_comments_on_enter
         };
         if comments && document.format().is_code() {
-            if let Some(profile) = self
-                .reflow_language()
-                .and_then(comment_profile_for_language)
+            let profile = self.reflow_options.profile();
             {
+                // Vim's / flag suppresses o/O continuation of trailing comments.
+                let trailing = open && !self.reflow_options.has('/') && !above;
+                let comment_text = if trailing && profile.line_prefix(text.trim_start_matches([' ', '\t'])).is_none() {
+                    profile.trailing_line_leader(&text).filter(|(_, leader)| leader.text.starts_with("//")).map(|(at, _)| format!("{}{}", " ".repeat(options.columns(&text[..at])), &text[at..]))
+                } else { None };
                 if let Some(prefix) =
-                    comment_continuation_prefix(&snapshot, line.index(), &text, profile, above)
+                    comment_continuation_prefix(&snapshot, line.index(), comment_text.as_deref().unwrap_or(&text), &profile, above, options.tabstop as usize)
                 {
                     let leading = leading_whitespace_len(&prefix);
                     return format!(
@@ -270,6 +277,28 @@ impl CommandInterpreter {
             .unwrap_or_else(|| self.continuation_indent(document, self.cursor, false, false));
         self.cleanup_generated_indent(document)?;
         let start = self.cursor;
+        if let Some((prepared, cursor)) = document.prepare_literal_terminal_break(start, &prefix)
+            .map_err(command_document_error)?
+        {
+            let inserted = format!("\n{prefix}");
+            let record = if prefix.is_empty() || self.mode == Mode::Replace {
+                Some(document.recorded_source_replacement(&prepared, start, cursor, inserted.clone(), None)
+                    .map_err(command_document_error)?)
+            } else { None };
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            self.cursor = cursor;
+            if let Some(session) = self.insert_session.as_mut() {
+                if let Some(record) = record {
+                    session.replace_journal.push(ReplaceJournalEntry {
+                        autoindent: false, start, inserted: inserted.clone(), original: record.original.clone(),
+                        source_record: Some(record),
+                    });
+                }
+                session.record_inserted(&RegisterValue::characterwise(inserted), Some(EditSessionStep::IndentedEnter));
+            }
+            self.capture_generated_indent(document, prefix);
+            return Ok(CommandOutput { document_changed: true, cursor_moved: true, ..CommandOutput::complete() });
+        }
         if self.mode == Mode::Replace {
             let snapshot = document.hard_line_snapshot();
             let line_end = line_end(&snapshot, start);
@@ -586,20 +615,24 @@ impl CommandInterpreter {
     pub(super) fn close_generated_comment(
         &mut self,
         document: &mut Document,
+        character: char,
     ) -> Result<Option<CommandOutput>, DocumentError> {
         let Some(generated) = &self.generated_indent else {
             return Ok(None);
         };
-        if !generated.text.ends_with("* ") {
-            return Ok(None);
-        }
+        if !document.format().is_code() { return Ok(None); }
+        let profile = self.reflow_options.profile();
+        let Some(block) = profile.blocks.iter().find(|block| block.automatic_end && block.close.ends_with(character) && generated.text.trim_start_matches([' ', '\t']).trim_end_matches([' ', '\t']) == block.middle) else { return Ok(None); };
         let Some(range) = generated.range(document).filter(|r| r.end == self.cursor) else {
             return Ok(None);
         };
-        document.replace(range.end - 1..range.end, "/")?;
+        let indent = &generated.text[..leading_whitespace_len(&generated.text)];
+        let replacement = format!("{indent}{}", block.close);
+        document.replace(range.clone(), &replacement)?;
+        self.cursor = range.start + replacement.len();
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
-            session.record_step(EditSessionStep::CloseComment);
+            session.record_step(EditSessionStep::CloseComment(character));
         }
         Ok(Some(CommandOutput {
             document_changed: true,
@@ -634,17 +667,17 @@ mod tests {
         let mut c = CommandInterpreter::new();
         keys(&mut c, &mut d, "A");
         key(&mut c, &mut d, Key::Enter);
-        assert_eq!(d.text(), "  text\n  ");
+        assert_eq!(d.text(), "  text\n  \n");
         key(&mut c, &mut d, Key::Escape);
-        assert_eq!(d.text(), "  text\n");
+        assert_eq!(d.text(), "  text\n\n");
         keys(&mut c, &mut d, "u");
         assert_eq!(d.text(), "  text");
         keys(&mut c, &mut d, "o");
         key(&mut c, &mut d, Key::Enter);
-        assert_eq!(d.text(), "  text\n\n  ");
+        assert_eq!(d.text(), "  text\n\n  \n");
         key(&mut c, &mut d, Key::Tab);
         key(&mut c, &mut d, Key::Escape);
-        assert_eq!(d.text(), "  text\n\n    ");
+        assert_eq!(d.text(), "  text\n\n    \n");
     }
     #[test]
     fn tabs_backspace_and_inherited_options() {
@@ -699,18 +732,20 @@ mod tests {
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code)
                     .unwrap();
             let mut c = CommandInterpreter::new();
+            c.reflow_options.format_options = Some("qjro".into());
             c.set_reflow_language(Some("cpp".into()));
             keys(&mut c, &mut d, "A");
             key(&mut c, &mut d, Key::Enter);
-            assert_eq!(d.text(), expected);
+            assert_eq!(d.text(), format!("{expected}\n"));
         }
         let mut d = Document::from_bytes(b"/*".to_vec(), Encoding::Utf8, Format::Code).unwrap();
         let mut c = CommandInterpreter::new();
+        c.reflow_options.format_options = Some("qjro".into());
         c.set_reflow_language(Some("c".into()));
         keys(&mut c, &mut d, "A");
         key(&mut c, &mut d, Key::Enter);
         keys(&mut c, &mut d, "/");
-        assert_eq!(d.text(), "/*\n */");
+        assert_eq!(d.text(), "/*\n */\n");
         key(&mut c, &mut d, Key::Escape);
         keys(&mut c, &mut d, "u");
         assert_eq!(d.text(), "/*");
@@ -723,7 +758,7 @@ mod tests {
         key(&mut c, &mut d, Key::Escape);
         assert_eq!(d.text(), "  a\n  x\n  x\n    b");
         keys(&mut c, &mut d, "G.");
-        assert_eq!(d.text(), "  a\n  x\n  x\n    b\n    x\n    x");
+        assert_eq!(d.text(), "  a\n  x\n  x\n    b\n    x\n    x\n");
         keys(&mut c, &mut d, "u");
         assert_eq!(d.text(), "  a\n  x\n  x\n    b");
         keys(&mut c, &mut d, "u");
@@ -771,6 +806,7 @@ mod tests {
     fn paste_preserves_literal_whitespace_and_never_continues_comments() {
         let mut d = Document::from_bytes(b"// old".to_vec(), Encoding::Utf8, Format::Code).unwrap();
         let mut c = CommandInterpreter::new();
+        c.reflow_options.format_options = Some("qjro".into());
         c.set_reflow_language(Some("cpp".into()));
         keys(&mut c, &mut d, "A");
         c.handle(&mut d, InputEvent::text("\n\tnew\n  tail"))
@@ -820,13 +856,14 @@ mod tests {
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code)
                     .unwrap();
             let mut c = CommandInterpreter::new();
+            c.reflow_options.format_options = Some("qjro".into());
             c.set_reflow_language(Some("cpp".into()));
             keys(&mut c, &mut d, "A");
             key(&mut c, &mut d, Key::Enter);
             let expected = if source.starts_with("//") {
-                format!("{source}\n// ")
+                format!("{source}\n// \n")
             } else {
-                format!("{source}\n")
+                format!("{source}\n\n")
             };
             assert_eq!(d.text(), expected);
         }
@@ -837,10 +874,11 @@ mod tests {
         )
         .unwrap();
         let mut c = CommandInterpreter::new();
+        c.reflow_options.format_options = Some("qjro".into());
         c.set_reflow_language(Some("cpp".into()));
         keys(&mut c, &mut d, "GA");
         key(&mut c, &mut d, Key::Enter);
-        assert_eq!(d.text(), "const char *s = \"/*\";\n * ordinary\n ");
+        assert_eq!(d.text(), "const char *s = \"/*\";\n * ordinary\n \n");
     }
 
     #[test]
@@ -886,6 +924,7 @@ mod tests {
         let mut d = Document::from_bytes(bytes, Encoding::Utf8, Format::Code).unwrap();
         d.replace(0..0, " ").unwrap();
         let mut c = CommandInterpreter::new();
+        c.reflow_options.format_options = Some("qjro".into());
         c.set_reflow_language(Some("cpp".into()));
         c.set_cursor(&d, 5_500_006);
         for event in [
@@ -907,6 +946,36 @@ mod tests {
                 "{event:?} flattened previous"
             );
             assert!(!d.projection().compatibility_text_is_materialized());
+        }
+    }
+
+    #[test]
+    fn replace_enter_at_unterminated_eof_restores_its_supporting_terminator() {
+        for format in [Format::PlainText, Format::Code] {
+            for source in ["body", ""] {
+                for enter in [Key::Enter, Key::ShiftEnter] {
+                    let mut d = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                    let mut c = CommandInterpreter::new();
+                    if !source.is_empty() { c.set_cursor(&d, source.len() - 1); }
+                    key(&mut c, &mut d, Key::Char('R'));
+                    // Replacing the last character reaches the insertion
+                    // boundary; set_cursor deliberately uses Normal stops.
+                    if let Some(last) = source.chars().last() { key(&mut c, &mut d, Key::Char(last)); }
+                    assert_eq!(c.cursor(), source.len());
+                    key(&mut c, &mut d, enter);
+                    assert_eq!(d.source_bytes(), format!("{source}\n\n").as_bytes());
+                    assert_eq!(c.cursor(), source.len() + 1);
+                    key(&mut c, &mut d, Key::Backspace);
+                    assert_eq!(d.source_bytes(), source.as_bytes());
+                    assert_eq!(c.cursor(), source.len());
+                    key(&mut c, &mut d, enter);
+                    key(&mut c, &mut d, Key::Char('x'));
+                    key(&mut c, &mut d, Key::Escape);
+                    assert_eq!(d.source_bytes(), format!("{source}\nx\n").as_bytes());
+                    key(&mut c, &mut d, Key::Char('u'));
+                    assert_eq!(d.source_bytes(), source.as_bytes());
+                }
+            }
         }
     }
 }

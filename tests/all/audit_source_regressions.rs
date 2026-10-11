@@ -1,5 +1,5 @@
 use viem_core::command::{CommandStatus, InputEvent, Key, NavigationKey};
-use viem_core::document::{BoundaryAffinity, Document, Encoding, Format, HistoryNavigationRequest, TableEditIntent};
+use viem_core::document::{BoundaryAffinity, Document, Encoding, FileFormat, Format, HistoryNavigationRequest, TableEditIntent};
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, ViewId};
 
@@ -11,7 +11,7 @@ fn open(source: &str) -> (Core<MockTextMeasurementProvider>, ViewId) {
 
 fn exact(core: &Core<MockTextMeasurementProvider>) {
     let document = core.document();
-    let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, document.format()).unwrap();
+    let fresh = Document::from_bytes_with_file_format(document.source_bytes(), document.encoding(), document.format(), document.file_format()).unwrap();
     assert_eq!(document.text(), fresh.text(), "source {:?}", String::from_utf8_lossy(&document.source_bytes()));
     let blocks = |document: &Document| document.projection().blocks().iter()
         .map(|block| (block.kind.clone(), block.range.clone(), block.quote_depth, block.style.clone(), block.markdown_html, block.thematic_break))
@@ -347,4 +347,109 @@ fn late_source_named_choice_decodes_only_the_selected_prose_owner() {
     assert!(work.source_full_materialized_bytes < 20_000, "{work:?}");
     assert!(String::from_utf8(core.document().source_bytes()).unwrap().starts_with(&source[..source.len()-11]));
     exact(&core);
+}
+
+fn source_fixture_bytes(text: &str, encoding: Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Latin1 => text.chars().map(|ch| u8::try_from(u32::from(ch)).unwrap()).collect(),
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+    }
+}
+
+#[test]
+fn source_backspace_crosses_an_emptied_new_paragraph_in_every_encoding_and_fileformat() {
+    for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+            for enter in [Key::Enter, Key::ShiftEnter] {
+                let document = Document::from_bytes_with_file_format(Vec::new(), encoding,
+                    Format::MarkdownSource, file_format).unwrap();
+                let mut core = Core::new(document);
+                let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+                for action in [Key::Char('i'), Key::Char('a'), Key::Char('b'), enter, Key::Char('c'), Key::Backspace] {
+                    key(&mut core, view, action);
+                }
+                key(&mut core, view, Key::Backspace);
+                assert_eq!(core.document().source_bytes(), source_fixture_bytes("ab", encoding),
+                    "{encoding:?} {file_format:?}");
+                assert_eq!(core.command_state(view).unwrap().cursor(), 2);
+                key(&mut core, view, Key::Escape);
+                key(&mut core, view, Key::Char('u'));
+                assert!(core.document().source_bytes().is_empty());
+                key(&mut core, view, Key::Ctrl('r'));
+                assert_eq!(core.document().source_bytes(), source_fixture_bytes("ab", encoding));
+                key(&mut core, view, Key::Char('A'));
+                for expected in ["a", "", ""] {
+                    key(&mut core, view, Key::Backspace);
+                    assert_eq!(core.document().source_bytes(), source_fixture_bytes(expected, encoding));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_repeated_deletion_makes_progress_across_empty_structural_rows() {
+    let sources = [
+        "ab\n\nc", "ab\nc", "\n\na", "ab\n\nc\n\nd", "a\n\n\n\nb",
+        "# ab\n\nc", "ab\n===\n\nc", "> ab\n>\n> c", "- ab\n- c",
+        "- a\n  - ab", "```text\nab\n```", "```\nab\n\ncd\n```",
+        "> ```\n> ab\n> ```", "<pre>ab\nc</pre>", "<!-- a\nb -->",
+        "**ab**\n\nc", "[ab](u)\n\nc", "a\n\nb\n```", "a\n\nb\n~~~\n",
+        "| ab | cd |\n| --- | --- |\n| ef | gh |", "e\u{301}👩‍💻\n\nc",
+        "\u{feff}ab\n\nc", "\u{feff}  c\n\nb", "\u{feff}  \n\nb",
+    ];
+    for source in sources {
+        for backward in [false, true] {
+            let (mut core, view) = open(source);
+            key(&mut core, view, Key::Char('i'));
+            let at = if backward { core.document().text().len() } else { 0 };
+            place(&mut core, view, at, false);
+            let mut completed = false;
+            for _ in 0..source.chars().count() * 2 + 4 {
+                let cursor = core.command_state(view).unwrap().cursor();
+                let has_visible_target = if backward { cursor > 0 } else { cursor < core.document().text().len() };
+                if !has_visible_target { completed = true; break; }
+                let before = core.document().source_bytes();
+                key(&mut core, view, if backward { Key::Backspace } else { Key::Delete });
+                let after = core.document().source_bytes();
+                assert!(after.len() < before.len(), "stalled {source:?}, backward={backward}, cursor={cursor}, source={:?}",
+                    String::from_utf8_lossy(&before));
+            }
+            assert!(completed, "unbounded deletion {source:?}, backward={backward}");
+            let final_source = core.document().source_bytes();
+            key(&mut core, view, Key::Escape);
+            key(&mut core, view, Key::Char('u'));
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), final_source);
+        }
+    }
+}
+
+#[test]
+fn source_delete_does_not_stall_on_hidden_list_or_quote_whitespace() {
+    for (source, at) in [("- x\n- ab\n- c", 6), ("- a\n  - ab", 8), ("> x\n>\n> ab\n>\n> c", 8)] {
+        let (mut core, view) = open(source);
+        key(&mut core, view, Key::Char('i'));
+        place(&mut core, view, at, false);
+        for action in [Key::Enter, Key::Up, Key::Home] { key(&mut core, view, action); }
+        let before_deletion = core.document().source_bytes();
+        for _ in 0..4 {
+            let before = core.document().source_bytes();
+            key(&mut core, view, Key::Delete);
+            assert!(core.document().source_byte_len() < before.len(), "{source:?}: {:?}", String::from_utf8_lossy(&before));
+        }
+        let edited = core.document().source_bytes();
+        key(&mut core, view, Key::Escape);
+        key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), before_deletion);
+        key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(core.document().source_bytes(), before_deletion);
+        key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(core.document().source_bytes(), edited);
+    }
 }

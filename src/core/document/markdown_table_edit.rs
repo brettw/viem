@@ -1,7 +1,7 @@
 //! Verified table source transactions. Structural edits patch only affected
 //! rows/cells; original source remains the serialization authority.
 use super::*;
-use crate::document::{MarkdownTable, MarkdownTableCell, TableAlignment, TableEditIntent};
+use crate::document::{BlockKind, MarkdownTable, MarkdownTableCell, TableAlignment, TableEditIntent};
 
 fn unsupported(reason: &'static str) -> ModelTransactionError {
     DocumentError::UnsupportedTableEdit(reason).into()
@@ -682,55 +682,26 @@ impl Document {
                 .source_range(range.clone())
                 .ok_or(DocumentError::AmbiguousProjection)?
         };
-        let mut scopes = Vec::new();
-        if self.format() == Format::Markdown && range.is_empty() {
-            for span in self.projection().style_spans_for_region(
-                &(range.start.saturating_sub(1)
-                    ..range.end.saturating_add(1).min(self.text().len())),
-            ) {
-                if !(span.range.start <= range.start && range.end <= span.range.end) {
-                    continue;
-                }
-                let content = self
-                    .projection()
-                    .source_range(span.range.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let patches = match span.application {
-                    StyleApplication::Semantic(
-                        style @ (SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis),
-                    ) => self.markdown_style_removal_patches(&content, style)?,
-                    StyleApplication::Automatic(ref name) if name.0 == "Strikethrough" => {
-                        self.markdown_strike_removal_patches(&content)?
-                    }
-                    _ => continue,
-                };
-                if range.start == span.range.start {
-                    source.start = source.start.min(patches[0].range.start);
-                    source.end = source.start;
-                    continue;
-                }
-                if range.start == span.range.end {
-                    source.end = source.end.max(patches[1].range.end);
-                    source.start = source.end;
-                    continue;
-                }
-                scopes.push((
-                    patches[0].range.start,
-                    self.table_source_text(patches[0].range.clone())?,
-                    self.table_source_text(patches[1].range.clone())?,
-                ));
-            }
-            scopes.sort_by_key(|scope| scope.0);
-        }
-        let newline = self.file_format().spelling();
+        let newline = "\n";
         let block = self
             .projection()
             .blocks_for_region(&(range.start..range.start))
             .into_iter()
             .find(|block| block.range.start <= range.start && range.start <= block.range.end);
         let mut prefix = String::new();
-        if let Some(block) = block {
+        if let Some(block) = &block {
             prefix = "> ".repeat(block.quote_depth);
+            if self.format() == Format::Markdown && range.is_empty()
+                && range.start == block.range.start && matches!(block.kind, BlockKind::Heading(_))
+            {
+                let line = self.state().source_hard_lines.line_at_offset(source.start)
+                    .and_then(|index| self.state().source_hard_lines.get(index))
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let raw = self.table_source_text(line.start..source.start)?;
+                let quote = super::super::markdown_quotes::prefix(&raw);
+                let at = line.start + self.encoding().encode_fragment(&raw[..quote])?.len();
+                source = at..at;
+            }
             if matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
                 let line = self
                     .state()
@@ -746,29 +717,30 @@ impl Document {
                 prefix.push_str(&" ".repeat(indent));
             }
         }
-        let mut body = scopes
-            .iter()
-            .rev()
-            .map(|scope| scope.2.as_str())
-            .collect::<String>();
-        let needs_before = source.start
-            > self
-                .state()
-                .source_hard_lines
-                .get(0)
-                .map_or(0, |range| range.start);
+        let physical = self.state().source_hard_lines.line_at_offset(source.start)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let source_prefix = if self.format().is_source_view() && !prefix.is_empty() {
+            let raw = self.table_source_text(physical.start..source.start)?;
+            super::super::markdown_quotes::prefix(&raw) == raw.len()
+        } else { false };
+        let at_paragraph_start = block.as_ref().is_some_and(|block|
+            range.is_empty() && (range.start == block.range.start || source_prefix)
+                && matches!(block.kind, BlockKind::Paragraph | BlockKind::Heading(_)));
+        let mut body = String::new();
+        let needs_before = !at_paragraph_start && source.start
+            > self.state().source_hard_lines.get(0).map_or(0, |range| range.start);
         if needs_before {
             body.push_str(newline);
             body.push_str(&prefix);
             body.push_str(newline);
             body.push_str(&prefix);
         }
-        let table_start = source.start + self.encoding().encode_fragment(&body)?.len()
-            - self
-                .encoding()
-                .encode_fragment(&prefix)?
-                .len()
-                .min(self.encoding().encode_fragment(&body)?.len());
+        let physical_start = physical.start;
+        if !needs_before && source.start == physical_start {
+            body.push_str(&prefix);
+        }
+        let header = format!("|{}\n{}|{}", "  |".repeat(columns), prefix, " --- |".repeat(columns));
         body.push('|');
         body.push_str(&"  |".repeat(columns));
         body.push_str(newline);
@@ -788,14 +760,42 @@ impl Document {
         body.push_str(newline);
         body.push_str(&prefix);
         body.push_str(newline);
-        body.push_str(&prefix);
-        for (_, opening, _) in &scopes {
-            body.push_str(opening);
+        if !(self.format().is_source_view() && source.end == physical_start) {
+            if self.format() == Format::Markdown
+                && range.end == self.projection().text_tree().byte_len()
+                && block.as_ref().is_some_and(|block| matches!(block.kind, BlockKind::ListItem { .. }))
+            {
+                // No following item body owns terminal indentation. Emitting
+                // it here would turn an editable empty boundary into spaces.
+                body.push_str(&"> ".repeat(block.as_ref().unwrap().quote_depth));
+            } else {
+                body.push_str(&prefix);
+            }
         }
-        let prepared = self.prepare_reprojected_source_patches(vec![SourcePatch::primary(
-            source,
-            self.encoding().encode_fragment(&body)?,
-        )])?;
+        let edit = TextEdit::new(range.clone(), "\n");
+        let mut patches = if self.format() == Format::Markdown {
+            markdown_split::patches_with_separator(self, &range, "\n", &body, Some(source.start))?
+                .unwrap_or(vec![SourcePatch::primary(source.clone(),
+                    self.encoding().encode_fragment(&spell_logical_breaks(&body, self.file_format()))?)])
+        } else {
+            vec![SourcePatch::primary(source.clone(),
+                self.encoding().encode_fragment(&spell_logical_breaks(&body, self.file_format()))?)]
+        };
+        self.preserve_markdown_edit_boundaries(std::slice::from_ref(&edit),
+            std::iter::once(&edit.range), &mut patches)?;
+        patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+        let header = self.encoding().encode_fragment(&spell_logical_breaks(&header, self.file_format()))?;
+        let mut delta = 0isize;
+        let mut header_source = None;
+        for patch in &patches {
+            if let Some(offset) = patch.replacement.windows(header.len()).position(|window| window == header) {
+                header_source = patch.range.start.checked_add_signed(delta)
+                    .and_then(|start| start.checked_add(offset));
+            }
+            delta += patch.replacement.len() as isize - patch.range.len() as isize;
+        }
+        let header_source = header_source.ok_or(DocumentError::VerificationFailed)?;
+        let prepared = self.prepare_reprojected_source_patches(patches)?;
         let PreparedPublication::State(state) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
@@ -803,16 +803,33 @@ impl Document {
             .projection
             .tables()
             .iter()
-            .find(|table| table.source_range.start == table_start)
+            .find(|table| table.source_range.start <= header_source
+                && table.source_rows.first().is_some_and(|row| header_source <= row.source_body.end))
             .ok_or(DocumentError::VerificationFailed)?;
         if table.columns.len() != columns || table.rows.len() != body_rows + 1 {
             return Err(DocumentError::VerificationFailed.into());
         }
         if self.format() == Format::Markdown {
-            let before = &self.text()[..range.start];
-            let after = &self.text()[range.end..];
-            let candidate_before = &state.projection.text()[..table.range.start];
-            let candidate_after = &state.projection.text()[table.range.end..];
+            // Only the intersected paragraphs can change around these local
+            // patches. Comparing the entire document prefix/suffix would make
+            // inserting a small table scale with unrelated document length.
+            let before_start = block.as_ref().map_or(range.start, |block| block.range.start);
+            let after_end = self.projection().blocks_for_region(&(range.end..range.end))
+                .into_iter().find(|block| block.range.start <= range.end && range.end <= block.range.end)
+                .map_or(range.end, |block| block.range.end);
+            let mapped = |at, association| -> Result<usize, ModelTransactionError> {
+                Ok(prepared.text_position_map().map_text_point(self.text_point(at)?, association,
+                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)?
+                    .value().ok_or(DocumentError::AmbiguousProjection)?.offset())
+            };
+            let slice = |projection: &FormattedDocument, range| projection.text_tree().slice(range)
+                .map_err(DocumentError::FormattedTextStorage);
+            let before = slice(self.projection(), before_start..range.start)?;
+            let after = slice(self.projection(), range.end..after_end)?;
+            let candidate_before = slice(&state.projection,
+                mapped(before_start, Association::BeforeInsertion)?..table.range.start)?;
+            let candidate_after = slice(&state.projection,
+                table.range.end..mapped(after_end, Association::AfterInsertion)?)?;
             if candidate_before.trim_end_matches('\n') != before.trim_end_matches('\n')
                 || candidate_after.trim_start_matches('\n') != after.trim_start_matches('\n')
             {
@@ -822,6 +839,53 @@ impl Document {
             }
         }
         let caret = table.rows[0].cells[0].range.start;
+        let heading = block.filter(|block| self.format() == Format::Markdown
+            && matches!(block.kind, BlockKind::Heading(_)));
+        if let Some(block) = heading {
+            let mut points = Vec::new();
+            if block.range.start < range.start {
+                points.push(self.previous_grapheme_boundary(range.start).ok_or(DocumentError::AmbiguousProjection)?);
+            }
+            if range.end < block.range.end {
+                points.push(prepared.text_position_map().map_text_point(self.text_point(range.end)?,
+                    Association::AfterInsertion, BoundaryAffinity::Downstream,
+                    DeletionRecovery::PreferFollowingThenPreceding)?.value()
+                    .ok_or(DocumentError::AmbiguousProjection)?.offset());
+            }
+            let mut scratch = self.scratch_document();
+            let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            // The table was prepared for the live view's undo group. Continue
+            // from its verified immutable candidate in private history rather
+            // than publishing those live-group preconditions on scratch.
+            scratch.next_revision = prepared.after_revision.0.checked_add(1)
+                .ok_or(ModelTransactionError::RevisionExhausted)?;
+            scratch.next_projected_block_id = prepared.next_projected_block_id_after;
+            let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
+            scratch.history = super::super::history::History::transient(state);
+            for point in points {
+                let paragraph = super::super::edit_boundary::paragraph_at(&scratch, point)?
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if paragraph.style == block.style { continue; }
+                let styled = scratch.prepare_markdown_paragraph_style(paragraph.range, block.style.clone())?;
+                for patch in styled.summary.source_patches.iter().rev() {
+                    sources.splice(patch.range(), patch.replacement());
+                }
+                scratch.commit_model_transaction(styled)?;
+            }
+            let prepared = self.prepare_reprojected_source_patches(sources.source_patches())?;
+            let PreparedPublication::State(candidate) = &prepared.publication else {
+                return Err(DocumentError::VerificationFailed.into());
+            };
+            if candidate.projection.text() != scratch.text()
+                || candidate.projection.style_spans() != scratch.projection().style_spans()
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            return Ok((prepared, caret));
+        }
         Ok((prepared, caret))
     }
 }

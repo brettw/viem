@@ -250,9 +250,14 @@ fn repository_global_delete_preserves_completed_prefix_on_supported_targets() {
     use viem_core::document::DocumentError;
     let source = include_str!("../../docs/markdown_demo.md");
     let (mut core, view) = open(source);
-    let max_attempts = core.document().hard_line_snapshot().line_count() + 1;
+    const MAX_ZERO_PROGRESS_RETRIES: usize = 16;
+    let max_attempts = core.document().hard_line_snapshot().line_count()
+        + 1
+        + MAX_ZERO_PROGRESS_RETRIES;
+    let mut zero_progress_retries = 0;
     for _ in 0..max_attempts {
         let before = core.document().source_bytes();
+        let before_revision = core.document().revision();
         for key in ":g/a/d".chars() {
             core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key)))
                 .unwrap();
@@ -267,10 +272,12 @@ fn repository_global_delete_preserves_completed_prefix_on_supported_targets() {
                 DocumentError::UnsupportedTableEdit(_)
             )))
         );
+        let work_limit =
+            matches!(&status, CommandStatus::Unsupported(message) if message.contains("work limit"));
         assert!(
             table_policy
                 || matches!(&status, CommandStatus::Complete)
-                || matches!(&status, CommandStatus::Unsupported(message) if message.contains("work limit")),
+                || work_limit,
             "{status:?}"
         );
         let result = core.document().source_bytes();
@@ -278,6 +285,18 @@ fn repository_global_delete_preserves_completed_prefix_on_supported_targets() {
             Document::from_bytes(result.clone(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(reopened.text(), core.document().text());
         if result == before {
+            if work_limit {
+                // The wall-clock replay budget can expire before the first
+                // target when other tests contend for CPU. Retry that pause
+                // without treating it as a completed undoable edit.
+                assert_eq!(core.document().revision(), before_revision);
+                zero_progress_retries += 1;
+                assert!(
+                    zero_progress_retries <= MAX_ZERO_PROGRESS_RETRIES,
+                    ":global repeatedly exhausted its budget without progress: {status:?}"
+                );
+                continue;
+            }
             // Whole visual-row table deletion remains the existing open
             // policy. Repeated continuation must end at that explicit refusal,
             // never an internal verification error or silently accepted edit.

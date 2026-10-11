@@ -68,6 +68,7 @@ pub struct ExExecutionContext {
     pub selection_options: super::SelectionOptions,
     /// Buffer-owned `textwidth` state.
     pub text_width: crate::document::TextWidthSetting,
+    pub reflow_options: crate::document::ReflowOptions,
     pub indentation: crate::document::IndentationSetting,
     pub visible_whitespace: super::VisibleWhitespaceSetting,
     pub last_search_pattern: Option<String>,
@@ -84,6 +85,7 @@ impl Default for ExExecutionContext {
             search_options: super::search_regex::SearchOptions::default(),
             selection_options: Default::default(),
             text_width: crate::document::TextWidthSetting::default(),
+            reflow_options: crate::document::ReflowOptions::default(),
             indentation: Default::default(),
             visible_whitespace: Default::default(),
             last_search_pattern: None,
@@ -281,6 +283,7 @@ pub enum ExOptionName {
     SmartCase,
     WrapScan,
     TextWidth,
+    FormatOptions, Comments, FormatListPat,
     AutoIndent, TabStop, ShiftWidth, SoftTabStop, ExpandTab, SmartTab,
     ContinueCommentsOnEnter, ContinueCommentsOnOpenLine,
     List, ListChars, KeyModel, SelectMode, AutoSelect,
@@ -292,6 +295,7 @@ pub enum ExOptionValue {
     String(String),
     Integer(i32),
     Indentation(crate::document::IndentationSetting),
+    Reflow(crate::document::ReflowOptions),
     VisibleWhitespace(super::VisibleWhitespaceSetting),
     FileFormat(FileFormat),
     FileFormats(Vec<FileFormat>),
@@ -1256,9 +1260,16 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 document, state, context, command, *pattern, flags, *count, &mut plan,
             )?;
         }
-        ExAction::GoToLine(_) => {
+        ExAction::GoToLine(address) => {
             let line = addresses.navigation.as_ref().ok_or(ExExecuteError::AddressOverflow)?;
             plan.outcome.navigation = Some(address_navigation(document, line)?);
+            if let AddressBase::Absolute(value) = address.base {
+                if i128::from(value) + i128::from(address.offset) > document.physical_source_line_number_count() as i128 {
+                    plan.outcome.frontend_requests.push(ExFrontendRequest::Info(
+                        ExInfoRequest::Message("E16: Invalid range".into()),
+                    ));
+                }
+            }
         }
         ExAction::GoToByte { count } => {
             let count = effective_goto_count(
@@ -2359,6 +2370,7 @@ fn prepare_set(
         search_options: context.search_options,
         selection_options: context.selection_options.clone(),
         text_width: context.text_width,
+        reflow_options: context.reflow_options.clone(),
         indentation: context.indentation,
         visible_whitespace: context.visible_whitespace.clone(),
     };
@@ -2404,6 +2416,10 @@ fn prepare_set(
                     ExOptionName::TextWidth,
                     ExOptionValue::Number(values.text_width.effective()),
                 ));
+            }
+            for (display, explicit) in reflow_option_values(&values.reflow_options).into_iter().zip([
+                values.reflow_options.format_options.is_some(), values.reflow_options.comments.is_some(), values.reflow_options.format_list_pattern.is_some()]) {
+                if explicit { shown.push(display); }
             }
             let defaults = { let mut d = values.indentation; d.local = Default::default(); indentation_options(d) };
             shown.extend(indentation_options(values.indentation).into_iter().zip(defaults).filter_map(|(value, default)| (value != default).then_some(value)));
@@ -2458,6 +2474,7 @@ struct PendingOptions {
     search_options: super::search_regex::SearchOptions,
     selection_options: super::SelectionOptions,
     text_width: crate::document::TextWidthSetting,
+    reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     visible_whitespace: super::VisibleWhitespaceSetting,
 }
@@ -2498,6 +2515,7 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
             ExOptionValue::FileFormats(values.fileformats.clone()),
         ),
     ];
+    result.extend(reflow_option_values(&values.reflow_options));
     result.extend(indentation_options(values.indentation));
     result
 }
@@ -2515,8 +2533,6 @@ fn indentation_options(setting: crate::document::IndentationSetting) -> Vec<ExOp
         display(ExOptionName::SoftTabStop, ExOptionValue::Integer(value.softtabstop)),
         display(ExOptionName::ExpandTab, ExOptionValue::Boolean(value.expandtab)),
         display(ExOptionName::SmartTab, ExOptionValue::Boolean(value.smarttab)),
-        display(ExOptionName::ContinueCommentsOnEnter, ExOptionValue::Boolean(value.continue_comments_on_enter)),
-        display(ExOptionName::ContinueCommentsOnOpenLine, ExOptionValue::Boolean(value.continue_comments_on_open_line)),
     ]
 }
 fn apply_indentation_option(scope: SetScope, operation: &OptionOperation,
@@ -2529,8 +2545,6 @@ fn apply_indentation_option(scope: SetScope, operation: &OptionOperation,
         "softtabstop" | "sts" => ExOptionName::SoftTabStop,
         "expandtab" | "et" => ExOptionName::ExpandTab,
         "smarttab" | "sta" => ExOptionName::SmartTab,
-        "continuecommentsonenter" => ExOptionName::ContinueCommentsOnEnter,
-        "continuecommentsonopenline" => ExOptionName::ContinueCommentsOnOpenLine,
         _ => return Ok(false),
     };
     if operation.action == OptionAction::Query {
@@ -2544,8 +2558,6 @@ fn apply_indentation_option(scope: SetScope, operation: &OptionOperation,
         ExOptionName::AutoIndent => Some((&mut values.local.autoindent, effective.autoindent)),
         ExOptionName::ExpandTab => Some((&mut values.local.expandtab, effective.expandtab)),
         ExOptionName::SmartTab => Some((&mut values.local.smarttab, effective.smarttab)),
-        ExOptionName::ContinueCommentsOnEnter => Some((&mut values.local.continue_comments_on_enter, effective.continue_comments_on_enter)),
-        ExOptionName::ContinueCommentsOnOpenLine => Some((&mut values.local.continue_comments_on_open_line, effective.continue_comments_on_open_line)),
         _ => None,
     };
     if let Some((local, value)) = boolean {
@@ -2641,6 +2653,63 @@ fn apply_whitespace_option(scope: SetScope, operation: &OptionOperation, setting
     Ok(true)
 }
 
+fn reflow_option_values(value: &crate::document::ReflowOptions) -> Vec<ExOptionDisplay> {
+    vec![display(ExOptionName::FormatOptions, ExOptionValue::String(value.flags().into())),
+        display(ExOptionName::Comments, ExOptionValue::String(value.comments().into())),
+        display(ExOptionName::FormatListPat, ExOptionValue::String(value.list_pattern().into())),
+        display(ExOptionName::ContinueCommentsOnEnter, ExOptionValue::Boolean(value.has('r'))),
+        display(ExOptionName::ContinueCommentsOnOpenLine, ExOptionValue::Boolean(value.has('o')))]
+}
+fn apply_reflow_option(scope: SetScope, operation: &OptionOperation,
+    values: &mut crate::document::ReflowOptions, plan: &mut ExPlan) -> Result<bool, ExExecuteError> {
+    let name = operation.name.to_ascii_lowercase();
+    let key = match name.as_str() {
+        "formatoptions" | "fo" => ExOptionName::FormatOptions,
+        "comments" | "com" => ExOptionName::Comments,
+        "formatlistpat" | "flp" => ExOptionName::FormatListPat,
+        "continuecommentsonenter" => ExOptionName::ContinueCommentsOnEnter,
+        "continuecommentsonopenline" => ExOptionName::ContinueCommentsOnOpenLine,
+        _ => return Ok(false),
+    };
+    let old = values.clone();
+    if matches!(key, ExOptionName::ContinueCommentsOnEnter | ExOptionName::ContinueCommentsOnOpenLine) {
+        let flag = if key == ExOptionName::ContinueCommentsOnEnter { 'r' } else { 'o' };
+        let enabled = match operation.action {
+            OptionAction::Query => { show_option(plan, key, ExOptionValue::Boolean(values.has(flag))); return Ok(true); },
+            OptionAction::Enable => true, OptionAction::Disable => false,
+            OptionAction::Reset | OptionAction::Inherit => { let mut inherited = values.clone(); inherited.format_options = None; inherited.has(flag) },
+            OptionAction::Toggle => !values.has(flag),
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        };
+        values.set_flag(flag, enabled);
+    } else {
+        let current = match key { ExOptionName::FormatOptions => values.flags(), ExOptionName::Comments => values.comments(), _ => values.list_pattern() }.to_owned();
+        let new = match &operation.action {
+            OptionAction::Query | OptionAction::Enable => { show_option(plan, key, ExOptionValue::String(current)); return Ok(true); },
+            OptionAction::Reset | OptionAction::Inherit => None,
+            OptionAction::Assign(value) => Some(value.clone()),
+            OptionAction::Append(value) | OptionAction::Prepend(value) | OptionAction::Remove(value) => Some(if key == ExOptionName::Comments {
+                modify_listchars(&current, value, &operation.action)
+            } else { match &operation.action {
+                OptionAction::Append(_) => format!("{current}{value}"),
+                OptionAction::Prepend(_) => format!("{value}{current}"),
+                OptionAction::Remove(_) if key == ExOptionName::FormatOptions => current.chars().filter(|c| !value.contains(*c)).collect(),
+                OptionAction::Remove(_) => current.replacen(value, "", 1),
+                _ => unreachable!(),
+            }}),
+            _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
+        };
+        match key {
+            ExOptionName::FormatOptions => values.format_options = new.map(|v| crate::document::normalize_format_options(&v)).transpose().map_err(|_| ExExecuteError::InvalidOptionValue { option: name.clone(), value: current.clone() })?,
+            ExOptionName::Comments => values.comments = new,
+            _ => values.format_list_pattern = new,
+        }
+        values.validate().map_err(|error| ExExecuteError::InvalidOptionValue { option: name, value: error })?;
+    }
+    if old != *values { plan.outcome.option_effects.push(ExOptionEffect { scope, name: key, old_value: ExOptionValue::Reflow(old), new_value: ExOptionValue::Reflow(values.clone()) }); }
+    Ok(true)
+}
+
 fn apply_option_operation(
     scope: SetScope,
     operation: &OptionOperation,
@@ -2648,6 +2717,7 @@ fn apply_option_operation(
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
     let name = operation.name.to_ascii_lowercase();
+    if apply_reflow_option(scope, operation, &mut values.reflow_options, plan)? { return Ok(()); }
     if apply_indentation_option(scope, operation, &mut values.indentation, plan)? { return Ok(()); }
     if apply_whitespace_option(scope, operation, &mut values.visible_whitespace, plan)? { return Ok(()); }
     if matches!(name.as_str(), "keymodel" | "km" | "selectmode" | "slm") {
@@ -3736,7 +3806,9 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 23);
+        for name in [ExOptionName::FormatOptions, ExOptionName::Comments, ExOptionName::FormatListPat] {
+            assert!(options.iter().any(|option| option.name == name));
+        }
         assert!(options.iter().any(|option| option.name == ExOptionName::Number
             && option.value == ExOptionValue::Boolean(false)));
         assert!(options.iter().any(|option| option.name == ExOptionName::AutoSelect

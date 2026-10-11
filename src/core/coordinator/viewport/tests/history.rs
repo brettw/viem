@@ -1,5 +1,44 @@
 use super::*;
 
+#[test]
+fn undo_join_of_wrapped_code_comments_preserves_a_visible_viewport() {
+    let source = include_str!("../../../document/code_presentation.rs");
+    for width in [150., 240., 360.] {
+        for numbers in [false, true] {
+          for (scrolled, native) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap());
+            let view = core.add_view(MockTextMeasurementProvider::new(), width, 600.);
+            if numbers { core.set_number(view, true).unwrap(); }
+            for key in ['2', 'G'] {
+                core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+            }
+            if scrolled {
+                let top = caret_row(&core, view).y;
+                core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+            }
+            core.handle(view, CoreEvent::Input(InputEvent::key('J'))).unwrap();
+            let joined = core.document().source_bytes();
+            let before = core.layout(view).unwrap().viewport_top();
+            for redo in [false, true] {
+                let event = if native {
+                    CoreEvent::NavigateHistory(if redo { HistoryNavigationRequest::Redo } else { HistoryNavigationRequest::Undo })
+                } else {
+                    CoreEvent::Input(InputEvent::Key(if redo { Key::Ctrl('r') } else { Key::Char('u') }))
+                };
+                core.handle(view, event).unwrap();
+                assert_eq!(core.document().source_bytes(), if redo { joined.as_slice() } else { source.as_bytes() });
+                let layout = core.layout(view).unwrap();
+                assert!((layout.viewport_top() - before).abs() < 0.01,
+                    "width={width}, numbers={numbers}, scrolled={scrolled}, native={native}, redo={redo}: {before} -> {}", layout.viewport_top());
+                let row = caret_row(&core, view);
+                assert!(row.reveal_bounds().start >= layout.viewport_top());
+                assert!(row.reveal_bounds().end <= layout.viewport_top() + layout.height());
+            }
+          }
+        }
+    }
+}
+
 fn mermaid_fixture(format: Format) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let source = format!("{}\n```mermaid\ngraph LR\n    Writing --> Editing\n    Editing --> Saving\n```\n\n{}",
         "Before\n\n".repeat(100), "After\n\n".repeat(100));

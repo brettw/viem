@@ -167,7 +167,7 @@ pub unsafe extern "C" fn viem_core_view_line_number_snapshot_info(
                 identity: snapshot_identity(snapshot, id),
                 viewport: viewport(core, id)?,
                 source_line_count: checked_export_count(
-                    core.document().physical_line_count().map_err(|error| core_status(error.into()))?,
+                    core.document().presented_source_line_number_count(),
                 )?,
                 current_source_line: checked_export_count(
                     core.current_physical_source_line(id).map_err(core_status)?,

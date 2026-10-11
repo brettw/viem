@@ -91,9 +91,12 @@ fn normal_cursor_floors_stale_byte_ordinals_without_flattening() {
     text.insert(0, 'q');
     let lines = document.hard_line_snapshot();
     for offset in (0..64).chain([text.len(), text.len() + 1, usize::MAX]) {
+        let expected = if offset >= text.len() {
+            text.len() - 2 // final visible `x`, before the file terminator
+        } else { normalize_normal_cursor(&text, &lines, offset) };
         assert_eq!(
             normalize_normal_cursor_document(&document, &lines, offset),
-            normalize_normal_cursor(&text, &lines, offset),
+            expected,
             "cursor byte {offset}",
         );
     }

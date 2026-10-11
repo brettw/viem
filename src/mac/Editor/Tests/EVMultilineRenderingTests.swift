@@ -159,8 +159,10 @@ final class EVMultilineRenderingTests: XCTestCase {
         }
 
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        XCTAssertEqual(snapshot.rows.count, 3)
-        XCTAssertEqual(snapshot.rows.map(\.row_index), [0, 1, 2])
+        // The final terminator has insertion geometry but contributes no glyphs.
+        XCTAssertEqual(snapshot.rows.count, 4)
+        XCTAssertEqual(snapshot.rows.map(\.row_index), [0, 1, 2, 3])
+        XCTAssertTrue(snapshot.clusters.filter { $0.row_index == 3 }.isEmpty)
         XCTAssertGreaterThan(snapshot.rows[1].y, snapshot.rows[0].y)
         XCTAssertGreaterThan(snapshot.rows[2].y, snapshot.rows[1].y)
         for rowIndex in UInt64(0) ... 2 {
@@ -185,7 +187,7 @@ final class EVMultilineRenderingTests: XCTestCase {
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         surface.refreshPresentation()
 
-        XCTAssertEqual(surface.formattedText, "Hello, Viem — SF Pro 14\nUnicode: café 漢字 👩🏽‍💻")
+        XCTAssertEqual(surface.formattedText, "Hello, Viem — SF Pro 14\nUnicode: café 漢字 👩🏽‍💻\n")
         let layout = try session.layoutExport()
         XCTAssertGreaterThanOrEqual(layout.rows.count, 2)
         XCTAssertGreaterThan(layout.rows[1].y, layout.rows[0].y)
@@ -225,7 +227,8 @@ final class EVMultilineRenderingTests: XCTestCase {
         surface.refreshPresentation()
 
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        XCTAssertEqual(snapshot.rows.count, 2)
+        XCTAssertEqual(snapshot.rows.count, 3)
+        XCTAssertTrue(snapshot.clusters.filter { $0.row_index == 2 }.isEmpty)
         let firstClusters = snapshot.clusters.filter { $0.row_index == 0 }
         let secondClusters = snapshot.clusters.filter { $0.row_index == 1 }
         XCTAssertFalse(firstClusters.isEmpty)

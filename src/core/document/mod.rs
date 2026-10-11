@@ -72,6 +72,7 @@ mod style;
 #[cfg(test)]
 mod percentage_styles_tests;
 mod reflow;
+mod format_options;
 mod indentation;
 pub use indentation::{IndentationOptions, IndentationOverrides, IndentationSetting};
 pub(crate) use indentation::{leading_whitespace_len, end_column as indentation_end_column};
@@ -122,10 +123,11 @@ pub use projection::{
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
+pub use format_options::{ReflowOptions, normalize_format_options};
+pub(crate) use reflow::{comment_continuation_prefix, comment_join_prefix};
 pub use reflow::{
-    comment_continuation_prefix,
-    comment_profile_for_language, reflow_edits, BlockCommentSyntax, CommentProfile, ReflowError,
-    ReflowRequest, TextWidthSetting, C_FAMILY_COMMENT_LANGUAGES, C_FAMILY_COMMENT_PROFILE,
+    reflow_edits, ReflowError,
+    ReflowRequest, TextWidthSetting,
     DEFAULT_TEXT_WIDTH,
 };
 pub use source::SourceArtifactDigest;
@@ -2149,6 +2151,31 @@ impl Document {
 
     pub fn line_count(&self) -> usize {
         self.projection().hard_line_count()
+    }
+
+    /// Final file delimiters retain an insertion boundary without adding a
+    /// Normal/Ex line. Markdown's explicit empty paragraphs remain content.
+    pub fn addressable_hard_line_count(&self) -> usize {
+        if self.format().is_literal() {
+            self.physical_source_line_number_count()
+        } else if self.format().is_source_view() {
+            let count = self.line_count();
+            let lines = self.hard_line_snapshot();
+            let terminal = lines.line(count.saturating_sub(1));
+            // Source paragraph separators can combine several physical endings
+            // into one displayed break. Only a single final ending is trivia;
+            // the boundary of an authored empty paragraph remains addressable.
+            let continuation = count > 1
+                && terminal.is_some_and(|line| line.content_range().is_empty())
+                && lines.line(count - 2).and_then(|line| line.separator_range())
+                    .and_then(|range| self.projection().source_range(range))
+                    .is_some_and(|source| !source.is_empty() && source.end == self.source_byte_len()
+                        && self.state().source_hard_lines.line_at_offset(source.start)
+                            == self.state().source_hard_lines.line_at_offset(source.end - 1));
+            if continuation { count.saturating_sub(1).max(1) } else { count }
+        } else {
+            self.line_count()
+        }
     }
 
     /// Captures an immutable, revision-bound view of the authoritative

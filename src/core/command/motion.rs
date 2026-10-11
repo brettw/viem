@@ -14,6 +14,21 @@ impl CommandInterpreter {
         let old = self.cursor;
         let in_linear_visual = matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine);
         let retain_visual_line_end = in_linear_visual && self.visual_to_line_end;
+        let last_addressable_line_start = if matches!(self.mode, Mode::Insert | Mode::Replace) {
+            None
+        } else {
+            let count = document.addressable_hard_line_count();
+            (count < lines.line_count()).then(|| nth_line_start(&lines, count))
+        };
+        // Resolve the destination line before applying its column semantics. Clamping
+        // the final cursor instead would turn a downward motion into a line-end motion.
+        let addressable_line_position = |position| {
+            if position == lines.text_length() {
+                last_addressable_line_start.unwrap_or(position)
+            } else {
+                position
+            }
+        };
         self.cursor = match motion {
             Motion::Horizontal(amount) => {
                 move_horizontal(&lines, self.cursor, directional_count(count, amount > 0))
@@ -41,12 +56,12 @@ impl CommandInterpreter {
                 position
             }
             Motion::Vertical(amount) => {
-                let line_position = move_vertical(
+                let line_position = addressable_line_position(move_vertical(
                     text(),
                     &lines,
                     self.cursor,
                     directional_count(count, amount > 0),
-                );
+                ));
                 if retain_visual_line_end {
                     self.preferred_column = None;
                     last_grapheme_on_line(text(), &lines, line_position)
@@ -68,7 +83,7 @@ impl CommandInterpreter {
                     };
                     position = next;
                 }
-                last_grapheme_on_line(text(), &lines, position)
+                last_grapheme_on_line(text(), &lines, addressable_line_position(position))
             }
             Motion::InsertionLineEnd => line_end(&lines, self.cursor),
             Motion::WordForward(big) => {
@@ -90,7 +105,7 @@ impl CommandInterpreter {
                     };
                     position = next;
                 }
-                last_non_blank(text(), &lines, position)
+                last_non_blank(text(), &lines, addressable_line_position(position))
             }
             Motion::Column(one_based) => position_at_column(
                 text(),
@@ -99,12 +114,12 @@ impl CommandInterpreter {
                 one_based.saturating_sub(1),
             ),
             Motion::LineOffsetFirstNonBlank(amount) => {
-                let line = move_vertical(
+                let line = addressable_line_position(move_vertical(
                     text(),
                     &lines,
                     self.cursor,
                     directional_count(count, amount > 0),
-                );
+                ));
                 first_non_blank(text(), &lines, line)
             }
             Motion::Sentence(forward) => normalize_normal_cursor_snapshot(
@@ -116,6 +131,9 @@ impl CommandInterpreter {
                 text::move_document_paragraph(document, self.cursor, forward, count),
             ),
         };
+        if !matches!(self.mode, Mode::Insert | Mode::Replace) {
+            self.cursor = normalize_normal_cursor_document(document, &lines, self.cursor);
+        }
         if !matches!(motion, Motion::Vertical(_)) {
             self.preferred_column = None;
         }
@@ -142,7 +160,8 @@ impl CommandInterpreter {
     pub(super) fn goto_line(&mut self, document: &Document, one_based: usize) -> CommandOutput {
         let old = self.cursor;
         let lines = document.hard_line_snapshot();
-        self.cursor = first_nonblank_document(document, &lines, nth_line_start(&lines, one_based));
+        self.cursor = first_nonblank_document(document, &lines,
+            nth_line_start(&lines, one_based.min(document.addressable_hard_line_count())));
         self.preferred_column = None;
         let output = CommandOutput {
             cursor_moved: old != self.cursor,

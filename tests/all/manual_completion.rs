@@ -364,7 +364,7 @@ fn change_operator_completion_undoes_as_one_change_and_preserves_delete_register
 
 #[test]
 fn counts_dot_and_macro_replay_use_the_accepted_payload() {
-    let (mut core, view) = fixture(Document::new("alphabet\n"));
+    let (mut core, view) = fixture(Document::new("alphabet\n\n"));
     place(&mut core, view, 9);
     for ch in "3i".chars() {
         key(&mut core, view, Key::Char(ch));
@@ -373,12 +373,12 @@ fn counts_dot_and_macro_replay_use_the_accepted_payload() {
     key(&mut core, view, Key::Ctrl('p'));
     finish_search(&mut core, view);
     key(&mut core, view, Key::Escape);
-    assert_eq!(core.document().text(), "alphabet\nalphabetalphabetalphabet");
+    assert_eq!(core.document().text(), "alphabet\nalphabetalphabetalphabet\n");
     key(&mut core, view, Key::Char('u'));
-    assert_eq!(core.document().text(), "alphabet\n");
+    assert_eq!(core.document().text(), "alphabet\n\n");
 
     for macro_replay in [false, true] {
-        let (mut core, view) = fixture(Document::new("alphabet\n\n"));
+        let (mut core, view) = fixture(Document::new("alphabet\n\n\n"));
         place(&mut core, view, 9);
         if macro_replay {
             for ch in "qa".chars() {
@@ -399,7 +399,7 @@ fn counts_dot_and_macro_replay_use_the_accepted_payload() {
         }
         assert_eq!(
             core.document().text(),
-            "alphabet\nalphabet\nalphabet",
+            "alphabet\nalphabet\nalphabet\n",
             "macro={macro_replay}"
         );
         assert!(core.completion_presentation(view).unwrap().is_none());

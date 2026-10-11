@@ -488,7 +488,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         dirtyRect.fill()
         if let snapshot {
             context.saveGState()
-            context.clip(to: textViewportRect)
+            context.clip(to: textPaintViewportRect)
             let clusters = drawingClusters(in: dirtyRect, snapshot: snapshot)
             drawBlockBackgrounds(snapshot, dirtyRect: dirtyRect, in: context)
             drawCodeBlockLanguages(snapshot, dirtyRect: dirtyRect, in: context)
@@ -554,7 +554,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             identity: EVEditorDrawingIdentity(
                 contentGeneration: surface.immutablePresentationGeneration,
                 bounds: bounds,
-                viewport: textViewportRect,
+                viewport: textPaintViewportRect,
                 backingScale: window?.backingScaleFactor ?? 1,
                 appearance: effectiveAppearance.name.rawValue,
                 themeGeneration: EVThemeStore.shared.generation),
@@ -1493,6 +1493,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             width: layoutViewportSize.width,
             height: layoutViewportSize.height
         )
+    }
+
+    /// Overflowing lines continue beneath the native vertical scrollbar. The
+    /// layout and hit-test viewport still end at its inside edge; exposing this
+    /// already-shaped ink must never change wrapping or request wider layout.
+    var textPaintViewportRect: NSRect {
+        var rect = textViewportRect
+        if documentScrollbars.horizontalAvailable {
+            rect.size.width = max(rect.width, bounds.maxX - rect.minX)
+        }
+        return rect
     }
 
     private func layoutDocumentScrollbars() {

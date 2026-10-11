@@ -345,6 +345,11 @@ struct LineExtent {
 impl CommandInterpreter {
     pub(super) fn mode_line_key(&self, key: Key) -> bool {
         let key = self.resolved_clipboard_copy_key(key);
+        // Native vertical navigation follows the displayed rows in every
+        // editing mode. Vim operator motions still use the selected line domain.
+        if self.pending == Pending::None && matches!(key, Key::Up | Key::Down) {
+            return false;
+        }
         if self.register_pending
             || self.count_overflowed
             || !matches!(
@@ -391,7 +396,7 @@ impl CommandInterpreter {
                     Some(
                         RepeatAction::Operator {
                             command: OperatorRepeat {
-                                target: RepeatTarget::ViewLine(..),
+                                target: RepeatTarget::ViewLine(..) | RepeatTarget::VisualViewLine(..),
                                 ..
                             },
                             ..
@@ -435,7 +440,7 @@ impl CommandInterpreter {
                     } else {
                         count - 1
                     })
-                    .min(document.physical_line_count()? - 1)
+                    .min(document.physical_source_line_number_count() - 1)
             };
             let first = document.physical_line(index)?;
             let last = document.physical_line(end)?;
@@ -485,10 +490,16 @@ impl CommandInterpreter {
             LineShape::Start | LineShape::StartNonblank => 0,
             _ => (count - 1).min(isize::MAX as usize) as isize,
         };
-        let rows = match layout_motion::command_row_span(snapshot, current, delta) {
+        let mut rows = match layout_motion::command_row_span(snapshot, current, delta) {
             Ok(rows) => rows,
             Err(error) => return Ok(Err(error)),
         };
+        let end = document.projection().text_tree().byte_len();
+        if rows.len() > 1 && snapshot.rows[rows.end - 1].text_range == (end..end)
+            && document.addressable_hard_line_count() < document.line_count()
+        {
+            rows.end -= 1;
+        }
         let first = &snapshot.rows[rows.start];
         let last = &snapshot.rows[rows.end - 1];
         let start = if shape == LineShape::End {
@@ -686,10 +697,27 @@ impl CommandInterpreter {
                 }
                 _ => return Ok(None),
             };
-            let position = match moved {
+            let mut position = match moved {
                 Ok(position) => position,
                 Err(error) => return Ok(Some(layout_error(error))),
             };
+            if position.text_offset == document.projection().text_tree().byte_len()
+                && document.addressable_hard_line_count() < document.line_count()
+            {
+                position = match gk(&snapshot, position, 1, desired_x) {
+                    Ok(motion) => motion.position,
+                    Err(error) => return Ok(Some(layout_error(error))),
+                };
+                let edge = match key {
+                    Key::Char('+' | '_') | Key::Enter => layout_motion::g_caret_for_document(document, &snapshot, position),
+                    Key::Char('$') | Key::End => g_dollar_for_document(document, &snapshot, position),
+                    _ => Ok(position),
+                };
+                position = match edge {
+                    Ok(position) => position,
+                    Err(error) => return Ok(Some(layout_error(error))),
+                };
+            }
             let output = self.install_visual_position(document, &snapshot, position);
             self.visual_to_line_end = self.mode == Mode::VisualCharacter
                 && matches!(key, Key::Char('$') | Key::End);
@@ -701,12 +729,12 @@ impl CommandInterpreter {
             Key::Char('j' | '+') | Key::Down | Key::Enter => line
                 .index
                 .saturating_add(count)
-                .min(document.physical_line_count()? - 1),
+                .min(document.physical_source_line_number_count() - 1),
             Key::Char('k' | '-') | Key::Up => line.index.saturating_sub(count),
             Key::Char('$' | '_') | Key::End => line
                 .index
                 .saturating_add(count - 1)
-                .min(document.physical_line_count()? - 1),
+                .min(document.physical_source_line_number_count() - 1),
             _ => line.index,
         };
         let vertical = matches!(key, Key::Char('j' | 'k') | Key::Up | Key::Down);
@@ -1627,7 +1655,7 @@ impl CommandInterpreter {
                 .physical_line(
                     line.index
                         .saturating_add(count.saturating_sub(1))
-                        .min(document.physical_line_count().ok()?.saturating_sub(1)),
+                        .min(document.physical_source_line_number_count().saturating_sub(1)),
                 )
                 .ok()?;
             source_target = Some(target.content_range.start);
@@ -1759,18 +1787,21 @@ impl CommandInterpreter {
         let last_index = first
             .index
             .saturating_add(count.max(2) - 1)
-            .min(document.physical_line_count()?.saturating_sub(1));
+            .min(document.physical_source_line_number_count().saturating_sub(1));
         if last_index == first.index {
             return Ok(CommandOutput::complete());
         }
         let mut joined = document.physical_source_text(first.content_range.clone())?;
         let mut cursor = joined.len();
+        let mut previous = joined.clone();
+        let profile = (document.format().is_code() && self.reflow_options.has('j')).then(|| self.reflow_options.profile());
         for index in first.index + 1..=last_index {
             let line = document.physical_line(index)?;
             let content = document.physical_source_text(line.content_range)?;
             cursor = joined.len();
             let value = if insert_space {
-                content.trim_start_matches([' ', '\t'])
+                if let Some(profile) = &profile { &content[crate::document::comment_join_prefix(&document.hard_line_snapshot(), index - 1, &previous, &content, profile)..] }
+                else { content.trim_start_matches([' ', '\t']) }
             } else {
                 content.as_str()
             };
@@ -1783,6 +1814,7 @@ impl CommandInterpreter {
                 joined.push(' ');
             }
             joined.push_str(value);
+            previous = content;
         }
         let last = document.physical_line(last_index)?;
         let source_cursor = first.source_range.start

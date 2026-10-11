@@ -6349,11 +6349,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 }
                 let changed = self.document.revision() != before;
-                if changed {
+                if changed && !command.history_navigation {
                     if let Some(anchor) = edit_anchor {
                         // Rebase this pre-edit boundary with the transaction.
                         // Unlike a new caret reveal, local typing must not
                         // recenter because the old layout revision is stale.
+                        // History instead preserves the viewport's text anchor:
+                        // the current editing row may split or move on Undo.
                         target_view.viewport_anchor = Some(anchor);
                     }
                 }

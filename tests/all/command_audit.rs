@@ -32,6 +32,365 @@ fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, text: &str) 
 }
 
 #[test]
+fn resolved_vim_failed_changes_keep_normal_and_existing_registers() {
+    use viem_core::command::Mode;
+    for command in ["cc", "C", "S", "cw"] {
+        let (mut core, view) = editor("one two", Format::PlainText);
+        keys(&mut core, view, "yiw\"%");
+        let revision = core.document().revision();
+        for (index, ch) in command.chars().enumerate() {
+            let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char(ch)))).unwrap();
+            if index + 1 == command.len() {
+                assert!(matches!(result.command.unwrap().status, CommandStatus::RegisterWriteError(_)), "{command}");
+            }
+        }
+        assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal, "{command}");
+        assert_eq!(core.document().revision(), revision);
+        assert_eq!(core.document().source_bytes(), b"one two");
+        assert_eq!(core.command_state(view).unwrap().register('"').unwrap().text, "one");
+        keys(&mut core, view, "x");
+        assert_eq!(core.document().text(), "ne two", "following keys retain Vim Normal meaning");
+    }
+    let (mut core, view) = editor("abc", Format::PlainText);
+    keys(&mut core, view, "cf");
+    let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char('Z')))).unwrap();
+    assert_eq!(result.command.unwrap().status, CommandStatus::SearchNotFound);
+    keys(&mut core, view, "x");
+    assert_eq!(core.document().text(), "bc", "Vim also remains Normal after a failed find-motion change");
+}
+
+#[test]
+fn resolved_vim_terminal_enter_authors_a_persistent_empty_line() {
+    use viem_core::document::FileFormat;
+    let encode = |text: &str, encoding| match encoding {
+        Encoding::Utf8 | Encoding::Latin1 => text.as_bytes().to_vec(),
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+    };
+    for format in [Format::PlainText, Format::Code] {
+        for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+            let ending = match file_format { FileFormat::Unix => "\n", FileFormat::Dos => "\r\n", FileFormat::Mac => "\r" };
+            for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+                for source in ["body", "body\n", ""] {
+                    for enter in [Key::Enter, Key::ShiftEnter] {
+                        let bytes = encode(&source.replace('\n', ending), encoding);
+                        let document = Document::from_bytes_with_file_format(bytes.clone(), encoding, format, file_format).unwrap();
+                        let mut core = Core::new(document);
+                        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 400.);
+                        keys(&mut core, view, "A");
+                        key(&mut core, view, enter);
+                        let body = source.trim_end_matches('\n');
+                        let expected = encode(&format!("{body}{ending}{ending}"), encoding);
+                        assert_eq!(core.document().source_bytes(), expected, "{format:?} {file_format:?} {encoding:?} {source:?} {enter:?}");
+                        assert_eq!(core.command_state(view).unwrap().cursor(), body.len() + 1);
+                        key(&mut core, view, Key::Escape);
+                        assert_eq!(core.command_state(view).unwrap().cursor(), body.len() + 1);
+                        assert_eq!(core.command_state(view).unwrap().register('.').unwrap().text, "\n",
+                            "the inserted-text register excludes supporting syntax");
+                        assert_eq!(core.document().addressable_hard_line_count(), 2);
+                        let reopened = Document::from_bytes_with_file_format(expected.clone(), encoding, format, file_format).unwrap();
+                        assert_eq!(reopened.addressable_hard_line_count(), 2);
+                        keys(&mut core, view, "u");
+                        assert_eq!(core.document().source_bytes(), bytes);
+                        key(&mut core, view, Key::Ctrl('r'));
+                        assert_eq!(core.document().source_bytes(), expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn resolved_vim_terminal_enter_restores_exact_source_and_continues_typing() {
+    for format in [Format::PlainText, Format::Code] {
+        for source in ["body", "body\n", ""] {
+            for enter in [Key::Enter, Key::ShiftEnter] {
+                let (mut core, view) = editor(source, format);
+                keys(&mut core, view, "A");
+                key(&mut core, view, enter);
+                key(&mut core, view, Key::Backspace);
+                assert_eq!(core.document().source_bytes(), source.as_bytes(), "{format:?} {source:?} {enter:?}");
+                key(&mut core, view, enter);
+                keys(&mut core, view, "é");
+                let expected = format!("{}\né\n", source.trim_end_matches('\n'));
+                assert_eq!(core.document().source_bytes(), expected.as_bytes());
+                key(&mut core, view, Key::Backspace);
+                let before = core.document().source_bytes();
+                key(&mut core, view, Key::Delete);
+                assert_eq!(core.document().source_bytes(), before, "Delete at the last empty line is EOF");
+                key(&mut core, view, Key::Backspace);
+                assert_eq!(core.document().source_bytes(), format!("{}\n", source.trim_end_matches('\n')).as_bytes());
+                key(&mut core, view, Key::Escape);
+                keys(&mut core, view, "u");
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+    for source in ["body\n", "body\n\n"] {
+        for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+            let (mut core, view) = editor(source, format);
+            keys(&mut core, view, "GA");
+            let before = core.document().source_bytes();
+            key(&mut core, view, Key::Delete);
+            assert_eq!(core.document().source_bytes(), before, "{format:?} {source:?}");
+        }
+    }
+}
+
+#[test]
+fn resolved_vim_terminal_open_lines_have_stable_counts_and_repeat() {
+    for format in [Format::PlainText, Format::Code] {
+        for source in ["body", "body\n", ""] {
+            for command in ["o", "O", "2o", "2O"] {
+                let (mut core, view) = editor(source, format);
+                keys(&mut core, view, command);
+                key(&mut core, view, Key::Escape);
+                let expected_lines = if command.starts_with('2') { 3 } else { 2 };
+                assert_eq!(core.document().addressable_hard_line_count(), expected_lines, "{format:?} {source:?} {command}");
+                let changed = core.document().source_bytes();
+                let reopened = Document::from_bytes(changed.clone(), Encoding::Utf8, format).unwrap();
+                assert_eq!(reopened.addressable_hard_line_count(), expected_lines);
+                keys(&mut core, view, "u");
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                key(&mut core, view, Key::Ctrl('r'));
+                assert_eq!(core.document().source_bytes(), changed);
+                keys(&mut core, view, ".");
+                assert_eq!(core.document().addressable_hard_line_count(), expected_lines * 2 - 1);
+                keys(&mut core, view, "u");
+                assert_eq!(core.document().source_bytes(), changed);
+            }
+        }
+    }
+}
+
+#[test]
+fn resolved_vim_counted_terminal_enter_repeats_semantic_breaks_only() {
+    for format in [Format::PlainText, Format::Code] {
+        let (mut core, view) = editor("body", format);
+        keys(&mut core, view, "3A");
+        key(&mut core, view, Key::Enter);
+        key(&mut core, view, Key::Escape);
+        let expected = b"body\n\n\n\n";
+        assert_eq!(core.document().source_bytes(), expected);
+        assert_eq!(core.document().addressable_hard_line_count(), 4);
+        assert_eq!(core.command_state(view).unwrap().register('.').unwrap().text, "\n",
+            "Vim records the user's one break, independently of its count");
+        keys(&mut core, view, ".");
+        assert_eq!(core.document().addressable_hard_line_count(), 7);
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), expected);
+    }
+}
+
+#[test]
+fn resolved_vim_insert_word_and_line_delete_join_at_line_start() {
+    use viem_core::command::Mode;
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        let source = if format.is_markdown() { "aé\n\n👩‍💻b" } else { "aé\n👩‍💻b" };
+        for input in [Key::Ctrl('w'), Key::Ctrl('u')] {
+            let (mut core, view) = editor(source, format);
+            keys(&mut core, view, "ji");
+            key(&mut core, view, input);
+            assert_eq!(core.document().text(), "aé👩‍💻b", "{format:?} {input:?}");
+            assert_eq!(core.command_state(view).unwrap().cursor(), "aé".len());
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+            keys(&mut core, view, "x");
+            key(&mut core, view, Key::Escape);
+            let result = core.document().source_bytes();
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), result);
+        }
+    }
+    for input in [Key::Ctrl('w'), Key::Ctrl('u')] {
+        let (mut core, view) = editor("a\nb\nc", Format::PlainText);
+        keys(&mut core, view, "ji");
+        key(&mut core, view, input);
+        key(&mut core, view, Key::Escape);
+        keys(&mut core, view, "j.");
+        assert_eq!(core.document().text(), "abc", "dot repeats the backward operation at its new line start");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().text(), "ab\nc");
+        keys(&mut core, view, "ggi");
+        let revision = core.document().revision();
+        key(&mut core, view, input);
+        assert_eq!(core.document().revision(), revision, "BOF is a no-op");
+    }
+}
+
+#[test]
+fn resolved_vim_visual_uppercase_operators_are_linewise_and_repeatable() {
+    use viem_core::command::{Mode, RegisterKind};
+    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+        for entry in ["lvjl", "lVj", "jlvkl"] {
+            for operator in ['X', 'D', 'C', 'S', 'R'] {
+                let source = "  abc\n  defg\n  hijkl\ntail";
+                let (mut core, view) = editor(source, format);
+                keys(&mut core, view, entry);
+                keys(&mut core, view, "\"a");
+                key(&mut core, view, Key::Char(operator));
+                let changes = matches!(operator, 'C' | 'S' | 'R');
+                assert_eq!(core.command_state(view).unwrap().mode(), if changes { Mode::Insert } else { Mode::Normal });
+                let register = core.command_state(view).unwrap().register('a').unwrap();
+                assert_eq!(register.kind, RegisterKind::Linewise);
+                assert_eq!(register.text, "  abc\n  defg\n", "{format:?} {entry}{operator}");
+                if changes {
+                    keys(&mut core, view, "x");
+                    key(&mut core, view, Key::Escape);
+                }
+                assert_eq!(core.document().source_bytes(),
+                    if changes { b"  x\n  hijkl\ntail".as_slice() } else { b"  hijkl\ntail".as_slice() },
+                    "{format:?} {entry}{operator}");
+                let result = core.document().source_bytes();
+                keys(&mut core, view, "u");
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                key(&mut core, view, Key::Ctrl('r'));
+                assert_eq!(core.document().source_bytes(), result);
+            }
+        }
+    }
+    let (mut core, view) = editor("a\nb\nc\nd\ne", Format::PlainText);
+    keys(&mut core, view, "vjD4.");
+    assert_eq!(core.document().text(), "e");
+}
+
+#[test]
+fn resolved_vim_visual_uppercase_failure_preserves_selection_mode_and_extent() {
+    for entry in ["vjl", "Vj", "block"] {
+        for operator in ['X', 'D', 'C', 'S', 'R'] {
+            let (mut core, view) = editor("abc\ndef\nghi", Format::Code);
+            if entry == "block" {
+                key(&mut core, view, Key::Ctrl('v'));
+                keys(&mut core, view, "jl");
+            } else { keys(&mut core, view, entry); }
+            let mode = core.command_state(view).unwrap().mode();
+            let cursor = core.command_state(view).unwrap().cursor();
+            let revision = core.document().revision();
+            keys(&mut core, view, "\"%");
+            let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char(operator)))).unwrap();
+            assert!(matches!(result.command.unwrap().status, CommandStatus::RegisterWriteError(_)));
+            assert_eq!(core.command_state(view).unwrap().mode(), mode, "{entry}{operator}");
+            assert_eq!(core.command_state(view).unwrap().cursor(), cursor, "{entry}{operator}");
+            assert_eq!(core.document().revision(), revision);
+            keys(&mut core, view, "d");
+            assert_eq!(core.document().text(), if entry == "block" { "c\nf\nghi" } else if entry == "Vj" { "ghi" } else { "f\nghi" });
+        }
+    }
+}
+
+#[test]
+fn resolved_vim_block_uppercase_operators_keep_rectangle_and_end_of_line_distinctions() {
+    use viem_core::command::RegisterKind;
+    for operator in ['X', 'D', 'C', 'S', 'R'] {
+        let source = "  abc\n  defg\n  hijkl\ntail";
+        let (mut core, view) = editor(source, Format::Code);
+        keys(&mut core, view, "l");
+        key(&mut core, view, Key::Ctrl('v'));
+        keys(&mut core, view, "jl\"a");
+        key(&mut core, view, Key::Char(operator));
+        let changes = matches!(operator, 'C' | 'S' | 'R');
+        if changes {
+            keys(&mut core, view, "x");
+            key(&mut core, view, Key::Escape);
+        }
+        let (expected, register, kind) = match operator {
+            'X' => (" bc\n efg\n  hijkl\ntail", " a\n d", RegisterKind::Blockwise),
+            'D' => (" \n \n  hijkl\ntail", " abc\n defg", RegisterKind::Blockwise),
+            'C' => (" x\n x\n  hijkl\ntail", " abc\n defg", RegisterKind::Blockwise),
+            _ => ("  x\n  hijkl\ntail", "  abc\n  defg\n", RegisterKind::Linewise),
+        };
+        assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{operator}");
+        let actual = core.command_state(view).unwrap().register('a').unwrap();
+        assert_eq!(actual.text, register, "{operator}");
+        assert_eq!(actual.kind, kind, "{operator}");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{operator}");
+        key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{operator}");
+    }
+}
+
+#[test]
+fn resolved_vim_number_changes_follow_default_bases_width_sign_cursor_and_overflow() {
+    for (source, at, input, expected, cursor) in [
+        ("é 009 end", 0, Key::Ctrl('a'), "é 010 end", 5),
+        ("007", 0, Key::Ctrl('a'), "008", 2),
+        ("-001", 0, Key::Ctrl('a'), "000", 2),
+        ("-001", 0, Key::Ctrl('x'), "-002", 3),
+        ("-0x00f", 0, Key::Ctrl('a'), "-0x010", 5),
+        ("0x100", 0, Key::Ctrl('x'), "0x0ff", 4),
+        ("0b0011", 0, Key::Ctrl('a'), "0b0100", 5),
+        ("0x00af", 0, Key::Ctrl('a'), "0x00b0", 5),
+        ("0X009", 0, Key::Ctrl('a'), "0X00A", 4),
+        ("0xabc", 3, Key::Ctrl('a'), "0xabd", 4),
+        ("abc123def45", 6, Key::Ctrl('a'), "abc123def46", 10),
+        ("abc123def", 4, Key::Ctrl('a'), "abc124def", 5),
+        ("0b012", 4, Key::Ctrl('a'), "0b102", 3),
+        ("18446744073709551616", 0, Key::Ctrl('x'), "18446744073709551615", 19),
+        ("18446744073709551615", 0, Key::Ctrl('a'), "-18446744073709551615", 20),
+        ("-18446744073709551615", 0, Key::Ctrl('x'), "18446744073709551615", 19),
+        ("0xffffffffffffffff", 0, Key::Ctrl('a'), "0x0000000000000000", 17),
+        ("1\u{301}", 0, Key::Ctrl('a'), "2\u{301}", 0),
+        ("1", 0, Key::Ctrl('a'), "2", 0),
+    ] {
+        for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+            let (mut core, view) = editor(source, format);
+            core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                text_offset: at, affinity: viem_core::layout::BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+            key(&mut core, view, input);
+            assert_eq!(core.document().text(), expected, "{format:?} {source:?} {at} {input:?}");
+            assert_eq!(core.command_state(view).unwrap().cursor(), cursor, "{source:?}");
+            let bytes = core.document().source_bytes();
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), bytes);
+        }
+    }
+}
+
+#[test]
+fn resolved_vim_number_counts_dot_registers_and_missing_targets() {
+    let (mut core, view) = editor("a 10\nb 20\nc 30", Format::PlainText);
+    keys(&mut core, view, "yiw\"a3");
+    key(&mut core, view, Key::Ctrl('a'));
+    assert_eq!(core.document().text(), "a 13\nb 20\nc 30");
+    assert_eq!(core.command_state(view).unwrap().register('"').unwrap().text, "a");
+    assert!(core.command_state(view).unwrap().register('a').is_none());
+    keys(&mut core, view, "j0.j02.");
+    assert_eq!(core.document().text(), "a 13\nb 23\nc 32");
+    keys(&mut core, view, "gg0");
+    // A missing target does not edit or search the next hard line.
+    keys(&mut core, view, "Oword");
+    key(&mut core, view, Key::Escape);
+    let revision = core.document().revision();
+    key(&mut core, view, Key::Ctrl('x'));
+    assert_eq!(core.document().revision(), revision);
+    assert_eq!(core.document().text(), "word\na 13\nb 23\nc 32");
+    let (mut core, view) = editor("nothing\n10", Format::PlainText);
+    keys(&mut core, view, "j");
+    key(&mut core, view, Key::Ctrl('a'));
+    keys(&mut core, view, "gg");
+    key(&mut core, view, Key::Ctrl('x'));
+    keys(&mut core, view, "j.");
+    assert_eq!(core.document().text(), "nothing\n12", "a missing target retains the previous dot recipe");
+    let (mut core, view) = editor("10\n20\n30\n40", Format::Code);
+    keys(&mut core, view, "qa");
+    key(&mut core, view, Key::Ctrl('a'));
+    keys(&mut core, view, "jq2@a");
+    assert_eq!(core.document().text(), "11\n21\n31\n40");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "11\n20\n30\n40", "the counted macro is one undo unit");
+    keys(&mut core, view, "d");
+    let revision = core.document().revision();
+    let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('a')))).unwrap();
+    assert!(matches!(result.command.unwrap().status, CommandStatus::Unsupported(_)));
+    assert_eq!(core.document().revision(), revision, "number change is a complete Normal command, not an operator motion");
+}
+
+#[test]
 fn jump_operator_rebases_retained_multibyte_locations_before_deduplicating() {
     for format in [Format::PlainText, Format::MarkdownSource] {
         let (mut core, view) = editor(" 中文", format);
@@ -99,7 +458,7 @@ fn source_open_below_last_table_row_keeps_valid_cursor() {
 }
 
 #[test]
-fn empty_terminal_line_changes_keep_valid_ordered_ranges() {
+fn terminal_line_changes_keep_valid_ranges_and_literal_final_terminators() {
     for format in [Format::PlainText, Format::MarkdownSource, Format::Code] {
         for change in ["cc", "S", "Vc"] {
             let (mut core, view) = editor("a\nb\n", format);
@@ -107,7 +466,7 @@ fn empty_terminal_line_changes_keep_valid_ordered_ranges() {
             key(&mut core, view, Key::Escape);
             assert_eq!(
                 core.document().source_bytes(),
-                b"a\nb\nx",
+                b"a\nx\n".as_slice(),
                 "{format:?} {change}"
             );
             keys(&mut core, view, "u");

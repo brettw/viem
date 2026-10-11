@@ -305,6 +305,8 @@ fn line_fragments_use_physical_source_lines_across_encodings_and_projections() {
             assert_eq!(doc.find_link_fragment("L1").unwrap(), Some(0));
             for (fragment, text) in [
                 ("L3", "prefix"),
+                ("L3-L4", "prefix"),
+                ("L3-L999", "prefix"),
                 (
                     "L4",
                     if format == Format::Markdown {
@@ -325,7 +327,11 @@ fn line_fragments_use_physical_source_lines_across_encodings_and_projections() {
                 "L7",
                 "L",
                 "L+3",
-                "L3-L4",
+                "L4-L3",
+                "L3-L0",
+                "L3-L",
+                "L3-L4-L5",
+                "L3-L999999999999999999999999999999",
                 "L999999999999999999999999999999",
             ] {
                 assert_eq!(
@@ -370,7 +376,7 @@ fn line_fragment_navigation_centers_and_clamps_without_editing_or_moving_other_v
         let id = core.document().id();
         let revision = core.document().revision();
         let history = core.document().history_status();
-        for (fragment, text) in [("L79", "line 40"), ("L1", "line 1"), ("L159", "line 80")] {
+        for (fragment, text) in [("L79", "line 40"), ("L79-L83", "line 40"), ("L1", "line 1"), ("L159", "line 80")] {
             let outcome = core
                 .navigate_to_link_fragment(view, id, revision, fragment)
                 .unwrap()
