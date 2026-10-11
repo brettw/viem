@@ -26,6 +26,32 @@ import XCTest
             window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID, documentRevision: state.documentRevision, force: force, path: path, sourceByteRange: range, readAfterOffset: after, readAfterIsSource: true)]) { continuation.resume(returning: $0) }
         }
     }
+    func testFilenameDirectoryMenuUsesNativeCdAndPreservesDocumentState() throws {
+        let (directory, backend, document, window) = try fixture()
+        let previous = FileManager.default.currentDirectoryPath
+        defer { _ = FileManager.default.changeCurrentDirectoryPath(previous); window.close(); try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appendingPathComponent("folder with | café #")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        window.showWindow(nil)
+        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
+        let before = try session.presentation()
+        let source = try backend.serializedSource(typeName: EVDocument.markdownType)
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let bar = try XCTUnwrap(descendants(try XCTUnwrap(window.window?.contentView)).compactMap { $0 as? EVStatusBarView }.first)
+        let menu = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel()?.hasPrefix("File: ") == true }?.menu)
+        // Invoke an already-created menu after the document is rebound.
+        document.fileURL = destination.appendingPathComponent("renamed.md")
+        menu.update()
+        XCTAssertTrue(menu.items.last?.isEnabled == true)
+        menu.performActionForItem(at: menu.numberOfItems - 1)
+        XCTAssertTrue(EVDocumentIdentity.sameFile(URL(fileURLWithPath: FileManager.default.currentDirectoryPath), destination))
+        XCTAssertEqual(bar.filePath, "renamed.md")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        XCTAssertEqual(try session.presentation().mode, before.mode)
+        XCTAssertEqual(try session.presentation().cursor_utf8_offset, before.cursor_utf8_offset)
+    }
     func testNewMarkdownExOpensUsePreferenceButCurrentFileReloadKeepsItsView() async throws {
         let (directory, backend, document, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }

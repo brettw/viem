@@ -1,6 +1,30 @@
 import Foundation
 
 enum EVStatusFilePath {
+  /// Drop whole leading directories before shortening the filename itself.
+  static func fitting(_ path: String, width: CGFloat, measure: (String) -> CGFloat) -> String {
+    guard width > 0 else { return "" }
+    if measure(path) <= width { return path }
+    var filename = path
+    let scalars = path.unicodeScalars
+    for separator in scalars.indices where scalars[separator] == "/" {
+      let suffix = String(scalars[scalars.index(after: separator)...])
+      guard !suffix.isEmpty else { continue }
+      filename = suffix
+      if measure(suffix) <= width { return suffix }
+    }
+    let ellipsis = "..."
+    guard measure(ellipsis) <= width else { return "" }
+    let boundaries = Array(filename.indices) + [filename.endIndex]
+    var low = 0, high = boundaries.count - 1
+    while low < high {
+      let middle = low + (high - low + 1) / 2
+      if measure(String(filename[..<boundaries[middle]]) + ellipsis) <= width { low = middle }
+      else { high = middle - 1 }
+    }
+    return String(filename[..<boundaries[low]]) + ellipsis
+  }
+
   /// Keep the displayed path relative only when its common ancestor with CWD is below root.
   static func display(_ file: URL?, relativeTo directory: URL = URL(
     fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)

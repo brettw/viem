@@ -60,6 +60,13 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
     func hide() { if !popupTracking { widget.isHidden = true; target = nil; targetIdentity = nil; targetKind = nil } }
 
+    func ownsPointerInteraction(at point: NSPoint) -> Bool {
+        guard !widget.isHidden, let identity = targetIdentity,
+              surface?.layoutSnapshot?.info.identity.isSameLayout(as: identity) == true,
+              editor?.viewportOrigin == targetViewport else { return false }
+        return widget.frame.union(activation).insetBy(dx: -3, dy: -3).contains(point)
+    }
+
     func moved(to point: NSPoint) {
         guard let editor, let surface, let snapshot = surface.layoutSnapshot, surface.backend.sourceFormat == .markdown,
               editor.bounds.contains(point) else { hide(); return }

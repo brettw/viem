@@ -241,8 +241,6 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         tableAlignmentNote.isHidden = true
         let paraToolbar = row([alignmentGroup, tableAlignmentNote, NSView(), direction(.paragraphBaseDirection, title: "Direction")])
         let indents = row([
-            numeric(.paragraphLeadingIndent, title: "Start indent", icon: .leadingIndent),
-            numeric(.paragraphTrailingIndent, title: "End indent", icon: .trailingIndent),
             numeric(.paragraphFirstLineIndent, title: "First line", icon: .firstIndent),
         ])
         lineKind.addItems(withTitles: ["Normal", "Multiple", "At least", "Exactly"])

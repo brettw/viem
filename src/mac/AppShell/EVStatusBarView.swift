@@ -93,6 +93,9 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   private let messageLabel = NSTextField(labelWithString: "")
   private let filePathLabel = NSTextField(labelWithString: "Untitled")
   private var modeWidthConstraint: NSLayoutConstraint!
+  private var pathWidthConstraint: NSLayoutConstraint!
+  private var messageWidthConstraint: NSLayoutConstraint!
+  var changeDirectory: ((URL) -> Void)?
   public var fileURL: URL? {
     didSet { filePath = EVStatusFilePath.display(fileURL) }
   }
@@ -107,6 +110,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       applyLabelAttributes()
       filePathLabel.toolTip = filePath
       filePathLabel.setAccessibilityLabel("File: \(filePath)")
+      needsLayout = true
     }
   }
   private let locationLabel = NSButton(title: "", target: nil, action: nil)
@@ -147,7 +151,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     modeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
     modeWidthConstraint = modeLabel.widthAnchor.constraint(equalToConstant: 0)
     modeWidthConstraint.isActive = true
-    filePathLabel.lineBreakMode = .byTruncatingHead
+    filePathLabel.lineBreakMode = .byClipping
     filePathLabel.maximumNumberOfLines = 1
     filePathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     filePathLabel.setAccessibilityLabel("File: Untitled")
@@ -158,10 +162,17 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       item.target = self
       pathMenu.addItem(item)
     }
+    pathMenu.addItem(.separator())
+    let directoryItem = NSMenuItem(title: "Change directory to here", action: #selector(changeDirectoryToFile(_:)), keyEquivalent: "")
+    directoryItem.target = self
+    pathMenu.addItem(directoryItem)
     filePathLabel.menu = pathMenu
     messageLabel.textColor = .secondaryLabelColor
     messageLabel.lineBreakMode = .byTruncatingTail
     messageLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+    pathWidthConstraint = filePathLabel.widthAnchor.constraint(equalToConstant: 0)
+    messageWidthConstraint = messageLabel.widthAnchor.constraint(equalToConstant: 0)
+    NSLayoutConstraint.activate([pathWidthConstraint, messageWidthConstraint])
 
     // Everything except the caret position widget is left-aligned; the widget
     // is always present and always at the trailing edge.
@@ -296,7 +307,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   }
 
   public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    fileURL != nil
+    fileURL != nil && (menuItem.action != #selector(changeDirectoryToFile(_:)) || changeDirectory != nil)
   }
 
   @objc private func copyFullPath(_ sender: NSMenuItem) {
@@ -307,6 +318,11 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   @objc private func copyRelativePath(_ sender: NSMenuItem) {
     guard let fileURL else { return }
     writeCopiedPath(EVStatusFilePath.relative(fileURL))
+  }
+
+  @objc private func changeDirectoryToFile(_ sender: NSMenuItem) {
+    guard let fileURL else { return }
+    changeDirectory?(fileURL.deletingLastPathComponent())
   }
 
   @objc private func observedClick() {}
@@ -610,11 +626,12 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   }
 
   public override func layout() {
-    let hideLabels = currentState.commandLine != nil || currentState.commandOutput != nil || bounds.width < 320
-    setLeftGroupHidden(hideLabels)
     // Refresh native button metrics after attachment or a change in split
     // width, so a compressed position widget recovers when widened.
     locationLabel.invalidateIntrinsicContentSize()
+    let hideLabels = currentState.commandLine != nil || currentState.commandOutput != nil || statusTextWidth <= 0
+    setLeftGroupHidden(hideLabels)
+    if !hideLabels { layoutStatusLabels() }
     super.layout()
     if let controls = outputControls, !controls.scroll.isHidden {
       let area = commandAreaRect
@@ -635,12 +652,33 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     window?.invalidateCursorRects(for: self)
   }
 
+  private func layoutStatusLabels() {
+    func measure(_ text: String) -> CGFloat { ceil((text as NSString).size(withAttributes: barTextAttributes).width) }
+    let available = statusTextWidth
+    let messageWidth = min(measure(currentState.message), available / 2)
+    messageWidthConstraint.constant = messageWidth
+    let pathArea = max(0, available - messageWidth - (messageWidth > 0 ? leftGroup.spacing : 0))
+    let showMode = modeWidthConstraint.constant + leftGroup.spacing + measure(filePath) <= pathArea
+    modeLabel.isHidden = !showMode
+    let width = max(0, pathArea - (showMode ? modeWidthConstraint.constant + leftGroup.spacing : 0))
+    let displayed = EVStatusFilePath.fitting(filePath, width: width, measure: measure)
+    pathWidthConstraint.constant = min(width, measure(displayed))
+    if filePathLabel.stringValue != displayed {
+      filePathLabel.attributedStringValue = NSAttributedString(string: displayed, attributes: barTextAttributes)
+    }
+  }
+
+  private var statusTextWidth: CGFloat {
+    max(0, bounds.width - barStyle.padding.left - barStyle.padding.right
+      - locationLabel.intrinsicContentSize.width - leftGroup.spacing)
+  }
+
   public func apply(_ state: EVStatusBarState) {
     let previous = currentState
     currentState = state
     if state.commandLine == nil { commandShape = nil }
     let showingOutput = state.commandLine == nil && state.commandOutput != nil
-    setLeftGroupHidden(state.commandLine != nil || showingOutput || bounds.width < 320)
+    setLeftGroupHidden(state.commandLine != nil || showingOutput || statusTextWidth <= 0)
     if state.commandOutput != nil { ensureOutputControls() }
     if let controls = outputControls {
       controls.scroll.isHidden = !showingOutput

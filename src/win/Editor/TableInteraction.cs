@@ -41,13 +41,24 @@ internal sealed partial class EditorPane
         tableWidgetIdentity = null;
         tableWidgetSelection = null;
     }
+    private Rect TableWidgetRectangle()
+    {
+        var origin = tableWidget!.TransformToVisual(Canvas).TransformPoint(new Point());
+        return new(origin.X, origin.Y, tableWidget.Width, tableWidget.Height);
+    }
+    private bool TableControlOwnsPointer(Point point)
+    {
+        if (tableWidget?.Visibility != Visibility.Visible) return false;
+        var widget = TableWidgetRectangle();
+        return tablePopupTracking || TableHoverGeometry.RetentionPath(widget, tableActivation).Contains(point);
+    }
     private void TableHover(Point point)
     {
         if (View == null || snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) { HideTableWidget(); return; }
         if (point.X < 0 || point.Y < 0 || point.X >= Canvas.ActualWidth || point.Y >= Canvas.ActualHeight) { HideTableWidget(); return; }
         Rect? retention = null;
         if (tableWidget?.Visibility == Visibility.Visible) {
-            var widget = new Rect(tableWidget.Margin.Left, tableWidget.Margin.Top, tableWidget.Width, tableWidget.Height);
+            var widget = TableWidgetRectangle();
             if (widget.Contains(point) || tablePopupTracking) return;
             retention = TableHoverGeometry.RetentionPath(widget, tableActivation);
         }

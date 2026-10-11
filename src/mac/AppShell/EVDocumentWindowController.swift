@@ -1669,6 +1669,20 @@ final class EVDocumentContentViewController: NSViewController,
       self.statusBar.apply(self.editorSurface.statusBarState)
       self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
     }
+    statusBar.changeDirectory = { [weak self] _ in
+      guard let self, let document = self.document,
+        let directory = document.fileURL?.deletingLastPathComponent(),
+        let controller = self.viewIfLoaded?.window?.windowController as? EVDocumentWindowController
+      else { return }
+      let state = document.editorBackend.persistenceState
+      controller.performDocumentHostRequest(EVDocumentHostRequest(kind: .changeDirectory,
+        documentID: state.documentID, documentRevision: state.documentRevision, path: directory.path), in: self) { [weak self] result in
+        switch result {
+        case .success(let message): if let message { self?.editorSurface.showDocumentMessage(message) }
+        case .failure(let error): self?.editorSurface.showDocumentMessage(error.localizedDescription)
+        }
+      }
+    }
     // The command line is drawn by the status line, so pointer selection in it
     // is reported from there and routed back to this pane's surface.
     statusBar.commandLineDidSelect = { [weak self] offset, extending in

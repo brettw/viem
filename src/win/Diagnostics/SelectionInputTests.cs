@@ -12,6 +12,54 @@ internal static class SelectionInputTests
 {
     private static void Check(bool value, string name)
     { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    private static async Task CheckMarginDragging(EditorPane pane)
+    {
+        var view = pane.View!;
+        var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
+        var preferences = App.Instance.Preferences;
+        bool numbered = view.NumberEnabled;
+        view.Padding(20, 40, 20, 20); view.Number(false);
+        try {
+            pane.UpdateLayout();
+            var rows = view.Layout().Rows;
+            double firstY = rows[0].baseline - view.Viewport.top - 3;
+            double secondY = rows[1].baseline - view.Viewport.top - 3;
+            double contentX = rows[0].paragraph_content_x - view.Viewport.left;
+            global::Windows.Foundation.Point Fraction(double x, double y) => new(x / pane.Canvas.ActualWidth, y / pane.Canvas.ActualHeight);
+            Check(pane.RowSelectionPointForTesting(new(contentX - 3, firstY))
+                && !pane.RowSelectionPointForTesting(new(contentX - 2, firstY))
+                && !pane.RowSelectionPointForTesting(new(contentX - 1, firstY)),
+                "document margin selects rows while the final two DIPs retain text placement");
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                new[] { Fraction(4, firstY), Fraction(contentX + 45, secondY), Fraction(contentX + 20, firstY) }, step => {
+                    Check(pane.PointerCursorForTesting == "row", "margin row drag keeps the mirrored cursor over text");
+                    var range = view.LogicalSelection();
+                    Check(range.text_start == 0 && range.text_end == (step == 1 ? 22ul : 11ul),
+                        "margin drag retains its original complete row when extending and reversing");
+                });
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                new[] { Fraction(contentX + 25, firstY), Fraction(4, secondY), Fraction(contentX + 50, firstY) }, _ => {
+                    Check(pane.PointerCursorForTesting == "text", "ordinary drag keeps the I-beam over row-selection margins");
+                });
+            foreach (double startX in new[] { 4d, contentX + 25 }) {
+                view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
+                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                await InputRoutingTests.Drag(window, pane.Canvas,
+                    new[] { Fraction(startX, firstY), Fraction(contentX + 45, secondY) }, step => {
+                        if (step != 1) return;
+                        pane.Canvas.ReleasePointerCaptures();
+                        Check(!pane.PointerSelectionActiveForTesting, "capture loss ends both row and text cursor locks");
+                    });
+            }
+            Check(pane.Document.FormattedText() == "alpha beta\nsecond line", "margin and text drags preserve document contents");
+        } finally {
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg"); view.Number(numbered);
+            view.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right"));
+        }
+    }
     internal static async Task RunPointerPlacement(EditorPane pane)
     {
         var view = pane.View!;
@@ -22,6 +70,7 @@ internal static class SelectionInputTests
         window.Activate(); pane.FocusEditor();
         try
         {
+            await CheckMarginDragging(pane);
             global::Windows.Foundation.Point PointAt(ulong offset, double fraction = .1)
             {
                 var layout = view.Layout(); var viewport = view.Viewport;

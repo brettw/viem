@@ -101,6 +101,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         // Language is preserved in the model but has no inspector control.
         let propertiesWithoutIndependentOverride: Set<EVStyleProperty> = [
             .characterLanguage, .characterWeight, .characterFontAxes, .characterFontFace,
+            .paragraphLeadingIndent, .paragraphTrailingIndent,
         ]
         let expectedProperties = Set((EVStyleProperty.characterProperties + EVStyleProperty.paragraphProperties + EVStyleProperty.blockProperties)
             .filter { !propertiesWithoutIndependentOverride.contains($0) }.map { Int($0.rawValue) })
@@ -119,9 +120,8 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
             (EVStyleEditorTab.character, ["Font family", "Font face", "Fallback fonts", "Size", "Bold",
                 "Italic", "Underline", "Strikethrough", "Text color", "Background color", "Tracking",
                 "Character direction", "Adjust size", "Adjust tracking"]),
-            (EVStyleEditorTab.paragraph, ["Paragraph alignment", "Paragraph direction", "Start indent",
-                "End indent", "First line", "Line spacing kind",
-                "Adjust start indent", "Adjust end indent", "Adjust first line"]),
+            (EVStyleEditorTab.paragraph, ["Paragraph alignment", "Paragraph direction", "First line",
+                "Line spacing kind", "Adjust first line"]),
             (EVStyleEditorTab.block, ["Margin top", "Margin right", "Margin bottom", "Margin left",
                 "Padding top", "Padding right", "Padding bottom", "Padding left", "Block background",
                 "Border top weight", "Border right weight", "Border bottom weight", "Border left weight"]),

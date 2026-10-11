@@ -578,6 +578,13 @@ internal sealed partial class EditorWindow : Window
         var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = title, Content = new ScrollViewer { Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }, MaxHeight = 450 }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = ContentDialogButton.Primary };
         return await dialog.ShowAsync();
     }
+    internal void ChangeDirectory(EditorPane pane, string path)
+    {
+        Environment.CurrentDirectory = path;
+        foreach (var openPane in App.Instance.Windows.SelectMany(w => w.Panes)) openPane.RefreshStatusFilePath();
+        pane.SetMessage(Environment.CurrentDirectory);
+    }
+
     internal Task ApplyEffects(EditorPane pane, HostEffects effects)
     {
         GlobalSelectionOptions.Observe(pane.Document, effects.SelectionOptions);
@@ -633,10 +640,7 @@ internal sealed partial class EditorWindow : Window
                             break;
                         case VIEM_EX_FRONTEND_ONLY: await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1); break;
                         case VIEM_EX_FRONTEND_PWD: pane.SetMessage(Environment.CurrentDirectory); break;
-                        case VIEM_EX_FRONTEND_CD:
-                            Environment.CurrentDirectory = ResolvePath(request.Text);
-                            foreach (var openPane in App.Instance.Windows.SelectMany(w => w.Panes)) openPane.RefreshStatusFilePath();
-                            pane.SetMessage(Environment.CurrentDirectory); break;
+                        case VIEM_EX_FRONTEND_CD: ChangeDirectory(pane, ResolvePath(request.Text)); break;
                         case VIEM_EX_FRONTEND_FILE: if (request.Text.Length > 0) await RenameDocument(pane, ResolvePath(request.Text)); UpdateTitle(); break;
                         case VIEM_EX_FRONTEND_MESSAGE: pane.SetMessage(request.Text); break;
                         case VIEM_EX_FRONTEND_NORMAL: pane.View.Command(request.Text); break;

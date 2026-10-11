@@ -3,6 +3,7 @@ using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.Graphics.Canvas.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Input;
 using Viem.Windows.Core;
 using Windows.Foundation;
 
@@ -48,32 +49,14 @@ internal sealed partial class EditorPane
         lineNumberCanvas.PointerExited += (_, _) => { pointerOverGutter = false; UpdatePointerCursor(); };
         lineNumberCanvas.PointerPressed += (_, args) => {
             if (View == null || !args.GetCurrentPoint(lineNumberCanvas).Properties.IsLeftButtonPressed) return;
-            DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); DismissCommandOutput(false);
-            caretHoverLocation = null; SetCaretHover(null);
-            if (composing) { compositionRejected = true; ClearInput(); }
-            tableCellDrag = false; tableDragAnchor = null; tableDragIdentity = null;
-            FocusEditor();
-            dragPoint = args.GetCurrentPoint(Canvas).Position;
-            wordSelectionDragging = false;
-            gutterSelectionDragging = dragging = true;
-            pressedPointer = args.Pointer.PointerId;
-            Run(() => View.SelectPointerRow((float)dragPoint.Y));
-            if (!lineNumberCanvas.CapturePointer(args.Pointer)) { pressedPointer = null; gutterSelectionDragging = dragging = false; }
-            UpdatePointerCursor(); args.Handled = true; ResetBlink();
+            Run(() => BeginGutterSelection(lineNumberCanvas, args));
         };
-        lineNumberCanvas.PointerMoved += (_, args) => {
-            if (!gutterSelectionDragging || pressedPointer != args.Pointer.PointerId || View == null) return;
-            dragPoint = args.GetCurrentPoint(Canvas).Position;
-            Run(() => View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true));
-            UpdatePointerCursor(); args.Handled = true;
-        };
+        lineNumberCanvas.PointerMoved += (_, args) => ContinueGutterSelection(args);
         lineNumberCanvas.PointerReleased += (_, args) => {
-            if (pressedPointer != args.Pointer.PointerId) return;
-            pressedPointer = null; gutterSelectionDragging = dragging = false;
-            lineNumberCanvas.ReleasePointerCapture(args.Pointer); UpdatePointerCursor(); args.Handled = true;
+            if (pressedPointer == args.Pointer.PointerId) EndPointerSelection(lineNumberCanvas, args);
         };
         lineNumberCanvas.PointerCaptureLost += (_, args) => {
-            if (pressedPointer == args.Pointer.PointerId) { pressedPointer = null; gutterSelectionDragging = dragging = false; UpdatePointerCursor(); }
+            if (pressedPointer == args.Pointer.PointerId) EndPointerSelection(lineNumberCanvas, args);
         };
         lineNumberCanvas.PointerWheelChanged += (_, args) => {
             if (View == null) return;
@@ -81,6 +64,40 @@ internal sealed partial class EditorPane
             Run(() => { RefreshScrollGeometry(); View.Scroll(View.Viewport.left, View.Viewport.top - point.Properties.MouseWheelDelta / 120f * 60); });
             args.Handled = true;
         };
+    }
+
+    private void BeginGutterSelection(UIElement owner, PointerRoutedEventArgs args)
+    {
+        if (View == null) return;
+        DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); DismissCommandOutput(false);
+        caretHoverLocation = null; SetCaretHover(null); MoveCodeBlockLanguageHover(null);
+        if (composing) { compositionRejected = true; ClearInput(); }
+        tableCellDrag = false; tableDragAnchor = null; tableDragIdentity = null;
+        HideTableWidget(); FocusEditor();
+        dragPoint = args.GetCurrentPoint(Canvas).Position;
+        View.SelectPointerRow((float)dragPoint.Y);
+        wordSelectionDragging = false;
+        gutterSelectionDragging = dragging = true;
+        pressedPointer = args.Pointer.PointerId;
+        if (!owner.CapturePointer(args.Pointer)) { pressedPointer = null; gutterSelectionDragging = dragging = false; }
+        UpdatePointerCursor(); args.Handled = true; ResetBlink();
+    }
+    private void ContinueGutterSelection(PointerRoutedEventArgs args)
+    {
+        if (!gutterSelectionDragging || pressedPointer != args.Pointer.PointerId || View == null) return;
+        var point = args.GetCurrentPoint(Canvas);
+        if (!point.Properties.IsLeftButtonPressed) {
+            EndPointerSelection(Canvas, args); lineNumberCanvas.ReleasePointerCapture(args.Pointer); return;
+        }
+        dragPoint = point.Position;
+        Run(() => View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true));
+        UpdatePointerCursor(); args.Handled = true;
+    }
+    private void EndPointerSelection(UIElement owner, PointerRoutedEventArgs args)
+    {
+        pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        owner.ReleasePointerCapture(args.Pointer);
+        UpdatePointerRegion(args.GetCurrentPoint(Canvas).Position); args.Handled = true;
     }
 
     private void RefreshLineNumbers()

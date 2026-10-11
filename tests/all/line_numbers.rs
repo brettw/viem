@@ -856,6 +856,23 @@ fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selecti
         regions.as_mut_ptr(), regions.len() as u64, &mut copied) }, ViemStatus::Ok);
     let mut outcome = ViemCoreOutcomeV1::default();
     let y = (regions[1].top + regions[1].bottom) / 2.;
+    let mut hit = 0;
+    assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &info.identity, -100., y, &mut hit) }, ViemStatus::Ok);
+    assert_eq!(hit, 1);
+    assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &info.identity, 100_000., y, &mut hit) }, ViemStatus::Ok);
+    assert_eq!(hit, 0);
+    let mut stale_hit_identity = info.identity; stale_hit_identity.layout_revision += 1;
+    for (identity, x, y, status) in [(stale_hit_identity, -100., y, ViemStatus::StaleRevision),
+        (info.identity, f32::NAN, y, ViemStatus::InvalidArgument),
+        (info.identity, -100., f32::INFINITY, ViemStatus::InvalidArgument)] {
+        hit = 99;
+        assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &identity, x, y, &mut hit) }, status);
+        assert_eq!(hit, 0);
+    }
+    let mut aliased = info.identity;
+    let out_alias = std::ptr::addr_of_mut!(aliased).cast::<u32>();
+    assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &aliased, -100., y, out_alias) }, ViemStatus::InvalidArgument);
+    assert_eq!(aliased, info.identity);
     assert_eq!(unsafe { viem_core_view_select_pointer_row(fixture.handle, fixture.view, &info.identity, y, 0, &mut outcome) }, ViemStatus::Ok);
     let mut selected = ViemLogicalSelectionIdentityV1::default();
     assert_eq!(unsafe { viem_core_view_list_selection(fixture.handle, fixture.view, &mut selected) }, ViemStatus::Ok);
