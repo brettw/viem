@@ -2,6 +2,9 @@
 //! tree operations and copying snapshots happen after releasing the lock.
 use super::*;
 use crate::layout::panes::{Axis, Error, PaneLayout, MAX_PANES};
+pub const VIEM_PANE_FRAME_STATUS_DRAGGABLE: u32 = 1;
+pub const VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER: u32 = 1 << 1;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ViemPaneChrome {
@@ -170,7 +173,15 @@ pub unsafe extern "C" fn viem_pane_layout_copy(
                 frames.add(i).write(ViemPaneFrame {
                     id: f.id,
                     kind: u32::from(f.splitter),
-                    flags: u32::from(f.status_draggable),
+                    flags: (if f.status_draggable {
+                        VIEM_PANE_FRAME_STATUS_DRAGGABLE
+                    } else {
+                        0
+                    }) | (if f.suppress_splitter_top_border {
+                        VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER
+                    } else {
+                        0
+                    }),
                     x: f.rect.x,
                     y: f.rect.y,
                     width: f.rect.width,
@@ -323,6 +334,65 @@ pub unsafe extern "C" fn viem_pane_layout_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pane_abi_exports_status_owned_splitter_top_cap_without_changing_other_flags() {
+        let mut handle = 0;
+        assert_eq!(
+            unsafe { viem_pane_layout_create(&mut handle) },
+            ViemStatus::Ok
+        );
+        let input = ViemPaneChrome {
+            id: 1,
+            status_height: 25.0,
+        };
+        assert_eq!(
+            unsafe { viem_pane_layout_update(handle, 605.5, 500.5, &input, 1) },
+            ViemStatus::Ok
+        );
+        let mut lower = 0;
+        assert_eq!(
+            unsafe { viem_pane_layout_split(handle, 1, 0, 25.0, &mut lower) },
+            ViemStatus::Ok
+        );
+        let mut right = 0;
+        assert_eq!(
+            unsafe { viem_pane_layout_split(handle, lower, 1, 25.0, &mut right) },
+            ViemStatus::Ok
+        );
+        let mut info = ViemPaneSnapshot::default();
+        let mut frames = [ViemPaneFrame::default(); 4];
+        assert_eq!(
+            unsafe { viem_pane_layout_copy(handle, frames.as_mut_ptr(), 4, &mut info) },
+            ViemStatus::Ok
+        );
+        assert_eq!(info.count, 4);
+        assert_eq!(
+            frames.iter().find(|frame| frame.id == 1).unwrap().flags,
+            VIEM_PANE_FRAME_STATUS_DRAGGABLE
+        );
+        let divider = frames.iter().find(|frame| frame.kind == 1).unwrap();
+        assert_eq!(divider.id, right);
+        assert_eq!(divider.flags, VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER);
+        assert_eq!(divider.width, crate::layout::panes::SPLITTER_WIDTH);
+        assert!(frames
+            .iter()
+            .filter(|frame| frame.kind == 0 && frame.id != 1)
+            .all(|frame| frame.flags == 0));
+        assert_eq!(viem_pane_layout_remove(handle, 1), ViemStatus::Ok);
+        assert_eq!(
+            unsafe { viem_pane_layout_copy(handle, frames.as_mut_ptr(), 4, &mut info) },
+            ViemStatus::Ok
+        );
+        assert_eq!(info.count, 3);
+        let divider = frames[..info.count as usize]
+            .iter()
+            .find(|frame| frame.kind == 1)
+            .unwrap();
+        assert_eq!(divider.y, 0.0);
+        assert_eq!(divider.flags, 0);
+        assert_eq!(viem_pane_layout_destroy(handle), ViemStatus::Ok);
+    }
+
     #[test]
     fn pane_abi_ownership_admission_and_snapshot_buffers() {
         let mut handle = 0;

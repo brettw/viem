@@ -1461,7 +1461,10 @@ including after reaching an edge. Splitting requires room for one additional
 status bar in the current pane; otherwise report that there is no room to split.
 Vertical splitters are 5 DIPs wide, use the status background and matching
 left/right borders. Top/bottom borders are visible at interior boundaries and
-clipped outside the window only where the splitter meets its outer edge. They show a
+clipped outside the window where the splitter meets its outer edge. Where a
+splitter starts directly below a horizontal status bar spanning its full width,
+the status bar owns the junction border; omit the splitter's top cap. A splitter's
+bottom cap remains where it separates the junction from content below. They show a
 left/right cursor on hover and drag. Every pane
 retains at least 100 DIPs of width; splits require 205 DIPs in the current pane.
 Dragging pushes adjacent splits with their minimum widths, and reversing releases

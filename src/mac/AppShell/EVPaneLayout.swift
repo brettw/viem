@@ -63,8 +63,9 @@ final class EVVerticalSplitter: NSView {
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
   deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
-  func updateOuterEdges(frame: ViemPaneFrame, containerHeight: CGFloat) {
+  func updateBorderVisibility(frame: ViemPaneFrame, containerHeight: CGFloat) {
     let top = frame.y <= 0.000001
+      || frame.flags & UInt32(VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER) != 0
     let bottom = frame.y + frame.height >= containerHeight - 0.000001
     guard top != hidesTopBorder || bottom != hidesBottomBorder else { return }
     hidesTopBorder = top; hidesBottomBorder = bottom; needsDisplay = true

@@ -525,7 +525,7 @@ final class EVWindowCommandTests: XCTestCase {
     let splitter = EVVerticalSplitter(frame: NSRect(x: 0, y: 0, width: 5, height: 20))
     var geometry = ViemPaneFrame()
     geometry.y = 10; geometry.height = 20
-    splitter.updateOuterEdges(frame: geometry, containerHeight: 100)
+    splitter.updateBorderVisibility(frame: geometry, containerHeight: 100)
     for width in [CGFloat(1), 4] {
       let border = EVChromeBorder(width: width, color: .black.withAlphaComponent(0.5))
       let style = EVChromeStyle(topBorder: border, rightBorder: border, bottomBorder: border, leftBorder: border)
@@ -545,6 +545,44 @@ final class EVWindowCommandTests: XCTestCase {
         }
       }
     }
+  }
+
+  func testVerticalSplitterUnderStatusBarOmitsTopCapWhenUpperPaneCollapses() throws {
+    let container = try stack(panes: 2)
+    let upper = container.panes[0], lower = container.panes[1]
+    let right = EVDocumentContentViewController(editorSurface: Surface())
+    try container.insert(right, splitting: lower, vertical: true)
+    let splitter = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.first)
+    XCTAssertGreaterThan(splitter.frame.minY, 0)
+    XCTAssertTrue(splitter.hidesTopBorder, "The horizontal status bar above owns the T junction")
+    XCTAssertTrue(splitter.hidesBottomBorder, "The bottom still touches the window edge")
+    container.dragStatusBar(of: upper, by: -10_000)
+    XCTAssertEqual(upper.editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)
+    XCTAssertEqual(splitter.frame.minY, upper.statusBarHeight, accuracy: 0.001)
+    XCTAssertTrue(splitter.hidesTopBorder, "A collapsed editor retains its real status-bar coverage")
+
+    // The portable suppression bit removes only the horizontal cap. Vertical
+    // side borders still reach the junction and the opposite cap is unchanged.
+    let sample = EVVerticalSplitter(frame: NSRect(x: 0, y: 0, width: 5, height: 20))
+    var frame = ViemPaneFrame()
+    frame.y = 10; frame.height = 20
+    frame.flags = UInt32(VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER)
+    sample.updateBorderVisibility(frame: frame, containerHeight: 100)
+    let border = EVChromeBorder(width: 1, color: .black.withAlphaComponent(0.5))
+    let style = EVChromeStyle(topBorder: border, rightBorder: border, bottomBorder: border, leftBorder: border)
+    let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil,
+      pixelsWide: 5, pixelsHigh: 20, bitsPerSample: 8, samplesPerPixel: 4,
+      hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+    let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = graphics
+    graphics.cgContext.clear(sample.bounds)
+    sample.drawBorders(style)
+    NSGraphicsContext.restoreGraphicsState()
+    XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 2, y: 0)).alphaComponent, 0, accuracy: 0.01)
+    XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 0, y: 0)).alphaComponent, 0.5, accuracy: 0.01)
+    XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 4, y: 0)).alphaComponent, 0.5, accuracy: 0.01)
+    XCTAssertEqual(try XCTUnwrap(bitmap.colorAt(x: 2, y: 19)).alphaComponent, 0.5, accuracy: 0.01)
   }
 
   func testNestedVerticalSplittersClipBordersOnlyAtOuterWindowEdges() throws {

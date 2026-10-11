@@ -59,7 +59,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     internal void RequireSplitRoom(EditorPane pane, double statusHeight, bool vertical)
     { UpdateLayout(); Check(viem_pane_layout_can_split(handle, ids[pane], vertical ? 1u : 0u, statusHeight)); }
-    internal bool CanDragBar(EditorPane pane) => ids.TryGetValue(pane, out ulong id) && frames.Any(f => f.id == id && f.kind == 0 && (f.flags & 1) != 0);
+    internal bool CanDragBar(EditorPane pane) => ids.TryGetValue(pane, out ulong id) && frames.Any(f => f.id == id && f.kind == 0 && (f.flags & VIEM_PANE_FRAME_STATUS_DRAGGABLE) != 0);
     private void Fit(Size size)
     {
         if (ids.Count == 0) return;
@@ -113,7 +113,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
         foreach (var frame in frames)
         {
             var control = Control(frame);
-            if (control is VerticalSplitter splitter) splitter.UpdateOuterEdges(frame, finalSize.Height);
+            if (control is VerticalSplitter splitter) splitter.UpdateBorderVisibility(frame, finalSize.Height);
             control.Arrange(new Rect(frame.x, frame.y, frame.width, frame.height));
             control.Clip = new RectangleGeometry { Rect = new Rect(0, 0, frame.width, frame.height) };
         }
@@ -168,9 +168,10 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
         PointerReleased += (_, e) => { if (pointer != e.Pointer.PointerId) return; pointer = null; if (dragging) { dragging = false; ReleasePointerCapture(e.Pointer); e.Handled = true; } };
         PointerCaptureLost += (_, _) => { pointer = null; dragging = false; };
     }
-    internal void UpdateOuterEdges(ViemPaneFrame frame, double containerHeight)
+    internal void UpdateBorderVisibility(ViemPaneFrame frame, double containerHeight)
     {
-        bool top = frame.y <= .000001, bottom = frame.y + frame.height >= containerHeight - .000001;
+        bool top = frame.y <= .000001 || (frame.flags & VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER) != 0;
+        bool bottom = frame.y + frame.height >= containerHeight - .000001;
         if (top == HidesTopBorder && bottom == HidesBottomBorder) return;
         HidesTopBorder = top; HidesBottomBorder = bottom; decoration.Invalidate();
     }
