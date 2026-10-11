@@ -206,27 +206,6 @@ fn inline(document: &FormattedDocument, range: Range<usize>, output: &mut Markdo
         }
     }
 }
-/// Clipboard imports reuse the Markdown writer's escaping and supported
-/// inline vocabulary without creating an HTML editing document.
-pub(super) fn markdown_character_fragment(
-    document: &FormattedDocument,
-    range: Range<usize>,
-    properties: &CharacterProperties,
-) -> String {
-    let mut output = MarkdownWriter {
-        source: String::new(),
-        line_prefix: MarkdownLinePrefix::Empty,
-    };
-    markdown_inline_text(
-        &document.text()[range.clone()],
-        range.start,
-        properties.clone(),
-        false,
-        &mut output,
-    );
-    output.source
-}
-
 fn markdown_inline_text(
     text: &str,
     at: usize,

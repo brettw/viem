@@ -4566,6 +4566,7 @@ fn model_transaction_status(error: ModelTransactionError) -> ViemStatus {
 
 fn core_status(error: CoreError) -> ViemStatus {
     match error {
+        CoreError::InputPanic => ViemStatus::Panic,
         CoreError::UnknownView(_) => ViemStatus::InvalidView,
         CoreError::IdentifierExhausted(_) => ViemStatus::ResourceExhausted,
         CoreError::Document(error) => document_status(error),
@@ -6307,7 +6308,12 @@ fn export_visual_selection(
     let document = core.document();
     let mut segments = Vec::new();
     let mut rectangles = Vec::new();
+    // The base selection is retained for cancellation, but its coordinates do
+    // not belong to the temporary marked-text layout. Composition has its own
+    // selected range and caret export; do not paint the replaced base range.
+    let composing = core.composition_overlay(view_id).map_err(core_status)?.is_some();
     let kind = match state.mode() {
+        _ if composing => VIEM_VISUAL_SELECTION_KIND_NONE,
         Mode::VisualCharacter | Mode::VisualLine => {
             let kind = if state.mode() == Mode::VisualCharacter {
                 VIEM_VISUAL_SELECTION_KIND_CHARACTER

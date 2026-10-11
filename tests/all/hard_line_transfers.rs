@@ -23,6 +23,52 @@ fn encoded(text: &str, encoding: Encoding) -> Vec<u8> {
     }
 }
 
+#[test]
+fn transferring_quote_hard_lines_preserves_their_independent_container_depths() {
+    let source = "> a\\\n> b\n\n>> c";
+    for (operation, rows, destination, expected_text, depths) in [
+        (
+            HardLineTransfer::Copy,
+            1..2,
+            0,
+            "b\na\nb\nc",
+            vec![1, 1, 1, 2],
+        ),
+        (HardLineTransfer::Move, 0..1, 3, "b\nc\na", vec![1, 2, 1]),
+    ] {
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        let prepared = document
+            .prepare_model_request(request(&document, operation, rows, destination))
+            .unwrap();
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.text(), expected_text);
+        for (line, depth) in depths.into_iter().enumerate() {
+            let range = document
+                .hard_line_snapshot()
+                .line(line)
+                .unwrap()
+                .content_range();
+            let block = document
+                .projection()
+                .blocks()
+                .iter()
+                .find(|block| block.range.start <= range.start && range.end <= block.range.end)
+                .unwrap();
+            assert_eq!(block.quote_depth, depth);
+        }
+        let edited = document.source_bytes();
+        let reopened =
+            Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.text(), expected_text);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), edited);
+    }
+}
+
 fn paragraph_source(text: &str, format: Format) -> String {
     if format == Format::Markdown {
         text.replace('\r', "\r\r")
@@ -553,7 +599,7 @@ fn markdown_transfers_complete_wrapped_paragraphs_and_explicit_hard_lines() {
                 line..line + 1,
                 count,
             ))
-            .unwrap();
+            .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
         assert_eq!(prepared.summary().source_patches().len(), 1);
         assert_eq!(
             prepared.summary().source_patches()[0].range(),
@@ -574,6 +620,175 @@ fn markdown_transfers_complete_wrapped_paragraphs_and_explicit_hard_lines() {
             document.projection().style_spans()
         );
         assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn unrelated_fences_do_not_block_prose_transfers_and_complete_code_owners_travel() {
+    for (source, operation, lines, destination, expected) in [
+        (
+            "```rust\nfn x() {}\n```\n\npara",
+            HardLineTransfer::Copy,
+            1..2,
+            2,
+            "```rust\nfn x() {}\n```\n\npara\n\npara",
+        ),
+        (
+            "```rust\nfn x() {}\n```\n\npara",
+            HardLineTransfer::Move,
+            1..2,
+            0,
+            "para\n\n```rust\nfn x() {}\n```",
+        ),
+        (
+            "```rust\nfn x() {}\n```\n\npara",
+            HardLineTransfer::Copy,
+            0..1,
+            1,
+            "```rust\nfn x() {}\n```\n\n```rust\nfn x() {}\n```\n\npara",
+        ),
+        (
+            "```rust\na\nb\n```\n\npara",
+            HardLineTransfer::Move,
+            2..3,
+            0,
+            "para\n\n```rust\na\nb\n```",
+        ),
+    ] {
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        let prepared = document
+            .prepare_model_request(request(&document, operation, lines.clone(), destination))
+            .unwrap_or_else(|e| {
+                panic!("{source:?} {operation:?} {lines:?} -> {destination}: {e:?}")
+            });
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown)
+            .unwrap();
+        assert_eq!(document.text(), fresh.text());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn contextual_ex_copy_and_move_work_beside_fenced_code() {
+    use viem_core::command::{CommandStatus, InputEvent, Key};
+    use viem_core::document::BoundaryAffinity;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let source = "```rust\nfn x() {}\n```\n\npara";
+    for (ex, expected) in [
+        (":t.", "```rust\nfn x() {}\n```\n\npara\n\npara"),
+        (":m0", "para\n\n```rust\nfn x() {}\n```"),
+    ] {
+        let mut core = Core::new(
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap(),
+        );
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 400.);
+        core.handle_with_layout(
+            view,
+            CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: core.document().text().find("para").unwrap(),
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )
+        .unwrap();
+        for event in ex
+            .chars()
+            .map(InputEvent::key)
+            .chain([InputEvent::Key(Key::Enter)])
+        {
+            let result = core
+                .handle_with_layout(view, CoreEvent::Input(event))
+                .unwrap();
+            let status = result.command.unwrap().status;
+            assert!(
+                matches!(status, CommandStatus::Complete | CommandStatus::Pending),
+                "{ex}: {status:?}"
+            );
+        }
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u')))
+            .unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn markdown_alternate_structures_copy_complete_visible_lines() {
+    let mut failures = Vec::new();
+    for source in [
+        "\n",
+        "\na",
+        "a<br>b",
+        "Setext\n===",
+        "a\n=\n\nb",
+        "1) a\n2) b",
+    ] {
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        let before = document.text().to_owned();
+        let mut lines: Vec<_> = before.split('\n').collect();
+        lines.insert(1, lines[0]);
+        let expected = lines.join("\n");
+        let prepared = match document.prepare_model_request(request(
+            &document,
+            HardLineTransfer::Copy,
+            0..1,
+            1,
+        )) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                failures.push(format!("{source:?}: {error:?}"));
+                continue;
+            }
+        };
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.text(), expected, "{source:?}");
+        let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown)
+            .unwrap();
+        assert_eq!(fresh.text(), expected);
+        document.try_undo().unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn markdown_alternate_structures_move_complete_visible_lines() {
+    for source in ["\na", "a<br>b", "a\n=\n\nb", "1) a\n2) b"] {
+        let mut document =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                .unwrap();
+        let before = document.text().to_owned();
+        let mut lines: Vec<_> = before.split('\n').collect();
+        let first = lines.remove(0);
+        lines.push(first);
+        let expected = lines.join("\n");
+        let prepared = document
+            .prepare_model_request(request(
+                &document,
+                HardLineTransfer::Move,
+                0..1,
+                lines.len(),
+            ))
+            .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.text(), expected, "{source:?}");
+        let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown)
+            .unwrap();
+        assert_eq!(fresh.text(), expected);
+        document.try_undo().unwrap();
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }

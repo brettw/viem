@@ -270,7 +270,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.performInput {
             _ = try session.sendText("/العربية")
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
-            _ = try session.sendText("75nli")
+            _ = try session.sendTestKeys("75nli")
         }
         func occurrenceOffsets(_ text: String) -> [Int] {
             var start = text.startIndex

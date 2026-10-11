@@ -18,9 +18,36 @@ pub(crate) struct ReplacementParagraphStyle {
     pub code_language: Option<String>,
     pub style: super::StyleId,
     pub quote_depth: usize,
+    pub markdown_prefix: Option<String>,
 }
 
 impl Document {
+    fn markdown_replacement_prefix(&self, owner: &super::Block) -> Result<Option<String>, DocumentError> {
+        if self.format() != Format::Markdown || owner.style.0 == "Code Block"
+            || owner.markdown_html || owner.thematic_break
+            || owner.quote_depth == 0 && !matches!(owner.kind, super::BlockKind::ListItem { .. } | super::BlockKind::Heading(_))
+        { return Ok(None); }
+        let at = self.projection().source_insertion_point(owner.range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let line = self.state().source_hard_lines.line_at_offset(at)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = self.state().source.bytes_in(line.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, line.start)?;
+        let mut end = 0;
+        loop {
+            let previous = end;
+            end += super::markdown_quotes::prefix(&decoded.text[end..]);
+            if let Some(marker) = super::markdown_blocks::marker_prefix_length(&decoded.text[end..]) { end += marker; }
+            if end == previous { break; }
+        }
+        let mut prefix = decoded.text[..end].to_owned();
+        if let Some(level) = owner.style.0.strip_prefix("Heading").and_then(|level| level.parse::<usize>().ok()).filter(|level| (1..=6).contains(level)) {
+            prefix.push_str(&"#".repeat(level)); prefix.push(' ');
+        }
+        Ok((!prefix.is_empty()).then_some(prefix))
+    }
+
     pub(crate) fn replacement_typing_context(
         &self,
         range: Range<usize>,
@@ -42,6 +69,7 @@ impl Document {
             // restore in source.
             style: if owner.style.0 == "Image" { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
             quote_depth: owner.quote_depth,
+            markdown_prefix: self.markdown_replacement_prefix(owner)? ,
             code_language: owner.code_language.clone(),
         };
         // Paragraph separators have no character style of their own. Skip

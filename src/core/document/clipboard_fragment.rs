@@ -26,6 +26,9 @@ struct Export {
     encoding: u32,
     file_format: u32,
     source_plain_text: String,
+    // Older payloads lack this proof and stay on the source-preserving path.
+    #[serde(default = "source_semantics_required")]
+    requires_source_semantics: bool,
     #[serde(default)]
     inline_source_bytes: Vec<u8>,
     #[serde(default)]
@@ -37,6 +40,8 @@ struct Export {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     table_cells: Vec<Vec<Export>>,
 }
+
+fn source_semantics_required() -> bool { true }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SourceSegment {
@@ -92,6 +97,7 @@ impl ClipboardFragment {
             plain_text: text.clone(),
             image_plain_text: None,
             source_plain_text: text.clone(),
+            requires_source_semantics: true,
             hard_breaks: projection.hard_breaks_for_region(&range),
             register_kind: 1,
             is_rich: true,
@@ -426,6 +432,10 @@ impl Document {
         } else {
             (Vec::new(), Vec::new())
         };
+        let source_spans = self.projection().style_spans_for_region(&range);
+        let code_ranges = source_spans.iter().filter(|span|
+            span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+            .map(|span| (span.range.start, span.range.end)).collect::<BTreeSet<_>>();
         let export = Export {
             schema_version: 1,
             plain_text: if is_rich {
@@ -435,6 +445,12 @@ impl Document {
             },
             image_plain_text: self.image_plain_text_for_range(range.clone())?,
             source_plain_text: captured.text().to_owned(),
+            requires_source_semantics: source_spans.iter().any(|span|
+                !matches!(span.application, StyleApplication::Semantic(_))
+                    && !(span.application == StyleApplication::Named("Code".into())
+                        && code_ranges.contains(&(span.range.start, span.range.end))))
+                || !self.projection().inline_images_for_region(&range).is_empty()
+                || self.projection().blocks_for_region(&range).iter().any(|block| block.markdown_html),
             hard_breaks: captured.break_offsets().to_vec(),
             register_kind: 1,
             is_rich,
@@ -509,6 +525,7 @@ impl Document {
                 )
                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
                 let start = export.plain_text.len();
+                export.requires_source_semantics |= fragment.requires_source_semantics;
                 export.plain_text.push_str(&fragment.plain_text);
                 export.source_text.push_str(&fragment.source_text);
                 let shift = |run: &Value| {
@@ -572,6 +589,38 @@ impl Document {
         if !export.can_insert_rich_source(self.format(), text) {
             return Ok(None);
         }
+        let whole = range == (0..self.text().len());
+        // When the destination already supplies exactly the copied inline
+        // appearance, plain insertion avoids splitting or respelling its
+        // existing delimiters. Source-only semantics need the source path.
+        let inline = if export.inline_source_bytes.is_empty() {
+            export.source_bytes.as_slice()
+        } else {
+            export.inline_source_bytes.as_slice()
+        };
+        let inline = encoding.decode_region(inline, 0)?.text;
+        use pulldown_cmark::{Event, Tag, TagEnd};
+        let simple_inline = self.format() == Format::Markdown && !whole && !export.requires_source_semantics
+            && pulldown_cmark::Parser::new_ext(&inline, pulldown_cmark::Options::ENABLE_STRIKETHROUGH)
+                .all(|event| matches!(event, Event::Text(_) | Event::Code(_) | Event::SoftBreak | Event::HardBreak
+                    | Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
+                    | Event::End(TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough)));
+        if simple_inline {
+            let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), text, export.hard_breaks.clone())
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+            if let Ok(prepared) = self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(range.clone(), payload)])
+                .and_then(|prepared| verify_styles(prepared, &export, range.clone(), whole, self.projection()))
+            {
+                return Ok(Some(prepared));
+            }
+            if export.source_bytes.is_empty() && !export.source_plain_text.is_empty() {
+                // Nonrectangular text copied across table cells has no single
+                // source interval. Its portable text/style runs are complete;
+                // paste them into the one destination cell as ordinary text.
+                let prepared = self.prepare_normalized_clipboard_fragment(range.clone(), &export)?;
+                return verify_styles(prepared, &export, range, whole, self.projection()).map(Some);
+            }
+        }
         if range != (0..self.text().len()) {
             if let Some(prepared) =
                 self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
@@ -595,7 +644,6 @@ impl Document {
             self.projection(),
             &TextEdit::new(range.clone(), text),
         )?;
-        let whole = range == (0..self.text().len());
         let plan = if whole {
             None
         } else {
@@ -670,7 +718,89 @@ impl Document {
                 Err(failed) => error = failed,
             }
         }
+        // A copied terminal soft ending no longer folds to a space on its
+        // own. Reconstruct only the copied inline fragment if its authored
+        // syntax cannot compose here, retaining the same verification.
+        if simple_inline {
+            if let Ok(prepared) = self.prepare_normalized_clipboard_fragment(range.clone(), &export)
+                .and_then(|prepared| verify_styles(prepared, &export, range, whole, self.projection()))
+            {
+                return Ok(Some(prepared));
+            }
+        }
         Err(error)
+    }
+
+    /// Put complete rich rows through paragraph openings so the new source
+    /// owners never inherit a retained heading, link or code delimiter.
+    pub(crate) fn prepare_rich_linewise_put(
+        &self,
+        origin: usize,
+        before: bool,
+        fragment: &ClipboardFragment,
+        count: usize,
+    ) -> Result<Option<(PreparedModelTransaction, usize, usize)>, ModelTransactionError> {
+        // Literal hard lines inside a code paragraph stay in that owner.
+        // Its ordinary payload path can preserve the copied code treatment
+        // without opening a following-style paragraph outside the fence.
+        if self.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
+            block.style.0 == "Code Block" && block.range.start <= origin && origin <= block.range.end) {
+            return Ok(None);
+        }
+        let export: Export = serde_json::from_str(fragment.json())
+            .map_err(|_| DocumentError::UnsupportedFormatting)?;
+        if export.register_kind != 2 || !export.can_insert_rich_source(self.format(), &export.source_plain_text)
+            || export.source_plain_text.is_empty()
+            || export.plain_text != format!("{}\n", export.source_plain_text) {
+            return Ok(None);
+        }
+        let body = fragment.as_seen();
+        let mut scratch = self.scratch_document();
+        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+        let mut formatted = replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let publish = |scratch: &mut Document, prepared: PreparedModelTransaction,
+                       sources: &mut replacement::PatchComposition, formatted: &mut replacement::PatchComposition|
+            -> Result<(), ModelTransactionError> {
+            for patch in prepared.summary.source_patches.iter().rev() { sources.splice(patch.range(), patch.replacement()); }
+            formatted.record_formatted(&prepared)?;
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        let mut origin = origin;
+        let mut first = None;
+        let mut last = 0;
+        for index in 0..count {
+            let at = if index == 0 && scratch.projection().text_tree().byte_len() == 0 {
+                0
+            } else {
+                let line = scratch.hard_line_snapshot().line_at_offset(origin)
+                    .map_err(|_| DocumentError::AmbiguousProjection)?;
+                let after = index != 0 || !before;
+                let at = if after { line.content_range().end } else { line.content_range().start };
+                let opened = scratch.prepare_open_line(at, origin, after)?;
+                let target = opened.text_position_map().map_text_point(scratch.text_point(at)?,
+                    if after { Association::AfterInsertion } else { Association::BeforeInsertion },
+                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)?
+                    .value().ok_or(DocumentError::AmbiguousProjection)?.offset();
+                publish(&mut scratch, opened, &mut sources, &mut formatted)?;
+                target
+            };
+            let Some(inserted) = scratch.prepare_clipboard_fragment(at..at, &body, &export.source_plain_text)? else {
+                return Ok(None);
+            };
+            let inserted = verify_styles(inserted, &export, at..at, true, scratch.projection())?;
+            last = at.checked_add(export.source_plain_text.len()).ok_or(DocumentError::UnsupportedFormatting)?;
+            publish(&mut scratch, inserted, &mut sources, &mut formatted)?;
+            first.get_or_insert(at);
+            origin = last;
+        }
+        let Some(first) = first else { return Ok(None); };
+        let prepared = self.prepare_text_edits_with_patch_policy(formatted.formatted_edits(), Some(sources.source_patches()), true)?;
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        if style_runs(candidate.projection(), &(first..last))? != style_runs(scratch.projection(), &(first..last))? {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok(Some((prepared, first, last)))
     }
 
     /// Native replacement deletes the selection, then puts the copied text at
@@ -904,27 +1034,47 @@ impl Document {
             }
         }
         for (range, properties) in markdown_runs {
-            if properties.bold != Some(true)
-                && properties.slant != Some(super::super::FontSlant::Italic)
-                && properties.underline != Some(true) && properties.strikethrough != Some(true)
-                && properties.superscript != Some(true) && properties.subscript != Some(true)
-            {
-                continue;
+            // Keep the exact typing scope when its inherited delimiters can
+            // be reused. Portable runs with literal markers or several
+            // paragraphs also have the selected-formatting transaction path.
+            for (style, enabled) in [
+                (Some(SemanticInlineStyle::Strong), properties.bold == Some(true)),
+                (Some(SemanticInlineStyle::Emphasis), properties.slant == Some(super::super::FontSlant::Italic)),
+                (None, properties.strikethrough == Some(true)),
+            ] {
+                let application = style.map_or_else(|| StyleApplication::Automatic("Strikethrough".into()), StyleApplication::Semantic);
+                if enabled || scratch.projection().style_spans_for_region(&range).iter()
+                    .any(|span| span.application == application) {
+                    let request = if let Some(style) = style {
+                        ModelRequest::SetSemanticStyle {
+                            document: scratch.id(), revision: scratch.revision(),
+                            range: range.clone(), style, enabled,
+                        }
+                    } else {
+                        ModelRequest::SetStrikethrough {
+                            document: scratch.id(), revision: scratch.revision(),
+                            range: range.clone(), enabled,
+                        }
+                    };
+                    let styled = scratch.prepare_typing_markdown_application(range.clone(), style, enabled)
+                        .or_else(|error| match error {
+                            ModelTransactionError::Document(DocumentError::UnsupportedFormatting
+                                | DocumentError::VerificationFailed) => scratch.prepare_model_request(request),
+                            error => Err(error),
+                        })?;
+                    publish(&mut scratch, styled, &mut sources)?;
+                }
             }
-            let syntax = super::super::markdown_serialization::markdown_character_fragment(
-                scratch.projection(),
-                range.clone(),
-                &properties,
-            );
-            let source = scratch
-                .projection()
-                .source_range(range.clone())
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let styled = scratch.prepare_source_only_patches(vec![SourcePatch::primary(
-                source,
-                self.encoding().encode_fragment(&syntax)?,
-            )])?;
-            publish(&mut scratch, styled, &mut sources)?;
+            for (property, enabled) in [
+                (StyleProperty::CharacterUnderline, properties.underline),
+                (StyleProperty::CharacterSuperscript, properties.superscript),
+                (StyleProperty::CharacterSubscript, properties.subscript),
+            ] {
+                if let Some(enabled) = enabled {
+                    let styled = scratch.prepare_typing_inline_property(range.clone(), property, enabled)?;
+                    publish(&mut scratch, styled, &mut sources)?;
+                }
+            }
         }
         self.prepare_text_edits_with_patches(
             vec![TextEdit::new(replaced, &export.source_plain_text)],
@@ -1670,7 +1820,7 @@ impl Document {
             strings.push(value.plain_text.clone());fragments.push(value);
         }texts.push(strings);cells.push(fragments);}
         let plain_text=tabular_text(&texts);
-        let export=Export {schema_version:1,plain_text:plain_text.clone(),image_plain_text:None,source_plain_text:plain_text.clone(),hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
+        let export=Export {schema_version:1,plain_text:plain_text.clone(),image_plain_text:None,source_plain_text:plain_text.clone(),requires_source_semantics:true,hard_breaks:plain_text.match_indices('\n').map(|(at,_)|at).collect(),register_kind:1,is_rich:true,source_text:plain_text.clone(),source_bytes:plain_text.as_bytes().to_vec(),source_format:1,encoding:1,file_format:1,inline_source_bytes:Vec::new(),embedded_source_bytes:Vec::new(),character_runs:Vec::new(),paragraph_runs:Vec::new(),source_segments:Vec::new(),table_cells:cells};
         let json=serde_json::to_string(&export).map_err(|_|DocumentError::UnsupportedFormatting)?;
         Ok((ClipboardFragment(Arc::from(json)),plain_text))
     }

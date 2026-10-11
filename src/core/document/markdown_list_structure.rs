@@ -305,7 +305,8 @@ pub(super) fn deletion_patches(
     }
     if !paragraphs
         .iter()
-        .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. }))
+        .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. })
+            || whole_line && matches!(block.kind, super::super::BlockKind::Heading(_)))
         || !(range.start == first.range.start || range.start + 1 == first.range.start)
         || !(range.end == last.range.end || range.end == last.range.end + 1)
         || !whole_line
@@ -318,6 +319,11 @@ pub(super) fn deletion_patches(
     }
     let source_line =
         |block: &super::super::Block, at_end: bool| -> Result<Range<usize>, DocumentError> {
+            if !at_end && block.style.0 == "Code Block" {
+                if let Some(fence) = super::super::markdown_code::fenced_source(document, block)? {
+                    return Ok(fence.opening);
+                }
+            }
             let at = if at_end && !block.range.is_empty() {
                 projection
                     .source_range(block.range.clone())
@@ -483,8 +489,8 @@ pub(super) fn empty_insertion_patches(
     )]))
 }
 
-/// An empty nested dash item cannot interrupt its parent's prose: the dash
-/// would instead underline that prose as a Setext heading. Preserve the item
+/// An empty dash item cannot interrupt preceding prose, including its parent:
+/// the dash would instead underline that prose as a Setext heading. Preserve the item
 /// with a local blank separator when an edit creates that ambiguous spelling.
 pub(super) fn preserve_empty_item_boundaries(
     document: &Document,

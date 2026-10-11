@@ -5114,7 +5114,7 @@ fn link_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let mut outcome = ViemCoreOutcomeV1::default();
-    assert_eq!(unsafe { test_send_text(core.handle, view, b"v$".as_ptr(), 2, &mut outcome) }, ViemStatus::Ok);
+    for ch in "v$".chars() { assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, ch as u32), &mut outcome) }, ViemStatus::Ok); }
     let mut selection = ViemLogicalSelectionIdentityV1::default();
     assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
     let mut required = 0;
@@ -5159,7 +5159,7 @@ fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let mut outcome = ViemCoreOutcomeV1::default();
-    assert_eq!(unsafe { test_send_text(core.handle, view, b"v$".as_ptr(), 2, &mut outcome) }, ViemStatus::Ok);
+    for ch in "v$".chars() { assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, ch as u32), &mut outcome) }, ViemStatus::Ok); }
     let mut selection = ViemLogicalSelectionIdentityV1::default();
     assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
     let mut required = 0;
@@ -5220,5 +5220,43 @@ fn image_popup_ffi_identifies_forward_and_reversed_native_image_selections() {
             assert_eq!(context["canInsert"], false);
             assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, revision), source);
         }
+    }
+}
+
+#[test]
+fn composition_replacing_selection_exports_only_overlay_selection_until_cancel() {
+    for format in [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN_SOURCE, VIEM_FORMAT_MARKDOWN] {
+        let source = b"First paragraph.\nSecond line.";
+        let core = create_core(source, ViemDocumentOptions { format, encoding: VIEM_ENCODING_LATIN1, ..ViemDocumentOptions::default() });
+        let mut context = Box::new(FakeProviderContext::new(core.handle));
+        let (view, mut outcome) = add_test_view(&core, &mut *context);
+        let document = document_state(&core).document_id;
+        assert_eq!(unsafe { viem_core_view_select_all(core.handle, view, document, 0, &mut outcome) }, ViemStatus::Ok);
+        let mut original = ViemVisualSelectionInfoV1::default();
+        assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut original) }, ViemStatus::Ok);
+        assert_eq!(original.segment_count, 1);
+        let formatted = copy_core_bytes(viem_core_copy_formatted_utf8, &core, 0);
+        let begin = ViemCompositionBeginV1 { struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE, reserved: 0, document_revision: 0, replacement_start: 0, replacement_end: formatted.len() as u64 };
+        assert_eq!(unsafe { viem_core_view_composition_begin(core.handle, view, &begin, &mut outcome) }, ViemStatus::Ok);
+        let marked = "ほん".as_bytes();
+        let update = ViemCompositionUpdateV1 { struct_size: VIEM_COMPOSITION_UPDATE_V1_SIZE, reserved: 0, document_revision: 0, marked_text: utf8_slice(marked), selected_start: marked.len() as u64, selected_end: marked.len() as u64 };
+        assert_eq!(unsafe { viem_core_view_composition_update(core.handle, view, &update, &mut outcome) }, ViemStatus::Ok);
+        let mut selection = ViemVisualSelectionInfoV1::default();
+        assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok, "format={format}");
+        assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_NONE);
+        assert_eq!(selection.rectangle_count, 0);
+        if format == VIEM_FORMAT_PLAIN_TEXT || format == VIEM_FORMAT_CODE {
+            let commit = ViemCompositionCommitV1 { struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE, reserved: 0, document_revision: 0, committed_text: utf8_slice(marked) };
+            assert_eq!(unsafe { viem_core_view_composition_commit(core.handle, view, &commit, &mut outcome) }, ViemStatus::UnrepresentableCharacter);
+            assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok);
+            assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_NONE);
+        }
+        let cancel = ViemCompositionCancelV1 { struct_size: VIEM_COMPOSITION_CANCEL_V1_SIZE, reserved: 0, document_revision: 0 };
+        assert_eq!(unsafe { viem_core_view_composition_cancel(core.handle, view, &cancel, &mut outcome) }, ViemStatus::Ok);
+        assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok);
+        assert_eq!(selection.segment_count, original.segment_count);
+        assert_eq!(selection.rectangle_count, original.rectangle_count);
+        assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, 0), source);
+        assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
     }
 }

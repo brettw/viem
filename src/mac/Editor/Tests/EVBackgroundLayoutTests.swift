@@ -98,7 +98,7 @@ final class EVBackgroundLayoutTests: XCTestCase {
         surface.view.frame.size = NSSize(width: 330, height: 240)
         surface.viewDidLayout()
         surface.performInput {
-            _ = try session.sendText("ggiChanged ")
+            _ = try session.sendTestKeys("ggiChanged ")
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         }
         session.provider.invalidateMetrics()

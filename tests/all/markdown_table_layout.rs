@@ -1,6 +1,232 @@
 use viem_core::document::{Encoding, Format};
 use viem_core::layout::{LayoutEngine, LayoutPoint, MockTextMeasurementProvider, ViewLayout};
 use viem_core::Document;
+use viem_core::command::{CommandStatus, InputEvent, Key};
+
+fn audit_key(core: &mut viem_core::Core<MockTextMeasurementProvider>, view: viem_core::ViewId, key: Key) {
+    let outcome = core.handle_with_layout(view, viem_core::CoreEvent::Input(InputEvent::Key(key.clone())))
+        .unwrap_or_else(|error| panic!("{key:?}: {error:?}"));
+    if let Some(command) = outcome.command {
+        assert!(matches!(command.status, CommandStatus::Complete | CommandStatus::Pending)
+            || (key == Key::Escape && matches!(command.status, CommandStatus::Cancelled)),
+            "{key:?}: {:?}", command.status);
+    }
+}
+
+fn audit_place(core: &mut viem_core::Core<MockTextMeasurementProvider>, view: viem_core::ViewId, at: usize) {
+    core.handle(view, viem_core::CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: at,
+        affinity: viem_core::document::BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+}
+
+fn audit_caret(core: &viem_core::Core<MockTextMeasurementProvider>, view: viem_core::ViewId) {
+    let commands = core.command_state(view).unwrap();
+    let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+    snapshot.logical_endpoint_geometry(commands.cursor(), commands.boundary_affinity())
+        .or_else(|_| snapshot.logical_endpoint_geometry(commands.cursor(), viem_core::document::BoundaryAffinity::Upstream))
+        .unwrap_or_else(|error| panic!("caret {}: {error:?}; text {:?}; rows {:?}", commands.cursor(), core.document().text(),
+            snapshot.rows.iter().map(|row| (&row.text_range, row.table_cell.as_ref().map(|cell| (cell.row,cell.column)))).collect::<Vec<_>>()));
+}
+
+#[test]
+fn audit_ligature_interiors_support_vertical_and_row_edge_motion() {
+    for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource, Format::Code] {
+        for key in [Key::Down, Key::Up, Key::Home, Key::End, Key::Char('j'), Key::Char('k')] {
+            let mut core = viem_core::Core::new(document("office\nnext line here", format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 300., 200.);
+            audit_place(&mut core, view, 2);
+            audit_key(&mut core, view, key);
+            audit_caret(&core, view);
+        }
+    }
+}
+
+#[test]
+fn audit_narrow_table_resize_scroll_and_zoom_remain_editable() {
+    for source in ["| a | b | c |\n| :-: | --- | ---: |\n| 1 | 2 | 3 |", "- | a | b |\n  | - | - |\n  | 1 | 2 |"] {
+        let mut core = viem_core::Core::new(document(source, Format::Markdown));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 900.);
+        for (width, height) in [(120.,200.), (40.,30.), (300.,200.)] {
+            core.handle(view, viem_core::CoreEvent::Resize { width, height }).unwrap();
+            assert!(core.layout(view).unwrap().snapshot().is_some());
+            audit_key(&mut core, view, Key::SelectAll);
+            core.handle(view, viem_core::CoreEvent::SetScale(0.5))
+                .unwrap_or_else(|error| panic!("{source:?}, {width} x {height}: {error:?}"));
+            audit_caret(&core, view);
+            audit_key(&mut core, view, Key::Escape);
+            core.handle(view, viem_core::CoreEvent::SetScale(1.)).unwrap();
+            core.handle(view, viem_core::CoreEvent::SetViewportOrigin {left: 0., top: Some(f32::MAX)}).unwrap();
+        }
+        audit_key(&mut core, view, Key::SelectAll);
+        for scale in [0.5, 2., 1.] {
+            core.handle(view, viem_core::CoreEvent::SetScale(scale)).unwrap();
+            audit_caret(&core, view);
+        }
+    }
+}
+
+#[test]
+fn audit_wide_table_moves_between_rows_and_keeps_every_cell_caret() {
+    let source = "| one | two | three | four | five | six |\n|---|---|---|---|---|---|\n| 1 | 2 | 3 | 4 | 5 | 6 |\n| alpha | beta | gamma | delta | epsilon | zeta |";
+    for width in [70., 120., 300.] {
+        let mut core = viem_core::Core::new(document(source, Format::Markdown));
+        let view = core.add_view(MockTextMeasurementProvider::new(), width, 500.);
+        audit_key(&mut core, view, Key::Char('i'));
+        for _ in 0..70 {
+            audit_key(&mut core, view, Key::Right);
+            audit_caret(&core, view);
+        }
+        let at = core.document().projection().tables()[0].rows[0].cells[5].range.start;
+        let below = core.document().projection().tables()[0].rows[1].cells[5].range.clone();
+        audit_place(&mut core, view, at);
+        audit_key(&mut core, view, Key::Down);
+        let cursor = core.command_state(view).unwrap().cursor();
+        assert!(below.start <= cursor && cursor <= below.end, "{width}: {cursor} outside {below:?}");
+        audit_caret(&core, view);
+    }
+}
+
+#[test]
+fn audit_block_selection_in_prose_ignores_unrelated_wide_table() {
+    let source = "para\n\n| a | b | c | d |\n|---|---|---|---|\n| 1 | 2 | 3 | 4 |";
+    for key in ['I', 'A', 'd'] {
+        let mut core = viem_core::Core::new(document(source, Format::Markdown));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 120., 200.);
+        audit_key(&mut core, view, Key::Ctrl('v'));
+        audit_key(&mut core, view, Key::Char(key));
+        audit_caret(&core, view);
+    }
+}
+
+#[test]
+fn audit_empty_table_word_motion_always_has_geometry() {
+    for source in ["| | |\n|-|-|\n| | |", "| a | b |\n| - | - |\n|  |  |"] {
+        let mut core = viem_core::Core::new(document(source, Format::Markdown));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 400.);
+        for (at, key) in [(1,Key::WordRight),(5,Key::WordLeft)] {
+            if at > core.document().text().len() { continue; }
+            audit_place(&mut core, view, at);
+            audit_key(&mut core, view, key);
+            audit_caret(&core, view);
+        }
+    }
+}
+
+#[test]
+fn audit_markdown_demo_table_navigation_keeps_current_caret_geometry() {
+    use viem_core::command::LineMode;
+    let source = include_str!("../../docs/markdown_demo.md");
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for width in [120., 700.] {
+            let mut core = viem_core::Core::new(document(source, Format::Markdown));
+            let view = core.add_view(MockTextMeasurementProvider::new(), width, 300.);
+            core.handle(view, viem_core::CoreEvent::SetLineMode(line_mode)).unwrap();
+            let text = core.document().text();
+            let mut offsets = Vec::new();
+            for table in core.document().projection().tables() {
+                for row in &table.rows {
+                    for cell in &row.cells {
+                        offsets.push(cell.range.start);
+                        offsets.push(cell.range.end);
+                        offsets.extend(text[cell.range.clone()].char_indices()
+                            .step_by(7).map(|(offset, _)| cell.range.start + offset));
+                    }
+                }
+            }
+            offsets.sort_unstable();
+            offsets.dedup();
+            assert!(offsets.len() > 50, "demo must exercise its current tables");
+            for at in offsets {
+                for key in [Key::Left, Key::Right, Key::WordLeft, Key::WordRight,
+                    Key::Char('b'), Key::Char('e'), Key::Char('w'),
+                    Key::Char('{'), Key::Char('}')] {
+                    audit_place(&mut core, view, at);
+                    audit_key(&mut core, view, key);
+                    audit_caret(&core, view);
+                }
+            }
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn audit_multiline_rtl_table_block_delete_has_exact_layout() {
+    let source = "| a | b |\n| - | - |\n| 1 | 2 |\n\ntext after";
+    let mut core = viem_core::Core::new(document(source, Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 400.);
+    audit_key(&mut core, view, Key::Char('a'));
+    audit_key(&mut core, view, Key::Enter);
+    core.handle_with_layout(view, viem_core::CoreEvent::Input(InputEvent::text("العربية"))).unwrap();
+    audit_key(&mut core, view, Key::Escape);
+    audit_key(&mut core, view, Key::Ctrl('v'));
+    audit_key(&mut core, view, Key::Char('d'));
+    audit_caret(&core, view);
+}
+
+#[test]
+fn audit_block_edit_and_resize_keep_large_table_materialization_bounded() {
+    let source = format!("para\n\n|{}\n|{}\n|{}\n\n{}",
+        " header |".repeat(1000), " --- |".repeat(1000), " value |".repeat(1000),
+        "unrelated paragraph\n\n".repeat(2000));
+    let mut core = viem_core::Core::new(document(&source, Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 120., 200.);
+    audit_key(&mut core, view, Key::Ctrl('v'));
+    audit_key(&mut core, view, Key::Char('d'));
+    let after_edit = core.document().source_bytes();
+    assert_eq!(&after_edit, &source.as_bytes()[1..]);
+    for width in [40., 300., 120.] {
+        core.handle(view, viem_core::CoreEvent::Resize {width, height: 200.}).unwrap();
+        audit_caret(&core, view);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        assert!(snapshot.table_cells().len() < 100, "shaped unrelated table columns");
+        assert!(snapshot.coverage.hard_lines().len() < 100, "laid out unrelated suffix");
+    }
+    assert_eq!(core.document().source_bytes(), after_edit);
+    audit_key(&mut core, view, Key::Char('u'));
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn audit_short_viewports_keep_styled_caret_geometry_after_escape() {
+    for (format, source) in [(Format::Markdown, "**`code in bold`**"),
+        (Format::MarkdownSource, "```\na\n\nb\n```\ntext")] {
+        let mut core = viem_core::Core::new(document(source, format));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 120., 30.);
+        audit_key(&mut core, view, Key::Char('i'));
+        audit_key(&mut core, view, Key::Escape);
+        audit_caret(&core, view);
+        core.handle(view, viem_core::CoreEvent::Resize {width: 300., height: 200.}).unwrap();
+        audit_caret(&core, view);
+    }
+}
+
+#[test]
+fn audit_narrow_nested_table_insert_and_row_delete_recover_on_resize() {
+    use viem_core::document::TableEditIntent;
+    let mut core = viem_core::Core::new(document(">> nested", Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 900.);
+    core.handle_with_layout(view, viem_core::CoreEvent::TableEdit {
+        document: core.document().id(), revision: core.document().revision(),
+        intent: TableEditIntent::Insert {range: 0..0, columns: 2, body_rows: 1},
+    }).unwrap();
+    core.handle(view, viem_core::CoreEvent::Resize {width: 40., height: 900.}).unwrap();
+    assert!(core.layout(view).unwrap().snapshot().is_some());
+
+    let mut core = viem_core::Core::new(document("- | a | b |\n  | - | - |\n  | 1 | 2 |", Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 40., 30.);
+    let table = core.document().projection().tables()[0].id;
+    core.handle_with_layout(view, viem_core::CoreEvent::TableEdit {
+        document: core.document().id(), revision: core.document().revision(),
+        intent: TableEditIntent::DeleteRow {table, row: 0},
+    }).unwrap();
+    core.handle(view, viem_core::CoreEvent::SetViewportOrigin {left: 0., top: Some(f32::MAX)}).unwrap();
+    for (width,height) in [(40.,30.),(300.,200.)] {
+        core.handle(view, viem_core::CoreEvent::Resize {width,height}).unwrap();
+        assert!(!core.layout(view).unwrap().snapshot().unwrap().rows.is_empty());
+    }
+}
 fn document(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }

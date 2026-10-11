@@ -270,17 +270,26 @@ fn resolve_block_selection_impl(
     formatted_text: &HardLineSnapshot,
     to_line_end: bool,
 ) -> Result<ResolvedBlockSelection, VisualBlockError> {
-    if snapshot.has_horizontal_materialization() {
-        let super::layout_motion::LayoutMotionError::OutsideMaterializedCoverage(demand) =
-            super::layout_motion::complete_horizontal_demand(snapshot, selection.active.text_offset)
-            else { unreachable!() };
-        return Err(VisualBlockError::NeedsLayout(demand));
-    }
     validate_snapshot(selection, snapshot, formatted_text)?;
     let anchor_row = locate_endpoint(snapshot, selection.anchor)?;
     let active_row = locate_endpoint(snapshot, selection.active)?;
     let first_row = anchor_row.min(active_row);
     let last_row = anchor_row.max(active_row);
+    if snapshot.has_horizontal_materialization()
+        && (first_row..=last_row).any(|index| {
+            let row = &snapshot.rows[index];
+            !snapshot.horizontal_row_is_complete(index)
+                || !snapshot.horizontal_geometry_is_materialized(index, selection.left_x())
+                || !snapshot.horizontal_geometry_is_materialized(index, selection.right_x())
+                || row.clusters.iter().map(|cluster| cluster.text_range.start).min().is_some_and(|start| start > row.text_range.start)
+                || row.clusters.iter().map(|cluster| cluster.text_range.end).max().is_some_and(|end| end < row.text_range.end)
+        })
+    {
+        let super::layout_motion::LayoutMotionError::OutsideMaterializedCoverage(demand) =
+            super::layout_motion::complete_horizontal_demand(snapshot, selection.active.text_offset)
+            else { unreachable!() };
+        return Err(VisualBlockError::NeedsLayout(demand));
+    }
     let mut rows = Vec::with_capacity(last_row - first_row + 1);
 
     for row_index in first_row..=last_row {

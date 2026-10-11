@@ -348,13 +348,16 @@ pub(crate) fn move_word_forward(text: &str, offset: usize, big_word: bool, count
         if index >= items.len() {
             return text.len();
         }
+        let empty_line = |index: usize| text[items[index].0..items[index].1] == *"\n"
+            && (index == 0 || text[items[index - 1].0..items[index - 1].1] == *"\n");
         let class = class_for(big_word, items[index].2);
+        if empty_line(index) { index += 1; }
         if class != WordClass::White {
             while index < items.len() && class_for(big_word, items[index].2) == class {
                 index += 1;
             }
         }
-        while index < items.len() && items[index].2 == WordClass::White {
+        while index < items.len() && items[index].2 == WordClass::White && !empty_line(index) {
             index += 1;
         }
     }
@@ -370,17 +373,13 @@ pub(crate) fn move_word_end(text: &str, offset: usize, big_word: bool, count: us
         .iter()
         .position(|(start, end, _)| *start <= offset && offset < *end)
         .unwrap_or(items.len().saturating_sub(1));
-    for iteration in 0..count.max(1).min(items.len().saturating_add(1)) {
-        if iteration > 0 || class_for(big_word, items[index].2) == WordClass::White {
-            if iteration > 0 {
-                index = (index + 1).min(items.len() - 1);
-            }
-            while index < items.len() && items[index].2 == WordClass::White {
-                index += 1;
-            }
-            if index >= items.len() {
-                return items.last().map_or(0, |item| item.0);
-            }
+    for _ in 0..count.max(1).min(items.len().saturating_add(1)) {
+        index = (index + 1).min(items.len() - 1);
+        while index < items.len() && items[index].2 == WordClass::White {
+            index += 1;
+        }
+        if index >= items.len() {
+            return items.last().map_or(0, |item| item.0);
         }
         let class = class_for(big_word, items[index].2);
         while index + 1 < items.len() && class_for(big_word, items[index + 1].2) == class {
@@ -403,9 +402,12 @@ pub(crate) fn move_word_backward(text: &str, offset: usize, big_word: bool, coun
         if iteration > 0 && index > 0 {
             index -= 1;
         }
-        while index > 0 && items[index].2 == WordClass::White {
+        let empty_line = |index: usize| text[items[index].0..items[index].1] == *"\n"
+            && (index == 0 || text[items[index - 1].0..items[index - 1].1] == *"\n");
+        while index > 0 && items[index].2 == WordClass::White && !empty_line(index) {
             index -= 1;
         }
+        if empty_line(index) { continue; }
         let class = class_for(big_word, items[index].2);
         while index > 0 && class_for(big_word, items[index - 1].2) == class {
             index -= 1;

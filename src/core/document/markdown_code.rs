@@ -602,6 +602,9 @@ fn join_following_paragraph(
     let delimiter = fence.delimiter;
     let opening_width = fence.width;
     let closing_width = closing_text.trim().len();
+    // The appended body supplies the fence's container prefix once. A
+    // standalone fence's optional indentation is also in closing_text.
+    let closing_text = closing_text.trim_start_matches([' ', '\t']);
     let following_source = projection.source_range(following.range.clone())
         .ok_or(DocumentError::AmbiguousProjection)?;
     let source_lines = &document.state().source_hard_lines;
@@ -622,8 +625,9 @@ fn join_following_paragraph(
         .filter(|ending| ending.source.end == end_line.end)
         .map_or(end_line.end, |ending| ending.source.start);
     if is_fenced_paragraph(document, following)? {
-        let Some(following_fence) = fenced_source(document, following)? else { return Ok(None); };
-        end = following_fence.closing_content_end.unwrap_or(following_fence.body.end);
+        if let Some(following_fence) = fenced_source(document, following)? {
+            end = following_fence.closing_content_end.unwrap_or(following_fence.body.end);
+        }
     } else if following.range.is_empty() {
         end = following_source.end;
     }
@@ -708,21 +712,47 @@ fn join_code_into_previous(
         return Ok(None);
     };
     if !is_fenced_paragraph(document, code)? { return Ok(None); }
-    let Some(fence) = fenced_source(document, code)? else { return Ok(None); };
-    let body = fence.body;
-    let mut ranges = super::source_edit::visible_runs(projection, range)?
-        .into_iter().map(|run| run.source).collect::<Vec<_>>();
+    let (body, closing_range) = if let Some(fence) = fenced_source(document, code)? {
+        let closing = fence.closing.map(|closing| fence.body.end..closing.end);
+        (fence.body, closing)
+    } else if super::markdown_indented_code::source_block(document, code)?.is_some() {
+        (projection.source_range(code.range.clone()).ok_or(DocumentError::AmbiguousProjection)?, None)
+    } else { return Ok(None); };
+    let mut ranges = Vec::new();
+    let mut start = range.start;
+    // A completely selected table owns its generated cell/row separators.
+    // Consume its explicit source owner once, without trying to reverse-map
+    // those generated separators as independently editable characters.
+    for table in projection.tables().iter().filter(|table|
+        range.start <= table.range.start && table.range.end <= range.end)
+    {
+        if start < table.range.start {
+            ranges.extend(super::source_edit::visible_runs(projection, &(start..table.range.start))?
+                .into_iter().map(|run| run.source));
+        }
+        ranges.push(table.source_range.clone());
+        start = table.range.end;
+    }
+    if start < range.end {
+        ranges.extend(super::source_edit::visible_runs(projection, &(start..range.end))?
+            .into_iter().map(|run| run.source));
+    }
     ranges.extend(selected_inline_delimiters(document, range)?);
     let separator = projection.source_range(first.range.end..first.range.end + 1)
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let closing_range = fence.closing.map(|closing| body.end..closing.end);
     let tail = projection.text_tree().slice(range.end..code.range.end)
         .map_err(DocumentError::FormattedTextStorage)?;
     let tail_source = projection.source_insertion_point(range.end, range.end != code.range.end)
         .ok_or(DocumentError::AmbiguousProjection)?..body.end;
     ranges.push(separator.start..tail_source.start);
-    let mut tail_syntax = tail.split('\n').map(|text| super::projection::escape_markdown_insert_in_encoding(text, document.encoding()))
-        .collect::<Vec<_>>().join("<br>");
+    let mut tail_syntax = tail.split('\n').map(|text| {
+        let leading = text.len() - text.trim_start_matches([' ', '\t']).len();
+        let trailing = text.trim_end_matches([' ', '\t']).len().max(leading);
+        let whitespace = |value: &str| value.chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+        format!("{}{}{}", whitespace(&text[..leading]),
+            super::projection::escape_markdown_insert_in_encoding(&text[leading..trailing], document.encoding()),
+            whitespace(&text[trailing..]))
+    }).collect::<Vec<_>>().join("<br>");
     if let Some(closing) = &closing_range {
         let following = code.range.end < projection.text_tree().byte_len();
         if following {
@@ -766,6 +796,38 @@ pub(super) struct FencedSource {
     pub(super) body_prefix: String,
 }
 
+/// A list wraps the literal code owner rather than replacing its leaf style.
+/// Patch each physical prefix so body bytes, fence spelling and annotation are
+/// retained, including an intentionally unclosed fence.
+pub(super) fn list_wrapper_patches(
+    document: &Document,
+    block: &super::Block,
+    marker: &str,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    let source = if let Some(fence) = fenced_source(document, block)? {
+        fence.opening.start..fence.closing.map_or(fence.body.end, |closing| closing.end)
+    } else if let Some(code) = super::markdown_indented_code::source_block(document, block)? {
+        code.source
+    } else {
+        return Err(DocumentError::UnsupportedFormatting);
+    };
+    let lines = &document.state().source_hard_lines;
+    let first = lines.line_at_offset(source.start).ok_or(DocumentError::AmbiguousProjection)?;
+    let last = lines.line_at_offset(source.end.saturating_sub(1).max(source.start))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut patches = Vec::new();
+    for index in first..=last {
+        let line = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = document.state().source.bytes_in(line.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = document.encoding().decode_region(&bytes, line.start)?;
+        let quote = super::markdown_quotes::prefix(&decoded.text);
+        let at = line.start + document.encoding().encode_fragment(&decoded.text[..quote])?.len();
+        patches.push((at..at, if index == first { marker.to_owned() } else { " ".repeat(marker.len()) }));
+    }
+    Ok(patches)
+}
+
 fn is_fenced_paragraph(document: &Document, block: &super::Block) -> Result<bool, DocumentError> {
     Ok(block.style.0 == "Code Block" || super::markdown_quotes::is_fenced_block(document, block)?)
 }
@@ -786,9 +848,7 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         document.encoding().decode_region(&bytes, line.start)
     };
     let text = read(&opening)?;
-    let quote = super::markdown_quotes::prefix(&text.text);
-    let mut prefix = quote + super::markdown_blocks::marker_prefix_length(&text.text[quote..]).unwrap_or(0);
-    prefix += text.text[prefix..].len() - text.text[prefix..].trim_start_matches([' ', '\t']).len();
+    let prefix = super::markdown_quotes::container_prefix(&text.text);
     let Some((delimiter, width)) = super::projection::markdown_fence(&text.text[prefix..]) else {
         return Ok(None);
     };
@@ -939,6 +999,14 @@ pub(super) fn preserve_edited_inline_delimiters(
         if span.range.is_empty() {
             continue;
         }
+        if edits.iter().any(|edit| edit.replacement.contains('\n')
+            && span.range.start <= edit.range.start && edit.range.end <= span.range.end)
+        {
+            // Structural split translation closes and reopens the code scope
+            // around the requested break. Those new backticks are delimiters,
+            // not literal body characters requiring a wider original marker.
+            continue;
+        }
         let content = document
             .projection()
             .source_range(span.range.clone())
@@ -946,6 +1014,29 @@ pub(super) fn preserve_edited_inline_delimiters(
         let Some((opening, closing)) = delimiter_ranges(document, &content)? else {
             continue;
         };
+        for edit in edits.iter().filter(|edit| edit.range.is_empty()
+            && span.range.start < edit.range.start && edit.range.start < span.range.end
+            && edit.replacement.starts_with('>')) {
+            // A quote marker at a physical continuation start interrupts an
+            // otherwise valid multiline code span. Its preceding ending is
+            // already a visible code space; spelling that one contributor as
+            // a literal space keeps the new marker inside the code owner.
+            for folded in document.projection().provenance_touching(&edit.range) {
+                if folded.formatted.end != edit.range.start || folded.formatted.is_empty()
+                    || document.projection().text_tree().slice(folded.formatted.clone()).as_deref() != Ok(" ")
+                    || patches.iter().any(|patch| patch.range().start < folded.source.end
+                        && folded.source.start < patch.range().end) {
+                    continue;
+                }
+                let bytes = document.state().source.bytes_in(folded.source.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = document.encoding().decode_region(&bytes, folded.source.start)?;
+                if !super::line_endings::normalize(&decoded, document.file_format()).endings.is_empty() {
+                    support.push(super::SourcePatch::primary(folded.source,
+                        document.encoding().encode_fragment(" ")?));
+                }
+            }
+        }
         // Fence conversions and explicit code-typing rewrites own their syntax.
         if patches.iter().any(|patch| {
             !patch.replacement().is_empty()
@@ -1081,6 +1172,9 @@ pub(super) fn edited_source_fragment(
     content: &Range<usize>,
     patches: &[super::SourcePatch],
 ) -> Result<Vec<u8>, DocumentError> {
+    if content.start > content.end || patches.iter().any(|patch| patch.range().start > patch.range().end) {
+        return Err(DocumentError::UnsupportedFormatting);
+    }
     let mut body = document
         .state()
         .source
@@ -1099,6 +1193,9 @@ pub(super) fn edited_source_fragment(
     for patch in relevant.into_iter().rev() {
         let start = patch.range().start.max(content.start) - content.start;
         let end = patch.range().end.min(content.end) - content.start;
+        if start > end || end > body.len() {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
         body.splice(start..end, patch.replacement().iter().copied());
     }
     Ok(body)

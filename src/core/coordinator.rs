@@ -614,6 +614,8 @@ impl ViewportState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreError {
+    /// An unwound input was rolled back through its publication checkpoint.
+    InputPanic,
     Completion(crate::command::completion::CompletionError),
     UnknownView(ViewId),
     IdentifierExhausted(CoreIdentifierKind),
@@ -983,7 +985,14 @@ pub struct Core<P: TextMeasurementProvider> {
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
     compound_replay_event_limit: usize,
+    global_replay_time_limit: std::time::Duration,
+    #[cfg(test)]
+    input_panic: Option<(InputEvent, InputPanicStage)>,
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputPanicStage { BeforeDispatch, AfterDispatch, NestedAfterDispatch }
 
 #[derive(Clone, Debug)]
 struct OpenGroupRestoration {
@@ -996,14 +1005,18 @@ struct OpenGroupRestoration {
 /// snapshots remain disposable, and no document-sized layout cache is cloned.
 struct InputPublicationCheckpoint {
     document: crate::document::DocumentCommandCheckpoint,
-    commands: CommandInterpreter,
+    buffer_commands: BufferCommandState,
     views: BTreeMap<ViewId, InputViewCheckpoint>,
     edit_group_owner: Option<ViewId>,
     edit_group_restoration: Option<OpenGroupRestoration>,
     replay_undo_floor: Option<usize>,
+    queued_replay: Option<ReplayPlan>,
 }
 
 struct InputViewCheckpoint {
+    commands: CommandInterpreter,
+    composition: Option<CompositionSession>,
+    completion: Option<crate::command::completion::CompletionSession>,
     viewport_anchor: Option<ViewportTextAnchor>,
     viewport_left: f32,
     viewport_top: f32,
@@ -1136,6 +1149,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             replay_undo_floor: None,
             queued_replay: None,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
+            global_replay_time_limit: crate::command::ex_global::GLOBAL_REPLAY_TIME_BUDGET,
+            #[cfg(test)]
+            input_panic: None,
         }
     }
 
@@ -2227,11 +2243,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
             }
         }
-        if self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some() {
-            if let LayoutJobRegion::Viewport(viewport) = region {
-                region = LayoutJobRegion::Viewport(viewport.with_complete_horizontal_geometry());
-            }
-        }
         let document_revision = self.document.revision();
         let requirements = {
             let view = self
@@ -2674,11 +2685,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut next_requested_top = requested_top;
 
         loop {
-            let region = ViewportLayoutRegion::new(
+            let mut region = ViewportLayoutRegion::new(
                 start..end,
                 next_requested_top,
                 viewport_height.max(f32::EPSILON),
             )?;
+            if intent != ImmediateLayoutIntent::RevealCaret {
+                region = region.with_horizontal_anchor(focus_offset);
+            }
             let region = LayoutJobRegion::Viewport(if allow_automatic_horizontal_focus {
                 region
             } else {
@@ -3469,7 +3483,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                         || (!target_geometry_only && intent != ImmediateLayoutIntent::PreserveViewport
                             && (!snapshot.coverage.contains_text_offset(cursor)
                                 || !snapshot.horizontal_text_is_materialized(cursor)))
-                        || (visual_block_endpoints.is_some() && snapshot.has_horizontal_materialization())
                         || visual_block_endpoints.is_some_and(|(anchor, active)| {
                             !snapshot.coverage.contains_text_offset(anchor)
                                 || !snapshot.coverage.contains_text_offset(active)
@@ -5167,10 +5180,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
-    fn begin_input_publication(&mut self, invoking: ViewId) -> InputPublicationCheckpoint {
+    fn begin_input_publication(&mut self) -> InputPublicationCheckpoint {
         InputPublicationCheckpoint {
             document: self.document.begin_command_checkpoint(),
-            commands: self.views[&invoking].commands.clone(),
+            buffer_commands: self.buffer_commands.clone(),
             views: self
                 .views
                 .iter()
@@ -5178,6 +5191,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     (
                         *id,
                         InputViewCheckpoint {
+                            commands: view.commands.clone(),
+                            composition: view.composition.clone(),
+                            completion: view.completion.clone(),
                             viewport_anchor: view.viewport_anchor,
                             viewport_left: view.layout.viewport_left(),
                             viewport_top: view.layout.viewport_top(),
@@ -5189,7 +5205,22 @@ impl<P: TextMeasurementProvider> Core<P> {
             edit_group_owner: self.edit_group_owner,
             edit_group_restoration: self.edit_group_restoration.clone(),
             replay_undo_floor: self.replay_undo_floor,
+            queued_replay: self.queued_replay.clone(),
         }
+    }
+
+    #[cfg(test)]
+    fn inject_input_panic(&mut self, event: &CoreEvent, stage: InputPanicStage) {
+        if !matches!((event, self.input_panic.as_ref()),
+            (CoreEvent::Input(input), Some((expected, requested))) if input == expected && stage == *requested) {
+            return;
+        }
+        self.input_panic = None;
+        if stage == InputPanicStage::NestedAfterDispatch {
+            let _abandoned = self.document.begin_command_checkpoint();
+            self.document.insert(0, "abandoned").unwrap();
+        }
+        panic!("injected input publication panic at {stage:?}");
     }
 
     fn rollback_input_publication(
@@ -5197,27 +5228,31 @@ impl<P: TextMeasurementProvider> Core<P> {
         invoking: ViewId,
         checkpoint: InputPublicationCheckpoint,
         failed: bool,
+        interrupted: bool,
     ) {
-        self.document
-            .rollback_command_checkpoint(checkpoint.document);
-        let commands = &mut self
-            .views
-            .get_mut(&invoking)
-            .expect("input does not detach views")
-            .commands;
-        if failed {
-            commands.restore_failed_command(checkpoint.commands);
+        if interrupted {
+            self.document.rollback_interrupted_command_checkpoint(checkpoint.document);
         } else {
-            commands.restore_pending_layout_checkpoint(&checkpoint.commands);
+            self.document.rollback_command_checkpoint(checkpoint.document);
         }
+        self.buffer_commands = checkpoint.buffer_commands;
         self.edit_group_owner = checkpoint.edit_group_owner;
         self.edit_group_restoration = checkpoint.edit_group_restoration;
         self.replay_undo_floor = checkpoint.replay_undo_floor;
+        self.queued_replay = checkpoint.queued_replay;
         for (id, saved) in checkpoint.views {
             let view = self
                 .views
                 .get_mut(&id)
                 .expect("input does not detach views");
+            if id == invoking && !interrupted {
+                if failed { view.commands.restore_failed_command(saved.commands); }
+                else { view.commands.restore_pending_layout_checkpoint(&saved.commands); }
+            } else {
+                view.commands = saved.commands;
+            }
+            view.composition = saved.composition;
+            view.completion = saved.completion;
             view.viewport_anchor = saved.viewport_anchor;
             view.layout.set_wrap(saved.wrap);
             view.layout
@@ -5230,8 +5265,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             // its unchanged geometry. Keep validated wrap checkpoints so a
             // retry can continue locally; failed-edit revisions or restored
             // configuration changes still retire incompatible checkpoints.
-            let requirements = inspect_layout_provider(&view.engine);
-            view.long_line_checkpoints.discard_stale(&self.document, &view.layout, requirements);
+            if interrupted {
+                cancel_active_layout_work(view);
+                view.composition_layout = None;
+                view.layout.discard_tentative_publication();
+                view.engine.clear_caches();
+                view.long_line_checkpoints = LongLineCheckpointCache::default();
+            } else {
+                let requirements = inspect_layout_provider(&view.engine);
+                view.long_line_checkpoints.discard_stale(&self.document, &view.layout, requirements);
+            }
         }
     }
 
@@ -5669,8 +5712,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         let mut emitted_replay = None;
         let checkpoint =
-            matches!(&event, CoreEvent::Input(_)).then(|| self.begin_input_publication(view_id));
-        let result = self.dispatch_core_event(view_id, event, &clipboard_context, &mut emitted_replay);
+            matches!(&event, CoreEvent::Input(_)).then(|| self.begin_input_publication());
+        let result = if checkpoint.is_some() {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                let panic_event = event.clone();
+                #[cfg(test)]
+                self.inject_input_panic(&panic_event, InputPanicStage::BeforeDispatch);
+                let result = self.dispatch_core_event(view_id, event, &clipboard_context, &mut emitted_replay);
+                #[cfg(test)]
+                self.inject_input_panic(&panic_event, InputPanicStage::AfterDispatch);
+                #[cfg(test)]
+                self.inject_input_panic(&panic_event, InputPanicStage::NestedAfterDispatch);
+                result
+            })).unwrap_or(Err(CoreError::InputPanic))
+        } else {
+            self.dispatch_core_event(view_id, event, &clipboard_context, &mut emitted_replay)
+        };
         if let Some(checkpoint) = checkpoint {
             match &result {
                 Ok(outcome)
@@ -5678,10 +5736,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         matches!(command.status, CommandStatus::NeedsMoreLayout(_))
                     }) =>
                 {
-                    self.rollback_input_publication(view_id, checkpoint, false)
+                    self.rollback_input_publication(view_id, checkpoint, false, false)
                 }
                 Ok(_) => self.document.commit_command_checkpoint(checkpoint.document),
-                Err(_) => self.rollback_input_publication(view_id, checkpoint, true),
+                Err(error) => self.rollback_input_publication(view_id, checkpoint, true, *error == CoreError::InputPanic),
             }
         }
         let outcome = result?;
@@ -6728,6 +6786,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut terminal_status = None;
         let mut global_error = None;
         let mut dispatched_events = 0usize;
+        let mut global_started: Option<std::time::Instant> = None;
+        let mut completed_global_targets = 0usize;
         if self
             .views
             .get_mut(&view_id)
@@ -6819,6 +6879,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         }
                         if matches!(&popped, Some(ReplayFrame::ExNormal { plan, .. }) if plan.global) {
                             self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
+                            if !frames.iter().any(|frame| matches!(frame, ReplayFrame::ExNormal { plan, .. } if plan.global)) {
+                                global_started = None;
+                                completed_global_targets = 0;
+                            }
                         }
                         if popped.is_some() {
                             self.views
@@ -6837,6 +6901,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                         }
                     }
                     ReplayAction::BeginExNormalLine(target) => {
+                        if frames.iter().any(|frame| matches!(frame, ReplayFrame::ExNormal { plan, .. } if plan.global)) {
+                            global_started.get_or_insert_with(std::time::Instant::now);
+                        } else {
+                            global_started = None;
+                            completed_global_targets = 0;
+                        }
                         let Some(position) = ex_normal_target_position(&self.document, target)
                         else {
                             if let Some(ReplayFrame::ExNormal {
@@ -6909,6 +6979,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             accumulator.command_mut().status = CommandStatus::Complete;
                         }
                         if let Some(ReplayFrame::ExNormal {
+                            plan,
                             target,
                             event,
                             line_started,
@@ -6918,6 +6989,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                             *target += 1;
                             *event = 0;
                             *line_started = false;
+                            if plan.global {
+                                completed_global_targets += 1;
+                                if *target < plan.targets.len() && global_started
+                                    .is_some_and(|started| started.elapsed() >= self.global_replay_time_limit) {
+                                    terminal_status = Some(crate::command::ex_global::work_budget_status(completed_global_targets));
+                                }
+                            }
                         }
                     }
                     ReplayAction::Input { event, ex_normal, remap } => {
@@ -7462,6 +7540,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         if table_commit {
             target_commands.finish_native_table_edit(&mut self.document, caret_offset, true);
         }
+        // Replacing a native selection enters Insert and opens its ordinary
+        // typing group. The composition itself is already an isolated model
+        // transaction: close that empty group so the next composition or typed
+        // input cannot accidentally amend its history node. Ordinary input
+        // will open and register its own group through prepare_input_edit_group.
+        self.document.close_edit_group();
         target_commands.restore_typing_style(typing_named, typing_properties, typing_inherited);
         target_commands.restore_typing_link_disabled(typing_link_disabled);
         if let Some((authored_start, source_caret)) = source_insertion {
@@ -7586,11 +7670,18 @@ fn composition_layout_styles(
     if let Some(search) = &mut styles.search_paint_overlay {
         search.remap_ranges(|range| map_base_range_to_overlay(overlay, &range).ok());
     }
-    styles.inline_images = styles.inline_images.into_iter().filter_map(|mut image| {
-        if image.text_range.start < replaced.end && replaced.start < image.text_range.end { return None; }
-        image.text_range = map_base_range_to_overlay(overlay, &image.text_range).ok()?;
-        Some(image)
-    }).collect();
+    styles.inline_images = styles.inline_images.into_iter()
+        .filter(|image| !(image.text_range.start < replaced.end && replaced.start < image.text_range.end))
+        .map(|mut image| {
+            // An image remains one object. Adjacent marked text belongs
+            // outside it, including insertion exactly at its trailing edge.
+            let start = overlay.overlay_offset_for_base_boundary(image.text_range.start, Association::AfterInsertion)
+                .ok_or(LayoutError::InvalidTextOffset(image.text_range.start))?;
+            let end = overlay.overlay_offset_for_base_boundary(image.text_range.end, Association::BeforeInsertion)
+                .ok_or(LayoutError::InvalidTextOffset(image.text_range.end))?;
+            image.text_range = start..end;
+            Ok(image)
+        }).collect::<Result<_, LayoutError>>()?;
     styles.paragraphs = splice_paragraph_styles(styles.paragraphs, &replaced, &inserted, affinity)?;
     Ok(styles)
 }
@@ -10057,6 +10148,107 @@ mod tests {
             oldest.command.unwrap().status,
             CommandStatus::Error(_)
         ));
+    }
+
+    #[test]
+    fn input_panic_restores_model_shared_views_and_composition() {
+        for stage in [InputPanicStage::BeforeDispatch, InputPanicStage::AfterDispatch,
+            InputPanicStage::NestedAfterDispatch] {
+            let mut core = Core::new(Document::new("abc"));
+            let writer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+            let observer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+            core.handle(writer, key('m')).unwrap();
+            core.handle(writer, key('a')).unwrap();
+            core.handle(writer, key('i')).unwrap();
+            core.handle(observer, begin_composition(&core, 1..2)).unwrap();
+            core.handle(observer, CoreEvent::Composition(CompositionEvent::Update(
+                CompositionUpdate::new("é", 2..2)))).unwrap();
+            let commands = core.views.iter().map(|(id, view)|
+                (*id, format!("{:?}", view.commands))).collect::<BTreeMap<_, _>>();
+            let composition = core.views[&observer].composition.clone();
+            let shared = format!("{:?}", core.buffer_commands);
+            let revision = core.document.revision();
+            let history = core.document.history_status();
+            let group_depth = core.document.edit_group_depth();
+            core.input_panic = Some((InputEvent::Text("X".into()), stage));
+
+            assert!(matches!(core.handle(writer, text("X")), Err(CoreError::InputPanic)));
+            assert_eq!(core.document.source_bytes(), b"abc");
+            assert_eq!(core.document.revision(), revision);
+            assert_eq!(core.document.history_status(), history);
+            assert_eq!(core.document.edit_group_depth(), group_depth);
+            assert!(!core.document.has_command_checkpoint());
+            assert_eq!(format!("{:?}", core.buffer_commands), shared);
+            assert_eq!(core.views[&observer].composition, composition);
+            for (id, expected) in commands {
+                assert_eq!(format!("{:?}", core.views[&id].commands), expected);
+                core.views[&id].commands.capture_position_anchors(&core.document).unwrap();
+                assert!(core.views[&id].layout.snapshot().is_none());
+            }
+
+            // The same Insert session can accept a new edit, and its undo is
+            // still one complete unit rather than an abandoned nested group.
+            core.handle(writer, text("Y")).unwrap();
+            if stage != InputPanicStage::BeforeDispatch {
+                assert!(core.document.revision().0 > revision.0 + 1,
+                    "an interrupted publication's revision cannot identify new source");
+            }
+            core.handle(writer, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+            assert_eq!(core.document.text(), "Yabc");
+            core.handle(writer, key('u')).unwrap();
+            assert_eq!(core.document.source_bytes(), b"abc");
+            assert_eq!(core.document.edit_group_depth(), 0);
+            assert!(!core.document.has_command_checkpoint());
+        }
+    }
+
+    #[test]
+    fn global_work_budget_keeps_completed_target_and_one_undo_unit() {
+        let mut core = Core::new(Document::new("alpha\nalpha\nalpha"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+        core.global_replay_time_limit = std::time::Duration::ZERO;
+        for character in ":g/alpha/normal! x".chars() { core.handle(view, key(character)).unwrap(); }
+        let result = core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        let status = result.command.unwrap().status;
+        assert!(matches!(&status, CommandStatus::Unsupported(message)
+            if message.contains("work limit") && message.contains("1 completed targets")), "{status:?}");
+        assert_eq!(core.document.text(), "lpha\nalpha\nalpha");
+        assert_eq!(core.document.edit_group_depth(), 0);
+        assert!(core.replay_undo_floor.is_none());
+        core.handle(view, key('u')).unwrap();
+        assert_eq!(core.document.source_bytes(), b"alpha\nalpha\nalpha");
+        core.handle(view, key('x')).unwrap();
+        assert_eq!(core.document.text(), "lpha\nalpha\nalpha");
+    }
+
+    #[test]
+    fn input_panic_during_macro_retains_completed_prefix_and_finishes_undo_group() {
+        let mut core = Core::new(Document::new("abc"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+        for character in ['q', 'a', 'x', '~', 'q', 'u', 'u'] {
+            core.handle(view, key(character)).unwrap();
+        }
+        assert_eq!(core.document.text(), "abc");
+        let observer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+        assert!(core.views.get_mut(&observer).unwrap().commands.set_cursor(&core.document, 2));
+        core.input_panic = Some((InputEvent::Key(Key::Char('~')), InputPanicStage::NestedAfterDispatch));
+
+        core.handle(view, key('@')).unwrap();
+        let replay = core.handle(view, key('a')).unwrap();
+        let status = replay.command.unwrap().status;
+        assert!(matches!(&status, CommandStatus::Unsupported(message)
+            if message.contains("successful prefix") && message.contains("InputPanic")), "{status:?}");
+        assert_eq!(core.document.text(), "bc");
+        assert_eq!(core.views[&observer].commands.cursor(), 1);
+        assert_eq!(core.document.edit_group_depth(), 0);
+        assert!(!core.document.has_command_checkpoint());
+        assert!(core.replay_undo_floor.is_none());
+        assert!(core.queued_replay.is_none());
+        core.views[&observer].commands.capture_position_anchors(&core.document).unwrap();
+        core.handle(view, key('u')).unwrap();
+        assert_eq!(core.document.source_bytes(), b"abc");
+        core.handle(view, key('x')).unwrap();
+        assert_eq!(core.document.text(), "bc");
     }
 
     #[test]

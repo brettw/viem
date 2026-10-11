@@ -76,6 +76,15 @@ impl Document {
             } else if let Some(code) =
                 super::super::markdown_indented_code::source_block(self, &block)?
             {
+                let prefix_bytes = self.state().source
+                    .bytes_in(code.source.start..code.lines[0].content_start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let prefix = self.encoding().decode_region(&prefix_bytes, code.source.start)?.text;
+                let quote = super::super::markdown_quotes::prefix(&prefix);
+                let marker = super::super::markdown_blocks::marker_prefix_length(&prefix[quote..])
+                    .unwrap_or(0);
+                let continuation = format!("{}{}", &prefix[..quote], " ".repeat(code.container_indent));
+                let first = if marker > 0 { &prefix[..quote + marker] } else { &continuation };
                 let mut lines = Vec::new();
                 for line in code.lines {
                     let bytes = self
@@ -91,7 +100,9 @@ impl Document {
                             .text
                     ));
                 }
-                let prose = prose_from_code(&lines.join("\n"));
+                let prose = prose_from_code(&lines.join("\n")).split('\n').enumerate()
+                    .map(|(index, line)| format!("{}{line}", if index == 0 { first } else { &continuation }))
+                    .collect::<Vec<_>>().join("\n");
                 (
                     prose.clone(),
                     0..raw.len(),
@@ -102,11 +113,9 @@ impl Document {
             } else {
                 let first_end = raw.find('\n').unwrap_or(raw.len());
                 let opening = &raw[..first_end];
-                let quote = super::super::markdown_quotes::prefix(opening);
-                let marker = super::super::markdown_blocks::marker_prefix_length(&opening[quote..])
-                    .unwrap_or(0);
+                let quote = super::super::markdown_quotes::container_prefix(opening);
                 let (delimiter, width) = super::super::projection::markdown_fence(
-                    opening[quote + marker..].trim_start(),
+                    &opening[quote..],
                 )
                 .ok_or(DocumentError::UnsupportedFormatting)?;
                 let last_start = raw.rfind('\n').map_or(raw.len(), |at| at + 1);
@@ -135,7 +144,22 @@ impl Document {
                 } else {
                     &visible
                 });
-                let prose = quote_lines(&prose, &opening[..quote]);
+                let prose = if matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
+                    let continuation = if self.format().is_source_view() {
+                        body.lines().next().map(|line| {
+                            let end = super::super::markdown_quotes::prefix(line);
+                            line[..end].to_owned()
+                        }).unwrap_or_default()
+                    } else {
+                        super::super::markdown_code::fenced_source(self, &block)?
+                            .map(|fence| fence.body_prefix).unwrap_or_default()
+                    };
+                    prose.split('\n').enumerate().map(|(index, line)| {
+                        format!("{}{line}", if index == 0 { &opening[..quote] } else { &continuation })
+                    }).collect::<Vec<_>>().join("\n")
+                } else {
+                    quote_lines(&prose, &opening[..quote])
+                };
                 (
                     prose.clone(),
                     (first_end + 1).min(body_end)..body_end,
@@ -216,6 +240,14 @@ impl Document {
         // Text verification alone cannot detect a paragraph being swallowed
         // by its neighbor. Verify every assigned block through the change map.
         for range in targets {
+            let retained_list = (!enabled).then(|| self.projection().blocks_for_region(&range)
+                .into_iter().find(|block| block.range == range)
+                .and_then(|block| match block.kind {
+                    super::super::BlockKind::ListItem { ordered, level, .. } => Some((
+                        block.kind.clone(), block.quote_depth,
+                        self.projection().style_sheet().list_style_id(ordered, level))),
+                    _ => None,
+                })).flatten();
             let at = prepared
                 .text_position_map()
                 .map_text_point(
@@ -235,6 +267,8 @@ impl Document {
                 .any(|block| {
                     block.range.start == at
                         && (block.style.0 == expected
+                            || retained_list.as_ref().is_some_and(|(kind, quote, style)|
+                                block.kind == *kind && block.quote_depth == *quote && block.style == *style)
                             || !enabled
                                 && self.format().is_source_view()
                                 && block.quote_depth > 0

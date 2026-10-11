@@ -11,8 +11,36 @@ pub(super) fn replacement_insertion(
     if document.format() != Format::Markdown || text.is_empty() {
         return Ok(None);
     }
+    if document.projection().text_tree().byte_len() == 0 && !text.contains('\n') {
+        if let Some(prefix) = inherited.paragraph.markdown_prefix.as_ref() {
+            let current = document.projection().blocks_for_region(&(at..at));
+            let retained_owner = current.iter().any(|block| block.quote_depth > 0
+                || matches!(block.kind, super::super::BlockKind::ListItem { .. } | super::super::BlockKind::Heading(_)));
+            if !retained_owner {
+                // A whole-document replacement removed its original owner.
+                // Restore its ordered container prefix before inserting the
+                // body, preserving list/quote nesting and heading treatment.
+                let source = document.projection().source_insertion_point(at, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let mut body = document.escape_markdown_source_text(source, text)?;
+                if inherited.paragraph.style.0.starts_with("Heading") {
+                    let end = body.trim_end_matches([' ', '\t']).len();
+                    let tail = body[end..].chars().map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>();
+                    body.truncate(end); body.push_str(&tail);
+                }
+                let syntax = format!("{prefix}{body}");
+                return Ok(Some(super::super::replacement_context::Insertion {
+                    source: source..source,
+                    source_caret: source + document.encoding().encode_fragment(&syntax)?.len(),
+                    syntax,
+                }));
+            }
+        }
+    }
     if inherited.paragraph.style.0 == "Code Block"
         && document.projection().text_tree().byte_len() == 0
+        && !document.projection().blocks_for_region(&(at..at)).iter()
+            .any(|block| block.style.0 == "Code Block")
     {
         // Whole-document replacement cleared the original fence. Recreate
         // its paragraph role before inserting literal code, including syntax
@@ -40,7 +68,10 @@ pub(super) fn replacement_insertion(
                 .join(newline),
         }));
     }
-    if inherited.paragraph.quote_depth > 0 && document.projection().text_tree().byte_len() == 0 {
+    if inherited.paragraph.quote_depth > 0 && document.projection().text_tree().byte_len() == 0
+        && !document.projection().blocks_for_region(&(at..at)).iter()
+            .any(|block| block.quote_depth >= inherited.paragraph.quote_depth)
+    {
         let source = document.source_byte_len();
         let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
         let prefix = "> ".repeat(inherited.paragraph.quote_depth);

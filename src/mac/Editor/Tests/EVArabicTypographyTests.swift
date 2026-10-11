@@ -52,7 +52,7 @@ final class EVArabicTypographyTests: XCTestCase {
     XCTAssertLessThan(before.rows.count, 100)
     let surviving = Set(
       before.clusters.filter { $0.row_index == 2 }.map { $0.render_run.identifier })
-    surface.performInput { _ = try session.sendText("iX") }
+    surface.performInput { _ = try session.sendTestKeys("iX") }
     let after = try XCTUnwrap(surface.layoutSnapshot)
     XCTAssertLessThan(after.rows.count, 100)
     let reused = Set(after.clusters.filter { $0.row_index == 2 }.map { $0.render_run.identifier })

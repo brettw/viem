@@ -1288,3 +1288,33 @@ fn giant_code_block_requests_and_layout_remain_regional_and_scrolling_retires_ol
     assert_eq!(core.document().source_bytes(), source.as_bytes());
     assert!(!core.document().is_dirty());
 }
+
+#[test]
+fn highlighted_code_line_transfers_and_sort_verify_source_without_syntax_decorations() {
+    use viem_core::{CoreEvent, document::HistoryNavigationRequest};
+    use viem_core::command::{CommandStatus, InputEvent, Key};
+    for (command, expected) in [
+        (":1t1", "c\nc\na\nb"),
+        (":1m2", "a\nc\nb"),
+        (":sort", "a\nb\nc"),
+    ] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        let mut core = Core::new(Document::from_bytes(b"c\na\nb".to_vec(), Encoding::Utf8, Format::Code).unwrap());
+        core.initialize_code_detection("x.rs", true).unwrap();
+        core.set_syntax_provider_factory(Arc::new(move || Box::new(FixtureSyntax(captured.clone()))));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 500., 180.);
+        wait_for_fixture_syntax(&mut core, &calls, 0);
+        assert!(!core.document().projection().style_spans().is_empty());
+        for ch in command.chars() {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(ch))).unwrap();
+        }
+        let output = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+        assert_eq!(output.command.unwrap().status, CommandStatus::Complete, "{command}");
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        core.handle_with_layout(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), b"c\na\nb");
+        core.handle_with_layout(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}

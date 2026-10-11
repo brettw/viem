@@ -57,8 +57,46 @@ impl CommandInterpreter {
         self.indentation.effective()
     }
 
-    fn literal_indentation(&self, document: &Document) -> bool {
+    pub(super) fn literal_indentation(&self, document: &Document) -> bool {
         document.format().is_literal() || document.format().is_source_view()
+    }
+
+    fn commit_indent_edit(
+        &mut self,
+        document: &mut Document,
+        edit: TextEdit,
+        floor: usize,
+    ) -> Result<(), DocumentError> {
+        let prepared = document
+            .prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: document.id(),
+                revision: document.revision(),
+                edits: vec![edit],
+            })
+            .map_err(command_document_error)?;
+        let cursor = prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?;
+        // Explicit indentation changes bring the edited prefix into the Insert
+        // unit. A still-valid old offset can otherwise end up after the caret.
+        let floor = self
+            .insert_session
+            .as_ref()
+            .map(|session| {
+                prepared_cursor(
+                    document,
+                    &prepared,
+                    session.unit_floor.min(floor),
+                    Association::BeforeInsertion,
+                )
+            })
+            .transpose()?;
+        document
+            .commit_model_transaction(prepared)
+            .map_err(command_document_error)?;
+        self.cursor = cursor;
+        if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), floor) {
+            session.unit_floor = floor;
+        }
+        Ok(())
     }
 
     pub(super) fn continuation_indent(
@@ -181,6 +219,16 @@ impl CommandInterpreter {
                         .len()
                         .saturating_sub(text.graphemes(true).count());
                     let entries = &session.replace_journal[start..];
+                    if !entries.is_empty() && entries.iter().all(|entry| entry.source_record.is_some()) {
+                        let records = entries.iter().filter_map(|entry| entry.source_record.clone()).collect::<Vec<_>>();
+                        let record = document.combine_recorded_replacements(&records)?;
+                        let combined = ReplaceJournalEntry {
+                            autoindent: false, start: record.before_cursor, inserted: record.inserted.clone(),
+                            original: record.original.clone(), source_record: Some(record),
+                        };
+                        session.replace_journal.truncate(start);
+                        session.replace_journal.push(combined);
+                    } else
                     if !entries.is_empty()
                         && entries.iter().all(|entry| entry.source_record.is_none())
                         && entries
@@ -222,6 +270,65 @@ impl CommandInterpreter {
             .unwrap_or_else(|| self.continuation_indent(document, self.cursor, false, false));
         self.cleanup_generated_indent(document)?;
         let start = self.cursor;
+        if self.mode == Mode::Replace && document.format().is_markdown() {
+            let snapshot = document.hard_line_snapshot();
+            let line_end = line_end(&snapshot, start);
+            let suffix = snapshot.slice_utf8(start..line_end).map_err(DocumentError::FormattedTextStorage)?;
+            let removed_len = if self.indentation_options().autoindent && self.literal_indentation(document) {
+                leading_whitespace_len(&suffix)
+            } else { 0 };
+            let inserted = format!("\n{prefix}");
+            let payload = FormattedTextPayload::new(&snapshot, inserted.clone(), vec![0])
+                .expect("Replace Enter contains one semantic break");
+            let edit = FormattedPayloadEdit::new(start..start + removed_len, payload)
+                .with_boundary_affinity(self.markdown_typing_affinity(document));
+            let use_markdown_typing = document.format().is_wysiwyg() && !self.typing_style.link_disabled
+                && self.markdown_autodetect();
+            let mut exit_source = None;
+            let heading_enter = document.format().is_wysiwyg() && prefix.is_empty()
+                && document.projection().blocks_for_region(&(start..start)).iter()
+                    .any(|block| matches!(block.kind, crate::document::BlockKind::Heading(_))
+                        && block.range.start <= start && start <= block.range.end);
+            let (prepared, after) = if heading_enter {
+                let prepared = document.prepare_model_request(ModelRequest::ContinueList {
+                    document: document.id(), revision: document.revision(), at: start,
+                }).map_err(command_document_error)?;
+                let after = prepared_list_enter_cursor(document, &prepared, start)?;
+                (prepared, after)
+            } else if use_markdown_typing {
+                let (prepared, after, _, exit) = document.prepare_markdown_typing_batch(edit,
+                    self.typing_style.named.as_ref(), &self.typing_style.values,
+                    self.typing_style.inherited.as_ref(), self.input_assistance.literal, self.markdown_typing_exit(document),
+                ).map_err(command_document_error)?;
+                exit_source = exit;
+                (prepared, after)
+            } else if !self.typing_style.is_empty() {
+                let prepare = if self.typing_style.link_disabled { Document::prepare_insertion_without_link }
+                    else { Document::prepare_insertion_with_typing_context };
+                let (prepared, after, _) = prepare(document, edit, self.typing_style.named.as_ref(),
+                    &self.typing_style.values, self.typing_style.inherited.as_ref()).map_err(command_document_error)?;
+                (prepared, after)
+            } else {
+                let prepared = document.prepare_formatted_payload_request(FormattedPayloadEditRequest::new(
+                    document.id(), document.revision(), vec![edit.clone()],
+                )).map_err(command_document_error)?;
+                let after = prepared_payload_caret(document, &prepared, &edit)?;
+                (prepared, after)
+            };
+            let record = document.recorded_source_replacement(&prepared, start, after,
+                inserted.clone(), Some(suffix[..removed_len].to_owned())).map_err(command_document_error)?;
+            let changed = !prepared.is_no_op();
+            document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            self.cursor = after;
+            if use_markdown_typing { self.note_markdown_typing_exit(document, exit_source)?; }
+            if let Some(session) = self.insert_session.as_mut() {
+                session.replace_journal.push(ReplaceJournalEntry {
+                    autoindent: false, start, inserted: inserted.clone(), original: record.original.clone(), source_record: Some(record),
+                });
+                session.record_inserted(&RegisterValue::characterwise(inserted), Some(EditSessionStep::IndentedEnter));
+            }
+            return Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() });
+        }
         let mut removed_whitespace = String::new();
         if self.indentation_options().autoindent && self.literal_indentation(document) {
             let snapshot = document.hard_line_snapshot();
@@ -232,7 +339,19 @@ impl CommandInterpreter {
             let whitespace = leading_whitespace_len(&suffix);
             if whitespace > 0 {
                 removed_whitespace = suffix[..whitespace].to_owned();
-                document.replace(self.cursor..self.cursor + whitespace, "")?;
+                let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(), revision: document.revision(),
+                    edits: vec![TextEdit::new(self.cursor..self.cursor + whitespace, "")],
+                }).map_err(command_document_error)?;
+                let floor = self.insert_session.as_ref().map(|session|
+                    prepared_cursor(document, &prepared, session.unit_floor, Association::BeforeInsertion)
+                ).transpose()?;
+                let cursor = prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?;
+                document.commit_model_transaction(prepared).map_err(command_document_error)?;
+                self.cursor = cursor;
+                if let (Some(session), Some(floor)) = (self.insert_session.as_mut(), floor) {
+                    session.unit_floor = floor;
+                }
             }
         }
         let output = self.record_semantic_insert(
@@ -373,8 +492,10 @@ impl CommandInterpreter {
         }
         let replacement = " ".repeat(target.saturating_sub(remove_column));
         let removed = &before[remove_start..];
-        document.replace(start + remove_start..self.cursor, &replacement)?;
-        self.cursor = start + remove_start + replacement.len();
+        self.commit_indent_edit(document,
+            TextEdit::new(start + remove_start..self.cursor, replacement),
+            if leading { start } else { start + remove_start },
+        )?;
         self.finish_typing_caret(document)?;
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
@@ -420,12 +541,9 @@ impl CommandInterpreter {
             (columns / width + 1) * width
         };
         let replacement = options.whitespace(0, target);
-        document.replace(line.start..line.start + len, &replacement)?;
-        self.cursor = if self.cursor < line.start + len {
-            line.start + replacement.len()
-        } else {
-            self.cursor - len + replacement.len()
-        };
+        self.commit_indent_edit(document,
+            TextEdit::new(line.start..line.start + len, replacement), line.start,
+        )?;
         self.finish_typing_caret(document)?;
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
@@ -453,8 +571,7 @@ impl CommandInterpreter {
         if restore {
             self.restored_indent = Some(options.columns(&before[..len]));
         }
-        document.replace(start..self.cursor, "")?;
-        self.cursor = start;
+        self.commit_indent_edit(document, TextEdit::new(start..self.cursor, ""), start)?;
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
             session.record_step(EditSessionStep::ResetIndent { restore });

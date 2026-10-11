@@ -19,6 +19,12 @@ impl Document {
         }) else {
             return Ok(None);
         };
+        // A table nested in a list or quote inherits owner grammar that a
+        // table-only restart cannot reproduce or safely splice away.
+        if self.projection().blocks_for_region(&table.range).iter()
+            .any(|block| !block.containers.is_empty()) {
+            return Ok(None);
+        }
         // The final ending separates this table from the following source row
         // (or exposes the terminal empty row in Source). The table-only parse
         // omits that ending, so it cannot prove an edit which consumes it.
@@ -100,6 +106,13 @@ impl Document {
         let (old_local, _, old_parsed_source) = parse(old_bytes.clone(), old_source.clone())?;
         let (regional, source_ranges, new_parsed_source) =
             parse(new_bytes.clone(), new_source.clone())?;
+        if self.format() == Format::MarkdownSource && old_source.end == self.source_byte_len()
+            && (old_parsed_source.end != old_source.end) != (new_parsed_source.end != new_source.end)
+        {
+            // Adding/removing the terminal ending changes the final empty
+            // Source row outside the table's text range.
+            return Ok(None);
+        }
         if old_local.tables().len() != 1
             || regional.tables().len() != 1
             || old_local.tables()[0].range != (0..old_local.text_tree().byte_len())
@@ -237,6 +250,12 @@ impl Document {
     ) -> Result<bool, ModelTransactionError> {
         if self.format() != Format::MarkdownSource { return Ok(false); }
         let header = &table.source_rows[0].source_body;
+        if patches.iter().any(|patch| [header.start, header.end].into_iter()
+            .any(|boundary| patch.range.start < boundary && boundary < patch.range.end)) {
+            // A consumed header boundary has no retained row-local identity.
+            // The complete Source candidate must classify the remaining text.
+            return Ok(true);
+        }
         let start = rebase_source_boundary(header.start, patches, Association::BeforeInsertion)?;
         let end = rebase_source_boundary(header.end, patches, Association::AfterInsertion)?;
         let leading_pipe = |bytes: Vec<u8>, at| -> Result<bool, ModelTransactionError> {
@@ -268,6 +287,10 @@ impl Document {
         let Some((table, _, _)) = self.projection().table_cell_at(first.range.start) else {
             return Ok(None);
         };
+        if self.projection().blocks_for_region(&table.range).iter()
+            .any(|block| !block.containers.is_empty()) {
+            return Ok(None);
+        }
         if self.table_header_prefix_changes(source, table, patches)? {
             return Ok(None);
         }

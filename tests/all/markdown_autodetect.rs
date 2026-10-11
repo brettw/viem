@@ -455,3 +455,40 @@ fn marked_input_waits_for_commit_and_cancellation_is_source_preserving() {
             .bold
     );
 }
+
+#[test]
+fn authored_prefixes_in_list_items_match_fresh_container_projection() {
+    for source in ["- a", "0. zero", "1) a\n2) b", "*\ta\n*\tb", "- a\n  b\n  c", "- a\n1. b", "-\ta", "1. a\n\n\n2. b"] {
+        for prefix in ["- ", "# ", "> ", "1. "] {
+            let (mut d, mut c) = fixture(source);
+            key(&mut d, &mut c, Key::Char('i'));
+            type_keys(&mut d, &mut c, prefix);
+            let fresh = reopened(&d);
+            let summary = |d: &Document| d.projection().blocks().iter().map(|b|
+                (b.range.clone(), b.kind.clone(), b.style.clone(), b.quote_depth)).collect::<Vec<_>>();
+            assert_eq!(summary(&d), summary(&fresh), "source={source:?}, prefix={prefix:?}, result={:?}", String::from_utf8_lossy(&d.source_bytes()));
+            assert_eq!(d.text(), fresh.text());
+            key(&mut d, &mut c, Key::Escape);
+            let after = d.source_bytes();
+            key(&mut d, &mut c, Key::Char('u'));
+            assert_eq!(d.source_bytes(), source.as_bytes());
+            key(&mut d, &mut c, Key::Ctrl('r'));
+            assert_eq!(d.source_bytes(), after);
+        }
+    }
+}
+
+#[test]
+fn list_prefix_recognition_reparses_local_structure_without_unrelated_suffix() {
+    for count in [100, 10_000] {
+        let source = format!("- a\n\n{}", "unrelated paragraph\n\n".repeat(count));
+        let (mut d, mut c) = fixture(&source);
+        key(&mut d, &mut c, Key::Char('i'));
+        key(&mut d, &mut c, Key::Char('-'));
+        let (_, work) = viem_core::document::measure_document_work(|| key(&mut d, &mut c, Key::Char(' ')));
+        assert_eq!(work.source_full_materializations, 0, "{count}: {work:?}");
+        assert_eq!(work.full_projection_candidates, 0, "{count}: {work:?}");
+        assert!(work.source_decoded_bytes < 4096, "{count}: {work:?}");
+        assert_eq!(d.projection().blocks()[0].kind, reopened(&d).projection().blocks()[0].kind);
+    }
+}

@@ -21,6 +21,15 @@ fn item_start(block: &Block) -> bool {
     block.list_editing.item_start
 }
 
+fn same_list_parent(left: &Block, right: &Block) -> bool {
+    let parent = |block: &Block| block.containers.iter().rposition(|member|
+        matches!(member.container.kind, super::super::ContainerKind::List { .. })).unwrap_or(0);
+    let left_parent = &left.containers[..parent(left)];
+    let right_parent = &right.containers[..parent(right)];
+    left_parent.len() == right_parent.len() && left_parent.iter().zip(right_parent)
+        .all(|(left, right)| left.container.id == right.container.id)
+}
+
 fn targets(
     blocks: &[Block],
     range: &Range<usize>,
@@ -81,7 +90,8 @@ fn targets(
                 level < base || level == base && item_start(&blocks[*index])
             })
         })
-        .filter(|index| level(&blocks[*index]) == Some(base));
+        .filter(|index| level(&blocks[*index]) == Some(base)
+            && same_list_parent(&blocks[*index], &blocks[first]));
     let parent = (0..first)
         .rev()
         .find(|index| level(&blocks[*index]).map_or(true, |level| level < base))
@@ -162,7 +172,8 @@ impl Document {
         let previous = blocks
             .find_navigation(0..first, true, boundary)
             .and_then(|index| blocks.get(index))
-            .is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base));
+            .is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base)
+                && same_list_parent(&block, &current));
         let parent = base > 1
             && blocks
                 .find_navigation(0..first, true, lower)
@@ -211,6 +222,11 @@ impl Document {
             } else {
                 visible.visible_point_for_source(raw.end, false)?
             };
+            // A selection entirely inside hidden syntax can map its inward
+            // edges past one another. It selects no visible list body.
+            if start > end {
+                return Err(DocumentError::UnsupportedFormatting.into());
+            }
             let prepared = visible.prepare_list_indent(start..end, unindent)?;
             return self
                 .prepare_visible_source_patches(prepared.summary().source_patches().to_vec());
@@ -326,7 +342,21 @@ fn markdown_patches(
     unindent: bool,
 ) -> Result<Vec<SourcePatch>, DocumentError> {
     let original = input;
-    let quotes = super::super::markdown_quotes::classify(input);
+    let mut quotes = super::super::markdown_quotes::classify(input);
+    // Move the item's inner quotes with it. Only quotes enclosing the list
+    // remain outside the indentation patch; stripping every quote would add
+    // whitespace to the quote body instead of moving its marker.
+    let memberships = &blocks[target.first].containers;
+    let owner = memberships.iter().rposition(|member|
+        member.container.kind == super::super::ContainerKind::ListItem).unwrap_or(0);
+    let outer_quotes = memberships[..owner].iter().filter(|member|
+        member.container.kind == super::super::ContainerKind::Quote).count();
+    for quote in &mut quotes {
+        if quote.depth > outer_quotes {
+            quote.content_start = quote.range.start + super::super::markdown_quotes::prefix_with_limit(
+                &input.text[quote.range.clone()], outer_quotes).0;
+        }
+    }
     let stripped = super::super::markdown_quotes::strip(input, &quotes);
     let input = &stripped;
     let lines = super::super::paragraph_flow::source_lines(input);
@@ -446,9 +476,19 @@ fn markdown_patches(
         } else {
             current + delta
         };
+        let mut indentation = " ".repeat(next);
+        if !unindent && line_index == start && blocks[target.first].range.is_empty()
+            && line_index > 0 && !input.text[lines[line_index - 1].clone()].trim().is_empty()
+        {
+            // An empty nested bullet cannot interrupt its parent's paragraph
+            // in GFM (and '-' may instead become a setext underline). A blank
+            // source line makes the new empty child an actual list item.
+            let quote = &original.text[quotes[line_index].range.start..quotes[line_index].content_start];
+            indentation = format!("{}{quote}{indentation}", document.file_format().spelling());
+        }
         patches.push(SourcePatch::primary(
             converter.source_range(line.start..line.start + prefix),
-            document.encoding().encode_fragment(&" ".repeat(next))?,
+            document.encoding().encode_fragment(&indentation)?,
         ));
         if let Some(ordinal) = canonical_ordinals.get(&line_index) {
             let context = contexts[line_index]

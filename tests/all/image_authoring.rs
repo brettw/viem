@@ -66,7 +66,7 @@ fn html_image_removal_and_normal_delete_restore_exact_source_on_undo() {
         assert_eq!(doc.source_bytes(), source.as_bytes());
         let mut core = Core::new(doc);
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
-        core.handle(view, CoreEvent::Input(InputEvent::text("llx"))).unwrap();
+        for ch in "llx".chars() { core.handle(view, CoreEvent::Input(InputEvent::key(ch))).unwrap(); }
         assert_eq!(core.document().text(), "a  z");
         core.handle(view, CoreEvent::Input(InputEvent::text("u"))).unwrap();
         assert_eq!(core.document().source_bytes(), source.as_bytes());

@@ -144,7 +144,7 @@ fn counted_and_mapped_paragraph_navigation_replays_through_macros() {
     send(&mut commands, &mut document, InputEvent::key('q'));
     assert_eq!(commands.cursor(), 13);
     commands.set_cursor(&document, 0);
-    send(&mut commands, &mut document, InputEvent::text("@q"));
+    for ch in "@q".chars() { send(&mut commands, &mut document, InputEvent::key(ch)); }
     assert_eq!(commands.cursor(), 7);
     assert_eq!(document.text(), "one\ntwo\nthree\nfour");
 }

@@ -428,6 +428,7 @@ impl CommandInterpreter {
             LineShape::End | LineShape::Start | LineShape::StartNonblank
         );
         if whole
+            && first.fragment_index == 0
             && !last.wraps_to_next
             && end < document.text().len()
             && document.text().as_bytes()[end] == b'\n'
@@ -451,6 +452,10 @@ impl CommandInterpreter {
             return Ok(None);
         }
         if key == Key::Char('V') || matches!(self.pending, Pending::G { .. }) {
+            return Ok(None);
+        }
+        if self.pending == Pending::None && self.mode != Mode::Normal
+            && matches!(key, Key::Char('J' | 'A' | 'I' | 'o' | 'O' | 'C' | 'D' | 'Y' | 'S')) {
             return Ok(None);
         }
         if key == Key::Char('.') {
@@ -594,6 +599,8 @@ impl CommandInterpreter {
                 Err(error) => return Ok(Some(layout_error(error))),
             };
             let output = self.install_visual_position(document, &snapshot, position);
+            self.visual_to_line_end = self.mode == Mode::VisualCharacter
+                && matches!(key, Key::Char('$') | Key::End);
             self.desired_x = desired_x;
             return Ok(Some(output));
         }
@@ -666,6 +673,8 @@ impl CommandInterpreter {
             BoundaryAffinity::Downstream
         };
         self.visual_position = None;
+        self.visual_to_line_end = self.mode == Mode::VisualCharacter
+            && matches!(key, Key::Char('$') | Key::End);
         self.remember_physical_cursor(document, source);
         Ok(Some(CommandOutput {
             cursor_moved: self.cursor != before,
@@ -816,6 +825,7 @@ impl CommandInterpreter {
         }
         let before = document.revision();
         let mut physical_change_at = None;
+        let mut retained_indent = String::new();
         let mut output = if let Some(mut source) = extent.source {
             let source_len = document.source_byte_len();
             let payload = document.physical_source_payload(source.clone())?;
@@ -837,17 +847,22 @@ impl CommandInterpreter {
                 Operator::Lowercase => Some(crate::document::PhysicalSourceTransform::Lowercase),
                 Operator::Uppercase => Some(crate::document::PhysicalSourceTransform::Uppercase),
                 Operator::ToggleCase => Some(crate::document::PhysicalSourceTransform::ToggleCase),
-                Operator::Indent => Some(crate::document::PhysicalSourceTransform::Indent { spaces: 4usize.saturating_mul(applications) }),
-                Operator::Outdent => Some(crate::document::PhysicalSourceTransform::Outdent { spaces: 4usize.saturating_mul(applications) }),
-                Operator::Reindent => Some(crate::document::PhysicalSourceTransform::TrimIndent),
+                Operator::Indent => Some(crate::document::PhysicalSourceTransform::Indent { columns: self.indentation_options().shift_width().saturating_mul(applications), options: self.indentation_options() }),
+                Operator::Outdent => Some(crate::document::PhysicalSourceTransform::Outdent { columns: self.indentation_options().shift_width().saturating_mul(applications), options: self.indentation_options() }),
+                Operator::Reindent => Some(crate::document::PhysicalSourceTransform::Reindent { options: self.indentation_options() }),
                 _ => None,
             };
             let replacement = match operator {
                 Operator::Delete | Operator::Change => {
-                    if operator == Operator::Change && extent.whole && source.end < source_len {
-                        "\n".to_owned()
+                    if operator == Operator::Change && extent.whole && self.literal_indentation(document)
+                        && self.indentation_options().autoindent {
+                        retained_indent = normalized[..crate::document::leading_whitespace_len(&normalized)].to_owned();
+                    }
+                    if operator == Operator::Change && extent.whole
+                        && (source.end < source_len || payload.break_offsets().last().is_some_and(|offset| offset + 1 == normalized.len())) {
+                        format!("{retained_indent}\n")
                     } else {
-                        String::new()
+                        retained_indent.clone()
                     }
                 }
                 Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => String::new(),
@@ -861,6 +876,7 @@ impl CommandInterpreter {
                 && extent.whole
                 && source.end == source_len
                 && source.start > 0
+                && (source.is_empty() || !payload.break_offsets().last().is_some_and(|offset| offset + 1 == normalized.len()))
             {
                 let index = document.physical_line_at_source(source.start)?.index;
                 if index > 0 {
@@ -890,11 +906,11 @@ impl CommandInterpreter {
                     },
                 );
             }
-            self.cursor = document
-                .visible_point_for_source(source.start.min(document.source_byte_len()), true)?;
-            self.remember_physical_cursor(document, source.start.min(document.source_byte_len()));
+            let insertion_source = (source.start + document.encoding().encode_fragment(&retained_indent)?.len()).min(document.source_byte_len());
+            self.cursor = document.visible_point_for_source(insertion_source, true)?;
+            self.remember_physical_cursor(document, insertion_source);
             if operator == Operator::Change {
-                physical_change_at = Some(document.source_point(source.start.min(document.source_byte_len()))
+                physical_change_at = Some(document.source_point(insertion_source)
                     .map_err(|_| DocumentError::AmbiguousProjection)?);
             }
             CommandOutput {
@@ -947,9 +963,18 @@ impl CommandInterpreter {
             if operator == Operator::Change
                 && extent.whole
                 && whole_hard_lines
+                && range.start < range.end
                 && document.text().as_bytes().get(range.end.saturating_sub(1)) == Some(&b'\n')
             {
                 range.end -= 1;
+            }
+            if operator == Operator::Change && extent.whole && whole_hard_lines
+                && self.literal_indentation(document) && self.indentation_options().autoindent {
+                let line = lines.line_at_offset(range.start).map_err(|_| DocumentError::AmbiguousProjection)?;
+                let content = lines.slice_utf8(line.content_range()).map_err(DocumentError::FormattedTextStorage)?;
+                let prefix = crate::document::leading_whitespace_len(&content);
+                retained_indent = content[..prefix].to_owned();
+                range.start += prefix;
             }
             let replacement = match operator {
                 Operator::Delete | Operator::Change => String::new(),
@@ -970,8 +995,24 @@ impl CommandInterpreter {
                 document.apply_edits(edits)?;
             } else if operator == Operator::Delete && extent.whole {
                 document.delete_visual_text(range.clone())?;
+            } else if matches!(operator, Operator::Change | Operator::Delete) && document.format().is_source_view() {
+                let source = document.projection().source_insertion_point(range.start, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let at = document.source_point(source).map_err(|_| DocumentError::AmbiguousProjection)?;
+                let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(), revision: document.revision(),
+                    edits: vec![TextEdit::new(range.clone(), "")],
+                }).map_err(command_document_error)?;
+                changed_cursor = Some(prepared_cursor(document, &prepared, range.start, Association::BeforeInsertion)?);
+                physical_change_at = prepared.text_position_map().source_position_map()
+                    .and_then(|map| map.map_source_point(at, Association::BeforeInsertion,
+                        DeletionRecovery::PreferFollowingThenPreceding).ok())
+                    .and_then(|mapped| mapped.value().copied());
+                document.commit_model_transaction(prepared).map_err(command_document_error)?;
             } else if operator == Operator::Change {
                 changed_cursor = Some(delete_with_cursor(document, range.clone())?);
+            } else if matches!(operator, Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase) {
+                document.apply_edits(case_edits(&document.text()[range.clone()], range.start, operator))?;
             } else {
                 document.replace(range.clone(), &replacement)?;
             }
@@ -996,6 +1037,7 @@ impl CommandInterpreter {
         if operator == Operator::Change {
             output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
             self.typing_style.inherited = inherited_typing;
+            self.capture_generated_indent(document, retained_indent);
             if let Some(at) = physical_change_at {
                 if document.source_insertion_requires_materialization(at)? {
                     if let Some(session) = self.insert_session.as_mut() {
@@ -1012,6 +1054,11 @@ impl CommandInterpreter {
                 &document.hard_line_snapshot(),
                 self.cursor,
             );
+            if let Some(at) = physical_change_at {
+                if document.source_insertion_requires_materialization(at)? {
+                    self.remember_physical_cursor(document, at.offset());
+                }
+            }
         }
         if !self.replaying && operator != Operator::Yank {
             let command = OperatorRepeat {
@@ -1291,7 +1338,11 @@ impl CommandInterpreter {
         let point = if at_end {
             g_dollar_for_document(document, snapshot, position)
         } else if nonblank {
-            layout_motion::g_caret_for_document(document, snapshot, position)
+            let rows = layout_motion::command_row_span(snapshot, position, 0).ok()?;
+            let row = &snapshot.rows[rows.start];
+            let text = document.hard_line_snapshot().slice_utf8(row.text_range.clone()).ok()?;
+            let prefix = crate::document::leading_whitespace_len(&text);
+            return Some(row.text_range.start + prefix);
         } else {
             g0(snapshot, position)
         }
@@ -1353,7 +1404,7 @@ impl CommandInterpreter {
         let first = &snapshot.rows[a.start.min(b.start)];
         let last = &snapshot.rows[a.start.max(b.start)];
         let mut end = last.text_range.end;
-        if !last.wraps_to_next && document.text().as_bytes().get(end) == Some(&b'\n') {
+        if first.fragment_index == 0 && !last.wraps_to_next && document.text().as_bytes().get(end) == Some(&b'\n') {
             end += 1;
         }
         Some((
@@ -1515,13 +1566,14 @@ impl CommandInterpreter {
         let Some(snapshot) = &self.line_layout else {
             return Err(DocumentError::AmbiguousProjection);
         };
+        let options = self.indentation_options();
         let shift = applications
-            .checked_mul(4)
+            .checked_mul(options.shift_width())
             .filter(|size| *size <= 1_000_000)
             .ok_or(DocumentError::UnsupportedFormatting)?;
         let mut edits = Vec::new();
         for row in snapshot.rows.iter() {
-            if row.text_range.start >= range.end || row.text_range.end < range.start {
+            if row.text_range.start >= range.end || row.text_range.end <= range.start {
                 continue;
             }
             let mut start = row.text_range.start;
@@ -1536,25 +1588,28 @@ impl CommandInterpreter {
                 continue;
             }
             let text = &document.text()[start..row.text_range.end];
-            match operator {
-                Operator::Indent => edits.push(TextEdit::new(start..start, " ".repeat(shift))),
-                Operator::Outdent => {
-                    let count = text
-                        .bytes()
-                        .take_while(|byte| *byte == b' ')
-                        .take(shift)
-                        .count();
-                    if count > 0 {
-                        edits.push(TextEdit::new(start..start + count, ""));
-                    }
-                }
+            let prefix = crate::document::leading_whitespace_len(text);
+            let old_columns = options.columns(&text[..prefix]);
+            let columns = match operator {
+                Operator::Indent => old_columns.checked_add(shift).ok_or(DocumentError::UnsupportedFormatting)?,
+                Operator::Outdent => old_columns.saturating_sub(shift),
                 Operator::Reindent => {
-                    let count = text.len() - text.trim_start_matches([' ', '\t']).len();
-                    if count > 0 {
-                        edits.push(TextEdit::new(start..start + count, ""));
+                    let lines = document.hard_line_snapshot();
+                    let index = lines.line_at_offset(start).map_err(|_| DocumentError::AmbiguousProjection)?.index();
+                    let mut columns = 0;
+                    for previous in (index.saturating_sub(512)..index).rev() {
+                        let line = lines.line(previous).ok_or(DocumentError::AmbiguousProjection)?;
+                        let text = lines.slice_utf8(line.content_range()).map_err(DocumentError::FormattedTextStorage)?;
+                        let prefix = crate::document::leading_whitespace_len(&text);
+                        if prefix < text.len() { columns = options.columns(&text[..prefix]); break; }
                     }
-                }
+                    columns
+                },
                 _ => unreachable!(),
+            };
+            let replacement = options.try_whitespace(0, columns).map_err(|_| DocumentError::UnsupportedFormatting)?;
+            if replacement != text[..prefix] {
+                edits.push(TextEdit::new(start..start + prefix, replacement));
             }
         }
         Ok(edits)

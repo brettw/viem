@@ -90,6 +90,25 @@ fn whitespace_in_large_list_preserves_unaffected_layout_and_block_identity() {
 }
 
 #[test]
+fn filling_an_empty_item_among_list_siblings_keeps_projection_work_local() {
+    use viem_core::document::{ModelRequest, ProjectionWorkScope, TextEdit};
+    let source = format!("{}- \n{}", "- before\n".repeat(5_000), "- after\n".repeat(5_000));
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = document.projection().blocks()[5_000].range.start;
+    let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+        document: document.id(), revision: document.revision(),
+        edits: vec![TextEdit::new(at..at, "x")],
+    }).unwrap();
+    let work = prepared.summary().projection_work();
+    assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+    assert!(work.decoded_source_bytes() < 128, "{work:?}");
+    document.commit_model_transaction(prepared).unwrap();
+    assert_eq!(document.projection().blocks()[5_000].range, at..at + 1);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+#[test]
 fn list_continuation_body_whitespace_matches_reopened_projection() {
     let source = "- ```\n  A\n  ```";
     let mut document =

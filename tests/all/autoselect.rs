@@ -22,6 +22,9 @@ fn send(c: &mut CommandInterpreter, d: &mut Document, event: InputEvent) {
 fn key(c: &mut CommandInterpreter, d: &mut Document, key: Key) {
     send(c, d, InputEvent::Key(key));
 }
+fn keys(c: &mut CommandInterpreter, d: &mut Document, keys: &str) {
+    for ch in keys.chars() { key(c, d, Key::Char(ch)); }
+}
 fn text(c: &mut CommandInterpreter, d: &mut Document, text: &str) {
     send(c, d, InputEvent::text(text));
 }
@@ -156,7 +159,7 @@ fn vim_shift_selection_is_inclusive_and_stopsel_moves_instead_of_collapsing() {
 fn vim_select_delete_returns_normal_native_delete_continues_typing() {
     for deletion in [Key::Delete, Key::Backspace] {
         let (mut d, mut c) = fixture();
-        text(&mut c, &mut d, "gh");
+        keys(&mut c, &mut d, "gh");
         assert!(c.is_select_mode());
         key(&mut c, &mut d, deletion);
         assert_eq!(c.mode(), Mode::Normal);
@@ -179,7 +182,7 @@ fn native_selection_does_not_run_vim_select_mappings_and_ctrl_g_is_explicit() {
     key(&mut c, &mut d, Key::Char('x'));
     assert_eq!(d.text(), "xbc def");
     key(&mut c, &mut d, Key::Escape);
-    text(&mut c, &mut d, "gh");
+    keys(&mut c, &mut d, "gh");
     key(&mut c, &mut d, Key::Char('x'));
     assert_eq!(d.text(), "Qbc def");
     key(&mut c, &mut d, Key::Escape);

@@ -59,7 +59,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
     func testNativeTabAndShiftTabIndentInsideTheVisibleItem() throws {
         let (backend, surface) = try makeSurface("1. Parent\n2. **Body**")
         let session = try XCTUnwrap(surface.session)
-        surface.performInput { _ = try session.sendText("jlli") }
+        surface.performInput { _ = try session.sendTestKeys("jlli") }
         let original = try session.layoutExport()
         let originalX = try XCTUnwrap(original.decorations.last).x
         let cursor = surface.viewPresentation.cursor_utf8_offset

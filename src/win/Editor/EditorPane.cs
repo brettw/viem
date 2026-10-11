@@ -137,7 +137,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         });
         Canvas.PointerWheelChanged += (_, e) => {
             if (View == null) return; var p = e.GetCurrentPoint(Canvas); bool ctrl = Down(VirtualKey.Control);
-            Run(() => { if (ctrl) View.StepZoom(p.Properties.MouseWheelDelta > 0); else { var v = View.Viewport; float delta = -p.Properties.MouseWheelDelta / 120f * 60; View.Scroll(v.left + ((p.Properties.IsHorizontalMouseWheel || Down(VirtualKey.Shift)) ? delta : 0), v.top + ((!p.Properties.IsHorizontalMouseWheel && !Down(VirtualKey.Shift)) ? delta : 0)); } }); e.Handled = true;
+            Run(() => { if (ctrl) View.StepZoom(p.Properties.MouseWheelDelta > 0); else { RefreshScrollGeometry(); var v = View.Viewport; float delta = -p.Properties.MouseWheelDelta / 120f * 60; View.Scroll(v.left + ((p.Properties.IsHorizontalMouseWheel || Down(VirtualKey.Shift)) ? delta : 0), v.top + ((!p.Properties.IsHorizontalMouseWheel && !Down(VirtualKey.Shift)) ? delta : 0)); } }); e.Handled = true;
         };
         Canvas.AllowDrop = true;
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
@@ -168,7 +168,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             Enqueue(() => { if (View?.Composing == true) View.CommitComposition(text); else DeliverText(text); return Task.CompletedTask; });
         };
         vertical.Scroll += (_, e) => ScrollVerticallyFromScrollbar(e.NewValue);
-        horizontal.Scroll += (_, _) => { if (!scrollUpdating && View != null) Run(() => View.Scroll((float)horizontal.Value, View.Viewport.top)); };
+        horizontal.Scroll += (_, _) => { if (!scrollUpdating && View != null) Run(() => { RefreshScrollGeometry(); View.Scroll((float)horizontal.Value, View.Viewport.top); }); };
         uint blinkMs = GetCaretBlinkTime();
         blink.Interval = TimeSpan.FromMilliseconds(blinkMs is 0 or uint.MaxValue ? 530 : Math.Max(100, blinkMs));
         blink.Tick += (_, _) => { if (active && input.FocusState != FocusState.Unfocused && blinkMs != uint.MaxValue) { caretVisible = !caretVisible; Canvas.Invalidate(); prompt.Blink(caretVisible); } };
@@ -471,13 +471,22 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal ScrollBar HorizontalScrollControl => horizontal;
     internal Rect CaretRectangle => caretRect;
 
+    private void RefreshScrollGeometry()
+    {
+        if (View == null) return;
+        try { _ = View.LayoutInfo(); }
+        catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) {
+            View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight);
+        }
+    }
+
     internal void ScrollVerticallyFromScrollbar(double value)
     {
         if (scrollUpdating || View == null) return;
         // Estimated document heights cannot identify the actual last row.
         // Let core materialize and clamp at the real end when the thumb reaches it.
         float top = vertical.Maximum > 0 && value >= vertical.Maximum ? float.MaxValue : (float)value;
-        Run(() => View.Scroll(View.Viewport.left, top));
+        Run(() => { RefreshScrollGeometry(); View.Scroll(View.Viewport.left, top); });
     }
 
     public void Refresh()
@@ -492,8 +501,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // geometry is temporarily unavailable (for example after scrolling).
             if (!StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath)) ResetImagePreviews();
             presentation = View.Presentation;
-            message.Text = View.SubstitutePrompt();
-            UpdateStatusPresentation();
+            viewport = View.Viewport;
+            try { message.Text = View.SubstitutePrompt(); }
+            catch (CoreException error) { message.Text = ""; PresentationWarning("substitute prompt", error); }
+            try { UpdateStatusPresentation(); }
+            catch (CoreException error) { prompt.ClearPresentation(); PresentationWarning("command line", error); }
             // Materialize the requested viewport before waiting, then export
             // its geometry and colors together after syntax publication.
             try { _ = View.LayoutInfo(); }
@@ -505,8 +517,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
             presentation = View.Presentation; viewport = View.Viewport;
             try { RefreshLineNumbers(); }
             catch (CoreException error) { lineNumbers = null; lineNumberCanvas.Invalidate(); PresentationWarning("line numbers", error); }
-            RefreshImagePreviews();
-            RefreshTableInteraction();
+            try { RefreshImagePreviews(); }
+            catch (CoreException error) { PresentationWarning("image previews", error); }
+            try { RefreshTableInteraction(); }
+            catch (CoreException error) { PresentationWarning("table controls", error); }
             mode.Text = presentation.mode switch {
                 VIEM_MODE_INSERT => "INSERT", VIEM_MODE_REPLACE => "REPLACE",
                 VIEM_MODE_VISUAL_CHARACTER => "VISUAL", VIEM_MODE_VISUAL_LINE => "V-LINE", VIEM_MODE_VISUAL_BLOCK => "V-BLOCK",
@@ -520,7 +534,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             horizontal.Maximum = viewport.maximum_left; horizontal.ViewportSize = Math.Max(1, Canvas.ActualWidth); horizontal.Value = viewport.left;
             horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
             scrollUpdating = false;
-            caretRect = CalculateCaret();
+            try { caretRect = CalculateCaret(); }
+            catch (CoreException error) { caretRect = new(); PresentationWarning("caret", error); }
             try { RefreshLinkPopup(); }
             catch (CoreException error) { DismissLinkPopup(suppress: false); PresentationWarning("link popup", error); }
             try { RefreshImagePopup(); }
@@ -545,9 +560,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
             }
         }
         catch (Exception e) {
-            // A previous source/device snapshot cannot become the new frame
-            // merely because exporting its replacement failed.
-            snapshot = null; lineNumbers = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
+            // Retain geometry only when core still attests to every identity.
+            // Keep the current viewport and input mode independently of paint.
+            try {
+                presentation = View.Presentation; viewport = View.Viewport;
+                if (snapshot == null || !CoreView.SameLayout(snapshot.Info.identity, View.LayoutInfo().identity)) snapshot = null;
+            } catch { snapshot = null; }
+            lineNumbers = null; whitespace = null; caretRect = new(); SetCaretHover(null); DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
             InvalidateDrawingCache(); Canvas.Invalidate(); lineNumberCanvas.Invalidate(); Report(e);
         }
         finally {
@@ -704,6 +723,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             double dy = dragPoint.Y < 0 ? Math.Max(-60, dragPoint.Y) : dragPoint.Y > Canvas.ActualHeight ? Math.Min(60, dragPoint.Y - Canvas.ActualHeight) : 0;
             double dx = dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
             if (dx == 0 && dy == 0) return;
+            RefreshScrollGeometry();
             View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
             if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
         });

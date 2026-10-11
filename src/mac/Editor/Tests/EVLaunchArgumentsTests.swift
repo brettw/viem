@@ -107,7 +107,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
             surface.loadViewIfNeeded()
             surface.goToLine(1)
             let session = try XCTUnwrap(surface.session)
-            _ = try session.sendText(pendingInput)
+            _ = try session.sendTestKeys(pendingInput)
             if pendingInput == "iLiteral " {
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 118)
             }
@@ -281,7 +281,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
         let controller = try f.window(for: document)
         let surface = try XCTUnwrap(controller.editorSurface as? EVEditorSurfaceController)
         let session = try XCTUnwrap(surface.session)
-        _ = try session.sendText("iUnsaved ")
+        _ = try session.sendTestKeys("iUnsaved ")
         let expected = try document.editorBackend.serializedSource(typeName: EVDocument.plainTextType)
         XCTAssertTrue(document.editorBackend.persistenceState.isDirty)
         f.process(EVLaunchArguments(filenames: [url.path], initialLine: 2))

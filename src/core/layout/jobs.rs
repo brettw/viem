@@ -69,6 +69,7 @@ pub struct ViewportLayoutRegion {
     viewport_height: f32,
     long_line_checkpoint: Option<LongLineLayoutCheckpoint>,
     horizontal_focus_offset: Option<usize>,
+    horizontal_anchor_offset: Option<usize>,
     horizontal_desired_x: Option<f32>,
     allow_automatic_horizontal_focus: bool,
     complete_horizontal_geometry: bool,
@@ -100,6 +101,7 @@ impl ViewportLayoutRegion {
             viewport_height,
             long_line_checkpoint: None,
             horizontal_focus_offset: None,
+            horizontal_anchor_offset: None,
             horizontal_desired_x: None,
             allow_automatic_horizontal_focus: true,
             complete_horizontal_geometry: false,
@@ -141,6 +143,11 @@ impl ViewportLayoutRegion {
     pub fn with_horizontal_focus(mut self, offset: usize, desired_x: Option<f32>) -> Self {
         self.horizontal_focus_offset = Some(offset);
         self.horizontal_desired_x = desired_x.filter(|value| value.is_finite());
+        self
+    }
+
+    pub(crate) fn with_horizontal_anchor(mut self, offset: usize) -> Self {
+        self.horizontal_anchor_offset = Some(offset);
         self
     }
 
@@ -1080,7 +1087,9 @@ where
         let prefix = view.hard_line_prefix_height(range.start).map_or(0.0, |height| height.height() as f32);
         captured_view.regional_viewport_top = (viewport.viewport_top - prefix).max(0.0);
         captured_view.horizontal_focus_offset = viewport.horizontal_focus_offset;
+        captured_view.horizontal_anchor_offset = viewport.horizontal_anchor_offset;
         captured_view.horizontal_desired_x = viewport.horizontal_desired_x;
+        captured_view.complete_horizontal_geometry = viewport.complete_horizontal_geometry;
     }
     before_registration();
     // This CAS is the preparation acceptance point. If cancellation happened

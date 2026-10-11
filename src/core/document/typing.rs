@@ -712,6 +712,36 @@ impl Document {
             .source_range(range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
         if enabled && self.format() == Format::Markdown {
+            if let Some(code) = self.projection().style_spans_for_region(&range).into_iter().find(|span|
+                span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)
+                    && span.range.start <= range.start && range.end <= span.range.end
+                    && span.range != range)
+            {
+                let content = self.projection().source_range(code.range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if let Some((opening, closing)) = super::super::markdown_code::delimiter_ranges(self, &content)? {
+                    let wrap_code = |body: &str| {
+                        if body.is_empty() { return String::new(); }
+                        let marker = "`".repeat(body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+                        let pad = if body.starts_with('`') || body.ends_with('`')
+                            || body.starts_with(' ') && body.ends_with(' ') && !body.trim().is_empty() { " " } else { "" };
+                        let body = if self.projection().table_cell_at(range.start).is_some() {
+                            body.replace('|', "\\|")
+                        } else { body.to_owned() };
+                        format!("{marker}{pad}{body}{pad}{marker}")
+                    };
+                    let marker = if style == Some(SemanticInlineStyle::Strong) { "**" }
+                        else if style.is_some() { "*" } else { "~~" };
+                    let syntax = format!("{}{marker}{}{marker}{}",
+                        wrap_code(&self.text()[code.range.start..range.start]),
+                        wrap_code(&self.text()[range.clone()]),
+                        wrap_code(&self.text()[range.end..code.range.end]));
+                    return self.prepare_source_only_patches(vec![SourcePatch::primary(
+                        opening.start..closing.end, self.encoding().encode_fragment(&syntax)?)]);
+                }
+            }
+        }
+        if enabled && self.format() == Format::Markdown {
             // Code keeps its interior literal. Emphasis on the complete
             // inherited Code run must enclose its delimiters, not become
             // newly visible asterisks inside the backticks.
@@ -891,10 +921,21 @@ impl Document {
                     marker,
                 )
             } else {
-                let content = self
+                let mut content = self
                     .projection()
                     .source_range(span.range.clone())
                     .ok_or(DocumentError::AmbiguousProjection)?;
+                for code in self.projection().style_spans_for_region(&span.range) {
+                    if code.application != StyleApplication::Semantic(SemanticInlineStyle::Code)
+                        || code.range.start < span.range.start || span.range.end < code.range.end { continue; }
+                    let body = self.projection().source_range(code.range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+                    if let Some((opening, closing)) = super::super::markdown_code::delimiter_ranges(self, &body)? {
+                        if code.range.start == span.range.start { content.start = content.start.min(opening.start); }
+                        if code.range.end == span.range.end { content.end = content.end.max(closing.end); }
+                    }
+                }
+                if range.start == span.range.start { source.start = content.start; }
+                if range.end == span.range.end { source.end = content.end; }
                 let removal = removal(&content)?;
                 let opening = removal[0].range();
                 let closing = removal[1].range();
@@ -946,8 +987,43 @@ impl Document {
             }
         }
         if self.format() == Format::MarkdownSource {
-            self.prepare_visible_source_patches(patches)
+            // Source-visible partial removal must also preserve the meaning
+            // of the retained delimiter flanks. An underscore split can either
+            // keep styling the selection or expose the old markers as text;
+            // passive inline scopes express the retained flanks in both cases.
+            let prepared = self.prepare_visible_source_patches(if enabled || application == StyleApplication::Automatic("Strikethrough".into()) { patches } else { fallback })?;
+            if enabled {
+                return Ok(prepared);
+            }
+            // Source-visible edits also need a semantic proof. Repeatedly
+            // clearing a surviving trait would keep adding delimiters forever.
+            let cleared = |candidate: &PreparedModelTransaction| -> Result<bool, ModelTransactionError> {
+                let mapped = |offset, association| -> Result<usize, ModelTransactionError> {
+                    Ok(candidate.text_position_map().map_text_point(
+                        self.text_point(offset)?, association,
+                        BoundaryAffinity::Downstream,
+                        DeletionRecovery::PreferFollowingThenPreceding,
+                    )?.value().ok_or(DocumentError::AmbiguousProjection)?.offset())
+                };
+                let selected = mapped(range.start, Association::AfterInsertion)?
+                    ..mapped(range.end, Association::BeforeInsertion)?;
+                let projection = match &candidate.publication {
+                    PreparedPublication::State(state) => &state.projection,
+                    PreparedPublication::NoOp => self.projection(),
+                    PreparedPublication::History { .. } => return Err(DocumentError::VerificationFailed.into()),
+                };
+                Ok(!projection.style_spans_for_region(&selected).iter().any(|span|
+                    span.application == application && span.range.start < selected.end
+                        && selected.start < span.range.end))
+            };
+            if !cleared(&prepared)? {
+                return Err(DocumentError::UnsupportedFormatting.into());
+            }
+            Ok(prepared)
         } else {
+            let identity = [TextEdit::new(range.clone(), self.text()[range.clone()].to_owned())];
+            super::markdown_block_styles::preserve_retained_literals(self, &identity, &mut patches)?;
+            super::markdown_block_styles::preserve_retained_literals(self, &identity, &mut fallback)?;
             self.prepare_source_only_patches(patches).or_else(|error| {
                 if matches!(
                     error,
@@ -1014,6 +1090,7 @@ impl Document {
         // The captured first character supplies inheritance, while deliberate
         // pending menu choices still win. Only differing properties are later
         // written, so paragraph defaults remain sparse whenever they survive.
+        let explicit_named = named.is_some();
         let inherited_named =
             inherited.map(|context| context.named.clone().unwrap_or_else(|| StyleId::from("")));
         let effective_named = named.or(inherited_named.as_ref());
@@ -1047,7 +1124,48 @@ impl Document {
         }
         self.validate_typing_payload(&edit)?;
         let properties = self.validate_typing_properties(values)?;
+        if self.format() == Format::Markdown && (named.is_some() || !values.is_empty()) {
+            let sample = if edit.range.start == self.text().len() && edit.range.start > 0 {
+                self.previous_grapheme_boundary(edit.range.start).unwrap_or(edit.range.start)
+            } else { edit.range.start };
+            if self.link_snapshot_at(self.text_point(sample)?)?.is_some_and(|link|
+                link.editable && link.destination_source.is_none())
+            {
+                // Automatic link syntax cannot contain authored Code/emphasis.
+                // Canonicalize just this link before applying the typing choice.
+                return self.prepare_typing_after_canonical_link(edit, named, values);
+            }
+        }
         let mut at = edit.range.start;
+        if self.format() == Format::MarkdownSource && edit.range.is_empty()
+            && named.is_some_and(|style| style.0 == "Code") && !edit.payload.text().contains('\n')
+            && !edit.payload.text().is_empty()
+        {
+            let in_delimiter = self.projection().style_spans_for_region(&(at..at)).iter().any(|span| {
+                let width = match span.application {
+                    StyleApplication::Semantic(SemanticInlineStyle::Strong) => 2,
+                    StyleApplication::Semantic(SemanticInlineStyle::Emphasis) => 1,
+                    _ => return false,
+                };
+                span.range.len() >= width * 2 && (span.range.start < at && at < span.range.start + width
+                    || span.range.end - width < at && at < span.range.end)
+            });
+            if in_delimiter {
+                // Source delimiter interiors are literal insertion positions.
+                // Styling new text cannot consume either retained marker flank.
+                let body = edit.payload.text();
+                let marker = "`".repeat(body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+                let pad = if body.starts_with('`') || body.ends_with('`')
+                    || body.starts_with(' ') && body.ends_with(' ') && !body.trim().is_empty() { " " } else { "" };
+                let source = self.projection().source_insertion_point(at, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let syntax = format!("{marker}{pad}{body}{pad}{marker}");
+                let prepared = self.prepare_visible_source_patches(vec![SourcePatch::primary(source..source,
+                    self.encoding().encode_fragment(&syntax)?)])?;
+                let start = at + marker.len() + pad.len();
+                return Ok((prepared, start + body.len(), start));
+            }
+        }
         if named.is_none() && inherited.is_none() && edit.payload.text().trim().is_empty() {
             let caret = at + edit.payload.text().len();
             return Ok((self.prepare_formatted_payload_edits(vec![edit])?, caret, at));
@@ -1131,7 +1249,9 @@ impl Document {
         if structural.is_none()
             && (edit.range.is_empty() || single_replacement)
             && context_matches
-            && inherited.is_none()
+            && (inherited.is_none()
+                || single_replacement
+                    && self.replacement_typing_context(edit.range.clone())?.as_ref() == inherited)
         {
             // Replacing one already-matching grapheme retains its existing
             // source syntax, so no redundant wrapper edit is needed.
@@ -1316,8 +1436,14 @@ impl Document {
             }
         }
         if let Some(style) = named {
-            let prepared =
-                scratch.prepare_character_style_choice(selection.clone(), style.clone())?;
+            // Inheriting a named style is not a menu reset of every direct
+            // trait. Preserve matching source scopes and let the individual
+            // inherited properties below change only traits that differ.
+            let prepared = if explicit_named {
+                scratch.prepare_character_style_choice(selection.clone(), style.clone())?
+            } else {
+                scratch.prepare_markdown_named_character(selection.clone(), style)?
+            };
             apply(
                 &mut scratch,
                 prepared,

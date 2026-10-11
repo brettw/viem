@@ -3,6 +3,8 @@ using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Viem.Windows.Editor;
+using Viem.Windows.Core;
+using Viem.Windows.Interop;
 using Viem.Windows.Shell;
 using static Viem.Windows.Interop.Native;
 
@@ -70,6 +72,27 @@ internal static class PresentationTests
         var theme = preferences.Theme;
         Invalidates(() => preferences.Set("theme", "foreground", Preferences.ColorJson(Microsoft.UI.Colors.Red)), "theme invalidates cached drawing commands");
         preferences.Set("theme", "foreground", Preferences.ColorJson(theme.Foreground));
+        var unchangedRevision = pane.Document.State.document_revision;
+        foreach (string export in new[] { "paint", "selection", "paragraph decorations", "table controls" }) {
+            try {
+                view.BeforePresentationExport = name => {
+                    if (name == export) throw new CoreException(VIEM_STATUS_CORE_FAILURE, $"Injected {name} failure");
+                };
+                view.Zoom(1.1f); pane.Refresh();
+                var degraded = view.Layout();
+                Check(degraded.Rows.Length > 0 && CoreView.SameLayout(degraded.Info.identity, view.LayoutInfo().identity),
+                    $"failed {export} export preserves current geometry");
+                view.Provider.InvalidateMetrics();
+                pane.ScrollVerticallyFromScrollbar(0);
+                Check(view.LayoutInfo().identity.metrics_generation == view.Provider.Generation,
+                    $"failed {export} export permits fresh scrollbar geometry after metrics invalidation");
+                view.Place(45f, 40f); Draw();
+                Check(pane.Document.State.document_revision == unchangedRevision,
+                    $"failed {export} export leaves pointer placement available without source edits");
+            } finally { view.BeforePresentationExport = null; view.Zoom(1); pane.Refresh(); }
+            byte[] recovered = Draw(); pane.InvalidateDrawingCache();
+            Check(Draw().AsSpan().SequenceEqual(recovered), $"recovered {export} export matches fresh pixels");
+        }
         if (pane.LastError != null) throw pane.LastError;
     }
 }

@@ -184,7 +184,7 @@ final class EVNativeSelectionTests: XCTestCase {
         }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
-        surface.performInput { _ = try session.sendText("0v") }
+        surface.performInput { _ = try session.sendTestKeys("0v") }
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECT_CHARACTER))
         surface.perform(menuCommand: .selectWord, sender: nil)
         XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "one")
@@ -224,7 +224,7 @@ final class EVNativeSelectionTests: XCTestCase {
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 1, length: 3))
         surface.performInput {
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-            _ = try session.sendText("gh")
+            _ = try session.sendTestKeys("gh")
         }
         XCTAssertEqual(surface.statusBarState.mode, "SELECT")
     }
@@ -247,7 +247,7 @@ final class EVNativeSelectionTests: XCTestCase {
         for (command, mode) in [("i", UInt32(VIEM_MODE_INSERT)), ("R", UInt32(VIEM_MODE_REPLACE))] {
             let (_, surface, session, window) = try fixture("one two")
             defer { window.close() }
-            surface.performInput { _ = try session.sendText("w" + command) }
+            surface.performInput { _ = try session.sendTestKeys("w" + command) }
             surface.perform(menuCommand: .selectWord, sender: nil)
             XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "two")
             XCTAssertEqual(surface.statusBarState.mode, "SELECTION")

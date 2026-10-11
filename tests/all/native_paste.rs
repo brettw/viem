@@ -606,6 +606,59 @@ fn encoding_rejection_preserves_source_selection_registers_and_history() {
 
 type Editor = Core<MockTextMeasurementProvider>;
 
+#[test]
+fn copied_markdown_fragments_paste_inside_inline_contexts() {
+    let mut failures = Vec::new();
+    for (source, range, at) in [("a\nb", 0..2, 1), ("\na", 0..1, 0),
+        ("*it*", 0..1, 1), ("a*b*c", 0..1, 1), ("`a\nb`", 0..1, 1),
+        ("**bold**", 0..4, 4), ("- [ ] task", 1..3, 0), ("**bold**", 0..1, 1),
+        ("a**b**c", 0..1, 1), ("a\n***\nb", 0..1, 3), ("- > quote in list", 5..8, 0),
+        ("| **bold** | _it_ |\n| --- | --- |\n| a | b |", 0..9, 8)] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+        core_key(&mut core, view, Key::Char('i'));
+        for (offset, extend) in [(range.start, false), (range.end, true)] {
+            core.handle_with_layout(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: offset,
+                affinity: BoundaryAffinity::Downstream, extend_selection: extend,
+            }).unwrap();
+        }
+        let copied = core.handle_with_layout(view, CoreEvent::InputWithClipboard {
+            input: InputEvent::Key(Key::CopySelection),
+            clipboard: ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard),
+        }).unwrap().command.unwrap();
+        let content = copied.clipboard_writes[0].content().clone();
+        let mut expected = core.document().text().to_owned();
+        expected.insert_str(at, content.plain_text());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core_key(&mut core, view, Key::Char('i'));
+        core.handle_with_layout(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        let result = core.handle_with_layout(view, CoreEvent::InputWithClipboard {
+            input: InputEvent::Key(Key::PasteClipboard), clipboard: clipboard(content),
+        });
+        match result {
+            Ok(result) if result.command.as_ref().is_some_and(|c| matches!(c.status, CommandStatus::Complete)) => {},
+            result => { failures.push(format!("{source:?} {range:?} at {at}: {result:?}")); continue; }
+        }
+        assert_eq!(core.document().text(), expected, "{source:?}");
+        let after = core.document().source_bytes();
+        if source == "**bold**" && range == (0..4) { assert_eq!(after, b"**boldbold**"); }
+        let fresh = Document::from_bytes(after.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        if fresh.text() != expected {
+            failures.push(format!("{source:?} {range:?} at {at}: reopened {:?}, expected {expected:?}, bytes {:?}", fresh.text(), String::from_utf8_lossy(&after)));
+        }
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core_key(&mut core, view, Key::Char('u'));
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core_key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(core.document().source_bytes(), after);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
 fn core_key(core: &mut Editor, view: ViewId, key: Key) {
     accepted(
         core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key)))

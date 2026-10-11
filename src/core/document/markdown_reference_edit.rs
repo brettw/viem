@@ -109,6 +109,10 @@ impl Document {
             // Retire just this definition and protect the new whitespace; its
             // untouched continuation endings can keep folding as prose.
             let force_prose = edits.iter().any(|edit| {
+                edit.replacement.contains('\n')
+                    && self.projection().source_insertion_point(edit.range.start, true)
+                        .is_some_and(|at| source.start <= at && at <= source.end)
+            }) || edits.iter().any(|edit| {
                 edit.range.is_empty() && edit.replacement.chars().any(|ch| matches!(ch, ' ' | '\t'))
                     && self.projection().source_insertion_point(edit.range.start, true)
                         .is_some_and(|at| source.start <= at && at <= source.end)
@@ -166,7 +170,7 @@ impl Document {
                 && retained_definitions.iter().any(|range| {
                     candidate.text[..range.start]
                         .chars()
-                        .all(|ch| matches!(ch, ' ' | '\t'))
+                        .all(|ch| matches!(ch, ' ' | '\t' | '\n'))
                         && range.end >= candidate.text.trim_end_matches('\n').len()
                 })
             {

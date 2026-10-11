@@ -95,7 +95,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 XCTAssertNotNil(surface.layoutSnapshot)
                 XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
                 XCTAssertFalse(backend.persistenceState.isDirty)
-                surface.performInput { _ = try session.sendText("iX") }
+                surface.performInput { _ = try session.sendTestKeys("iX") }
                 XCTAssertNil(surface.commandOutput)
                 XCTAssertNotEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
                 surface.performInput { _ = try session.undo() }
@@ -157,7 +157,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
             XCTAssertEqual(snapshot.info.content_insets.right, Float(margins.right))
             XCTAssertEqual(snapshot.rows.count, 1)
             XCTAssertFalse(backend.persistenceState.isDirty)
-            _ = try session.sendText("iFirst words")
+            _ = try session.sendTestKeys("iFirst words")
             surface.refreshPresentation()
             XCTAssertEqual(try backend.formattedText(), "First words")
             XCTAssertNil(surface.commandOutput)
@@ -262,7 +262,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         for style in [NSScroller.Style.legacy, .overlay] {
             let (backend, surface, preferences) = try fixture(style: style)
             let session = try XCTUnwrap(surface.session)
-            _ = try session.sendText("GA")
+            _ = try session.sendTestKeys("GA")
             for _ in 0..<3 {
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
                 _ = try session.sendText("more text")

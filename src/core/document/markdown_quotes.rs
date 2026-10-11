@@ -62,7 +62,7 @@ pub(super) fn empty_insertion_patches(
             .len();
     Ok(Some(vec![(
         at..at,
-        super::projection::escape_markdown_insert_in_encoding(replacement, document.encoding()),
+        document.escape_markdown_source_text(at, replacement)?,
     )]))
 }
 
@@ -113,7 +113,7 @@ pub(super) fn is_fenced_block(
             .bytes_in(source.clone())
             .ok_or(super::DocumentError::AmbiguousProjection)?;
         let decoded = document.encoding().decode_region(&bytes, source.start)?;
-        if markdown_fence(&decoded.text[prefix(&decoded.text)..]).is_some() {
+        if markdown_fence(&decoded.text[container_prefix(&decoded.text)..]).is_some() {
             return Ok(true);
         }
     }
@@ -131,7 +131,20 @@ pub(super) fn prefix(text: &str) -> usize {
     prefix_with_limit(text, usize::MAX).0
 }
 
-fn prefix_with_limit(text: &str, limit: usize) -> (usize, usize) {
+/// A fenced owner may alternate list and quote containers on its opening row.
+/// This is used only while identifying an already parsed code paragraph.
+pub(super) fn container_prefix(text: &str) -> usize {
+    let mut at = 0;
+    loop {
+        let before = at;
+        at += prefix(&text[at..]);
+        at += super::markdown_blocks::marker_prefix_length(&text[at..]).unwrap_or(0);
+        at += text[at..].len() - text[at..].trim_start_matches([' ', '\t']).len();
+        if at == before { return at; }
+    }
+}
+
+pub(super) fn prefix_with_limit(text: &str, limit: usize) -> (usize, usize) {
     let bytes = text.as_bytes();
     let mut at = 0;
     let mut depth = 0;
@@ -180,6 +193,18 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
                 .unwrap_or(0);
             let mut content_start =
                 range.start + prefix_with_limit(&input.text[range.clone()], depth).0;
+            // A parser-owned quote inside a deep list can follow four or
+            // more indentation columns. The root quote-prefix rule allows
+            // only three; apply it after the enclosing list's indentation.
+            // The grammar ownership is required so indented literal `>` text
+            // cannot become a quote merely because it resembles a marker.
+            if depth > 0 && content_start == range.start
+                && active.iter().any(|container| container.list.is_some()) {
+                let raw = &input.text[range.clone()];
+                let indentation = raw.len() - raw.trim_start_matches([' ', '\t']).len();
+                let quote = prefix_with_limit(&raw[indentation..], depth).0;
+                if quote > 0 { content_start = range.start + indentation + quote; }
+            }
             // A quote may begin after a list marker on the same physical row.
             // Its parser-owned start supplies the prefix that a row-only scan misses.
             for container in active.iter().filter(|container| {

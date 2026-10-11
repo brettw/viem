@@ -1711,7 +1711,12 @@ impl FormattedDocument {
     }
     fn install_table_ids(&mut self, mut next_id:u64, previous:Option<&Self>) -> Result<u64,BlockIdentityError> {
         let mut previous_cells=std::collections::HashMap::new();let mut previous_rows=std::collections::HashMap::new();
-        if let Some(previous)=previous {for table in previous.tables.iter().filter(|old|self.tables.iter().any(|new|!new.rows.is_frozen() && old.source_range.start==new.source_range.start)){for row in &table.rows {previous_rows.insert(row.id,(table.id,row));for cell in &row.cells {previous_cells.insert(cell.id,(table.id,row));}}}}
+        // A structural edit can split one table into several tables whose
+        // retained rows all name the same former owner. Only one successor
+        // may inherit that table identity.
+        let mut table_ids = self.tables.iter().filter(|table| table.rows.is_frozen())
+            .map(|table| table.id).collect::<std::collections::HashSet<_>>();
+        if let Some(previous)=previous {for table in previous.tables.iter().filter(|old|self.tables.iter().any(|new|!new.rows.is_frozen() && (old.source_range.start==new.source_range.start || old.range==new.range))){for row in &table.rows {previous_rows.insert(row.id,(table.id,row));for cell in &row.cells {previous_cells.insert(cell.id,(table.id,row));}}}}
         for table in Arc::make_mut(&mut self.tables) {
             if table.rows.is_frozen() { continue; }
             let mut table_previous=None;
@@ -1726,7 +1731,13 @@ impl FormattedDocument {
                 }
                 row.id=old_row.map_or_else(||row.cells.first().map_or(0,|cell|cell.id),|(_,row)|row.id);
             }
-            table.id=table_previous.unwrap_or_else(||table.rows.first().map_or(0,|row|row.id));
+            table.id=table_previous.filter(|id| !table_ids.contains(id))
+                .unwrap_or_else(||table.rows.first().map_or(0,|row|row.id));
+            if !table_ids.insert(table.id) {
+                table.id=next_id;
+                next_id=next_id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;
+                table_ids.insert(table.id);
+            }
             table.rows.freeze(); table.source_rows.freeze();
         }
         Ok(next_id)
@@ -6025,6 +6036,18 @@ fn project_markdown_lines(
             markdown_presented_kind(kind, preserve_markers)
         };
         if let Some(table) = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= at)).filter(|table| table.range.start <= source_end && at < table.range.end) {
+            // All table rows belong to the same enclosing list item. Only
+            // its first projected block can own an authored list marker.
+            let table_kind = |first: bool| {
+                let mut kind = presented_kind(BlockKind::Paragraph);
+                if !first {
+                    if let BlockKind::ListItem { item_start, container_start, .. } = &mut kind {
+                        *item_start = false;
+                        *container_start = false;
+                    }
+                }
+                kind
+            };
             let mut projected = super::MarkdownTable { id: 0, range: output_start..output_start, source_range: table.range.clone(), source_view:preserve_markers, columns: table.columns.clone(), rows: Default::default(), source_rows: Default::default() };
             builder.in_table = true;
             for source_row in &table.rows {
@@ -6050,7 +6073,7 @@ fn project_markdown_lines(
                         shown_cells.push(start..builder.output.len()); previous = b;
                     }
                     builder.emit_range(previous, raw_end);
-                    let mut block = Block::new(0,row_start..builder.output.len(),presented_kind(BlockKind::Paragraph),style.into(),None);
+                    let mut block = Block::new(0,row_start..builder.output.len(),table_kind(row_start == output_start),style.into(),None);
                     block.quote_depth = quote_depth; builder.blocks.push(block);
                 } else if !source_row.delimiter {
                     for column in 0..table.columns.len() {
@@ -6065,7 +6088,7 @@ fn project_markdown_lines(
                         let source = if left < right { builder.unit_at(left).unwrap().source.start..builder.unit_at(normalized.text[..right].char_indices().next_back().unwrap().0).unwrap().source.end } else { raw.start..raw.start };
                         if start == builder.output.len() { builder.provenance.push(ProvenanceSpan { formatted:start..start, source:source.clone() }); }
                         let range = start..builder.output.len();
-                        let mut block = Block::new(0,range.clone(),presented_kind(BlockKind::Paragraph),style.into(),None); block.quote_depth=quote_depth; builder.blocks.push(block);
+                        let mut block = Block::new(0,range.clone(),table_kind(row_start == output_start && column == 0),style.into(),None); block.quote_depth=quote_depth; builder.blocks.push(block);
                         cells.push(super::MarkdownTableCell { id:0,range,source_range:source,missing:column>=source_row.cells.len() });
                     }
                 }
@@ -6333,7 +6356,7 @@ fn project_markdown_lines(
             }
         }
         // Quote markers after a list prefix belong to the container too.
-        if quoted { content_start += super::markdown_quotes::prefix(&normalized.text[content_start..content_end]); }
+        if quoted && heading.is_none() { content_start += super::markdown_quotes::prefix(&normalized.text[content_start..content_end]); }
         if preserve_markers { builder.emit_range(line.start, content_start); }
         kind = presented_kind(kind);
         let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= at)).is_some_and(|range| range.start <= source_end && at < range.end);
@@ -6408,7 +6431,7 @@ fn project_markdown_lines(
             // boundary after their prefix, including an empty ATX heading.
             let content_at = builder.unit_at(content_start)
                 .map_or_else(|| block_syntax.map_or(source_content_end, |syntax| syntax.content.start), |unit| unit.source.start);
-            let at = if matches!(kind, BlockKind::Heading(_)) { content_at } else {
+            let at = if heading.is_some() || quoted { content_at } else {
                 context.map_or_else(|| quote.map_or(content_at, |quote| quote.content_start), |context| context.content_start)
             };
             builder.provenance.push(ProvenanceSpan {

@@ -51,7 +51,7 @@ final class EVTextInputClientTests: XCTestCase {
                 let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
                 surface.loadViewIfNeeded()
                 let session = try XCTUnwrap(surface.session)
-                surface.performInput { if !command.isEmpty { _ = try session.sendText(command) } }
+                surface.performInput { if !command.isEmpty { _ = try session.sendTestKeys(command) } }
                 let view = RecordingEditorView(surface: surface)
                 surface.view = view
                 let window = textInputWindow(view)
@@ -472,7 +472,7 @@ final class EVTextInputClientTests: XCTestCase {
                     _ = try session.sendText("i")
                     _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 111)
                 } else if !command.isEmpty {
-                    _ = try session.sendText(command)
+                    _ = try session.sendTestKeys(command)
                 }
             }
             let view = surface.editorView
@@ -509,7 +509,7 @@ final class EVTextInputClientTests: XCTestCase {
             surface.performInput {
                 if command == "block" {
                     _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 118)
-                } else if !command.isEmpty { _ = try session.sendText(command) }
+                } else if !command.isEmpty { _ = try session.sendTestKeys(command) }
             }
             let view = RecordingEditorView(surface: surface)
             let mode = surface.viewPresentation.mode
@@ -564,7 +564,7 @@ final class EVTextInputClientTests: XCTestCase {
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
-            surface.performInput { _ = try session.sendText(command) }
+            surface.performInput { _ = try session.sendTestKeys(command) }
             let view = RecordingEditorView(surface: surface)
             XCTAssertNotNil(view.inputContext, command)
             view.keyDown(with: keyEvent(keyCode: 31, characters: "o"))

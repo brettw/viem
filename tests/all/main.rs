@@ -8,6 +8,7 @@
 //! `cargo test --test all hard_line_reflow::`.
 
 mod application_theme;
+mod audit_rich_boundaries;
 mod formatting_presentation_work;
 mod architecture_boundaries;
 mod autoselect;
@@ -88,6 +89,7 @@ mod markdown_model_structure;
 mod markdown_model_code_tables;
 mod markdown_model_html_regressions;
 mod markdown_inline_typing_regressions;
+mod audit_document_regressions;
 mod markdown_indented_code;
 mod markdown_empty_continuations;
 mod markdown_inline_breaks;
@@ -192,3 +194,9 @@ mod native_arrows;
 mod ex_address_substitute;
 
 mod ex_address_files;
+mod command_audit;
+mod audit_source_regressions;
+
+mod audit_replay_regressions;
+
+mod audit_format_regressions;

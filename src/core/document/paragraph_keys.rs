@@ -149,6 +149,47 @@ impl Document {
         let block = super::super::edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
         if self.format() == Format::Markdown
+            && self.projection().style_spans_for_region(&(at..at)).iter().any(|span|
+                span.application == StyleApplication::Automatic("Comment".into())
+                    && span.range.start < at && at < span.range.end)
+        {
+            // Visible comment contents are literal, so backslash and <br>
+            // would appear as text. Its own source newline is the hard break.
+            let prepared = self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")])?;
+            return self.verify_hard_break_paragraph(prepared, &block);
+        }
+        if self.format() == Format::Markdown {
+            // An empty overlap query excludes a span's edges. Include both
+            // neighboring sides so comment starts and ends remain reachable.
+            let nearby = at.saturating_sub(1)..at.saturating_add(1).min(self.text().len());
+            if let Some(comment) = self.projection().style_spans_for_region(&nearby).iter().find(|span|
+                span.application == StyleApplication::Automatic("Comment".into())
+                    && (span.range.start == at || span.range.end == at))
+            {
+                // A break beside a block comment must join its existing
+                // literal lines in the same paragraph. Retire that opener
+                // locally, protecting the comment's existing hard breaks.
+                let mut patches = self.literal_comment_support(comment.range.clone())?;
+                let source = self.projection().source_insertion_point(at, at == comment.range.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                patches.push(SourcePatch::primary(source..source, self.encoding().encode_fragment("<br>")?));
+                let prepared = self.prepare_text_edits_with_patches(
+                    vec![TextEdit::new(at..at, "\n")], Some(patches),
+                )?;
+                return self.verify_hard_break_paragraph(prepared, &block);
+            }
+        }
+        if self.format() == Format::Markdown && block.thematic_break {
+            // Typing at the rule's editable boundary replaces its furniture.
+            // Retire the rule first so the requested break belongs to ordinary
+            // prose, with the same verified supporting edit as printable text.
+            if let Some(patches) = self.markdown_rule_text_patches(&TextEdit::new(at..at, ""))? {
+                return self.prepare_markdown_supporting_patches(patches, |document| {
+                    document.prepare_intra_paragraph_break(at, affinity)
+                });
+            }
+        }
+        if self.format() == Format::Markdown
             && (block.style == StyleId::from("Block quote") || block.quote_depth > 0)
             && super::super::markdown_quotes::is_fenced_block(self, &block)?
         {
@@ -172,11 +213,19 @@ impl Document {
                     || affinity == BoundaryAffinity::Downstream && at < self.text().len(),
             )
             .ok_or(DocumentError::AmbiguousProjection)?;
+        let before_folded_ending = at < block.range.end
+            && self.projection().text_tree().slice(at..at + 1).as_deref() == Ok(" ")
+            && self.projection().source_range(at..at + 1).is_some_and(|range| {
+                self.state().source.bytes_in(range.clone())
+                    .and_then(|bytes| self.encoding().decode_region(&bytes, range.start).ok())
+                    .is_some_and(|decoded| !normalize(&decoded, self.file_format()).endings.is_empty())
+            });
         let inline_html = self.format() == Format::Markdown
             && (matches!(block.kind, super::super::BlockKind::Heading(_))
                 || at == block.range.end
+                || before_folded_ending
                 || self.text()[block.range.clone()].trim().is_empty());
-        let syntax = if inline_html {
+        let mut syntax = if inline_html {
             // An ATX heading cannot span physical lines. Bare br is also
             // stable in an empty quote/item, where blank continuation lines
             // otherwise acquire paragraph or empty-item structure.
@@ -215,6 +264,19 @@ impl Document {
             };
             format!("\\\n{quote}{}", " ".repeat(indentation))
         };
+        if inline_html && block.range.is_empty() {
+            if let Some(line) = self.state().source_hard_lines.line_at_offset(source_at)
+                .and_then(|index| self.state().source_hard_lines.get(index)) {
+                let bytes = self.state().source.bytes_in(line.start..source_at)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let prefix = self.encoding().decode_region(&bytes, line.start)?.text;
+                if !prefix.ends_with([' ', '\t'])
+                    && (block.style.0.starts_with("Heading")
+                        || matches!(block.kind, super::super::BlockKind::ListItem { .. })) {
+                    syntax.insert(0, ' ');
+                }
+            }
+        }
         let in_code = self.projection().style_spans_for_region(
             &(at.saturating_sub(1)..at.saturating_add(1).min(self.text().len())),
         ).into_iter().any(|span| span.range.start <= at && at <= span.range.end
@@ -225,11 +287,13 @@ impl Document {
         } else {
             None
         };
-        let patches = patches.unwrap_or(vec![SourcePatch::primary(
+        let mut patches = patches.unwrap_or(vec![SourcePatch::primary(
             source_at..source_at,
             self.encoding()
                 .encode_fragment(&spell_logical_breaks(&syntax, self.file_format()))?,
         )]);
+        self.preserve_edited_reference_content(&[TextEdit::new(at..at, "\n")], &mut patches)?;
+        markdown_block_styles::preserve_split_boundaries(self, std::iter::once(&(at..at)), &mut patches)?;
         let prepared =
             self.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], Some(patches))?;
         self.verify_hard_break_paragraph(prepared, &block)

@@ -198,3 +198,32 @@ fn source_view_style_choices_clear_inline_traits_without_changing_visible_words(
         }
     }
 }
+
+#[test]
+fn source_partial_character_choices_terminate_and_clear_selected_traits() {
+    use viem_core::layout::DocumentLayoutStyles;
+    for (source, needle, within) in [
+        ("_ab_", "ab", 1..2),
+        ("__bold__", "bold", 1..2),
+        ("**[bold link](u)**", "bold link", 1..2),
+        ("**a *b* c**", "b", 0..1),
+    ] {
+        for chosen in ["Code", ""] {
+            let mut document = open(source.as_bytes(), Format::MarkdownSource);
+            let start = document.text().find(needle).unwrap();
+            assign(&mut document, start + within.start..start + within.end, chosen)
+                .unwrap_or_else(|error| panic!("{source:?} {chosen:?}: {error:?}"));
+            let bytes = document.source_bytes();
+            let rich = open(&bytes, Format::Markdown);
+            let target = rich.text().find(needle).unwrap_or_else(|| panic!("{source:?} {chosen:?}: {} => {:?}", String::from_utf8_lossy(&bytes), rich.text())) + within.start;
+            let value = DocumentLayoutStyles::semantic_character_at(rich.projection(), target, false).unwrap();
+            assert!(!value.bold, "{}", String::from_utf8_lossy(&bytes));
+            assert_eq!(value.slant, FontSlant::Upright);
+            assert_eq!(named(&rich, target).0, chosen);
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), bytes);
+        }
+    }
+}

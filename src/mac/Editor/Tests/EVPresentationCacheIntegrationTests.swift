@@ -8,6 +8,58 @@ import XCTest
 
 @MainActor
 final class EVPresentationCacheIntegrationTests: XCTestCase {
+    func testOptionalExportFailuresKeepCurrentGeometryScrollingAndPointerPlacement() throws {
+        let source = (0..<400).map { "Line \($0): optional presentation may fail." }.joined(separator: "\n")
+        for export in ["paint", "text", "command line", "selection"] {
+            let (backend, surface, session) = try fixture(source)
+            surface.beforePresentationExport = { name in
+                if name == export { throw EVCoreFrontendError.core(operation: "Injected \(name)", status: UInt32(VIEM_STATUS_CORE_FAILURE)) }
+            }
+            // Force new geometry and text instead of exercising only a cache hit.
+            _ = try session.setScale(1.1)
+            surface.refreshPresentation()
+            let initial = try XCTUnwrap(surface.layoutSnapshot, export)
+            XCTAssertTrue(initial.info.identity.isSameLayout(as: try session.layoutSnapshotInfo().identity), export)
+            XCTAssertTrue(surface.refreshGeometryBeforeInteraction(), export)
+            surface.requestVerticalViewport(top: 600)
+            XCTAssertGreaterThan(surface.viewportState.top, 0, export)
+            XCTAssertEqual(surface.viewportState.top, try session.viewportState().top, export)
+            XCTAssertTrue(surface.refreshGeometryBeforeInteraction(), export)
+            let current = try XCTUnwrap(surface.layoutSnapshot, export)
+            let point = try session.hitTest(CGPoint(x: 80, y: CGFloat(surface.viewportState.top) + 50), in: current.info)
+            _ = try session.placeCursor(point, extendSelection: false)
+            surface.refreshPresentation()
+            XCTAssertEqual(try backend.formattedText(), source, export)
+            XCTAssertNotNil(backend.configurationWarning, export)
+            surface.beforePresentationExport = nil
+            surface.refreshPresentation()
+            XCTAssertNotNil(surface.layoutPaint, export)
+            XCTAssertNotNil(surface.commandLine, export)
+            XCTAssertNotNil(surface.visualSelection, export)
+            XCTAssertFalse(surface.layoutTextSlices.isEmpty, export)
+        }
+    }
+
+    func testFailedGeometryExportNeverReusesAnOlderLayoutAndDoesNotBlockScrolling() throws {
+        let (_, surface, session) = try fixture(String(repeating: "paragraph text\n", count: 400))
+        let previous = try XCTUnwrap(surface.layoutSnapshot)
+        surface.beforePresentationExport = { name in
+            if name == "layout" { throw EVCoreFrontendError.core(operation: "Injected geometry", status: UInt32(VIEM_STATUS_CORE_FAILURE)) }
+        }
+        surface.refreshPresentation()
+        XCTAssertTrue(try XCTUnwrap(surface.layoutSnapshot).info.identity.isSameLayout(as: previous.info.identity))
+        _ = try session.setScale(1.2)
+        surface.refreshPresentation()
+        XCTAssertNil(surface.layoutSnapshot, "an unavailable replacement cannot validate old geometry")
+        surface.requestVerticalViewport(top: 600)
+        XCTAssertGreaterThan(try session.viewportState().top, 0)
+        XCTAssertEqual(surface.viewportState.top, try session.viewportState().top)
+        surface.beforePresentationExport = nil
+        surface.refreshPresentation()
+        XCTAssertTrue(surface.refreshGeometryBeforeInteraction())
+        XCTAssertTrue(try XCTUnwrap(surface.layoutSnapshot).info.identity.isSameLayout(as: try session.layoutSnapshotInfo().identity))
+    }
+
     func testRepeatedVisibleSelectionsInAgentFileReusePresentationExports() throws {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { root.deleteLastPathComponent() }
@@ -26,7 +78,8 @@ final class EVPresentationCacheIntegrationTests: XCTestCase {
         let initial = try XCTUnwrap(surface.layoutSnapshot)
         let before = session.presentationExportCounters
         surface.performInput {
-            _ = try session.sendText("iChanged ")
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)
+            _ = try session.sendText("Changed ")
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
         }
         let edited = try XCTUnwrap(surface.layoutSnapshot)

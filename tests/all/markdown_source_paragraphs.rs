@@ -128,7 +128,7 @@ fn edits_and_formatting_after_mapped_separator_preserve_exact_source() {
         .unwrap();
     assert_eq!(
         document.source_bytes(),
-        b"First\r\n \t\r\n- New Second\r\n\r\nTail"
+        b"First\r\n \t\r\n- ## New Second\r\n\r\nTail"
     );
     assert!(document.undo());
     assert!(document.undo());

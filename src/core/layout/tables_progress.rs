@@ -342,7 +342,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 progress.direction = direction;
             }
         }
-        let focus = view.horizontal_focus_offset.and_then(|at| {
+        let requested_focus = view.horizontal_focus_offset.filter(|at| range.start <= *at && *at <= range.end)
+            .or(view.horizontal_anchor_offset.filter(|at| range.start <= *at && *at <= range.end))
+            .or(view.horizontal_focus_offset);
+        let focus = requested_focus.and_then(|at| {
             if range.start <= at && at <= range.end {
                 return Some(at);
             }

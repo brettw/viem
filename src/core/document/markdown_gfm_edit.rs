@@ -16,7 +16,9 @@ impl Document {
                 .iter()
                 .any(|block| {
                     block.range == edit.range
-                        && matches!(block.kind, super::super::BlockKind::Heading(_))
+                        && (matches!(block.kind, super::super::BlockKind::Heading(_))
+                            || matches!(block.kind, super::super::BlockKind::ListItem { .. })
+                                && block.style.0.starts_with("Heading"))
                 })
         {
             return Ok(None);
@@ -244,10 +246,16 @@ impl Document {
         if self.format() != Format::Markdown {
             return Ok(Vec::new());
         }
-        let mut patches = Vec::new();
+        let mut patches = self.markdown_autolink_support(edits)?;
+        patches.extend(self.unclosed_comment_boundary_support(edits)?);
         let mut seen = std::collections::BTreeSet::new();
         for edit in edits {
-            if !edit.replacement.contains('\n') && !self.text()[edit.range.clone()].contains('\n') {
+            if !edit.replacement.contains('\n') && !self.text()[edit.range.clone()].contains('\n')
+                && !self.projection().blocks_for_region(&edit.range).iter().any(|block|
+                    matches!(block.kind, super::super::BlockKind::Heading(_))
+                        && !block.range.is_empty() && edit.range.start <= block.range.start
+                        && block.range.end <= edit.range.end)
+            {
                 continue;
             }
             let range =
@@ -295,6 +303,9 @@ impl Document {
                 {
                     continue;
                 }
+                patches.extend(markdown_block_styles::support_patches(
+                    self, &block.range, true, false,
+                )?);
                 let end = normalized
                     .endings
                     .first()
@@ -450,7 +461,8 @@ impl Document {
         for edit in edits {
             // Joining at the end of a definition can make newly authored
             // whitespace part of its literal spelling as well.
-            let region = edit.range.start.saturating_sub(1)..edit.range.end;
+            let region = edit.range.start.saturating_sub(1)
+                ..self.next_grapheme_boundary(edit.range.end).unwrap_or(edit.range.end);
             for span in self.projection().style_spans_for_region(&region) {
                 if span.application != StyleApplication::Automatic("Markdown reference".into()) {
                     continue;
@@ -466,11 +478,19 @@ impl Document {
         }
         let entity = self.encoding().encode_fragment("&#32;")?;
         let space = self.encoding().encode_fragment(" ")?;
-        let targets = patches.iter().enumerate().filter_map(|(index, patch)| {
-            ((patch.replacement == space || patch.replacement == entity)
-                && references.iter().any(|range| range.start <= patch.range.start
-                    && patch.range.start <= range.end)).then_some(index)
-        }).collect::<Vec<_>>();
+        let mut targets = Vec::new();
+        for (index, patch) in patches.iter().enumerate() {
+            if !references.iter().any(|range| range.start <= patch.range.start && patch.range.start <= range.end) {
+                continue;
+            }
+            let authored = self.encoding().decode_region(&patch.replacement, patch.range.start)?.text;
+            let literal = if patch.replacement == entity { " ".to_owned() } else { authored };
+            if !literal.is_empty() && literal.chars().all(|ch| matches!(ch, ' ' | '\t')) {
+                let protected = self.encoding().encode_fragment(&literal.chars()
+                    .map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" }).collect::<String>())?;
+                targets.push((index, literal, protected));
+            }
+        }
         if targets.is_empty() {
             return Ok(());
         }
@@ -486,7 +506,7 @@ impl Document {
             .map(|range| mapper.source_range(range)).collect::<Vec<_>>();
         let mut protect = Vec::new();
         let mut retired = Vec::new();
-        for index in targets {
+        for (index, literal_text, protected) in targets {
             let patch = &patches[index];
             let start = rebase_source_boundary(patch.range.start, &ordered, Association::BeforeInsertion)?;
             let range = start..start + patch.replacement.len();
@@ -505,11 +525,11 @@ impl Document {
                 }
             } else if projected.provenance_contained_in_source(&range).iter().any(|span| {
                 span.source.start <= range.start && range.end <= span.source.end
-                    && projected.text_tree().slice(span.formatted.clone()).as_deref() == Ok(" ")
+                    && projected.text_tree().slice(span.formatted.clone()).as_deref() == Ok(literal_text.as_str())
             }) {
                 continue;
             }
-            protect.push(index);
+            protect.push((index, protected));
             // A trailing replacement can leave a valid shortened definition
             // whose trailing space is trivia. Retire that one definition so
             // the protected space has ordinary prose entity semantics.
@@ -522,7 +542,7 @@ impl Document {
                 }
             }
         }
-        for index in protect { patches[index].replacement = entity.clone(); }
+        for (index, replacement) in protect { patches[index].replacement = replacement; }
         retired.sort_unstable();
         retired.dedup();
         for at in retired {

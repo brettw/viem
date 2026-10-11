@@ -1,17 +1,41 @@
 //! Source-line transformations preserve delimiters and unrelated malformed bytes.
 use super::*;
+use crate::document::{BlockKind, IndentationOptions, leading_whitespace_len};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PhysicalSourceTransform {
     Lowercase,
     Uppercase,
     ToggleCase,
-    Indent { spaces: usize },
-    Outdent { spaces: usize },
-    TrimIndent,
+    Indent { columns: usize, options: IndentationOptions },
+    Outdent { columns: usize, options: IndentationOptions },
+    Reindent { options: IndentationOptions },
 }
 
 impl Document {
+    /// Independent ordinary paragraphs can be removed from one snapshot. The
+    /// exact contributor ranges prove the local source patches; a single
+    /// candidate verifies the complete requested text before publication.
+    pub(crate) fn prepare_independent_paragraph_deletions(
+        &self, ranges: Vec<Range<usize>>,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if !self.format().is_wysiwyg() || !self.projection().style_spans().is_empty()
+            || self.projection().blocks().iter().any(|block| block.style.0 != "Paragraph"
+                || block.kind != BlockKind::Paragraph || block.quote_depth != 0
+                || !block.containers.is_empty() || block.markdown_html || block.thematic_break) {
+            return Ok(None);
+        }
+        let mut patches = Vec::new();
+        let mut edits = Vec::new();
+        for range in ranges {
+            self.validate_range(&range)?;
+            let Some(source) = self.projection().source_range(range.clone()) else { return Ok(None); };
+            patches.push(SourcePatch::primary(source, Vec::new()));
+            edits.push(TextEdit::new(range, ""));
+        }
+        self.prepare_text_edits_with_patch_policy(edits, Some(patches), true).map(Some)
+    }
+
     pub(super) fn prepare_physical_source_transform(
         &self, range: Range<usize>, transform: PhysicalSourceTransform,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
@@ -26,6 +50,17 @@ impl Document {
         let first = self.physical_line_index_at_source(range.start)?;
         let last = self.physical_line_index_at_source(range.end - 1)?;
         let mut patches: Vec<SourcePatch> = Vec::new();
+        let mut previous = 0;
+        if let PhysicalSourceTransform::Reindent { options } = transform {
+            for index in (first.saturating_sub(512)..first).rev() {
+                let line = self.physical_line(index)?;
+                let prefix = leading_whitespace_len(&line.text);
+                if prefix < line.text.len() {
+                    previous = options.columns(&line.text[..prefix]);
+                    break;
+                }
+            }
+        }
         for index in first..=last {
             let (_, content) = self.physical_line_ranges(index)?;
             let content = content.start.max(range.start)..content.end.min(range.end);
@@ -33,22 +68,23 @@ impl Document {
             let bytes = self.source_bytes_in(content.clone())?;
             let decoded = self.encoding().decode_region(&bytes, content.start)?;
             match transform {
-                PhysicalSourceTransform::Indent { spaces } => {
-                    if spaces > 0 {
-                        patches.push(SourcePatch::primary(content.start..content.start,
-                            self.encoding().encode_fragment(&" ".repeat(spaces))?));
-                    }
-                }
-                PhysicalSourceTransform::Outdent { .. } | PhysicalSourceTransform::TrimIndent => {
-                    let spaces = match transform { PhysicalSourceTransform::Outdent { spaces } => spaces, _ => 0 };
-                    let prefix = if matches!(transform, PhysicalSourceTransform::TrimIndent) {
-                        decoded.text.len() - decoded.text.trim_start_matches([' ', '\t']).len()
-                    } else {
-                        decoded.text.bytes().take_while(|byte| *byte == b' ').take(spaces).count()
+                PhysicalSourceTransform::Indent { options, .. }
+                | PhysicalSourceTransform::Outdent { options, .. }
+                | PhysicalSourceTransform::Reindent { options } => {
+                    if decoded.text.is_empty() { continue; }
+                    let prefix = leading_whitespace_len(&decoded.text);
+                    let old_columns = options.columns(&decoded.text[..prefix]);
+                    let columns = match transform {
+                        PhysicalSourceTransform::Indent { columns, .. } => old_columns.checked_add(columns)
+                            .ok_or(DocumentError::UnsupportedFormatting)?,
+                        PhysicalSourceTransform::Outdent { columns, .. } => old_columns.saturating_sub(columns),
+                        _ => if prefix == decoded.text.len() { 0 } else { previous },
                     };
-                    if prefix > 0 {
+                    if prefix < decoded.text.len() { previous = columns; }
+                    let replacement = options.try_whitespace(0, columns).map_err(|_| DocumentError::UnsupportedFormatting)?;
+                    if replacement != decoded.text[..prefix] {
                         let end = decoded.source_boundary(prefix).ok_or(DocumentError::AmbiguousProjection)?;
-                        patches.push(SourcePatch::primary(content.start..end, Vec::new()));
+                        patches.push(SourcePatch::primary(content.start..end, self.encoding().encode_fragment(&replacement)?));
                     }
                 }
                 PhysicalSourceTransform::Lowercase | PhysicalSourceTransform::Uppercase
@@ -107,7 +143,7 @@ mod tests {
             Encoding::Utf8, Format::PlainText, FileFormat::Mac).unwrap();
         document.apply_model_request(ModelRequest::TransformPhysicalSource {
             document: document.id(), revision: document.revision(), range: 0..7,
-            transform: PhysicalSourceTransform::Indent { spaces: 2 },
+            transform: PhysicalSourceTransform::Indent { columns: 2, options: IndentationOptions::default() },
         }).unwrap();
         assert_eq!(document.source_bytes(), b"  one\ntwo\rthree");
 

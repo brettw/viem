@@ -1297,7 +1297,7 @@ mod rich_tests {
     }
 
     #[test]
-    fn clipboard_yank_and_insert_paste_roundtrip_authored_source_without_touching_ordinary_yanks() {
+    fn clipboard_and_ordinary_yanks_retain_authored_rich_source() {
         for (format, source) in [
             (Format::Markdown, b"__bold__".as_slice()),
         ] {
@@ -1354,7 +1354,7 @@ mod rich_tests {
                 .register('0')
                 .unwrap()
                 .clipboard_fragment()
-                .is_none());
+                .is_some());
         }
     }
     #[test]

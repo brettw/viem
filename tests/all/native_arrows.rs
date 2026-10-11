@@ -60,7 +60,8 @@ fn operator_arrows_retain_vim_line_limited_edit_semantics() {
     key(&mut core, view, Key::End);
     key(&mut core, view, Key::Char('d'));
     key(&mut core, view, Key::Right);
-    assert_eq!(core.document().text(), "ab\ncd", "operator Right must not cross the line boundary");
+    assert_eq!(core.document().text(), "a\ncd", "operator Right consumes the last character without crossing the boundary");
+    key(&mut core, view, Key::Char('u'));
     key(&mut core, view, Key::Left);
     key(&mut core, view, Key::Char('d'));
     key(&mut core, view, Key::Right);
