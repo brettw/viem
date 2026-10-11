@@ -1819,11 +1819,17 @@ impl Document {
     }
 
     pub(crate) fn link_fragment_source_line(fragment: &str) -> Option<usize> {
+        let ordinal = |digits: &str| {
+            (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                .then(|| digits.parse::<usize>().ok()?.checked_sub(1)).flatten()
+        };
         let digits = fragment.strip_prefix('L')?;
-        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
+        if let Some((first, last)) = digits.split_once("-L") {
+            let first = ordinal(first)?;
+            let last = ordinal(last)?;
+            return (first <= last).then_some(first);
         }
-        digits.parse::<usize>().ok()?.checked_sub(1)
+        ordinal(digits)
     }
 
     pub fn find_link_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {

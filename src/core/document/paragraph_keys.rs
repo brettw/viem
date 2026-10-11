@@ -3,6 +3,94 @@
 use super::*;
 
 impl Document {
+    /// A newly opened final line needs its own terminator when the source did
+    /// not have one. Otherwise Escape/reopen would turn that authored empty
+    /// line into the preceding line's final delimiter.
+    pub(crate) fn literal_terminal_break_cursor(&self, at: usize, prefix_len: usize) -> Option<usize> {
+        if !self.format().is_literal() || at != self.projection().text_tree().byte_len() {
+            return None;
+        }
+        if at > 0 && self.hard_line_snapshot().line_at_offset(at).ok()?.content_range().start == at {
+            return None;
+        }
+        at.checked_add(1)?.checked_add(prefix_len)
+    }
+
+    pub(crate) fn prepare_literal_terminal_break(
+        &self,
+        at: usize,
+        prefix: &str,
+    ) -> Result<Option<(PreparedModelTransaction, usize)>, ModelTransactionError> {
+        let Some(cursor) = self.literal_terminal_break_cursor(at, prefix.len()) else { return Ok(None); };
+        let prepared = self.prepare_text_edits(vec![TextEdit::new(at..at, format!("\n{prefix}\n"))])?;
+        self.prepared_text_point(&prepared, cursor)?;
+        Ok(Some((prepared, cursor)))
+    }
+
+    /// Return at a folded source ending replaces its displayed space with the
+    /// paragraph boundary. Literal spaces, hard breaks, and Source retain their
+    /// ordinary editing rules.
+    pub(super) fn prepare_enter_at_folded_ending(
+        &self,
+        at: usize,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if self.format() != Format::Markdown
+            || self.projection().text_tree().slice(at..at.saturating_add(1)).as_deref() != Ok(" ")
+            || self.projection().table_cell_at(at).is_some()
+        {
+            return Ok(None);
+        }
+        let range = at..at + 1;
+        let Some(source) = self.projection().source_range(range.clone()) else {
+            return Ok(None);
+        };
+        let bytes = self.state().source.bytes_in(source.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, source.start)?;
+        if normalize(&decoded, self.file_format()).endings.is_empty()
+            || self.projection().style_spans_for_region(&range).iter().any(|span|
+                span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+        {
+            return Ok(None);
+        }
+        if self.projection().blocks_for_region(&range).iter().any(|block|
+            block.kind == super::super::BlockKind::Paragraph && block.quote_depth == 0
+                && block.containers.is_empty() && !block.markdown_html)
+        {
+            // Ordinary prose has no container continuation policy. Express the
+            // replacement directly so projection work stays paragraph-local.
+            return self.prepare_text_edits(vec![TextEdit::new(range, "\n")]).map(Some);
+        }
+        let mut scratch = self.scratch_document();
+        let mut sources = replacement::PatchComposition::new(self.source_byte_len());
+        let mut formatted = replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let deletion = scratch.prepare_text_edits(vec![TextEdit::new(range, "")])?;
+        formatted.record_formatted(&deletion)?;
+        for patch in deletion.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(deletion)?;
+        let split = scratch.prepare_structural_list_enter(at)?;
+        formatted.record_formatted(&split)?;
+        for patch in split.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        scratch.commit_model_transaction(split)?;
+        let prepared = self.prepare_text_edits_with_patches(
+            formatted.formatted_edits(), Some(sources.source_patches()),
+        )?;
+        let PreparedPublication::State(candidate) = &prepared.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        if candidate.projection.text() != scratch.text()
+            || !candidate.projection.has_same_hard_line_structure(scratch.projection())
+            || candidate.projection.style_spans() != scratch.projection().style_spans()
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok(Some(prepared))
+    }
+
     /// Paragraph keyboard actions use the formatted boundary, independently
     /// of its source spelling, affinity, or how the caret arrived there.
     fn keyboard_paragraph(&self, at: usize) -> Result<Option<super::super::Block>, DocumentError> {
@@ -143,6 +231,9 @@ impl Document {
         self.text_point(at)?;
         if !self.format().is_wysiwyg() {
             // Plain/source projections author a literal source line ending.
+            if let Some((prepared, _)) = self.prepare_literal_terminal_break(at, "")? {
+                return Ok(prepared);
+            }
             return self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")]);
         }
         if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
@@ -335,5 +426,27 @@ impl Document {
             }
         }
         Ok(prepared)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_literal_break_preparation_only_reads_local_source() {
+        let source = format!("{}tail", "line\n".repeat(100_000));
+        let mut document = Document::new(source.clone());
+        let (result, work) = crate::document::measure_document_work(|| {
+            let (prepared, cursor) = document.prepare_literal_terminal_break(source.len(), "").unwrap().unwrap();
+            document.commit_model_transaction(prepared).unwrap();
+            cursor
+        });
+        assert_eq!(result, source.len() + 1);
+        assert_eq!(document.addressable_hard_line_count(), 100_002);
+        assert_eq!(document.hard_line_snapshot().slice_utf8(source.len()..source.len() + 2).unwrap(), "\n\n");
+        assert_eq!(work.source_full_materializations, 0, "{work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "{work:?}");
+        assert!(work.source_range_materialized_bytes < 4096, "{work:?}");
     }
 }

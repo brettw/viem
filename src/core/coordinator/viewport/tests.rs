@@ -628,13 +628,23 @@ fn document_end_including_an_empty_final_line_can_scroll_above_bottom_margin() {
         for input in [InputEvent::Key(Key::Enter), InputEvent::Text("tail".into())] {
             core.handle(view, CoreEvent::Input(input)).unwrap();
             assert_row_above_margin(&core, view, 28.);
-            let row = caret_row(&core, view);
             let layout = core.layout(view).unwrap();
+            let snapshot = layout.snapshot().unwrap();
+            let row = snapshot.rows.last().unwrap();
             let total = layout.content_height().height() as f32;
             assert!((total - (row.y + row.height()) - 28.).abs() < 0.05,
                 "document scroll extent includes the bottom margin exactly once");
-            assert!((layout.viewport_top() + layout.height() - total).abs() < 0.05);
+            assert!(layout.viewport_top() + layout.height() <= total + 0.05);
         }
+        // Enter supplies a final terminator. Its trailing insertion boundary
+        // still has geometry even though Normal navigation excludes that row.
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(), text_offset: core.document.text().len(),
+            affinity: BoundaryAffinity::Upstream, extend_selection: false,
+        }).unwrap();
+        assert_row_above_margin(&core, view, 28.);
+        let layout = core.layout(view).unwrap();
+        assert!((layout.viewport_top() + layout.height() - layout.content_height().height() as f32).abs() < 0.05);
     }
 }
 

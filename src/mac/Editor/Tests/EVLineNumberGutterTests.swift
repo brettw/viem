@@ -73,8 +73,8 @@ final class EVLineNumberGutterTests: XCTestCase {
         surface.performInput { _ = try session.sendText("i") }
         XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.iBeam)
         XCTAssertEqual(try backend.formattedText(), "first\nsecond\nthird\nlast\n")
-        XCTAssertEqual(try session.lineNumberInfo().source_line_count, 5)
-        XCTAssertEqual(view.lineNumberGutter.bands.map(\.line), [1, 2, 3, 4, 5])
+        XCTAssertEqual(try session.lineNumberInfo().source_line_count, 4)
+        XCTAssertEqual(view.lineNumberGutter.bands.map(\.line), [1, 2, 3, 4])
     }
 
     func testGutterDragAutoscrollIsVerticalAndRetainsInitialRow() throws {

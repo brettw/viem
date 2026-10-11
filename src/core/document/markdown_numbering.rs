@@ -119,6 +119,7 @@ impl Document {
             .collect::<HashMap<_, _>>();
         let mut patches = Vec::new();
         let mut indents = BTreeMap::new();
+        let mut literal_overflow = false;
         for list in &lists.lists {
             if list.style != ListStyle::Numbered
                 || !list.items.iter().any(|item| {
@@ -148,6 +149,7 @@ impl Document {
             }
             for (index, item) in list.items.iter().enumerate() {
                 let number = start.saturating_add(index as u64);
+                literal_overflow |= number > 999_999_999;
                 Self::markdown_number_patches(
                     candidate,
                     item,
@@ -218,7 +220,14 @@ impl Document {
         } else {
             Vec::new()
         };
-        let renumbered = scratch.prepare_text_edits_with_patches(edits, Some(patches))?;
+        let renumbered = if literal_overflow {
+            // Ten-digit ordinals have no list meaning in CommonMark. This is
+            // an explicit source-syntax change, including the now-visible
+            // marker and the parser's resulting paragraph ownership.
+            scratch.prepare_reprojected_source_patches(patches)?
+        } else {
+            scratch.prepare_text_edits_with_patches(edits, Some(patches))?
+        };
         let PreparedPublication::State(renumbered_state) = &renumbered.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
@@ -231,7 +240,7 @@ impl Document {
             }
             (kind, block.style.clone())
         };
-        if scratch
+        if !literal_overflow && scratch
             .projection()
             .blocks()
             .iter()

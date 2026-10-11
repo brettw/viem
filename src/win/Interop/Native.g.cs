@@ -1619,6 +1619,9 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_OPTION_IGNORECASE = 5u;
     public const uint VIEM_EX_OPTION_SMARTCASE = 6u;
     public const uint VIEM_EX_OPTION_WRAPSCAN = 7u;
+    public const uint VIEM_EX_OPTION_FORMATOPTIONS = 25u;
+    public const uint VIEM_EX_OPTION_COMMENTS = 26u;
+    public const uint VIEM_EX_OPTION_FORMATLISTPAT = 27u;
     public const uint VIEM_EX_OPTION_TEXTWIDTH = 8u;
     public const uint VIEM_EX_OPTION_AUTOINDENT = 9u;
     public const uint VIEM_EX_OPTION_TABSTOP = 10u;

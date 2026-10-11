@@ -500,3 +500,99 @@ fn october11_removing_quote_preserves_literal_code_prefixes() {
         assert_eq!(document.source_bytes(), expected.as_bytes());
     }
 }
+
+#[test]
+fn source_emptying_prose_before_a_fence_reparses_separator_context() {
+    use viem_core::document::FileFormat;
+    for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
+        for fence in ["```", "~~~"] {
+            for suffix in [String::new(), format!("\nbody\n{fence}\n\nafter")] {
+                for key in [Key::Backspace, Key::Delete] {
+                    let source = format!("a\n\nb\n{fence}{suffix}").replace('\n', ending);
+                    let expected = format!("a\n\n\n{fence}{suffix}").replace('\n', ending);
+                    let document = Document::from_bytes_with_file_format(
+                        source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource, file_format,
+                    ).unwrap();
+                    let mut core = Core::new(document);
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+                    input(&mut core, view, InputEvent::key('i'));
+                    core.handle(view, CoreEvent::PlaceCursor {
+                        document_revision: core.document().revision(),
+                        text_offset: if key == Key::Backspace { 3 } else { 2 },
+                        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+                    }).unwrap();
+                    input(&mut core, view, InputEvent::Key(key));
+                    assert_eq!(core.document().source_bytes(), expected.as_bytes());
+                    assert_reopened(core.document());
+                    input(&mut core, view, InputEvent::Key(Key::Escape));
+                    input(&mut core, view, InputEvent::key('u'));
+                    assert_eq!(core.document().source_bytes(), source.as_bytes());
+                    input(&mut core, view, InputEvent::Key(Key::Ctrl('r')));
+                    assert_eq!(core.document().source_bytes(), expected.as_bytes());
+                    assert_reopened(core.document());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn source_nonempty_deletion_beside_a_fence_keeps_bounded_projection() {
+    let source = format!("{}a\n\nbc\n```\ncode\n```\n\n{}",
+        "before\n\n".repeat(2_000), "after\n\n".repeat(2_000));
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+    let at = document.text().find("bc\n```").unwrap();
+    let unchanged = document.projection().blocks()[100].id;
+    let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
+        document: document.id(), revision: document.revision(), edits: vec![TextEdit::new(at..at + 1, "")],
+    }).unwrap();
+    let work = prepared.summary().projection_work();
+    assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+    assert!(work.decoded_source_bytes() < 128, "{work:?}");
+    document.commit_model_transaction(prepared).unwrap();
+    assert_eq!(document.source_bytes(), source.replacen("bc\n```", "c\n```", 1).as_bytes());
+    assert_eq!(document.projection().blocks()[100].id, unchanged);
+    assert_reopened(&document);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn enter_replacing_a_folded_break_preserves_unrelated_source_and_bounded_projection() {
+    let source = format!("{}a\nb\n\n{}", "before\n\n".repeat(2_000), "after\n\n".repeat(2_000));
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = document.text().find("a b").unwrap() + 1;
+    let prepared = document.prepare_model_request(ModelRequest::ContinueList {
+        document: document.id(), revision: document.revision(), at,
+    }).unwrap();
+    let work = prepared.summary().projection_work();
+    assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
+    assert!(work.decoded_source_bytes() < 128, "{work:?}");
+    document.commit_model_transaction(prepared).unwrap();
+    assert_eq!(document.source_bytes(), source.replacen("a\nb", "a\n\nb", 1).as_bytes());
+    assert_reopened(&document);
+    let saved = document.source_bytes();
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), saved);
+}
+
+#[test]
+fn prose_splits_next_to_lists_retain_their_full_source_owner_context() {
+    for source in ["- first\n\nTail", "Tail\n\n- next"] {
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let at = document.text().find("Tail").unwrap();
+        let prepared = document.prepare_model_request(ModelRequest::ContinueList {
+            document: document.id(), revision: document.revision(), at,
+        }).unwrap();
+        document.commit_model_transaction(prepared).unwrap();
+        assert_reopened(&document);
+        let saved = document.source_bytes();
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), saved);
+        assert_reopened(&document);
+    }
+}

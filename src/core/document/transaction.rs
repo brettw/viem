@@ -32,6 +32,8 @@ mod markdown_reference_edit;
 mod markdown_table_edit;
 #[path = "markdown_table_projection.rs"]
 mod markdown_table_projection;
+#[path = "markdown_paragraph_projection.rs"]
+mod markdown_paragraph_projection;
 #[path = "markdown_html_edit.rs"]
 mod markdown_html_edit;
 #[path = "markdown_indented_edit.rs"]
@@ -3658,6 +3660,9 @@ impl Document {
     fn prepare_structural_list_enter(
         &self, at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let Some(prepared) = self.prepare_enter_at_folded_ending(at)? {
+            return Ok(prepared);
+        }
         if self.format() == Format::MarkdownSource {
             return self.prepare_markdown_source_list_enter(at);
         }
@@ -4570,6 +4575,9 @@ impl Document {
         }
         validate_source_patches(&mut patches)?;
         if let Ok(Some(prepared)) = self.prepare_table_local_reprojection(&patches) {
+            return Ok(prepared);
+        }
+        if let Ok(Some((prepared, _, _))) = self.prepare_independent_paragraph_reprojection(&patches) {
             return Ok(prepared);
         }
         let source = apply_source_patches(&self.state().source, &patches)?;
@@ -5544,6 +5552,21 @@ impl Document {
             }
         }
 
+        if let Ok(Some((prepared, old_region, new_region))) =
+            self.prepare_independent_paragraph_reprojection(source_patches)
+        {
+            let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
+            if edits.iter().all(|edit| old_region.start <= edit.range.start && edit.range.end <= old_region.end)
+                && state.projection.text_tree().byte_len() == target_text.byte_len()
+                && state.projection.text_tree().slice(new_region.clone())
+                    .map_err(DocumentError::FormattedTextStorage)?
+                    == target_text.slice(new_region).map_err(DocumentError::FormattedTextStorage)?
+            {
+                return Ok(TextEditCandidate { state, work: prepared.summary.projection_work,
+                    block_ids_already_reconciled: true,
+                    next_projected_block_id: prepared.next_projected_block_id_after });
+            }
+        }
         let state = self.build_verified_candidate(
             source,
             self.state().file_format,
@@ -6428,11 +6451,14 @@ impl Document {
         }
         // Consecutive source endings pair into paragraph separators. A run
         // of them just outside the region is bounded by the region's edge
-        // row, and would join endings an edit adds or removes there if that
-        // row became blank.
+        // row. Emptying that row can join the runs without editing an ending
+        // itself, so its new blank state is also a dependency on the omitted
+        // neighbor (for example the opening fence immediately after prose).
         let changes_breaks =
             first_edited != last_edited || edits.iter().any(|edit| edit.replacement.contains('\n'));
-        if changes_breaks {
+        if changes_breaks || first_edited == region.hard_lines.start
+            || last_edited + 1 == region.hard_lines.end
+        {
             let blank = |line: usize| -> Result<bool, ModelTransactionError> {
                 let row = regional.hard_line_range(line).ok_or_else(failed)?;
                 let text = regional
@@ -6445,8 +6471,10 @@ impl Document {
                 .hard_line_count()
                 .checked_sub(1)
                 .ok_or_else(failed)?;
-            if (region.hard_lines.start > 0 && blank(0)?)
-                || (region.hard_lines.end < self.projection().hard_line_count() && blank(last_row)?)
+            if (region.hard_lines.start > 0 && blank(0)?
+                && (changes_breaks || first_edited == region.hard_lines.start))
+                || (region.hard_lines.end < self.projection().hard_line_count() && blank(last_row)?
+                    && (changes_breaks || last_edited + 1 == region.hard_lines.end))
             {
                 return Err(failed());
             }

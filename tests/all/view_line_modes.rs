@@ -74,6 +74,23 @@ fn code_views_default_to_physical_source_lines() {
 }
 
 #[test]
+fn native_vertical_arrows_follow_wrapped_rows_in_physical_line_mode() {
+    for start in ["", "i", "R", "v", "V"] {
+        let source = "alpha beta gamma delta epsilon zeta eta theta\nnext";
+        let (mut core, view) = editor(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap(), 90.);
+        let second = core.layout(view).unwrap().snapshot().unwrap().rows[1].text_range.start;
+        assert!(second < source.find('\n').unwrap());
+        keys(&mut core, view, start);
+        key(&mut core, view, Key::Down);
+        assert_eq!(core.command_state(view).unwrap().cursor(), second, "{start:?}");
+        key(&mut core, view, Key::Up);
+        assert_eq!(core.command_state(view).unwrap().cursor(), 0, "{start:?}");
+        assert_eq!(core.command_state(view).unwrap().line_mode(), LineMode::PhysicalSource);
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
 fn row_change_and_physical_change_have_one_undo_unit() {
     for mode in [LineMode::Visual, LineMode::PhysicalSource] {
         let original = "abc def ghi jkl mno\nsecond";
@@ -119,11 +136,11 @@ fn location_and_width_changes_keep_large_document_layout_local() {
     keys(&mut core, view, "G");
     let before = core.layout(view).unwrap().regional_cache_statistics();
     let physical = core.physical_line_location(view).unwrap();
-    assert_eq!((physical.line, physical.column), (Some(20_001), 1));
+    assert_eq!((physical.line, physical.column), (Some(20_000), 1));
     assert_eq!(physical.mode, LineMode::PhysicalSource);
     let location = core.line_location(view).unwrap();
     assert_eq!(location.line, None);
-    assert_eq!(location.hard_line, 20_001);
+    assert_eq!(location.hard_line, 20_000);
     assert_eq!(location.fragment, 1);
     assert_eq!(
         core.layout(view).unwrap().regional_cache_statistics(),
@@ -131,7 +148,7 @@ fn location_and_width_changes_keep_large_document_layout_local() {
     );
     core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource))
         .unwrap();
-    assert_eq!(core.line_location(view).unwrap().line, Some(20_001));
+    assert_eq!(core.line_location(view).unwrap().line, Some(20_000));
     assert!(
         core.layout(view)
             .unwrap()
@@ -610,7 +627,7 @@ fn counted_g_targets_physical_lines_in_every_selection_and_line_mode() {
 }
 
 #[test]
-fn counted_g_clamps_to_last_numbered_line_and_uncounted_g_retains_eof() {
+fn counted_and_uncounted_g_target_the_last_numbered_line() {
     for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
         let source = "first\n  last\n";
         let (mut core, view) = editor(Document::new(source), 50.);
@@ -619,7 +636,7 @@ fn counted_g_clamps_to_last_numbered_line_and_uncounted_g_retains_eof() {
         assert_eq!(core.command_state(view).unwrap().cursor(), source.find("last").unwrap());
         assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 1);
         keys(&mut core, view, "G");
-        assert_eq!(core.command_state(view).unwrap().cursor(), source.len());
+        assert_eq!(core.command_state(view).unwrap().cursor(), source.find("last").unwrap());
     }
     let (mut core, view) = editor(Document::new(""), 100.);
     keys(&mut core, view, "999G");

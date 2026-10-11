@@ -8,8 +8,8 @@ public struct EVIndentationOptions: Codable, Equatable, Sendable {
   public var softtabstop: Int32 = 2
   public var expandtab = true
   public var smarttab = true
-  public var continueCommentsOnEnter = true
-  public var continueCommentsOnOpenLine = true
+  public var continueCommentsOnEnter = false
+  public var continueCommentsOnOpenLine = false
 
   public init() {}
 

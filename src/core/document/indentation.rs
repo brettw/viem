@@ -25,8 +25,8 @@ impl Default for IndentationOptions {
             softtabstop: 2,
             expandtab: true,
             smarttab: true,
-            continue_comments_on_enter: true,
-            continue_comments_on_open_line: true,
+            continue_comments_on_enter: false,
+            continue_comments_on_open_line: false,
         }
     }
 }

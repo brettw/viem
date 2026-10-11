@@ -639,7 +639,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .ok()
             .map(|geometry| geometry.row_index);
         let mut bands = BTreeMap::<usize, LineNumberRegion>::new();
-        let source_line_count = self.document.physical_line_count()?;
+        let source_line_count = self.document.presented_source_line_number_count();
         let has_horizontal_materialization = snapshot.has_horizontal_materialization();
         let mut hard_lines = BTreeMap::<usize, PartialHardLineNumbers>::new();
         for (row_index, row) in snapshot.rows.iter().enumerate() {

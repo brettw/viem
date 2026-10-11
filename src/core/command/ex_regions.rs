@@ -113,7 +113,7 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
                 value,
             });
         }
-        ExAction::Join { .. } => prepare_join(document, range, command.bang, &mut plan)?,
+        ExAction::Join { .. } => prepare_join(document, context, range, command.bang, &mut plan)?,
         ExAction::Copy { .. } | ExAction::Move { .. } => {
             prepare_transfer(
                 document,
@@ -457,20 +457,24 @@ fn source_deletion_cursor(
 
 fn prepare_join(
     document: &Document,
+    context: &ExExecutionContext,
     range: &ResolvedExRange,
     bang: bool,
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
+    let profile = (document.format().is_code() && context.reflow_options.has('j')).then(|| context.reflow_options.profile());
     if let Some(source) = source_range(document, range)? {
         let units = source_units(document, source.clone())?;
         let mut patches = Vec::new();
-        for pair in units.windows(2) {
+        for (pair_index, pair) in units.windows(2).enumerate() {
             if pair[0].separator.is_empty() {
                 continue;
             }
             let following = &pair[1];
             let leading = if bang {
                 0
+            } else if let Some(profile) = &profile {
+                crate::document::comment_join_prefix(&document.hard_line_snapshot(), range.start.index + pair_index, &pair[0].text, &following.text, profile)
             } else {
                 following.text.len() - following.text.trim_start_matches(char::is_whitespace).len()
             };
@@ -506,14 +510,12 @@ fn prepare_join(
             let following = snapshot
                 .slice_utf8(pair[1].content.clone())
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
-            let leading = if bang {
-                0
-            } else {
-                following.len() - following.trim_start_matches(char::is_whitespace).len()
-            };
             let before = snapshot
                 .slice_utf8(pair[0].content.clone())
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
+            let leading = if bang { 0 }
+                else if let Some(profile) = &profile { crate::document::comment_join_prefix(&snapshot, snapshot.line_at_offset(pair[0].content.start).map_err(|_| ExExecuteError::AddressOverflow)?.index(), &before, &following, profile) }
+                else { following.len() - following.trim_start_matches(char::is_whitespace).len() };
             let separator = if bang
                 || before.chars().last().is_none_or(char::is_whitespace)
                 || following[leading..].is_empty()

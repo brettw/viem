@@ -378,6 +378,94 @@ fn insertion_preserves_split_prose_and_quote_owners() {
 }
 
 #[test]
+fn inserting_a_table_preserves_spaces_folded_breaks_and_inline_scopes() {
+    for source in ["a b", "a\nb", "a\n b", "**a b**", "*a b*", "[a b](x 'title')", "<ins>a b</ins>", "> a b", "- a b"] {
+        for at in [1, 2] {
+            let mut document = doc(source, Format::Markdown);
+            let before = document.text().to_owned();
+            let (prepared, _) = document.prepare_table_edit(document.id(), document.revision(),
+                TableEditIntent::Insert { range: at..at, columns: 1, body_rows: 1 })
+                .unwrap_or_else(|error| panic!("{source:?} at {at}: {error:?}"));
+            document.commit_model_transaction(prepared).unwrap();
+            let table = &document.projection().tables()[0];
+            assert_eq!(document.text()[..table.range.start].trim_end_matches('\n'), &before[..at]);
+            assert_eq!(document.text()[table.range.end..].trim_start_matches('\n'), &before[at..]);
+            let saved = document.source_bytes();
+            let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), document.text());
+            assert_eq!(reopened.projection().style_spans(), document.projection().style_spans());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
+    }
+}
+
+#[test]
+fn table_insertion_preserves_both_heading_halves_and_has_no_empty_leading_heading() {
+    for source in ["# ab", "## ab ##", "ab\n==", "> # ab", "# **ab**"] {
+        for at in 0..=2 {
+            let mut document = doc(source, Format::Markdown);
+            let style = document.projection().blocks()[0].style.clone();
+            action(&mut document, TableEditIntent::Insert { range: at..at, columns: 1, body_rows: 1 });
+            let table = &document.projection().tables()[0];
+            if at == 0 { assert_eq!(table.range.start, 0, "{source:?}"); }
+            for block in document.projection().blocks().iter().filter(|block|
+                !block.range.is_empty() && !block.range.start.eq(&table.rows[0].cells[0].range.start)
+                && (block.range.end <= table.range.start || table.range.end <= block.range.start)) {
+                assert_eq!(block.style, style, "{source:?} at {at}");
+            }
+            let saved = document.source_bytes();
+            assert_eq!(Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap().text(), document.text());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
+    }
+}
+
+#[test]
+fn inserting_a_table_at_a_quoted_paragraph_start_adds_no_empty_paragraph() {
+    for source in ["> ab", "> **ab**", ">> ab"] {
+        let mut document = doc(source, Format::Markdown);
+        action(&mut document, TableEditIntent::Insert { range: 0..0, columns: 1, body_rows: 1 });
+        let table = &document.projection().tables()[0];
+        assert_eq!(table.range.start, 0, "{source:?}");
+        assert_eq!(document.text(), "\n\nab", "{source:?}");
+        let saved = document.source_bytes();
+        assert_eq!(Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap().text(), document.text());
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), saved);
+    }
+}
+
+#[test]
+fn table_insertion_in_a_large_document_only_reprojects_its_local_paragraph() {
+    let source = format!("{}**a b**\n\n{}", "before\n\n".repeat(2_000), "after\n\n".repeat(2_000));
+    let mut document = doc(&source, Format::Markdown);
+    let at = document.text().find("a b").unwrap() + 1;
+    let source_at = source.find("**a b**").unwrap();
+    let unaffected = document.projection().blocks()[100].id;
+    let (prepared, _) = document.prepare_table_edit(document.id(), document.revision(),
+        TableEditIntent::Insert { range: at..at, columns: 2, body_rows: 1 }).unwrap();
+    let work = prepared.summary().projection_work();
+    assert_eq!(work.scope(), viem_core::document::ProjectionWorkScope::RegionalHardLines);
+    assert!(work.decoded_source_bytes() < 512, "{work:?}");
+    assert!(prepared.summary().source_patches().iter().all(|patch|
+        source_at <= patch.range().start && patch.range().end <= source_at + "**a b**".len()));
+    document.commit_model_transaction(prepared).unwrap();
+    assert_eq!(document.projection().blocks()[100].id, unaffected);
+    assert!(document.source_bytes().starts_with(&source.as_bytes()[..source_at]));
+    assert!(document.source_bytes().ends_with(&source.as_bytes()[source_at + "**a b**".len()..]));
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+#[test]
 fn inserting_below_header_retains_adjacent_delimiter_and_terminal_spelling() {
     let original = "| A | B |\n| :-- | --: |\n| one | two |";
     let mut document = doc(original, Format::Markdown);

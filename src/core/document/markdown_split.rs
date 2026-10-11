@@ -13,6 +13,7 @@ struct Scope {
 enum ScopeStyle {
     Semantic(SemanticInlineStyle),
     Strike,
+    Character(StyleProperty),
 }
 
 /// Balance the inline scopes cut by a newly authored wrapper. The source hull
@@ -74,6 +75,12 @@ fn scope_style(application: &StyleApplication) -> Option<ScopeStyle> {
     match application {
         StyleApplication::Semantic(style) => Some(ScopeStyle::Semantic(*style)),
         StyleApplication::Automatic(id) if id.0 == "Strikethrough" => Some(ScopeStyle::Strike),
+        StyleApplication::Direct(properties) => [
+            (StyleProperty::CharacterUnderline, properties.underline),
+            (StyleProperty::CharacterSuperscript, properties.superscript),
+            (StyleProperty::CharacterSubscript, properties.subscript),
+        ].into_iter().find_map(|(property, enabled)|
+            (enabled == Some(true)).then_some(ScopeStyle::Character(property))),
         _ => None,
     }
 }
@@ -398,6 +405,7 @@ fn inline_scopes(
                 let markers = match style {
                     ScopeStyle::Semantic(style) => markdown_style_markers(*style),
                     ScopeStyle::Strike => &["~~", "~"][..],
+                    ScopeStyle::Character(_) => &[],
                 };
                 for marker in markers {
                     let bytes = document.encoding().encode_fragment(marker)?;
@@ -436,6 +444,9 @@ fn inline_scopes(
                         ("<s>", "</s>"),
                         ("<strike>", "</strike>"),
                     ],
+                    ScopeStyle::Character(StyleProperty::CharacterUnderline) => &[("<ins>", "</ins>"), ("<u>", "</u>")],
+                    ScopeStyle::Character(StyleProperty::CharacterSuperscript) => &[("<sup>", "</sup>")],
+                    ScopeStyle::Character(StyleProperty::CharacterSubscript) => &[("<sub>", "</sub>")],
                     _ => &[],
                 };
                 for (open, close) in tags {

@@ -2,7 +2,7 @@
 //! portable formatter, then apply the command-specific cursor policy.
 use super::*;
 use crate::document::{
-    comment_profile_for_language, reflow_edits, ReflowRequest, TextWidthSetting,
+    reflow_edits, ReflowRequest, TextWidthSetting,
 };
 
 impl CommandInterpreter {
@@ -19,6 +19,7 @@ impl CommandInterpreter {
     /// Canonical language name used to select a declarative comment profile.
     /// Independent of syntax coverage, styles, and highlighter availability.
     pub fn set_reflow_language(&mut self, language: Option<String>) {
+        self.reflow_options.set_language(language.as_deref());
         self.reflow_language = language;
     }
 
@@ -61,17 +62,14 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         let snapshot = document.hard_line_snapshot();
         document.validate_hard_line_snapshot(&snapshot)?;
-        let profile = self
-            .reflow_language
-            .as_deref()
-            .and_then(comment_profile_for_language);
         let edits = match reflow_edits(&ReflowRequest {
             snapshot: &snapshot,
             format: document.format(),
             lines: lines.clone(),
             text_width: self.text_width.effective(),
             tabstop: self.indentation_options().tabstop,
-            profile,
+            options: &self.reflow_options,
+            autoindent: self.indentation_options().autoindent,
         }) {
             Ok(edits) => edits,
             Err(error) => {

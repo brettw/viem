@@ -253,9 +253,9 @@ fn linewise_paste_precedes_empty_and_nonempty_lines_without_a_leading_blank() {
     for (source, at, payload, expected, caret) in [
         ("abc\ndef", 1, "X\nY\n", "X\nY\nabc\ndef", 4),
         ("\nabc", 0, "X\nY\n", "X\nY\n\nabc", 4),
-        ("", 0, "X\nY\n", "X\nY\n", 4),
+        ("", 0, "X\nY\n", "X\nY\n", 2),
         ("abc", 1, "\n", "\nabc", 1),
-        ("", 0, "\n", "\n", 1),
+        ("", 0, "\n", "\n", 0),
         ("abc", 1, "\n\n", "\n\nabc", 2),
         ("abc", 1, "X\r\nY\r", "X\nY\nabc", 4),
     ] {
@@ -335,7 +335,7 @@ fn visual_paste_uses_change_then_put_and_preserves_its_deleted_register() {
             4,
             "abc\n",
         ),
-        ("abc\ndef", "VG", "X\nY\n", "X\nY\n", 4, "abc\ndef\n"),
+        ("abc\ndef", "VG", "X\nY\n", "X\nY\n", 2, "abc\ndef\n"),
     ] {
         let mut document = plain(source);
         let mut commands = CommandInterpreter::new();

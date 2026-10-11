@@ -83,33 +83,33 @@ mod tests {
 
     #[test]
     fn copied_character_counts_and_dot_keep_the_copied_value() {
-        let mut d = Document::new("abc\n\nXYZ\n");
+        let mut d = Document::new("abc\n\nXYZ\n\n");
         let mut c = CommandInterpreter::new();
         c.set_cursor(&d, 4);
         keys(&mut c, &mut d, "2i");
         key(&mut c, &mut d, Key::Ctrl('y'));
         key(&mut c, &mut d, Key::Escape);
-        assert_eq!(d.text(), "abc\naa\nXYZ\n");
-        c.set_cursor(&d, d.text().len());
+        assert_eq!(d.text(), "abc\naa\nXYZ\n\n");
+        c.set_cursor(&d, d.text().len() - 1);
         keys(&mut c, &mut d, ".");
-        assert_eq!(d.text(), "abc\naa\nXYZ\naa");
+        assert_eq!(d.text(), "abc\naa\nXYZ\naa\n");
         keys(&mut c, &mut d, "u");
-        assert_eq!(d.text(), "abc\naa\nXYZ\n");
+        assert_eq!(d.text(), "abc\naa\nXYZ\n\n");
     }
 
     #[test]
     fn copied_character_macros_read_the_new_neighbour() {
-        let mut d = Document::new("abc\n\nXYZ\n");
+        let mut d = Document::new("abc\n\nXYZ\n\n");
         let mut c = CommandInterpreter::new();
         assert!(c.set_cursor(&d, 4));
         keys(&mut c, &mut d, "qai");
         key(&mut c, &mut d, Key::Ctrl('y'));
         key(&mut c, &mut d, Key::Escape);
         keys(&mut c, &mut d, "q");
-        assert_eq!(d.text(), "abc\na\nXYZ\n");
-        assert!(c.set_cursor(&d, d.text().len()));
+        assert_eq!(d.text(), "abc\na\nXYZ\n\n");
+        assert!(c.set_cursor(&d, d.text().len() - 1));
         keys(&mut c, &mut d, "@a");
-        assert_eq!(d.text(), "abc\na\nXYZ\nX");
+        assert_eq!(d.text(), "abc\na\nXYZ\nX\n");
     }
 
     #[test]

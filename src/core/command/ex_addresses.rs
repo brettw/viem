@@ -296,7 +296,14 @@ impl<'a> AddressResolver<'a> {
                 let current = if matches!(address.base, AddressBase::Absolute(_)) {
                     self.raw_position()
                 } else { self.current_position()? };
-                result.navigation = Some(self.address(address, current, None)?);
+                result.navigation = Some(match self.address(address, current, None) {
+                    Err(ExAddressResolutionError::Execute(ExExecuteError::AddressOutOfBounds {
+                        value, line_count, ..
+                    })) if matches!(address.base, AddressBase::Absolute(_)) && value > line_count as i128 => {
+                        self.physical(self.physical_count().saturating_sub(1))?
+                    }
+                    result => result?,
+                });
             }
             _ => {}
         }
@@ -348,6 +355,13 @@ impl<'a> AddressResolver<'a> {
     }
 
     fn contextual(&self, position: VisualPosition) -> Result<ResolvedExLine, ExAddressResolutionError> {
+        let position = if position.text_offset == self.document.projection().text_tree().byte_len()
+            && self.document.addressable_hard_line_count() < self.document.line_count()
+        {
+            let line = self.document.hard_line_snapshot().line(self.document.addressable_hard_line_count() - 1)
+                .ok_or(ExExecuteError::AddressOverflow)?;
+            VisualPosition { text_offset: line.content_range().end, affinity: BoundaryAffinity::Upstream }
+        } else { position };
         if self.interpreter.line_mode == LineMode::PhysicalSource {
             let index = if position.text_offset == self.interpreter.cursor {
                 self.interpreter.physical_source_line_index(self.document)?
@@ -520,7 +534,7 @@ impl<'a> AddressResolver<'a> {
                     self.contextual(VisualPosition { text_offset: self.document.projection().text_tree().byte_len(),
                         affinity: BoundaryAffinity::Downstream })?
                 } else {
-                    self.formatted(self.document.line_count().saturating_sub(1))?
+                    self.formatted(self.document.addressable_hard_line_count().saturating_sub(1))?
                 }
             }
             AddressBase::Mark(name) => {
@@ -544,7 +558,7 @@ impl<'a> AddressResolver<'a> {
             ExLineDomain::PhysicalSource | ExLineDomain::Formatted => {
                 let count = if line.domain == ExLineDomain::PhysicalSource {
                     self.physical_count()
-                } else { self.document.line_count() };
+                } else { self.document.addressable_hard_line_count() };
                 let value = (line.index as i128 + 1).checked_add(i128::from(offset))
                     .ok_or(ExExecuteError::AddressOverflow)?;
                 if value < 1 || (!clamp_end && value > count as i128) {
@@ -561,7 +575,18 @@ impl<'a> AddressResolver<'a> {
                 let delta = isize::try_from(offset).map_err(|_| ExExecuteError::AddressOverflow)?;
                 let origin = self.visual_span(snapshot, line.position, 0)?.start;
                 let rows = self.visual_span(snapshot, line.position, delta)?;
-                let target = if offset < 0 { rows.start } else { rows.end - 1 };
+                let mut target = if offset < 0 { rows.start } else { rows.end - 1 };
+                if self.document.addressable_hard_line_count() < self.document.line_count()
+                    && snapshot.rows[target].text_range == (self.document.projection().text_tree().byte_len()..self.document.projection().text_tree().byte_len())
+                {
+                    if !clamp_end {
+                        return Err(ExExecuteError::AddressOutOfBounds {
+                            value: line.index as i128 + 1 + i128::from(offset),
+                            line_count: snapshot.rows.len().saturating_sub(1), zero_allowed: false,
+                        }.into());
+                    }
+                    target = target.saturating_sub(1);
+                }
                 if !clamp_end && target.abs_diff(origin) != offset.unsigned_abs() as usize {
                     return Err(ExExecuteError::AddressOutOfBounds {
                         value: line.index as i128 + 1 + i128::from(offset),
@@ -869,12 +894,11 @@ mod domain_tests {
     }
 
     #[test]
-    fn contextual_last_and_numeric_last_distinguish_terminal_caret_row() {
+    fn contextual_last_and_numeric_last_exclude_terminal_caret_row() {
         let document = Document::new("a\n");
         let mut interpreter = displayed(&document, 500.0);
-        let last = interpreter.line_layout.as_ref().unwrap().rows.len() - 1;
         let range = resolve(&interpreter, &document, ":$p").unwrap().range.unwrap();
-        assert_eq!((range.start.domain, range.start.index), (ExLineDomain::Visual, last));
+        assert_eq!((range.start.domain, range.start.index), (ExLineDomain::Visual, 0));
         interpreter.line_mode = LineMode::PhysicalSource;
         let range = resolve(&interpreter, &document, ":$p").unwrap().range.unwrap();
         assert_eq!((range.start.domain, range.start.index), (ExLineDomain::PhysicalSource, 0));

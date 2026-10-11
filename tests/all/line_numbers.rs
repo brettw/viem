@@ -138,7 +138,7 @@ fn wrapped_and_empty_physical_lines_have_one_full_allocated_band() {
     );
     assert_eq!(
         bands.len(),
-        core.document().physical_line_count().unwrap()
+        core.document().physical_source_line_number_count()
     );
     for band in bands {
         let rows: Vec<_> = snapshot
@@ -642,7 +642,7 @@ fn a_fitting_document_keeps_its_top_when_resize_or_gutter_causes_overflow() {
 }
 
 #[test]
-fn terminal_caret_rows_have_numbers_without_becoming_ex_addresses() {
+fn literal_final_terminators_do_not_add_gutter_or_ex_lines() {
     use viem_core::document::FileFormat;
     for (ending, format) in [
         ("\n", FileFormat::Unix),
@@ -676,7 +676,7 @@ fn terminal_caret_rows_have_numbers_without_becoming_ex_addresses() {
                 .line_number_regions(view)
                 .unwrap()
                 .iter()
-                .all(|band| band.source_line <= if terminate { 100 } else { 99 }));
+                .all(|band| band.source_line <= 99));
             assert_eq!(core.document().source_bytes(), source.as_bytes());
         }
     }
@@ -684,7 +684,7 @@ fn terminal_caret_rows_have_numbers_without_becoming_ex_addresses() {
         let (mut core, view) = opened(source, Format::PlainText, 250., 180.);
         core.set_number(view, true).unwrap();
         assert_eq!(core.document().physical_source_line_number_count(), count);
-        assert_eq!(core.line_number_regions(view).unwrap().len(), count + usize::from(source.ends_with("\n")));
+        assert_eq!(core.line_number_regions(view).unwrap().len(), count);
     }
     let (mut core, view) = opened("first\nlast\n", Format::PlainText, 250., 180.);
     core.set_number(view, true).unwrap();
@@ -704,21 +704,20 @@ fn terminal_caret_rows_have_numbers_without_becoming_ex_addresses() {
     )
     .unwrap();
     let after = core.line_number_regions(view).unwrap();
-    assert_eq!(before.len(), 3);
-    assert_eq!(after.len(), 3);
+    assert_eq!(before.len(), 2);
+    assert_eq!(after.len(), 2);
     assert_eq!(before[1].top, after[1].top);
     assert_eq!(before[1].bottom, after[1].bottom);
-    assert_eq!(core.current_physical_source_line(view).unwrap(), 3);
+    assert_eq!(core.current_physical_source_line(view).unwrap(), 2);
     assert!(!after[0].current);
-    assert!(!after[1].current);
-    assert!(after[2].current);
+    assert!(after[1].current);
 }
 
 #[test]
 fn gutter_abi_validates_revision_viewport_capacity_and_pointer_aliasing() {
     use viem_core::ffi::*;
     let fixture =
-        super::ffi_core_surface::table_ffi_fixture(b"one\ntwo\nthree", VIEM_FORMAT_PLAIN_TEXT);
+        super::ffi_core_surface::table_ffi_fixture(b"one\ntwo\nthree\n", VIEM_FORMAT_PLAIN_TEXT);
     assert_eq!(
         viem_core_view_set_number(fixture.handle, fixture.view, 2),
         ViemStatus::InvalidArgument

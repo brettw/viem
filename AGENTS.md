@@ -403,7 +403,9 @@ unsaved edits; only documents without an open view receive a new Viem window.
 A local file's heading fragment navigates that chosen view. A `#L` fragment
 followed by a positive decimal line number navigates to the beginning of that
 physical source-file line in the chosen view, centering it within the valid
-scroll range. HTTP and HTTPS open the default browser. Native URL and document
+scroll range. GitHub ranges such as `#L5-L7` navigate to their first line;
+both endpoints must be positive and the range must be ordered.
+HTTP and HTTPS open the default browser. Native URL and document
 APIs perform these actions, never a shell. Preserve existing percent escapes
 and encode invalid bytes once.
 
@@ -458,6 +460,8 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   continuation endings but represents paragraph separators without extra raw
   blank rows. Continuations share paragraph style and spacing. Code endings and
   whitespace remain literal in both views.
+  Splitting at a folded source ending consumes its corresponding space; deleting
+  the last character on a continuation line retains that folded space.
 - Enter in prose creates a paragraph with two current-fileformat endings.
   Shift-Enter creates an internal hard break in WYSIWYG (Markdown backslash
   break, or inline `<br>` where a physical ending would alter structure).
@@ -521,6 +525,8 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   start at one. Adjust owned indentation when number width changes. Preserve
   delimiters, spacing, encoding and unrelated lists. No-op saves and ordinary
   literal typing never renumber.
+  Continuing beyond CommonMark's nine-digit ordered-marker limit writes the
+  new ordinal as ordinary paragraph text instead of retaining list treatment.
 - Generated ordered labels use decimal/lower-alpha/lower-roman/decimal by depth;
   bullets use disc/circle/square/disc, with the last style for deeper imports.
   Alphabetic labels continue after `z`; unsupported Roman values use decimal.
@@ -531,6 +537,11 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   removals retain unselected whitespace, hard breaks, empty edge paragraphs and
   following items. All supporting patches share verification, position maps
   and undo with the initiating action.
+
+Inserting a table inside a paragraph splits it around the table, preserving
+the surrounding inline and paragraph treatments. At a paragraph start, insert
+the table before its content without adding an empty paragraph, including in
+quotes.
 
 ### Authored input and caret formatting
 
@@ -755,14 +766,24 @@ Line, including counts/replay. Explicit `g` visual motions retain their visual
 meaning. `gq`/`gw` implicit line
 motions count complete hard lines. Native Select All always selects the entire
 formatted document through its terminal boundary.
+Native Up/Down follows displayed rows in Normal, Insert, Replace and selection
+modes, independently of this setting; Vim operator motions retain the selected
+line domain.
 
 Absolute line addresses always name physical source-file lines, independently
 of a view's line mode. This includes counted `G`/`gg` motions and operators,
 counted `zt`/`zz`/`zb`, percentage jumps and native/launch line navigation.
 Navigation counts beyond the file clamp to its last numbered line, excluding the
-zero-byte editable boundary after a final terminator; invalid explicit Ex
-addresses reject without changing state. Uncounted document-edge motions retain
-their existing behavior.
+zero-byte boundary after a final terminator. A bare numeric Ex navigation past
+EOF moves to the last file line and reports Vim's invalid-range diagnostic;
+out-of-range addresses used by editing commands still reject atomically.
+In Text, Code and Markdown Source, a final delimiter outside an explicit empty
+Markdown paragraph terminates the last line: Normal motions
+and Ex commands must not treat its following insertion boundary as another line.
+Enter or opening a line at an unterminated Text/Code EOF supplies the delimiter
+needed to keep the new empty line editable after Escape and reopening. Place
+the caret before that supporting delimiter; immediate Backspace restores the
+exact original source. Forward Delete at the final content boundary is a no-op.
 
 Ex decimal addresses use physical lines; contextual `.`, `$`, marks and search
 addresses use the view's selected line meaning. Offsets and trailing line counts
@@ -780,8 +801,9 @@ physical source ordinals; hidden syntax has no separate rendered band. If severa
 source lines contribute to one visual row, display only its first ordinal.
 Current-line appearance follows that displayed representative. Table cells on
 one source line share one number, and wrapped lines retain their full vertical
-region while scrolling. Number the editable empty row after a final terminator
-as well; this extra caret row does not extend absolute Ex/motion address ranges.
+region while scrolling. Markdown's editable empty paragraphs retain numbers;
+Text, Code and Markdown Source do not number a final terminator's zero-byte
+boundary when it is not an explicit Markdown paragraph.
 Center numbers vertically and shrink typography to fit short regions. The
 builtin line-number paragraph styles are editable presentation only; the current
 line style inherits the ordinary style without default overrides. Their display
@@ -879,6 +901,8 @@ motions use portable Unicode-aware human-language rules with Vim blank-line
 behavior, pinned in fixtures rather than delegated to frontend segmentation.
 Control-Home/End always target document boundaries, preserving input mode or
 extending Visual selection; in a prompt they target prompt boundaries.
+Normal numeric increment/decrement use Vim's default binary/hexadecimal and
+decimal recognition; configurable `nrformats` is outside the current scope.
 
 ### Search and Viem Regex v2
 
@@ -1009,6 +1033,8 @@ never invokes a language formatter, `cindent`, `indentexpr` or external process.
 Vim tab/soft-stop, Ctrl-T/D and temporary-indent behavior must preserve counts,
 repeat and restoration semantics. Replace Tab is one restoration unit; Replace
 Enter inserts rather than overwrites the following body.
+Insert Ctrl-W/U at a hard-line start join the preceding line, and do nothing at
+the document start. Replace retains its overwrite-restoration policy.
 
 Enter and `o`/`O` preserve logical indentation under the configured tabs/spaces
 policy. Generate indentation only at a resulting hard-line start, including the
@@ -1017,9 +1043,12 @@ indentation when leaving an otherwise empty inserted line, while preserving
 authored blanks/manual changes. Paste and IME commits bypass per-keystroke
 indentation/comment assistance; the shared batch smart-quote policy still applies.
 
-Code comment continuation defaults on separately for Enter and `o`/`O`. It shares
-reflow's declarative language profiles and full-line context, independent of
-syntax highlighting. Preserve distinct line leaders and established starred or
+Code editing and reflow share Vim `formatoptions`, `comments` and
+`formatlistpat`, with `formatoptions=qj` by default. Enter and `o`/`O` comment
+continuation require their respective flags. Language-derived defaults preserve
+explicit buffer overrides; an explicitly empty `comments` disables recognition.
+Comment rules use full-line context independently of syntax highlighting.
+Preserve distinct line leaders and established starred or
 unstarred block bodies. A new conventional block generates ` * `; typing `/`
 immediately after that generated prefix closes it as ` */`. After a closer,
 resume opener indentation. A bare leading `*` or delimiter inside code/string
@@ -1080,16 +1109,19 @@ stops, and is independent of fonts/zoom/window. Preserve graphemes and unbreakab
 words/URLs even if they overflow. Join paragraph words with single spaces while
 preserving order, punctuation, indentation, blank separators, recognized list
 markers/numbering and hanging indent. Do not join adjacent list items or
-paragraphs with differing indentation except recognized list continuations.
+paragraphs with differing indentation except recognized list continuations or
+Code's explicit `formatoptions=2` second-line indentation policy with `autoindent`.
 An overwide prefix must not generate empty lines or repeated splits.
 
-Code comment profiles recognize only full-line leaders. Preserve `//`, `///`,
+With `formatoptions=q`, Code comment configuration recognizes full-line leaders.
+Preserve `//`, `///`,
 `//!`, block openers/closers and established interior-star conventions; standalone
 delimiter and blank comment lines remain separate. Comment-kind/leader changes
 separate paragraphs. Lists inside comments retain hanging indent after repeated
 prefixes. Mixed code plus trailing-comment lines remain byte-identical boundaries.
-Nested block comments and languages without a declared profile remain gaps;
-the former ends at its first closer, and the latter's leaders are ordinary words.
+Nested block comments remain unsupported and end at their first closer.
+Language defaults supply comment and list conventions; explicit buffer values
+take precedence, including when the selected language changes.
 Comment context and reflow cannot depend on asynchronous highlighting or styles.
 
 One reflow is one atomic transaction/undo unit, leaving registers unchanged.
@@ -1834,8 +1866,10 @@ the Rust wrappers.
   to VoiceOver and native text services without introducing native text storage
   as a second source of truth.
 - Follow the system scrollbar preference live. Legacy vertical bars reserve a
-  stable gutter; horizontal controls overlay the full-height canvas. Painting,
-  layout, hit testing and IME geometry must agree on that canvas. Vertical
+  stable layout gutter while continuing non-wrapped content paints beneath their
+  translucent track; this paint extension must not change wrapping or document
+  width. Horizontal controls overlay the full-height canvas. Hit testing and IME
+  geometry retain the document viewport. Vertical
   scrollbars span the full viewport from its top edge to the status-bar margin;
   a horizontal scrollbar must not shorten their track.
 

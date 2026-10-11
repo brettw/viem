@@ -164,9 +164,8 @@ impl Document {
         origin: usize,
         after: bool,
     ) -> Result<Option<usize>, DocumentError> {
-        let list = self
-            .markdown_source_list_edit(at, origin, Some(after))?
-            .is_some();
+        let list_edit = self.markdown_source_list_edit(at, origin, Some(after))?;
+        let list = list_edit.is_some();
         if !list
             && self
                 .markdown_source_quote_code_open(at, origin, after)?
@@ -203,6 +202,13 @@ impl Document {
         let quote = super::super::markdown_quotes::prefix(&text);
         let width = if list {
             super::super::markdown_blocks::marker_prefix_length(&text[quote..])
+                .or_else(|| {
+                    // CommonMark stops recognizing ordered markers after nine
+                    // digits. The authored continuation is still editable
+                    // literal text, and its caret follows that exact prefix.
+                    let marker = list_edit.as_ref()?.replacement.trim_matches('\n');
+                    text.starts_with(marker).then_some(marker.len().saturating_sub(quote))
+                })
                 .ok_or(DocumentError::VerificationFailed)?
         } else {
             0
@@ -642,6 +648,9 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&(at..at))?;
         self.validate_range(&(origin..origin))?;
+        if let Some((prepared, _)) = self.prepare_literal_terminal_break(at, "")? {
+            return Ok(prepared);
+        }
         if self.format()==Format::Markdown && self.projection().table_cell_at(origin).is_some() {
             return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);
         }
@@ -732,6 +741,14 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let block =
             edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
+        if self.format() == Format::Markdown
+            && matches!(block.kind, BlockKind::ListItem { ordered: true, ordinal: 999_999_999.., .. })
+        {
+            // Once the generated decimal spelling becomes literal, the
+            // retained body takes its parsed paragraph treatment. Applying an
+            // old generated list style to it would recreate the retired list.
+            return self.prepare_markdown_list_split(at, true);
+        }
         let heading_start = if self.format() == Format::Markdown
             && at == block.range.start
             && block.quote_depth == 0
@@ -1144,6 +1161,12 @@ impl Document {
             std::iter::once(&edit.range),
             &mut patches,
         )?;
+        if ordered && ordinal >= 999_999_999 {
+            // The next decimal spelling is ordinary CommonMark text. Its
+            // visible marker and continuation ownership are intentionally
+            // determined by the same source parser used on reopen.
+            return self.prepare_reprojected_source_patches(patches);
+        }
         self.prepare_text_edits_with_patches(vec![edit], Some(patches))
     }
 }

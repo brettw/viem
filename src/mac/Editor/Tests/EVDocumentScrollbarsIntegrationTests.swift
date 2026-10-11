@@ -66,6 +66,80 @@ final class EVDocumentScrollbarsIntegrationTests: XCTestCase {
         XCTAssertNil(surface.commandOutput)
     }
 
+    func testOverflowPaintContinuesUnderVerticalScrollerWithoutChangingWrapWidth() throws {
+        for style in [NSScroller.Style.legacy, .overlay] {
+            let backend = EVCoreDocumentBackend()
+            let firstLine = String(repeating: "MMMMMMMM ", count: 100)
+            let source = firstLine + "\n" + String(repeating: "tail\n", count: 20)
+            try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+            let surface = EVEditorSurfaceController(backend: backend)
+            surface.view = EVEditorView(surface: surface, scrollbarStyleProvider: { style })
+            surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 160)
+            surface.viewDidLayout()
+            let view = surface.editorView
+            let session = try XCTUnwrap(surface.session)
+            surface.performInput { _ = try session.setWrap(true) }
+            let wrapped = try XCTUnwrap(surface.layoutSnapshot)
+            let wrappedRows = wrapped.rows.filter { $0.hard_line_index == 0 }
+            let width = view.layoutViewportSize.width
+            XCTAssertEqual(view.textPaintViewportRect, view.textViewportRect)
+            XCTAssertGreaterThan(wrappedRows.count, 1)
+            XCTAssertEqual(wrappedRows.first?.text_start, 0)
+            XCTAssertEqual(wrappedRows.last?.text_end, UInt64(firstLine.utf8.count))
+
+            surface.performInput { _ = try session.setWrap(false) }
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            XCTAssertTrue(view.documentScrollbars.horizontalAvailable)
+            XCTAssertEqual(view.textPaintViewportRect.maxX, view.bounds.maxX)
+            XCTAssertEqual(view.layoutViewportSize.width, width)
+            XCTAssertEqual(CGFloat(snapshot.info.viewport_width), width, accuracy: 0.01)
+            XCTAssertGreaterThan(view.documentScrollbars.verticalState.maximum, 0)
+            view.documentScrollbars.layoutSubtreeIfNeeded()
+            let scroller = view.documentScrollbars.verticalScroller
+            // Overlay controls already occupy the text viewport. Sample the
+            // actual track in both styles, including the newly exposed legacy
+            // strip, rather than assuming every scrollbar reserves a gutter.
+            let band = view.convert(scroller.bounds, from: scroller).intersection(view.bounds)
+            XCTAssertGreaterThan(band.width, 0)
+            XCTAssertFalse(view.drawingClusters(in: band, snapshot: snapshot).isEmpty)
+            let bitmap = try XCTUnwrap(CGContext(data: nil, width: Int(view.bounds.width),
+                height: Int(view.bounds.height), bitsPerComponent: 8, bytesPerRow: Int(view.bounds.width) * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(cgContext: bitmap, flipped: true)
+            view.draw(view.bounds)
+            NSGraphicsContext.restoreGraphicsState()
+            let image = NSBitmapImageRep(cgImage: try XCTUnwrap(bitmap.makeImage()))
+            let background = try XCTUnwrap(image.colorAt(x: image.pixelsWide - 1, y: image.pixelsHigh / 2)?.usingColorSpace(.sRGB))
+            var hasInk = false
+            for x in Int(band.minX)..<image.pixelsWide {
+                for y in 0..<image.pixelsHigh {
+                    let color = try XCTUnwrap(image.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                    if abs(color.redComponent - background.redComponent)
+                        + abs(color.greenComponent - background.greenComponent)
+                        + abs(color.blueComponent - background.blueComponent) > 0.1 { hasInk = true }
+                }
+            }
+            XCTAssertTrue(hasInk, "Overflow ink should remain visible beneath \(style) scroller")
+            surface.performInput { _ = try session.setWrap(true) }
+            XCTAssertEqual(view.layoutViewportSize.width, width)
+            XCTAssertEqual(view.textPaintViewportRect, view.textViewportRect)
+            // Cache coverage of the trailing short lines may grow. Compare the
+            // complete first hard line, whose wrapping and geometry must stay fixed.
+            let restoredRows = try XCTUnwrap(surface.layoutSnapshot).rows.filter { $0.hard_line_index == 0 }
+            XCTAssertEqual(restoredRows.map(\.text_start), wrappedRows.map(\.text_start))
+            XCTAssertEqual(restoredRows.map(\.text_end), wrappedRows.map(\.text_end))
+            for (restored, original) in zip(restoredRows, wrappedRows) {
+                XCTAssertEqual(restored.width, original.width, accuracy: 0.01)
+                XCTAssertEqual(restored.paragraph_content_x, original.paragraph_content_x, accuracy: 0.01)
+                XCTAssertEqual(restored.paragraph_content_width, original.paragraph_content_width, accuracy: 0.01)
+                XCTAssertEqual(restored.y, original.y, accuracy: 0.01)
+                XCTAssertEqual(restored.line_advance, original.line_advance, accuracy: 0.01)
+            }
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), Data(source.utf8))
+        }
+    }
+
     func testVerticalThumbAndPageActionsScrollWithoutMovingCaretOrEditing() throws {
         let source = (0..<400).map { "Paragraph \($0)" }.joined(separator: "\n")
         let (backend, surface) = try makeSurface(source)

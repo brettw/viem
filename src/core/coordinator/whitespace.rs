@@ -272,11 +272,12 @@ mod tests {
         core.set_code_language(
             crate::document::syntax::detection::LanguageSelection::Language("cpp".into()),
         );
+        assert_eq!(ex(&mut core, id, ":set fo+=r"), CommandStatus::Complete);
         keys(&mut core, id, "A");
         event(&mut core, id, InputEvent::Key(Key::Enter));
-        assert_eq!(core.document.text(), "/*\n * ");
+        assert_eq!(core.document.text(), "/*\n * \n");
         event(&mut core, id, InputEvent::text("/"));
-        assert_eq!(core.document.text(), "/*\n */");
+        assert_eq!(core.document.text(), "/*\n */\n");
         event(&mut core, id, InputEvent::Key(Key::Escape));
         keys(&mut core, id, "u");
         assert_eq!(core.document.text(), "/*");
@@ -293,7 +294,7 @@ mod tests {
         keys(&mut core, id, "G.");
         assert_eq!(
             core.document.text(),
-            "  first\n  new\n  new\n    last\n    new\n    new"
+            "  first\n  new\n  new\n    last\n    new\n    new\n"
         );
         keys(&mut core, id, "u");
         assert_eq!(core.document.text(), "  first\n  new\n  new\n    last");
@@ -311,9 +312,9 @@ mod tests {
         event(&mut core, id, InputEvent::Key(Key::Escape));
         keys(&mut core, id, "A");
         event(&mut core, id, InputEvent::Key(Key::Enter));
-        assert_eq!(core.document.text(), "  word\n  ");
+        assert_eq!(core.document.text(), "  word\n  \n");
         event(&mut core, id, InputEvent::Key(Key::Escape));
-        assert_eq!(core.document.text(), "  word\n");
+        assert_eq!(core.document.text(), "  word\n\n");
         keys(&mut core, id, "u");
         assert_eq!(core.document.text(), "  word");
     }

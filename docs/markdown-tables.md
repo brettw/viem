@@ -112,7 +112,10 @@ inside the first source cell rather than on its outer pipe.
 
 Insert at the exact caret. Split surrounding prose only as needed to put the
 table between valid block boundaries, preserving text on both sides and existing
-list/quote ownership. At a document edge, retain or create an ordinary editable
+inline styles, paragraph treatments, and list/quote ownership. A heading split
+retains its heading treatment on both halves. Insertion at a paragraph's start,
+including a quoted paragraph, adds no empty paragraph before the table.
+At a document edge, retain or create an ordinary editable
 boundary for leaving the table. New source endings use the current `fileformat`.
 A new table replaces exactly the selected content when a text selection is
 nonempty; never expand it to surrounding paragraphs. If that replacement

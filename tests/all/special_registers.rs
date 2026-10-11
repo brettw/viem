@@ -194,7 +194,7 @@ fn dot_distinguishes_semantic_enter_from_literal_lf_in_mac_source() {
     let inserted = commands.register('.').unwrap();
     assert_eq!(inserted.text, "\n");
     assert_eq!(inserted.hard_break_offsets(), &[0]);
-    assert_eq!(semantic.source_bytes(), b"\r");
+    assert_eq!(semantic.source_bytes(), b"\r\r");
 
     let mut literal = Document::from_bytes_with_file_format(
         Vec::new(),

@@ -60,8 +60,8 @@ pub(super) fn ctrl_u_delete_range_since_snapshot(
     Ok(line.start.max(session_floor)..caret)
 }
 
-/// Vim Insert-mode `Ctrl-W`: delete intervening whitespace and one preceding
-/// word/punctuation run, stopping at the supplied hard-line boundary.
+/// Within-line component of Insert `Ctrl-W`: delete intervening whitespace and
+/// one word/punctuation run. The controller handles joining at a line start.
 pub fn ctrl_w_delete_range(
     text: &str,
     line: Range<usize>,
@@ -71,8 +71,8 @@ pub fn ctrl_w_delete_range(
     Ok(previous_word_boundary_unchecked(text, line.start, caret)..caret)
 }
 
-/// Vim Insert-mode `Ctrl-U` logical extent when no Insert-session floor is
-/// available. It never consumes the preceding projected hard-line boundary.
+/// Within-line component of Insert `Ctrl-U` without an Insert-session floor.
+/// The controller handles joining at a line start.
 pub fn ctrl_u_delete_range(
     text: &str,
     line: Range<usize>,
@@ -350,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_w_never_crosses_a_hard_line() {
+    fn ctrl_w_word_scan_stops_at_the_supplied_hard_line() {
         let text = "previous\n   ";
         let range = ctrl_w_delete_range(text, text.len()).unwrap();
         assert_eq!(&text[range], "   ");

@@ -869,7 +869,7 @@ fn a_stale_snapshot_or_out_of_range_span_applies_nothing() {
             format: d.format(),
             lines: 0..9,
             text_width: 80,
-            profile: None,
+            options: &viem_core::document::ReflowOptions::default(), autoindent: true,
         }),
         Err(ReflowError::InvalidLineRange { .. })
     ));
@@ -1016,5 +1016,320 @@ fn deliberate_differences_from_vim_are_fixtured() {
             matches!(output.status, CommandStatus::ExError(_)),
             "{command}"
         );
+    }
+}
+
+
+fn set_ok(c: &mut CommandInterpreter, d: &mut Document, command: &str) {
+    let output = ex(c, d, command);
+    assert!(matches!(output.status, CommandStatus::Complete), "{command}: {:?}", output.status);
+}
+fn shown_option(c: &mut CommandInterpreter, d: &mut Document, command: &str) -> ExOptionValue {
+    let output = ex(c, d, command);
+    let outcome = output.ex_outcome.unwrap();
+    let ExFrontendRequest::Info(ExInfoRequest::Options(options)) = &outcome.frontend_requests[0] else { panic!("query"); };
+    options[0].value.clone()
+}
+
+#[test]
+fn formatoptions_defaults_and_comment_overrides_survive_language_refresh() {
+    let (mut c, mut d) = code("// alpha beta gamma delta", "cpp");
+    assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("qj".into()));
+    assert_eq!(shown_option(&mut c, &mut d, ":set com?"), ExOptionValue::String(":///,://!,://,s1:/*,mb:*,ex:*/".into()));
+    set_ok(&mut c, &mut d, ":set com=b:# fo+=ro fo-=j fo^=1");
+    c.set_reflow_language(Some("rust".into()));
+    assert_eq!(shown_option(&mut c, &mut d, ":set com?"), ExOptionValue::String("b:#".into()));
+    assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("1qro".into()));
+    set_ok(&mut c, &mut d, ":set com=");
+    c.set_reflow_language(Some("c".into()));
+    assert_eq!(shown_option(&mut c, &mut d, ":set comments?"), ExOptionValue::String("".into()));
+    set_ok(&mut c, &mut d, ":set com& fo&");
+    assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("qj".into()));
+    set_ok(&mut c, &mut d, ":set fo=q,r,o,q");
+    assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("ro,q".into()));
+    set_ok(&mut c, &mut d, ":set fo&");
+    let before = d.source_bytes();
+    for command in [":set fo=qt", ":set com=s1:/*", r":set flp=\(", ":set fo=ro com=bad"] {
+        assert!(matches!(ex(&mut c, &mut d, command).status, CommandStatus::ExError(_)), "{command}");
+        assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("qj".into()));
+        assert_eq!(d.source_bytes(), before);
+    }
+}
+
+#[test]
+fn formatoptions_q_controls_comment_reflow_and_empty_comments_disable_all_assistance() {
+    for (fo, comments, expected) in [
+        ("qj", None, "// aaa bbb ccc\n// ddd eee fff"),
+        ("j", None, "// aaa bbb ccc\nddd // eee fff"),
+        ("qjro", Some(""), "// aaa bbb ccc\nddd // eee fff"),
+    ] {
+        let original = "// aaa bbb ccc ddd\n// eee fff";
+        let (mut c, mut d) = code(original, "cpp");
+        set_ok(&mut c, &mut d, &format!(":set fo={fo} tw=14"));
+        if let Some(comments) = comments { set_ok(&mut c, &mut d, &format!(":set comments={comments}")); }
+        keys(&mut c, &mut d, "gqG");
+        assert_eq!(d.text(), expected, "{fo} {comments:?}");
+        keys(&mut c, &mut d, "u");
+        assert_eq!(d.text(), original);
+    }
+    let (mut c, mut d) = code("// a\n// b", "cpp");
+    set_ok(&mut c, &mut d, ":set fo=qjro com=");
+    keys(&mut c, &mut d, "J");
+    assert_eq!(d.text(), "// a // b");
+    keys(&mut c, &mut d, "A");
+    c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
+    assert_eq!(d.text(), "// a // b\n\n");
+}
+
+#[test]
+fn formatoptions_j_handles_leaders_counts_dot_and_literal_gj() {
+    for (fo, command, expected) in [
+        ("qj", "3J", "int i; // index in the list"),
+        ("q", "3J", "int i; // index // in //! the list"),
+        ("qj", "3gJ", "int i; // index    // in    //! the list"),
+    ] {
+        let original = "int i; // index\n    // in\n    //! the list";
+        let (mut c, mut d) = code(original, "cpp");
+        set_ok(&mut c, &mut d, &format!(":set fo={fo}"));
+        keys(&mut c, &mut d, command);
+        assert_eq!(d.text(), expected, "{command}");
+        keys(&mut c, &mut d, "u");
+        assert_eq!(d.text(), original);
+        c.handle(&mut d, InputEvent::Key(Key::Ctrl('r'))).unwrap();
+        assert_eq!(d.text(), expected);
+    }
+    for (command, expected) in [(":1,3join", "// one two three"), (":1,3join!", "// one// two// three")] {
+        let (mut c, mut d) = code("// one\n// two\n// three", "cpp");
+        set_ok(&mut c, &mut d, command);
+        assert_eq!(d.text(), expected);
+    }
+    let (mut c, mut d) = code("# one\n# two\n# three\n# four", "python");
+    set_ok(&mut c, &mut d, ":set comments=b:#");
+    keys(&mut c, &mut d, "Jj.");
+    assert_eq!(d.text(), "# one two\n# three four");
+}
+
+#[test]
+fn formatoptions_r_o_and_slash_are_independent_and_code_only() {
+    for (fo, action, expected) in [
+        ("qj", "A\n", "// a\n\n"),
+        ("qjr", "A\n", "// a\n// \n"),
+        ("qjr", "o", "// a\n\n"),
+        ("qjo", "o", "// a\n// \n"),
+        ("qjo", "O", "// \n// a"),
+        ("qjo", "A\n", "// a\n\n"),
+    ] {
+        let (mut c, mut d) = code("// a", "cpp");
+        set_ok(&mut c, &mut d, &format!(":set fo={fo}"));
+        for ch in action.chars() { c.handle(&mut d, InputEvent::Key(if ch == '\n' { Key::Enter } else { Key::Char(ch) })).unwrap(); }
+        assert_eq!(d.text(), expected, "{fo} {action:?}");
+    }
+    for (fo, expected) in [("qjo", "x // a\n  // \n"), ("qjo/", "x // a\n\n")] {
+        let (mut c, mut d) = code("x // a", "cpp");
+        set_ok(&mut c, &mut d, &format!(":set fo={fo}"));
+        keys(&mut c, &mut d, "o");
+        assert_eq!(d.text(), expected);
+    }
+    let (mut c, mut d) = text("// a\n// b");
+    c.set_reflow_language(Some("cpp".into()));
+    set_ok(&mut c, &mut d, ":set fo=qjro");
+    keys(&mut c, &mut d, "J");
+    assert_eq!(d.text(), "// a // b");
+}
+
+#[test]
+fn formatoptions_n_custom_vim_list_pattern_and_second_indent() {
+    for (fo, source, width, expected) in [
+        ("qjn", "1. aaa bbb ccc ddd\ncontinued\n2. xyz abc def", 14, "1. aaa bbb ccc\n   ddd\n   continued\n2. xyz abc def"),
+        ("qj2", "  aaa bbb ccc\nddd eee fff\nggg hhh", 12, "  aaa bbb\nccc ddd eee\nfff ggg hhh"),
+        ("qj1", "aaa bbb a ccc ddd e fff", 10, "aaa bbb\na ccc ddd\ne fff"),
+        ("qj1", "aaa b c ddd", 7, "aaa\nb c ddd"),
+        ("qj1", "aaa b c d e f longword", 8, "aaa\nb c d e f longword"),
+        ("qjw", "aaa bbb ccc \nddd eee\nfff ggg hhh", 10, "aaa bbb \nccc ddd \neee\nfff ggg \nhhh"),
+    ] {
+        let (mut c, mut d) = code(source, "cpp");
+        set_ok(&mut c, &mut d, &format!(":set fo={fo} tw={width}"));
+        keys(&mut c, &mut d, "gqG");
+        assert_eq!(d.text(), expected, "{fo}");
+        keys(&mut c, &mut d, "u");
+        assert_eq!(d.text(), source);
+    }
+    let (mut c, mut d) = code("- aaa bbb ccc ddd\n- eee fff", "cpp");
+    set_ok(&mut c, &mut d, r":set fo=qjn tw=10 flp=^\s*[-+]\s\+");
+    keys(&mut c, &mut d, "gqG");
+    assert_eq!(d.text(), "- aaa bbb\n  ccc ddd\n- eee fff");
+}
+
+#[test]
+fn comments_flags_blank_nested_first_only_and_multiple_blocks() {
+    for (comments, source, expected) in [
+        ("b:#", "# aa bb cc dd\n# ee ff", "# aa bb\n# cc dd\n# ee ff"),
+        ("s1:/*,mb:*,ex:*/", "/* aa bb cc dd\n*pointer\n*/", "/* aa bb\n * cc dd\n*pointer\n*/"),
+        ("n:>", "> > aa bb cc dd\n> > ee ff", "> > aa\n> > bb\n> > cc\n> > dd\n> > ee\n> > ff"),
+        ("fb:-", "- aa bb cc dd\n  ee ff", "- aa bb\n  cc dd\n  ee ff"),
+        ("s1:/*,mb:*,ex:*/,s1:#{,mb:#,ex:#}", "#{ aa bb cc dd\n # ee ff\n #}", "#{ aa bb\n # cc dd\n # ee ff\n #}"),
+    ] {
+        let (mut c, mut d) = code(source, "cpp");
+        set_ok(&mut c, &mut d, &format!(":set comments={comments} tw=8"));
+        keys(&mut c, &mut d, "gqG");
+        assert_eq!(d.text(), expected, "{comments}");
+    }
+    let (mut c, mut d) = code("#{", "cpp");
+    set_ok(&mut c, &mut d, ":set comments=s1:#{,mb:#,ex:#} fo+=r");
+    keys(&mut c, &mut d, "A");
+    c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
+    keys(&mut c, &mut d, "}");
+    assert_eq!(d.text(), "#{\n #}\n");
+}
+
+#[test]
+fn formatting_options_are_shared_across_views_without_entering_undo() {
+    let document = Document::from_bytes(b"# one\n# two".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+    let mut core = Core::new(document);
+    let first = core.add_view(MockTextMeasurementProvider::new(), 500.0, 500.0);
+    let second = core.add_view(MockTextMeasurementProvider::new(), 500.0, 500.0);
+    let mut events = chars(":set comments=b:# fo=qjro");
+    events.push(InputEvent::Key(Key::Enter));
+    run(&mut core, first, &events);
+    run(&mut core, second, &chars("J"));
+    assert_eq!(core.document().text(), "# one two");
+    run(&mut core, first, &chars("u"));
+    assert_eq!(core.document().text(), "# one\n# two");
+    let third = core.add_view(MockTextMeasurementProvider::new(), 500.0, 500.0);
+    run(&mut core, third, &chars("o"));
+    assert_eq!(core.document().text(), "# one\n# \n# two");
+}
+
+#[test]
+fn configured_comment_reflow_is_local_in_a_large_encoded_file() {
+    let prefix = "untouched\r\n".repeat(10_000);
+    let source = format!("{prefix}# aa bb cc dd\r\n# ee ff\r\nTAIL");
+    let bytes = source.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+    let mut d = Document::from_bytes_with_file_format(bytes.clone(), Encoding::Utf16Le, Format::Code, FileFormat::Dos).unwrap();
+    let mut c = CommandInterpreter::new();
+    set_ok(&mut c, &mut d, ":set comments=b:# fo=qj tw=8");
+    c.set_cursor(&d, prefix.replace("\r\n", "\n").len());
+    keys(&mut c, &mut d, "2gqq");
+    assert!(d.text().ends_with("# aa bb\n# cc dd\n# ee ff\nTAIL"));
+    let after = d.source_bytes();
+    let prefix_bytes = prefix.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>();
+    assert!(after.starts_with(&prefix_bytes));
+    let reopened = Document::from_bytes_with_file_format(after.clone(), Encoding::Utf16Le, Format::Code, FileFormat::Dos).unwrap();
+    assert_eq!(reopened.text(), d.text());
+    keys(&mut c, &mut d, "u");
+    assert_eq!(d.source_bytes(), bytes);
+    c.handle(&mut d, InputEvent::Key(Key::Ctrl('r'))).unwrap();
+    assert_eq!(d.source_bytes(), after);
+}
+
+
+#[test]
+fn formatlistpat_uses_vim_match_end_and_rejects_cluster_splits_atomically() {
+    let (mut c, mut d) = code("[a] aaa bbb ccc ddd", "cpp");
+    set_ok(&mut c, &mut d, r":set fo=qjn tw=11 flp=^\[a\]\s\+\ze\w");
+    keys(&mut c, &mut d, "gqq");
+    assert_eq!(d.text(), "[a] aaa bbb\n    ccc ddd");
+    let (mut c, mut d) = code("  - aaa bbb ccc ddd", "cpp");
+    set_ok(&mut c, &mut d, r":set fo=qjn tw=11 flp=^\s\{2}[-+]\s\+");
+    keys(&mut c, &mut d, "gqq");
+    assert_eq!(d.text(), "  - aaa bbb\n    ccc ddd");
+    let (mut c, mut d) = code("a\u{301} aaa bbb ccc", "cpp");
+    set_ok(&mut c, &mut d, ":set fo=qjn tw=8 flp=^a");
+    let source = d.source_bytes();
+    assert!(matches!(keys(&mut c, &mut d, "gqq"), CommandStatus::Error(_)));
+    assert_eq!(d.source_bytes(), source);
+    assert!(!d.undo());
+}
+
+#[test]
+fn comment_join_and_open_require_comment_context_not_quoted_delimiters() {
+    for (source, keys_text, expected) in [
+        ("* pointer\n* another", "J", "* pointer * another"),
+        ("/*\n * one\n * two\n */", "jJ", "/*\n * one two\n */"),
+        ("let x = \"//\";\n// next", "J", "let x = \"//\"; // next"),
+        ("/*\n * one\n * two\n * three\n */", "j3J", "/*\n * one two three\n */"),
+    ] {
+        let (mut c, mut d) = code(source, "cpp");
+        keys(&mut c, &mut d, keys_text);
+        assert_eq!(d.text(), expected);
+    }
+    let (mut c, mut d) = code("let x = \"//\";", "cpp");
+    set_ok(&mut c, &mut d, ":set fo+=o");
+    keys(&mut c, &mut d, "o");
+    assert_eq!(d.text(), "let x = \"//\";\n\n");
+}
+
+
+#[test]
+fn three_piece_comment_alignment_and_automatic_end_follow_the_configured_parts() {
+    let (mut c, mut d) = code("  /***", "cpp");
+    set_ok(&mut c, &mut d, ":set comments=sr:/***,m:**,ex-2:******/ fo+=ro");
+    keys(&mut c, &mut d, "A");
+    c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
+    assert_eq!(d.text(), "  /***\n    ** \n");
+    keys(&mut c, &mut d, "/");
+    assert_eq!(d.text(), "  /***\n    ******/\n");
+    let (mut c, mut d) = code("  /***\n    ******/", "cpp");
+    set_ok(&mut c, &mut d, ":set comments=sr:/***,m:**,ex2:******/ fo+=o");
+    keys(&mut c, &mut d, "GO");
+    assert_eq!(d.text(), "  /***\n      **   \n    ******/");
+}
+
+#[test]
+fn public_reflow_requests_reject_invalid_options_without_panicking_or_editing() {
+    use viem_core::document::{reflow_edits, ReflowError, ReflowOptions, ReflowRequest};
+    let (_, d) = code("// aaa bbb ccc", "cpp");
+    let snapshot = d.hard_line_snapshot();
+    for invalid in 0..3 {
+        let mut options = ReflowOptions::default();
+        match invalid {
+            0 => options.comments = Some("invalid".into()),
+            1 => options.format_options = Some("qjt".into()),
+            _ => { options.format_options = Some("qjn".into()); options.format_list_pattern = Some(r"\(".into()); }
+        }
+        let result = reflow_edits(&ReflowRequest { snapshot: &snapshot, format: Format::Code,
+            lines: 0..1, text_width: 8, tabstop: 2, options: &options, autoindent: true });
+        assert!(matches!(result, Err(ReflowError::InvalidOptions(_))), "{invalid}: {result:?}");
+        assert_eq!(d.source_bytes(), b"// aaa bbb ccc");
+    }
+}
+
+
+#[test]
+fn reflow_and_enter_use_custom_block_alignment_and_blank_requirements() {
+    for (start, continuation) in [("s0", "*  "), ("s1", " * "), ("s3", "   *"), ("sr", " * ")] {
+        let (mut c, mut d) = code("/* aaa bbb ccc ddd */", "cpp");
+        set_ok(&mut c, &mut d, &format!(":set comments={start}:/*,mb:*,ex:*/ fo=qjr tw=14"));
+        keys(&mut c, &mut d, "gqG");
+        assert_eq!(d.text(), format!("/* aaa bbb ccc\n{continuation}ddd */"), "{start}");
+        let (mut c, mut d) = code("/* aaa", "cpp");
+        set_ok(&mut c, &mut d, &format!(":set comments={start}:/*,mb:*,ex:*/ fo=qjr"));
+        keys(&mut c, &mut d, "A");
+        c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
+        assert_eq!(d.text(), format!("/* aaa\n{continuation}\n"), "{start}");
+    }
+    let (mut c, mut d) = code("/*not\n * b", "cpp");
+    set_ok(&mut c, &mut d, ":set comments=sb:/*,mb:*,ex:*/ fo=qj");
+    keys(&mut c, &mut d, "J");
+    assert_eq!(d.text(), "/*not * b");
+}
+
+#[test]
+fn physical_counted_join_uses_each_original_comment_line() {
+    use viem_core::command::LineMode;
+    for (source, expected) in [
+        ("// one\ntwo\n// three", "// one two // three"),
+        ("// one\n\n// three", "// one // three"),
+        ("/* one\n two\n * three", "/* one two * three"),
+        ("/* one\n * two\n * three", "/* one two three"),
+    ] {
+        let (mut c, mut d) = code(source, "cpp");
+        c.set_line_mode(&d, LineMode::PhysicalSource).unwrap();
+        assert!(matches!(keys(&mut c, &mut d, "3J"), CommandStatus::Complete));
+        assert_eq!(d.text(), expected, "{source}");
+        keys(&mut c, &mut d, "u");
+        assert_eq!(d.source_bytes(), source.as_bytes());
+        c.handle(&mut d, InputEvent::Key(Key::Ctrl('r'))).unwrap();
+        assert_eq!(d.text(), expected);
     }
 }

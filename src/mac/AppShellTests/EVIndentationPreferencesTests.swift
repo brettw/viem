@@ -17,7 +17,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     XCTAssertEqual(store.indentation.shiftwidth, 2)
     XCTAssertEqual(store.indentation.softtabstop, 2)
     XCTAssertTrue(store.indentation.autoindent && store.indentation.expandtab && store.indentation.smarttab)
-    XCTAssertTrue(store.indentation.continueCommentsOnEnter && store.indentation.continueCommentsOnOpenLine)
+    XCTAssertFalse(store.indentation.continueCommentsOnEnter || store.indentation.continueCommentsOnOpenLine)
     XCTAssertEqual(store.whitespacePresentation.codeWhitespace, .paragraphEn)
     XCTAssertEqual(store.whitespacePresentation.otherWhitespace, .spaces)
     XCTAssertEqual(store.whitespacePresentation.codeWrappedLineIndent, 4)
